@@ -7,10 +7,15 @@ from pathlib import Path
 from uuid import uuid4
 
 
+def runs_directory(home):
+    """Coconut keeps its routine receipts in its own folder of the bot, `<data>/bots/<uuid>/runs`, not in the profile."""
+    return Path(home).parent / 'runs'
+
+
 def receipt_path(home, identity):
     if not identity or Path(identity).name != identity or identity in ('.', '..'):
         raise ValueError('Invalid native routine ID.')
-    return Path(home) / 'coconut-runs' / (identity + '.json')
+    return runs_directory(home) / (identity + '.json')
 
 
 def read(home, identity):
@@ -22,7 +27,7 @@ def save(home, identity, value):
     from profiles import _write
     path = receipt_path(home, identity)
     path.parent.mkdir(exist_ok=True, mode=0o700)
-    _write(path, json.dumps(value), Path(home))
+    _write(path, json.dumps(value), runs_directory(home))
 
 
 @contextmanager
@@ -171,7 +176,7 @@ def finish(home, identity, jobs, *, owner, success, output='', failure=None):
 def completion_receipts(home):
     """Read only our exact legacy occurrence format; leave other receipts alone."""
     result = {}
-    for path in (Path(home) / 'coconut-runs').glob('completed-*.json'):
+    for path in runs_directory(home).glob('completed-*.json'):
         try:
             value = json.loads(path.read_text())
             if (isinstance(value, dict) and isinstance(value.get('job_id'), str)

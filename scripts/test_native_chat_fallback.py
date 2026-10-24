@@ -84,6 +84,8 @@ def check(source, python):
                 def resolve_runtime(self, *_, **__):
                     return dict(provider='custom', api_mode='chat_completions',
                                 base_url=address + '/primary/v1', api_key='primary-key')
+                def worker_limit(self):
+                    return None
             Catalog.root.mkdir()
             (Catalog.root / 'config.yaml').write_text(json.dumps({'fallback_providers': [dict(
                 provider='openai-api', model='fallback-probe', base_url=address + '/fallback/v1',
@@ -92,7 +94,20 @@ def check(source, python):
             class Provider(HermesProvider):
                 def migrate_model_default(self, *_): pass
                 def subscribe_model_catalog(self, *_): pass
-                def native_settings(self, *_args, **_kwargs): return {'routines': []}
+                def native_settings(self, operation='read', bots=(), **_kwargs):
+                    if operation == 'migrate':
+                        # The one-time settings step gives a new bot a copy of the default fallback and its key.
+                        for bot in bots:
+                            profile = home / 'data' / 'bots' / bot['id'] / 'home'
+                            config = json.loads((profile / 'config.yaml').read_text())
+                            config['fallback_providers'] = json.loads((Catalog.root / 'config.yaml').read_text())['fallback_providers']
+                            (profile / 'config.yaml').write_text(json.dumps(config))
+                            (profile / '.env').write_text((Catalog.root / '.env').read_text())
+                            report = profile.parent / 'settings-migration' / 'report.json'
+                            report.parent.mkdir(parents=True, exist_ok=True)
+                            report.write_text('{"status": "done", "version": 1}')
+                        return {'ok': True}
+                    return {'routines': []}
                 def observe_bot(self, bot): return bot
                 def model_catalog(self): return {'default': self.resolve_task_model({}, {}), 'models': []}
                 def resolve_model(self, bot, catalog=None): return self.resolve_task_model(bot, {})

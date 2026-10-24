@@ -46,7 +46,9 @@ class RoutineClaimTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.home = Path(self.tmp.name)
+        # Coconut keeps the receipts beside the profile home, in its own runs folder.
+        self.home = Path(self.tmp.name) / 'home'
+        self.home.mkdir()
         self.modules = patch.dict('sys.modules', {'profiles': profiles})
         self.modules.start(); self.addCleanup(self.modules.stop)
         self.job = {'id': 'native-job', 'fire_claim': None}
@@ -176,7 +178,9 @@ class NativeCompletionReceiptTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.home = Path(self.tmp.name)
+        # Coconut keeps the receipts beside the profile home, in its own runs folder.
+        self.home = Path(self.tmp.name) / 'home'
+        self.home.mkdir()
         self.job = {'id': 'job', 'fire_claim': {'by': 'owner'}, 'repeat': {'completed': 0}}
         self.outputs, self.writes = [], 0
         self.request = dict(bot_id='bot', native_id='job', owner='owner', success=True, output='Done')

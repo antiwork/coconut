@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import stat
 import tempfile
@@ -99,6 +100,15 @@ def prompt_revision(home: str | Path, *, boundary: str | Path | None = None) -> 
     return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
 
 
+def settings_report(home: str | Path) -> Path:
+    """The report of the one-time settings step (settings_migration) for this profile home. It marks the step as done."""
+    return Path(home).parent / 'settings-migration' / 'report.json'
+
+
+def settings_migrated(home: str | Path) -> bool:
+    return settings_report(home).is_file()
+
+
 class HermesProfiles:
     """Hermes files own behavior. Coconut records identity and phone presentation."""
 
@@ -124,76 +134,40 @@ class HermesProfiles:
         _write(home / 'SOUL.md', text, self.root)
 
     def sync(self, bot: dict) -> dict:
+        """Check the profile identity of this bot. Create the profile only when the bot has none.
+
+        Coconut does not change an existing profile here. It writes into a profile only when the person acts: when they
+        edit SOUL, change the model through the Hermes config, or create a bot.
+        """
         identity = profile_id(bot)
         home = self.home(bot)
-        metadata_path = home / 'coconut-profile.json'
-        _safe(metadata_path, self.root)
-        previous = None
-        if metadata_path.exists():
-            try:
-                previous = json.loads(metadata_path.read_text())
-            except (ValueError, OSError):
-                raise ProfileError('The Hermes profile identity file is invalid.') from None
-            if not isinstance(previous, dict) or any(previous.get(key) != value for key, value in (
-                    ('profile_id', identity), ('bot_id', bot['id']), ('session_id', bot['session_id']))):
-                raise ProfileError('The Hermes profile belongs to another bot or session.')
-            if previous.get('status') == 'deleted' and not bot.get('_deleted'):
-                raise ProfileError('This Hermes profile belongs to a deleted bot.')
         status = 'deleted' if bot.get('_deleted') else 'archived' if bot.get('archived') else 'active'
-        metadata = dict(version=2, native_memory=True, skill_defaults_applied=True,
-                        profile_id=identity, bot_id=bot['id'], session_id=bot['session_id'],
-                        status=status, managed_files=['coconut-profile.json'])
+        created = False
         # Deleting an unused bot does not create a new Hermes home.
-        if status == 'deleted' and not home.exists():
-            return metadata
-        home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        home.chmod(0o700)
-        if status != 'deleted':
-            # Apply the native default once. Later Hermes opt-in choices remain authoritative.
-            if not previous or not previous.get('skill_defaults_applied'):
-                _write(home / '.no-bundled-skills',
-                       'Use essential Hermes skills only. Run hermes skills opt-in to enable the bundled catalog.\n',
-                       self.root)
-            soul = home / 'SOUL.md'
-            _safe(soul, self.root)
-            if previous is None and soul.exists():
-                backup = home / 'SOUL.before-coconut.md'
-                _safe(backup, self.root)
-                if not backup.exists():
-                    _write(backup, soul.read_text(), self.root)
-            if not soul.exists():
-                _write(soul, bot.get('instructions', ''), self.root)
-            if not previous or not previous.get('native_memory'):
-                # Each import preserves native entries and tolerates an interrupted migration.
-                memories = home / 'memories'
-                _safe(memories, self.root)
-                memories.mkdir(exist_ok=True, mode=0o700)
-                for filename, entries in (
-                    ('MEMORY.md', [bot.get('memory', '')]),
-                    ('USER.md', [item['text'] for item in bot.get('preferences', [])]),
-                ):
-                    target = memories / filename
-                    _safe(target, self.root)
-                    content = target.read_text() if target.exists() else ''
-                    for entry in entries:
-                        if entry.strip() and entry.strip() not in content:
-                            content = content.rstrip() + '\n\n' + entry.strip() + '\n'
-                    if content:
-                        _write(target, content.lstrip(), self.root)
-                legacy = home / 'COCONUT_MEMORY.md'
-                _safe(legacy, self.root)
-                legacy.unlink(missing_ok=True)
-            config = home / 'config.yaml'
-            _safe(config, self.root)
-            if not config.exists():
-                _write(config, _json({'toolsets': ['kanban'], 'terminal': {'cwd': str(home.parent / 'workspace')},
-                                      'delegation': {'max_concurrent_children': None, 'worktree_isolation': True}}), self.root)
-            meta = home / 'profile.yaml'
-            _safe(meta, self.root)
-            if not meta.exists():
-                _write(meta, _json(dict(display_name=bot.get('name', identity), description=bot.get('role', ''))), self.root)
-        _write(metadata_path, _json(metadata), self.root)
-        return metadata
+        if status != 'deleted' and not home.exists():
+            self._create(bot, home)
+            created = True
+        return dict(profile_id=identity, bot_id=bot['id'], session_id=bot['session_id'], status=status, created=created)
+
+    def _create(self, bot: dict, home: Path) -> None:
+        """Write the files of a new profile in a staging folder, then rename it, so a crash leaves no half profile."""
+        staging = home.with_name(home.name + '.creating')
+        _safe(staging, self.root)
+        if staging.exists():
+            # Only an interrupted creation leaves this folder. It holds no state yet.
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True, mode=0o700)
+        # New profiles start with the essential Hermes skills only. `hermes skills opt-in` enables the bundled catalog.
+        _write(staging / '.no-bundled-skills',
+               'Use essential Hermes skills only. Run hermes skills opt-in to enable the bundled catalog.\n', self.root)
+        _write(staging / 'SOUL.md', bot.get('instructions', ''), self.root)
+        _write(staging / 'config.yaml', _json({'toolsets': ['kanban'], 'terminal': {'cwd': str(home.parent / 'workspace')},
+                                               'delegation': {'max_concurrent_children': None, 'worktree_isolation': True}}),
+               self.root)
+        _write(staging / 'profile.yaml', _json(dict(display_name=bot.get('name', profile_id(bot)),
+                                                    description=bot.get('role', ''))), self.root)
+        _safe(home, self.root)
+        os.rename(staging, home)
 
 
 def merge_runtime_config(home: str | Path) -> None:
@@ -205,7 +179,7 @@ def merge_runtime_config(home: str | Path) -> None:
         from .runtime_environment import CLAUDE_PROFILE_OVERRIDES, profile_environment
     except ImportError:
         from runtime_environment import CLAUDE_PROFILE_OVERRIDES, profile_environment
-    protected = set(profile_environment(home)) | set(CLAUDE_PROFILE_OVERRIDES) | {'HERMES_HOME', 'PYTHONPATH', 'COCONUT_DEFAULT_HOME'}
+    protected = set(profile_environment(home)) | set(CLAUDE_PROFILE_OVERRIDES) | {'HERMES_HOME', 'PYTHONPATH'}
     for key in CLAUDE_PROFILE_OVERRIDES:
         os.environ.pop(key, None)
     for key, value in dotenv_values(home / '.env').items():
@@ -230,14 +204,9 @@ def inspect_profiles(data_dir: str | Path, identity: str | None = None, *, inclu
         if (identity is not None and current != identity) or (bot.get('_deleted') and not include_deleted):
             continue
         home = profiles.home(bot)
-        metadata_path = home / 'coconut-profile.json'
-        _safe(metadata_path, profiles.root)
-        metadata = json.loads(metadata_path.read_text()) if metadata_path.is_file() else {}
         state = 'deleted' if bot.get('_deleted') else 'archived' if bot.get('archived') else 'active'
         result.append(dict(profile_id=current, bot_id=bot['id'], session_id=bot['session_id'], name=bot['name'],
-                           status=state, home=str(home), home_exists=home.is_dir(),
-                           identity_recorded=all(metadata.get(key) == value for key, value in (
-                               ('profile_id', current), ('bot_id', bot['id']), ('session_id', bot['session_id']), ('status', state)))))
+                           status=state, home=str(home), home_exists=home.is_dir()))
     if identity is not None and not result:
         raise ProfileError('This profile does not exist in the selected Coconut data directory.')
     return sorted(result, key=lambda item: (item['name'].casefold(), item['profile_id']))

@@ -25,7 +25,7 @@ from uuid import UUID, uuid4, uuid5
 from .pr_tracking import GitHubPRTracker, PRTrackingError, parse_pr_url
 from .routines import validate_schedule, next_run
 from .native_conversation import reaction_only_turn
-from .profiles import HermesProfiles, ProfileError, profile_id
+from .profiles import HermesProfiles, ProfileError, profile_id, settings_migrated
 from .state_sync import StateSync
 
 
@@ -348,8 +348,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
             self.process_lock.close()
             raise
-        if hasattr(self.provider, 'native_settings') and not getattr(self, '_workspace_recovery_hold', False):
-            self.provider.native_settings('migrate', [b for b in self._all('bots') if not b.get('_deleted')])
+        self._migrate_profile_settings(self._all('bots'))
         with self.transaction():
             for bot in self._all('bots'):
                 bot.pop('memory', None)
@@ -366,8 +365,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                     self.provider.migrate_model_default(self._setting('model'), self._setting('base_url'))
                 elif hasattr(self.provider, 'configure') and self._setting('model'):
                     self.provider.configure(model=self._setting('model'), base_url=self._setting('base_url') or None)
-                if hasattr(self.provider, 'native_settings'):
-                    self.provider.native_settings('migrate', [b for b in self._all('bots') if not b.get('_deleted')])
+                self._migrate_profile_settings(self._all('bots'))
         except BaseException:
             if self.kanban:
                 self.kanban.close()
@@ -686,6 +684,21 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             raise ServiceError(409, str(error)) from error
         except OSError as error:
             raise ServiceError(503, 'The bot settings were saved, but its Hermes profile could not sync.') from error
+
+    def _migrate_profile_settings(self, bots):
+        """Write the settings that each bot inherited into its own profile, once. settings_migration describes the step.
+
+        Its report file marks a bot as done, so this check costs one file read. A failed step stops the start, so the
+        automatic update keeps the earlier version. The step waits while workspace recovery holds the start, because a
+        worker of the earlier service can still run. The provider gives a new bot the same step before its first turn.
+        """
+        if not hasattr(self.provider, 'native_settings') or getattr(self, '_workspace_recovery_hold', False):
+            return
+        pending = [bot for bot in bots if not bot.get('_deleted') and self.profiles.home(bot).is_dir()
+                   and not settings_migrated(self.profiles.home(bot))]
+        if pending:
+            # One Hermes process runs the step for all bots.
+            self.provider.native_settings('migrate', pending)
 
 
     def _human_source(self, task: dict, source_id: str, binding: dict, purpose: str) -> dict:

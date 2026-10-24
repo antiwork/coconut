@@ -1,5 +1,4 @@
 from copy import deepcopy
-import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -108,9 +107,8 @@ class BotModelSettingsTests(unittest.TestCase):
         self.assertEqual(response['model_override'], selected)
         self.assertEqual(self.provider.native[bot['id']], selected)
         self.assertEqual(response['effective_model']['reasoning_effort'], 'medium')
-        metadata = json.loads((self.root / 'bots' / bot['id'] / 'home/coconut-profile.json').read_text())
-        self.assertEqual(metadata['profile_id'], bot['id'])
-        self.assertNotIn('model_override', metadata)
+        # Coconut keeps no identity file in the profile. The native config holds the model.
+        self.assertFalse((self.root / 'bots' / bot['id'] / 'home/coconut-profile.json').exists())
         self.service.close()
         self.service = Service(self.root, self.provider, start_workers=False)
         self.provider.service = self.service

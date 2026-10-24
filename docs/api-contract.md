@@ -62,7 +62,7 @@ Workflow policies and custom preference routes no longer exist.
 - `PUT /settings/approvals`: `{mode}` edits the active native default access mode.
 - `PATCH /bots/{id}` accepts `model_override` and `approval_override`.
 
-`model_override: null` and `approval_override: null` restore inheritance.
+`model_override: null` makes the bot use the default model. `approval_override: null` removes the bot's approval mode, so Hermes asks for flagged actions.
 A model override contains `{model, provider, reasoning_effort}`.
 Null effort uses that model's native default. Effective values remain visible separately.
 The service rejects model and effort choices outside the current Hermes catalog.

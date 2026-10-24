@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -65,11 +64,11 @@ class ServiceProfileTests(unittest.TestCase):
         updated = self.write('PATCH', f'/v1/bots/{bot["id"]}', {'name': 'Ada renamed', 'instructions': 'New instructions', 'archived': True})
         self.assertEqual(updated['profile_id'], bot['id'])
         self.assertIn('New instructions', (home / 'SOUL.md').read_text())
-        self.assertEqual(json.loads((home / 'coconut-profile.json').read_text())['status'], 'archived')
+        self.assertTrue(self.service._get('bots', bot['id'])['archived'])
         self.write('PATCH', f'/v1/bots/{bot["id"]}', {'archived': False})
-        self.assertEqual(json.loads((home / 'coconut-profile.json').read_text())['status'], 'active')
+        self.assertFalse(self.service._get('bots', bot['id'])['archived'])
         self.write('DELETE', f'/v1/bots/{bot["id"]}')
-        self.assertEqual(json.loads((home / 'coconut-profile.json').read_text())['status'], 'deleted')
+        self.assertTrue(self.service._get('bots', bot['id']).get('_deleted'))
         self.assertTrue((home / 'SOUL.md').exists())
 
     def test_profile_files_change_only_after_database_commit(self):
@@ -80,7 +79,7 @@ class ServiceProfileTests(unittest.TestCase):
                 self.write('PATCH', f'/v1/bots/{bot["id"]}', {'instructions': 'Must roll back', 'archived': True})
         self.assertEqual((self.home(bot) / 'SOUL.md').read_text(), before)
         self.assertFalse(self.service._get('bots', bot['id'])['archived'])
-        self.assertEqual(json.loads((self.home(bot) / 'coconut-profile.json').read_text())['status'], 'active')
+        self.assertFalse(self.service._get('bots', bot['id'])['archived'])
 
     def test_profile_identity_cannot_be_reassigned(self):
         bot = self.bot()

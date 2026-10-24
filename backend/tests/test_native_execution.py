@@ -270,8 +270,8 @@ class NativeExecutionTests(unittest.TestCase):
         self.assertFalse(result['notifications'])
 
 
-class NativeMemoryMigrationTests(unittest.TestCase):
-    def test_existing_native_memory_is_preserved_and_import_is_idempotent(self):
+class NativeMemoryTests(unittest.TestCase):
+    def test_sync_leaves_native_memory_unchanged(self):
         with tempfile.TemporaryDirectory() as temporary:
             profiles = HermesProfiles(temporary)
             bot = dict(id=str(uuid4()), session_id=str(uuid4()), name='Memory', instructions='Native instructions', memory='Older note.', preferences=[{'text': 'Always offer do nothing.'}])
@@ -280,11 +280,8 @@ class NativeMemoryMigrationTests(unittest.TestCase):
             (home / 'memories/USER.md').write_text('Existing native preference.\n')
             profiles.sync(bot)
             profiles.sync(bot)
-            content = (home / 'memories/USER.md').read_text()
-            self.assertEqual(content.count('Always offer do nothing.'), 1)
-            self.assertIn('Existing native preference.', content)
-            self.assertIn('Older note.', (home / 'memories/MEMORY.md').read_text())
-            self.assertFalse((home / 'COCONUT_MEMORY.md').exists())
+            self.assertEqual((home / 'memories/USER.md').read_text(), 'Existing native preference.\n')
+            self.assertFalse((home / 'memories/MEMORY.md').exists())
             (home / 'memories/USER.md').write_text('Changed in Hermes.')
             profiles.sync(bot)
             self.assertEqual((home / 'memories/USER.md').read_text(), 'Changed in Hermes.')

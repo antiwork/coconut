@@ -1,52 +1,61 @@
-import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from coconut.profiles import ProfileError
 from coconut.terminal_setup import SHELL_INIT, command_path, configure_terminal
 
 
+def native_shell(files):
+    """A stand-in for Hermes's tools.environments.local, which reads the profile's own shell_init_files."""
+    local = SimpleNamespace(_resolve_shell_init_files=lambda: list(files))
+    environments = SimpleNamespace(local=local)
+    return local, {'tools': SimpleNamespace(environments=environments), 'tools.environments': environments,
+                   'tools.environments.local': local}
+
+
 class TerminalSetupTests(unittest.TestCase):
-    def configure(self, root, config):
-        with patch.dict(os.environ), patch('coconut.native_settings.raw_config', return_value=config), \
-             patch('coconut.native_settings.save_config') as save:
-            configure_terminal(root)
-        return save
+    def configure(self, home, files=()):
+        local, modules = native_shell(files)
+        with patch.dict(os.environ), patch.dict(sys.modules, modules):
+            configure_terminal(home)
+            return local._resolve_shell_init_files()
 
-    def test_new_install_preserves_native_default_init_files(self):
+    def test_the_profile_stays_unchanged_and_its_own_files_come_first(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
-            config = {'terminal': {'cwd': '/workspace'}, 'model': 'native-model'}
-            save = self.configure(home, config)
-            self.assertEqual(config['terminal']['shell_init_files'],
-                             [str(home / name) for name in ('.profile', '.bash_profile', '.bashrc', 'coconut-terminal.sh')])
-            self.assertEqual(config['model'], 'native-model')
-            self.assertEqual(config['terminal']['cwd'], '/workspace')
-            save.assert_called_once_with(home, config)
-            self.assertTrue((home / 'coconut-terminal.sh').read_text().startswith(SHELL_INIT))
+            home = Path(directory) / 'bots' / 'bot' / 'home'
+            home.mkdir(parents=True)
+            config = home / 'config.yaml'
+            config.write_text('terminal:\n  shell_init_files: [/custom/startup.sh]\n')
+            before = config.read_bytes()
+            script = home.parent / 'terminal' / 'coconut-terminal.sh'
+            for _ in range(2):
+                self.assertEqual(self.configure(home, ['/custom/startup.sh']), ['/custom/startup.sh', str(script)])
+            self.assertEqual(config.read_bytes(), before)
+            self.assertEqual(sorted(path.name for path in home.iterdir()), ['config.yaml'])
+            self.assertTrue(script.read_text().startswith(SHELL_INIT))
 
-    def test_upgrade_preserves_custom_init_and_is_idempotent(self):
+    def test_a_listed_script_is_not_added_twice(self):
         with tempfile.TemporaryDirectory() as directory:
-            home = Path(directory)
-            config = {'terminal': {'shell_init_files': ['/custom/startup.sh'], 'auto_source_bashrc': False}}
-            self.configure(home, config)
-            self.assertEqual(config['terminal']['shell_init_files'], ['/custom/startup.sh', str(home / 'coconut-terminal.sh')])
-            self.configure(home, config).assert_not_called()
+            home = Path(directory) / 'home'
+            home.mkdir()
+            script = str(Path(directory) / 'terminal' / 'coconut-terminal.sh')
+            self.assertEqual(self.configure(home, [script]), [script])
 
-    def test_null_terminal_settings_use_native_defaults(self):
+    def test_a_linked_terminal_folder_is_refused(self):
         with tempfile.TemporaryDirectory() as directory:
-            config = {'terminal': None}
-            self.configure(Path(directory), config)
-            self.assertEqual(config['terminal']['shell_init_files'][0], str(Path(directory) / '.profile'))
-
-    def test_disabled_auto_source_stays_disabled(self):
-        with tempfile.TemporaryDirectory() as directory:
-            config = {'terminal': {'auto_source_bashrc': False}}
-            self.configure(Path(directory), config)
-            self.assertEqual(len(config['terminal']['shell_init_files']), 1)
+            root = Path(directory)
+            (root / 'home').mkdir()
+            (root / 'outside').mkdir()
+            (root / 'terminal').symlink_to(root / 'outside', target_is_directory=True)
+            with self.assertRaises(ProfileError):
+                self.configure(root / 'home')
+            self.assertEqual(list((root / 'outside').iterdir()), [])
 
     def test_shell_restores_package_priority_after_system_login_and_preserves_custom_paths(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -78,13 +87,11 @@ class TerminalSetupTests(unittest.TestCase):
             for name in ('desk', 'tuner'):
                 home = root / 'bots' / name / 'home'
                 home.mkdir(parents=True)
-                config = {'terminal': {'shell_init_files': ['/custom/startup.sh']}}
+                folder = home.parent / 'terminal'
                 with patch.dict(os.environ, {'COCONUT_GOOGLE_HOME': str(google_home)}):
-                    self.configure(home, config)
-                    self.assertEqual(config['terminal']['shell_init_files'][-2:],
-                                     [str(home / 'coconut-terminal.sh'), str(home / 'coconut-google.sh')])
-                    script = (home / 'coconut-google.sh').read_text()
-                    self.assertIn('google_connection.py', script)
-                    self.assertIn(str(google_home), script)
-                    self.configure(home, config).assert_not_called()
+                    files = self.configure(home, ['/custom/startup.sh'])
+                self.assertEqual(files, ['/custom/startup.sh', str(folder / 'coconut-terminal.sh'), str(folder / 'coconut-google.sh')])
+                script = (folder / 'coconut-google.sh').read_text()
+                self.assertIn('google_connection.py', script)
+                self.assertIn(str(google_home), script)
             self.assertFalse(google_home.exists())

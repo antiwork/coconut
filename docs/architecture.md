@@ -24,7 +24,7 @@ Coconut retains small projections for phone display. Native files own behavior.
 Inbox threads group decisions. They do not restrict a bot's recall of its own conversation.
 Workers resume native history and compression continuations. The phone never displays those internal boundaries.
 Model and access defaults resolve from the active native default profile.
-Each bot can inherit these values or store an override in its own native configuration.
+Each bot stores its MCP servers, approval settings and API fallback in its own native configuration, as in Hermes. A bot without its own model uses the default model.
 
 ## Native integration
 
@@ -42,7 +42,7 @@ The service checks that revision before it records a current assessment.
 Changes during a turn leave its cards stale until another check.
 A runtime plugin registers middleware through Hermes's plugin API.
 The middleware records tool intent and result through the parent service.
-Coconut adapts native approvals through the gateway callback and resolves profile inheritance during each approval check.
+Coconut adapts native approvals through the gateway callback. Each profile's own approval settings apply.
 
 Native `off`, `smart`, and `manual` modes retain their Hermes meaning.
 Full access is the one-time initial default. Later launches preserve the configured mode.

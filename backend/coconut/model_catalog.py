@@ -18,6 +18,17 @@ from uuid import UUID
 # A source folder that does not exist. The catalog uses it when this Mac has no Hermes.
 MISSING_SOURCE = Path('/nonexistent/hermes-agent')
 MAX_REQUEST_CHARACTERS = 100_000
+# A profile's .env cannot replace these process variables.
+PROTECTED_ENV = ('HOME', 'USER', 'HERMES_HOME', 'HERMES_REAL_HOME', 'PYTHONPATH',
+                 'CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR')
+
+
+def apply_env_file(path):
+    """Load one profile .env into the process environment, as a turn does. Protected variables stay unchanged."""
+    from dotenv import dotenv_values
+    for key, value in dotenv_values(path).items():
+        if value is not None and key not in PROTECTED_ENV:
+            os.environ[key] = value
 # A profile read that failed, for example because a busy Mac delayed the settings process, runs again after this.
 PROFILE_RETRY_SECONDS = 15
 NATIVE_TEXT_FIELDS = {'routine_finish': 'output', 'relay_reply': 'text'}
@@ -139,6 +150,7 @@ class HermesModelCatalog:
         self._write_lock = threading.Lock()
         self._refreshing = False
         self._profile_cache = {}
+        self._worker_limit_cache = None
         self.on_change = None
 
     def _signature(self):
@@ -307,20 +319,38 @@ class HermesModelCatalog:
         """Identify the files that native_routines reads for this bot, with the default profile files.
 
         Hermes keeps the jobs in cron/jobs.json and their runs in cron/executions.db. Coconut keeps its claim and
-        completion receipts in coconut-runs. The settings set the time zone and the routine model.
+        completion receipts in the runs folder beside the profile. The settings set the time zone and the routine model.
         """
         home = self._profile_home(bot_id)
-        receipts = _contained(home / 'coconut-runs', self.data_dir)
-        names = ['cron/jobs.json', 'cron/executions.db', 'cron/executions.db-wal', 'config.yaml', '.env']
-        names += sorted('coconut-runs/' + path.name for path in receipts.glob('*.json'))
+        from .native_routine_receipts import runs_directory
+        receipts = _contained(runs_directory(home), self.data_dir)
+        paths = [(name, home / name) for name in ('cron/jobs.json', 'cron/executions.db', 'cron/executions.db-wal',
+                                                   'config.yaml', '.env')]
+        paths += sorted(('runs/' + path.name, path) for path in receipts.glob('*.json'))
         files = []
-        for name in names:
+        for name, path in paths:
             try:
-                state = _contained(home / name, self.data_dir).stat()
+                state = _contained(path, self.data_dir).stat()
                 files.append((name, state.st_ino, state.st_mtime_ns, state.st_size))
             except FileNotFoundError:
                 files.append((name, None))
         return self._signature(), tuple(files)
+
+    def worker_limit(self):
+        """Return the worker limit of the Coconut settings, which each turn applies. Read it again after a change."""
+        with self._lock:
+            try:
+                state = _contained(native_home(self.root) / 'config.yaml', self.root).stat()
+                signature = (state.st_ino, state.st_mtime_ns, state.st_size)
+            except FileNotFoundError:
+                signature = None
+            cached = self._worker_limit_cache
+            if cached and cached[0] == signature:
+                return cached[1]
+        limit = self._call('native', native_operation='parallel_work_read')['effective_limit']
+        with self._lock:
+            self._worker_limit_cache = (signature, limit)
+        return limit
 
     def read_profile(self, bot_id):
         return self.read_profiles([bot_id])[bot_id]
@@ -718,7 +748,54 @@ def _write_profile(home, selection, catalog):
         reset_hermes_home_override(token)
 
 
-def _native_runtime(selection, profile_home=None, canonical_home=None, canonical_root=None):
+def signed_in(home, provider):
+    """Whether this Hermes home keeps a sign-in (OAuth state) for the provider. An unreadable store holds none."""
+    from hermes_cli import auth
+    home = Path(home)
+    if provider == 'anthropic' and (home / '.anthropic_oauth.json').is_file():
+        return True
+    registration = auth.PROVIDER_REGISTRY.get(provider)
+    if registration is not None and registration.auth_type == 'api_key' and provider != 'anthropic':
+        return False
+    if not (home / 'auth.json').is_file():
+        return False
+    try:
+        return auth._provider_state_in(auth._load_auth_store(home / 'auth.json'), provider) is not None
+    except (OSError, ValueError):
+        return False
+
+
+def own_credentials(home, provider):
+    """Whether this profile has its own credential for the provider: a sign-in, an API key in .env, or a pool entry."""
+    from dotenv import dotenv_values
+    from hermes_cli import auth
+    home = Path(home)
+    if signed_in(home, provider):
+        return True
+    registration = auth.PROVIDER_REGISTRY.get(provider)
+    values = dotenv_values(home / '.env') if (home / '.env').is_file() else {}
+    if registration is not None and any(values.get(name) for name in registration.api_key_env_vars):
+        return True
+    try:
+        store = json.loads((home / 'auth.json').read_text()) if (home / 'auth.json').is_file() else {}
+    except (OSError, ValueError):
+        return False
+    pool = store.get('credential_pool') if isinstance(store, dict) else None
+    return isinstance(pool, dict) and bool(pool.get(provider))
+
+
+def sign_in_home(provider, profile, defaults):
+    """The home whose credentials a profile uses for this provider.
+
+    The profile uses its own home when it has its own credential for the provider. Otherwise it uses the first default
+    home that keeps a sign-in for it. Without any, it uses its own home, where Hermes reads API keys and pools.
+    """
+    if own_credentials(profile, provider):
+        return profile
+    return next((home for home in defaults if signed_in(home, provider)), profile)
+
+
+def _native_runtime(selection, profile_home=None):
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
     from hermes_cli.config import load_config
     config = load_config()
@@ -728,25 +805,8 @@ def _native_runtime(selection, profile_home=None, canonical_home=None, canonical
         raise UnsupportedModelRoute(UNSUPPORTED_ROUTE_MESSAGE)
     token = None
     if profile_home:
-        from hermes_cli import auth
-        from dotenv import dotenv_values
-        for key, value in dotenv_values(Path(profile_home) / '.env').items():
-            if value is not None and key not in ('HOME', 'USER', 'HERMES_HOME', 'HERMES_REAL_HOME', 'PYTHONPATH',
-                                               'CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR'):
-                os.environ[key] = value
-        # The native transaction writes refreshed OAuth tokens back to their source file.
-        candidates = [Path(canonical_home) / 'auth.json', Path(canonical_root) / 'auth.json']
-        fallback = next((path for path in candidates
-                         if auth._provider_state_in(auth._load_auth_store(path), selection['provider']) is not None),
-                        candidates[0])
-        if selection['provider'] == 'anthropic':
-            from agent import anthropic_credentials
-            pkce = next((path.parent / '.anthropic_oauth.json' for path in candidates
-                         if (path.parent / '.anthropic_oauth.json').is_file()), None)
-            if pkce is not None:
-                fallback = pkce.parent / 'auth.json'
-                anthropic_credentials._root_hermes_oauth_file = lambda: pkce
-        auth._global_auth_file_path = lambda: fallback
+        apply_env_file(Path(profile_home) / '.env')
+        # Hermes reads and refreshes the sign-ins of the profile itself.
         token = set_hermes_home_override(profile_home)
     from hermes_cli.runtime_provider import resolve_runtime_provider
     # Native resolution owns credentials, OAuth refresh, aliases, and endpoint binding.
@@ -788,15 +848,12 @@ def _worker(request):
         _contained(selected_home / name, root)
         _contained(root / name, root)
     # Read profile variables without the native CLI's optional file-format repairs.
-    from dotenv import dotenv_values
-    for key, value in dotenv_values(selected_home / '.env').items():
-        if value is not None and key not in ('HOME', 'USER', 'HERMES_HOME', 'HERMES_REAL_HOME', 'PYTHONPATH',
-                                           'CLAUDE_CONFIG_DIR', 'CLAUDE_SECURESTORAGE_CONFIG_DIR'):
-            os.environ[key] = value
+    apply_env_file(selected_home / '.env')
     if request['operation'] == 'native':
         from native_settings import worker
         return worker(dict(request, settings_root=str(root)), selected_home)
     if request['operation'] == 'runtime':
+        selection = _selection(request['selection'])
         profile = request.get('profile_home')
         if profile:
             profile = _contained(profile, request['data_root'])
@@ -805,9 +862,12 @@ def _worker(request):
             # A profile with no selection uses native global routing and credentials.
             config, model, provider, base_url = _native_state()
             inherited = _catalog(config, model, provider, base_url, [])['default']
-            if _read_profile(profile, inherited)['model_override'] is None:
+            if (_read_profile(profile, inherited)['model_override'] is None
+                    or sign_in_home(selection['provider'], profile, dict.fromkeys((selected_home, root))) != profile):
+                # Hermes refreshes a sign-in only in the store that holds it. A bot whose model uses a sign-in of the
+                # default home resolves its route there, so Coconut copies no refresh token into the profile.
                 profile = None
-        return _native_runtime(_selection(request['selection']), profile, selected_home, root)
+        return _native_runtime(selection, profile)
     config, model, provider, base_url = _native_state()
     if request['operation'] in ('read_profiles', 'set_profile', 'native'):
         inherited = _catalog(config, model, provider, base_url, [])['default']

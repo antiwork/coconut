@@ -212,7 +212,9 @@ class CompletionRetentionTests(ServiceCompletionTests):
         from coconut import profiles
         self.home_tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.home_tmp.cleanup)
-        self.home = Path(self.home_tmp.name)
+        # Coconut keeps the receipts beside the profile home, in its own runs folder.
+        self.home = Path(self.home_tmp.name) / 'home'
+        self.home.mkdir()
         self.modules = patch.dict('sys.modules', {'profiles': profiles})
         self.modules.start()
         self.addCleanup(self.modules.stop)
@@ -323,7 +325,7 @@ class CompletionRetentionTests(ServiceCompletionTests):
             self.candidates[identity] = proof
             with self.service.transaction(): self.service._put('tasks', task)
             self.service.refresh_native_routines()
-            self.assertEqual(list((self.home / 'coconut-runs').glob('completed-*.json')), [])
+            self.assertEqual(list((self.home.parent / 'runs').glob('completed-*.json')), [])
             self.candidates = {}
         old = self.service._get('tasks', original_id)
         self.assertEqual(self.service.native_routine_completion_input(old), dict(self.expected, native_confirmed=True))

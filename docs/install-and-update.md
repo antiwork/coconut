@@ -107,8 +107,8 @@ Set `COCONUT_HERMES_SOURCE` to read another Hermes home. Coconut ignores a linke
 
 ## GitHub access for a bot
 
-Each bot uses its own GitHub CLI configuration. A login in your normal Mac Terminal does not configure the bot.
-Coconut preserves the Mac account home for Keychain access and selects the bot through `GH_CONFIG_DIR`.
+Bots use the GitHub CLI login of the Mac account, as your normal Mac Terminal does.
+A bot that had its own GitHub login before this version keeps it: the profile's `.env` sets `GH_CONFIG_DIR` to the bot's own folder.
 Coconut does not copy tokens between bots.
 
 From a bot's terminal, run:
@@ -130,7 +130,7 @@ To run these commands from the Mac's normal Terminal, first find the bot's profi
 sqlite3 ~/Coconut/.runtime/host/coconut.sqlite3 "SELECT json_extract(data, '$.name'), id FROM bots"
 ```
 
-From the Coconut folder, prefix each `gh` command with `GH_CONFIG_DIR="$PWD/.runtime/host/bots/PROFILE_ID/home/.config/gh"`.
+For a bot with its own login, read `GH_CONFIG_DIR` from `.runtime/host/bots/PROFILE_ID/home/.env` in the Coconut folder. Prefix each `gh` command with that value.
 Replace `PROFILE_ID` with that bot's ID. Do not change the shell's `HOME` or paste a token into chat.
 If the Keychain is locked or unavailable, GitHub CLI supports `--insecure-storage`.
 This stores the token unencrypted with owner-only permissions. Use it only if you accept that storage method.
@@ -139,7 +139,7 @@ See [GitHub CLI authentication](https://cli.github.com/manual/gh_auth_login).
 
 ## CLI login from chat
 
-Bots use `CODEX_HOME` and `GH_CONFIG_DIR` inside their existing Hermes profile directory.
+Bots use the Mac account's `CODEX_HOME`, `GH_CONFIG_DIR` and `XDG_*` folders, unless the profile's `.env` sets them.
 Keep these variables unchanged during login and later commands. Do not replace `HOME`.
 Claude Code uses one Mac account login for all bots.
 Keep `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` unset so Claude Code and Hermes use the same native credential store.

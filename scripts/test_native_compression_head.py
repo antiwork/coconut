@@ -92,19 +92,18 @@ def child(case, evidence, control):
     from coconut.native_fallback import configuration
 
     home = Path(os.environ['HERMES_HOME'])
-    owner = home / 'owner'; owner.mkdir()
     # A large Sol window lets normal preflight defer to the simulated provider
     # failure. Native overflow parsing then learns Astra's smaller window.
     config = {'toolsets': [], 'model': {'provider': 'openai-api', 'default': 'gpt-6-sol',
               'base_url': 'https://sol.invalid/v1', 'context_length': 2097152},
               'agent': {'max_turns': 8}, 'approvals': {'mode': 'manual'},
               'auxiliary': {'background_review': {'enabled': False}}}
-    (home / 'config.yaml').write_text(json.dumps(config))
-    (owner / 'config.yaml').write_text(json.dumps({'fallback_providers': [
+    # Each profile uses its own fallback chain.
+    config['fallback_providers'] = [
         {'provider': 'openai-api', 'model': 'gpt-6-astra', 'base_url': 'https://astra.invalid/v1',
-         'api_mode': 'chat_completions', 'key_env': 'OPENAI_API_KEY'}]}))
-    (owner / '.env').write_text('OPENAI_API_KEY=synthetic-owner-key\n')
-    os.environ['COCONUT_DEFAULT_HOME'] = str(owner)
+         'api_mode': 'chat_completions', 'key_env': 'OPENAI_API_KEY'}]
+    (home / 'config.yaml').write_text(json.dumps(config))
+    (home / '.env').write_text('OPENAI_API_KEY=synthetic-owner-key\n')
     # A profile in use already has its synced skills and their index snapshot. Without them, the first Hermes
     # build hides environment-gated skills and later builds from the snapshot list them, so Hermes v0.21.7 and
     # later append a skills-change note to the current message, which a used profile never receives.

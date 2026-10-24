@@ -21,7 +21,7 @@ def check(source, python, evidence):
     with tempfile.TemporaryDirectory(dir=evidence, prefix='native-receipts-') as temporary:
         home = Path(temporary)
         env = dict(PATH=os.environ.get('PATH', ''), HOME=str(home), HERMES_HOME=str(home), HERMES_DISABLE_LAZY_INSTALLS='1',
-                   COCONUT_DEFAULT_HOME=str(home), TMPDIR=str(home), PYTHONPATH=str(source),
+                   TMPDIR=str(home), PYTHONPATH=str(source),
                    HERMES_SKIP_SKILL_SYNC='1')
         (home / 'config.yaml').write_text(json.dumps({'toolsets': [], 'fallback_providers': [],
             'agent': {'max_turns': 5}, 'compression': {'enabled': False}}))

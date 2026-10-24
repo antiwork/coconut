@@ -15,9 +15,8 @@ Hermes uses `openai` as a legacy alias for OpenRouter.
 Do not substitute that alias when configuring an OpenAI API fallback.
 
 Changes apply when a new turn starts.
-Bots inherit the default OpenAI API fallback.
-Other providers remain in their own profiles.
-A bot with an explicit native fallback chain uses that chain instead of the default.
+Each bot uses the fallback chain of its own profile. A new bot gets a copy of the default OpenAI API fallback when Coconut creates it.
+The switch changes the default, so it applies to bots that Coconut creates later.
 An explicit empty chain disables fallback for that bot.
 Unpinned delegated workers inherit the parent fallback through Hermes.
 

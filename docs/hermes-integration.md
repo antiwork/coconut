@@ -39,7 +39,7 @@ See [continuous conversations](conversation-continuity.md) for restart and retri
 The installed Hermes runtime resolves model credentials and effort. Model keys never enter phone API responses.
 The default model comes from the active native profile, not an app constant.
 
-New bot profiles use Hermes' `.no-bundled-skills` setting. Existing profiles receive this default once.
+New bot profiles use Hermes' `.no-bundled-skills` setting. Coconut writes it only when it creates the profile.
 Native skill sync supplies only the essential skills that Hermes defines, currently its `hermes-agent` operating manual.
 The larger bundled catalog stays absent across native syncs and updates. User-installed and bot-created skills remain available.
 Later changes through `hermes skills opt-in` remain authoritative. Coconut keeps no separate list of essential skills.
@@ -47,7 +47,7 @@ Later changes through `hermes skills opt-in` remain authoritative. Coconut keeps
 Coconut registers tool middleware through `PluginContext.register_middleware` and `TOOL_EXECUTION_MIDDLEWARE`.
 The middleware persists tool intent and completion through the parent service.
 Native approval callbacks create durable Inbox cards. Context keeps the original decision pending.
-The adapter uses a runtime hook for inherited approval configuration. It changes no upstream source files.
+Each profile uses its own approval settings, as in Hermes. Without an approval mode, Hermes asks for flagged actions.
 
 Coconut adds these tools:
 
@@ -168,6 +168,43 @@ These checks use real model requests in temporary profiles. They leave existing 
 Run `python3 scripts/test_native_relay.py` for busy delivery, pending decisions, context, approval, and restart.
 Local backend tests use API doubles and do not replace the real Hermes checks.
 
+## Profile settings
+
+Coconut does not change a bot's profile while the bot runs. It writes into a profile only when the person acts:
+- The person edits the bot's instructions (`SOUL.md`).
+- The person changes the bot's model or approval mode. Coconut uses the Hermes config API.
+- The person creates a bot. Coconut then writes `SOUL.md`, `profile.yaml`, `config.yaml` and `.no-bundled-skills`.
+
+Each profile uses its own MCP servers, approval settings, API fallback and model, as in Hermes. A bot that has no model of its own uses the default model of Coconut's Hermes home.
+Hermes refreshes a sign-in only in the store that holds it. When a bot's model uses a provider sign-in that only Coconut's Hermes home holds, Coconut resolves that route in Coconut's Hermes home. It never copies a refresh token into a profile, because a copied refresh token can stop both copies from working.
+The worker limit stays a Coconut setting. Each turn applies it through Hermes's `DELEGATION_MAX_CONCURRENT_CHILDREN` fallback.
+Bots run under the Mac account. `CODEX_HOME`, `GH_CONFIG_DIR` and the `XDG_*` folders are the account's normal folders, unless the profile's `.env` sets them.
+Coconut's own files of a bot stay outside the profile, in `<data>/bots/<uuid>/`: `runs/` (routine receipts), `workspace/`, `browser/`, `tmp/` and `terminal/`.
+Coconut adds `terminal/coconut-terminal.sh` after the profile's own `terminal.shell_init_files` while its worker runs. It does not write the script into the profile's settings.
+
+### The one-time settings step
+
+Earlier versions gave each bot the MCP servers, approval settings, API fallback and model of Coconut's default Hermes home at run time. They also pointed `CODEX_HOME`, `GH_CONFIG_DIR` and `XDG_*` into the profile.
+At the first start of this version, `settings_migration.py` writes those settings into each bot's own `config.yaml` and `.env`. A new bot gets the same copy when Coconut creates it.
+The step:
+1. Copies `config.yaml`, `.env` and Coconut's earlier files of the profile into `<data>/bots/<uuid>/settings-migration/backup/`.
+2. Adds each root MCP server that the profile does not have, with the variables that the server needs.
+3. Adds each root approval setting that the profile does not set.
+4. Copies the default model, when the profile has none. It copies the model only when Hermes resolves the same provider and key from the bot's profile. When the default model uses a sign-in of Coconut's Hermes home, the bot keeps the default model.
+5. Copies the OpenAI API fallback, when the profile has no fallback setting. An explicit `fallback_providers: []` is a setting, so it stays. Each route keeps the key that it used before:
+   - When the profile has another value under the same name, the route reads the copied key from `COCONUT_FALLBACK_<NAME>`.
+   - When Coconut's Hermes home reads the key through its `secrets:` sources, the profile gets those sources.
+   - The copy is all or nothing. The step first writes the proposed files into a private check folder and resolves the keys there. If the bot would not resolve the same key, or the copied sources would change another key of the bot, the step copies nothing for the fallback and records the reason in the report. The bot then works without the inherited fallback, as a bot without any fallback does.
+   - After the checks pass, the step writes the variables, then `config.yaml`. After a stop between the two writes, the next attempt repeats both with the same values.
+6. Keeps each login folder that holds files (for example `.config/gh` with a GitHub login) through its variable in the profile's `.env`.
+7. Removes Coconut's scripts from `terminal.shell_init_files`, and moves the routine receipts from `coconut-runs/` to `runs/`.
+8. Writes `<data>/bots/<uuid>/settings-migration/report.json`.
+
+The report marks the bot as done, so a later start skips it. Each part checks the profile before it writes, so a step that stopped halfway runs again safely.
+Each attempt first copies the profile files to `settings-migration/attempt/`. A failed attempt restores that copy, so changes that the person made after an earlier attempt stay. `backup/` keeps the files from before the first attempt.
+If the step fails at the start, the service does not start, and the automatic update keeps the earlier version.
+To undo the step for one bot, stop the service, copy the files from `backup/` back into the profile, and delete `report.json`.
+
 ## MCP connections
 
 Settings → Connections reads `mcp_servers` from the root Hermes configuration.
@@ -177,9 +214,10 @@ Hermes stores tokens in the profile's `.env` and keeps variable references in `c
 The app receives connection metadata and tool names, never saved tokens or headers.
 Use Hermes on the Mac for other transports or advanced authentication.
 
-Bot workers inherit shared MCP connections between turns. A bot's native entry overrides a shared entry with the same name.
+Each bot uses the MCP servers of its own profile, as in Hermes. A new bot gets a copy of the root servers when Coconut creates it.
+Later changes in Settings → Connections apply to the root configuration and to bots that Coconut creates after the change.
 Native Hermes code handles discovery, validation, connection testing, and tool execution.
-When configuration changes, the worker refreshes MCP connections without stopping native terminal processes.
+When a profile's servers change, the worker reconnects them between turns without stopping native terminal processes.
 Coconut needs Hermes's `mcp` extra. The official installer includes it, and the check refuses a Hermes without it.
 
 ## Updates

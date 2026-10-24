@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from coconut.runtime_environment import CLAUDE_PROFILE_OVERRIDES, prepare_profile, profile_environment
-from coconut.profiles import ProfileError, merge_runtime_config
+from coconut.profiles import merge_runtime_config
 from coconut.terminal_setup import configure_terminal
 
 
@@ -21,9 +21,14 @@ class RuntimeEnvironmentTests(unittest.TestCase):
             self.assertEqual(env['HOME'], pwd.getpwuid(os.getuid()).pw_dir)
             self.assertEqual(env['HERMES_REAL_HOME'], env['HOME'])
             self.assertEqual(env['USER'], pwd.getpwuid(os.getuid()).pw_name)
+
+    def test_tools_use_the_account_folders_and_the_profile_stays_unchanged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            env = prepare_profile(profile)
             for key in ('CODEX_HOME', 'GH_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME'):
-                self.assertTrue(Path(env[key]).is_relative_to(profile))
-                self.assertEqual(Path(env[key]).stat().st_mode & 0o777, 0o700)
+                self.assertNotIn(key, env)
+            self.assertEqual(list(profile.iterdir()), [])
 
     def test_claude_uses_the_account_default_without_moving_old_bot_state(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -60,23 +65,13 @@ class RuntimeEnvironmentTests(unittest.TestCase):
             self.assertEqual(saved.read_text(), 'native saved state')
             self.assertEqual(list(outside.iterdir()), [saved])
 
-    def test_profile_links_cannot_redirect_tool_configuration(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            profile, outside = root / 'profile', root / 'outside'
-            profile.mkdir(); outside.mkdir()
-            (profile / '.codex').symlink_to(outside)
-            with self.assertRaises(ProfileError):
-                prepare_profile(profile)
-            self.assertEqual(list(outside.iterdir()), [])
-
     def test_profile_credentials_cannot_replace_runtime_paths(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ):
             profile = Path(directory)
             env = prepare_profile(profile)
             os.environ.update(env)
-            values = dict(CLAUDE_CONFIG_DIR='/other', CLAUDE_SECURESTORAGE_CONFIG_DIR='/other',
-                          HOME='/other', USER='other-user', CODEX_HOME='/other', CUSTOM_API_KEY='profile-value')
+            values = dict(CLAUDE_CONFIG_DIR='/other', CLAUDE_SECURESTORAGE_CONFIG_DIR='/other', HOME='/other',
+                          USER='other-user', GH_CONFIG_DIR=str(profile / '.config/gh'), CUSTOM_API_KEY='profile-value')
             os.environ.update({key: '/old/profile' for key in CLAUDE_PROFILE_OVERRIDES})
             with patch.dict(sys.modules, {'dotenv': SimpleNamespace(dotenv_values=lambda _: values)}):
                 merge_runtime_config(profile)
@@ -85,19 +80,88 @@ class RuntimeEnvironmentTests(unittest.TestCase):
             for key in CLAUDE_PROFILE_OVERRIDES:
                 self.assertNotIn(key, os.environ)
             self.assertEqual(os.environ['CUSTOM_API_KEY'], 'profile-value')
+            # A profile that keeps its own login folder sets it in its .env file.
+            self.assertEqual(os.environ['GH_CONFIG_DIR'], str(profile / '.config/gh'))
 
     def test_native_shell_init_restores_account_home_and_tool_scope(self):
         with tempfile.TemporaryDirectory(prefix="coconut's profile ") as directory, patch.dict(os.environ):
-            profile = Path(directory)
-            config = {'terminal': {'shell_init_files': ['~/.bashrc']}}
-            with patch('coconut.native_settings.raw_config', return_value=config), patch('coconut.native_settings.save_config'):
+            profile = Path(directory) / 'home'
+            profile.mkdir()
+            local = SimpleNamespace(_resolve_shell_init_files=lambda: [])
+            environments = SimpleNamespace(local=local)
+            with patch.dict(sys.modules, {'tools': SimpleNamespace(environments=environments),
+                                          'tools.environments': environments, 'tools.environments.local': local}):
                 configure_terminal(profile)
-            self.assertEqual(config['terminal']['shell_init_files'][0], str(profile / '.bashrc'))
-            command = 'export HOME=/wrong CLAUDE_CONFIG_DIR=/wrong CLAUDE_SECURESTORAGE_CONFIG_DIR=/wrong CODEX_HOME=/wrong; source "$1"; /usr/bin/env'
-            result = subprocess.run(['/bin/bash', '-c', command, 'test', str(profile / 'coconut-terminal.sh')],
+            script = Path(directory) / 'terminal' / 'coconut-terminal.sh'
+            command = 'export HOME=/wrong CLAUDE_CONFIG_DIR=/wrong CLAUDE_SECURESTORAGE_CONFIG_DIR=/wrong; source "$1"; /usr/bin/env'
+            result = subprocess.run(['/bin/bash', '-c', command, 'test', str(script)],
                                     capture_output=True, text=True, check=True)
             values = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
             for key, value in profile_environment(profile).items():
                 self.assertEqual(values[key], value)
             for key in CLAUDE_PROFILE_OVERRIDES:
                 self.assertNotIn(key, values)
+
+
+
+ENV_FILE = """# A comment line
+export GH_CONFIG_DIR=${BOT_HOME}/.config/gh   # an inline comment
+CODEX_HOME="${BOT_HOME}/.codex"
+XDG_CONFIG_HOME='/quoted${BOT_HOME}'
+XDG_DATA_HOME=${MISSING_FOLDER:-/fallback/share}
+XDG_CACHE_HOME=relative/cache
+OPENAI_API_KEY=not-a-folder
+"""
+# Cases where a small parser often differs from python-dotenv. The keys are not login folders, so the test compares
+# the parser itself.
+EDGE_CASES = """C="/a\\"b"
+E=
+F=${E:-/f}
+G="/first
+second"
+'K'=/k
+H=#not-a-comment-value
+I = /spaced   # comment
+J='/single\\'s'
+"""
+
+
+class LoginFolderTests(unittest.TestCase):
+    def expected(self, home):
+        return {'GH_CONFIG_DIR': str(home / '.config/gh'), 'CODEX_HOME': str(home / '.codex'),
+                'XDG_CONFIG_HOME': '/quoted' + str(home), 'XDG_DATA_HOME': '/fallback/share'}
+
+    def test_the_service_parser_follows_the_dotenv_rules(self):
+        from coconut.runtime_environment import _env_values, login_folders
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'BOT_HOME': directory}), \
+                patch.dict(sys.modules, {'dotenv': None}):
+            os.environ.pop('MISSING_FOLDER', None)
+            home = Path(directory)
+            (home / '.env').write_text(ENV_FILE)
+            self.assertEqual(login_folders(home), self.expected(home))
+            (home / 'edge.env').write_text(EDGE_CASES)
+            values = _env_values(home / 'edge.env')
+            self.assertEqual(values['C'], '/a"b')
+            self.assertEqual(values['F'], '')
+            self.assertEqual(values['G'], '/first\nsecond')
+            self.assertEqual(values['K'], '/k')
+            self.assertEqual(values['I'], '/spaced')
+            self.assertEqual(values['H'], '#not-a-comment-value')
+
+    def test_the_service_parser_matches_python_dotenv(self):
+        try:
+            from dotenv import dotenv_values
+        except ImportError:
+            self.skipTest('python-dotenv is part of the Hermes environment only.')
+        from coconut.runtime_environment import LOGIN_FOLDERS, _env_values, login_folders
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {'BOT_HOME': directory}):
+            os.environ.pop('MISSING_FOLDER', None)
+            home = Path(directory)
+            (home / '.env').write_text(ENV_FILE)
+            (home / 'edge.env').write_text(EDGE_CASES)
+            native = {key: value for key, value in dotenv_values(home / '.env').items()
+                      if key in LOGIN_FOLDERS and value.startswith('/')}
+            self.assertEqual(native, self.expected(home))
+            with patch.dict(sys.modules, {'dotenv': None}):
+                self.assertEqual(login_folders(home), native)
+                self.assertEqual(_env_values(home / 'edge.env'), dict(dotenv_values(home / 'edge.env')))

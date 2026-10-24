@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
@@ -24,12 +26,20 @@ class WorkObservationTests(unittest.TestCase):
         self.assertIsNone(result.checks_state)
 
     def test_bot_auth_does_not_inherit_global_tokens(self):
-        with patch.dict(os.environ, {'GH_TOKEN': 'wrong-token', 'GITHUB_TOKEN': 'wrong-token'}), \
-             patch('coconut.pr_tracking.shutil.which', return_value='/opt/homebrew/bin/gh'), \
-             patch('coconut.pr_tracking.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout='bot-token\n')) as run:
-            tracker = GitHubPRTracker.for_profile('/tmp/bot-home')
-        environment = run.call_args.kwargs['env']
-        self.assertEqual(environment['GH_CONFIG_DIR'], '/tmp/bot-home/.config/gh')
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            # The one-time settings step keeps a bot's own gh login through its .env file.
+            (home / '.env').write_text('OPENAI_API_KEY=not-a-folder\nexport GH_CONFIG_DIR="' + str(home / '.config/gh') + '"\n')
+            with patch.dict(os.environ, {'GH_TOKEN': 'wrong-token', 'GITHUB_TOKEN': 'wrong-token', 'GH_CONFIG_DIR': '/service/gh'}), \
+                 patch('coconut.pr_tracking.shutil.which', return_value='/opt/homebrew/bin/gh'), \
+                 patch('coconut.pr_tracking.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout='bot-token\n')) as run:
+                tracker = GitHubPRTracker.for_profile(home)
+                environment = run.call_args.kwargs['env']
+                self.assertEqual(environment['GH_CONFIG_DIR'], str(home / '.config/gh'))
+                (home / '.env').unlink()
+                GitHubPRTracker.for_profile(home)
+                # Without its own folder, the bot uses the Mac account's gh login, as its terminal does.
+                self.assertNotIn('GH_CONFIG_DIR', run.call_args.kwargs['env'])
         self.assertNotIn('GH_TOKEN', environment)
         self.assertNotIn('GITHUB_TOKEN', environment)
         self.assertEqual(tracker._token, 'bot-token')

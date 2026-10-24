@@ -36,44 +36,58 @@ unset -f _coconut_prepend_path
 '''
 
 
-def configure_terminal(home):
+# The scripts that the native shell sources after the profile's own terminal.shell_init_files.
+_scripts: list[str] = []
+
+
+def configure_terminal(home, directory=None):
+    """Prepare the native shell of one bot. Coconut writes nothing into the Hermes profile.
+
+    Hermes's register_task_env_overrides carries only the sandbox image, the backend and cwd, so it cannot carry shell
+    setup. Coconut writes its scripts into its own folder of the bot (`directory`, by default the parent of the
+    profile) and adds them, in this process only, to the files that the native shell sources.
+    """
     try:
-        from .native_settings import raw_config, save_config
-        from .profiles import _write
+        from .profiles import _safe, _write
         from .runtime_environment import CLAUDE_PROFILE_OVERRIDES, prepare_profile
     except ImportError:
-        from native_settings import raw_config, save_config
-        from profiles import _write
+        from profiles import _safe, _write
         from runtime_environment import CLAUDE_PROFILE_OVERRIDES, prepare_profile
     home = Path(home)
-    config = raw_config(home)
-    terminal = config.get('terminal') or {}
-    if not isinstance(terminal, dict):
-        raise ValueError('Hermes terminal settings must contain a mapping.')
-    config['terminal'] = terminal
-    files = terminal.get('shell_init_files') or []
-    if not isinstance(files, list):
-        raise ValueError('Hermes terminal.shell_init_files must contain a list.')
-    if not files and terminal.get('auto_source_bashrc', True):
-        files = ['~/.profile', '~/.bash_profile', '~/.bashrc']
-    # Preserve the files that ~ resolved to before HOME used the real account home.
-    files = [str(home / item[2:]) if isinstance(item, str) and item.startswith('~/') else item for item in files]
-    script = home / 'coconut-terminal.sh'
+    directory = Path(directory) if directory is not None else home.parent
+    folder = directory / 'terminal'
+    _safe(folder, directory)
+    folder.mkdir(exist_ok=True, mode=0o700)
     environment = prepare_profile(home)
     exports = 'unset ' + ' '.join(CLAUDE_PROFILE_OVERRIDES) + '\n'
     exports += ''.join(f'export {key}={shlex.quote(value)}\n' for key, value in environment.items())
-    _write(script, SHELL_INIT + exports, home)
-    google_script = home / 'coconut-google.sh'
-    updated = [item for item in files if item not in (str(script), str(google_script))] + [str(script)]
+    script = folder / 'coconut-terminal.sh'
+    _write(script, SHELL_INIT + exports, directory)
+    scripts = [str(script)]
+    google_script = folder / 'coconut-google.sh'
     google_home = os.environ.get('COCONUT_GOOGLE_HOME')
     if google_home:
         command = shlex.join([sys.executable, str(Path(__file__).with_name('google_connection.py')), google_home])
-        _write(google_script, '# Managed by Coconut. Google sign-in stays in the phone app.\neval "$(' + command + ')"\n', home)
-        updated.append(str(google_script))
-    if terminal.get('shell_init_files') != updated:
-        terminal['shell_init_files'] = updated
-        save_config(home, config)
+        _write(google_script, '# Managed by Coconut. Google sign-in stays in the phone app.\neval "$(' + command + ')"\n', directory)
+        scripts.append(str(google_script))
+    install_shell_init(scripts)
     for key in CLAUDE_PROFILE_OVERRIDES:
         os.environ.pop(key, None)
     os.environ.update(environment)
     os.environ['PATH'] = command_path(os.environ.get('PATH', ''))
+
+
+def install_shell_init(scripts):
+    """Source these scripts last in every native shell of this process. The profile's own list stays first."""
+    from tools.environments import local
+    _scripts[:] = scripts
+    if getattr(local._resolve_shell_init_files, 'coconut_scripts', None) is _scripts:
+        return
+    original = local._resolve_shell_init_files
+
+    def resolve():
+        files = original()
+        return files + [path for path in _scripts if path not in files and os.path.isfile(path)]
+
+    resolve.coconut_scripts = _scripts
+    local._resolve_shell_init_files = resolve

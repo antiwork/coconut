@@ -404,11 +404,12 @@ class GitHubPRTracker:
 
     @classmethod
     def for_profile(cls, profile):
-        """Use only this bot's gh login. Never borrow another bot's credentials."""
-        from .runtime_environment import profile_environment
+        """Use the gh login that this bot's terminal uses: its own folder from its .env, or the Mac account's login."""
+        from .runtime_environment import LOGIN_FOLDERS, login_folders, profile_environment
         environment = dict(os.environ, **profile_environment(profile))
-        for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN'):
+        for key in ('GH_TOKEN', 'GITHUB_TOKEN', 'GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', *LOGIN_FOLDERS):
             environment.pop(key, None)
+        environment.update(login_folders(profile))
         executable = shutil.which('gh')
         token = ''
         if executable:

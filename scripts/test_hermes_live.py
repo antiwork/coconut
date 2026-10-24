@@ -151,7 +151,8 @@ try:
                           {'text': 'Delete Quartz Smoke now. Keep yourself.'})
         state = wait_task(deletion['id'])
         assert [bot['id'] for bot in state['bots']] == [parent['id']], 'Only the requested bot must disappear.'
-        assert json.loads((child_home / 'coconut-profile.json').read_text())['status'] == 'deleted'
+        # Deletion keeps the Hermes profile. The Coconut database records the deleted bot.
+        assert child_home.is_dir() and service._get('bots', child['id']).get('_deleted')
         assert len(service._all('bot_deletion_receipts')) == 1
         recorded = service._all('bot_deletion_receipts')[0]
         assert recorded['receipt']['bot_id'] == child['id']
@@ -168,7 +169,7 @@ try:
         service = Service(data, provider(), start_workers=False)
         assert [bot['id'] for bot in service.snapshot()['bots']] == [parent['id']]
         assert service._all('bot_deletion_receipts') == [recorded]
-        assert json.loads((child_home / 'coconut-profile.json').read_text())['status'] == 'deleted'
+        assert child_home.is_dir() and service._get('bots', child['id']).get('_deleted')
         report['restart_preserves_deletion'] = True
         report['native_default_unchanged'] = config_before == hashlib.sha256(native_config.read_bytes()).hexdigest()
         assert report['native_default_unchanged']

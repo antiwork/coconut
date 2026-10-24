@@ -1,4 +1,4 @@
-"""Manage native Hermes MCP configuration and inherit shared connections."""
+"""Manage native Hermes MCP configuration and the MCP connections of one profile."""
 from copy import deepcopy
 import hashlib
 import json
@@ -170,9 +170,8 @@ def import_servers(source, home):
     return dict(added=sorted(added), needs_setup=sorted(setup), skipped=sorted(skipped), servers=public_servers(home))
 
 
-_original_loader = None
-_shared = {}
 _signature = None
+_names = []
 
 
 def reset_connections():
@@ -197,41 +196,25 @@ def reset_connections():
     reprobe_tool_availability()
 
 
-def refresh_inheritance(default_root, *, allow_reset=True):
-    """Refresh native MCP connections between turns without stopping terminal processes."""
-    global _original_loader, _shared, _signature
-    default = Path(default_root)
-    entries = servers(default)
-    if not entries and _original_loader is None:
+def prepare_turn(*, allow_reset=True):
+    """Return the MCP servers of this profile, as Hermes reads them. Reconnect them after the profile changed them.
+
+    Between turns, the person can change the servers. A reconnect stops the connections of all turns in this process,
+    so it waits until this turn is the only one.
+    """
+    global _signature, _names
+    import os
+    home = os.environ['HERMES_HOME']
+    if _signature is None and not servers(home):
         return []
     from tools import mcp_tool_config
-    from agent.secret_scope import load_env_file, set_secret_scope, reset_secret_scope
-    from hermes_cli.mcp_security import validate_mcp_server_entry
-    from hermes_constants import get_hermes_home
-    from tools.mcp_tool_common import _env_ref_name
-    values = load_env_file(default / '.env')
-    for match in mcp_tool_config._ENV_VAR_PATTERN.finditer(json.dumps(entries)):
-        values.setdefault(_env_ref_name(match.group(1)), '')
-    scope = set_secret_scope(values)
-    try:
-        shared = {name: mcp_tool_config._interpolate_env_vars(entry) for name, entry in entries.items()
-                  if isinstance(entry, dict) and not validate_mcp_server_entry(name, entry)}
-    finally:
-        reset_secret_scope(scope)
-    if _original_loader is None:
-        _original_loader = mcp_tool_config._load_mcp_config
-        def inherited():
-            from utils import env_var_enabled
-            if env_var_enabled('HERMES_SAFE_MODE'):
-                return {}
-            return dict(deepcopy(_shared), **_original_loader())
-        mcp_tool_config._load_mcp_config = inherited
-    local = _original_loader()
-    signature = hashlib.sha256(json.dumps([str(get_hermes_home()), shared, local], sort_keys=True).encode()).hexdigest()
+    from tools.mcp_tool_common import mcp_server_enabled
+    entries = mcp_tool_config._load_mcp_config()
+    signature = hashlib.sha256(json.dumps([home, entries], sort_keys=True, default=str).encode()).hexdigest()
     if _signature is not None and _signature != signature:
         if not allow_reset:
-            return list(_shared)
+            return list(_names)
         reset_connections()
-    _shared = shared
     _signature = signature
-    return list(shared)
+    _names = [name for name, entry in entries.items() if isinstance(entry, dict) and mcp_server_enabled(entry)]
+    return list(_names)

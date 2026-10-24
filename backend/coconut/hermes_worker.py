@@ -900,8 +900,6 @@ def main():
         shutdown()
 
     threading.Thread(target=watch_parent, daemon=True, name='service-liveness').start()
-    from native_settings import install_approval_inheritance
-    install_approval_inheritance(os.environ['COCONUT_DEFAULT_HOME'])
     def execute(request, scope):
         identity = request.get('turn_id')
         token = current_turn.set(scope)
@@ -1065,17 +1063,15 @@ def run_turn(request, emit, request_receipt):
             return 0
         from profiles import merge_runtime_config, prompt_revision
         merge_runtime_config(os.environ['HERMES_HOME'])
-        if os.environ.get('COCONUT_DEFAULT_HOME'):
+        if 'worker_limit' in request:
             from parallel_work import prepare_turn
-            prepare_turn(os.environ['COCONUT_DEFAULT_HOME'])
+            prepare_turn(request['worker_limit'])
         from terminal_setup import configure_terminal
         configure_terminal(os.environ['HERMES_HOME'])
         timing.mark('runtime_config')
-        mcp_names = []
-        if os.environ.get('COCONUT_DEFAULT_HOME'):
-            from native_mcp import refresh_inheritance
-            mcp_names = refresh_inheritance(os.environ['COCONUT_DEFAULT_HOME'], allow_reset=len(active_scopes) == 1)
-        timing.mark('mcp_inheritance')
+        from native_mcp import prepare_turn as prepare_mcp
+        mcp_names = prepare_mcp(allow_reset=len(active_scopes) == 1)
+        timing.mark('mcp_config')
         from tools.skills_sync import sync_skills
         sync_skills(quiet=True)
         timing.mark('skills_sync')
@@ -1371,12 +1367,12 @@ def run_turn(request, emit, request_receipt):
                         f'Use {relay_tool} to send useful requests and results through the native Hermes relay. Use the exact contact ID as target. Do not send acknowledgements. '
                         'The Coconut relay connects isolated Hermes profiles on this same Mac. '
                         'Homebrew packages and its Homebrew-only configuration are shared across Coconut bots on this Mac. '
-                        'Coconut configures terminal PATH through Hermes shell_init_files. '
+                        'Coconut adds its terminal PATH setup after the Hermes shell_init_files of this profile. '
                         'To reload the Coconut service, use coconut_restart_service, then finish your reply. '
                         'The service restarts once after active turns finish. Do not create launchctl jobs or restart the parent from terminal. '
                         'Use the inherited HOMEBREW_XDG_CONFIG_HOME for package trust; do not replace HOME or share other configuration. '
                         'HOME is the Mac account home so native credential storage works. '
-                        'HERMES_HOME, CODEX_HOME, GH_CONFIG_DIR, and XDG paths select this bot\'s profiles. '
+                        'HERMES_HOME selects this bot\'s Hermes profile. CODEX_HOME, GH_CONFIG_DIR, and XDG paths are the Mac account folders unless this profile\'s .env sets them. '
                         'Claude Code uses the Mac account\'s shared login. Keep CLAUDE_CONFIG_DIR and CLAUDE_SECURESTORAGE_CONFIG_DIR unset. '
                         'Keep those inherited paths during login and later commands. Do not invent a different HOME. '
                         'For Gmail and Calendar, use the inherited gog access from this bot terminal. '
@@ -1464,8 +1460,6 @@ def run_turn(request, emit, request_receipt):
                         interim_assistant_callback=publish_interim,
                         skip_context_files=False, load_soul_identity=True, skip_memory=False, skip_background_review=False,
                         save_trajectories=False, run_budget_seconds=None)
-        from native_compression import install as install_compression_fallback
-        install_compression_fallback(agent, profile_config, fallback)
         from native_compression_head import install as install_compression_head
         install_compression_head(agent, profile_config)
         scope.agent = agent

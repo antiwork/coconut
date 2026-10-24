@@ -25,7 +25,7 @@ class KanbanWorkerTests(unittest.TestCase):
         self.profile = self.root / 'profile'
         self.profile.mkdir()
         self.provider = HermesProvider(self.root, python=PYTHON, hermes_root=SOURCE,
-                                       catalog=SimpleNamespace(root=self.profile))
+                                       catalog=SimpleNamespace(root=self.profile, worker_limit=lambda: None))
         self.addCleanup(self.provider.close)
         self.provider.environment = lambda bot: (dict(os.environ, HERMES_HOME=str(self.profile),
             PYTHONPATH=os.pathsep.join((str(BACKEND), SOURCE)), HERMES_DISABLE_TELEMETRY='1'), self.root)

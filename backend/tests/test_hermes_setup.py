@@ -170,7 +170,7 @@ class ImportTests(unittest.TestCase):
         for private in ('.env', 'auth.json', 'sessions'):
             self.assertFalse((home / private).exists(), private)
         self.assertEqual(list((self.service.profiles.root / 'imports').iterdir()), [])
-        self.assertTrue((home / 'coconut-profile.json').exists())
+        self.assertFalse((home / 'coconut-profile.json').exists())
         self.assertEqual(result['logins'], [])
         self.assertFalse(self.default_home.exists())
         self.assertEqual(self.service.hermes_setup()['profiles'][0]['bot_id'], bot['id'])

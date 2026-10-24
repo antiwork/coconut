@@ -44,7 +44,6 @@ def child():
         'agent': {'max_turns': 4}, 'approvals': {'mode': 'manual'}, 'auxiliary': {'background_review': {'enabled': False}}}))
     (owner / 'config.yaml').write_text('{}')
     (owner / '.env').write_text('OPENAI_API_KEY=synthetic-owner-key\n')
-    os.environ['COCONUT_DEFAULT_HOME'] = str(owner)
     db = SessionDB()
     db.create_session(SESSION, source='coconut')
     db.set_meta('coconut.history-context.' + SESSION, 'complete')

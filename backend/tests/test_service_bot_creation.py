@@ -1,5 +1,4 @@
 import copy
-import json
 from pathlib import Path
 import tempfile
 import threading
@@ -76,9 +75,9 @@ class BotCreationTests(unittest.TestCase):
         self.assertFalse(bot['pinned'])
         self.assertEqual((self.home(bot['id']) / 'SOUL.md').read_text(), self.payload(task)['instructions'])
         self.assertFalse((self.home(bot['id']) / 'COCONUT_MEMORY.md').exists())
-        metadata = json.loads((self.home(bot['id']) / 'coconut-profile.json').read_text())
-        self.assertEqual(metadata['session_id'], receipt['session_id'])
-        self.assertEqual(metadata['status'], 'active')
+        self.assertTrue((self.home(bot['id']) / 'config.yaml').is_file())
+        self.assertFalse((self.home(bot['id']) / 'coconut-profile.json').exists())
+        self.assertEqual(self.service._get('bots', bot['id'])['session_id'], receipt['session_id'])
         self.assertFalse(any(t['bot_id'] == bot['id'] for t in self.service._all('tasks')))
         self.assertEqual(self.service._all('decisions'), [])
         event = [e for e in self.service.events(0)['events'] if e['type'] == 'bot.created'][-1]
@@ -122,7 +121,8 @@ class BotCreationTests(unittest.TestCase):
             self.create(task)
         self.assertEqual(self.service._bot_creation_input(task)['_bot_creation_receipts'], [])
         self.assertEqual(len(self.service._all('bots')), 3)
-        self.assertEqual(json.loads((self.home(receipt['bot_id']) / 'coconut-profile.json').read_text())['status'], 'deleted')
+        self.assertTrue(self.service._get('bots', receipt['bot_id']).get('_deleted'))
+        self.assertTrue(self.home(receipt['bot_id']).is_dir())
 
     def test_paused_archived_cancelled_completed_and_waiting_tasks_cannot_create(self):
         task = self.working(self.send())
@@ -224,7 +224,7 @@ class BotCreationTests(unittest.TestCase):
                 self.create(task)
         receipt = self.create(task)
         self.assertEqual(receipt, record['receipt'] | {'status': 'duplicate'})
-        self.assertTrue((self.home(receipt['bot_id']) / 'coconut-profile.json').is_file())
+        self.assertTrue((self.home(receipt['bot_id']) / 'config.yaml').is_file())
         self.assertEqual(len(self.service._all('bots')), 3)
 
     def test_restart_reconciles_profile_before_receipt_enters_provider_input(self):
@@ -238,7 +238,7 @@ class BotCreationTests(unittest.TestCase):
         provider_task = self.provider.starts[-1][0]
         self.assertEqual(provider_task['_bot_creation_sources'], [{'id': receipt['source_message_id'], 'text': 'Create a bot named Scout for research.'}])
         self.assertEqual(provider_task['_bot_creation_receipts'], [receipt | {'status': 'duplicate'}])
-        self.assertTrue((self.home(receipt['bot_id']) / 'coconut-profile.json').is_file())
+        self.assertTrue((self.home(receipt['bot_id']) / 'config.yaml').is_file())
 
     def test_transaction_failure_leaves_no_bot_profile_receipt_or_event(self):
         task = self.working(self.send())
@@ -258,7 +258,7 @@ class BotCreationTests(unittest.TestCase):
             with self.assertRaises(ServiceError):
                 self.write('POST', '/v1/bots', data, key)
         bot = self.write('POST', '/v1/bots', data, key)
-        self.assertTrue((self.home(bot['id']) / 'coconut-profile.json').is_file())
+        self.assertTrue((self.home(bot['id']) / 'config.yaml').is_file())
         self.assertIsNone(bot['model_override'])
         self.assertEqual(len(self.service._all('bots')), 3)
         self.write('DELETE', f'/v1/bots/{bot["id"]}')

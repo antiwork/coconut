@@ -5,10 +5,10 @@ from pathlib import Path
 
 if __package__:
     from .native_settings import raw_config, save_config
-    from .model_catalog import native_home, _contained
+    from .model_catalog import _contained
 else:
     from native_settings import raw_config, save_config
-    from model_catalog import native_home, _contained
+    from model_catalog import _contained
 
 
 def chain(config):
@@ -102,20 +102,14 @@ def entry_key(entry):
 
 
 def for_turn():
-    """Read native routes for each turn; an explicit profile chain takes precedence."""
+    """Read the native fallback routes of this profile for each turn."""
     from hermes_constants import get_hermes_home
-    home = worker_home = get_hermes_home()
+    home = get_hermes_home()
     config = raw_config(home)
-    if not any(key in config for key in ('fallback_providers', 'fallback_model')):
-        home = native_home(os.environ.get('COCONUT_DEFAULT_HOME', home))
-        config = raw_config(home)
     if not any(key in config for key in ('fallback_providers', 'fallback_model')):
         return None
     with configuration(home) as expanded:
         entries = chain(expanded)
-        if home != worker_home:
-            # This setting shares only OpenAI API fallback. Other providers remain profile-local.
-            entries = [entry for entry in entries if entry.get('provider') == 'openai-api']
         for entry in entries:
             # Bind the initial route. Hermes retains the bot's configured credential-pool recovery.
             if key := entry_key(entry):
@@ -124,5 +118,5 @@ def for_turn():
                 entry.pop('api_key', None)
             if entry.get('provider') == 'openai-api':
                 entry['base_url'] = entry_url(entry)
-        # A missing owner key must not fall through to the bot's credentials.
+        # An OpenAI API route without its key must not fall through to other credentials.
         return [entry for entry in entries if entry.get('provider') != 'openai-api' or entry.get('api_key')] or None

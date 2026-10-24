@@ -43,7 +43,7 @@ class ModelSelectionTests(unittest.TestCase):
             self.assertEqual(environment['HOME'], profile_environment(Path(directory) / 'bot')['HOME'])
             self.assertEqual(environment['HERMES_REAL_HOME'], environment['HOME'])
             self.assertEqual(environment['USER'], profile_environment(Path(directory) / 'bot')['USER'])
-            self.assertEqual(environment['CODEX_HOME'], str(catalog.private_home / '.codex'))
+            self.assertNotIn('CODEX_HOME', environment)
             self.assertNotIn('CLAUDE_CONFIG_DIR', environment)
             self.assertNotIn('CLAUDE_SECURESTORAGE_CONFIG_DIR', environment)
 
@@ -629,14 +629,14 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
         self.assertEqual(result['model_override']['reasoning_effort'], 'none')
         self.assertEqual(result['effective_model']['base_url'], 'http://localhost:9911/v1')
 
-    def test_native_profile_auth_falls_back_to_canonical_store_without_copy(self):
+    def test_native_profile_auth_uses_the_store_of_the_profile(self):
         profile = self.root / 'bot'
         profile.mkdir()
-        canonical_auth = self.home / 'auth.json'
-        canonical_auth.write_text(json.dumps({'providers': {'openai-codex': {'access_token': 'private-test'}}}))
-        result = self.run_native("from unittest.mock import patch\nfrom hermes_cli import auth\nfrom hermes_cli.config import get_config_path\ndef resolve(**kwargs):\n    state, origin = auth._load_provider_state_with_source(auth._load_auth_store(), 'openai-codex')\n    return {'provider': 'openai-codex', 'api_mode': 'codex_responses', 'api_key': state['access_token'], 'base_url': 'https://chatgpt.com/backend-api/codex', 'source': str(origin), 'config_path': str(get_config_path())}\nwith patch('hermes_cli.runtime_provider.resolve_runtime_provider', side_effect=resolve):\n    private = m._native_runtime({'model': 'gpt-6-astra', 'provider': 'openai-codex'}, request['profile'], request['canonical'], request['canonical'])\nresult = {'resolved': private['api_key'] == 'private-test', 'bot_auth_exists': os.path.exists(request['profile'] + '/auth.json')}", {'profile': str(profile), 'canonical': str(self.home)})
-        self.assertTrue(result['resolved'])
-        self.assertFalse(result['bot_auth_exists'])
+        (profile / 'auth.json').write_text(json.dumps({'providers': {'openai-codex': {'access_token': 'profile-test'}}}))
+        (self.home / 'auth.json').write_text(json.dumps({'providers': {'openai-codex': {'access_token': 'default-test'}}}))
+        result = self.run_native("from unittest.mock import patch\nfrom hermes_cli import auth\ndef resolve(**kwargs):\n    state, origin = auth._load_provider_state_with_source(auth._load_auth_store(), 'openai-codex')\n    return {'provider': 'openai-codex', 'api_mode': 'codex_responses', 'api_key': state['access_token'], 'base_url': 'https://chatgpt.com/backend-api/codex'}\nwith patch('hermes_cli.runtime_provider.resolve_runtime_provider', side_effect=resolve):\n    private = m._native_runtime({'model': 'gpt-6-astra', 'provider': 'openai-codex'}, request['profile'])\nresult = private['api_key']", {'profile': str(profile)})
+        # Hermes reads and refreshes the sign-in of the profile itself. Coconut does not redirect it to another home.
+        self.assertEqual(result, 'profile-test')
 
     def test_invalid_profile_does_not_hide_another_bot(self):
         (self.home / 'config.yaml').write_text('model: {default: gpt-6-astra, provider: openai-codex}\n')
@@ -648,15 +648,6 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
         self.assertIsNone(result['good']['model_override'])
         self.assertNotIn('error', result['good'])
         self.assertIn('error', result['bad'])
-
-    def test_native_pkce_fallback_keeps_its_active_profile_source(self):
-        profile = self.root / 'bot'
-        active = self.home / 'profiles/active'
-        profile.mkdir()
-        active.mkdir(parents=True)
-        (active / '.anthropic_oauth.json').write_text('{}')
-        result = self.run_native("from unittest.mock import patch\nfrom agent import anthropic_credentials\ndef resolve(**kwargs):\n    return {'provider': 'anthropic', 'api_mode': 'anthropic_messages', 'api_key': 'ok' if str(anthropic_credentials._root_hermes_oauth_file()) == request['expected'] else 'wrong'}\nwith patch('hermes_cli.runtime_provider.resolve_runtime_provider', side_effect=resolve):\n    private = m._native_runtime({'model': 'native-model', 'provider': 'anthropic'}, request['profile'], request['active'], request['canonical'])\nresult = private['api_key'] == 'ok'", {'profile': str(profile), 'active': str(active), 'canonical': str(self.home), 'expected': str(active / '.anthropic_oauth.json')})
-        self.assertTrue(result)
 
     def test_custom_route_stays_visible_as_default_but_cannot_be_selected(self):
         result = self.run_native("config = {'model': {'default': 'native-custom-model', 'provider': 'custom:private', 'base_url': 'https://private.example/v1'}}\nrows = [{'slug': 'custom:private', 'models': ['native-custom-model'], 'api_url': 'https://private.example/v1', 'is_user_defined': True}]\nresult = m._catalog(config, 'native-custom-model', 'custom:private', 'https://private.example/v1', rows)")

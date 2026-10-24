@@ -48,7 +48,12 @@ class BotDeletionTests(unittest.TestCase):
         return self.service.emit(task['id'], 'bot_delete', payload or self.payload(task))
 
     def profile(self, bot=None):
-        return self.root / 'bots' / (bot or self.target)['id'] / 'home' / 'coconut-profile.json'
+        return self.root / 'bots' / (bot or self.target)['id'] / 'home'
+
+    def status(self, bot=None):
+        # Coconut keeps no status file in the profile. The database records the bot's state.
+        row = self.service._get('bots', (bot or self.target)['id'])
+        return 'deleted' if row.get('_deleted') else 'archived' if row.get('archived') else 'active'
 
     def restart(self):
         self.service.close()
@@ -65,8 +70,8 @@ class BotDeletionTests(unittest.TestCase):
         self.assertEqual(receipt, dict(status='deleted', bot_id=self.target['id'], profile_id=self.target['id'],
                                       name='Research', source_message_id=task['_preference_source_ids'][0], cancelled_task_ids=[]))
         self.assertNotIn(self.target['id'], {bot['id'] for bot in self.service.snapshot()['bots']})
-        self.assertEqual(json.loads(self.profile().read_text())['status'], 'deleted')
-        self.assertEqual((self.profile().parent / 'SOUL.md').read_text(), 'Private instructions')
+        self.assertEqual(self.status(), 'deleted')
+        self.assertEqual((self.profile() / 'SOUL.md').read_text(), 'Private instructions')
         self.assertEqual(self.service._get('tasks', task['id'])['status'], 'working')
         event = next(row for row in self.service.events(0)['events'] if row['type'] == 'bot.deleted')
         self.assertEqual(event['data']['deleted_by'], 'phone')
@@ -119,7 +124,7 @@ class BotDeletionTests(unittest.TestCase):
         task = self.working(task)
         self.assertEqual(self.delete(task), receipt | {'status': 'duplicate'})
         self.assertIn(replacement['id'], {bot['id'] for bot in self.service.snapshot()['bots']})
-        self.assertEqual(json.loads(self.profile(replacement).read_text())['status'], 'active')
+        self.assertEqual(self.status(replacement), 'active')
         self.assertEqual(len(self.service._all('bot_deletion_receipts')), 1)
         self.assertEqual(len([row for row in self.service.events(0)['events'] if row['type'] == 'bot.deleted']), 1)
         self.assertEqual(self.service._bot_deletion_input(task)['_bot_deletion_receipts'], [receipt])
@@ -204,9 +209,10 @@ class BotDeletionTests(unittest.TestCase):
             with self.assertRaisesRegex(ServiceError, 'cleanup is unconfirmed'):
                 self.delete(task)
         self.assertEqual(len(self.service._all('bot_deletion_receipts')), 1)
-        self.assertEqual(json.loads(self.profile().read_text())['status'], 'active')
+        # The database committed the deletion once. Only the cleanup waits for the retry.
+        self.assertEqual(self.status(), 'deleted')
         self.assertEqual(self.delete(task)['status'], 'duplicate')
-        self.assertEqual(json.loads(self.profile().read_text())['status'], 'deleted')
+        self.assertEqual(self.status(), 'deleted')
 
     def test_restart_reconciles_profile_after_commit_before_cleanup(self):
         task = self.working(self.send())
@@ -214,7 +220,7 @@ class BotDeletionTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.delete(task)
         self.restart()
-        self.assertEqual(json.loads(self.profile().read_text())['status'], 'deleted')
+        self.assertEqual(self.status(), 'deleted')
         self.assertEqual(self.delete(self.working(task))['status'], 'duplicate')
 
     def test_cancel_failure_is_not_a_success_receipt_and_retry_stops_work(self):
@@ -251,7 +257,7 @@ class BotDeletionTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', target['id'])['status'], 'working')
         self.assertEqual(self.provider.cancelled, [])
         self.assertEqual(self.service._all('bot_deletion_receipts'), [])
-        self.assertEqual(json.loads(self.profile().read_text())['status'], 'active')
+        self.assertEqual(self.status(), 'active')
 
     def test_manual_delete_retry_also_reconciles_cleanup(self):
         key = str(uuid4())
@@ -260,7 +266,7 @@ class BotDeletionTests(unittest.TestCase):
             with self.assertRaises(ServiceError):
                 self.write('DELETE', path, key=key)
         self.assertEqual(self.write('DELETE', path, key=key), {'ok': True})
-        self.assertEqual(json.loads(self.profile().read_text())['status'], 'deleted')
+        self.assertEqual(self.status(), 'deleted')
 
     def test_two_recipients_share_one_deletion_receipt(self):
         sent = self.send(recipient_bot_ids=[self.caller['id'], self.sibling['id']])
@@ -296,7 +302,7 @@ class BotDeletionTests(unittest.TestCase):
         self.assertTrue(finished.is_set())
         self.assertEqual(errors, [])
         self.assertEqual(receipts[0]['status'], 'deleted')
-        self.assertEqual(json.loads(self.profile().read_text())['status'], 'deleted')
+        self.assertEqual(self.status(), 'deleted')
 
     def test_cancellation_attempts_other_workers_even_when_one_stop_fails(self):
         first = self.working(self.send(self.target))
