@@ -448,6 +448,45 @@ class NativeFallbackMigrationTests(unittest.TestCase):
         self.assertEqual(retried['env']['COCONUT_FALLBACK_OPENAI_API_KEY'], 'person-key')
         self.assertNotIn('fallback_providers', retried['config'])
 
+    EDIT_ROUTE = ("from native_settings import raw_config, save_config\n"
+                  "config = raw_config(home)\n"
+                  "config['fallback_providers'][0]['model'] = 'person-model'\n"
+                  "save_config(home, config)\n")
+    ROTATE = ("(default / '.env').write_text('OPENAI_API_KEY=synthetic-rotated\\n')\n"
+              "os.environ['OPENAI_API_KEY'] = 'synthetic-rotated'\n")
+
+    def test_an_edited_route_keeps_the_copied_key_that_it_uses(self):
+        # The person edits the copied route after the stop, and the default key rotates before the retry.
+        stopped, retried, again = self.attempts([self.STOP, self.EDIT_ROUTE + self.ROTATE, self.ROTATE],
+                                                {'fallback_providers': [self.route]}, 'OPENAI_API_KEY=synthetic-default\n',
+                                                {}, 'OPENAI_API_KEY=synthetic-bot\n')
+        self.assertEqual(stopped, 'stopped')
+        self.assertIn('Bots not migrated', retried['error'])
+        routes = retried['config']['fallback_providers']
+        self.assertEqual([(route['model'], route['key_env']) for route in routes],
+                         [('person-model', 'COCONUT_FALLBACK_OPENAI_API_KEY')])
+        # The kept route still reads the copied key, so the key stays and the copy stays pending.
+        self.assertEqual(retried['env']['COCONUT_FALLBACK_OPENAI_API_KEY'], 'synthetic-default')
+        self.assertEqual(retried['env']['OPENAI_API_KEY'], 'synthetic-bot')
+        self.assertTrue(retried['pending'])
+        self.assertFalse(retried['done'])
+        # The next attempt checks the pending copy again. It does not mark the bot done without its key.
+        self.assertIn('Bots not migrated', again['error'])
+        self.assertEqual(again['env']['COCONUT_FALLBACK_OPENAI_API_KEY'], 'synthetic-default')
+        self.assertFalse(again['done'])
+
+    def test_an_edited_route_keeps_the_copied_secret_sources_that_it_uses(self):
+        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
+        stopped, retried = self.attempts([self.STOP, self.EDIT_ROUTE + self.MISMATCH],
+                                         {'fallback_providers': [self.route], 'secrets': secrets}, '', {}, '')
+        self.assertEqual(stopped, 'stopped')
+        self.assertIn('Bots not migrated', retried['error'])
+        self.assertEqual(retried['config']['fallback_providers'][0]['model'], 'person-model')
+        # OPENAI_API_KEY comes only from the copied sources, so they stay with the route that reads it.
+        self.assertIn('secrets', retried['config'])
+        self.assertTrue(retried['pending'])
+        self.assertFalse(retried['done'])
+
     def test_a_bot_with_its_own_key_keeps_using_it(self):
         with tempfile.TemporaryDirectory(prefix='settings-migration-') as temporary:
             root = Path(temporary)

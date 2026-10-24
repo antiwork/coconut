@@ -340,25 +340,72 @@ def _digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
-def _undo_pending(home, pending):
-    """Undo what an unchecked fallback copy wrote, and keep every other setting as it is now.
+def _referenced_names(config):
+    """The variables that a configuration refers to: ${NAME} references and key settings at any depth, and the
+    OPENAI_API_KEY that an OpenAI API route without its own key setting reads."""
+    from native_mcp import _references
+    found = _references(config, set())
 
-    The step removes the copied routes, secret sources and variables only while they still hold what the copy wrote,
-    so a change that the person made since then stays.
+    def settings(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if key in KEY_SETTINGS and isinstance(item, str) and item:
+                    found.add(item)
+                settings(item)
+        elif isinstance(value, list):
+            for item in value:
+                settings(item)
+    settings(config)
+    routes = config.get('fallback_providers')
+    for route in routes if isinstance(routes, list) else []:
+        if (isinstance(route, dict) and route.get('provider') == 'openai-api' and not route.get('api_key')
+                and not any(route.get(key) for key in KEY_SETTINGS)):
+            found.add('OPENAI_API_KEY')
+    return found
+
+
+def _undo_pending(home, pending):
+    """Undo what an unchecked fallback copy wrote, and keep every other setting as it is now. Return whether the copy
+    is fully undone.
+
+    The step removes a copied route only while it is unchanged. It removes a copied variable or the copied secret
+    sources only while they hold what the copy wrote and no setting that stays refers to them. When a setting that
+    stays still uses a copied value, the step keeps that value and the copy stays pending, so the bot is not done.
     """
     from hermes_cli.config import remove_env_value
     config = raw_config(home)
     before = deepcopy(config)
-    if config.get('fallback_providers') == pending.get('routes'):
-        config.pop('fallback_providers', None)
+    copied = pending.get('routes') or []
+    routes = config.get('fallback_providers')
+    if isinstance(routes, list):
+        kept = [route for route in routes if route not in copied]
+        if kept:
+            config['fallback_providers'] = kept
+        else:
+            config.pop('fallback_providers', None)
+    referenced = _referenced_names(config)
+    values = _env(home)
+    complete, remove = True, []
+    for name, digest in pending.get('written', {}).items():
+        if values.get(name) is None or _digest(values[name]) != digest:
+            # The variable is gone, or the person changed it: it is not the copy's value any more.
+            continue
+        if name in referenced:
+            complete = False
+        else:
+            remove.append(name)
     if pending.get('secrets') is not None and config.get('secrets') == pending['secrets']:
-        config.pop('secrets', None)
+        defined = {name for name, value in values.items() if value and name not in remove}
+        if referenced - defined:
+            # A setting that stays can read a variable from these sources.
+            complete = False
+        else:
+            config.pop('secrets', None)
     if config != before:
         save_config(home, config)
-    values = _env(home)
-    for name, digest in pending.get('written', {}).items():
-        if values.get(name) is not None and _digest(values[name]) == digest:
-            remove_env_value(name)
+    for name in remove:
+        remove_env_value(name)
+    return complete
 
 
 def _check_fallback(default, home, pending, values):
@@ -516,8 +563,7 @@ def migrate_bot(default, home, root=None):
     except BaseException:
         # A bot that is not done keeps no half attempt. The next start runs the step again.
         _restore(home, folder)
-        if earlier:
-            _undo_pending(home, earlier)
+        if earlier and _undo_pending(home, earlier):
             (folder / PENDING).unlink(missing_ok=True)
         raise
     finally:
