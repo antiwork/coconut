@@ -195,11 +195,13 @@ The step:
    - When the profile has another value under the same name, the route reads the copied key from `COCONUT_FALLBACK_<NAME>`.
    - When Coconut's Hermes home reads the key through its `secrets:` sources, the profile gets those sources.
    - When the bot still cannot resolve the same key, the step restores the profile files and stops the start.
+   - The step records a copied fallback in `pending.json` before it writes it. After a stop, the next attempt repeats the checks of that copy before it marks the bot as done.
 6. Keeps each login folder that holds files (for example `.config/gh` with a GitHub login) through its variable in the profile's `.env`.
 7. Removes Coconut's scripts from `terminal.shell_init_files`, and moves the routine receipts from `coconut-runs/` to `runs/`.
 8. Writes `<data>/bots/<uuid>/settings-migration/report.json`.
 
 The report marks the bot as done, so a later start skips it. Each part checks the profile before it writes, so a step that stopped halfway runs again safely.
+Each attempt first copies the profile files to `settings-migration/attempt/`. A failed attempt restores that copy, so changes that the person made after an earlier attempt stay. `backup/` keeps the files from before the first attempt.
 If the step fails at the start, the service does not start, and the automatic update keeps the earlier version.
 To undo the step for one bot, stop the service, copy the files from `backup/` back into the profile, and delete `report.json`.
 

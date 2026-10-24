@@ -253,6 +253,30 @@ print(json.dumps({'report': report['fallback'], 'keys': _fallback_keys(home), 'd
 """
 
 
+ATTEMPT = r"""
+import json, os, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+default, home = root / 'default', root / 'bots' / 'bot' / 'home'
+folder = home.parent / 'settings-migration'
+import model_catalog
+model_catalog.apply_env_file(default / '.env')
+STEP
+from settings_migration import MigrationError, migrate
+from agent.secret_scope import load_env_file
+from native_settings import raw_config
+state = {}
+try:
+    state['report'] = migrate(default, {'bot': home})['bot']
+except MigrationError as error:
+    state['error'] = str(error)
+backup = folder / 'backup' / 'config.yaml'
+state.update(config=raw_config(home), env=load_env_file(home / '.env'), done=(folder / 'report.json').exists(),
+             pending=(folder / 'pending.json').exists(),
+             backup_config=json.loads(backup.read_text()) if backup.exists() else None)
+print(json.dumps(state))
+"""
+
 @needs_hermes
 class NativeFallbackMigrationTests(unittest.TestCase):
     def run_case(self, default_config, default_env, bot_config, bot_env):
@@ -320,6 +344,72 @@ class NativeFallbackMigrationTests(unittest.TestCase):
         self.assertIn('Bots not migrated', state['error'])
         self.assertTrue(state['restored'])
         self.assertFalse(state['report'])
+
+    def attempts(self, steps, default_config, default_env, bot_config, bot_env):
+        """Run several attempts of the step in separate processes. Each step is Python code that runs before migrate."""
+        with tempfile.TemporaryDirectory(prefix='settings-migration-') as temporary:
+            root = Path(temporary)
+            default, home = root / 'default', root / 'bots' / 'bot' / 'home'
+            default.mkdir()
+            home.mkdir(parents=True)
+            secret = root / 'secret.env'
+            secret.write_text('OPENAI_API_KEY=synthetic-secret-source\n')
+            (default / 'config.yaml').write_text(json.dumps(default_config).replace('SECRET_FILE', str(secret)))
+            (default / '.env').write_text(default_env)
+            (home / 'config.yaml').write_text(json.dumps(bot_config).replace('SECRET_FILE', str(secret)))
+            if bot_env:
+                (home / '.env').write_text(bot_env)
+            env = {key: value for key, value in os.environ.items() if key != 'OPENAI_API_KEY'}
+            env.update(HERMES_HOME=str(default),
+                       PYTHONPATH=os.pathsep.join([str(Path(SOURCE).resolve()), str(BACKEND), str(BACKEND / 'coconut')]))
+            results = []
+            for step in steps:
+                code = ATTEMPT.replace('STEP', step)
+                result = subprocess.run([PYTHON, '-c', code, str(root)], env=env, capture_output=True, text=True, timeout=60)
+                self.assertIn(result.returncode, (0, 3), result.stderr[-6000:])
+                results.append(json.loads(result.stdout.strip().splitlines()[-1]) if result.returncode == 0 else 'stopped')
+            return results
+
+    def test_a_second_failed_attempt_keeps_the_changes_of_the_person(self):
+        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
+        change = ("from native_settings import raw_config, save_config\n"
+                  "config = raw_config(home); config['approvals'] = {'mode': 'smart'}; save_config(home, config)\n"
+                  "(home / '.env').write_text('PERSON_VALUE=chosen\\n')\n")
+        first, second = self.attempts(['', change], {'fallback_providers': [self.route], 'secrets': secrets}, '',
+                                      {'secrets': {'command': {'enabled': False, 'command': 'true'}}}, '')
+        self.assertIn('Bots not migrated', first['error'])
+        self.assertIn('Bots not migrated', second['error'])
+        # The failed second attempt keeps what the person changed after the first one.
+        self.assertEqual(second['config']['approvals'], {'mode': 'smart'})
+        self.assertEqual(second['env'], {'PERSON_VALUE': 'chosen'})
+        self.assertNotIn('fallback_providers', second['config'])
+        # The first backup still holds the files from before the step.
+        self.assertEqual(second['backup_config'], {'secrets': {'command': {'enabled': False, 'command': 'true'}}})
+        self.assertFalse(second['done'])
+
+    def test_a_stop_between_the_save_and_the_checks_repeats_the_checks(self):
+        stop = ("import settings_migration\n"
+                "settings_migration._check_fallback = lambda *args, **kwargs: os._exit(3)\n")
+        secrets = {'command': {'enabled': True, 'command': 'cat SECRET_FILE'}}
+        stopped, retried = self.attempts([stop, ''], {'fallback_providers': [self.route], 'secrets': secrets}, '',
+                                         {'secrets': {'command': {'enabled': False, 'command': 'true'}}}, '')
+        self.assertEqual(stopped, 'stopped')
+        # The next attempt runs the checks of the unfinished copy, fails, and undoes that copy.
+        self.assertIn('Bots not migrated', retried['error'])
+        self.assertNotIn('fallback_providers', retried['config'])
+        self.assertFalse(retried['done'])
+        self.assertFalse(retried['pending'])
+
+    def test_a_stop_between_the_save_and_the_checks_finishes_when_the_checks_pass(self):
+        stop = ("import settings_migration\n"
+                "settings_migration._check_fallback = lambda *args, **kwargs: os._exit(3)\n")
+        stopped, retried = self.attempts([stop, ''], {'fallback_providers': [self.route]},
+                                         'OPENAI_API_KEY=synthetic-default\n', {}, 'OPENAI_API_KEY=synthetic-bot\n')
+        self.assertEqual(stopped, 'stopped')
+        self.assertTrue(retried['done'])
+        self.assertFalse(retried['pending'])
+        self.assertEqual(retried['report']['fallback']['renamed_variables'],
+                         {'OPENAI_API_KEY': 'COCONUT_FALLBACK_OPENAI_API_KEY'})
 
     def test_a_bot_with_its_own_key_keeps_using_it(self):
         with tempfile.TemporaryDirectory(prefix='settings-migration-') as temporary:
