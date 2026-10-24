@@ -292,7 +292,16 @@ def retry_tunnel(live, state, state_path):
     if not pending or time.time() < pending.get('retry_at', 0):
         return
     try:
-        run([sys.executable, str(live / 'scripts/tunnel.py'), 'rebuild'], cwd=live)
+        # deploy.py holds this lock while it installs and rebuilds. Without it, a retry that started first could
+        # compile older sources, and replace the sidecar of a newer deploy after it.
+        descriptor = os.open(live / '.runtime/deploy/deploy.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, 'a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print('A deployment is running. The tunnel sidecar retry waits for the next pass.', file=sys.stderr)
+                return
+            run([sys.executable, str(live / 'scripts/tunnel.py'), 'rebuild'], cwd=live)
     except (RuntimeError, subprocess.TimeoutExpired, OSError) as error:
         state['pending_tunnel'] = dict(pending, error=str(error)[-500:], retry_at=time.time() + FAILED_DEPLOY_SECONDS)
         save(state_path, state)

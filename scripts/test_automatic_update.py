@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import fcntl
 import hashlib
 from types import SimpleNamespace
 import unittest
@@ -178,6 +179,7 @@ class AutomaticUpdateTests(unittest.TestCase):
             source.mkdir(); live.mkdir()
             (live / '.runtime/host').mkdir(parents=True)
             (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
+            (live / '.runtime/deploy').mkdir()
             (live / 'app.py').write_text('current')
             hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
             (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=dict(hashes, old='x'))))
@@ -197,6 +199,9 @@ class AutomaticUpdateTests(unittest.TestCase):
                             '"error":"Tunnel sidecar build failed (exit 1)."}}')
                 if args[-1:] == ['rebuild']:
                     rebuilds.append(args)
+                    # The rebuild runs under the deploy lock, so no deployment can run at the same time.
+                    with (live / '.runtime/deploy/deploy.lock').open('a') as other, self.assertRaises(BlockingIOError):
+                        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     if rebuild_fails[0]:
                         raise RuntimeError('launchctl did not restart it.')
                 return ''
@@ -232,6 +237,12 @@ class AutomaticUpdateTests(unittest.TestCase):
             attempt(1000 + update.FAILED_DEPLOY_SECONDS + 1)
             self.assertEqual(len(rebuilds), 1)
             rebuild_fails[0] = False
+            # While a deployment holds the lock, the retry waits and keeps its record.
+            with (live / '.runtime/deploy/deploy.lock').open('a') as deployment:
+                fcntl.flock(deployment, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                attempt(1000 + 2 * update.FAILED_DEPLOY_SECONDS)
+            self.assertEqual(len(rebuilds), 1)
+            self.assertEqual(json.loads(state_path.read_text())['pending_tunnel'], pending)
             attempt(1000 + 2 * update.FAILED_DEPLOY_SECONDS)
             self.assertEqual((len(received), len(rebuilds)), (1, 2))
             self.assertNotIn('pending_tunnel', json.loads(state_path.read_text()))
