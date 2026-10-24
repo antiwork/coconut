@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Open a private, one-time setup QR for the iPhone.
 
-A Mac with the tunnel sidecar (scripts/tunnel.py) makes a version 2 link for the relay transport. Other Macs, and
---legacy, make a version 1 link for the TLS connection that current app builds use.
+A Mac with the tunnel sidecar (scripts/tunnel.py) makes a version 2 setup for the relay transport, in a version 3 link.
+Other Macs, and --legacy, make a version 1 setup for the TLS connection that earlier app builds use.
 """
 
 from __future__ import annotations
@@ -18,12 +18,19 @@ import re
 import socket
 import subprocess
 import sys
+from urllib.parse import parse_qs, urlsplit
 
 import host
 
 
 ROOT = Path(__file__).resolve().parents[1]
 V2_FIELDS = {"version", "relay", "route", "mac_key", "secret", "expires", "name"}
+LINK_VERSION = 3
+# App builds before the version 3 link read only the setup field. This value is base64url of a JSON object with the
+# version 1 field names and version 3, so those builds ask the person to update the app. The space before the
+# object keeps the text from starting with "eyJ", which Hermes masks as a JSON Web Token.
+OLD_BUILD_SETUP = base64.urlsafe_b64encode(
+    b' {"version":3,"server_url":"","certificate_sha256":"","pairing_code":""}').decode().rstrip("=")
 
 
 def unpadded(value: str, size: int) -> bytes | None:
@@ -128,9 +135,49 @@ def tunnel_payload(data: Path) -> dict:
 
 
 def link(payload: dict) -> str:
-    """A setup link opens Coconut on the iPhone. The QR code holds the same link."""
-    data = json.dumps(validate(payload), separators=(",", ":")).encode()
-    return "coconut://pair?setup=" + base64.urlsafe_b64encode(data).decode().rstrip("=")
+    """A setup link opens Coconut on the iPhone. The QR code holds the same link.
+
+    A version 2 setup goes in a version 3 link: coconut://pair/<token>?setup=<OLD_BUILD_SETUP>. The token is the
+    packed setup in lowercase base32. Hermes masks text that looks like a secret before its agent sends the link,
+    and no Hermes rule matches lowercase letters and the digits 2 to 7 after a slash. A version 1 setup keeps the
+    base64url JSON in the setup field, because only the earlier app builds read it.
+    """
+    payload = validate(payload)
+    if payload["version"] == 1:
+        data = json.dumps(payload, separators=(",", ":")).encode()
+        return "coconut://pair?setup=" + base64.urlsafe_b64encode(data).decode().rstrip("=")
+    token = base64.b32encode(pack(payload)).decode().rstrip("=").lower()
+    return f"coconut://pair/{token}?setup={OLD_BUILD_SETUP}"
+
+
+def pack(payload: dict) -> bytes:
+    """Link version, route, Mac key, one-time code, expiry, relay length, relay, and the Mac name last."""
+    relay, name = payload["relay"].encode(), payload["name"].encode()
+    if not 0 <= payload["expires"] < 2**32 or len(relay) > 255:
+        raise ValueError("The expiry or the relay address is out of range.")
+    return (bytes([LINK_VERSION]) + bytes.fromhex(payload["route"]) + unpadded(payload["mac_key"], 32)
+            + unpadded(payload["secret"], 32) + payload["expires"].to_bytes(4, "big") + bytes([len(relay)]) + relay + name)
+
+
+def read_link(text: str) -> dict:
+    """Return the setup of a link from link(), in the version 3 or the earlier format."""
+    parts = urlsplit(text.strip())
+    if parts.scheme != "coconut" or parts.netloc != "pair":
+        raise ValueError("This is not a Coconut setup link.")
+    token = parts.path.removeprefix("/")
+    if not token:
+        encoded = parse_qs(parts.query).get("setup", [""])[0]
+        return validate(json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))))
+    if not re.fullmatch(r"[a-z2-7]+", token):
+        raise ValueError("The setup link is damaged.")
+    data = base64.b32decode(token.upper() + "=" * (-len(token) % 8))
+    if len(data) < 102 or data[0] != LINK_VERSION or len(data) < 102 + data[101]:
+        raise ValueError("The setup link is damaged.")
+    size = data[101]
+    encode = lambda value: base64.urlsafe_b64encode(value).decode().rstrip("=")
+    return validate_v2(dict(version=2, route=data[1:33].hex(), mac_key=encode(data[33:65]), secret=encode(data[65:97]),
+                            expires=int.from_bytes(data[97:101], "big"), relay=data[102:102 + size].decode(),
+                            name=data[102 + size:].decode()))
 
 
 def render(payload: dict, *, show: bool = True, share: bool = False) -> Path:

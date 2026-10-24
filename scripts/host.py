@@ -551,6 +551,47 @@ def write_agent(path: Path, payload: dict) -> None:
             name.unlink(missing_ok=True)
 
 
+# Pythons that stay in place when Hermes updates, in order of preference.
+SERVICE_PYTHONS = ("/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3")
+
+
+def service_python() -> str | None:
+    """Return a Python for the LaunchAgent that can run host.py serve and does not move with a Hermes update.
+
+    install-service uses the Python that runs it. This prefers that Python too, unless it is in a virtual environment,
+    for example the one of a Hermes install.
+    """
+    candidates = [sys.executable] if sys.executable and sys.prefix == sys.base_prefix else []
+    for python in dict.fromkeys([*candidates, *SERVICE_PYTHONS]):
+        if not os.access(python, os.X_OK) or Path(python).resolve().is_relative_to((ROOT / ".runtime").resolve()):
+            continue
+        try:
+            check = subprocess.run([python, "-c", "import coconut.server"], cwd=ROOT / "backend", capture_output=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if check.returncode == 0:
+            return python
+    return None
+
+
+def repaired_agent(payload: dict) -> dict:
+    """Return the LaunchAgent settings for a restore. Every key that this does not repair stays the same.
+
+    The phone waits for the service over HTTPS, so the service runs as an interactive process. Earlier installations
+    started the service with the Python of the private Hermes runtime in .runtime/hermes. The update removed that
+    runtime, so launchd cannot start the service until it has another Python.
+    """
+    repaired = dict(payload, ProcessType="Interactive")
+    command = payload["ProgramArguments"]
+    if Path(command[0]).is_relative_to(ROOT / ".runtime/hermes"):
+        python = service_python()
+        if python is None:
+            raise SystemExit("Coconut's LaunchAgent starts the Python of the removed private Hermes runtime, and no "
+                             "other Python on this Mac can run Coconut. Install Python 3, then update again.")
+        repaired["ProgramArguments"] = [python, *command[1:]]
+    return repaired
+
+
 def restore_after_update(state: dict) -> None:
     if (not isinstance(state, dict) or state.get("project") != str(ROOT) or state.get("data_dir") != str(DEFAULT_DATA)
             or state.get("mode") not in {"manual", "managed", "stopped"}):
@@ -565,9 +606,9 @@ def restore_after_update(state: dict) -> None:
         if not path.exists() or current:
             raise SystemExit("Coconut cannot restore its LaunchAgent while its file is missing or a manual process is running.")
         payload = plistlib.loads(path.read_bytes())
-        if payload.get('ProcessType') != 'Interactive':
-            payload['ProcessType'] = 'Interactive'
-            write_agent(path, payload)
+        repaired = repaired_agent(payload)
+        if repaired != payload:
+            write_agent(path, repaired)
         result = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], capture_output=True, text=True)
         if result.returncode:
             raise SystemExit("launchctl could not restore Coconut. Its LaunchAgent file and data remain available.")
