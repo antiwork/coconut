@@ -99,7 +99,7 @@ final class PairingSetupTests: XCTestCase {
     // MARK: Version 3 links
 
     // From `scripts/pairing.py`, for the setup in `payload(["name": "Gianfranco’s Mac mini"])`.
-    private let versionThreeLink = "coconut://pair/aov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2waabaibqibiga4eascqlbqgq4dyqcejbgfavcylrqgi2dmob2hq7777p37h37l47r57w6x2ph4xr6dx653pm5pvot2hh43s6jy7c4hqgwsosaaugq5duobztulzpmnxwg33oov2c24dvonuc4z3vnvzg6ylefz3w64tlmvzhgltemv3eo2lbnztheylomnx6faezomqe2yldebwws3tj?setup=IHsidmVyc2lvbiI6Mywic2VydmVyX3VybCI6IiIsImNlcnRpZmljYXRlX3NoYTI1NiI6IiIsInBhaXJpbmdfY29kZSI6IiJ9"
+    private let versionThreeLink = "coconut://pair/aov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2waabaibqibiga4eascqlbqgq4dyqcejbgfavcylrqgi2dmob2hq7777p37h37l47r57w6x2ph4xr6dx653pm5pvot2hh43s6jy7c4hqgwsosaaacq2duoryhgorpf5rw6y3pnz2xillqovzwqlthovwxe33bmqxho33snnsxe4zomrsxmr3jmfxgm4tbnzrw7yuatfzsatlbmmqg22lone?setup=IHsidmVyc2lvbiI6Mywic2VydmVyX3VybCI6IiIsImNlcnRpZmljYXRlX3NoYTI1NiI6IiIsInBhaXJpbmdfY29kZSI6IiJ9"
 
     func testVersionThreeLinkGivesTheSameSetupAsTheEarlierLink() throws {
         let json = try payload(["name": "Gianfranco’s Mac mini"])
@@ -109,6 +109,14 @@ final class PairingSetupTests: XCTestCase {
         XCTAssertEqual(setup.name, "Gianfranco’s Mac mini")
         XCTAssertEqual(try PairingSetup.parse("  " + versionThreeLink + "\n"), setup)
         XCTAssertTrue(PairingSetup.isLink(try XCTUnwrap(URL(string: versionThreeLink))))
+    }
+
+    func testVersionThreeLinkHoldsTheLongestRelayHostName() throws {
+        // From `scripts/pairing.py`: a host name of 253 characters and a port, longer than 255 bytes.
+        let host = Array(repeating: String(repeating: "a", count: 63), count: 3).joined(separator: ".") + "." + String(repeating: "b", count: 61)
+        let relay = "https://\(host):65535"
+        let link = "coconut://pair/aov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2xk5lvov2waabaibqibiga4eascqlbqgq4dyqcejbgfavcylrqgi2dmob2hq7777p37h37l47r57w6x2ph4xr6dx653pm5pvot2hh43s6jy7c4hqgwsosaaaqw2duoryhgorpf5qwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcyjomfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcltbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqwcylbmfqs4ytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeytcmjrgeyr2gy2tkmzvjvqwgidnnfxgs?setup=IHsidmVyc2lvbiI6Mywic2VydmVyX3VybCI6IiIsImNlcnRpZmljYXRlX3NoYTI1NiI6IiIsInBhaXJpbmdfY29kZSI6IiJ9"
+        XCTAssertEqual(try PairingSetup.parse(link), try PairingSetup.parse(try payload(["relay": relay])))
     }
 
     func testEarlierBuildsReadAnUpdateRequestFromAVersionThreeLink() throws {

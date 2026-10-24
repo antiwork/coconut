@@ -151,12 +151,15 @@ def link(payload: dict) -> str:
 
 
 def pack(payload: dict) -> bytes:
-    """Link version, route, Mac key, one-time code, expiry, relay length, relay, and the Mac name last."""
+    """Link version, route, Mac key, one-time code, expiry, relay length (2 bytes), relay, and the Mac name last.
+
+    Any relay that validate_v2 accepts fits: a host name has at most 253 characters.
+    """
     relay, name = payload["relay"].encode(), payload["name"].encode()
-    if not 0 <= payload["expires"] < 2**32 or len(relay) > 255:
+    if not 0 <= payload["expires"] < 2**32 or len(relay) >= 2**16:
         raise ValueError("The expiry or the relay address is out of range.")
     return (bytes([LINK_VERSION]) + bytes.fromhex(payload["route"]) + unpadded(payload["mac_key"], 32)
-            + unpadded(payload["secret"], 32) + payload["expires"].to_bytes(4, "big") + bytes([len(relay)]) + relay + name)
+            + unpadded(payload["secret"], 32) + payload["expires"].to_bytes(4, "big") + len(relay).to_bytes(2, "big") + relay + name)
 
 
 def read_link(text: str) -> dict:
@@ -171,13 +174,13 @@ def read_link(text: str) -> dict:
     if not re.fullmatch(r"[a-z2-7]+", token):
         raise ValueError("The setup link is damaged.")
     data = base64.b32decode(token.upper() + "=" * (-len(token) % 8))
-    if len(data) < 102 or data[0] != LINK_VERSION or len(data) < 102 + data[101]:
+    size = int.from_bytes(data[101:103], "big")
+    if len(data) < 103 or data[0] != LINK_VERSION or len(data) < 103 + size:
         raise ValueError("The setup link is damaged.")
-    size = data[101]
     encode = lambda value: base64.urlsafe_b64encode(value).decode().rstrip("=")
     return validate_v2(dict(version=2, route=data[1:33].hex(), mac_key=encode(data[33:65]), secret=encode(data[65:97]),
-                            expires=int.from_bytes(data[97:101], "big"), relay=data[102:102 + size].decode(),
-                            name=data[102 + size:].decode()))
+                            expires=int.from_bytes(data[97:101], "big"), relay=data[103:103 + size].decode(),
+                            name=data[103 + size:].decode()))
 
 
 def render(payload: dict, *, show: bool = True, share: bool = False) -> Path:

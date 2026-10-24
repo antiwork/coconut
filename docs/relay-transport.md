@@ -111,8 +111,8 @@ The token is unpadded lowercase base32 (RFC 4648) of these bytes:
 | 32 | `mac_key` |
 | 32 | `secret` |
 | 4 | `expires`, big-endian |
-| 1 | Length of `relay` |
-| 0 to 255 | `relay`, UTF-8 |
+| 2 | Length of `relay`, big-endian |
+| Length of `relay` | `relay`, UTF-8 |
 | The rest | `name`, UTF-8 |
 
 Hermes masks text that looks like a secret before its agent sends the link. The earlier link held base64url JSON, which always starts with `eyJ`, so Hermes masked it as a JSON Web Token. No rule of Hermes 0.22.4 or 0.22.5 matches the token. `backend/tests/test_native_pairing_redaction.py` checks this with the redaction functions of the installed Hermes, in the native CI job for the minimum and the latest Hermes.

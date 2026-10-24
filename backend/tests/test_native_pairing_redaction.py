@@ -53,7 +53,8 @@ class PairingLinkRedactionTests(unittest.TestCase):
 
     def payloads(self):
         names = ['Mac mini', 'Gianfranco’s Mac mini', 'Büro "Mac" {x}', 'sk-proj Mac', 'eyJ Mac', 'Mac' * 26]
-        relays = ['https://coconut-push.gumroad.workers.dev', 'https://relay.example.com:8443', 'http://127.0.0.1:8787']
+        relays = ['https://coconut-push.gumroad.workers.dev', 'https://relay.example.com:8443', 'http://127.0.0.1:8787',
+                  'https://' + '.'.join(['a' * 63] * 3 + ['b' * 61]) + ':65535']
         generator = random.Random(7)
         for index in range(300):
             yield dict(version=2, relay=relays[index % len(relays)], route=generator.randbytes(32).hex(),

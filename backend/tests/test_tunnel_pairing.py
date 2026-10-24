@@ -154,6 +154,13 @@ class PairingLinkTests(unittest.TestCase):
         self.assertEqual(old_build, dict(version=3, server_url='', certificate_sha256='', pairing_code=''))
         self.assertNotIn('eyJ', link)
 
+    def test_a_version_3_link_holds_the_longest_relay_host_name(self):
+        # A host name has at most 253 characters. With the scheme and a port, the relay is longer than 255 bytes.
+        host = '.'.join(['a' * 63] * 3 + ['b' * 61])
+        for relay in ['https://' + host, 'https://' + host + ':65535']:
+            with self.subTest(relay=relay[-12:]):
+                self.assertEqual(pairing.read_link(pairing.link(self.payload() | {'relay': relay})), self.payload() | {'relay': relay})
+
     def test_the_earlier_link_format_still_reads(self):
         data = json.dumps(self.payload(), separators=(',', ':')).encode()
         earlier = 'coconut://pair?setup=' + base64.urlsafe_b64encode(data).decode().rstrip('=')

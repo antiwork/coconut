@@ -3,7 +3,7 @@ import Foundation
 // A version 2 setup from `scripts/pairing.py`, in a version 3 link:
 // coconut://pair/<token>?setup=<base64url JSON for earlier app builds>
 // The token is lowercase base32 of the link version 3, the route (32 bytes), the Mac key (32 bytes), the one-time
-// code (32 bytes), the expiry (4 bytes, big-endian Unix seconds), the relay length (1 byte), the relay, and the Mac
+// code (32 bytes), the expiry (4 bytes, big-endian Unix seconds), the relay length (2 bytes, big-endian), the relay, and the Mac
 // name. Hermes masks base64url JSON as a JSON Web Token, but no Hermes rule matches this token.
 // The app also reads the earlier link: coconut://pair?setup=<base64url {version:2, relay, route, mac_key, secret, expires, name}>
 struct PairingSetup: Equatable, Sendable {
@@ -46,10 +46,10 @@ struct PairingSetup: Equatable, Sendable {
     }
 
     private static func parse(token: String) throws -> Self {
-        guard let data = Data(base32: token).map(Array.init), data.count >= 102, data[0] == 3,
-              data.count >= 102 + Int(data[101]) else { throw PairingSetupError.damagedLink }
-        let relayEnd = 102 + Int(data[101])
-        guard let relay = String(bytes: data[102..<relayEnd], encoding: .utf8),
+        guard let data = Data(base32: token).map(Array.init), data.count >= 103, data[0] == 3,
+              data.count >= 103 + (Int(data[101]) << 8 | Int(data[102])) else { throw PairingSetupError.damagedLink }
+        let relayEnd = 103 + (Int(data[101]) << 8 | Int(data[102]))
+        guard let relay = String(bytes: data[103..<relayEnd], encoding: .utf8),
               let name = String(bytes: data[relayEnd...], encoding: .utf8) else { throw PairingSetupError.damagedLink }
         let expires = data[97..<101].reduce(0) { $0 << 8 | Int($1) }
         let secret = Data(data[65..<97])
