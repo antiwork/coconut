@@ -190,9 +190,10 @@ class RequesterCallbackContinuationTests(unittest.TestCase):
         owner, _, _, caller, _, _ = self.callback()
         for method in ('_background_pending', '_task_work_is_paused'):
             original = getattr(self.service, method)
+            # Pending background work of the caller, beyond the input of its own turn, still refuses.
             with self.subTest(method=method), patch.object(self.service, method,
-                    side_effect=lambda value, original=original: True if
-                    (value.get('id') if isinstance(value, dict) else value) == caller['id'] else original(value)):
+                    side_effect=lambda value, original=original, **options: True if
+                    (value.get('id') if isinstance(value, dict) else value) == caller['id'] else original(value, **options)):
                 self.reject(owner, caller)
 
     def test_native_foreground_must_match_the_exact_saved_claim(self):
