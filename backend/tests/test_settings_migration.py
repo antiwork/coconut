@@ -411,6 +411,43 @@ class NativeFallbackMigrationTests(unittest.TestCase):
         self.assertEqual(retried['report']['fallback']['renamed_variables'],
                          {'OPENAI_API_KEY': 'COCONUT_FALLBACK_OPENAI_API_KEY'})
 
+    STOP = ("import settings_migration\n"
+            "settings_migration._check_fallback = lambda *args, **kwargs: os._exit(3)\n")
+    # The checks fail on purpose: the bot seems to resolve another key than the default home.
+    MISMATCH = ("import settings_migration\n"
+                "settings_migration._fallback_keys = lambda home: [str(home)]\n")
+
+    def person_changes(self, variable_value=None):
+        lines = ("from native_settings import raw_config, save_config\n"
+                 "config = raw_config(home)\n"
+                 "config['model'] = {'default': 'person-model', 'provider': 'openai-api'}\n"
+                 "save_config(home, config)\n"
+                 "env = (home / '.env').read_text()\n")
+        if variable_value is not None:
+            lines += f"env = env.replace('COCONUT_FALLBACK_OPENAI_API_KEY=synthetic-default', 'COCONUT_FALLBACK_OPENAI_API_KEY={variable_value}')\n"
+        return lines + "(home / '.env').write_text(env + 'PERSON_VALUE=chosen\\n')\n"
+
+    def test_a_failed_check_after_a_stop_keeps_the_changes_of_the_person(self):
+        stopped, retried = self.attempts([self.STOP, self.person_changes() + self.MISMATCH],
+                                         {'fallback_providers': [self.route]}, 'OPENAI_API_KEY=synthetic-default\n',
+                                         {}, 'OPENAI_API_KEY=synthetic-bot\n')
+        self.assertEqual(stopped, 'stopped')
+        self.assertIn('Bots not migrated', retried['error'])
+        # The person's model and variable stay. Only what the unchecked copy wrote goes.
+        self.assertEqual(retried['config']['model'], {'default': 'person-model', 'provider': 'openai-api'})
+        self.assertNotIn('fallback_providers', retried['config'])
+        self.assertEqual(retried['env'], {'OPENAI_API_KEY': 'synthetic-bot', 'PERSON_VALUE': 'chosen'})
+        self.assertFalse(retried['done'])
+        self.assertFalse(retried['pending'])
+
+    def test_a_copied_variable_that_the_person_changed_stays(self):
+        stopped, retried = self.attempts([self.STOP, self.person_changes('person-key') + self.MISMATCH],
+                                         {'fallback_providers': [self.route]}, 'OPENAI_API_KEY=synthetic-default\n',
+                                         {}, 'OPENAI_API_KEY=synthetic-bot\n')
+        self.assertEqual(stopped, 'stopped')
+        self.assertEqual(retried['env']['COCONUT_FALLBACK_OPENAI_API_KEY'], 'person-key')
+        self.assertNotIn('fallback_providers', retried['config'])
+
     def test_a_bot_with_its_own_key_keeps_using_it(self):
         with tempfile.TemporaryDirectory(prefix='settings-migration-') as temporary:
             root = Path(temporary)
