@@ -4,6 +4,7 @@ import time
 import json
 from uuid import UUID, uuid5
 
+from .native_failure import TRANSIENT_ERROR_CODES
 from .work_sources import ANSWERED, source_origin
 
 
@@ -215,7 +216,22 @@ class NativeRoutines:
                     and not native.get('current_run_id') and not native.get('worker_pid')
                     and isinstance(runs, list) and runs
                     and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
-                    and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim['run_id'])
+                    and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim['run_id']
+                    and (runs[-1].get('outcome') == 'blocked' or not self._provider_successor(task, card)))
+
+    @staticmethod
+    def _provider_successor(task, card):
+        """Whether the card is the successor that Board.sync made for the current input of a request without a retained
+        native outcome, and the model provider stopped that input's turn for a while.
+
+        Board.sync gives new input to such a request a card under the key coconut:<id>:<input>. When the provider stops a
+        turn for a while (TRANSIENT_ERROR_CODES), Hermes retries a card that Coconut owns (Board.finish). This card is
+        not owned, so the stop blocked it, the request failed, and the settle pass archived the card. Only that stop
+        continues. Any other failure of such a card stays final.
+        """
+        claim = task.get('_kanban_claim') or {}
+        return bool(not task.get('_native_outcome_id') and claim.get('input') and task.get('error_code') in TRANSIENT_ERROR_CODES
+                    and card.get('idempotency_key') == 'coconut:' + task['id'] + ':' + claim['input'])
 
     def _settled_request_failure(self, task, card):
         """The checks of settled_failed_request that read only Coconut's records and the snapshot card.
@@ -223,13 +239,17 @@ class NativeRoutines:
         The request has no routine record, and no person stopped it. Coconut created the request once. Its claim names
         the archived task and the current input, and Coconut started the run of that claim. No tool call is unknown.
         Its only open input is the input that the failed turn never received, which the continuation hands to the
-        retry. The checks of _settled_card hold too, so the phone's idle archive is not it.
+        retry. The checks of _settled_card hold too, so the phone's idle archive is not it. The card is the request's
+        original card, the successor of its retained outcome for the claim's input, or the successor that a provider
+        stop ended (_provider_successor).
         """
         claim = task.get('_kanban_claim') or {}
         turn = task.get('_native_turn_id')
         keys = {'coconut:' + task['id']}
         if task.get('_native_outcome_id') == card.get('id') and claim.get('input'):
             keys.add('coconut-followup:' + task['id'] + ':' + claim['input'])
+        if self._provider_successor(task, card):
+            keys.add(card['idempotency_key'])
         if (task['status'] != 'failed' or any(field in task for field in ROUTINE_PROVENANCE)
                 or task.get('_native_outcome_id') not in (None, card.get('id')) or card.get('idempotency_key') not in keys
                 or not turn or claim.get('input') != turn or type(claim.get('run_id')) is not int

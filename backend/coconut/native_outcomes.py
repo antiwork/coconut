@@ -60,6 +60,13 @@ UNLINK_SCHEMA = {
 }
 
 
+RETAINED_PR_URL_LIMIT = 500
+# The refusal when the owner's delegated PRs of one Work all finished and the call names none of them.
+FINISHED_PRS_AMBIGUOUS = ('Choose one retained Work item for this native outcome. Its delegated PRs of the same Work '
+                          'have all finished. Name one of them with retained_pr_url.')
+SELECTION_REFUSED = ('retained_pr_url names no finished delegated PR that this continuation can choose. Use it only '
+                     'when every delegated PR of the Work finished and the plain call asks for it.')
+
 CONTINUE_SCHEMA = {
     'name': 'coconut_continue_work',
     'description': 'Continue a quiescent queued, scheduled, review, blocked, failed, or completed Hermes outcome with new facts. Use the native task ID from kanban_show. '
@@ -68,7 +75,11 @@ CONTINUE_SCHEMA = {
         'This does not approve actions. The result goes to the original requester.',
     'parameters': {'type': 'object', 'additionalProperties': False,
         'properties': {'task_id': {'type': 'string'}, 'message': {'type': 'string', 'maxLength': 16000},
-                       'independent_technical_work': TECHNICAL_LANE_SCHEMA},
+                       'independent_technical_work': TECHNICAL_LANE_SCHEMA,
+                       'retained_pr_url': {'type': 'string', 'maxLength': RETAINED_PR_URL_LIMIT,
+                           'description': 'Only when the plain call refuses because every delegated PR of the Work '
+                               'finished: the URL of the one finished PR that this continuation keeps as its Work item. '
+                               'It chooses the presentation only. It approves nothing and changes no task or Work.'}},
         'required': ['task_id', 'message']},
 }
 
@@ -580,7 +591,7 @@ class NativeOutcomes:
                 return False
         return True
 
-    def _retain_native_work(self, owner, native, snapshot_missing=None, snapshots=None, caller=None):
+    def _retain_native_work(self, owner, native, snapshot_missing=None, snapshots=None, caller=None, selected_pr=None):
         from .service import ServiceError, now
         from .work_capacity import execution_key
         snapshots = self.kanban.tasks if snapshots is None else snapshots
@@ -742,6 +753,16 @@ class NativeOutcomes:
         finished = [a for a in prs if a.get('pr_state') in ('merged', 'closed')]
         if finished and len(prs) - len(finished) == 1:
             retained = [a for a in retained if a not in finished]
+        # Two or more delegated PRs of the same authenticated Work, all finished, and nothing else: no PR is the
+        # outcome by itself, and Coconut chooses none. The caller can name one with retained_pr_url. That keeps the
+        # existing PR artifact and approves nothing. A report of another Work stays in `reports` and keeps the refusal.
+        all_finished = (len(finished) > 1 and len(finished) == len(prs) and all(a in prs for a in retained)
+                        and all(root['id'] == linked_parent['id'] for root in reports))
+        if selected_pr is not None:
+            chosen = [a for a in finished if all_finished and a.get('url') and a['url'].lower() == selected_pr.lower()]
+            if len(chosen) != 1:
+                raise ServiceError(409, SELECTION_REFUSED)
+            retained = chosen
         # The report and the one delegated PR of the same Work describe one execution and one outcome.
         # Two PRs, another Work, or no authenticated PR keep the report's Work, so the choice stays ambiguous.
         delegated = {a['id'] for a in retained if linked_parent and a['kind'] == 'pr'
@@ -749,7 +770,7 @@ class NativeOutcomes:
         retained.extend(root for root in reports if not (len(delegated) == 1 and root['id'] == linked_parent['id']))
         items = list({a['id']: a for a in retained}.values())
         if len(items) > 1:
-            raise ServiceError(409, 'Choose one retained Work item for this native outcome.')
+            raise ServiceError(409, FINISHED_PRS_AMBIGUOUS if all_finished else 'Choose one retained Work item for this native outcome.')
         if items:
             item = items[0]
             if (item['kind'] not in ('work', 'pr') or item['bot_id'] != owner['bot_id']
@@ -1211,7 +1232,9 @@ class NativeOutcomes:
             identity = require_text(payload, 'task_id', 100)
             text = require_text(payload, 'message', 16000)
             lane = technical_lane_request(payload)
-            key = digest(encoded(['continue_work', source_id, source.get('_native_turn_id'), identity, text] + ([lane] if lane else [])))
+            selected_pr = require_text(payload, 'retained_pr_url', RETAINED_PR_URL_LIMIT) if 'retained_pr_url' in payload else None
+            key = digest(encoded(['continue_work', source_id, source.get('_native_turn_id'), identity, text] + ([lane] if lane else [])
+                                 + ([{'retained_pr_url': selected_pr}] if selected_pr is not None else [])))
             previous = self.db.execute('SELECT data FROM deliveries WHERE id=?', (key,)).fetchone()
             if previous:
                 return json.loads(previous[0])['receipt']
@@ -1274,7 +1297,10 @@ class NativeOutcomes:
                     or self._background_pending(t['id']) for t in related):
                 raise ServiceError(409, 'This execution has active work. Wait for its result.')
             if not owner.get('_native_outcome_id'):
-                self._retain_native_work(owner, native, snapshot_missing, snapshots, caller=source)
+                self._retain_native_work(owner, native, snapshot_missing, snapshots, caller=source, selected_pr=selected_pr)
+            elif selected_pr is not None:
+                # The owner already retains its Work item. A selection cannot replace it.
+                raise ServiceError(409, SELECTION_REFUSED)
             owner['_native_outcome_id'] = identity
             self._restore_native_work_owner(owner)
             previous_lane = owner.pop('_technical_lane', None)

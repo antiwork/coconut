@@ -44,6 +44,7 @@ RUNS = [dict(id=28715, status='scheduled', outcome='scheduled', ended=True),
         dict(id=28866, status='scheduled', outcome='scheduled', ended=True),
         dict(id=28873, status='blocked', outcome='blocked', ended=True),
         dict(id=RUN, status='blocked', outcome='blocked', ended=True)]
+BILLING = 'The model provider reported a billing limit.'
 PR_REVIEW = dict(url='https://github.com/antiwork/gumroad/pull/8525', pr_state='merged',
                  head_sha='7ac18975d0ddcbe95b42cb3637d81486a0739d6e', checked_at='2026-10-19T17:53:24.122308Z',
                  draft=False, checks_state=None, required_checks_state=None, review_checks=None, check_failures=None)
@@ -70,7 +71,7 @@ class ArchivedRequest:
         task = self.store.mutate('POST', '/v1/bots/' + bot['id'] + '/messages', {'text': text}, str(uuid4()), 'test-phone')
         return self.update(task['id'], status='working')
 
-    def archived(self):
+    def archived(self, failure=None):
         """The saved shape: Desk relayed the request, its input failed in preparation, and the settle pass archived it."""
         requester = self.working(self.desk, 'Ask Dev for the admin-only download grant.')
         delivered = self.store._store_bot_message(requester['id'], dict(
@@ -85,7 +86,7 @@ class ArchivedRequest:
                             _kanban_claim=dict(native_id=NATIVE, external_id=owner['id'], input=TURN, run_id=RUN,
                                                claim_lock='gumclaw:17363', workspace=str(self.workspace)),
                             _kanban_started=RUN, _pr_review=dict(PR_REVIEW))
-        self.store.emit(owner['id'], 'failed', dict(summary=FAILURE))
+        self.store.emit(owner['id'], 'failed', failure or dict(summary=FAILURE))
         self.store._drain_returns()
         owner = self.store._get('tasks', owner['id'])
         self.assertEqual(owner['status'], 'failed')
@@ -366,6 +367,200 @@ class ArchivedFailedRequestRepeatTests(ArchivedRequest, unittest.TestCase):
             self.resume(identity='t_successor', message='Run the grant tests again.')
         self.assertEqual(self.store._get('tasks', owner['id']), failed)
         self.assertEqual(self.store._get('decisions', 'pending')['status'], 'pending')
+
+
+class ProviderStoppedSuccessorTests(ArchivedRequest, unittest.TestCase):
+    """The request has no retained native outcome, so Board.sync gave its new input the successor coconut:<id>:<input>.
+
+    The model provider stopped that input's turn. Hermes retries such a stop for a card that Coconut owns, but this card
+    is not owned, so the stop blocked it, and the settle pass archived it. This is Dev's PR 8606 execution. Only that
+    stop continues the original owner, with its task, input, claim, run, creation, and result route. Its legacy result
+    pointer names a finished helper of the same execution, and the continuation leaves that helper alone.
+    """
+
+    def provider_stopped(self, error_code='native_billing'):
+        failure = dict(summary=BILLING)
+        if error_code:
+            failure['error_code'] = error_code
+        owner = self.archived(failure)
+        if error_code == 'native_billing':
+            # The worker's own failure report saved the provider's reason.
+            self.assertEqual((owner['error_code'], owner['summary']), (error_code, BILLING))
+        elif error_code:
+            # A reason that only the service records, such as a dispatch failure.
+            owner = self.update(owner['id'], error_code=error_code)
+        self.store.kanban.tasks[owner['id']]['idempotency_key'] = 'coconut:' + owner['id'] + ':' + TURN
+        self.runs[NATIVE] = [dict(id=RUN, status='blocked', outcome='blocked', ended=True)]
+        # A finished helper of the same execution, which another bot started for the owner's assignment.
+        helper = dict(owner, id=str(uuid4()), status='completed', summary='Complete.', _assignment_task_id=owner['id'],
+                      _native_turn_id='helper-turn', _kanban_started=RUN - 100, _kanban_claim=dict(
+                          native_id='t_helper', external_id=None, input='helper-turn', run_id=RUN - 100))
+        helper['_kanban_claim']['external_id'] = helper['id']
+        for key in ('source_task_id', 'source_bot_id', 'parent_task_id', '_reply_to_task_id', '_native_relay', 'error_code'):
+            helper.pop(key, None)
+        self.store._put('tasks', helper)
+        return self.update(owner['id'], _result_task_id=helper['id']), helper
+
+    def completion(self):
+        return lambda: self.adapter({'op': 'completion', 'id': NATIVE})['card']
+
+    def test_the_provider_stopped_successor_continues_its_original_owner(self):
+        owner, helper = self.provider_stopped()
+        before = copy.deepcopy(owner)
+        self.assertTrue(self.store.settled_failed_request(owner, self.store.kanban.tasks[owner['id']], self.completion()))
+        receipt = self.resume()
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id=NATIVE, status='queued'))
+        continued = self.store._get('tasks', owner['id'])
+        self.assertEqual((continued['status'], continued['_native_outcome_id']), ('queued', NATIVE))
+        self.assertNotEqual(continued['_native_turn_id'], TURN)
+        for key in ('id', 'bot_id', 'session_id', 'thread_id', 'exchange_id', 'conversation_bot_id', '_execution_session_id',
+                    '_kanban_claim', '_kanban_started', 'source_bot_id', 'source_task_id', 'parent_task_id',
+                    '_reply_to_task_id', '_native_relay', '_native_intake', 'created_at'):
+            self.assertEqual(continued.get(key), before.get(key), key)
+        self.assertEqual(continued['_pr_review'], PR_REVIEW)
+        self.assertEqual(continued['_self_recovery']['previous_task_id'], owner['id'])
+        self.assertEqual(continued['_self_recovery']['unknown_tools'], [])
+        self.assertEqual(continued['_bot_messages'][-1]['sender_bot_id'], self.desk['id'])
+        self.assertIn({'op': 'completion', 'id': NATIVE}, self.calls)
+        self.assertEqual(self.cancellations(owner), [])
+        self.assertEqual(self.store._get('tasks', helper['id']), helper)
+        self.assertEqual(self.resume(), receipt)
+        self.assertEqual(self.store._get('tasks', owner['id']), continued)
+        self.assertEqual(len([d for d in self.store._all('deliveries') if d.get('receipt') == receipt]), 1)
+
+    def test_its_result_returns_once_to_the_original_requester(self):
+        owner, helper = self.provider_stopped()
+        self.resume()
+
+        def returns():
+            deliveries = [d for d in self.store._all('deliveries') if d['source_task_id'] == owner['id']]
+            callbacks = [t for t in self.store._all('tasks') if t.get('_is_return') and t.get('source_task_id') == owner['id']]
+            return deliveries, callbacks
+        earlier = [{item['id'] for item in found} for found in returns()]
+        running = self.dispatch_successor(owner, 't_successor', RUN + 2)
+        self.assertEqual(self.store.kanban.tasks[owner['id']]['idempotency_key'],
+                         'coconut-followup:' + owner['id'] + ':' + running['_native_turn_id'])
+        # The owner's own turn completes, and Hermes completes the successor card of its input.
+        self.store.emit(owner['id'], 'completed', dict(summary='The grant passed its tests.'))
+        self.runs['t_successor'][-1].update(status='done', outcome='completed', ended=True)
+        self.store.kanban.tasks[owner['id']].update(status='done', current_run_id=None, worker_pid=None, claim_lock=None,
+                                                    outcome_summary='The grant passed its tests.')
+        for _ in range(2):
+            self.store._reconcile_kanban()
+            self.store._drain_returns()
+        deliveries, callbacks = [[item for item in found if item['id'] not in seen] for found, seen in zip(returns(), earlier)]
+        self.assertEqual(len(deliveries), 1, deliveries)
+        self.assertEqual((deliveries[0]['target_bot_id'], deliveries[0]['text']), (self.desk['id'], 'The grant passed its tests.'))
+        self.assertEqual([(t['bot_id'], t['_is_return']) for t in callbacks], [(self.desk['id'], True)])
+        finished = self.store._get('tasks', owner['id'])
+        self.assertEqual((finished['status'], finished['_reply_to_task_id']), ('completed', self.requester['id']))
+        self.assertFalse(finished.get('_return_pending'))
+        # The legacy result pointer still names the helper, and the helper receives nothing.
+        self.assertEqual(finished['_result_task_id'], helper['id'])
+        self.assertEqual(self.store._get('tasks', helper['id']), helper)
+        self.assertFalse([d for d in self.store._all('deliveries') if helper['id'] in (d['source_task_id'],
+                                                                                      (d.get('receipt') or {}).get('task_id'))])
+
+    def test_other_failures_of_that_successor_stay_final(self):
+        for error_code in (None, 'native_turn_failed', 'native_auth_permanent', 'native_context_overflow',
+                           'native_interrupted', 'native_dispatch_failed'):
+            with self.subTest(error_code=error_code):
+                ArchivedRequest.setUp(self)
+                owner, helper = self.provider_stopped(error_code)
+                self.assertFalse(self.store.settled_failed_request(owner, self.store.kanban.tasks[owner['id']], self.completion()))
+                self.assertRejected(owner, 'not blocked or completed')
+
+    def test_the_successor_must_be_this_input_claim_and_blocked_run(self):
+        cases = dict(
+            stale_predecessor=lambda owner, card, runs: card.update(idempotency_key='coconut:' + owner['id'] + ':earlier-input'),
+            other_request=lambda owner, card, runs: card.update(idempotency_key='coconut:' + str(uuid4()) + ':' + TURN),
+            other_claim_input=lambda owner, card, runs: owner['_kanban_claim'].update(input='another-input'),
+            other_claimed_card=lambda owner, card, runs: owner['_kanban_claim'].update(native_id='t_other'),
+            retained_outcome=lambda owner, card, runs: owner.update(_native_outcome_id='t_other'),
+            not_started=lambda owner, card, runs: owner.update(_kanban_started=RUN - 4),
+            crashed_run=lambda owner, card, runs: runs[-1].update(status='crashed', outcome='crashed'),
+            timed_out_run=lambda owner, card, runs: runs[-1].update(status='timed_out', outcome='timed_out'),
+            open_run=lambda owner, card, runs: runs[-1].update(ended=False),
+            completed_run=lambda owner, card, runs: runs.insert(0, dict(id=RUN - 1, status='done', outcome='completed', ended=True)),
+            later_run=lambda owner, card, runs: runs.append(dict(id=RUN + 1, status='blocked', outcome='blocked', ended=True)),
+            live_run=lambda owner, card, runs: card.update(current_run_id=RUN + 1),
+            live_worker=lambda owner, card, runs: card.update(worker_pid=4242),
+            accepted_other_input=lambda owner, card, runs: card.update(input_id='another-input'),
+            foreign_tenant=lambda owner, card, runs: card.update(tenant=self.desk['id']),
+            not_coconut=lambda owner, card, runs: card.update(created_by='someone'),
+            created_twice=lambda owner, card, runs: self.store._event('task.created', self.store._public(owner),
+                                                                       owner['bot_id'], owner['id']),
+            routine=lambda owner, card, runs: owner.update(routine_id=str(uuid4())))
+        for name, change in cases.items():
+            with self.subTest(name):
+                ArchivedRequest.setUp(self)
+                owner, helper = self.provider_stopped()
+                card = self.store.kanban.tasks[owner['id']]
+                change(owner, card, self.runs[NATIVE])
+                self.store._put('tasks', owner)
+                owner = self.store._get('tasks', owner['id'])
+                self.assertFalse(self.store.settled_failed_request(owner, card, self.completion()))
+                self.assertRejected(owner)
+
+    def test_a_person_or_idle_archive_stays_final(self):
+        def stop(owner, card):
+            self.store._event('task.updated', dict(self.store._public(owner), status='cancelled'), owner['bot_id'], owner['id'])
+
+        def archive_decision(owner, card):
+            self.store._put('decisions', dict(id='archived', task_id=owner['id'], bot_id=owner['bot_id'],
+                                              status='rejected', decided_by='archive', outcome='Task archived.'))
+        cases = dict(
+            cancelled=lambda owner, card: self.update(owner['id'], status='cancelled'),
+            stopped_before=stop,
+            idle_archive=lambda owner, card: card.update(last_activity_at=time.time() - IDLE_AGE - 60),
+            archive_decision=archive_decision)
+        for name, change in cases.items():
+            with self.subTest(name):
+                ArchivedRequest.setUp(self)
+                owner, helper = self.provider_stopped()
+                change(owner, self.store.kanban.tasks[owner['id']])
+                self.assertRejected(self.store._get('tasks', owner['id']))
+
+    def test_unknown_effects_decisions_workers_and_other_input_hold(self):
+        def pending_decision(owner):
+            self.store._put('decisions', dict(id='pending', task_id=owner['id'], bot_id=owner['bot_id'], status='pending'))
+
+        def unknown_tool(owner):
+            self.store._put('native_receipts', dict(id='unknown', task_id=owner['id'], turn_id=TURN, state='executing',
+                action_hash='hash', action={'name': 'write_file', 'arguments': {}}, created_at='2026-10-23T20:12:00Z'))
+
+        def helper_unknown_tool(owner):
+            helper = self.store._get('tasks', owner['_result_task_id'])
+            self.store._put('native_receipts', dict(id='helper-unknown', task_id=helper['id'], turn_id='helper-turn',
+                state='executing', action_hash='hash', action={'name': 'terminal', 'arguments': {}},
+                created_at='2026-10-23T16:40:00Z'))
+
+        def active_helper(owner):
+            self.update(owner['_result_task_id'], status='working')
+
+        def live_worker(owner):
+            self.store.running[owner['id']] = Mock(is_alive=Mock(return_value=True))
+        cases = dict(
+            pending_decision=pending_decision, unknown_tool=unknown_tool, live_worker=live_worker,
+            active_helper=active_helper,
+            recorded_unknown=lambda owner: self.update(owner['id'], _self_recovery=dict(unknown_tools=[dict(id='earlier-write')])),
+            steering=lambda owner: self.update(owner['id'], _steering=['Use the other checkout.']),
+            return_pending=lambda owner: self.update(owner['id'], _return_pending=dict(text='Saved result')),
+            waiting=lambda owner: self.update(owner['id'], _waiting_on=['dependency']),
+            resume_decision=lambda owner: self.update(owner['id'], _resume_decision='decision'))
+        for name, change in cases.items():
+            with self.subTest(name):
+                ArchivedRequest.setUp(self)
+                owner, helper = self.provider_stopped()
+                change(owner)
+                self.assertRejected(self.store._get('tasks', owner['id']))
+        # The helper's own unknown tool is part of the execution, so the owner's continuation records it.
+        ArchivedRequest.setUp(self)
+        owner, helper = self.provider_stopped()
+        helper_unknown_tool(owner)
+        self.resume()
+        recorded = self.store._get('tasks', owner['id'])['_self_recovery']['unknown_tools']
+        self.assertEqual([r['id'] for r in recorded], ['helper-unknown'])
 
 
 class ArchivedFailedRequestWorkerTests(ArchivedRequest, unittest.TestCase):
@@ -658,6 +853,81 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         self.assertEqual((second['source_task_id'], second['parent_task_id']), (requester['id'], requester['id']))
         self.assertEqual(self.service._get('tasks', owner['id'])['_reply_to_task_id'], requester['id'])
         self.assertEqual(second['_pr_review'], PR_REVIEW)
+
+    def provider_stopped_request(self, error_code='native_billing'):
+        """Dev in PR 8606. The request's first input completed its card. New input reached the request without a retained
+        native outcome, so Board.sync gave it the successor coconut:<id>:<input>. The provider stopped that turn, Coconut
+        finished the unowned card as blocked, and the settle pass archived it.
+        """
+        requester = self.write('/v1/bots/' + self.bot['id'] + '/messages', {'text': 'Ask Dev for the grant.'})
+        requester = self.update(requester['id'], status='working')
+        delivered = self.service._store_bot_message(requester['id'], dict(
+            target_bot_id=self.dev['id'], text='Implement the admin-only download grant.', native_envelope_id=ENVELOPE))
+        self.owner_id = delivered['task_id']
+        owner = self.update(delivered['task_id'], status='queued', _native_intake=True, _native_turn_id='first-input',
+                            _execution_session_id=delivered['task_id'],
+                            _conversation_epoch=self.service._setting('conversation_epoch'))
+        row = self.service._kanban_row(owner, owner, 'ready', 10)
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.service.kanban.call({'op': 'snapshot'})
+        original = self.service.kanban.tasks[owner['id']]['id']
+        self.native_program("assert board.kb.complete_task(board.conn, sys.argv[2], summary='First input complete')", original)
+        # The new input reaches the request, which retained no native outcome.
+        owner = self.update(owner['id'], status='queued', _native_turn_id=TURN, _kanban_claim=dict(
+            native_id=original, external_id=owner['id'], input='first-input', run_id='completed-run'))
+        self.assertIsNone(owner.get('_native_outcome_id'))
+        row = self.service._kanban_row(owner, owner, 'ready', 10)
+        self.assertEqual((row['native_id'], row['previous_input'], row['input']), (None, 'first-input', TURN))
+        self.native_program('import json; board.sync([json.loads(sys.argv[2])])', json.dumps(row))
+        self.service.kanban.call({'op': 'snapshot'})
+        card = self.service.kanban.tasks[owner['id']]
+        identity = card['id']
+        self.assertNotEqual(identity, original)
+        self.assertEqual(card['idempotency_key'], 'coconut:' + owner['id'] + ':' + TURN)
+        run = int(self.native_program('c = board.kb.claim_task(board.conn, sys.argv[2])\nprint(c.current_run_id)', identity))
+        self.update(owner['id'], status='working', _kanban_started=run, _kanban_claim=dict(
+            native_id=identity, external_id=owner['id'], input=TURN, run_id=run, workspace=card['workspace_path']))
+        self.service.emit(owner['id'], 'failed', dict(summary=BILLING, error_code=error_code))
+        self.service._drain_returns()
+        # The card is not an owned outcome, so Board.finish blocks it instead of retrying the provider stop.
+        self.native_program("assert board.finish(sys.argv[2], int(sys.argv[3]), 'blocked', sys.argv[4], sys.argv[5])",
+                            identity, str(run), BILLING, error_code)
+        self.native_program('assert board.archive_settled(sys.argv[2], None)', identity)
+        self.service.kanban.call({'op': 'snapshot'})
+        self.assertEqual(self.native(identity)['status'], 'archived')
+        Path(card['workspace_path']).mkdir(parents=True, exist_ok=True)
+        requester = self.update(requester['id'], status='working')
+        return self.service._get('tasks', owner['id']), requester, identity, card['workspace_path'], original
+
+    def test_a_provider_stopped_successor_continues_its_original_execution(self):
+        owner, requester, archived, workspace, original = self.provider_stopped_request()
+        self.assertEqual((owner['status'], owner.get('_native_outcome_id'), owner['error_code']),
+                         ('failed', None, 'native_billing'))
+        history = self.native(archived)
+        self.assertEqual((history['key'], history['parents']), ('coconut:' + owner['id'] + ':' + TURN, []))
+        self.assertEqual([run[2] for run in history['runs']], ['blocked'])
+        receipt = self.service.emit(requester['id'], 'work_continue', dict(task_id=archived, message='Continue the grant.'))
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id=archived, status='queued'))
+        continued = self.service._get('tasks', owner['id'])
+        task = self.owner_turn(owner, 1)
+        self.returned(owner, requester, 1)
+        successor = task['_native_outcome_id']
+        self.assertNotIn(successor, (archived, original))
+        native = self.native(successor)
+        self.assertEqual(native['parents'], [archived])
+        self.assertEqual(native['key'], 'coconut-followup:' + owner['id'] + ':' + continued['_native_turn_id'])
+        self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
+        self.assertEqual(self.native(archived), history)
+        self.assertEqual((task['_native_turn_id'], task['_kanban_workspace']), (continued['_native_turn_id'], workspace))
+        self.assertEqual((task['_execution_session_id'], task['source_task_id'], task['parent_task_id']),
+                         (owner['_execution_session_id'], requester['id'], requester['id']))
+        self.assertEqual(self.service._get('tasks', owner['id'])['_reply_to_task_id'], requester['id'])
+
+    def test_another_failure_of_that_successor_stays_archived(self):
+        owner, requester, archived, workspace, original = self.provider_stopped_request('native_turn_failed')
+        with self.assertRaisesRegex(ServiceError, 'not blocked or completed'):
+            self.service.emit(requester['id'], 'work_continue', dict(task_id=archived, message='Continue anyway.'))
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
 
     def test_cancelled_request_stays_archived(self):
         owner, requester, archived, _ = self.failed_request()
