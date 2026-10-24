@@ -60,6 +60,9 @@ python3 scripts/tunnel.py install
 - `install` creates the Mac's identity key, registers a route with the relay, and starts the LaunchAgent.
 - `status` prints `tunnel/status.json`.
 - `uninstall` stops the LaunchAgent. The identity key and the route stay.
+- `rebuild` is the last step of each deploy. It runs only after the update is complete, so a rollback never leaves a newer sidecar running. When the sidecar is installed and its sources changed, it compiles the sidecar again and restarts it. A failed restart removes the build receipt, so the next `rebuild` tries again. When the deploy reports a failed sidecar build, the host update stays installed, and `scripts/automatic_update.py` runs `tunnel.py rebuild` again every 10 minutes until it succeeds, also when the files already match. The retry holds the deploy lock, so it never runs at the same time as a deployment. A Mac without the sidecar stays without it.
+
+The deploy package carries `ios/Tunnel/*.swift`, so the live install can compile the sidecar. No setup step installs the sidecar on a new Mac yet. `scripts/setup_coconut.py` must install it in the same release as the app on the tunnel (R4). Until then, a Mac with the sidecar makes version 2 pairing links, which current app builds cannot read. Use `pairing.py --legacy` for those builds.
 
 The sidecar keeps one WebSocket to the relay. When the socket fails, it connects again after 1 second, then after up to 60 seconds. A network change or a wake from sleep starts a new connection at once. The sidecar sends a text `ping` after 20 silent seconds, and ends a socket that stays silent for 45 seconds.
 

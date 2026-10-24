@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import fcntl
 import hashlib
 from types import SimpleNamespace
 import unittest
@@ -170,6 +171,81 @@ class AutomaticUpdateTests(unittest.TestCase):
             # Coconut runs on the person's Hermes. deploy.py checks it, so the update installs no Hermes.
             self.assertEqual(len(received), 1)
             self.assertNotIn('--update-runtime', received[0])
+
+    def test_a_failed_sidecar_build_is_retried_after_the_files_match(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            (live / '.runtime/host').mkdir(parents=True)
+            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
+            (live / '.runtime/deploy').mkdir()
+            (live / 'app.py').write_text('current')
+            hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
+            (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=dict(hashes, old='x'))))
+            state_path = root / 'state.json'
+            update.save(state_path, {})
+            received, rebuilds, rebuild_fails = [], [], [True]
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'status']: return ''
+                if args[:2] == ['git', 'rev-parse']: return 'next'
+                if args[:2] == ['git', 'ls-files']: return 'app.py'
+                if 'receive' in args:
+                    received.append(args)
+                    (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=hashes)))
+                    return ('COCONUT_DEPLOY_RESULT={"ok":true,"tunnel":{"ok":false,'
+                            '"error":"Tunnel sidecar build failed (exit 1)."}}')
+                if args[-1:] == ['rebuild']:
+                    rebuilds.append(args)
+                    # The rebuild runs under the deploy lock, so no deployment can run at the same time.
+                    with (live / '.runtime/deploy/deploy.lock').open('a') as other, self.assertRaises(BlockingIOError):
+                        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    if rebuild_fails[0]:
+                        raise RuntimeError('launchctl did not restart it.')
+                return ''
+
+            def package(path):
+                path.write_bytes(b'package')
+                return dict(package_id='package')
+
+            def attempt(now):
+                packaging = SimpleNamespace(package=package, source_files=lambda: {'app.py': b'current'})
+                installer = SimpleNamespace(validate_package=lambda stream: SimpleNamespace(hashes=hashes, revision='runtime'),
+                                            Operations=lambda: SimpleNamespace(health=lambda *args: None))
+                config = dict(repository='owner/repo', source=str(source), live=str(live))
+                with patch.object(update, 'run', side_effect=command), \
+                        patch.object(update, 'module', side_effect=[packaging, installer]), \
+                        patch.object(update, 'reviewed_merge'), patch.object(update, 'ios_hash', return_value='ios'), \
+                        patch.object(update.time, 'time', return_value=now), patch.object(update.Path, 'home', return_value=root):
+                    update.update(config, state_path)
+
+            # The host update stays installed. The sidecar work waits, and the commit counts as installed.
+            attempt(1000)
+            saved = json.loads(state_path.read_text())
+            self.assertEqual(saved['source_sha'], 'next')
+            self.assertNotIn('failed_deploy', saved)
+            self.assertEqual(saved['pending_tunnel']['retry_at'], 1000 + update.FAILED_DEPLOY_SECONDS)
+            self.assertEqual(rebuilds, [])
+            # The files now match, so no deploy runs. After the wait, the updater retries the sidecar on its own.
+            attempt(1000 + update.FAILED_DEPLOY_SECONDS)
+            self.assertEqual(len(received), 1)
+            self.assertEqual(rebuilds, [[update.sys.executable, str(live / 'scripts/tunnel.py'), 'rebuild']])
+            pending = json.loads(state_path.read_text())['pending_tunnel']
+            self.assertEqual(pending['retry_at'], 1000 + 2 * update.FAILED_DEPLOY_SECONDS)
+            attempt(1000 + update.FAILED_DEPLOY_SECONDS + 1)
+            self.assertEqual(len(rebuilds), 1)
+            rebuild_fails[0] = False
+            # While a deployment holds the lock, the retry waits and keeps its record.
+            with (live / '.runtime/deploy/deploy.lock').open('a') as deployment:
+                fcntl.flock(deployment, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                attempt(1000 + 2 * update.FAILED_DEPLOY_SECONDS)
+            self.assertEqual(len(rebuilds), 1)
+            self.assertEqual(json.loads(state_path.read_text())['pending_tunnel'], pending)
+            attempt(1000 + 2 * update.FAILED_DEPLOY_SECONDS)
+            self.assertEqual((len(received), len(rebuilds)), (1, 2))
+            self.assertNotIn('pending_tunnel', json.loads(state_path.read_text()))
 
     def test_a_failed_deploy_backs_off_for_the_same_commit(self):
         with tempfile.TemporaryDirectory() as directory:

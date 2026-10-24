@@ -76,6 +76,7 @@ def allowed_path(name):
                  'Uninstall Coconut.command'}
         or re.fullmatch(r'backend/coconut/(?:[A-Za-z_][A-Za-z0-9_]*/)*[A-Za-z_][A-Za-z0-9_]*\.py', name)
         or re.fullmatch(r'scripts/[A-Za-z0-9_-]+\.(?:py|swift)', name)
+        or re.fullmatch(r'ios/Tunnel/[A-Za-z0-9_-]+\.swift', name)
         or re.fullmatch(r'docs/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.md', name)
     )
 
@@ -359,6 +360,18 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
             self.command([sys.executable, str(root / 'scripts/host.py'), 'setup', '--address', address], root, 'Secure host setup')
         elif not cert.is_file() or not key.is_file():
             raise DeployError('The existing certificate pair is incomplete. Coconut kept it unchanged.')
+
+    def tunnel(self, root):
+        """Give an installed tunnel sidecar the new code. A Mac without the sidecar stays without it.
+
+        This runs after the update is complete, so a rollback never leaves a newer sidecar running. A failure here
+        keeps the update and goes into the result.
+        """
+        try:
+            self.command([sys.executable, str(root / 'scripts/tunnel.py'), 'rebuild'], root, 'Tunnel sidecar build')
+        except DeployError as error:
+            return {'ok': False, 'error': str(error)}
+        return {'ok': True}
 
     def hermes(self, root):
         """Find the person's Hermes and run the contract check of the new code against it. See hermes_runtime.status."""
@@ -800,7 +813,7 @@ def receive(directory, address, stream, *, home=None, operations=None):
             write_json(root / MARKER_PATH, updated)
             remove_journal(root, record)
             prune_runtime_copies(root)
-            return {'version': 1, 'installation_id': marker['installation_id'], 'package_id': package.package_id, 'mode': mode, 'address': address, 'health': health, 'updated': original is not None}
+            result = {'version': 1, 'installation_id': marker['installation_id'], 'package_id': package.package_id, 'mode': mode, 'address': address, 'health': health, 'updated': original is not None}
         except BaseException as error:
             if not applied:
                 # A failed stop can have unloaded the job. Keep its recovery state.
@@ -811,6 +824,8 @@ def receive(directory, address, stream, *, home=None, operations=None):
                 raise DeployError(str(recovery_error)) from error
             detail = str(error) if isinstance(error, DeployError) else type(error).__name__
             raise DeployError('The update failed. Previous source and mode were restored; runtime data was not rewound. ' + detail) from error
+        result['tunnel'] = operations.tunnel(root)
+        return result
 
 
 def main():
