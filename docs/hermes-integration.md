@@ -179,6 +179,7 @@ Each profile uses its own MCP servers, approval settings, API fallback and model
 Hermes refreshes a sign-in only in the store that holds it. When a bot's model uses a provider sign-in that only Coconut's Hermes home holds, Coconut resolves that route in Coconut's Hermes home. It never copies a refresh token into a profile, because a copied refresh token can stop both copies from working.
 The worker limit stays a Coconut setting. Each turn applies it through Hermes's `DELEGATION_MAX_CONCURRENT_CHILDREN` fallback.
 Bots run under the Mac account. `CODEX_HOME`, `GH_CONFIG_DIR` and the `XDG_*` folders are the account's normal folders, unless the profile's `.env` sets them.
+Every process that Coconut runs for a bot uses the same folders as its turns: `provider.environment` reads them from the profile's `.env`. This includes work sources, process checks and session maintenance, which run `gh` and other tools outside a turn.
 Coconut's own files of a bot stay outside the profile, in `<data>/bots/<uuid>/`: `runs/` (routine receipts), `workspace/`, `browser/`, `tmp/` and `terminal/`.
 Coconut adds `terminal/coconut-terminal.sh` after the profile's own `terminal.shell_init_files` while its worker runs. It does not write the script into the profile's settings.
 

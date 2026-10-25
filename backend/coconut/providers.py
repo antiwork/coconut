@@ -410,8 +410,11 @@ class HermesProvider(FixtureProvider):
         shared_config.mkdir(exist_ok=True, mode=0o700)
         # Native tool configuration stays in the bot profile. HOME remains the OS account home.
         env = {k: os.environ[k] for k in ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY') if k in os.environ}
-        from .runtime_environment import prepare_profile
+        from .runtime_environment import login_folders, prepare_profile
         env.update(prepare_profile(root / 'home'))
+        # A bot that keeps its own logins sets their folders in its .env. The worker loads that file, and every other
+        # process for this bot (work sources, process and session checks) must use the same logins.
+        env.update(login_folders(root / 'home'))
         env['COCONUT_GOOGLE_HOME'] = str(self.data_dir / 'connections' / 'google' / 'home')
         env.update(HERMES_HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
         from .hermes_runtime import NO_LAZY_INSTALLS

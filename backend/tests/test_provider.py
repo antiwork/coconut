@@ -198,6 +198,20 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(first['HOME'], second['HOME'])
         self.assertNotEqual(first['HOME'], first['HERMES_HOME'])
 
+    def test_every_bot_process_uses_the_login_folders_of_the_bot_env(self):
+        provider = HermesProvider(self.root)
+        home = self.root / 'bots' / self.bot['id'] / 'home'
+        home.mkdir(parents=True)
+        (home / '.env').write_text(f'GH_CONFIG_DIR={home}/.config/gh\nXDG_CONFIG_HOME="{home}/.config"\nOPENAI_API_KEY=not-a-folder\n')
+        with patch.dict(os.environ, {'GH_CONFIG_DIR': '/service/gh'}, clear=True):
+            env, _ = provider.environment(self.bot['id'])
+            other, _ = provider.environment(str(uuid4()))
+        # Work sources and process checks run gh outside a turn. They must use the bot's own GitHub login.
+        self.assertEqual(env['GH_CONFIG_DIR'], str(home / '.config/gh'))
+        self.assertEqual(env['XDG_CONFIG_HOME'], str(home / '.config'))
+        self.assertNotIn('OPENAI_API_KEY', env)
+        self.assertNotIn('GH_CONFIG_DIR', other)
+
     def test_homebrew_trust_is_shared_without_sharing_bot_settings(self):
         provider = HermesProvider(self.root)
         with patch.dict(os.environ, {'XDG_CONFIG_HOME': '/private/settings',

@@ -89,6 +89,56 @@ class WorkSourceTests(unittest.TestCase):
         self.assertEqual(state['trusted_repositories_source_attempt'], source_fingerprint(self.source))
         self.assertNotIn('example/old', operator_owners(self.service))
 
+    def test_a_failure_streak_logs_one_line_with_stderr_and_one_line_when_it_ends(self):
+        import subprocess
+        failure = subprocess.CalledProcessError(4, ['gh', 'api', 'user'], output=b'',
+                                                stderr=b'gh: To get started with GitHub CLI,\n  run: gh auth login\n')
+        from coconut.work_sources import FAILURE_HINT
+        with self.assertLogs('coconut.work_sources', 'WARNING') as logs:
+            for _ in range(3):
+                with self.service.transaction():
+                    state = self.service._setting('work-source:assigned', {})
+                    state['next_check'] = 0
+                    self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                                            ('work-source:assigned', json.dumps(state)))
+                with patch('coconut.work_sources.subprocess.run', side_effect=failure):
+                    self.service.audit_work_sources()
+            state = self.service._setting('work-source:assigned')
+            self.assertEqual(state['error'], 'CalledProcessError')
+            self.assertEqual(state['error_detail'], 'CalledProcessError: exit 4. ' + FAILURE_HINT)
+            since = state['failing_since']
+            self.assertTrue(since)
+            self.assertIsNone(self.audit()['failing_since'])
+        failures = [line for line in logs.output if 'failed:' in line]
+        self.assertEqual(len(failures), 1)
+        self.assertIn('Work source assigned of bot ' + self.bot['id'] + ' failed: CalledProcessError: exit 4. ' + FAILURE_HINT,
+                      failures[0])
+        self.assertTrue(any('works again. It failed since ' + since in line for line in logs.output))
+
+    def test_a_failure_stores_and_logs_no_command_output(self):
+        import subprocess
+        from coconut.work_sources import FAILURE_HINT, failure_detail
+        token = 'ghp_' + 'A1b2' * 9
+        failure = subprocess.CalledProcessError(4, ['read', '--token', token], output=f'{{"token": "{token}"}}'.encode(),
+                                                stderr=f'Authorization: Bearer {token}\ntoken:\n{token}\n'.encode())
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                                    ('work-source:assigned', json.dumps(dict(next_check=0))))
+        with self.assertLogs('coconut.work_sources', 'WARNING') as logs, \
+                patch('coconut.work_sources.subprocess.run', side_effect=failure):
+            self.service.audit_work_sources()
+        stored = json.dumps(self.service._setting('work-source:assigned'))
+        for text in (stored, '\n'.join(logs.output)):
+            self.assertNotIn(token, text)
+            self.assertNotIn('Authorization', text)
+            self.assertNotIn('--token', text)
+        self.assertEqual(self.service._setting('work-source:assigned')['error_detail'],
+                         'CalledProcessError: exit 4. ' + FAILURE_HINT)
+        self.assertEqual(failure_detail(subprocess.CalledProcessError(-9, ['read'])), 'CalledProcessError: signal 9. ' + FAILURE_HINT)
+        self.assertEqual(failure_detail(subprocess.TimeoutExpired(['read', token], 60, stderr=token.encode())),
+                         'TimeoutExpired. ' + FAILURE_HINT)
+        self.assertEqual(failure_detail(json.JSONDecodeError('Expecting value', token, 0)), 'JSONDecodeError. ' + FAILURE_HINT)
+
     def test_source_audit_does_not_read_completed_tool_history(self):
         original = self.service._all
         def scoped(table):

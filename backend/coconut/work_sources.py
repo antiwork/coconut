@@ -307,6 +307,18 @@ def audit_signature(proof, decisions):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
+FAILURE_HINT = "Run the source command by hand in the bot's environment to see its output."
+
+
+def failure_detail(error):
+    """A line about a failed source read that holds no command output: the error class, the exit status or signal,
+    and a fixed hint. Command output can hold credentials, so the service neither stores nor logs it."""
+    parts = [type(error).__name__]
+    if isinstance(error, subprocess.CalledProcessError):
+        parts.append(f'signal {-error.returncode}' if error.returncode < 0 else f'exit {error.returncode}')
+    return ': '.join(parts) + '. ' + FAILURE_HINT
+
+
 class WorkSources:
     def _poll_work_sources(self):
         while not self.stopping.is_set():
@@ -355,6 +367,7 @@ class WorkSources:
                 bot = self._get('bots', source['bot_id'])
                 if bot.get('_deleted') or bot['archived']:
                     continue
+            failing_since = state.get('failing_since')
             try:
                 env, cwd = self.provider.environment(bot['id'])
                 result = subprocess.run(source['command'], cwd=cwd, env=env, capture_output=True, timeout=60, check=True)
@@ -546,11 +559,20 @@ class WorkSources:
                         '/'.join(github_source(item.get('id'))[1].split('/')[:2]).lower()
                         for item in items if github_source(item.get('id'))})
                     state.update(checked_at=current.isoformat(), missing=[item['id'] for item in gaps], error=None,
+                                 error_detail=None, failing_since=None,
                                  next_check=time.time() + max(60, source.get('interval_seconds', 600)))
                     self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))
+                if failing_since:
+                    logging.getLogger(__name__).warning('Work source %s of bot %s works again. It failed since %s.',
+                                                        source['id'], bot['id'], failing_since)
             except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
+                detail = failure_detail(error)
                 # Retain prior coverage on failed reads. Never turn a partial fetch into an empty Plate.
                 with self.transaction():
-                    state.update(error=type(error).__name__, next_check=time.time() + 60,
+                    state.update(error=type(error).__name__, error_detail=detail, next_check=time.time() + 60,
+                                 failing_since=failing_since or datetime.now(timezone.utc).isoformat(),
                                  trusted_repositories_source_attempt=source_fingerprint(source))
                     self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))
+                if not failing_since:
+                    # One line for each failure streak. The health check of Care reads it from the service log.
+                    logging.getLogger(__name__).warning('Work source %s of bot %s failed: %s', source['id'], bot['id'], detail)
