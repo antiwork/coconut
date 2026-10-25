@@ -3315,6 +3315,73 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertEqual((path / 'notes.txt').read_text(), 'x' * 64)
         self.assertNotIn('retired', self.registry()[identity])
 
+    def test_an_orphaned_worktree_with_a_populated_submodule_stays(self):
+        _, identity, path, _ = self.outcome()
+        sub = path / 'sub'
+        sub.mkdir()
+        git(sub, 'init', '-q')
+        (sub / 'file.txt').write_text('one\n')
+        git(sub, 'add', '.')
+        self.commit(sub, 'Sub')
+        git(path, '-c', 'advice.addEmbeddedRepo=false', 'add', 'sub')
+        self.commit(path, 'Add a submodule')
+        # The patch of the parent cannot hold this edit.
+        (sub / 'file.txt').write_text('local edit\n')
+        self.drop_git_record(identity)
+        with self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(any('contains a submodule' in line for line in logs.output))
+        self.assertEqual((sub / 'file.txt').read_text(), 'local edit\n')
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def orphan_with_notes(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'notes.txt').write_text('untracked\n')
+        self.drop_git_record(identity)
+        return outcome, identity, path
+
+    def test_a_stop_before_the_orphan_move_is_finished_by_the_next_pass(self):
+        outcome, identity, path = self.orphan_with_notes()
+        with patch('coconut.work_workspace.os.rename', side_effect=SystemExit), self.assertRaises(SystemExit):
+            self.retire()
+        binding = self.registry()[identity]
+        self.assertNotIn('retired', binding)
+        self.assertIn(work_workspace.ORPHAN_REMOVAL, binding)
+        first = Path(binding[work_workspace.ORPHAN_REMOVAL]['archive'])
+        self.assertTrue(path.is_dir() and first.is_file())
+        self.assertEqual(self.retire(), [identity])
+        binding = self.registry()[identity]
+        self.assertNotIn(work_workspace.ORPHAN_REMOVAL, binding)
+        self.assertTrue(binding['retired']['done'])
+        self.assertFalse(path.exists())
+        # Only the archive that the binding names stays.
+        self.assertEqual(list((self.workspaces / 'archive' / 'done').glob(identity + '*.tar.gz')),
+                         [Path(binding['retired']['archive'])])
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual((restored / 'notes.txt').read_text(), 'untracked\n')
+
+    def test_a_stop_after_the_orphan_move_is_finished_by_the_next_pass(self):
+        outcome, identity, path = self.orphan_with_notes()
+        rename = os.rename
+
+        def move_then_stop(source, target):
+            rename(source, target)
+            if Path(source) == path:
+                raise SystemExit
+        with patch('coconut.work_workspace.os.rename', side_effect=move_then_stop), self.assertRaises(SystemExit):
+            self.retire()
+        self.assertFalse(path.exists())
+        self.assertNotIn('retired', self.registry()[identity])
+        self.assertEqual(self.retire(), [identity])
+        binding = self.registry()[identity]
+        self.assertNotIn(work_workspace.ORPHAN_REMOVAL, binding)
+        self.assertTrue(binding['retired']['done'])
+        # The pass emptied the trash that the stop left.
+        trash = self.workspaces / work_workspace.TRASH
+        self.assertFalse(trash.exists() and any(trash.iterdir()))
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual((restored / 'notes.txt').read_text(), 'untracked\n')
+
     def test_an_orphaned_worktree_whose_branch_is_gone_stays(self):
         _, identity, path, _ = self.outcome()
         self.drop_git_record(identity)

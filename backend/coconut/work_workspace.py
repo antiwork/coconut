@@ -1183,6 +1183,14 @@ def orphan_snapshot(path, head, env, inside=()):
     Git still knows. Coconut archives them on their own.
     """
     git_output(path, 'read-tree', head, env=env)
+    # The patch of the parent cannot hold the files of a submodule, and the removal deletes them. This matches the
+    # submodule check of remove_nested: any non-empty gitlink folder.
+    listing = git_output(path, 'ls-files', '--stage', '-z', env=env)
+    for entry in (e for e in listing.split(b'\0') if e):
+        mode, _, name = entry.partition(b'\t')
+        target = path / os.fsdecode(name)
+        if mode.startswith(b'160000') and target.is_dir() and not target.is_symlink() and any(target.iterdir()):
+            raise ValueError('The worktree contains a submodule.')
     unstaged = git_output(path, 'diff', *DIFF, '--diff-filter=d', env=env)
     if len(unstaged) > PATCH_LIMIT_BYTES:
         raise ValueError('The changes in the worktree are larger than the archive limit.')
@@ -1201,6 +1209,10 @@ def orphan_snapshot(path, head, env, inside=()):
     entries = sorted([(UNTRACKED + name, name) for name in names]
                      + [(IGNORED + name, name) for name in ignored_files(path, inside, env)])
     return unstaged, entries
+
+
+# discard_orphan saves this key in the binding just before it moves the folder away. It names the archive and the commit.
+ORPHAN_REMOVAL = 'orphan_removal'
 
 
 def discard_orphan(root, identity, finished, *, orphan_age=None, urgent=False):
@@ -1281,9 +1293,13 @@ def discard_orphan(root, identity, finished, *, orphan_age=None, urgent=False):
                 if temporary:
                     temporary.replace(archive)
                     sync_directory(directory)
-                binding.pop('retire_failed', None)
-                binding['retired'] = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head,
-                                          archive=str(archive) if archive else None, changes=None, orphaned=True)
+                # The binding names the archive before the move, so a stop cannot leave an archive that no binding
+                # names. It is not done yet: a stop before the move leaves the folder, and the next pass removes it
+                # again. A stop after the move leaves no folder, and the discard of a gone checkout finishes the
+                # binding with this archive (see discard_run).
+                earlier = (before.get(ORPHAN_REMOVAL) or {}).get('archive')
+                binding[ORPHAN_REMOVAL] = dict(at=stamp(datetime.now(timezone.utc)), head=head,
+                                               archive=str(archive) if archive else None)
                 save_bindings(manifest, saved)
                 try:
                     os.rename(path, target)
@@ -1291,10 +1307,18 @@ def discard_orphan(root, identity, finished, *, orphan_age=None, urgent=False):
                     # The folder still holds the files. Keep no archive, and wait as after a refused removal.
                     if archive:
                         archive.unlink(missing_ok=True)
-                    binding.pop('retired')
+                    binding.pop(ORPHAN_REMOVAL)
                     binding['retire_failed'] = dict(at=stamp(datetime.now(timezone.utc)), error=str(error)[:1000], archive=None)
                     save_bindings(manifest, saved)
                     raise ValueError(f'Coconut could not move the orphaned worktree {path}: {error}') from None
+                binding.pop('retire_failed', None)
+                binding.pop(ORPHAN_REMOVAL)
+                binding['retired'] = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head,
+                                          archive=str(archive) if archive else None, changes=None, orphaned=True)
+                save_bindings(manifest, saved)
+                if earlier and earlier != str(archive):
+                    # A stop before the move left the archive of an earlier attempt. This attempt wrote its own.
+                    Path(earlier).unlink(missing_ok=True)
                 with contextlib.suppress(*GIT_ERRORS):
                     git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
                 drop_other_archives(root / 'archive', identity, None, saved)
@@ -1392,7 +1416,11 @@ def discard_run(root, identity, finished, state, *, orphan_age=None, merged=Fals
     present = os.path.lexists(path)
     head, branch, archive, temporary = None, before['branch'], None, None
     state['repository'] = repository
-    if not present and (before.get('retire_failed') or {}).get('archive'):
+    if not present and (before.get(ORPHAN_REMOVAL) or {}).get('head'):
+        # A stop interrupted discard_orphan after it moved the folder away. Its record names the archive and the commit.
+        head = before[ORPHAN_REMOVAL]['head']
+        archive = Path(before[ORPHAN_REMOVAL]['archive']) if before[ORPHAN_REMOVAL].get('archive') else None
+    elif not present and (before.get('retire_failed') or {}).get('archive'):
         # The checkout is gone, and an earlier retirement archived its files. That archive is the only copy.
         # Its own record names the commit, so a resume can put the files back.
         archive = Path(before['retire_failed']['archive'])
@@ -1474,6 +1502,7 @@ def finish_discard(root, identity, before, finished, present, path, repository, 
         retired = dict(at=stamp(datetime.now(timezone.utc)), done=True, head=head, archive=str(archive) if archive else None,
                        changes=digest)
         binding.pop('retire_failed', None)
+        binding.pop(ORPHAN_REMOVAL, None)
         binding['branch'], binding['retired'] = branch, retired
         if present:
             # A detached HEAD, a rebase in progress, or a nested worktree can hold commits that no branch holds.

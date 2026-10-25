@@ -382,9 +382,11 @@ An orphaned worktree goes only when its outcome is idle, as for retirement, and 
 archives the worktrees that Git still knows inside it, as retirement does. It reads the tree of the saved branch into
 a temporary index, and archives the changed tracked files as a patch, the untracked files, and the ignored files that
 are not build output, with the limits of retirement. A missing tracked file is not a change, because a stopped removal
-deletes files. A nested repository, a clone in a build folder, files over a limit, and a missing branch keep the
-folder. Under the registry lock, Coconut moves the folder to `workspaces/build-trash/`, prunes the Git records, and
-deletes the folder after the lock. The binding then counts as discarded.
+deletes files. A nested repository, a populated submodule, a clone in a build folder, files over a limit, and a
+missing branch keep the folder. Under the registry lock, Coconut saves the archive and the commit in the binding
+(`orphan_removal`), moves the folder to `workspaces/build-trash/`, and only then marks the binding as discarded. It
+prunes the Git records, and deletes the folder after the lock. After a stop before the move, the next pass removes the
+folder again. After a stop after the move, the discard of a gone checkout finishes the binding with the saved archive.
 
 A later turn gets a new checkout of the saved branch, and Coconut puts the archived changes back. When the branch moved,
 a patch does not fit, or the archive is gone, the checkout stays clean, and `coconut_workspace` tells the bot which
