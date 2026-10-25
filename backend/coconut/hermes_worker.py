@@ -763,6 +763,46 @@ def configure_process_checkpoint():
     process_registry.CHECKPOINT_PATH = path / 'processes.json'
 
 
+# The socket folder that this worker claimed for its browser-harness daemons.
+_browser_runtime = None
+
+
+def configure_browser_runtime():
+    """Give the browser-harness daemons of this worker a short private socket folder.
+
+    browser_exec starts a harness daemon that listens on <BH_RUNTIME_DIR>/bu-<session>.sock. Without BH_RUNTIME_DIR,
+    the folder is in the harness home: in a bot home whose XDG_CONFIG_HOME is a profile folder, the path is too long
+    for an AF_UNIX socket, and in ~/.config it is shared by every bot. Hermes shortens the folder only for served
+    profiles. Each worker process gets its own folder, so no worker reaches the daemon of another bot or execution.
+    """
+    global _browser_runtime
+    if os.environ.get('BH_RUNTIME_DIR') or not os.environ.get('HERMES_HOME'):
+        return
+    try:
+        from tools.browser_harness_dirs import claim_private_dir, fits_socket_budget, socket_dir_budget
+    except ImportError:
+        return
+    # The socket root of Hermes for served profiles: a profile or scratch folder is too long for a 64-character session.
+    # A random name: no other process can create the folder first, and no other worker uses it.
+    folder = os.path.join(os.path.realpath('/tmp'), f'cbh-{uuid4().hex[:12]}')
+    if fits_socket_budget(folder, socket_dir_budget(sys.platform)) and claim_private_dir(folder):
+        # Several session names share the folder, so the harness keeps bu-<session> file names.
+        os.environ.update(BH_RUNTIME_DIR=folder, BH_RUNTIME_DIR_SHARED='1')
+        _browser_runtime = folder
+        import atexit
+        # At a normal exit, this runs after Hermes stops its daemons.
+        atexit.register(release_browser_runtime)
+
+
+def release_browser_runtime():
+    """Delete the socket folder of this worker unless a daemon still listens there. rmdir keeps a folder with a socket."""
+    if _browser_runtime:
+        try:
+            os.rmdir(_browser_runtime)
+        except OSError:
+            pass
+
+
 def stop_native_processes(task_id=None, *, recover=False):
     module = sys.modules.get('tools.process_registry')
     if recover:
@@ -838,6 +878,7 @@ def main():
                 stop_native_processes()
             except Exception:
                 os._exit(1)
+            release_browser_runtime()
             os._exit(0)
         threading.Thread(target=clean, daemon=True, name='runtime-cleanup').start()
 
@@ -1589,6 +1630,7 @@ def run_turn(request, emit, request_receipt):
 
 if __name__ == '__main__':
     configure_process_checkpoint()
+    configure_browser_runtime()
     if sys.argv[1:] == ['--cleanup']:
         stop_native_processes(recover=True)
     else:

@@ -67,6 +67,7 @@ The official installer keeps the Python packages of Hermes in a dependency envir
 The Hermes home is `HERMES_HOME`. A LaunchAgent does not get the variables of your shell, so when the service has no `HERMES_HOME`, Coconut reads it from your login shell, for example from `~/.zprofile`. Without either, it uses `~/.hermes`.
 Coconut starts each Hermes process with `HERMES_DISABLE_LAZY_INSTALLS=1`. Each bot has its own Hermes home, and without this setting, Hermes would install a dependency environment for each of them.
 A bot's worker also gets `HERMES_RUNTIME_DIR=<bot's Hermes home>/tools`. That is where the bot's terminal `hermes` installs tools such as the browser. Without this setting, the worker would read the tools of the Hermes home that owns the source folder. Bots do not share tools.
+A bot's worker also gives the browser-harness daemons of `browser_exec` a private folder for their sockets: `BH_RUNTIME_DIR=/tmp/cbh-<random id>`, one for each worker process, removed when the worker stops. An AF_UNIX socket path has at most 103 bytes on macOS, which a folder in the bot's Hermes home exceeds. The daemon logs and the browser profiles stay where they were.
 After `hermes update`, restart Coconut, so that it uses the new dependency environment.
 
 The service imports the Hermes modules that it uses, then runs its contract check against them.
