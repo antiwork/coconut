@@ -49,11 +49,13 @@ DISCARD_IDLE_SECONDS = 2 * 24 * 60 * 60
 # the outcome is idle. A full disk stops the database and every turn, which costs more than the lost build files.
 LOW_DISK_BYTES = 20 * 1024 ** 3
 LOW_DISK_INTERVAL_SECONDS = 10 * 60
-# A bot keeps its own files in bots/<id>/workspace: clones, review checkouts, evidence. Nothing else removes them. An entry
-# that nothing in it changed for this long goes, unless a Git checkout in it holds work that no remote has. Below
-# LOW_DISK_BYTES the wait is the shorter one.
+# A bot keeps its own files in bots/<id>/workspace: clones, review checkouts, evidence. Its tools write temporary files
+# to bots/<id>/tmp (TMPDIR). Nothing else removes them. An entry that nothing in it changed for this long goes, unless
+# a Git checkout in it holds work that no remote has. Below LOW_DISK_BYTES the wait is the shorter one.
 BOT_WORKSPACE_STALE_SECONDS = 14 * 24 * 60 * 60
 BOT_WORKSPACE_LOW_DISK_STALE_SECONDS = 3 * 24 * 60 * 60
+# The folders of bots/<id> that the stale entry cleanup reads.
+BOT_FILE_FOLDERS = ('workspace', 'tmp')
 # A scratch workspace is named by its outcome. execution_key gives a task id, a session id, or a bot id.
 SCRATCH_NAME = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t_[0-9a-f]{8}')
 # A pull request in one of these states holds no more work for its outcome.
@@ -569,13 +571,16 @@ class WorktreeRetirement:
         return True
 
     def _clear_stale_bot_workspaces(self, current, saved, low_disk):
-        """Delete the entries of bots/<id>/workspace that nothing has changed for BOT_WORKSPACE_STALE_SECONDS.
+        """Delete the entries of bots/<id>/workspace and bots/<id>/tmp that nothing has changed for BOT_WORKSPACE_STALE_SECONDS.
 
         An entry is a file or a folder of the workspace. A folder that has a newer file is not stale, so Coconut then
         judges the entries inside it, one level down, unless it is a Git repository itself. A Git checkout that holds work
         that no remote has stays (checkout_keeps). A main checkout stays while a worktree of it stays. A process that
-        uses an entry, a tracked worktree, the repository of a binding, configured work-source files, and a name
-        that starts with a dot stay too.
+        uses an entry, a tracked worktree, the repository of a binding, a work-source bindings file, and a name that
+        starts with a dot stay too. A folder that holds one of these protected paths stays, but it does not protect its
+        other entries: Coconut judges them as if they were at the level of the folder. Without this rule, one protected
+        file kept every old entry next to it, for example weeks of snapshots beside a bindings file. A work-source
+        reader keeps its whole entry, because it can read the files next to it.
         A bot with work in progress is cleaned too: it is busy all day on a busy install, and a rule that skips it would never
         free its disk. A turn can read an old entry without opening it during the pass, and a read changes no time.
         The age, the open-file check, and the Git work check are the protection. Coconut moves a folder to a
@@ -585,8 +590,9 @@ class WorktreeRetirement:
         # A retired worktree comes back from the repository of its binding, so that repository stays too.
         tracked = tracked_places(saved) | {Path(repository).resolve() for repository in repositories(saved) if Path(repository).exists()}
         # Readers are usually idle between polls, so neither file age nor open-file
-        # checks identify these live dependencies. Keep configured paths and their
-        # containing entries, including bindings that have not been written yet.
+        # checks identify these live dependencies. Keep configured paths, including bindings that have not been
+        # written yet. A reader can also import or read the files next to it, so a reader keeps its whole entry.
+        sealed = set()
         sources_path = self.root / 'work-sources.json'
         try:
             if sources_path.exists():
@@ -600,7 +606,9 @@ class WorktreeRetirement:
                             or not all(isinstance(token, str) for token in source['command'])):
                         raise ValueError('Invalid work source configuration.')
                     workspace = self.root / 'bots' / source['bot_id'] / 'workspace'
-                    paths = [workspace / source['bindings']]
+                    bindings = workspace / source['bindings']
+                    tracked.update((bindings.parent.resolve() / bindings.name, bindings.resolve()))
+                    paths = []
                     for index, value in enumerate(source['command']):
                         if not value or value.startswith('-'):
                             continue
@@ -611,7 +619,7 @@ class WorktreeRetirement:
                             continue
                         paths.append(path if path.is_absolute() else workspace / path)
                     for path in paths:
-                        tracked.update((path.parent.resolve() / path.name, path.resolve()))
+                        sealed.update((path.parent.resolve() / path.name, path.resolve()))
         except (OSError, ValueError, TypeError, KeyError) as error:
             # Fail closed for bot files when their dependencies cannot be read, but
             # allow the caller to continue ordinary worktree retirement in this pass.
@@ -619,7 +627,7 @@ class WorktreeRetirement:
                                                type(error).__name__)
             return
         found = []
-        for bot in sorted((self.root / 'bots').glob('*/workspace')):
+        for bot in sorted(place for name in BOT_FILE_FOLDERS for place in (self.root / 'bots').glob('*/' + name)):
             if bot.is_symlink() or not bot.is_dir():
                 continue
             # A folder that Coconut cannot read, or that goes while it reads, must not stop the pass for the other bots.
@@ -628,13 +636,24 @@ class WorktreeRetirement:
                 for place in (bot, *(child for child in bot.iterdir() if child.is_dir() and not child.is_symlink())):
                     settle_checking(place, stale_before)
                     empty_moved(place)
-                pending = [bot]
+                # Each folder to read, and whether a fresh folder in it is read too. Only the top level, and a folder
+                # that is open because it holds a protected path, go one level down into a fresh folder.
+                pending = [(bot, True)]
                 while pending:
-                    parent = pending.pop()
+                    parent, deeper = pending.pop()
+                    if parent != bot and parent.parent != bot:
+                        # The loop above settled the top level. A deeper folder gets a trash folder too.
+                        settle_checking(parent, stale_before)
+                        empty_moved(parent)
                     for entry in sorted(parent.iterdir()):
                         # .stale-kept holds the entries that put_back could not return. They age out like any other entry.
                         if ((entry.name.startswith('.') and entry.name != STALE_KEPT) or entry.is_symlink()
-                                or holds_tracked(entry, tracked) or self.stopping.is_set() or self.restart_pending):
+                                or holds_tracked(entry, sealed) or self.stopping.is_set() or self.restart_pending):
+                            continue
+                        if holds_tracked(entry, tracked):
+                            # The entry is protected, or it leads to a protected path. Judge its other entries.
+                            if entry.resolve() not in tracked and entry.is_dir() and not is_repository(entry):
+                                pending.append((entry, deeper))
                             continue
                         try:
                             state = stale_tree(entry, stale_before)
@@ -642,8 +661,8 @@ class WorktreeRetirement:
                             continue
                         if state is not None:
                             found.append((entry, *state))
-                        elif parent == bot and entry.is_dir() and not is_repository(entry):
-                            pending.append(entry)
+                        elif deeper and entry.is_dir() and not is_repository(entry):
+                            pending.append((entry, False))
             except OSError as error:
                 logging.getLogger(__name__).warning('Coconut could not read the bot workspace %s: %s', bot, error)
         if not found:
@@ -857,6 +876,8 @@ class WorktreeRetirement:
         # A checkout that is already gone has nothing to archive, so its binding closes through discard.
         gone = {identity for identity, _ in pending
                 if isinstance(saved[identity].get('path'), str) and not os.path.lexists(saved[identity]['path'])}
+        # Git has no record of an orphaned worktree, so every Git command in it fails. It needs its own removal.
+        orphaned = {identity for identity, _ in pending if work_workspace.orphan_record(saved[identity])}
 
         def dropped(items):
             # A stop or a restart ended the pass. The next pass after the restart tries again.
@@ -895,12 +916,16 @@ class WorktreeRetirement:
                 if identity in gone:
                     # A checkout that is gone has no files left to lose.
                     action, check = work_workspace.discard, still_finished
+                elif identity in orphaned:
+                    # The checks and the archive limits of retirement apply. See work_workspace.discard_orphan.
+                    action, check = work_workspace.discard_orphan, still_finished
                 elif merged and outcome in native_done:
                     action, check = work_workspace.discard, still_settled
                 else:
                     # Retirement archives the ignored files exactly, or it refuses and the worktree stays.
                     action, check = work_workspace.retire, still_finished
-                options = dict(merged=merged, urgent=low_disk) if action is work_workspace.discard else {}
+                options = (dict(merged=merged, urgent=low_disk) if action is work_workspace.discard else
+                           dict(urgent=low_disk) if action is work_workspace.discard_orphan else {})
                 try:
                     # A service restart leaves the processes of earlier turns to launchd. They keep the worktree in use.
                     if action(root, identity, check, orphan_age=ORPHAN_AGE_SECONDS, **options):
@@ -936,7 +961,8 @@ class WorktreeRetirement:
                     # sqlite3.Error covers a database that shutdown closed while this thread ran.
                     logging.getLogger(__name__).warning('Coconut did not retire worktree %s: %s', identity, refusal)
                 # A retirement can run for minutes. A stop or a restart that arrived meanwhile ends the pass first.
-                if self.stopping.is_set() or self.restart_pending:
+                # Git cannot read an orphaned worktree, so free_rebuildable cannot check its build folders.
+                if self.stopping.is_set() or self.restart_pending or identity in orphaned:
                     continue
                 # The worktree stays. Free the disk space of its build folders, so a refused worktree does not fill the disk.
                 try:

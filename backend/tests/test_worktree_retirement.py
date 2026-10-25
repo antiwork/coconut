@@ -3136,6 +3136,8 @@ class WorktreeRetirementTests(unittest.TestCase):
             (workspace / name).mkdir()
             (workspace / name / 'old.txt').write_text('old')
             self.age(workspace / name, 30)
+        (workspace / 'reader' / 'helper.py').write_text('old')
+        self.age(workspace / 'reader', 30)
         reader = workspace / 'reader' / 'old.txt'
         sources = [dict(bot_id=self.bot['id'], command=['python3', str(reader)],
                         bindings='coverage/not-written-yet.json')]
@@ -3143,7 +3145,10 @@ class WorktreeRetirementTests(unittest.TestCase):
         with self.stale_rule(low=True):
             self.retire()
         self.assertTrue(reader.exists())
-        self.assertTrue((workspace / 'coverage' / 'old.txt').exists())
+        # A reader keeps the files next to it. A bindings file keeps its folder, but not the old files next to it.
+        self.assertTrue((workspace / 'reader' / 'helper.py').exists())
+        self.assertTrue((workspace / 'coverage').is_dir())
+        self.assertFalse((workspace / 'coverage' / 'old.txt').exists())
         self.assertFalse((workspace / 'unrelated').exists())
         # Relative reader paths are also rooted in the bot workspace.
         sources[0]['command'][1] = 'reader/old.txt'
@@ -3153,6 +3158,8 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertTrue(reader.exists())
         # Removing a source releases its files for ordinary cleanup.
         (self.service.root / 'work-sources.json').write_text('[]')
+        # The deletion of old.txt changed the folder. Age it again.
+        self.age(workspace / 'coverage', 30)
         with self.stale_rule():
             self.retire()
         self.assertFalse(reader.exists())
@@ -3204,6 +3211,248 @@ class WorktreeRetirementTests(unittest.TestCase):
         with self.stale_rule():
             self.retire()
         self.assertTrue((container / 'pr-2' / 'deep' / 'old.txt').exists())
+
+    # git worktree remove stops at a read-only folder, but it still deletes the Git record. The folder stays orphaned.
+    def read_only_evidence(self, path):
+        folder = path / 'evidence' / 'frozen'
+        folder.mkdir(parents=True)
+        (folder / 'result.md').write_text('result\n')
+        os.chmod(folder, 0o555)
+        self.addCleanup(ReadOnlyTrashTests.writable, self.root)
+        return folder
+
+    def drop_git_record(self, identity):
+        shutil.rmtree(self.repo / '.git' / 'worktrees' / identity)
+
+    def test_orphan_record_names_only_a_missing_or_reused_git_record(self):
+        _, identity, path, _ = self.outcome()
+        binding = self.registry()[identity]
+        self.assertIsNone(work_workspace.orphan_record(binding))
+        record = self.repo / '.git' / 'worktrees' / identity
+        self.drop_git_record(identity)
+        self.assertEqual(work_workspace.orphan_record(binding), record)
+        # Git gave the name to another folder.
+        record.mkdir()
+        (record / 'gitdir').write_text(str(self.root / 'elsewhere' / '.git') + '\n')
+        self.assertEqual(work_workspace.orphan_record(binding), record)
+        (record / 'gitdir').write_text(str(path / '.git') + '\n')
+        self.assertIsNone(work_workspace.orphan_record(binding))
+        # A missing folder is gone, not orphaned. A main checkout is not a linked worktree.
+        self.assertIsNone(work_workspace.orphan_record(dict(binding, path=str(self.root / 'missing'))))
+        self.assertIsNone(work_workspace.orphan_record(dict(binding, path=str(self.repo))))
+
+    def test_a_read_only_folder_does_not_leave_an_orphaned_half_checkout(self):
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        self.read_only_evidence(path)
+        self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        self.assertNotIn(str(path), git(self.repo, 'worktree', 'list'))
+        self.assertTrue(self.registry()[identity]['retired']['done'])
+
+    def test_an_orphaned_worktree_is_archived_removed_and_restored(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'tracked.txt').write_text('one\nchanged\n')
+        # A removal that stopped part way deleted this file. The restore does not repeat the deletion.
+        (path / 'obsolete.txt').unlink()
+        (path / 'notes.txt').write_text('untracked\n')
+        (path / '.env').write_text('SECRET=1\n')
+        (path / 'node_modules' / 'pkg').mkdir(parents=True)
+        (path / 'node_modules' / 'pkg' / 'index.js').write_bytes(b'x' * 8192)
+        self.read_only_evidence(path)
+        inner = path / 'tmp' / 'baseline'
+        git(self.repo, 'worktree', 'add', '-q', '-b', 'baseline-branch', str(inner))
+        (inner / 'tracked.txt').write_text('nested change\n')
+        self.drop_git_record(identity)
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 4096):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        listed = git(self.repo, 'worktree', 'list')
+        self.assertNotIn(str(path), listed)
+        retired = self.registry()[identity]['retired']
+        self.assertTrue(retired['done'] and retired['orphaned'])
+        self.assertEqual(len(list((self.workspaces / 'archive' / 'nested').glob('baseline-*.tar.gz'))), 1)
+        self.assertFalse(any((self.workspaces / work_workspace.TRASH).iterdir()))
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual((restored / 'tracked.txt').read_text(), 'one\nchanged\n')
+        self.assertEqual((restored / 'obsolete.txt').read_text(), 'remove me\n')
+        self.assertEqual((restored / 'notes.txt').read_text(), 'untracked\n')
+        self.assertEqual((restored / 'evidence' / 'frozen' / 'result.md').read_text(), 'result\n')
+        self.assertEqual((restored / '.env').read_text(), 'SECRET=1\n')
+        self.assertFalse((restored / 'node_modules').exists())
+
+    def test_an_orphaned_worktree_keeps_its_files_under_the_retirement_checks(self):
+        outcome, identity, path, task = self.outcome()
+        (path / 'notes.txt').write_text('x' * 64)
+        self.drop_git_record(identity)
+        # A process uses it.
+        with patch('coconut.work_workspace.in_use', return_value=True), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(any('A process uses the worktree' in line for line in logs.output))
+        # Real untracked work keeps its size limit.
+        with patch.object(work_workspace, 'UNTRACKED_LIMIT_BYTES', 10), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(any('untracked files in the worktree are larger' in line for line in logs.output))
+        # A nested clone holds work that no archive keeps.
+        clone = path / 'tmp' / 'clone'
+        clone.mkdir(parents=True)
+        git(clone, 'init', '-q')
+        (path / 'nested').mkdir()
+        git(path / 'nested', 'init', '-q')
+        self.assertEqual(self.retire(), [])
+        shutil.rmtree(path / 'nested')
+        # The clone in the ignored tmp folder still keeps it.
+        with self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(any('build folder of the worktree holds a Git repository' in line for line in logs.output))
+        shutil.rmtree(clone)
+        # The outcome works again.
+        with self.service.transaction():
+            self.service._put('tasks', dict(task, status='working', updated_at=RECENT))
+        self.assertEqual(self.retire(), [])
+        self.assertEqual((path / 'notes.txt').read_text(), 'x' * 64)
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def test_an_orphaned_worktree_with_a_populated_submodule_stays(self):
+        _, identity, path, _ = self.outcome()
+        sub = path / 'sub'
+        sub.mkdir()
+        git(sub, 'init', '-q')
+        (sub / 'file.txt').write_text('one\n')
+        git(sub, 'add', '.')
+        self.commit(sub, 'Sub')
+        git(path, '-c', 'advice.addEmbeddedRepo=false', 'add', 'sub')
+        self.commit(path, 'Add a submodule')
+        # The patch of the parent cannot hold this edit.
+        (sub / 'file.txt').write_text('local edit\n')
+        self.drop_git_record(identity)
+        with self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(any('contains a submodule' in line for line in logs.output))
+        self.assertEqual((sub / 'file.txt').read_text(), 'local edit\n')
+        self.assertNotIn('retired', self.registry()[identity])
+
+    def orphan_with_notes(self):
+        outcome, identity, path, _ = self.outcome()
+        (path / 'notes.txt').write_text('untracked\n')
+        self.drop_git_record(identity)
+        return outcome, identity, path
+
+    def test_a_stop_before_the_orphan_move_is_finished_by_the_next_pass(self):
+        outcome, identity, path = self.orphan_with_notes()
+        with patch('coconut.work_workspace.os.rename', side_effect=SystemExit), self.assertRaises(SystemExit):
+            self.retire()
+        binding = self.registry()[identity]
+        self.assertNotIn('retired', binding)
+        self.assertIn(work_workspace.ORPHAN_REMOVAL, binding)
+        first = Path(binding[work_workspace.ORPHAN_REMOVAL]['archive'])
+        self.assertTrue(path.is_dir() and first.is_file())
+        self.assertEqual(self.retire(), [identity])
+        binding = self.registry()[identity]
+        self.assertNotIn(work_workspace.ORPHAN_REMOVAL, binding)
+        self.assertTrue(binding['retired']['done'])
+        self.assertFalse(path.exists())
+        # Only the archive that the binding names stays.
+        self.assertEqual(list((self.workspaces / 'archive' / 'done').glob(identity + '*.tar.gz')),
+                         [Path(binding['retired']['archive'])])
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual((restored / 'notes.txt').read_text(), 'untracked\n')
+
+    def test_a_stop_after_the_orphan_move_is_finished_by_the_next_pass(self):
+        outcome, identity, path = self.orphan_with_notes()
+        rename = os.rename
+
+        def move_then_stop(source, target):
+            rename(source, target)
+            if Path(source) == path:
+                raise SystemExit
+        with patch('coconut.work_workspace.os.rename', side_effect=move_then_stop), self.assertRaises(SystemExit):
+            self.retire()
+        self.assertFalse(path.exists())
+        self.assertNotIn('retired', self.registry()[identity])
+        # The archive is the only copy of the changes now. The size limit of the sweep keeps it.
+        pending = Path(self.registry()[identity][work_workspace.ORPHAN_REMOVAL]['archive'])
+        with patch.multiple(work_workspace, NESTED_ARCHIVE_LIMIT_BYTES=0, NESTED_ARCHIVE_KEEP_SECONDS=0):
+            work_workspace.sweep_temporary(self.workspaces)
+        self.assertTrue(pending.is_file())
+        self.assertEqual(self.retire(), [identity])
+        binding = self.registry()[identity]
+        self.assertNotIn(work_workspace.ORPHAN_REMOVAL, binding)
+        self.assertTrue(binding['retired']['done'])
+        # The pass emptied the trash that the stop left.
+        trash = self.workspaces / work_workspace.TRASH
+        self.assertFalse(trash.exists() and any(trash.iterdir()))
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual((restored / 'notes.txt').read_text(), 'untracked\n')
+
+    def test_an_orphaned_worktree_whose_branch_is_gone_stays(self):
+        _, identity, path, _ = self.outcome()
+        self.drop_git_record(identity)
+        git(self.repo, 'branch', '-D', self.registry()[identity]['branch'])
+        with self.assertLogs('coconut.worktree_retirement', 'WARNING'):
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(path.exists())
+
+    def test_ignored_caches_do_not_count_toward_the_archive_limit(self):
+        (self.repo / '.git' / 'info' / 'exclude').write_text('.next/\n__pycache__/\n/public/vite-test/\n')
+        outcome, identity, path, _ = self.outcome()
+        for folder in ('.next/cache', 'app/__pycache__', 'public/vite-test'):
+            (path / folder).mkdir(parents=True)
+            (path / folder / 'big.bin').write_bytes(b'x' * 8192)
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 4096):
+            self.assertEqual(self.retire(), [identity])
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertFalse((restored / '.next').exists())
+        self.assertFalse((restored / 'public' / 'vite-test').exists())
+
+    def test_a_protected_path_does_not_keep_the_old_entries_next_to_it(self):
+        workspace = self.bot_workspace()
+        triage = workspace / 'triage'
+        (triage / 'snapshots' / '20261010T000000Z').mkdir(parents=True)
+        (triage / 'snapshots' / '20261010T000000Z' / 'mail.json').write_text('{}')
+        (triage / 'runs' / 'old').mkdir(parents=True)
+        (triage / 'runs' / 'old' / 'run.json').write_text('{}')
+        (triage / 'runs' / 'new').mkdir()
+        (triage / 'runs' / 'new' / 'run.json').write_text('{}')
+        (triage / 'coverage.json').write_text('{}')
+        for name in ('snapshots', 'runs/old', 'coverage.json'):
+            self.age(triage / name, 30)
+        reviews = workspace / 'reviews'
+        repository = reviews / 'repo'
+        repository.mkdir(parents=True)
+        git(repository, 'init', '-q')
+        (reviews / 'old-evidence').mkdir()
+        (reviews / 'old-evidence' / 'video.mp4').write_bytes(b'x')
+        self.age(reviews / 'old-evidence', 30)
+        (self.service.root / 'work-sources.json').write_text(json.dumps([
+            dict(bot_id=self.bot['id'], command=['python3', 'reader.py'], bindings='triage/coverage.json')]))
+        saved = {'binding': dict(path=str(self.root / 'missing'), repository=str(repository), outcome='x', branch='b')}
+        with self.stale_rule():
+            self.service._clear_stale_bot_workspaces(time.time(), saved, False)
+        self.assertFalse((triage / 'snapshots').exists())
+        self.assertFalse((triage / 'runs' / 'old').exists())
+        self.assertTrue((triage / 'runs' / 'new' / 'run.json').exists())
+        self.assertTrue((triage / 'coverage.json').exists())
+        self.assertFalse((reviews / 'old-evidence').exists())
+        self.assertTrue((repository / '.git').is_dir())
+
+    def test_a_bot_tmp_folder_loses_its_stale_entries(self):
+        tmp = self.service.root / 'bots' / self.bot['id'] / 'tmp'
+        (tmp / 'TemporaryDirectory.abc').mkdir(parents=True)
+        (tmp / 'TemporaryDirectory.abc' / 'data').write_text('old')
+        (tmp / 'old.log').write_text('old')
+        (tmp / 'fresh.log').write_text('fresh')
+        (tmp / '.hidden').write_text('keep')
+        for name in ('TemporaryDirectory.abc', 'old.log', '.hidden'):
+            self.age(tmp / name, 30)
+        with self.stale_rule():
+            self.retire()
+        self.assertFalse((tmp / 'TemporaryDirectory.abc').exists())
+        self.assertFalse((tmp / 'old.log').exists())
+        self.assertTrue((tmp / 'fresh.log').exists())
+        self.assertTrue((tmp / '.hidden').exists())
 
     def test_a_low_disk_uses_the_shorter_stale_time_for_bot_workspaces(self):
         workspace = self.bot_workspace()
