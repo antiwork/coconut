@@ -36,8 +36,14 @@ FAKE_HERMES = {
     'hermes_cli/_launchers.py': '''
         import os
         from pathlib import Path
-        def resolve_store_python(repo):
-            return Path(os.environ['FAKE_STORE_PYTHON']) if os.environ.get('FAKE_STORE_PYTHON') else None
+        def _python(name):
+            return Path(os.environ[name]) if os.environ.get(name) else None
+        def resolve_store_python(repo, *, publication=False):
+            # HERMES_RUNTIME_DIR names the store of the running process. A publication prefers the store of the tree.
+            own = _python('FAKE_STORE_PYTHON')
+            if publication and own is not None:
+                return own
+            return _python('FAKE_RUNTIME_STORE_PYTHON') if os.environ.get('HERMES_RUNTIME_DIR') else own
     ''',
     'pm/__init__.py': '',
     'pm/environments.py': '''
@@ -88,6 +94,14 @@ class RoutineScriptPythonTests(unittest.TestCase):
         # A Hermes without a dependency store runs scripts on its own Python, as before.
         with patch.dict('os.environ', {'FAKE_STORE_PYTHON': ''}):
             self.assertEqual(self.scripts._script_argv(self.script), ([sys.executable, str(self.script)], {}))
+
+    def test_a_bot_tool_store_without_python_keeps_the_worker_python(self):
+        # The worker reads the bot's own tool store. That store has no Python until the bot's terminal installs one.
+        native_routine_execution.use_worker_python_for_scripts()
+        with patch.dict('os.environ', {'HERMES_RUNTIME_DIR': '/bot/home/tools'}):
+            argv, overlay = self.scripts._script_argv(self.script)
+        self.assertEqual(argv, [sys.executable, '-c', 'BOOTSTRAP', str(self.root.resolve()), str(self.script)])
+        self.assertEqual(overlay, {'HERMES_DISABLE_LAZY_INSTALLS': '1'})
 
     def test_the_change_applies_once(self):
         native_routine_execution.use_worker_python_for_scripts()
