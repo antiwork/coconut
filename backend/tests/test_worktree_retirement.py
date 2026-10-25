@@ -3372,6 +3372,11 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertFalse(path.exists())
         self.assertNotIn('retired', self.registry()[identity])
+        # The archive is the only copy of the changes now. The size limit of the sweep keeps it.
+        pending = Path(self.registry()[identity][work_workspace.ORPHAN_REMOVAL]['archive'])
+        with patch.multiple(work_workspace, NESTED_ARCHIVE_LIMIT_BYTES=0, NESTED_ARCHIVE_KEEP_SECONDS=0):
+            work_workspace.sweep_temporary(self.workspaces)
+        self.assertTrue(pending.is_file())
         self.assertEqual(self.retire(), [identity])
         binding = self.registry()[identity]
         self.assertNotIn(work_workspace.ORPHAN_REMOVAL, binding)

@@ -1766,13 +1766,25 @@ def sweep_temporary(root):
 
 
 def named_discard_archives(root):
-    """Return the discard archives that a binding still names, for a worktree that has not resumed."""
+    """Return the discard archives that a binding still names, for a worktree that has not resumed.
+
+    An orphan removal that a stop interrupted names its archive in ORPHAN_REMOVAL. That archive can be the only copy of
+    the changes, so it counts as named too.
+    """
     try:
         saved = json.loads((Path(root) / 'worktrees.json').read_text())
     except (OSError, ValueError):
         return set()
-    return {Path(b['retired']['archive']) for b in saved.values() if isinstance(b, dict)
-            and isinstance(b.get('retired'), dict) and b['retired'].get('done') and b['retired'].get('archive')}
+    named = set()
+    for binding in saved.values():
+        if not isinstance(binding, dict):
+            continue
+        retired, pending = binding.get('retired'), binding.get(ORPHAN_REMOVAL)
+        if isinstance(retired, dict) and retired.get('done') and retired.get('archive'):
+            named.add(Path(retired['archive']))
+        if isinstance(pending, dict) and pending.get('archive'):
+            named.add(Path(pending['archive']))
+    return named
 
 
 def trim_nested_archives(root, keep=(), *, folder='nested'):
