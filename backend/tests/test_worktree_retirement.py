@@ -1,3 +1,4 @@
+import contextlib
 from datetime import datetime, timedelta, timezone
 import copy
 import errno
@@ -1745,6 +1746,48 @@ class WorktreeRetirementTests(unittest.TestCase):
         restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
         self.assertEqual(restored, path)
         self.assertEqual((restored / '.private-evidence' / 'RESULT.md').read_text(), 'result\n')
+
+    def test_a_failed_return_of_held_evidence_keeps_every_folder(self):
+        (self.repo / '.git' / 'info' / 'exclude').write_text('.private-evidence/\n.qa-evidence/\n')
+        outcome, identity, path, _ = self.outcome()
+        for name in ('.private-evidence', '.qa-evidence'):
+            (path / name).mkdir()
+            (path / name / 'capture.png').write_bytes(name.encode() * 1000)
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 4096):
+            self.assertEqual(self.retire(), [identity])
+        held = self.registry()[identity]['retired']['held']
+        self.assertEqual(sorted(held['names']), ['.private-evidence', '.qa-evidence'])
+        rename, calls = os.rename, []
+
+        def second_fails(source, target):
+            # The first folder moves back into the new checkout. The second rename fails.
+            if str(source).startswith(held['folder']):
+                calls.append(source)
+                if len(calls) == 2:
+                    raise PermissionError('Operation not permitted')
+            return rename(source, target)
+        with patch('coconut.work_workspace.os.rename', side_effect=second_fails), \
+                contextlib.suppress(Exception), self.assertLogs(level='WARNING'):
+            acquire(self.workspaces, outcome, str(self.repo))
+        self.assertEqual(len(calls), 2)
+        # The failed restore deleted its checkout, but every evidence folder is back in its held place.
+        self.assertFalse(path.exists())
+        for name in ('.private-evidence', '.qa-evidence'):
+            self.assertEqual((Path(held['folder']) / name / 'capture.png').read_bytes(), name.encode() * 1000)
+        self.assertEqual(self.registry()[identity]['retired']['held'], held)
+
+    def test_a_held_folder_that_cannot_go_back_keeps_the_checkout(self):
+        _, identity, path, _ = self.evidence_worktree()
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 4096):
+            self.assertEqual(self.retire(), [identity])
+        retired = self.registry()[identity]['retired']
+        failure = work_workspace.HeldMoveFailed('Operation not permitted', ['.private-evidence'])
+        with patch('coconut.work_workspace.return_held', side_effect=failure), \
+                patch('coconut.work_workspace.discard_checkout') as discard, self.assertRaises(work_workspace.HeldMoveFailed):
+            work_workspace.unpack(dict(self.registry()[identity]), {})
+        discard.assert_not_called()
+        self.assertTrue((path / '.git').is_file())
+        self.assertEqual(self.registry()[identity]['retired'], retired)
 
     def test_an_ignored_folder_with_a_repository_is_not_held(self):
         _, identity, path, _ = self.evidence_worktree()

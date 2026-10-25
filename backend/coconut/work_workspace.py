@@ -305,6 +305,14 @@ def held_folders(path, inside=()):
     return held if total <= IGNORED_LIMIT_BYTES else []
 
 
+class HeldMoveFailed(OSError):
+    """A move of held folders failed, and its undo could not put every folder back. `stranded` names those folders."""
+
+    def __init__(self, message, stranded):
+        super().__init__(message)
+        self.stranded = stranded
+
+
 def hold(path, place, names):
     """Move the held folders of the worktree at path to place. On a failure, move back what moved, and raise."""
     moved = []
@@ -323,17 +331,31 @@ def return_held(held, path):
     """Move the held folders back into the worktree at path. Return the names that are gone. Never replace a file.
 
     A name that is still in the worktree was never moved, for example after a stop between the record and the move.
+    The move is all or nothing: when one rename fails, Coconut moves the folders that it already moved back to the held
+    place, because a failed restore deletes the new checkout. It then raises HeldMoveFailed. Its `stranded` names the
+    folders that the undo could not move back, and the caller must keep the checkout that holds them.
     """
-    place, missing = Path(held['folder']), []
-    for name in held['names']:
-        source, target = place / name, path / name
-        if os.path.lexists(target):
-            continue
-        if not os.path.lexists(source):
-            missing.append(name)
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        os.rename(source, target)
+    place, missing, returned = Path(held['folder']), [], []
+    try:
+        for name in held['names']:
+            source, target = place / name, path / name
+            if os.path.lexists(target):
+                continue
+            if not os.path.lexists(source):
+                missing.append(name)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(source, target)
+            returned.append(name)
+    except OSError as error:
+        stranded = []
+        for name in reversed(returned):
+            try:
+                os.rename(path / name, place / name)
+            except OSError:
+                stranded.append(name)
+        raise HeldMoveFailed(f'Coconut could not move the held folders between {place} and {path}: {error}',
+                             stranded) from error
     if os.path.isdir(place) and not os.path.islink(place):
         # Remove the empty folders that the move left. A folder that still holds files stays.
         for directory, _, _ in sorted(os.walk(place), key=lambda item: -len(item[0])):
@@ -1100,6 +1122,10 @@ def retire(root, identity, finished, *, orphan_age=None):
             if held:
                 try:
                     hold(path, place, held)
+                except HeldMoveFailed as error:
+                    # The undo left some folders in the held place. The record names them, and the checkout stays.
+                    # The restore of the next turn adopts the checkout and moves them back.
+                    raise ValueError(f'Coconut could not move the held folders {error.stranded} of {path} back: {error}') from None
                 except OSError as error:
                     # hold() moved back what it moved. The worktree stays, with all its files.
                     archive.unlink(missing_ok=True)
@@ -2262,7 +2288,12 @@ def unpack(binding, checked, *, retry_failure=None):
             # log names it.
             return_held(retired['held'], path)
     except BaseException as error:
-        if created:
+        if isinstance(error, HeldMoveFailed) and error.stranded:
+            # Held evidence that could not go back to its held place is in the checkout now. It is the only copy, so
+            # the checkout stays. A later restore adopts it and moves the other held folders back.
+            logging.getLogger(__name__).warning('Coconut kept the checkout %s, because it holds the held folders %s.',
+                                                path, error.stranded)
+        elif created:
             # Remove only the partial checkout. The archive stays.
             discard_checkout(repository, path)
             if retry_failure and isinstance(error, RESTORE_ERRORS):
