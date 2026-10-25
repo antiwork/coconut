@@ -228,10 +228,11 @@ def rebuildable(name):
             or any('/'.join(parts[:end]) in REBUILDABLE_PATHS for end in range(1, len(parts) + 1)))
 
 
-def ignored_files(path, inside=(), env=None):
+def ignored_files(path, inside=(), env=None, sizes=None):
     """Return the ignored files and links to archive. Skip rebuildable folders and the worktrees in `inside`.
 
-    `env` names the Git folders of an orphaned worktree (see orphan_git)."""
+    `env` names the Git folders of an orphaned worktree (see orphan_git). With `sizes`, a dict, Coconut adds the bytes
+    of each entry that Git lists to it, and it does not apply IGNORED_LIMIT_BYTES (see held_folders)."""
     listing = git_output(path, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z', strict=True,
                          env=env)
     names, seen, size = [], set(), 0
@@ -245,6 +246,8 @@ def ignored_files(path, inside=(), env=None):
                                   and (path / entry.rstrip('/')).resolve() in inside):
             continue
         candidates = [entry]
+        if sizes is not None:
+            sizes.setdefault(entry, 0)
         if entry.endswith('/'):
             candidates = []
             for directory, folders, files in os.walk(path / entry, onerror=unreadable):
@@ -263,13 +266,105 @@ def ignored_files(path, inside=(), env=None):
             status = os.lstat(path / name)
             if stat.S_ISREG(status.st_mode):
                 size += status.st_size
+                if sizes is not None:
+                    sizes[entry] += status.st_size
             elif not stat.S_ISLNK(status.st_mode):
                 # Removal would delete a socket or a pipe that the archive cannot hold.
                 raise ValueError('The worktree contains an ignored special file: ' + name)
             names.append(name)
-    if size > IGNORED_LIMIT_BYTES:
+    if size > IGNORED_LIMIT_BYTES and sizes is None:
         raise ValueError('The ignored files in the worktree are larger than the archive limit.')
     return names
+
+
+# Retirement moves the ignored folders that do not fit in the archive to archive/held/<identity>-<time>/, and the restore
+# moves them back. A held folder goes after NESTED_ARCHIVE_DAYS, as an archive does.
+HELD = 'held'
+
+
+def held_folders(path, inside=()):
+    """Return the ignored folders that retirement moves aside, so that the other ignored files fit in the archive.
+
+    Bots keep evidence in ignored folders, for example screenshots and recordings of a QA run. It is not build output,
+    so the archive must keep it, but it can be larger than IGNORED_LIMIT_BYTES. A rename keeps it whole and costs no copy.
+    Coconut takes the largest ignored folders first. A folder that holds a Git repository stays, because the move would
+    hide the repository from its main checkout. Return [] when the ignored files fit, or when moving folders cannot make
+    them fit, for example when one large ignored file is not in a folder. Retirement then refuses as before.
+    """
+    sizes = {}
+    ignored_files(path, inside, sizes=sizes)
+    total = sum(sizes.values())
+    held = []
+    for entry, size in sorted(sizes.items(), key=lambda item: (-item[1], item[0])):
+        if total <= IGNORED_LIMIT_BYTES:
+            break
+        folder = path / entry.rstrip('/')
+        if entry.endswith('/') and folder.is_dir() and not folder.is_symlink() and not holds_repository(folder):
+            held.append(entry.rstrip('/'))
+            total -= size
+    return held if total <= IGNORED_LIMIT_BYTES else []
+
+
+class HeldMoveFailed(OSError):
+    """A move of held folders failed, and its undo could not put every folder back. `stranded` names those folders."""
+
+    def __init__(self, message, stranded):
+        super().__init__(message)
+        self.stranded = stranded
+
+
+def hold(path, place, names):
+    """Move the held folders of the worktree at path to place. On a failure, move back what moved, and raise."""
+    moved = []
+    try:
+        for name in names:
+            target = place / name
+            target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+            os.rename(path / name, target)
+            moved.append(name)
+    except OSError:
+        return_held(dict(folder=str(place), names=moved), path)
+        raise
+
+
+def return_held(held, path):
+    """Move the held folders back into the worktree at path. Return the names that are gone. Never replace a file.
+
+    A name that is still in the worktree was never moved, for example after a stop between the record and the move.
+    The move is all or nothing: when one rename fails, Coconut moves the folders that it already moved back to the held
+    place, because a failed restore deletes the new checkout. It then raises HeldMoveFailed. Its `stranded` names the
+    folders that the undo could not move back, and the caller must keep the checkout that holds them.
+    """
+    place, missing, returned = Path(held['folder']), [], []
+    try:
+        for name in held['names']:
+            source, target = place / name, path / name
+            if os.path.lexists(target):
+                continue
+            if not os.path.lexists(source):
+                missing.append(name)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(source, target)
+            returned.append(name)
+    except OSError as error:
+        stranded = []
+        for name in reversed(returned):
+            try:
+                os.rename(path / name, place / name)
+            except OSError:
+                stranded.append(name)
+        raise HeldMoveFailed(f'Coconut could not move the held folders between {place} and {path}: {error}',
+                             stranded) from error
+    if os.path.isdir(place) and not os.path.islink(place):
+        # Remove the empty folders that the move left. A folder that still holds files stays.
+        for directory, _, _ in sorted(os.walk(place), key=lambda item: -len(item[0])):
+            with contextlib.suppress(OSError):
+                os.rmdir(directory)
+    if missing:
+        logging.getLogger(__name__).warning('Coconut could not put back the held folders %s of %s. They are gone from %s.',
+                                            missing, path, place)
+    return missing
 
 
 def fingerprint(path, names):
@@ -600,10 +695,11 @@ def stop_orphans(found, outcome, age, *, marked=True, within=None):
     return stopped - stop(stop(stopped, signal.SIGTERM, STOP_SECONDS), signal.SIGKILL, 1)
 
 
-def archive_entries(path, inside=()):
+def archive_entries(path, inside=(), held=()):
     """Return the changes of the worktree and the files that its archive holds. Refuse what an archive cannot hold.
 
-    `inside` names the worktrees inside this one. Coconut archives and removes each of them on its own.
+    `inside` names the worktrees inside this one. Coconut archives and removes each of them on its own. `held` names
+    the ignored folders that retirement moves aside (see held_folders). The archive does not hold them.
     """
     current = changes(path)
     staged, unstaged, names = current
@@ -621,8 +717,9 @@ def archive_entries(path, inside=()):
         raise ValueError('The untracked files in the worktree are larger than the archive limit.')
     current = (staged, unstaged, names)
     # Sort the entries, so two reads of the same files compare equal. os.walk returns directory order.
+    skipped = set(inside) | {(path / name).resolve() for name in held}
     return current, sorted([(UNTRACKED + name, name) for name in names]
-                           + [(IGNORED + name, name) for name in ignored_files(path, inside)])
+                           + [(IGNORED + name, name) for name in ignored_files(path, skipped)])
 
 
 def check_worktree(path, binding, repository, *, processes=True):
@@ -959,14 +1056,16 @@ def retire(root, identity, finished, *, orphan_age=None):
         remove_nested(root, path, repository, check_only=True)
         # Check the parent's own files first, without the nested worktrees. A refusal then removes nothing.
         # The parent is read again after the removal, so the archive reflects its files at that time.
-        archive_entries(path, {r['path'] for r in nested(path, registered(repository))})
+        inside = {r['path'] for r in nested(path, registered(repository))}
+        archive_entries(path, inside, held_folders(path, inside))
         if not finished(True):
             raise ValueError('The outcome resumed during retirement.')
         release(path, before['outcome'], orphan_age)
         remove_nested(root, path, repository, finished=finished)
         check_git(path, before, repository)
     head = git(path, 'rev-parse', 'HEAD')
-    current, entries = archive_entries(path)
+    held = held_folders(path)
+    current, entries = archive_entries(path, held=held)
     staged, unstaged, _ = current
     # Stop orphans only after every check that does not need them stopped. The hourly pass already stopped the old
     # orphans of every idle outcome, so this stop covers only the processes that became old since.
@@ -1002,7 +1101,9 @@ def retire(root, identity, finished, *, orphan_age=None):
             validate_binding(dict(binding))
             check_worktree(path, binding, repository, processes=False)
             if (git(path, 'rev-parse', 'HEAD') != head or changes(path) != current
-                    or sorted(ignored_files(path)) != sorted(name for arcname, name in entries if arcname.startswith(IGNORED))
+                    or any((path / name).is_symlink() or not (path / name).is_dir() for name in held)
+                    or sorted(ignored_files(path, {(path / name).resolve() for name in held}))
+                    != sorted(name for arcname, name in entries if arcname.startswith(IGNORED))
                     or fingerprint(path, archived) != marks):
                 raise ValueError('The worktree changed during retirement.')
             # A dispatch marks its task active before its worker takes this lock. Check the tasks with a short wait.
@@ -1012,7 +1113,28 @@ def retire(root, identity, finished, *, orphan_age=None):
             sync_directory(directory)
             binding.pop('retire_failed', None)
             binding['retired'] = dict(at=at, archive=str(archive), head=head, changes=changes_digest(*current))
+            if held:
+                # The binding names the held folders before they move, so a stop cannot lose them. The restore
+                # finds a folder that never moved still in the worktree.
+                place = directory / HELD / f'{identity}-{time.time_ns()}'
+                binding['retired']['held'] = dict(folder=str(place), names=held)
             save_bindings(manifest, saved)
+            if held:
+                try:
+                    hold(path, place, held)
+                except HeldMoveFailed as error:
+                    # The undo left some folders in the held place. The record names them, and the checkout stays.
+                    # The restore of the next turn adopts the checkout and moves them back.
+                    raise ValueError(f'Coconut could not move the held folders {error.stranded} of {path} back: {error}') from None
+                except OSError as error:
+                    # hold() moved back what it moved. The worktree stays, with all its files.
+                    archive.unlink(missing_ok=True)
+                    binding.pop('retired')
+                    binding['retire_failed'] = dict(at=stamp(datetime.now(timezone.utc)), error=str(error)[:1000], archive=None)
+                    save_bindings(manifest, saved)
+                    raise ValueError(f'Coconut could not move the large ignored folders of {path}: {error}') from None
+                logging.getLogger(__name__).warning('Coconut moved the ignored folders %s of worktree %s to %s. They do not '
+                                                    'fit in the archive. The restore moves them back.', held, identity, place)
             try:
                 remove_worktree(repository, path, '--force')
             except GIT_ERRORS as error:
@@ -1352,6 +1474,8 @@ def removal_stopped(manifest, saved, binding, path, repository, current, archive
         # Git refuses some removals before it deletes files, for example with a submodule.
         # Git can also delete ignored files before it stops, and changes() does not see them.
         # Keep the checkout and the archive, and wait a day before the next attempt.
+        if binding['retired'].get('held'):
+            return_held(binding['retired']['held'], path)
         binding.pop('retired')
         binding['retire_failed'] = dict(at=now, error=str(error)[:1000], archive=str(archive))
         save_bindings(manifest, saved)
@@ -1742,6 +1866,18 @@ def sweep_temporary(root):
         except OSError as error:
             logging.getLogger(__name__).warning('Coconut could not empty %s: %s', trash, error)
     trim_nested_archives(root)
+    held = Path(root) / 'archive' / HELD
+    if held.is_dir() and not held.is_symlink():
+        for folder in held.iterdir():
+            with contextlib.suppress(FileNotFoundError):
+                if folder.lstat().st_mtime >= time.time() - NESTED_ARCHIVE_DAYS * 86400:
+                    continue
+                try:
+                    delete_tree(folder)
+                except OSError as error:
+                    logging.getLogger(__name__).warning('Coconut could not delete %s: %s', folder, error)
+                else:
+                    logging.getLogger(__name__).warning('Coconut deleted held folder %s after %s days.', folder, NESTED_ARCHIVE_DAYS)
     # A binding names its discard archive, and a person needs it to recover the work. Only the age rule removes it.
     named = named_discard_archives(root)
     trim_nested_archives(root, folder='done', keep=named)
@@ -2085,6 +2221,9 @@ def unpack(binding, checked, *, retry_failure=None):
             intact = False
         if not intact:
             raise ValueError(f'The path {path} is not empty and does not match the archive.')
+        if retired.get('held'):
+            # A stop after the record left the checkout. Some held folders may have moved already.
+            return_held(retired['held'], path)
         return
     created = False
     try:
@@ -2144,8 +2283,17 @@ def unpack(binding, checked, *, retry_failure=None):
                 place_link(path, name, target)
         if git(path, 'rev-parse', 'HEAD') != retired['head'] or changes_digest(*changes(path)) != retired['changes']:
             raise ValueError('The restored files do not match the archive.')
+        if retired.get('held'):
+            # Git ignores these folders, so they do not change the digest above. One that aged out is gone, and the
+            # log names it.
+            return_held(retired['held'], path)
     except BaseException as error:
-        if created:
+        if isinstance(error, HeldMoveFailed) and error.stranded:
+            # Held evidence that could not go back to its held place is in the checkout now. It is the only copy, so
+            # the checkout stays. A later restore adopts it and moves the other held folders back.
+            logging.getLogger(__name__).warning('Coconut kept the checkout %s, because it holds the held folders %s.',
+                                                path, error.stranded)
+        elif created:
             # Remove only the partial checkout. The archive stays.
             discard_checkout(repository, path)
             if retry_failure and isinstance(error, RESTORE_ERRORS):
