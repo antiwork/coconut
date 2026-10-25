@@ -93,6 +93,7 @@ class WorkSourceTests(unittest.TestCase):
         import subprocess
         failure = subprocess.CalledProcessError(4, ['gh', 'api', 'user'], output=b'',
                                                 stderr=b'gh: To get started with GitHub CLI,\n  run: gh auth login\n')
+        from coconut.work_sources import FAILURE_HINT
         with self.assertLogs('coconut.work_sources', 'WARNING') as logs:
             for _ in range(3):
                 with self.service.transaction():
@@ -104,65 +105,39 @@ class WorkSourceTests(unittest.TestCase):
                     self.service.audit_work_sources()
             state = self.service._setting('work-source:assigned')
             self.assertEqual(state['error'], 'CalledProcessError')
-            self.assertEqual(state['error_detail'],
-                             'CalledProcessError: exit 4: gh: To get started with GitHub CLI, | run: gh auth login')
+            self.assertEqual(state['error_detail'], 'CalledProcessError: exit 4. ' + FAILURE_HINT)
             since = state['failing_since']
             self.assertTrue(since)
             self.assertIsNone(self.audit()['failing_since'])
         failures = [line for line in logs.output if 'failed:' in line]
         self.assertEqual(len(failures), 1)
-        self.assertIn('Work source assigned of bot ' + self.bot['id'] + ' failed: CalledProcessError: exit 4: gh: To get started', failures[0])
+        self.assertIn('Work source assigned of bot ' + self.bot['id'] + ' failed: CalledProcessError: exit 4. ' + FAILURE_HINT,
+                      failures[0])
         self.assertTrue(any('works again. It failed since ' + since in line for line in logs.output))
 
-    def test_the_failure_line_masks_tokens_and_never_shows_the_command(self):
+    def test_a_failure_stores_and_logs_no_command_output(self):
         import subprocess
-        from coconut.work_sources import failure_detail, mask_secrets
-        error = subprocess.CalledProcessError(1, ['read', '--token', 'ghp_' + 'a' * 36],
-                                              stderr=b'first line\nsecond line\nfatal: https://bot:pw@github.com/x\nlast line\n')
-        # The exit status and the last three stderr lines, masked. Never the command's arguments.
-        self.assertEqual(failure_detail(error),
-                         'CalledProcessError: exit 1: second line | fatal: https://[hidden]@github.com/x | last line')
-        self.assertEqual(failure_detail(subprocess.TimeoutExpired(['read', 'github_pat_' + 'b' * 30], 60)),
-                         'TimeoutExpired: no error output')
-        secret = 'opaque-credential-value'
-        masked = {
-            # Greptile's two examples.
-            f'token: {secret}': 'token: [hidden]',
-            'Authorization: Bearer abc.def': 'Authorization: [hidden]',
-            # A name with a credential word, with ":" or "=" and quotes.
-            f'GH_TOKEN={secret} gh api user': 'GH_TOKEN=[hidden] gh api user',
-            f'export GITHUB_TOKEN="{secret}"': 'export GITHUB_TOKEN=[hidden]',
-            f'{{"api_key": "{secret}", "password": \'{secret}\'}}': '{"api_key": [hidden], "password": [hidden]}',
-            f'client_secret={secret}&x=1': 'client_secret=[hidden]',
-            f'Cookie: session={secret}': 'Cookie: [hidden]',
-            f'X-Auth-Token: {secret}': 'X-Auth-Token: [hidden]',
-            f'credential: {secret}': 'credential: [hidden]',
-            f'Proxy-Authorization: Basic {secret}': 'Proxy-Authorization: [hidden]',
-            # An exact credential word with only whitespace.
-            f'password {secret}': 'password [hidden]',
-            # An auth scheme, with no length minimum.
-            'Bearer abc.def': 'Bearer [hidden]',
-            'Basic dXNlcjpw': 'Basic [hidden]',
-            'Digest a1': 'Digest [hidden]',
-            f'curl -H "Authorization: Bearer {secret}"': 'curl -H "Authorization: [hidden]',
-            # A standalone opaque run of 20 or more characters with a letter and a digit.
-            'retry with ghp_' + 'A1b2' * 9 + ' later': 'retry with [hidden] later',
-            'using gho_' + 'Z9y8' * 9: 'using [hidden]',
-            'github_pat_11ABCDEFG0_' + 'x' * 40: '[hidden]',
-            'jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl rejected': 'jwt [hidden] rejected',
-            'sk-proj-' + 'q1' * 15: '[hidden]',
-        }
-        for line, expected in masked.items():
-            with self.subTest(line=line):
-                self.assertEqual(mask_secrets(line), expected)
-        # Ordinary error text stays readable.
-        for line in ('gh: Not Found (HTTP 404)', 'authentication required', 'exit status 4',
-                     'gh: To get started with GitHub CLI, please run: gh auth login',
-                     'HTTP 401: Bad credentials (https://api.github.com/user)',
-                     'GraphQL: Could not resolve to a Repository with the name example/repo.',
-                     'Post "https://api.github.com/graphql": dial tcp: lookup api.github.com: no such host'):
-            with self.subTest(line=line):
-                self.assertEqual(mask_secrets(line), line)
+        from coconut.work_sources import FAILURE_HINT, failure_detail
+        token = 'ghp_' + 'A1b2' * 9
+        failure = subprocess.CalledProcessError(4, ['read', '--token', token], output=f'{{"token": "{token}"}}'.encode(),
+                                                stderr=f'Authorization: Bearer {token}\ntoken:\n{token}\n'.encode())
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                                    ('work-source:assigned', json.dumps(dict(next_check=0))))
+        with self.assertLogs('coconut.work_sources', 'WARNING') as logs, \
+                patch('coconut.work_sources.subprocess.run', side_effect=failure):
+            self.service.audit_work_sources()
+        stored = json.dumps(self.service._setting('work-source:assigned'))
+        for text in (stored, '\n'.join(logs.output)):
+            self.assertNotIn(token, text)
+            self.assertNotIn('Authorization', text)
+            self.assertNotIn('--token', text)
+        self.assertEqual(self.service._setting('work-source:assigned')['error_detail'],
+                         'CalledProcessError: exit 4. ' + FAILURE_HINT)
+        self.assertEqual(failure_detail(subprocess.CalledProcessError(-9, ['read'])), 'CalledProcessError: signal 9. ' + FAILURE_HINT)
+        self.assertEqual(failure_detail(subprocess.TimeoutExpired(['read', token], 60, stderr=token.encode())),
+                         'TimeoutExpired. ' + FAILURE_HINT)
+        self.assertEqual(failure_detail(json.JSONDecodeError('Expecting value', token, 0)), 'JSONDecodeError. ' + FAILURE_HINT)
 
     def test_source_audit_does_not_read_completed_tool_history(self):
         original = self.service._all

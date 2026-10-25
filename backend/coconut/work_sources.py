@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import logging
-import re
 import threading
 from pathlib import Path
 import subprocess
@@ -308,51 +307,16 @@ def audit_signature(proof, decisions):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-# The failure line of a work source is strict: it masks anything that can be a credential, and it keeps ordinary error
-# text such as "gh: Not Found (HTTP 404)", "authentication required" or "exit status 4" readable.
-_CHAR = r'[A-Za-z0-9_\-+/=.]'
-_VALUE = r'(?:"[^"]*"|\'[^\']*\'|[^\s,;}\]]+)'
-SECRETS = (
-    # 1. The value after a name that contains a credential word, with ":" or "=" and optional quotes:
-    #    token: <value>, GH_TOKEN=<value>, "api_key": "<value>", Authorization: Bearer <value>, Cookie: <value>.
-    (re.compile(r'(?i)(["\']?[\w.-]*(?:token|secret|key|password|passwd|auth|cookie|credential)[\w.-]*["\']?\s*[:=]\s*)'
-                r'(?:(?:bearer|basic|token|digest|negotiate)\s+)?' + _VALUE), r'\1[hidden]'),
-    #    The same with only whitespace, after an exact credential word: password <value>, api_key <value>. gh writes
-    #    "Bad credentials (<url>)", so "credentials" with whitespace is not one of these words.
-    (re.compile(r'(?i)\b((?:secret|password|passwd|api[_-]?key)\s+)' + _VALUE), r'\1[hidden]'),
-    # 2. The word after an auth scheme, of any length: Bearer <value>, Basic <value>, token <value>, Digest <value>.
-    (re.compile(r'(?i)\b((?:bearer|basic|token|digest)\s+)(?!\[hidden\])' + _VALUE), r'\1[hidden]'),
-    # 3. A standalone run of 20 or more token characters with a letter and a digit: opaque tokens, JWTs, ghp_..., keys.
-    (re.compile(r'(?<!' + _CHAR + r')(?=' + _CHAR + r'*[A-Za-z])(?=' + _CHAR + r'*[0-9])' + _CHAR + r'{20,}(?!' + _CHAR
-                + r')'), '[hidden]'),
-    # Credentials in a URL: https://user:password@host.
-    (re.compile(r'://[^/\s:@]+:[^/\s@]+@'), '://[hidden]@'),
-)
+FAILURE_HINT = "Run the source command by hand in the bot's environment to see its output."
 
 
-def mask_secrets(text):
-    for pattern, replacement in SECRETS:
-        text = pattern.sub(replacement, text)
-    return text
-
-
-def failure_detail(error, lines=3, limit=500):
-    """A short line about a failed source read: the error, the exit status, and the last lines of the command's stderr.
-
-    A failed command shows only its stderr, never its arguments. Each line is masked before it is kept.
-    """
+def failure_detail(error):
+    """A line about a failed source read that holds no command output: the error class, the exit status or signal,
+    and a fixed hint. Command output can hold credentials, so the service neither stores nor logs it."""
     parts = [type(error).__name__]
     if isinstance(error, subprocess.CalledProcessError):
-        parts.append(f'exit {error.returncode}')
-    if isinstance(error, subprocess.SubprocessError):
-        text = getattr(error, 'stderr', None) or b''
-        text = text.decode('utf-8', 'replace') if isinstance(text, bytes) else str(text)
-    else:
-        text = str(error)
-    kept = [mask_secrets(' '.join(line.split())) for line in text.splitlines() if line.strip()][-lines:]
-    detail = ' | '.join(kept)
-    parts.append(detail[-limit:] if detail else 'no error output')
-    return ': '.join(parts)
+        parts.append(f'signal {-error.returncode}' if error.returncode < 0 else f'exit {error.returncode}')
+    return ': '.join(parts) + '. ' + FAILURE_HINT
 
 
 class WorkSources:
