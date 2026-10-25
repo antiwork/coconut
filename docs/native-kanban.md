@@ -274,14 +274,18 @@ A failed outcome, a pending decision, and a blocked native task do not keep the 
 A turn restores the worktree before it starts, so work that resumes gets its files back.
 The poller holds the service lock only to read this state. It runs Git outside the service lock.
 A bot also keeps its own files in `bots/<id>/workspace`: clones, review checkouts, and evidence.
-Nothing else removes them.
+Its tools write temporary files to `bots/<id>/tmp`, because Coconut sets `TMPDIR` there.
+Nothing else removes them. The rules below apply to both folders.
 In the same pass, Coconut deletes an entry when nothing in it changed for 14 days (`BOT_WORKSPACE_STALE_SECONDS`).
 A change is a new modification time or a new change time, so an extract or a copy of old files counts as new.
 Below the low disk limit, the time is three days (`BOT_WORKSPACE_LOW_DISK_STALE_SECONDS`).
 An entry is a file or a folder of the workspace. A folder that has a newer file stays, and Coconut then judges its entries one level down.
 Coconut keeps a Git checkout that has uncommitted files, ignored files that a build does not make again (such as `.env`), commits that no remote has, or a stash. It keeps a bare repository.
 It keeps a main checkout while one of its worktrees stays.
-It keeps an entry that a process uses, a tracked worktree, a link, and a name that starts with a dot.
+It keeps an entry that a process uses, a tracked worktree, the repository of a binding, a work-source bindings file, a link, and a name that starts with a dot.
+A folder that holds one of these protected paths stays, but its other entries do not: Coconut judges them as if they were at the level of the folder.
+Before this rule, one bindings file kept every old snapshot next to it.
+A work-source reader keeps its whole entry, because it can read the files next to it.
 After it deletes a worktree, it prunes the record from the main checkout.
 Coconut scans for open files again after it moves the entries, and before it releases an entry that a stop left, so a turn that opened an entry after the first scan puts it back.
 It cleans a bot with work in progress too. A turn that only reads an old entry, without an open file during the pass, leaves no sign, so the age and the checks above are the only protection.
@@ -320,7 +324,11 @@ Retirement does these steps:
    - `unstaged.patch` from `git diff --binary`.
    - The untracked files that Git does not ignore, under `untracked/`.
    - The ignored files, under `ignored/`. Rebuildable folders are not in the archive:
-     `node_modules` and `.cache` at any depth, and `tmp`, `log`, `public/packs`, `public/packs-test`, and `coverage` at the top.
+     `node_modules`, `.cache`, `.next`, `.turbo`, `.parcel-cache`, `.vite`, `.nuxt`, `.svelte-kit`, `__pycache__`,
+     `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.gradle`, and `DerivedData` at any depth, and `tmp`, `log`,
+     `public/packs`, `public/packs-test`, `coverage`, `public/vite`, `public/vite-dev`, `public/vite-test`,
+     `public/vite-ssr`, and `public/assets` at the top. Only a folder that Git ignores counts. `build` and `dist` are
+     not in the list, because their name alone does not prove that a build made all of their files.
    - `retirement.json` with the branch, the HEAD commit, the outcome, the repository, and the time.
 
    The archive stores a hard link as a separate regular file.
@@ -337,6 +345,8 @@ Retirement keeps work only while it can resume. Coconut discards the worktree of
 
 - All pull requests of the outcome merged or closed, and one of them is in the repository of the worktree.
 - The checkout is already gone.
+- The checkout is orphaned: Git has no record of it, so every Git command in it fails. This happens when
+  `git worktree remove` stops part way. The retirement checks apply (see below).
 - Retirement refuses the worktree, and the outcome is idle for 2 days (`DISCARD_IDLE_SECONDS`) with no open pull
   request, for example after a branch switch, a nested repository, or ignored files larger than the archive limit.
 - Retirement refuses the worktree, and the disk has less than 20 GiB free (`LOW_DISK_BYTES`). The pass then runs
@@ -363,6 +373,18 @@ output (up to 200 MB), such as `.env`. Rebuildable folders and nested worktrees 
 worktree, a worktree of another outcome, or a process that is not an old orphan keeps the worktree. For a discard
 without the outcome variable, an orphan counts only when its command line names the worktree path or whose working folder is inside it, and never a
 session program or a machine-wide daemon. A nested repository or a clone goes without an archive, and the log names it.
+
+Before each removal, Coconut gives the owner write access to the read-only folders of the worktree. Without it,
+`git worktree remove --force` stopped at the first read-only folder, for example frozen evidence or a Go module cache,
+but it still deleted the Git record. That left an orphaned half checkout.
+
+An orphaned worktree goes only when its outcome is idle, as for retirement, and no process uses it. Coconut first
+archives the worktrees that Git still knows inside it, as retirement does. It reads the tree of the saved branch into
+a temporary index, and archives the changed tracked files as a patch, the untracked files, and the ignored files that
+are not build output, with the limits of retirement. A missing tracked file is not a change, because a stopped removal
+deletes files. A nested repository, a clone in a build folder, files over a limit, and a missing branch keep the
+folder. Under the registry lock, Coconut moves the folder to `workspaces/build-trash/`, prunes the Git records, and
+deletes the folder after the lock. The binding then counts as discarded.
 
 A later turn gets a new checkout of the saved branch, and Coconut puts the archived changes back. When the branch moved,
 a patch does not fit, or the archive is gone, the checkout stays clean, and `coconut_workspace` tells the bot which
