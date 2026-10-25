@@ -334,7 +334,12 @@ Retirement does these steps:
    - `retirement.json` with the branch, the HEAD commit, the outcome, the repository, and the time.
 
    The archive stores a hard link as a separate regular file.
-5. It skips the worktree when the archived ignored files are larger than 200 MB.
+5. When the archived ignored files are larger than 200 MB, it holds the largest ignored folders aside until the rest fit.
+   Bots keep QA evidence, such as screenshots and recordings, in ignored folders. It is not build output, and it can be
+   larger than the archive limit. A held folder moves by rename to `workspaces/archive/held/<identity>-<time>/`, so it
+   costs no copy. The binding names it before the move. The restore moves it back, also after a stop. A held folder
+   goes after 30 days (`NESTED_ARCHIVE_DAYS`), as an archive does. A folder that holds a Git repository is never held.
+   It skips the worktree when the ignored files still do not fit, for example when one large ignored file is not in a folder.
 6. It reads the archive again and compares it with the worktree.
 7. It checks the outcome state again. It waits at most 5 seconds for the service lock. It checks `lsof` again.
 8. It takes `workspaces/.workspace.lock`. It checks the binding, the Git worktree record, the HEAD commit, and the changes again.

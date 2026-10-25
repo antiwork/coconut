@@ -1686,13 +1686,86 @@ class WorktreeRetirementTests(unittest.TestCase):
         (path / 'node_modules' / 'big.js').write_bytes(b'x' * 8192)
         with patch('coconut.work_workspace.IGNORED_LIMIT_BYTES', 4096):
             self.assertEqual(self.retire(), [identity])
+        # A large ignored file outside a folder cannot move aside (see held_folders).
         _, identity, path, _ = self.outcome()
-        (path / 'build').mkdir()
-        (path / 'build' / 'fixture.db').write_bytes(b'x' * 4097)
+        (path / '.env').write_bytes(b'x' * 4097)
         with patch('coconut.work_workspace.IGNORED_LIMIT_BYTES', 4096):
             self.assertEqual(self.retire(), [])
-        self.assertEqual((path / 'build' / 'fixture.db').stat().st_size, 4097)
+        self.assertEqual((path / '.env').stat().st_size, 4097)
         self.assertNotIn('retired', self.registry()[identity])
+
+    # Bots keep QA evidence in ignored folders. It does not fit in the archive, so retirement moves it aside.
+    def evidence_worktree(self):
+        (self.repo / '.git' / 'info' / 'exclude').write_text('.private-evidence/\n')
+        outcome, identity, path, task = self.outcome()
+        media = path / '.private-evidence' / 'media'
+        media.mkdir(parents=True)
+        (media / 'capture.png').write_bytes(b'x' * 8192)
+        (path / '.private-evidence' / 'RESULT.md').write_text('result\n')
+        (path / '.env').write_text('SECRET=1\n')
+        (path / 'tracked.txt').write_text('one\nchanged\n')
+        return outcome, identity, path, task
+
+    def test_large_ignored_evidence_moves_aside_and_comes_back(self):
+        outcome, identity, path, _ = self.evidence_worktree()
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 4096):
+            self.assertEqual(self.retire(), [identity])
+        self.assertFalse(path.exists())
+        held = self.registry()[identity]['retired']['held']
+        self.assertEqual(held['names'], ['.private-evidence'])
+        self.assertEqual((Path(held['folder']) / '.private-evidence' / 'media' / 'capture.png').stat().st_size, 8192)
+        with tarfile.open(self.registry()[identity]['retired']['archive']) as tar:
+            names = tar.getnames()
+        self.assertIn('ignored/.env', names)
+        self.assertFalse(any('.private-evidence' in name for name in names))
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual((restored / '.private-evidence' / 'media' / 'capture.png').stat().st_size, 8192)
+        self.assertEqual((restored / '.private-evidence' / 'RESULT.md').read_text(), 'result\n')
+        self.assertEqual((restored / '.env').read_text(), 'SECRET=1\n')
+        self.assertEqual((restored / 'tracked.txt').read_text(), 'one\nchanged\n')
+        self.assertFalse(Path(held['folder']).exists())
+
+    def test_a_failed_removal_puts_the_held_evidence_back(self):
+        _, identity, path, _ = self.evidence_worktree()
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 4096), \
+                patch('coconut.work_workspace.remove_worktree', side_effect=ValueError('refused')), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING'):
+            self.assertEqual(self.retire(), [])
+        self.assertEqual((path / '.private-evidence' / 'media' / 'capture.png').stat().st_size, 8192)
+        self.assertNotIn('retired', self.registry()[identity])
+        self.assertFalse((self.workspaces / 'archive' / work_workspace.HELD).exists()
+                         and any((self.workspaces / 'archive' / work_workspace.HELD).iterdir()))
+
+    def test_a_stop_before_the_held_move_leaves_the_evidence_for_the_restore(self):
+        outcome, identity, path, _ = self.evidence_worktree()
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 4096), \
+                patch('coconut.work_workspace.hold', side_effect=SystemExit), self.assertRaises(SystemExit):
+            self.retire()
+        self.assertIn('held', self.registry()[identity]['retired'])
+        restored = Path(acquire(self.workspaces, outcome, str(self.repo))['path'])
+        self.assertEqual(restored, path)
+        self.assertEqual((restored / '.private-evidence' / 'RESULT.md').read_text(), 'result\n')
+
+    def test_an_ignored_folder_with_a_repository_is_not_held(self):
+        _, identity, path, _ = self.evidence_worktree()
+        git(path / '.private-evidence', 'init', '-q')
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 4096), \
+                self.assertLogs('coconut.worktree_retirement', 'WARNING') as logs:
+            self.assertEqual(self.retire(), [])
+        self.assertTrue(any('larger than the archive limit' in line for line in logs.output))
+        self.assertTrue((path / '.private-evidence' / '.git').is_dir())
+
+    def test_held_folders_go_after_the_archive_age(self):
+        _, identity, path, _ = self.evidence_worktree()
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 4096):
+            self.assertEqual(self.retire(), [identity])
+        folder = Path(self.registry()[identity]['retired']['held']['folder'])
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertTrue(folder.is_dir())
+        self.age(folder, work_workspace.NESTED_ARCHIVE_DAYS + 1)
+        with self.assertLogs('coconut.work_workspace', 'WARNING'):
+            work_workspace.sweep_temporary(self.workspaces)
+        self.assertFalse(folder.exists())
 
     def test_an_unreadable_ignored_folder_keeps_the_worktree(self):
         _, identity, path, _ = self.outcome()
