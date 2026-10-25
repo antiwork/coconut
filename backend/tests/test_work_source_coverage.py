@@ -105,7 +105,7 @@ class WorkSourceTests(unittest.TestCase):
             state = self.service._setting('work-source:assigned')
             self.assertEqual(state['error'], 'CalledProcessError')
             self.assertEqual(state['error_detail'],
-                             'CalledProcessError: exit 4: gh: To get started with GitHub CLI, run: gh auth login')
+                             'CalledProcessError: exit 4: gh: To get started with GitHub CLI, | run: gh auth login')
             since = state['failing_since']
             self.assertTrue(since)
             self.assertIsNone(self.audit()['failing_since'])
@@ -118,41 +118,51 @@ class WorkSourceTests(unittest.TestCase):
         import subprocess
         from coconut.work_sources import failure_detail, mask_secrets
         error = subprocess.CalledProcessError(1, ['read', '--token', 'ghp_' + 'a' * 36],
-                                              stderr=b'fatal: https://bot:secret-value@github.com/x failed\n')
-        detail = failure_detail(error)
-        self.assertEqual(detail, 'CalledProcessError: exit 1: fatal: https://[hidden]@github.com/x failed')
+                                              stderr=b'first line\nsecond line\nfatal: https://bot:pw@github.com/x\nlast line\n')
+        # The exit status and the last three stderr lines, masked. Never the command's arguments.
+        self.assertEqual(failure_detail(error),
+                         'CalledProcessError: exit 1: second line | fatal: https://[hidden]@github.com/x | last line')
         self.assertEqual(failure_detail(subprocess.TimeoutExpired(['read', 'github_pat_' + 'b' * 30], 60)),
                          'TimeoutExpired: no error output')
-        values = {
-            'ghp': 'ghp_' + 'A1b2' * 9, 'gho': 'gho_' + 'Z9y8' * 9, 'pat': 'github_pat_' + '11ABCDEFG0_' + 'x' * 40,
-            'jwt': 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl', 'basic': 'dXNlcjpwYXNzd29yZA==',
-            'plain': 'opaque-credential-value', 'sk': 'sk-proj-' + 'q' * 30,
+        secret = 'opaque-credential-value'
+        masked = {
+            # Greptile's two examples.
+            f'token: {secret}': 'token: [hidden]',
+            'Authorization: Bearer abc.def': 'Authorization: [hidden]',
+            # A name with a credential word, with ":" or "=" and quotes.
+            f'GH_TOKEN={secret} gh api user': 'GH_TOKEN=[hidden] gh api user',
+            f'export GITHUB_TOKEN="{secret}"': 'export GITHUB_TOKEN=[hidden]',
+            f'{{"api_key": "{secret}", "password": \'{secret}\'}}': '{"api_key": [hidden], "password": [hidden]}',
+            f'client_secret={secret}&x=1': 'client_secret=[hidden]',
+            f'Cookie: session={secret}': 'Cookie: [hidden]',
+            f'X-Auth-Token: {secret}': 'X-Auth-Token: [hidden]',
+            f'credential: {secret}': 'credential: [hidden]',
+            f'Proxy-Authorization: Basic {secret}': 'Proxy-Authorization: [hidden]',
+            # An exact credential word with only whitespace.
+            f'password {secret}': 'password [hidden]',
+            # An auth scheme, with no length minimum.
+            'Bearer abc.def': 'Bearer [hidden]',
+            'Basic dXNlcjpw': 'Basic [hidden]',
+            'Digest a1': 'Digest [hidden]',
+            f'curl -H "Authorization: Bearer {secret}"': 'curl -H "Authorization: [hidden]',
+            # A standalone opaque run of 20 or more characters with a letter and a digit.
+            'retry with ghp_' + 'A1b2' * 9 + ' later': 'retry with [hidden] later',
+            'using gho_' + 'Z9y8' * 9: 'using [hidden]',
+            'github_pat_11ABCDEFG0_' + 'x' * 40: '[hidden]',
+            'jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl rejected': 'jwt [hidden] rejected',
+            'sk-proj-' + 'q1' * 15: '[hidden]',
         }
-        lines = [
-            f'> Authorization: Bearer {values["jwt"]}',
-            f'authorization: token {values["gho"]}',
-            f'Proxy-Authorization: Basic {values["basic"]}',
-            f'Authorization: {values["plain"]}',
-            f'curl -H "Authorization: Bearer {values["sk"]}" failed',
-            f'GH_TOKEN={values["ghp"]} gh api user',
-            f'export GITHUB_TOKEN="{values["pat"]}"',
-            f'{{"api_key": "{values["plain"]}", "password": \'{values["plain"]}\'}}',
-            f'HTTP 401: Bad credentials (https://api.github.com/user) token {values["gho"]}',
-            f'error connecting to api.github.com with {values["ghp"]}',
-            f'GH_TOKEN: {values["plain"]}',
-            f'github_token: {values["plain"]}',
-        ]
-        for line in lines:
+        for line, expected in masked.items():
             with self.subTest(line=line):
-                masked = mask_secrets(line)
-                for value in values.values():
-                    self.assertNotIn(value, masked)
-                self.assertIn('[hidden]', masked)
-        # Ordinary gh errors keep their diagnosis.
-        for line in ('gh: To get started with GitHub CLI, please run: gh auth login',
+                self.assertEqual(mask_secrets(line), expected)
+        # Ordinary error text stays readable.
+        for line in ('gh: Not Found (HTTP 404)', 'authentication required', 'exit status 4',
+                     'gh: To get started with GitHub CLI, please run: gh auth login',
                      'HTTP 401: Bad credentials (https://api.github.com/user)',
-                     'error validating token: HTTP 401', 'GraphQL: Could not resolve to a Repository'):
-            self.assertEqual(mask_secrets(line), line)
+                     'GraphQL: Could not resolve to a Repository with the name example/repo.',
+                     'Post "https://api.github.com/graphql": dial tcp: lookup api.github.com: no such host'):
+            with self.subTest(line=line):
+                self.assertEqual(mask_secrets(line), line)
 
     def test_source_audit_does_not_read_completed_tool_history(self):
         original = self.service._all

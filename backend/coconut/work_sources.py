@@ -308,27 +308,23 @@ def audit_signature(proof, decisions):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-# Credential forms that a command can print in its errors. Each pattern covers the name or scheme with its value. The
-# failure line masks them before the log and the state get it.
-_VALUE = r'("[^"]*"|\'[^\']*\'|[^\s,;}]+)'
+# The failure line of a work source is strict: it masks anything that can be a credential, and it keeps ordinary error
+# text such as "gh: Not Found (HTTP 404)", "authentication required" or "exit status 4" readable.
+_CHAR = r'[A-Za-z0-9_\-+/=.]'
+_VALUE = r'(?:"[^"]*"|\'[^\']*\'|[^\s,;}\]]+)'
 SECRETS = (
-    # A header line: Authorization: Bearer <value>, Proxy-Authorization: Basic <value>, Authorization: <value>.
-    (re.compile(r'(?i)\b((?:proxy-)?authorization\s*[:=]\s*)(?:(?:bearer|basic|token|digest|negotiate)\s+)?'
-                r'("[^"]*"|\'[^\']*\'|\S+)'), r'\1[hidden]'),
-    # A scheme with its credential outside a header: Bearer <value>, Basic <value>, token <value>.
-    (re.compile(r'(?i)\b((?:bearer|basic|token)\s+)[A-Za-z0-9._~+/=-]{12,}'), r'\1[hidden]'),
-    # A variable or setting whose name says that it holds a credential: GH_TOKEN=<value>, export GITHUB_TOKEN="<value>",
-    # "api_key": "<value>", GH_TOKEN: <value>, api_key: <value>. Prose such as "token: HTTP 401" stays readable.
-    (re.compile(r'(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)\s*=\s*)'
-                + _VALUE), r'\1[hidden]'),
-    (re.compile(r'(?i)(["\'][\w-]*(?:token|secret|password|passwd|api_key|apikey|access_key|private_key)["\']\s*:\s*)'
-                + _VALUE), r'\1[hidden]'),
-    (re.compile(r'\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)\s*:\s*)' + _VALUE),
-     r'\1[hidden]'),
-    (re.compile(r'\b([a-z0-9]+_[a-z0-9_]*(?:token|secret|password|passwd|key)\s*:\s*)' + _VALUE), r'\1[hidden]'),
-    # Token formats that have a known prefix.
-    (re.compile(r'\b(?:gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}'
-                r'|xox[abprs]-[A-Za-z0-9-]{10,})'), '[hidden]'),
+    # 1. The value after a name that contains a credential word, with ":" or "=" and optional quotes:
+    #    token: <value>, GH_TOKEN=<value>, "api_key": "<value>", Authorization: Bearer <value>, Cookie: <value>.
+    (re.compile(r'(?i)(["\']?[\w.-]*(?:token|secret|key|password|passwd|auth|cookie|credential)[\w.-]*["\']?\s*[:=]\s*)'
+                r'(?:(?:bearer|basic|token|digest|negotiate)\s+)?' + _VALUE), r'\1[hidden]'),
+    #    The same with only whitespace, after an exact credential word: password <value>, api_key <value>. gh writes
+    #    "Bad credentials (<url>)", so "credentials" with whitespace is not one of these words.
+    (re.compile(r'(?i)\b((?:secret|password|passwd|api[_-]?key)\s+)' + _VALUE), r'\1[hidden]'),
+    # 2. The word after an auth scheme, of any length: Bearer <value>, Basic <value>, token <value>, Digest <value>.
+    (re.compile(r'(?i)\b((?:bearer|basic|token|digest)\s+)(?!\[hidden\])' + _VALUE), r'\1[hidden]'),
+    # 3. A standalone run of 20 or more token characters with a letter and a digit: opaque tokens, JWTs, ghp_..., keys.
+    (re.compile(r'(?<!' + _CHAR + r')(?=' + _CHAR + r'*[A-Za-z])(?=' + _CHAR + r'*[0-9])' + _CHAR + r'{20,}(?!' + _CHAR
+                + r')'), '[hidden]'),
     # Credentials in a URL: https://user:password@host.
     (re.compile(r'://[^/\s:@]+:[^/\s@]+@'), '://[hidden]@'),
 )
@@ -340,10 +336,10 @@ def mask_secrets(text):
     return text
 
 
-def failure_detail(error, limit=500):
-    """One line about a failed source read: the error, the exit status, and the end of the command's stderr.
+def failure_detail(error, lines=3, limit=500):
+    """A short line about a failed source read: the error, the exit status, and the last lines of the command's stderr.
 
-    A failed command shows only its stderr, never its arguments. The line masks token forms.
+    A failed command shows only its stderr, never its arguments. Each line is masked before it is kept.
     """
     parts = [type(error).__name__]
     if isinstance(error, subprocess.CalledProcessError):
@@ -353,8 +349,9 @@ def failure_detail(error, limit=500):
         text = text.decode('utf-8', 'replace') if isinstance(text, bytes) else str(text)
     else:
         text = str(error)
-    text = mask_secrets(' '.join(text.split()))
-    parts.append(text[-limit:] if text else 'no error output')
+    kept = [mask_secrets(' '.join(line.split())) for line in text.splitlines() if line.strip()][-lines:]
+    detail = ' | '.join(kept)
+    parts.append(detail[-limit:] if detail else 'no error output')
     return ': '.join(parts)
 
 

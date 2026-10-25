@@ -131,7 +131,7 @@ The audit reads the latest comment of each labeled item with one GraphQL request
 Bot work, a delegated ruling, or a scheduled recheck does not cover it. The audit tells the bot to ask with the source's own choices, and to post the answer to the source.
 When the GraphQL read fails, the audit uses its earlier rules.
 
-When a work source command fails, the service logs one warning for the failure streak: `Work source <id> of bot <bot> failed:` with the error, the exit status and the end of the command's stderr. The health check of Care reads this line. When the source works again, the service logs `Work source <id> of bot <bot> works again`. The source state keeps `error_detail` and `failing_since` until then.
+When a work source command fails, the service logs one warning for the failure streak: `Work source <id> of bot <bot> failed:` with the error, the exit status and the last three lines of the command's stderr. The line never shows the command's arguments, and it masks anything that can be a credential: the value after a name with a credential word (`token`, `secret`, `key`, `password`, `auth`, `cookie`, `credential`), the word after an auth scheme (`Bearer`, `Basic`, `token`, `Digest`), and any run of 20 or more token characters with a letter and a digit. The health check of Care reads this line. When the source works again, the service logs `Work source <id> of bot <bot> works again`. The source state keeps `error_detail` and `failing_since` until then.
 
 The work source audit records the source item that it gives a task in `_source_assignment`. A later audit of the same item
 runs in a separate execution, and it can ask the person about that item while the request's card waits archived.
