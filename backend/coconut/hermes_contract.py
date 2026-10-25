@@ -67,6 +67,12 @@ def verify_contract():
     from tools import browser_tool
     if not isinstance(browser_tool._active_sessions, dict) or not hasattr(browser_tool._cleanup_lock, '__enter__'):
         raise ValueError('Hermes changed the native browser session registry.')
+    # A stopping worker stops the harness daemons that it drove in parallel (hermes_worker.stop_browser_daemons).
+    from tools import browser_use_cli
+    if (not isinstance(browser_use_cli._driven_daemons, dict)
+            or not hasattr(browser_use_cli._driven_daemons_lock, '__enter__')
+            or not callable(browser_use_cli._reload_daemons)):
+        raise ValueError('Hermes changed the browser-harness daemon registry.')
     from tools.terminal_tool import register_task_env_overrides
     require_keywords(register_task_env_overrides, {'task_id', 'overrides'})
     from toolsets import create_custom_toolset, get_toolset

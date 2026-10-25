@@ -11,6 +11,7 @@ import re
 import signal
 import sys
 import threading
+import time
 import traceback
 import unicodedata
 from pathlib import Path, PurePosixPath
@@ -783,8 +784,10 @@ def configure_browser_runtime():
     except ImportError:
         return
     # The socket root of Hermes for served profiles: a profile or scratch folder is too long for a 64-character session.
+    root = os.path.realpath('/tmp')
+    remove_sealed_browser_runtimes(root)
     # A random name: no other process can create the folder first, and no other worker uses it.
-    folder = os.path.join(os.path.realpath('/tmp'), f'cbh-{uuid4().hex[:12]}')
+    folder = os.path.join(root, f'cbh-{uuid4().hex[:12]}')
     if fits_socket_budget(folder, socket_dir_budget(sys.platform)) and claim_private_dir(folder):
         # Several session names share the folder, so the harness keeps bu-<session> file names.
         os.environ.update(BH_RUNTIME_DIR=folder, BH_RUNTIME_DIR_SHARED='1')
@@ -794,13 +797,117 @@ def configure_browser_runtime():
         atexit.register(release_browser_runtime)
 
 
-def release_browser_runtime():
-    """Delete the socket folder of this worker unless a daemon still listens there. rmdir keeps a folder with a socket."""
-    if _browser_runtime:
+# Coconut kills a worker 10 seconds after SIGTERM (providers._terminate). The cleanup of the worker ends before that.
+SHUTDOWN_SECONDS = 8
+# A worker that stops during a turn leaves its empty socket folder with this mode, so no daemon can listen there.
+SEALED_MODE = 0o500
+# By then no browser-harness command of a stopped worker still starts a daemon.
+SEALED_SECONDS = 60
+
+
+def remove_sealed_browser_runtimes(root):
+    """Delete the sealed socket folders that stopped workers of this account left, once no daemon can start there."""
+    import stat
+    for path in Path(root).glob('cbh-*'):
         try:
-            os.rmdir(_browser_runtime)
+            info = os.lstat(path)
+            if (stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
+                    and stat.S_IMODE(info.st_mode) == SEALED_MODE and time.time() - info.st_ctime > SEALED_SECONDS):
+                os.rmdir(path)
         except OSError:
             pass
+
+
+def seal_browser_runtime(running):
+    """Delete the empty socket folder of this worker. Return False when a daemon still has files there.
+
+    While a turn still runs, the turn can start a daemon after the worker exits. Then the folder stays, empty and closed
+    to writes, so that daemon cannot listen and exits. A later worker deletes the folder.
+    """
+    # The harness never deletes the lock file of a daemon start, bu-<session>.spawnlock. It holds no daemon.
+    for path in Path(_browser_runtime).glob('bu-*.spawnlock'):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+    try:
+        if not running:
+            os.rmdir(_browser_runtime)
+            return True
+        if any(os.scandir(_browser_runtime)):
+            return False
+        os.chmod(_browser_runtime, SEALED_MODE)
+        if any(os.scandir(_browser_runtime)):
+            # A daemon started listening before the folder closed. Stop it first.
+            os.chmod(_browser_runtime, 0o700)
+            return False
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    return True
+
+
+def stop_browser_daemons(stopping=None):
+    """Start a stop for each browser-harness daemon of this worker that has no stop running, all at once.
+
+    Hermes's stop_harness_daemons stops one daemon after another, each for up to 15 seconds, so a few daemons outlast
+    the time of a stopping worker. Each thread runs the same identity-checked `browser-harness --reload` of Hermes for
+    one daemon, in its own session. A daemon belongs to this worker when browser_exec of this process drove it, or when
+    its socket is in the worker's own folder: a turn that still runs can start one after an earlier call. Return
+    `stopping`, which maps each daemon to the thread of its latest stop.
+    """
+    stopping = {} if stopping is None else stopping
+    browser = sys.modules.get('tools.browser_use_cli')
+    if browser is None:
+        return stopping
+    # As stop_harness_daemons does: take the daemons this process drove, so no later stop repeats them.
+    with browser._driven_daemons_lock:
+        daemons = set(browser._driven_daemons)
+        browser._driven_daemons.clear()
+    if _browser_runtime:
+        from tools.browser_harness_dirs import daemon_identity
+        env = browser._base_subprocess_env()
+        # In a shared folder, the harness keeps bu-<session>.sock for a listening daemon and bu-<session>.pid for one
+        # that starts. Its --reload removes both. Only this worker uses this folder.
+        names = {path.name[len('bu-'):].rsplit('.', 1)[0]
+                 for pattern in ('bu-*.sock', 'bu-*.pid') for path in Path(_browser_runtime).glob(pattern)}
+        daemons.update(daemon_identity({**env, 'BU_NAME': name}) for name in names)
+    for daemon in sorted(daemons):
+        if daemon in stopping and stopping[daemon].is_alive():
+            continue
+        stopping[daemon] = threading.Thread(target=browser._reload_daemons, args=([daemon],), daemon=True,
+                                            name='browser-daemon-stop')
+        stopping[daemon].start()
+    return stopping
+
+
+def release_browser_runtime(stopping=None, deadline=None, busy=lambda: False):
+    """Stop the browser-harness daemons of this worker, then delete or seal its socket folder.
+
+    The daemons run in their own session, so the SIGTERM for the worker misses them, and the os._exit of shutdown skips
+    the stop of Hermes at exit. No later worker can reach a daemon in this folder. `stopping` holds the stops that the
+    caller started already. Until the deadline, look again for daemons that a running turn started meanwhile. `busy()`
+    says whether a turn still runs. A worker without a folder of its own still waits for its stops.
+    """
+    stopping = stop_browser_daemons() if stopping is None else stopping
+    deadline = time.monotonic() + SHUTDOWN_SECONDS if deadline is None else deadline
+    while True:
+        for thread in list(stopping.values()):
+            thread.join(max(0, deadline - time.monotonic()))
+        if time.monotonic() >= deadline:
+            break
+        started = dict(stopping)
+        stop_browser_daemons(stopping)
+        if stopping != started:
+            continue
+        if not _browser_runtime or seal_browser_runtime(busy()):
+            break
+        if 'tools.browser_use_cli' not in sys.modules:
+            # No browser_exec ran in this process, so nothing can start or stop a daemon here.
+            break
+        # A daemon still has its socket there: its stop is not done, or a running turn just started it.
+        time.sleep(0.1)
 
 
 def stop_native_processes(task_id=None, *, recover=False):
@@ -874,12 +981,23 @@ def main():
             return
         stopping.set()
         def clean():
+            deadline = time.monotonic() + SHUTDOWN_SECONDS
+            code = 0
+            # The browser daemons stop first and in parallel, so each gets its stop before Coconut kills the worker.
+            # A failure of one step skips none of the others, and the worker always exits.
+            try:
+                browsers = stop_browser_daemons()
+            except Exception:
+                browsers, code = {}, 1
             try:
                 stop_native_processes()
             except Exception:
-                os._exit(1)
-            release_browser_runtime()
-            os._exit(0)
+                code = 1
+            try:
+                release_browser_runtime(browsers, deadline, busy=lambda: bool(active))
+            except Exception:
+                code = 1
+            os._exit(code)
         threading.Thread(target=clean, daemon=True, name='runtime-cleanup').start()
 
     signal.signal(signal.SIGTERM, shutdown)
