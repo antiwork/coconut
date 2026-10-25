@@ -66,6 +66,7 @@ Each time the service starts, it looks for Hermes in this order:
 The official installer keeps the Python packages of Hermes in a dependency environment in the Hermes home, under `installs/<id>`. Its `facts.json` names the active environment, and Coconut runs Hermes with that environment's Python.
 The Hermes home is `HERMES_HOME`. A LaunchAgent does not get the variables of your shell, so when the service has no `HERMES_HOME`, Coconut reads it from your login shell, for example from `~/.zprofile`. Without either, it uses `~/.hermes`.
 Coconut starts each Hermes process with `HERMES_DISABLE_LAZY_INSTALLS=1`. Each bot has its own Hermes home, and without this setting, Hermes would install a dependency environment for each of them.
+A bot's worker also gets `HERMES_RUNTIME_DIR=<bot's Hermes home>/tools`. That is where the bot's terminal `hermes` installs tools such as the browser. Without this setting, the worker would read the tools of the Hermes home that owns the source folder. Bots do not share tools.
 After `hermes update`, restart Coconut, so that it uses the new dependency environment.
 
 The service imports the Hermes modules that it uses, then runs its contract check against them.

@@ -182,6 +182,22 @@ class ProviderTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             provider.environment('../../outside')
 
+    def test_each_bot_worker_reads_the_tool_store_of_its_own_home(self):
+        provider = HermesProvider(self.root)
+        # A store that the service environment names never reaches a bot.
+        with patch.dict(os.environ, {'HERMES_RUNTIME_DIR': '/Users/person/.hermes/tools', 'HERMES_HOME': '/Users/person/.hermes'},
+                        clear=True):
+            first, _ = provider.environment(self.bot['id'])
+            second, _ = provider.environment(str(uuid4()))
+        for env in (first, second):
+            self.assertEqual(env['HERMES_RUNTIME_DIR'], str(Path(env['HERMES_HOME']) / 'tools'))
+            self.assertTrue(Path(env['HERMES_RUNTIME_DIR']).is_relative_to(self.root.resolve() / 'bots'))
+        self.assertEqual(Path(first['HERMES_HOME']), self.root.resolve() / 'bots' / self.bot['id'] / 'home')
+        self.assertNotEqual(first['HERMES_RUNTIME_DIR'], second['HERMES_RUNTIME_DIR'])
+        # The Mac account home stays the HOME of each bot.
+        self.assertEqual(first['HOME'], second['HOME'])
+        self.assertNotEqual(first['HOME'], first['HERMES_HOME'])
+
     def test_homebrew_trust_is_shared_without_sharing_bot_settings(self):
         provider = HermesProvider(self.root)
         with patch.dict(os.environ, {'XDG_CONFIG_HOME': '/private/settings',

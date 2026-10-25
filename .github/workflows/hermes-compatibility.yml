@@ -187,6 +187,9 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_requester_callback_continuation.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_foreground_dispatch.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_source_ownership.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_tool_store.py 2> .runtime/native-tool-store.log || { cat .runtime/native-tool-store.log; exit 1; }
+          cat .runtime/native-tool-store.log
+          grep -qx 'OK' .runtime/native-tool-store.log # The installer's source must not choose a bot's tool store, so the check must not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_display.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_pr_links.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_work_workspace.py

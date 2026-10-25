@@ -416,6 +416,9 @@ class HermesProvider(FixtureProvider):
         env.update(HERMES_HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
         from .hermes_runtime import NO_LAZY_INSTALLS
         env.update(NO_LAZY_INSTALLS)
+        # Hermes finds its tool store from the source folder, which the Hermes home of the official installer owns.
+        # The bot's terminal `hermes` installs tools into <HERMES_HOME>/tools, so the worker reads that store too.
+        env['HERMES_RUNTIME_DIR'] = str(root / 'home' / 'tools')
         env.update(HERMES_KANBAN_DB=str(self.data_dir / 'kanban/kanban.db'),
                    HERMES_KANBAN_BOARD='default', HERMES_TENANT=bot_id,
                    HERMES_KANBAN_WORKSPACES_ROOT=str(self.data_dir / 'kanban/kanban/workspaces'))

@@ -109,7 +109,8 @@ def use_worker_python_for_scripts():
         from hermes_cli._launchers import resolve_store_python
         from pm.environments import project_python
         repo = Path(scripts.__file__).resolve().parents[1]
-        if resolve_store_python(repo) is None or project_python(repo).is_file():
+        # The store of the source folder decides, not the bot's tool store that HERMES_RUNTIME_DIR names.
+        if resolve_store_python(repo, publication=True) is None or project_python(repo).is_file():
             return original(script)
         # The same command as Hermes builds for its own dependency environment, on this worker's Python.
         return [sys.executable, '-c', bootstrap, str(repo), str(script)], {'HERMES_DISABLE_LAZY_INSTALLS': '1'}
