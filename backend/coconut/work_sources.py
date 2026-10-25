@@ -308,9 +308,36 @@ def audit_signature(proof, decisions):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-# Token forms that a command can print in its errors. The failure line masks them before the log and the state get it.
-SECRET = re.compile(r'(?i)(gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}'
-                    r'|(?:bearer|token|authorization)[:= ]+\S+|://[^/\s:@]+:[^/\s@]+@)')
+# Credential forms that a command can print in its errors. Each pattern covers the name or scheme with its value. The
+# failure line masks them before the log and the state get it.
+_VALUE = r'("[^"]*"|\'[^\']*\'|[^\s,;}]+)'
+SECRETS = (
+    # A header line: Authorization: Bearer <value>, Proxy-Authorization: Basic <value>, Authorization: <value>.
+    (re.compile(r'(?i)\b((?:proxy-)?authorization\s*[:=]\s*)(?:(?:bearer|basic|token|digest|negotiate)\s+)?'
+                r'("[^"]*"|\'[^\']*\'|\S+)'), r'\1[hidden]'),
+    # A scheme with its credential outside a header: Bearer <value>, Basic <value>, token <value>.
+    (re.compile(r'(?i)\b((?:bearer|basic|token)\s+)[A-Za-z0-9._~+/=-]{12,}'), r'\1[hidden]'),
+    # A variable or setting whose name says that it holds a credential: GH_TOKEN=<value>, export GITHUB_TOKEN="<value>",
+    # "api_key": "<value>", GH_TOKEN: <value>, api_key: <value>. Prose such as "token: HTTP 401" stays readable.
+    (re.compile(r'(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)\s*=\s*)'
+                + _VALUE), r'\1[hidden]'),
+    (re.compile(r'(?i)(["\'][\w-]*(?:token|secret|password|passwd|api_key|apikey|access_key|private_key)["\']\s*:\s*)'
+                + _VALUE), r'\1[hidden]'),
+    (re.compile(r'\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)\s*:\s*)' + _VALUE),
+     r'\1[hidden]'),
+    (re.compile(r'\b([a-z0-9]+_[a-z0-9_]*(?:token|secret|password|passwd|key)\s*:\s*)' + _VALUE), r'\1[hidden]'),
+    # Token formats that have a known prefix.
+    (re.compile(r'\b(?:gh[opsur]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}'
+                r'|xox[abprs]-[A-Za-z0-9-]{10,})'), '[hidden]'),
+    # Credentials in a URL: https://user:password@host.
+    (re.compile(r'://[^/\s:@]+:[^/\s@]+@'), '://[hidden]@'),
+)
+
+
+def mask_secrets(text):
+    for pattern, replacement in SECRETS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def failure_detail(error, limit=500):
@@ -326,7 +353,7 @@ def failure_detail(error, limit=500):
         text = text.decode('utf-8', 'replace') if isinstance(text, bytes) else str(text)
     else:
         text = str(error)
-    text = SECRET.sub('[hidden]', ' '.join(text.split()))
+    text = mask_secrets(' '.join(text.split()))
     parts.append(text[-limit:] if text else 'no error output')
     return ': '.join(parts)
 

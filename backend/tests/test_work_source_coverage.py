@@ -116,16 +116,43 @@ class WorkSourceTests(unittest.TestCase):
 
     def test_the_failure_line_masks_tokens_and_never_shows_the_command(self):
         import subprocess
-        from coconut.work_sources import failure_detail
+        from coconut.work_sources import failure_detail, mask_secrets
         error = subprocess.CalledProcessError(1, ['read', '--token', 'ghp_' + 'a' * 36],
-                                              stderr=b'fatal: https://bot:secret-value@github.com/x failed; Bearer abc.def\n')
+                                              stderr=b'fatal: https://bot:secret-value@github.com/x failed\n')
         detail = failure_detail(error)
-        self.assertNotIn('ghp_', detail)
-        self.assertNotIn('secret-value', detail)
-        self.assertNotIn('abc.def', detail)
-        self.assertTrue(detail.startswith('CalledProcessError: exit 1: fatal: https[hidden]github.com/x failed;'))
+        self.assertEqual(detail, 'CalledProcessError: exit 1: fatal: https://[hidden]@github.com/x failed')
         self.assertEqual(failure_detail(subprocess.TimeoutExpired(['read', 'github_pat_' + 'b' * 30], 60)),
                          'TimeoutExpired: no error output')
+        values = {
+            'ghp': 'ghp_' + 'A1b2' * 9, 'gho': 'gho_' + 'Z9y8' * 9, 'pat': 'github_pat_' + '11ABCDEFG0_' + 'x' * 40,
+            'jwt': 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJl', 'basic': 'dXNlcjpwYXNzd29yZA==',
+            'plain': 'opaque-credential-value', 'sk': 'sk-proj-' + 'q' * 30,
+        }
+        lines = [
+            f'> Authorization: Bearer {values["jwt"]}',
+            f'authorization: token {values["gho"]}',
+            f'Proxy-Authorization: Basic {values["basic"]}',
+            f'Authorization: {values["plain"]}',
+            f'curl -H "Authorization: Bearer {values["sk"]}" failed',
+            f'GH_TOKEN={values["ghp"]} gh api user',
+            f'export GITHUB_TOKEN="{values["pat"]}"',
+            f'{{"api_key": "{values["plain"]}", "password": \'{values["plain"]}\'}}',
+            f'HTTP 401: Bad credentials (https://api.github.com/user) token {values["gho"]}',
+            f'error connecting to api.github.com with {values["ghp"]}',
+            f'GH_TOKEN: {values["plain"]}',
+            f'github_token: {values["plain"]}',
+        ]
+        for line in lines:
+            with self.subTest(line=line):
+                masked = mask_secrets(line)
+                for value in values.values():
+                    self.assertNotIn(value, masked)
+                self.assertIn('[hidden]', masked)
+        # Ordinary gh errors keep their diagnosis.
+        for line in ('gh: To get started with GitHub CLI, please run: gh auth login',
+                     'HTTP 401: Bad credentials (https://api.github.com/user)',
+                     'error validating token: HTTP 401', 'GraphQL: Could not resolve to a Repository'):
+            self.assertEqual(mask_secrets(line), line)
 
     def test_source_audit_does_not_read_completed_tool_history(self):
         original = self.service._all
