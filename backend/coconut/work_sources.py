@@ -161,23 +161,30 @@ def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, 
 
 AWAITING_LABELS = ('awaiting-human',)
 AWAITING_BATCH = 50
+# Labels of an issue that tracks work. The person's answer only unblocks a step, so the issue stays open.
+WORK_LABELS = ('enhancement', 'bug', 'feature', 'planning', 'working')
 
 
-def answer_steps(url, kind):
+def answer_steps(url, kind, labels=()):
     """Tell the bot what to do with the person's answer to a source that waits for them.
 
-    The bot posts the answer as a comment. For an issue, the bot then closes it: the comment carries the decision,
-    and the source's author does the rest from it. kind is the GitHub type that awaiting_user read, because an
-    /issues/ URL can also name a pull request. A pull request, or a source of unknown type, stays open.
+    The bot posts the answer as a comment. For an issue whose question the answer settles completely, the bot then
+    closes it: the comment carries the decision, and the source's author does the rest from it. kind is the GitHub
+    type that awaiting_user read, because an /issues/ URL can also name a pull request. A pull request, a source of
+    unknown type, or an issue with a work label stays open.
     """
     from .decision_sources import github_source
     steps = ('After the person answers, post their answer to the source as a comment in their words or with the chosen choice, '
              'then verify the comment. ')
     location = github_source(url)
-    if location and kind == 'Issue':
-        steps += ('Then close the issue with gh issue close ' + location[2] + ' and verify that the issue is closed. '
-                  'Do not close it when the answer says to keep the issue open, '
-                  'or when the answer asks a question back instead of deciding. ')
+    work = {str(label).lower() for label in labels or ()} & set(WORK_LABELS)
+    if location and kind == 'Issue' and not work:
+        steps += ('Close the issue only when the answer settles everything that the issue asks, for example a ruling, '
+                  'an approval or a refund decision. Then close it with gh issue close ' + location[2]
+                  + ' and verify that the issue is closed. '
+                  'Keep it open when work continues after the answer: when the request says that the answer unblocks work, '
+                  'a draft, a pull request or a next phase, when the answer says to keep the issue open, '
+                  'or when the answer asks a question back instead of deciding. If you are not sure, keep it open. ')
     else:
         steps += 'Do not close the source. '
     return steps
@@ -628,7 +635,7 @@ class WorkSources:
                             'mark its recommendation, and include the source link in sources. '
                             'A delegated ruling, a scheduled recheck, or a wait for another party does not answer it. '
                             'Do not create a card for a choice that the latest comments already settle. '
-                            + answer_steps(item['id'], item.get('github_type')) + 'Reuse a pending card about this source instead of creating another. '
+                            + answer_steps(item['id'], item.get('github_type'), item.get('labels')) + 'Reuse a pending card about this source instead of creating another. '
                             if item.get('awaiting_user') else '')
                         text = ('Reconcile these open assignments against the original sources and existing work. '
                                 + awaiting_instruction + removed_instruction +
@@ -648,7 +655,7 @@ class WorkSources:
                         if item.get('awaiting_user'):
                             from .decision_sources import github_source
                             task['_source_answer_steps'] = dict(url=github_source(item['id'])[2],
-                                                                text=answer_steps(item['id'], item.get('github_type')))
+                                                                text=answer_steps(item['id'], item.get('github_type'), item.get('labels')))
                         task['_source_assignment'] = dict(source_id=source['id'], id=item['id'], updated_at=item['updated_at'],
                                                           labels=item.get('labels', []), kind=item.get('kind'),
                                                           awaiting_user=bool(item.get('awaiting_user')))

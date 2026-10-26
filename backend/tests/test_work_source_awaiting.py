@@ -84,13 +84,24 @@ class AwaitingUserTests(unittest.TestCase):
 
 
 class AnswerStepsTests(unittest.TestCase):
-    def test_answer_to_an_issue_closes_the_issue(self):
-        steps = answer_steps(URL + '#issuecomment-1', 'Issue')
+    def test_answer_that_settles_an_issue_closes_it(self):
+        steps = answer_steps(URL + '#issuecomment-1', 'Issue', ['awaiting-human', 'priority/medium'])
         self.assertIn('post their answer to the source as a comment', steps)
-        self.assertIn('then verify the comment. Then close the issue with gh issue close ' + URL
-                      + ' and verify that the issue is closed.', steps)
-        self.assertIn('Do not close it when the answer says to keep the issue open', steps)
+        self.assertIn('Close the issue only when the answer settles everything that the issue asks', steps)
+        self.assertIn('Then close it with gh issue close ' + URL + ' and verify that the issue is closed.', steps)
+        self.assertIn('the answer unblocks work, a draft, a pull request or a next phase', steps)
+        self.assertIn('when the answer says to keep the issue open', steps)
         self.assertIn('asks a question back instead of deciding', steps)
+        self.assertIn('If you are not sure, keep it open.', steps)
+
+    def test_answer_to_a_work_issue_leaves_it_open(self):
+        # A feature plan asked one design choice; the answer unblocked work, and closing the issue was wrong.
+        for label in ('enhancement', 'Bug', 'feature', 'planning', 'working'):
+            with self.subTest(label=label):
+                steps = answer_steps(URL, 'Issue', ['awaiting-human', label])
+                self.assertIn('post their answer to the source as a comment', steps)
+                self.assertNotIn('gh issue close', steps)
+                self.assertIn('Do not close the source.', steps)
 
     def test_answer_to_a_pull_request_leaves_it_open(self):
         # GitHub also serves a pull request at /issues/N. Only the type that GitHub reports counts.
@@ -155,7 +166,7 @@ class AwaitingAuditTests(unittest.TestCase):
         prompt = self.service._get('tasks', state['task_id'])['_source_audit_prompt']
         self.assertIn('This source waits for the person', prompt)
         self.assertIn('post their answer to the source as a comment', prompt)
-        self.assertIn('Then close the issue with gh issue close ' + URL, prompt)
+        self.assertIn('Then close it with gh issue close ' + URL, prompt)
         self.assertIn('"awaiting_user": true', prompt)
         self.assertEqual(self.service._get('tasks', state['task_id'])['_source_answer_steps'],
                          dict(url=URL, text=answer_steps(URL, 'Issue')))
@@ -175,7 +186,7 @@ class AwaitingAuditTests(unittest.TestCase):
         for status in ('approved', 'replied'):
             card = dict(id='card', title='Payout', action_type='question', status=status, correction='Use option B.')
             prompt, _ = conversation_input(dict(operation='resume', task=task, decision=card, history=[]))
-            self.assertIn('Then close the issue with gh issue close ' + URL, prompt)
+            self.assertIn('Then close it with gh issue close ' + URL, prompt)
         card = dict(id='card', title='Payout', action_type='question', status='modified', correction='Ask again.')
         prompt, _ = conversation_input(dict(operation='resume', task=task, decision=card, history=[]))
         self.assertNotIn('gh issue close', prompt)
