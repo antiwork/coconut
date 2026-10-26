@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import ssl
 import sys
 import time
 from urllib.request import Request, urlopen
@@ -19,7 +18,6 @@ from coconut.server import create_pairing_code
 
 def main() -> None:
     data = ROOT / '.runtime/host'
-    context = ssl.create_default_context(cafile=str(data / 'server.crt'))
     token = None
 
     def request(method, path, body=None):
@@ -27,8 +25,8 @@ def main() -> None:
         if token:
             headers['Authorization'] = 'Bearer ' + token
         payload = json.dumps(body).encode() if body is not None else None
-        with urlopen(Request('https://localhost:8960' + path, data=payload, headers=headers,
-                             method=method), context=context, timeout=35) as response:
+        with urlopen(Request('http://127.0.0.1:8960' + path, data=payload, headers=headers,
+                             method=method), timeout=35) as response:
             return json.load(response)
 
     token = request('POST', '/v1/pair', {

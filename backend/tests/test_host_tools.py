@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 import plistlib
 import sys
-import shutil
-import ssl
 import subprocess
 import tempfile
 import time
@@ -68,241 +66,52 @@ class HostToolsTests(unittest.TestCase):
 
     def test_migrated_source_cannot_start_another_executor(self):
         with tempfile.TemporaryDirectory() as directory:
-            data = Path(directory)
-            (data / "moved-to.json").write_text('{"address":"https://mini.example.ts.net:8960"}')
-            args = self.arguments(directory)
+            (Path(directory) / "moved-to.json").write_text('{"ssh":"user@mini.local"}')
             with self.assertRaisesRegex(SystemExit, "Execution moved"):
-                host.service_args(args)
-            self.assertFalse((data / "server.key").exists())
+                host.service_args(self.arguments(directory))
 
     def arguments(self, directory, **changes):
-        values = dict(data_dir=Path(directory), address=None, port=None, command='setup',
-                      replace_certificate=False, host='0.0.0.0', provider='fixture', insecure_loopback=False)
-        values.update(changes)
-        args = argparse.Namespace(**values)
-        host.configure_address(args)
-        return args
+        return argparse.Namespace(**dict(dict(data_dir=Path(directory), port=8960, provider='fixture'), **changes))
 
-    def assert_certificate_connects(self, cert, key, hostname):
-        server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        server_context.load_cert_chain(cert, key)
-        client_context = ssl.create_default_context(cafile=str(cert))
-        client_in, client_out, server_in, server_out = [ssl.MemoryBIO() for _ in range(4)]
-        client = client_context.wrap_bio(client_in, client_out, server_hostname=hostname)
-        server = server_context.wrap_bio(server_in, server_out, server_side=True)
-        completed = set()
-        for _ in range(20):
-            for name, connection in [('client', client), ('server', server)]:
-                try:
-                    connection.do_handshake()
-                    completed.add(name)
-                except ssl.SSLWantReadError:
-                    pass
-            if client_out.pending:
-                server_in.write(client_out.read())
-            if server_out.pending:
-                client_in.write(server_out.read())
-            if len(completed) == 2:
-                break
-        self.assertEqual(completed, {'client', 'server'})
-        return client.getpeercert()
-
-    @unittest.skipUnless(shutil.which('openssl'), 'OpenSSL is required for the local TLS certificate.')
-    def test_certificate_matches_the_local_hostname(self):
+    def test_the_service_listens_on_loopback_with_the_tunnel_listener(self):
         with tempfile.TemporaryDirectory() as directory:
-            cert, key = host.certificate(Path(directory))
-            self.assert_certificate_connects(cert, key, host.socket.gethostname())
-            self.assertEqual(len(host.fingerprint(cert)), 64)
-            self.assertEqual(key.stat().st_mode & 0o777, 0o600)
+            arguments = host.service_args(self.arguments(directory, port=9000))
+        self.assertEqual(arguments[1:], ['-m', 'coconut', '--data-dir', directory, '--port', '9000',
+                                         '--provider', 'fixture', '--tunnel-port', '8961'])
+        with tempfile.TemporaryDirectory() as directory, self.assertRaisesRegex(SystemExit, 'port from 1'):
+            host.service_args(self.arguments(directory, port=0))
 
-    @unittest.skipUnless(Path('/usr/bin/openssl').is_file(), 'The system OpenSSL is required for this certificate test.')
-    def test_system_openssl_certificate_uses_named_p256_curve(self):
-        with tempfile.TemporaryDirectory() as directory, \
-             patch.object(host.shutil, 'which', return_value='/usr/bin/openssl'), \
-             patch.object(host.socket, 'gethostname', return_value='test-mini'), \
-             patch.object(host.socket, 'getaddrinfo', return_value=[]):
-            root = Path(directory)
-            cert, key = root / 'server.crt', root / 'server.key'
-            host.create_certificate(root, cert, key, 'test-mini.local')
-            details = subprocess.run(
-                ['/usr/bin/openssl', 'x509', '-in', str(cert), '-noout', '-text'],
-                check=True, capture_output=True, text=True,
-            ).stdout
-            self.assertIn('Public Key Algorithm: id-ecPublicKey', details)
-            self.assertIn('ASN1 OID: prime256v1', details)
-            self.assertNotIn('Field Type:', details)
-            self.assert_certificate_connects(cert, key, 'test-mini.local')
+    def serve(self, command):
+        """Run host.py serve with these arguments, and return the command that it starts."""
+        with patch.object(sys, 'argv', command), patch.object(host, 'load_credentials'), \
+             patch.object(host, 'managed_current_process', return_value=False), \
+             patch.object(host.os, 'chdir'), patch.object(host.os, 'execv') as execute:
+            host.main()
+        return execute.call_args.args[1]
 
-    def test_remote_dns_certificate_keeps_local_names(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(host.socket, 'gethostname', return_value='test-mini'), \
-             patch.object(host.socket, 'getaddrinfo', return_value=[]):
-            args = self.arguments(directory, address='https://mini.example.ts.net:8960')
-            cert, key = host.connection_certificate(args)
-            details = self.assert_certificate_connects(cert, key, 'mini.example.ts.net')
-            self.assertIn(('DNS', 'mini.example.ts.net'), details['subjectAltName'])
-            for hostname in ('localhost', 'test-mini', 'test-mini.local', '127.0.0.1'):
-                self.assert_certificate_connects(cert, key, hostname)
-            with self.assertRaises(ssl.SSLCertVerificationError):
-                self.assert_certificate_connects(cert, key, 'other.example.ts.net')
-
-    def test_remote_ip_certificate_uses_ip_san(self):
-        for address, hostname in (('https://100.82.1.2:8960', '100.82.1.2'), ('https://[fd7a:115c:a1e0::1]:8960', 'fd7a:115c:a1e0::1')):
-            with self.subTest(address=address), tempfile.TemporaryDirectory() as directory:
-                args = self.arguments(directory, address=address)
-                cert, key = host.connection_certificate(args)
-                details = self.assert_certificate_connects(cert, key, hostname)
-                self.assertTrue(any(kind == 'IP Address' for kind, _ in details['subjectAltName']))
-
-    def test_address_rejects_unsafe_urls_and_conflicting_ports(self):
-        invalid = ['http://mini:8960', 'https://user@mini:8960', 'https://user:password@mini:8960',
-                   'https://mini:8960/v1', 'https://mini:8960?', 'https://mini:8960#',
-                   'https://mini:0', 'https://mini:65536', 'https://mini:-1', 'https://mini:',
-                   'https://[::1]extra:8960', 'https://mini:8960\n', 'https://mini:8960 bad',
-                   'https://mini,IP:127.0.0.1:8960', 'https://mini\\other:8960',
-                   'https://[fe80::1%en0]:8960', 'https://%6dini:8960', 'https://-mini:8960']
-        for address in invalid:
-            with self.subTest(address=address), self.assertRaises(SystemExit):
-                host.address_parts(address)
-        with self.assertRaisesRegex(SystemExit, 'must match'):
-            host.address_parts('https://mini:9000', 8960)
-
-    def test_local_default_address_uses_port_8960(self):
-        with tempfile.TemporaryDirectory() as directory, patch.object(host.socket, 'gethostname', return_value='Test-Mini.local'):
-            args = self.arguments(directory)
-            self.assertEqual(args.port, 8960)
-            self.assertEqual(args.address, 'https://test-mini.local:8960')
-            self.assertFalse((Path(directory) / 'connection.json').exists())
-
-    def test_saved_address_and_nondefault_port_survive_launchers(self):
-        with tempfile.TemporaryDirectory() as directory:
-            args = self.arguments(directory, address='https://mini.example.ts.net:9000/')
-            host.connection_certificate(args)
-            path = Path(directory) / 'connection.json'
-            self.assertEqual(json.loads(path.read_text()), {'address': 'https://mini.example.ts.net:9000'})
-            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-            for command in host.ADDRESS_COMMANDS:
-                restored = self.arguments(directory, command=command)
-                self.assertEqual((restored.address, restored.port), ('https://mini.example.ts.net:9000', 9000))
-                arguments = host.service_args(restored)
-                self.assertEqual(arguments[arguments.index('--port') + 1], '9000')
-            with self.assertRaisesRegex(SystemExit, 'must match'):
-                self.arguments(directory, port=8960)
-
-    def test_existing_certificate_cannot_change_silently(self):
-        with tempfile.TemporaryDirectory() as directory:
-            cert, key = host.certificate(Path(directory))
-            previous = (cert.read_bytes(), key.read_bytes())
-            args = self.arguments(directory, address='https://mini.example.ts.net:8960')
-            with self.assertRaisesRegex(SystemExit, '--replace-certificate'):
-                host.connection_certificate(args)
-            self.assertEqual((cert.read_bytes(), key.read_bytes()), previous)
-            self.assertFalse((Path(directory) / 'connection.json').exists())
-
-    def test_certificate_replacement_keeps_backup_and_host_data(self):
+    def test_the_launchagent_starts_the_loopback_service(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            cert, key = host.certificate(root)
-            previous = (cert.read_bytes(), key.read_bytes())
-            history = root / 'coconut.sqlite3'
-            history.write_bytes(b'Host data must remain unchanged.')
-            args = self.arguments(directory, address='https://mini.example.ts.net:8960', replace_certificate=True)
-            host.connection_certificate(args)
-            backups = list(root.glob('certificate-backup-*'))
-            self.assertEqual(len(backups), 1)
-            self.assertEqual(((backups[0] / 'server.crt').read_bytes(), (backups[0] / 'server.key').read_bytes()), previous)
-            self.assertEqual(backups[0].stat().st_mode & 0o777, 0o700)
-            self.assertNotEqual(cert.read_bytes(), previous[0])
-            self.assert_certificate_connects(cert, key, 'mini.example.ts.net')
-            self.assertEqual(history.read_bytes(), b'Host data must remain unchanged.')
-
-    def test_certificate_replacement_requires_stopped_service(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            cert, key = host.certificate(root)
-            previous = (cert.read_bytes(), key.read_bytes())
-            args = self.arguments(directory, address='https://mini.example.ts.net:8960', replace_certificate=True)
-            with (root / 'service.lock').open('a') as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                with self.assertRaisesRegex(SystemExit, 'Stop Coconut'):
-                    host.connection_certificate(args)
-            self.assertEqual((cert.read_bytes(), key.read_bytes()), previous)
-            self.assertFalse((root / 'connection.json').exists())
-            self.assertEqual(list(root.glob('certificate-backup-*')), [])
-
-    def test_address_change_requires_stopped_service_but_same_address_can_pair(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            original = self.arguments(directory, address='https://mini.example.ts.net:8960')
-            cert, key = host.connection_certificate(original)
-            previous = (cert.read_bytes(), key.read_bytes(), (root / 'connection.json').read_bytes())
-            changed = self.arguments(directory, address='https://mini.example.ts.net:9000')
-            with (root / 'service.lock').open('a') as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                with self.assertRaisesRegex(SystemExit, 'before changing its address'):
-                    host.connection_certificate(changed)
-                host.connection_certificate(original)
-            self.assertEqual((cert.read_bytes(), key.read_bytes(), (root / 'connection.json').read_bytes()), previous)
-
-    def test_failed_generation_keeps_certificate_and_saved_address(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            original = self.arguments(directory, address='https://first.example.ts.net:8960')
-            cert, key = host.connection_certificate(original)
-            previous = (cert.read_bytes(), key.read_bytes(), (root / 'connection.json').read_bytes())
-            replacement = self.arguments(directory, address='https://second.example.ts.net:8960', replace_certificate=True)
-            with patch.object(host.subprocess, 'run', side_effect=subprocess.CalledProcessError(1, 'openssl')):
-                with self.assertRaises(subprocess.CalledProcessError):
-                    host.connection_certificate(replacement)
-            self.assertEqual((cert.read_bytes(), key.read_bytes(), (root / 'connection.json').read_bytes()), previous)
-
-    def test_launchagent_reuses_saved_address_port(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            args = self.arguments(directory, address='https://mini.example.ts.net:9000', command='install-service')
-            host.connection_certificate(args)
             with patch.object(Path, 'home', return_value=root), \
                  patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
-                host.install(args)
+                host.install(self.arguments(directory, port=9000, command='install-service'))
             payload = plistlib.loads((root / 'Library/LaunchAgents/local.coconut.agent.plist').read_bytes())
-            command = payload['ProgramArguments']
-            self.assertNotIn('--port', command)
             self.assertTrue(payload['KeepAlive'])
             self.assertEqual(payload['ProcessType'], 'Interactive')
-            self.assertEqual(json.loads((root / 'connection.json').read_text())['address'], args.address)
-            changed = self.arguments(directory, address='https://mini.example.ts.net:9001')
-            host.connection_certificate(changed)
-            with patch.object(sys, 'argv', command[1:]), patch.object(host, 'load_credentials'), \
-                 patch.object(host.os, 'chdir'), patch.object(host.os, 'execv') as execute:
-                host.main()
-            server_args = execute.call_args.args[1]
-            self.assertEqual(server_args[server_args.index('--port') + 1], '9001')
-
-    def test_launchagent_persists_default_address(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            args = self.arguments(directory, command='install-service')
-            host.connection_certificate(args)
+            command = payload['ProgramArguments']
+            self.assertEqual(command[2:], ['serve', '--data-dir', directory, '--port', '9000', '--provider', 'fixture'])
+            server = self.serve(command[1:])
+            self.assertEqual(server[server.index('--port') + 1], '9000')
             self.assertFalse((root / 'connection.json').exists())
-            with patch.object(Path, 'home', return_value=root), \
-                 patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
-                host.install(args)
-            self.assertEqual(json.loads((root / 'connection.json').read_text())['address'], args.address)
 
-    def test_connection_config_cannot_follow_symlink(self):
+    def test_old_launchagent_flags_start_the_loopback_service(self):
+        # LaunchAgents from before the loopback-only service gave a network address.
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            sentinel = root / 'keep.json'
-            sentinel.write_text('{"address":"https://mini.example.ts.net:8960"}')
-            (root / 'connection.json').symlink_to(sentinel)
-            with self.assertRaisesRegex(SystemExit, 'symbolic link'):
-                self.arguments(directory)
-            self.assertTrue(sentinel.exists())
-
-    def test_plain_http_cannot_listen_on_lan(self):
-        args = argparse.Namespace(data_dir=Path('/unused'), host='0.0.0.0', port=8960,
-                                  provider='hermes', insecure_loopback=True)
-        with self.assertRaisesRegex(SystemExit, 'only on loopback'):
-            host.service_args(args)
+            for extra in (['--host', '0.0.0.0'], ['--host', '127.0.0.1', '--insecure-loopback']):
+                with self.subTest(extra=extra):
+                    server = self.serve(['host.py', 'serve', '--data-dir', directory, *extra, '--provider', 'fixture'])
+                    self.assertEqual(server[1:], ['-m', 'coconut', '--data-dir', str(Path(directory).resolve()), '--port', '8960',
+                                                  '--provider', 'fixture', '--tunnel-port', '8961'])
 
     def test_cleanup_cannot_follow_runtime_symlink(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -381,7 +190,7 @@ class HostLifecycleTests(unittest.TestCase):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        self.options = {'host': '127.0.0.1', 'port': 9000, 'provider': 'fixture', 'insecure_loopback': True}
+        self.options = {'port': 9000, 'provider': 'fixture'}
         self.path = self.root / 'Library/LaunchAgents/local.coconut.agent.plist'
 
     def state(self, mode):
@@ -404,10 +213,15 @@ class HostLifecycleTests(unittest.TestCase):
 
     def test_process_check_handles_paths_with_spaces_and_preserves_options(self):
         self.write_process()
-        command = f'/usr/bin/python3 -m coconut --data-dir {self.data} --host 127.0.0.1 --port 9000 --provider fixture'
-        # A process from before the tunnel listener has no --tunnel-port.
-        for suffix in ('', ' --tunnel-port 8961'):
-            with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, command + suffix, '')):
+        command = f'/usr/bin/python3 -m coconut --data-dir {self.data}'
+        tls = f' --cert {self.data}/server.crt --key {self.data}/server.key'
+        # A process from before the loopback-only service has --host, and with TLS --cert and --key. A process from
+        # before the tunnel listener has no --tunnel-port.
+        for options in (' --port 9000 --provider fixture --tunnel-port 8961',
+                        ' --host 127.0.0.1 --port 9000 --provider fixture',
+                        ' --host 0.0.0.0 --port 9000 --provider fixture' + tls + ' --tunnel-port 8961'):
+            with self.subTest(options=options), \
+                    patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, command + options, '')):
                 self.assertEqual(host.owned_process(), (4242, self.options))
 
     def test_foreign_process_record_fails_before_process_control(self):
@@ -572,13 +386,29 @@ class HostLifecycleTests(unittest.TestCase):
             agent.assert_not_called()
             start.assert_not_called()
 
-    def test_restore_manual_preserves_fixture_and_bind_options(self):
+    def test_restore_manual_preserves_fixture_and_port_options(self):
+        old = dict(self.options, host='0.0.0.0', insecure_loopback=False)
+        # A state from before the loopback-only service also has host and insecure_loopback.
+        for options in (self.options, old):
+            with self.subTest(options=options), patch.object(host, 'owned_agent', return_value=(self.path, False)), \
+                    patch.object(host, 'owned_process', return_value=None), patch.object(host, 'start') as start:
+                host.restore_after_update(dict(self.state('manual'), options=options))
+            self.assertEqual(vars(start.call_args.args[0]), dict(self.options, data_dir=self.data))
         with patch.object(host, 'owned_agent', return_value=(self.path, False)), \
-             patch.object(host, 'owned_process', return_value=None), patch.object(host, 'start') as start:
-            host.restore_after_update(self.state('manual'))
-        arguments = start.call_args.args[0]
-        for name, value in self.options.items():
-            self.assertEqual(getattr(arguments, name), value)
+                patch.object(host, 'owned_process', return_value=None), self.assertRaisesRegex(SystemExit, 'invalid'):
+            host.restore_after_update(dict(self.state('manual'), options=dict(self.options, host='0.0.0.0')))
+
+    def test_restore_removes_the_network_flags_of_an_old_agent(self):
+        self.write_agent()
+        original = plistlib.loads(self.path.read_bytes())
+        command = original['ProgramArguments']
+        original['ProgramArguments'] = [*command, '--host', '0.0.0.0', '--insecure-loopback', '--provider', 'hermes']
+        self.path.write_bytes(plistlib.dumps(original))
+        with patch.object(host, 'owned_agent', side_effect=[(self.path, False), (self.path, True)]), \
+             patch.object(host, 'owned_process', return_value=None), \
+             patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')):
+            host.restore_after_update(self.state('managed'))
+        self.assertEqual(plistlib.loads(self.path.read_bytes())['ProgramArguments'], [*command, '--provider', 'hermes'])
 
     def test_restore_managed_bootstraps_only_the_owned_agent(self):
         self.write_agent()
@@ -694,8 +524,7 @@ class HostLifecycleTests(unittest.TestCase):
             kill.assert_called_once_with(4242, host.signal.SIGTERM)
 
     def test_restart_starts_an_initially_stopped_service(self):
-        args = argparse.Namespace(data_dir=self.data, address=None, port=None, host='0.0.0.0',
-                                  provider='hermes', insecure_loopback=False, replace_certificate=False)
+        args = argparse.Namespace(data_dir=self.data, port=8960, provider='hermes')
         with patch.object(host, 'stop_for_update', return_value=self.state('stopped')), \
              patch.object(host, 'start') as start, patch.object(host, 'restore_after_update') as restore:
             host.restart(args)
@@ -746,7 +575,7 @@ class ManualStartTests(unittest.TestCase):
         runtime.status.return_value = status
         with tempfile.TemporaryDirectory() as directory:
             data = Path(directory)
-            args = argparse.Namespace(data_dir=data, host='127.0.0.1', port=8960, provider='hermes', insecure_loopback=True)
+            args = argparse.Namespace(data_dir=data, port=8960, provider='hermes')
             process = unittest.mock.Mock(pid=4321)
             process.poll.return_value = None
 

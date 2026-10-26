@@ -81,14 +81,17 @@ def loaded() -> bool:
     return launchctl('print', f'gui/{os.getuid()}/{LABEL}').returncode == 0
 
 
-def rebuild(data_dir: Path) -> None:
+def rebuild(data_dir: Path, relay: str = RELAY_URL) -> None:
     """The deploy step: rebuild an installed sidecar when its sources changed, and restart it.
 
-    A Mac without a route or without the loaded LaunchAgent stays without the sidecar. The pairing flow or setup
-    installs it.
+    The relay is the only way from the phone to this Mac, so a Mac that never had the sidecar gets it now. A Mac with a
+    route but without the loaded LaunchAgent stays without the sidecar, because `tunnel.py uninstall` removed it.
     """
-    if not (data_dir.resolve() / 'tunnel/route.json').is_file() or not loaded():
-        print('The tunnel sidecar is not installed. Nothing to rebuild.')
+    if not (data_dir.resolve() / 'tunnel/route.json').is_file():
+        install(data_dir, relay)
+        return
+    if not loaded():
+        print('The tunnel sidecar is uninstalled. Nothing to rebuild.')
         return
     if not compile_sidecar(data_dir):
         print('The tunnel sidecar is up to date.')
@@ -128,7 +131,7 @@ def main() -> None:
         if args.command == 'build':
             print(build(args.data_dir))
         elif args.command == 'rebuild':
-            rebuild(args.data_dir)
+            rebuild(args.data_dir, args.relay)
         elif args.command == 'install':
             install(args.data_dir, args.relay)
         elif args.command == 'uninstall':

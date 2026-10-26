@@ -1,4 +1,4 @@
-"""The deploy package carries the tunnel sidecar's sources, and a deploy rebuilds an installed sidecar."""
+"""The deploy package carries the tunnel sidecar's sources, and a deploy installs or rebuilds the sidecar."""
 import importlib.util
 from pathlib import Path
 import subprocess
@@ -70,10 +70,17 @@ class TunnelRebuildTests(unittest.TestCase):
         (self.data / 'tunnel').mkdir()
         (self.data / 'tunnel/route.json').write_text('{}')
 
-    def test_a_mac_without_the_sidecar_stays_without_it(self):
-        self.assertFalse(self.rebuild(changed=True))
+    def test_a_mac_that_never_had_the_sidecar_gets_it(self):
+        # The relay is the only way from the phone to the Mac.
+        with patch.object(tunnel, 'install') as install:
+            self.assertFalse(self.rebuild(changed=True))
+        install.assert_called_once_with(self.data, tunnel.RELAY_URL)
+
+    def test_an_uninstalled_sidecar_stays_uninstalled(self):
         self.install()
-        self.assertFalse(self.rebuild(changed=True, loaded=False))
+        with patch.object(tunnel, 'install') as install:
+            self.assertFalse(self.rebuild(changed=True, loaded=False))
+        install.assert_not_called()
         self.assertNotIn('kickstart', self.calls)
 
     def test_new_sources_restart_the_sidecar(self):
