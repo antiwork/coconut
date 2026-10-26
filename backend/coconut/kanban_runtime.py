@@ -464,7 +464,39 @@ class Board:
             'SELECT id,status,outcome,ended_at FROM task_runs WHERE task_id=? ORDER BY id', (identity,))]
         return dict(id=task.id, tenant=task.tenant, idempotency_key=task.idempotency_key, status=task.status,
                     current_run_id=task.current_run_id, worker_pid=task.worker_pid,
-                    input_id=accepted[0] or None if accepted else None, runs=runs)
+                    input_id=accepted[0] or None if accepted else None, runs=runs, archive=self.archive_note(identity))
+
+    def archive_note(self, identity):
+        """The note that the latest archive of a task wrote at once, or None.
+
+        archive_stale archives a task and then comments why, so the comment is the next event of the task. A person's
+        archive, the phone's idle archive, and a Stop write no such comment, so their next comment is someone else's
+        or none. The comment's row is the latest comment of the event's author written from the archive to the event,
+        because add_comment writes the row and the event together. Hermes writes some comments without an event, so a
+        count of events does not find it. Its length must match the event too. `later` lists the kinds of the events
+        after the comment.
+        """
+        archived = self.conn.execute("SELECT id, run_id, created_at FROM task_events WHERE task_id=? AND kind='archived' "
+                                     'ORDER BY id DESC LIMIT 1', (identity,)).fetchone()
+        if not archived:
+            return None
+        events = self.conn.execute('SELECT id, kind, payload, created_at FROM task_events WHERE task_id=? AND id>? ORDER BY id',
+                                   (identity, archived[0])).fetchall()
+        if not events or events[0][1] != 'commented':
+            return None
+        try:
+            payload = json.loads(events[0][2] or '{}')
+        except ValueError:
+            return None
+        if not isinstance(payload, dict) or not isinstance(payload.get('author'), str):
+            return None
+        comment = self.conn.execute('SELECT author, body FROM task_comments WHERE task_id=? AND author=? '
+                                    'AND created_at BETWEEN ? AND ? ORDER BY id DESC LIMIT 1',
+                                    (identity, payload['author'].strip(), archived[2], events[0][3])).fetchone()
+        if not comment or len(comment[1]) != payload.get('len'):
+            return None
+        return dict(at=archived[2], run_id=archived[1], author=comment[0], note=comment[1],
+                    later=[event[1] for event in events[1:]])
 
     def activity(self, task):
         """Return when the task last changed, and Hermes' own diagnostics for a task that waits for someone.

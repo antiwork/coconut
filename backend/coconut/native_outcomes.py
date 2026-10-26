@@ -79,9 +79,15 @@ CONTINUE_SCHEMA = {
                        'retained_pr_url': {'type': 'string', 'maxLength': RETAINED_PR_URL_LIMIT,
                            'description': 'Only when the plain call refuses because every delegated PR of the Work '
                                'finished: the URL of the one finished PR that this continuation keeps as its Work item. '
-                               'It chooses the presentation only. It approves nothing and changes no task or Work.'}},
+                               'It chooses the presentation only. It approves nothing and changes no task or Work.'},
+                       'continue_closed_source': {'type': 'boolean',
+                           'description': 'Only when the plain call refuses because Coconut ended this work after every '
+                               'GitHub item that it works on closed, and the person or requester still needs this same work: '
+                               'true continues the same execution. It approves nothing.'}},
         'required': ['task_id', 'message']},
 }
+CLOSED_SOURCE_REFUSED = ('Coconut ended this work because every GitHub item that it works on closed. Repeat the call with '
+                         'continue_closed_source: true only when this same work must still continue.')
 
 
 # These Hermes tools run a local command as a process of the execution.
@@ -1240,8 +1246,12 @@ class NativeOutcomes:
             text = require_text(payload, 'message', 16000)
             lane = technical_lane_request(payload)
             selected_pr = require_text(payload, 'retained_pr_url', RETAINED_PR_URL_LIMIT) if 'retained_pr_url' in payload else None
+            reopen = payload.get('continue_closed_source', False)
+            if type(reopen) is not bool:
+                raise ServiceError(400, 'continue_closed_source must be true or false.')
             key = digest(encoded(['continue_work', source_id, source.get('_native_turn_id'), identity, text] + ([lane] if lane else [])
-                                 + ([{'retained_pr_url': selected_pr}] if selected_pr is not None else [])))
+                                 + ([{'retained_pr_url': selected_pr}] if selected_pr is not None else [])
+                                 + ([{'continue_closed_source': True}] if reopen else [])))
             previous = self.db.execute('SELECT data FROM deliveries WHERE id=?', (key,)).fetchone()
             if previous:
                 return json.loads(previous[0])['receipt']
@@ -1269,6 +1279,15 @@ class NativeOutcomes:
                 self.settled_failed_occurrence(owner, native, lambda: completion(identity))
                 or self.settled_failed_request(owner, native, lambda: completion(identity))
                 or self.settled_scheduled_continuation(owner, native, lambda: completion(identity)))
+            # The assignment pass ends idle work whose sources closed, and that stays the rule. Only the owner or its
+            # requesting bot can still ask for that same work, and only explicitly.
+            closed = (native.get('status') == 'archived' and not settled
+                      and self.settled_closed_source(owner, native, lambda: completion(identity)))
+            if closed and not reopen:
+                raise ServiceError(409, CLOSED_SOURCE_REFUSED)
+            if reopen and not closed:
+                raise ServiceError(409, 'continue_closed_source applies only to work that Coconut ended because its sources closed.')
+            settled = settled or closed
             # A later audit of the same source item may still wait for the person. Its answer comes first.
             if settled and self.pending_source_decision(owner):
                 raise ServiceError(409, 'A decision about the same source is pending. It must be answered before this work continues.')
@@ -1288,7 +1307,7 @@ class NativeOutcomes:
             # Only an explicit lane may leave one exact question pending. See technical_lane.py.
             gate = self._technical_lane_gate(owner, native, lane, related) if lane else None
             if (owner['status'] not in ('completed', 'failed', 'waiting') and not
-                    (scheduled and owner['status'] == 'scheduled') and not queued and not gate) or owner.get('_waiting_on'):
+                    (scheduled and owner['status'] == 'scheduled') and not queued and not gate and not closed) or owner.get('_waiting_on'):
                 raise ServiceError(409, 'Wait for this task and its existing dependencies.')
             if owner.get('_return_pending'):
                 raise ServiceError(409, 'Wait for the previous result to be delivered before continuing this work.')

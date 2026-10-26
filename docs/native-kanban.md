@@ -126,6 +126,24 @@ card is not owned, so the stop blocks it, and the settle pass archives it. That 
 only when its key names the claim's input, the provider stop is the request's failure, and its last run ended blocked.
 Any other failure of such a card stays final.
 
+The assignment pass ends idle work whose sources closed: it archives the card, comments `STALE_NOTE` at once, and the
+reconciler cancels the request of the archived input. That stays the rule, and the plain `coconut_continue_work` call
+refuses with `Coconut ended this work because every GitHub item that it works on closed. Repeat the call with
+continue_closed_source: true only when this same work must still continue.` The owner or its requesting bot can repeat
+the call with `"continue_closed_source": true` when the same work must still continue, for example a local check of a
+merged PR. It approves nothing. Coconut admits only that archive of a retained outcome. The adapter's `completion`
+reports the latest archive and its note: the note must be Coconut's `STALE_NOTE`, the next event after the archive, with
+only comments after it. A person's archive, the phone's idle archive, and a Stop write no such note and stay final.
+The card holds the request's current input, the claim names the card, Coconut started the claim's run, that run is the
+last one and ended without success, no run completed, and no run, worker, or open parent is left. Coconut created the
+request once, no person stopped it, and its last cancellation came after the archive. Every source item that links the
+card or the request is still closed, left before the archive, and has no open card; no person cancelled or dismissed the
+request's Work, and no archive closed one of its cards. Open input, decisions, unknown tool results, background work,
+and the other guards hold the continuation as before. The PR or process check of the ended turn is stale and the
+continuation's message replaces it. The new input gets a successor in the same execution, workspace, Work item, and
+result route. Its activity comes after the source left, so a later pass does not end it again. The flag on any other
+work refuses with `continue_closed_source applies only to work that Coconut ended because its sources closed.`
+
 An open assignment can wait for the person. Its label is in `awaiting_labels` of the source (default `awaiting-human`), and its latest comment comes from another GitHub account.
 The audit reads the latest comment of each labeled item with one GraphQL request. Only a card covers such an item: a pending card that names it, or an answer or dismissal that is not older than its latest change.
 Bot work, a delegated ruling, or a scheduled recheck does not cover it. The audit tells the bot to ask with the source's own choices, and to post the answer to the source.
