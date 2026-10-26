@@ -39,5 +39,5 @@ The **Mac release** workflow runs on `main` when a person starts it. It runs in 
 3. It sends the app to the notary service with `notarytool` and an App Store Connect API key, and staples the ticket.
 4. It keeps `Coconut-<version>-<build>.zip` as a workflow artifact for 30 days.
 
-Without the secrets `ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY_P8`, the workflow skips step 3 and says so.
-The archive then has the suffix `-not-notarized`, and Gatekeeper refuses it on other Macs.
+A missing secret stops the workflow. The secrets are `MAC_DEVELOPER_ID_P12`, `MAC_DEVELOPER_ID_P12_PASSWORD`,
+`ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY_P8`.

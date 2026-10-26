@@ -6,7 +6,7 @@ name: Mac release
 # The environment `mac-release` accepts only the main branch. It holds these secrets:
 #   MAC_DEVELOPER_ID_P12, MAC_DEVELOPER_ID_P12_PASSWORD   the Developer ID Application identity, base64 .p12
 #   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8                  an App Store Connect API key for notarytool
-# Without the three ASC secrets, the job signs the app, skips notarization and says so.
+# A missing secret stops the job: an archive that is not notarized must never reach a Mac.
 on:
   workflow_dispatch:
     inputs:
@@ -82,25 +82,19 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_P8" ]; then
-            echo "::warning::Notarization skipped: the environment mac-release has no ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8. Gatekeeper refuses this build on other Macs."
-            echo "NOTARIZED=false" >> "$GITHUB_ENV"
-            exit 0
+            echo "::error::The environment mac-release needs ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8."
+            exit 1
           fi
           key="$RUNNER_TEMP/AuthKey.p8"
           (umask 077; printf '%s\n' "$ASC_KEY_P8" > "$key")
           python3 scripts/mac_app.py notarize --output "$RUNNER_TEMP/mac" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID"
           rm -f "$key"
-          echo "NOTARIZED=true" >> "$GITHUB_ENV"
       - name: Make the archive
         run: |
           set -euo pipefail
           archive="$(python3 scripts/mac_app.py archive --output "$RUNNER_TEMP/mac")"
-          if [ "$NOTARIZED" != true ]; then
-            mv "$archive" "${archive%.zip}-not-notarized.zip"
-            archive="${archive%.zip}-not-notarized.zip"
-          fi
           echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
-          echo "Built $(basename "$archive"), notarized: $NOTARIZED" >> "$GITHUB_STEP_SUMMARY"
+          echo "Built, notarized and stapled $(basename "$archive")." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Coconut.app
