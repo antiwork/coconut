@@ -11,18 +11,18 @@ from uuid import uuid4
 from coconut.hermes_worker import conversation_input
 from coconut.providers import FixtureProvider
 from coconut.service import Service
-from coconut.work_sources import answer_steps, awaiting_user, coverage
+from coconut.work_sources import answer_steps, awaiting_user, card_answer_steps, coverage
 
 
 URL = 'https://github.com/example/private/issues/7'
 
 
-def graphql(viewer, *authors):
+def graphql(viewer, *authors, kind='Issue'):
     """One GraphQL answer. Each author is (issue author, last commenter or None)."""
     data = dict(viewer=dict(login=viewer))
     for index, (author, commenter) in enumerate(authors):
         nodes = [dict(author=dict(login=commenter))] if commenter else []
-        data[f'r{index}'] = dict(author=dict(login=author), comments=dict(nodes=nodes))
+        data[f'r{index}'] = dict(__typename=kind, author=dict(login=author), comments=dict(nodes=nodes))
     return SimpleNamespace(stdout=json.dumps(dict(data=data)))
 
 
@@ -35,15 +35,15 @@ class AwaitingUserTests(unittest.TestCase):
         def run(args):
             calls.append(args)
             return graphql('Person', ('helper', 'helper'))
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], run), {URL})
+        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], run), {URL: 'Issue'})
         self.assertEqual(len(calls), 1)
         self.assertIn(f'u0={URL}', calls[0])
 
     def test_question_without_comments_waits_for_the_person(self):
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: graphql('person', ('helper', None))), {URL})
+        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: graphql('person', ('helper', None))), {URL: 'Issue'})
 
     def test_answer_by_the_person_ends_the_wait(self):
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: graphql('person', ('helper', 'Person'))), set())
+        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: graphql('person', ('helper', 'Person'))), {})
 
     def test_every_labeled_item_is_read_in_batches(self):
         items = [dict(self.item, id=f'{URL[:-1]}{number}') for number in range(1, 121)]
@@ -52,18 +52,18 @@ class AwaitingUserTests(unittest.TestCase):
             count = sum(arg.startswith('u') and '=' in arg for arg in args)
             calls.append(count)
             return graphql('person', *[('helper', 'helper')] * count)
-        self.assertEqual(awaiting_user(items, ['awaiting-human'], run), {item['id'] for item in items})
+        self.assertEqual(set(awaiting_user(items, ['awaiting-human'], run)), {item['id'] for item in items})
         self.assertEqual(calls, [50, 50, 20])
 
     def test_unlabeled_items_need_no_read(self):
         self.item['labels'] = ['enhancement']
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: self.fail('No read expected.')), set())
+        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: self.fail('No read expected.')), {})
 
     def test_failed_read_keeps_the_earlier_rules(self):
         def run(args):
             raise subprocess.CalledProcessError(1, args)
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], run), set())
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: SimpleNamespace(stdout='{}')), set())
+        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], run), {})
+        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: SimpleNamespace(stdout='{}')), {})
 
     def test_only_a_card_covers_an_awaiting_item(self):
         current = datetime.now(timezone.utc)
@@ -85,7 +85,7 @@ class AwaitingUserTests(unittest.TestCase):
 
 class AnswerStepsTests(unittest.TestCase):
     def test_answer_to_an_issue_closes_the_issue(self):
-        steps = answer_steps(URL + '#issuecomment-1')
+        steps = answer_steps(URL + '#issuecomment-1', 'Issue')
         self.assertIn('post their answer to the source as a comment', steps)
         self.assertIn('then verify the comment. Then close the issue with gh issue close ' + URL
                       + ' and verify that the issue is closed.', steps)
@@ -93,11 +93,24 @@ class AnswerStepsTests(unittest.TestCase):
         self.assertIn('asks a question back instead of deciding', steps)
 
     def test_answer_to_a_pull_request_leaves_it_open(self):
-        steps = answer_steps('https://github.com/example/private/pull/8')
-        self.assertIn('post their answer to the source as a comment', steps)
-        self.assertNotIn('close the issue', steps)
-        self.assertNotIn('gh issue close', steps)
-        self.assertIn('Leave the pull request open.', steps)
+        # GitHub also serves a pull request at /issues/N. Only the type that GitHub reports counts.
+        for url in ('https://github.com/example/private/pull/8', 'https://github.com/example/private/issues/8'):
+            for kind in ('PullRequest', None):
+                steps = answer_steps(url, kind)
+                self.assertIn('post their answer to the source as a comment', steps)
+                self.assertNotIn('close the issue', steps)
+                self.assertNotIn('gh issue close', steps)
+                self.assertIn('Do not close the source.', steps)
+
+    def test_only_a_question_card_about_the_source_gets_the_steps(self):
+        task = dict(_source_answer_steps=dict(url=URL, text=answer_steps(URL, 'Issue')))
+        card = dict(action_type='question', sources=[dict(kind='issue', title='Payout', url=URL + '#issuecomment-1')])
+        self.assertEqual(card_answer_steps(task, card), answer_steps(URL, 'Issue'))
+        self.assertIsNone(card_answer_steps(task, dict(card, action_type='native_approval')))
+        self.assertIsNone(card_answer_steps(task, dict(card, sources=[dict(kind='issue', title='Other', url=URL[:-1] + '8')])))
+        self.assertIsNone(card_answer_steps(task, dict(card, sources=[])))
+        self.assertIsNone(card_answer_steps(task, None))
+        self.assertIsNone(card_answer_steps({}, card))
 
 
 class AwaitingAuditTests(unittest.TestCase):
@@ -114,6 +127,7 @@ class AwaitingAuditTests(unittest.TestCase):
         (self.root / 'work-sources.json').write_text(json.dumps([self.source]))
         self.item = dict(id=URL, updated_at='2026-10-21T07:45:03Z', title='Payout decision', labels=['awaiting-human'])
         self.commenter = 'helper'
+        self.kind = 'Issue'
 
     def audit(self):
         with self.service.transaction():
@@ -122,7 +136,7 @@ class AwaitingAuditTests(unittest.TestCase):
             self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('work-source:assigned', json.dumps(state)))
         def run(args, **kwargs):
             if args[0] == 'gh':
-                return graphql('person', ('helper', self.commenter))
+                return graphql('person', ('helper', self.commenter), kind=self.kind)
             return SimpleNamespace(stdout=json.dumps(dict(complete=True, items=[self.item])))
         with patch('coconut.work_sources.subprocess.run', side_effect=run):
             self.service.audit_work_sources()
@@ -143,11 +157,21 @@ class AwaitingAuditTests(unittest.TestCase):
         self.assertIn('post their answer to the source as a comment', prompt)
         self.assertIn('Then close the issue with gh issue close ' + URL, prompt)
         self.assertIn('"awaiting_user": true', prompt)
-        self.assertEqual(self.service._get('tasks', state['task_id'])['_source_answer_steps'], answer_steps(URL))
+        self.assertEqual(self.service._get('tasks', state['task_id'])['_source_answer_steps'],
+                         dict(url=URL, text=answer_steps(URL, 'Issue')))
+
+    def test_pull_request_behind_an_issue_url_stays_open(self):
+        self.kind = 'PullRequest'
+        state = self.audit()
+        prompt = self.service._get('tasks', state['task_id'])['_source_audit_prompt']
+        self.assertIn('post their answer to the source as a comment', prompt)
+        self.assertNotIn('gh issue close', prompt)
+        self.assertIn('Do not close the source.', prompt)
 
     def test_answered_card_repeats_the_close_step_when_the_bot_resumes(self):
         state = self.audit()
         task = self.service._get('tasks', state['task_id'])
+        task = dict(task, _source_answer_steps=task['_source_answer_steps']['text'])
         for status in ('approved', 'replied'):
             card = dict(id='card', title='Payout', action_type='question', status=status, correction='Use option B.')
             prompt, _ = conversation_input(dict(operation='resume', task=task, decision=card, history=[]))
