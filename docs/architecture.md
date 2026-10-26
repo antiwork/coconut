@@ -1,6 +1,6 @@
 # Architecture
 
-The SwiftUI app consumes a versioned HTTPS API. It never parses Hermes CLI output.
+The SwiftUI app consumes a versioned HTTP API through an end-to-end encrypted relay tunnel. It never parses Hermes CLI output.
 The Mac service owns coordination and runs separate Hermes worker processes.
 A future execution provider can move work to another host without changing bot, task, decision, or artifact IDs.
 
@@ -95,7 +95,7 @@ Native profile data is not copied into peer messages automatically.
 
 ## Transport and future providers
 
-The local Mac provider uses HTTPS over Tailscale, certificate pinning, one-time pairing, and device tokens.
+The local Mac provider uses the relay tunnel (Noise, see [relay transport](relay-transport.md)), one-time pairing links, and device tokens bound to the phone key.
 The app retains a cursor and replays ordered events after reconnecting.
 The host continues while the phone is disconnected or suspended.
 
