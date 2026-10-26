@@ -103,6 +103,17 @@ class NativeKanbanTests(unittest.TestCase):
         self.service._put('tasks', task)
         self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
                               if row['id'] == task['id']), 12)
+        # A source can set its own label scheme in work-sources.json. It replaces the default map.
+        task['_source_assignment'].update(labels=['urgent'], label_priority={'urgent': 18})
+        self.service._put('tasks', task)
+        self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
+                              if row['id'] == task['id']), 18)
+        task['_source_assignment'].update(labels=['priority/medium'], label_priority={'urgent': 25})
+        self.service._put('tasks', task)
+        self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
+                              if row['id'] == task['id']), 12)
+        del task['_source_assignment']['label_priority']
+        self.service._put('tasks', task)
         # A pull request assigned to the person, or an item that waits for the person, outranks bot messages.
         for item, urgency in [(dict(id='https://github.com/example/repo/pull/7', updated_at='today', labels=[]), 15),
                               (dict(id='https://github.com/example/repo/issues/8', updated_at='today', labels=[], awaiting_user=True), 15),

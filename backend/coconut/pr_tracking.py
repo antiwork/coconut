@@ -213,14 +213,31 @@ def _trusted(value: dict) -> bool:
     return value.get('author_association') in _TRUSTED_AUTHORS and user.get('type') != 'Bot'
 
 
+# A finished check run whose name contains one of these words is a review result, like a PR review. It resumes the
+# owner even when the aggregate check state does not change. The person sets the words in the Coconut setting
+# review_check_names, because the reviewer app is their choice.
+REVIEW_CHECK_NAMES = ('greptile',)
+
+
+def review_check_names_setting(value):
+    """Return the saved reviewer words in lower case, or the default for a missing or invalid value.
+
+    An empty list is valid: no check run counts as a review result.
+    """
+    if isinstance(value, (list, tuple)) and all(isinstance(name, str) and name.strip() for name in value):
+        return tuple(name.strip().lower() for name in value)
+    return REVIEW_CHECK_NAMES
+
+
 class GitHubPRTracker:
     """Poll GitHub with GET requests and return facts for durable storage."""
 
-    def __init__(self, *, token: str | None = None, timeout: float = 5.0):
+    def __init__(self, *, token: str | None = None, timeout: float = 5.0, review_check_names=REVIEW_CHECK_NAMES):
         if not 0 < timeout <= 10:
             raise ValueError("The GitHub timeout must be between 0 and 10 seconds.")
         self._token = os.environ.get("COCONUT_GITHUB_TOKEN", "") if token is None else token
         self._timeout = timeout
+        self._review_check_names = review_check_names_setting(review_check_names)
         self._opener = build_opener(_NoRedirect())
 
     def _get(self, path: str, deadline: float, *, cache: bool = True) -> dict[str, Any] | list:
@@ -403,7 +420,7 @@ class GitHubPRTracker:
         raise PRTrackingError('Too many statuses to confirm the pull request state.')
 
     @classmethod
-    def for_profile(cls, profile):
+    def for_profile(cls, profile, *, review_check_names=REVIEW_CHECK_NAMES):
         """Use the gh login that this bot's terminal uses: its own folder from its .env, or the Mac account's login."""
         from .runtime_environment import LOGIN_FOLDERS, login_folders, profile_environment
         environment = dict(os.environ, **profile_environment(profile))
@@ -420,7 +437,7 @@ class GitHubPRTracker:
                     token = result.stdout.strip()
             except (OSError, subprocess.TimeoutExpired):
                 pass
-        return cls(token=token)
+        return cls(token=token, review_check_names=review_check_names)
 
     def _issue_record(self, route: str, deadline: float, *, with_kind: bool = False):
         """Return the issue facts. With `with_kind`, also return the complete issue record."""
@@ -639,7 +656,8 @@ class GitHubPRTracker:
                 title = after[4]
                 checks_state = {"failed": "failed", "checks_running": "running", "opened": "none", "ready_for_review": "passed"}[_classify(False, checks, status, sha)[0]]
                 reviews = sorted(('check', c['id'], c.get('conclusion'), c.get('completed_at')) for c in checks
-                                 if 'greptile' in str(c.get('name') or '').lower() and c.get('status') == 'completed')
+                                 if c.get('status') == 'completed' and any(
+                                     name in str(c.get('name') or '').lower() for name in self._review_check_names))
                 reviews.extend(review_events)
                 if reviews:
                     review_checks = hashlib.sha256(json.dumps(sorted(reviews)).encode()).hexdigest()

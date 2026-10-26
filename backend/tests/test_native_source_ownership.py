@@ -87,6 +87,20 @@ print(identity)
             self.assertEqual(task['_source_assignment']['labels'], item['labels'])
             self.assertEqual(priorities[task['id']], expected)
 
+    def test_source_label_priority_replaces_the_default_labels(self):
+        self.source()
+        self.source_config['label_priority'] = {'P1': 17, 'priority/high': 3}
+        (self.root / 'work-sources.json').write_text(json.dumps([self.source_config]))
+        self.items = [dict(self.item, id=self.item['id'] + str(index), labels=[label])
+                      for index, label in enumerate(('P1', 'priority/high', 'priority/medium'))]
+        self.audit()
+        priorities = {row['id']: row['priority'] for row in self.service._kanban_rows()}
+        tasks = {task.get('_source_assignment', {}).get('id'): task for task in self.service._all('tasks')}
+        for item, expected in zip(self.items, (17, 3, 10)):
+            task = tasks[item['id']]
+            self.assertEqual(task['_source_assignment']['label_priority'], self.source_config['label_priority'])
+            self.assertEqual(priorities[task['id']], expected)
+
     def test_native_pause_and_completion_do_not_restart_an_assignment_audit(self):
         origin = self.source()
         identity = self.outcome(origin)

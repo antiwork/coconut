@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
+from coconut.pr_tracking import REVIEW_CHECK_NAMES, review_check_names_setting
 from test_pr_tracking import PayloadTracker, pull, check, statuses, SHA, URL
 import test_pull_request_reviews as fixtures
 from test_service_pr import observation
@@ -105,6 +106,18 @@ class RequiredCheckTests(unittest.TestCase):
         self.assertTrue(first.review_checks)
         self.assertEqual(first.review_checks, repeat.review_checks)
         self.assertNotEqual(first.review_checks, later.review_checks)
+
+    def test_review_check_names_are_a_setting(self):
+        # The reviewer app is the person's choice. Another name counts only when the setting names it.
+        review = dict(check(2), name='CodeRabbit', completed_at='2026-09-17T03:00:00Z')
+        self.assertIsNone(self.tracker(review=review).observe(URL).review_checks)
+        tracker = self.tracker(review=review)
+        tracker._review_check_names = review_check_names_setting(['CodeRabbit'])
+        self.assertTrue(tracker.observe(URL).review_checks)
+        # An empty list turns the review signal off. A missing or invalid value keeps the default.
+        self.assertEqual(review_check_names_setting([]), ())
+        for invalid in (None, 'greptile', [''], [3]):
+            self.assertEqual(review_check_names_setting(invalid), REVIEW_CHECK_NAMES)
 
 
 class PRMonitorTests(unittest.TestCase):
