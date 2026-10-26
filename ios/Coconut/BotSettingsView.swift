@@ -6,14 +6,11 @@ struct BotSettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let botId: String
-    @State private var draft: Bot?
-    @State private var original: Bot?
+    @State private var edits: BotDraft?
     @State private var routineOpen = false
     @State private var deleteOpen = false
-    @State private var saving = false
-    @State private var saveAgain = false
-    // The bot that the running save sent. Edits after it stay in the draft when the reply arrives.
-    @State private var submitted: Bot?
+
+    private var draft: Bot? { edits?.bot }
 
     var body: some View {
         Form {
@@ -31,7 +28,7 @@ struct BotSettingsView: View {
                     .accessibilityIdentifier("bot-access-settings")
                 }
                 Section {
-                    Toggle("Notifications", isOn: Binding(get: { self.draft?.notifications ?? true }, set: { self.draft?.notifications = $0 }))
+                    Toggle("Notifications", isOn: Binding(get: { edits?.bot.notifications ?? true }, set: { edits?.bot.notifications = $0 }))
                         .tint(BoardStyle.green)
                         .accessibilityIdentifier("bot-notifications")
                 } footer: { Text("Get notified when this bot needs a decision, finishes work, or fails.") }
@@ -64,10 +61,10 @@ struct BotSettingsView: View {
             }
         }
         .onAppear {
-            if draft == nil { draft = store.bots.first { $0.id == botId }; original = draft }
+            if edits == nil, let bot = store.bots.first(where: { $0.id == botId }) { edits = BotDraft(bot) }
         }
         .onChange(of: store.bots.first { $0.id == botId }) { _, current in
-            if let current { refreshDraft(current) }
+            if let current { edits?.receive(current) }
         }
         .onChange(of: draft?.notifications) { _, _ in save() }
         .onChange(of: draft?.avatar) { _, _ in save() }
@@ -95,34 +92,59 @@ struct BotSettingsView: View {
 
     // One save at a time. A change during a save starts one more save after it.
     private func save() {
-        guard !saving else { saveAgain = true; return }
-        guard let draft, let original, let pending = BotAutosave.changes(draft, comparedTo: original) else { return }
-        saving = true
-        submitted = pending
+        guard let request = edits?.beginSave() else { return }
         Task {
-            await store.updateBot(pending, comparedTo: original)
-            if store.error == nil, let current = store.bots.first(where: { $0.id == botId }) { refreshDraft(current) }
-            submitted = nil
-            saving = false
-            if saveAgain {
-                saveAgain = false
-                save()
-            }
+            await store.updateBot(request.pending, comparedTo: request.original)
+            let current = store.error == nil ? store.bots.first(where: { $0.id == botId }) : nil
+            if edits?.finishSave(current) == true { save() }
         }
-    }
-
-    private func refreshDraft(_ current: Bot) {
-        var updated = current
-        // During a save, the draft keeps only the edits made after the save started.
-        if let draft, let baseline = submitted ?? original {
-            updated = BotAutosave.merge(draft: draft, baseline: baseline, into: current)
-        }
-        draft = updated
-        original = current
     }
 
     private func field(_ path: WritableKeyPath<Bot, String>) -> Binding<String> {
-        Binding(get: { draft?[keyPath: path] ?? "" }, set: { draft?[keyPath: path] = $0 })
+        Binding(get: { edits?.bot[keyPath: path] ?? "" }, set: { edits?.bot[keyPath: path] = $0 })
+    }
+}
+
+// The bot on the bot settings page, the newest bot from the Mac, and the save that runs.
+struct BotDraft: Equatable {
+    var bot: Bot
+    private(set) var saved: Bot
+    private(set) var submitted: Bot?
+    private var saveAgain = false
+
+    init(_ bot: Bot) {
+        self.bot = bot
+        saved = bot
+    }
+
+    // The bot to send and the bot it changes, or nil. A request during a save asks for one more save after it.
+    mutating func beginSave() -> (pending: Bot, original: Bot)? {
+        guard submitted == nil else {
+            saveAgain = true
+            return nil
+        }
+        guard let pending = BotAutosave.changes(bot, comparedTo: saved) else { return nil }
+        submitted = pending
+        return (pending, saved)
+    }
+
+    // An update from the Mac, also during a save. It keeps every edit that the Mac has not confirmed.
+    mutating func receive(_ current: Bot) {
+        bot = BotAutosave.merge(draft: bot, baseline: saved, into: current)
+        saved = current
+    }
+
+    // The save ended. `current` is the bot after a successful save, nil after a failure.
+    // Returns true when a change during the save needs one more save.
+    mutating func finishSave(_ current: Bot?) -> Bool {
+        if let current, let submitted {
+            // The confirmed result replaces only the fields that the person did not edit after the save started.
+            bot = BotAutosave.merge(draft: bot, baseline: submitted, into: current)
+            saved = current
+        }
+        submitted = nil
+        defer { saveAgain = false }
+        return saveAgain
     }
 }
 

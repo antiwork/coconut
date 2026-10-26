@@ -67,6 +67,58 @@ final class SettingsFlowTests: XCTestCase {
         XCTAssertEqual(merged.color, "112233")
     }
 
+    func testAStatusUpdateDuringASaveKeepsThePendingEditAndNoSaveWritesTheOldValue() throws {
+        let original = try decodedBot()
+        var edits = BotDraft(original)
+        edits.bot.avatar = "fruit.apple"
+        edits.bot.notifications = false
+        let request = try XCTUnwrap(edits.beginSave())
+        XCTAssertEqual(request.pending.avatar, "fruit.apple")
+
+        // The Mac sends a status change that still has the old settings, before the save returns.
+        var update = original
+        update.status = "working"
+        edits.receive(update)
+        XCTAssertEqual(edits.bot.avatar, "fruit.apple")
+        XCTAssertFalse(edits.bot.notifications)
+        XCTAssertEqual(edits.bot.status, "working")
+        // A save request during the save sends nothing now.
+        XCTAssertNil(edits.beginSave())
+
+        var confirmed = update
+        confirmed.avatar = "fruit.apple"
+        confirmed.notifications = false
+        XCTAssertTrue(edits.finishSave(confirmed))
+        XCTAssertEqual(edits.bot, confirmed)
+        // The queued save has nothing to write, so the old values never go back to the Mac.
+        XCTAssertNil(edits.beginSave())
+    }
+
+    func testAnEditDuringASaveSavesAfterTheConfirmedResult() throws {
+        let original = try decodedBot()
+        var edits = BotDraft(original)
+        edits.bot.notifications = false
+        let first = try XCTUnwrap(edits.beginSave())
+        edits.bot.notifications = true
+        XCTAssertNil(edits.beginSave())
+
+        XCTAssertTrue(edits.finishSave(first.pending))
+        XCTAssertTrue(edits.bot.notifications)
+        let second = try XCTUnwrap(edits.beginSave())
+        XCTAssertTrue(second.pending.notifications)
+        XCTAssertFalse(second.original.notifications)
+    }
+
+    func testAFailedSaveKeepsTheEditForTheNextSave() throws {
+        let original = try decodedBot()
+        var edits = BotDraft(original)
+        edits.bot.color = "112233"
+        _ = try XCTUnwrap(edits.beginSave())
+        XCTAssertFalse(edits.finishSave(nil))
+        XCTAssertEqual(edits.bot.color, "112233")
+        XCTAssertEqual(try XCTUnwrap(edits.beginSave()).pending.color, "112233")
+    }
+
     // MARK: Connection banner
 
     func testLegacyPairingAsksToPairAgainWhileConnected() {
