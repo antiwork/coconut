@@ -6,7 +6,7 @@ import Foundation
 let usage = """
     Usage: coconut <command>
 
-      pair      Print a one-time iPhone setup link and the path of its QR image.
+      pair      Print a one-time iPhone setup link.
       status    Print the state of the service, Hermes and the relay as JSON.
       version   Print the version of Coconut.app.
       service   Run the Coconut service. The login item uses this command.
@@ -34,13 +34,15 @@ func waitAndExit(_ message: String) -> Never {
 
 /// Replace this process with the program. The output goes to the log files of the service, as with the old LaunchAgents.
 func run(_ launch: Launch) -> Never {
-    do {
-        try FileManager.default.createDirectory(at: launch.standardOutput.deletingLastPathComponent(),
-                                                withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-    } catch {
-        fail("Coconut could not create its log folder: \(error.localizedDescription)")
-    }
-    for (path, descriptor) in [(launch.standardOutput.path, STDOUT_FILENO), (launch.standardError.path, STDERR_FILENO)] {
+    for (log, descriptor) in [(launch.standardOutput, STDOUT_FILENO), (launch.standardError, STDERR_FILENO)] {
+        guard let log else { continue }
+        let path = log.path
+        do {
+            try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+        } catch {
+            fail("Coconut could not create its log folder: \(error.localizedDescription)")
+        }
         let file = open(path, O_WRONLY | O_APPEND | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard file >= 0, dup2(file, descriptor) >= 0 else { fail("Coconut could not open \(path).") }
         close(file)
@@ -84,17 +86,7 @@ case "pair":
     guard let python = PythonLocator(environment: environment).locate() else {
         fail("Coconut found no Python 3.11 or later.")
     }
-    let process = Process()
-    process.executableURL = python
-    process.arguments = [install.pairingScript.path, "--share"]
-    process.currentDirectoryURL = install.root
-    do {
-        try process.run()
-    } catch {
-        fail("Coconut could not run \(install.pairingScript.path): \(error.localizedDescription)")
-    }
-    process.waitUntilExit()
-    exit(process.terminationStatus)
+    run(.pairingLink(install: install, python: python, environment: environment))
 case "status":
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]

@@ -46,7 +46,7 @@ public struct StatusReader {
         return Status(install: install.root.path, service: service(isAlive: isAlive, healthy: healthy),
                       hermes: hermes?["status"] as? String ?? "missing",
                       hermesVersion: hermes?["version"] as? String, hermesReason: hermes?["reason"] as? String,
-                      relay: relay())
+                      relay: relay(isAlive: isAlive))
     }
 
     func service(isAlive: (Int32) -> Bool, healthy: Bool) -> Status.Service {
@@ -56,9 +56,12 @@ public struct StatusReader {
         return healthy ? .running : .starting
     }
 
-    func relay() -> String {
+    func relay(isAlive: (Int32) -> Bool) -> String {
         guard install.hasRelayRoute(fileManager: fileManager) else { return "not_installed" }
-        return object(at: install.tunnel.appendingPathComponent("status.json"))?["state"] as? String ?? "stopped"
+        // The sidecar leaves its last status.json when it stops. Its pid says whether that state is still true.
+        guard let status = object(at: install.tunnel.appendingPathComponent("status.json")),
+              let pid = (status["pid"] as? NSNumber)?.int32Value, pid > 0, isAlive(pid) else { return "stopped" }
+        return status["state"] as? String ?? "stopped"
     }
 
     func object(at url: URL) -> [String: Any]? {

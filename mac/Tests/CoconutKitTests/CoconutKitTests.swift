@@ -27,8 +27,11 @@ final class CoconutKitTests: XCTestCase {
     // MARK: Install
 
     func testTheInstallIsCoconutInTheHomeFolderUnlessTheEnvironmentNamesAnother() {
-        XCTAssertEqual(Install.standard(environment: [:], home: home).root.path, home.appendingPathComponent("Coconut").path)
-        XCTAssertEqual(Install.standard(environment: ["COCONUT_INSTALL_DIR": "/srv/coconut"], home: home).root.path, "/srv/coconut")
+        XCTAssertEqual(Install.standard(environment: [:], preference: nil, home: home).root.path,
+                       home.appendingPathComponent("Coconut").path)
+        XCTAssertEqual(Install.standard(environment: [:], preference: "/srv/saved", home: home).root.path, "/srv/saved")
+        XCTAssertEqual(Install.standard(environment: ["COCONUT_INSTALL_DIR": "/srv/coconut"], preference: "/srv/saved",
+                                        home: home).root.path, "/srv/coconut")
         let install = Install(root: URL(fileURLWithPath: "/Users/a/Coconut"))
         XCTAssertEqual(install.hostScript.path, "/Users/a/Coconut/scripts/host.py")
         XCTAssertEqual(install.data.path, "/Users/a/Coconut/.runtime/host")
@@ -83,9 +86,10 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertEqual(launch.arguments, ["/opt/homebrew/bin/python3", "/Users/a/Coconut/scripts/host.py", "serve",
                                           "--data-dir", "/Users/a/Coconut/.runtime/host", "--provider", "hermes"])
         XCTAssertEqual(launch.directory.path, "/Users/a/Coconut/backend")
-        XCTAssertEqual(launch.environment, ["PATH": "/bin", "PYTHONUNBUFFERED": "1"])
-        XCTAssertEqual(launch.standardOutput.path, "/Users/a/Coconut/.runtime/host/logs/service.log")
-        XCTAssertEqual(launch.standardError.path, "/Users/a/Coconut/.runtime/host/logs/error.log")
+        XCTAssertEqual(launch.environment, ["PATH": "/bin", "PYTHONUNBUFFERED": "1",
+                                            "COCONUT_LOGIN_ITEM": "com.gumroad.coconut.service"])
+        XCTAssertEqual(launch.standardOutput?.path, "/Users/a/Coconut/.runtime/host/logs/service.log")
+        XCTAssertEqual(launch.standardError?.path, "/Users/a/Coconut/.runtime/host/logs/error.log")
     }
 
     func testTheSidecarForwardsToTheTunnelListener() {
@@ -94,7 +98,19 @@ final class CoconutKitTests: XCTestCase {
                                     environment: [:])
         XCTAssertEqual(launch.arguments, ["/App/Contents/Helpers/tunnel-sidecar", "run", "--data-dir",
                                           "/Users/a/Coconut/.runtime/host", "--backend", "127.0.0.1:8961"])
-        XCTAssertEqual(launch.standardOutput.lastPathComponent, "tunnel.log")
+        XCTAssertEqual(launch.standardOutput?.lastPathComponent, "tunnel.log")
+    }
+
+    func testThePairingLinkNeedsNoSwiftAndKeepsTheOutputOfTheTool() {
+        let install = Install(root: URL(fileURLWithPath: "/Users/a/Coconut"))
+        let launch = Launch.pairingLink(install: install, python: URL(fileURLWithPath: "/usr/local/bin/python3"), environment: [:])
+        XCTAssertEqual(launch.arguments.first, "/usr/local/bin/python3")
+        XCTAssertEqual(launch.arguments[1], "-c")
+        XCTAssertTrue(launch.arguments[2].contains("pairing.link(pairing.local_payload())"))
+        XCTAssertFalse(launch.arguments[2].contains("render"))
+        XCTAssertEqual(launch.arguments.last, "/Users/a/Coconut/scripts")
+        XCTAssertNil(launch.standardOutput)
+        XCTAssertNil(launch.standardError)
     }
 
     func testTheLoginItemUsesThePathOfTheLoginShell() {
@@ -156,8 +172,10 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertEqual(status.hermesVersion, "0.22.5")
         XCTAssertEqual(status.relay, "stopped")
 
-        try write(#"{"state": "connected", "relay": "https://relay"}"#, to: "Coconut/.runtime/host/tunnel/status.json")
+        try write(#"{"state": "connected", "relay": "https://relay", "pid": 5151}"#, to: "Coconut/.runtime/host/tunnel/status.json")
         XCTAssertEqual(reader.read(isAlive: { _ in true }, healthy: true).relay, "connected")
+        // A sidecar that stopped leaves its last state behind.
+        XCTAssertEqual(reader.read(isAlive: { $0 != 5151 }, healthy: true).relay, "stopped")
     }
 
     func testTheStatusJSONUsesSnakeCaseKeys() throws {
@@ -182,6 +200,8 @@ final class CoconutKitTests: XCTestCase {
             """
         XCTAssertEqual(PairingLink(output: output),
                        PairingLink(link: "coconut://pair?setup=abc", image: "/Users/a/Coconut/.runtime/pairing/iphone-setup.png"))
+        XCTAssertEqual(PairingLink(output: "Setup link: coconut://pair/mfrggzdf?setup=IHsi\n")?.link,
+                       "coconut://pair/mfrggzdf?setup=IHsi")
         XCTAssertNil(PairingLink(output: "Coconut could not create the setup QR."))
         XCTAssertNil(PairingLink(output: "Setup link: https://example.com"))
     }
