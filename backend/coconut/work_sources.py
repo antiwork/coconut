@@ -163,37 +163,24 @@ AWAITING_LABELS = ('awaiting-human',)
 AWAITING_BATCH = 50
 
 
-def answer_steps(url, kind):
-    """Tell the bot what to do with the person's answer to a source that waits for them.
-
-    The bot posts the answer as a comment. For an issue, the bot then closes it: the comment carries the decision,
-    and the source's author does the rest from it. kind is the GitHub type that awaiting_user read, because an
-    /issues/ URL can also name a pull request. A pull request, or a source of unknown type, stays open.
-    """
-    from .decision_sources import github_source
-    steps = ('After the person answers, post their answer to the source as a comment in their words or with the chosen choice, '
-             'then verify the comment. ')
-    location = github_source(url)
-    if location and kind == 'Issue':
-        steps += ('Then close the issue with gh issue close ' + location[2] + ' and verify that the issue is closed. '
-                  'Do not close it when the answer says to keep the issue open, '
-                  'or when the answer asks a question back instead of deciding. ')
-    else:
-        steps += 'Do not close the source. '
-    return steps
+# What the bot does with the person's answer is the person's workflow, so it lives in the bot's own Hermes skills:
+# for example how to post the answer, and whether to close the source after it.
+ANSWER_STEPS = ('After the person answers, deliver the answer to the source as your skills for sources that wait '
+                'for the person say. ')
 
 
 def card_answer_steps(task, decision):
     """Return the answer steps of an audit task for a resumed card, or None.
 
     Only a question card that links the source carries the person's answer. A tool approval or a card about
-    another source does not answer the source.
+    another source does not answer the source. An older task also saved the text of its steps. The current text
+    replaces it, because the bot's skills now hold the policy that the old text carried.
     """
     from .decision_sources import github_links
     steps = task.get('_source_answer_steps')
     if (isinstance(steps, dict) and decision and decision.get('action_type') == 'question'
             and str(steps.get('url')).lower() in {link.lower() for link in github_links(decision)}):
-        return steps['text']
+        return ANSWER_STEPS
     return None
 
 
@@ -623,12 +610,9 @@ class WorkSources:
                             if answers else '')
                         awaiting_instruction = (
                             'This source waits for the person: it is assigned to them, it has a label that asks for a human, '
-                            'and the latest comment is not theirs. Ask them now with one coconut_ask card, even when you know the likely answer. '
-                            'Use the question that the latest request asks. Offer its own choices with their exact letters or names, '
-                            'mark its recommendation, and include the source link in sources. '
-                            'A delegated ruling, a scheduled recheck, or a wait for another party does not answer it. '
-                            'Do not create a card for a choice that the latest comments already settle. '
-                            + answer_steps(item['id'], item.get('github_type')) + 'Reuse a pending card about this source instead of creating another. '
+                            'and the latest comment is not theirs. Follow your skills for sources that wait for the person. '
+                            'To ask the person, use one coconut_ask card and include the source link in sources. '
+                            + ANSWER_STEPS + 'Reuse a pending card about this source instead of creating another. '
                             if item.get('awaiting_user') else '')
                         text = ('Reconcile these open assignments against the original sources and existing work. '
                                 + awaiting_instruction + removed_instruction +
@@ -647,8 +631,7 @@ class WorkSources:
                         task['_source_audit_prompt'] = text
                         if item.get('awaiting_user'):
                             from .decision_sources import github_source
-                            task['_source_answer_steps'] = dict(url=github_source(item['id'])[2],
-                                                                text=answer_steps(item['id'], item.get('github_type')))
+                            task['_source_answer_steps'] = dict(url=github_source(item['id'])[2])
                         task['_source_assignment'] = dict(source_id=source['id'], id=item['id'], updated_at=item['updated_at'],
                                                           labels=item.get('labels', []), kind=item.get('kind'),
                                                           awaiting_user=bool(item.get('awaiting_user')))
