@@ -37,6 +37,19 @@ class MacAppTests(unittest.TestCase):
         self.assertEqual(info['LSMinimumSystemVersion'], '14.0')
         self.assertIs(info['LSUIElement'], True)
 
+    def test_the_bundle_carries_the_source_package_its_id_and_its_installer(self):
+        resources = self.folder / 'Resources'
+        resources.mkdir()
+        package_id = mac_app.bundle_source(resources)
+        self.assertEqual(json.loads((resources / 'package.json').read_text()), {'package_id': package_id})
+        self.assertEqual((resources / 'deploy.py').read_bytes(), (mac_app.ROOT / 'scripts/deploy.py').read_bytes())
+        sys.path.insert(0, str(mac_app.ROOT / 'scripts'))
+        import deploy
+        with (resources / 'coconut-source.tar.gz').open('rb') as stream:
+            package = deploy.validate_package(stream)
+        self.assertEqual(package.package_id, package_id)
+        self.assertIn('scripts/host.py', package.files)
+
     def test_the_archive_name_has_the_version_and_the_build(self):
         self.assertEqual(mac_app.archive_name(self.app), 'Coconut-1.2.0-512.zip')
 

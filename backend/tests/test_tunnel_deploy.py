@@ -95,6 +95,34 @@ class TunnelRebuildTests(unittest.TestCase):
         install.assert_not_called()
         self.assertNotIn('kickstart', self.calls)
 
+    def app_rebuild(self, **options):
+        with patch.dict(tunnel.os.environ, {'COCONUT_SIDECAR': '/Applications/Coconut.app/Contents/Helpers/tunnel-sidecar'}), \
+             patch.object(tunnel, 'launchctl', lambda *arguments: (self.calls.append(arguments), self.launchctl(*arguments, **options))[1]), \
+             patch.object(tunnel, 'compile_sidecar') as compile_sidecar, patch.object(tunnel, 'install') as install, \
+             patch.object(tunnel, 'setup') as setup:
+            tunnel.rebuild(self.data)
+        compile_sidecar.assert_not_called()
+        install.assert_not_called()
+        return setup
+
+    def test_the_app_registers_a_route_once_and_restarts_its_own_sidecar(self):
+        setup = self.app_rebuild()
+        setup.assert_called_once_with(self.data, tunnel.RELAY_URL)
+        self.assertIn(('kickstart', '-k', f'gui/{tunnel.os.getuid()}/com.gumroad.coconut.relay'), self.calls)
+        self.install()
+        self.app_rebuild().assert_not_called()
+
+    def test_a_failed_restart_of_the_app_sidecar_is_reported(self):
+        self.install()
+        with self.assertRaisesRegex(SystemExit, 'com.gumroad.coconut.relay'):
+            self.app_rebuild(kickstart=1)
+
+    def test_the_app_sidecar_needs_no_build(self):
+        with patch.dict(tunnel.os.environ, {'COCONUT_SIDECAR': '/App/tunnel-sidecar'}), \
+             patch.object(tunnel, 'compile_sidecar') as compile_sidecar:
+            self.assertEqual(tunnel.build(self.data), Path('/App/tunnel-sidecar'))
+        compile_sidecar.assert_not_called()
+
     def test_new_sources_restart_the_sidecar(self):
         self.install()
         self.assertTrue(self.rebuild(changed=False))

@@ -15,6 +15,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var pairing: PairingLink?
     @Published private(set) var pairingError: String?
     @Published private(set) var isPairing = false
+    /// The install, update or move that runs now, with the text that the menu shows for it.
+    @Published private(set) var activity: String?
+    @Published private(set) var updateError: String?
 
     // The login items start without the environment of the app, so the app ignores COCONUT_INSTALL_DIR too. Both
     // read the same preference.
@@ -43,7 +46,13 @@ final class AppModel: ObservableObject {
     func start() {
         guard timer == nil else { return }
         registerIfNeeded()
-        Task { await refresh() }
+        Task {
+            await refresh()
+            // After Sparkle installs a new app, the new app updates the source that it carries.
+            if legacyAgents.isEmpty && install.isInstalled() {
+                await update(ifNeeded: true)
+            }
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { await self?.refresh() }
         }
@@ -65,9 +74,10 @@ final class AppModel: ObservableObject {
     }
 
     /// Register both login items when the person wants them, Coconut is installed and no old LaunchAgent runs it.
-    func registerIfNeeded() {
+    /// A first install registers them before the source exists: their tool waits, and the install starts it.
+    func registerIfNeeded(beforeInstall: Bool = false) {
         legacyAgents = LegacyAgents.present()
-        guard startAtLogin, legacyAgents.isEmpty, install.isInstalled() else { return }
+        guard startAtLogin, legacyAgents.isEmpty, beforeInstall || install.isInstalled() else { return }
         loginError = nil
         for agent in Agent.allCases {
             let service = SMAppService.agent(plistName: agent.plistName)
@@ -106,20 +116,70 @@ final class AppModel: ObservableObject {
         NSWorkspace.shared.open(install.logs)
     }
 
+    /// Install Coconut in the install folder, with the source of this app.
+    func setUp() async {
+        registerIfNeeded(beforeInstall: true)
+        await update(ifNeeded: false)
+    }
+
+    /// Install the source of this app when it is newer. deploy.py lets the running turns finish first.
+    func update(ifNeeded: Bool) async {
+        guard activity == nil else { return }
+        activity = install.isInstalled() ? "Updating Coconut. Running work finishes first." : "Installing Coconut…"
+        updateError = nil
+        let result = await runTool(ifNeeded ? ["update", "--if-needed"] : ["update"])
+        activity = nil
+        if result.0 != 0 {
+            updateError = DeployResult(output: result.1)?.error ?? Self.lastLine(result.1) ?? "The update failed."
+        }
+        await refresh()
+    }
+
+    /// Hand the service from the earlier LaunchAgents to the login items of this app, then update its source.
+    func moveToApp() async {
+        guard activity == nil else { return }
+        activity = "Moving Coconut to this app. Running work finishes first."
+        updateError = nil
+        let result = await runTool(["migrate"])
+        activity = nil
+        guard result.0 == 0 else {
+            updateError = Self.lastLine(result.1) ?? "Coconut could not move to this app."
+            return
+        }
+        registerIfNeeded()
+        await update(ifNeeded: true)
+    }
+
+    static func lastLine(_ text: String) -> String? {
+        text.split(whereSeparator: \.isNewline).last.map(String.init)
+    }
+
     /// Ask the service for a new one-time setup link, with `coconut pair`.
     func pair() async {
         guard !isPairing else { return }
         isPairing = true
         pairingError = nil
         defer { isPairing = false }
+        let result = await runTool(["pair"])
+        if result.0 == 0, let link = PairingLink(output: result.1) {
+            pairing = link
+        } else {
+            pairing = nil
+            pairingError = result.1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "Coconut could not create a setup link." : result.1.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    /// Run the `coconut` tool of this bundle. Return its exit code and its output.
+    func runTool(_ arguments: [String]) async -> (Int32, String) {
         let tool = tool
-        // The tool must pair the folder that the menu shows, also when the app inherited another COCONUT_INSTALL_DIR.
+        // The tool must use the folder that the menu shows, also when the app inherited another COCONUT_INSTALL_DIR.
         var environment = ProcessInfo.processInfo.environment
         environment["COCONUT_INSTALL_DIR"] = install.root.path
-        let result = await Task.detached { () -> (Int32, String) in
+        return await Task.detached { () -> (Int32, String) in
             let process = Process()
             process.executableURL = tool
-            process.arguments = ["pair"]
+            process.arguments = arguments
             process.environment = environment
             let output = Pipe()
             process.standardOutput = output
@@ -133,12 +193,5 @@ final class AppModel: ObservableObject {
             process.waitUntilExit()
             return (process.terminationStatus, String(decoding: data, as: UTF8.self))
         }.value
-        if result.0 == 0, let link = PairingLink(output: result.1) {
-            pairing = link
-        } else {
-            pairing = nil
-            pairingError = result.1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? "Coconut could not create a setup link." : result.1.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
     }
 }

@@ -6,6 +6,9 @@ The bundle:
   Contents/Helpers/coconut                    the tool that the login items run (mac/Sources/CoconutTool)
   Contents/Helpers/tunnel-sidecar             the relay sidecar (scripts/tunnel-sidecar.swift)
   Contents/Library/LaunchAgents/*.plist       the login items (mac/LaunchAgents)
+  Contents/Resources/coconut-source.tar.gz    the source package of scripts/remote.py, which `coconut update` installs
+  Contents/Resources/package.json             its package ID
+  Contents/Resources/deploy.py                the scripts/deploy.py that installs it
 
 Each binary is universal (arm64 and x86_64). Without --identity, the bundle has an ad-hoc signature.
 
@@ -26,6 +29,7 @@ import shutil
 import subprocess
 import tempfile
 
+import remote
 from tunnel import SOURCES as SIDECAR_SOURCES
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,10 +104,19 @@ def assemble(output: Path, version: str, build: str) -> Path:
         compile_sidecar(contents / 'Helpers/tunnel-sidecar', scratch)
     for agent in sorted((MAC / 'LaunchAgents').glob('*.plist')):
         shutil.copy2(agent, contents / 'Library/LaunchAgents' / agent.name)
+    bundle_source(contents / 'Resources')
     with (contents / 'Info.plist').open('wb') as handle:
         plistlib.dump(info_plist(version, build), handle)
     (contents / 'PkgInfo').write_text('APPL????')
     return app
+
+
+def bundle_source(resources: Path) -> str:
+    """Add the source package, its ID and its installer. Return the package ID."""
+    metadata = remote.package(resources / 'coconut-source.tar.gz')
+    (resources / 'package.json').write_text(json.dumps({'package_id': metadata['package_id']}) + '\n')
+    shutil.copy2(ROOT / 'scripts/deploy.py', resources / 'deploy.py')
+    return metadata['package_id']
 
 
 def sign(app: Path, identity: str) -> None:

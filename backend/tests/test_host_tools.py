@@ -372,33 +372,78 @@ class HostLifecycleTests(unittest.TestCase):
         self.assertIn('Restore its LaunchAgent with:', str(raised.exception))
         self.assertEqual(self.path.read_bytes(), previous)
 
-    def test_the_update_does_not_drain_a_service_of_the_app_login_item(self):
-        self.write_process(drain=True)
-        with patch.object(host, 'login_item_loaded', return_value=True), \
-             patch.object(host, 'owned_agent', return_value=(self.path, False)), \
-             patch.object(host, 'owned_process', return_value=(4242, self.options)):
-            self.assertFalse(host.drain_for_update(timeout=30))
-        self.assertFalse((self.data / 'drain-request').exists())
+    def app_service(self):
+        """Patch launchd so that the login item of Coconut.app runs the service, without a host.py LaunchAgent."""
+        return patch.object(host, 'login_item_loaded', return_value=True), \
+            patch.object(host, 'owned_agent', return_value=(self.path, False))
 
-    def test_the_update_drains_when_the_launch_agent_also_runs_the_service(self):
-        # stop_for_update stops a service of the host.py LaunchAgent, so the drain must happen first.
+    def test_the_app_mode_needs_the_login_item_and_no_launch_agent(self):
         with patch.object(host, 'login_item_loaded', return_value=True), \
              patch.object(host, 'owned_agent', return_value=(self.path, True)):
             self.assertFalse(host.app_runs_service())
         with patch.object(host, 'login_item_loaded', return_value=True), \
              patch.object(host, 'owned_agent', side_effect=SystemExit('Another installation owns the job')):
             self.assertFalse(host.app_runs_service())
+        with patch.object(host, 'login_item_loaded', return_value=False), \
+             patch.object(host, 'owned_agent', return_value=(self.path, False)):
+            self.assertFalse(host.app_runs_service())
+        loaded, agent = self.app_service()
+        with loaded, agent:
+            self.assertTrue(host.app_runs_service())
+            self.assertEqual(host.inspect_for_update(), self.state('app'))
 
-    def test_the_update_does_not_stop_a_service_of_the_app_login_item(self):
-        loaded = subprocess.CompletedProcess([], 0, 'state = running\n', '')
-        with patch.object(host, 'owned_agent', return_value=(self.path, False)), \
-             patch.object(host, 'owned_process', return_value=(4242, self.options)), \
-             patch.object(host.subprocess, 'run', return_value=loaded) as run, \
-             patch.object(host, 'stop_owned_process') as stop:
-            with self.assertRaisesRegex(SystemExit, 'Coconut.app runs this service'):
+    def test_the_update_drains_a_service_of_the_app_login_item(self):
+        self.write_process(drain=True)
+        loaded, agent = self.app_service()
+        with loaded, agent, patch.object(host, 'owned_process', return_value=(4242, self.options)), \
+             patch.object(host.time, 'monotonic', side_effect=[0, 1, 700]), patch.object(host.time, 'sleep'):
+            host.drain_for_update(timeout=600)
+        self.assertTrue((self.data / 'drain-request').exists())
+
+    def test_an_app_update_holds_the_login_item_while_it_stops_and_releases_it_at_restore(self):
+        events = []
+        def stop():
+            events.append(('stop', (self.data / host.UPDATE_HOLD).exists()))
+        loaded, agent = self.app_service()
+        with loaded, agent, patch.object(host, 'stop_owned_process', side_effect=stop), \
+             patch.object(host.time, 'time', return_value=1000.0):
+            self.assertEqual(host.stop_for_update(), self.state('app'))
+        # The hold exists before the stop, so the tool that launchd starts again waits for the new source.
+        self.assertEqual(events, [('stop', True)])
+        self.assertEqual(float((self.data / host.UPDATE_HOLD).read_text()), 1000.0 + host.UPDATE_HOLD_SECONDS)
+        host.restore_after_update(self.state('app'))
+        self.assertFalse((self.data / host.UPDATE_HOLD).exists())
+
+    def test_a_failed_app_stop_releases_the_hold(self):
+        loaded, agent = self.app_service()
+        with loaded, agent, patch.object(host, 'stop_owned_process', side_effect=SystemExit('Coconut did not stop.')):
+            with self.assertRaisesRegex(SystemExit, 'did not stop'):
                 host.stop_for_update()
-            stop.assert_not_called()
-        self.assertTrue(run.call_args.args[0][2].endswith('/com.gumroad.coconut.service'))
+        self.assertFalse((self.data / host.UPDATE_HOLD).exists())
+
+    def test_the_move_to_the_app_stops_the_service_and_keeps_the_earlier_launch_agents(self):
+        self.write_agent()
+        tunnel = self.path.with_name('com.gumroad.coconut.tunnel.plist')
+        tunnel.write_bytes(plistlib.dumps({'Label': 'com.gumroad.coconut.tunnel'}))
+        events = []
+        with patch.object(host, 'drain_for_update', side_effect=lambda: events.append('drain')), \
+             patch.object(host, 'stop_for_update', side_effect=lambda: events.append('stop')), \
+             patch.object(host.subprocess, 'run', side_effect=lambda command, **_: events.append(command[1])):
+            backup = host.migrate_to_app()
+        self.assertEqual(events, ['drain', 'stop', 'bootout'])
+        self.assertEqual(backup, self.root / '.runtime/legacy-agents')
+        self.assertFalse(self.path.exists())
+        self.assertFalse(tunnel.exists())
+        self.assertEqual(sorted(path.name for path in backup.iterdir()),
+                         ['com.gumroad.coconut.tunnel.plist', 'local.coconut.agent.plist'])
+
+    def test_a_failed_stop_keeps_the_earlier_launch_agents(self):
+        self.write_agent()
+        with patch.object(host, 'drain_for_update'), \
+             patch.object(host, 'stop_for_update', side_effect=SystemExit('launchctl could not unload Coconut.')):
+            with self.assertRaises(SystemExit):
+                host.migrate_to_app()
+        self.assertTrue(self.path.exists())
 
     def test_manual_stop_retains_launch_options(self):
         with patch.object(host, 'owned_agent', return_value=(self.path, False)), \

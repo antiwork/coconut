@@ -215,6 +215,70 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertTrue(StatusReader.isAlive(getpid()))
     }
 
+    // MARK: Update
+
+    func testTheBundledSourceIsNewerUntilItsPackageIsInstalled() throws {
+        try write(#"{"package_id": "abc"}"#, to: "Resources/package.json")
+        let source = try XCTUnwrap(BundledSource(resources: home.appendingPathComponent("Resources")))
+        XCTAssertEqual(source.packageID, "abc")
+        XCTAssertEqual(source.package.lastPathComponent, "coconut-source.tar.gz")
+        let install = Install(root: home.appendingPathComponent("Coconut"))
+        XCTAssertTrue(source.isNewer(than: install))
+        try write(#"{"package_id": "abc", "state": "pending"}"#, to: "Coconut/.coconut-install.json")
+        XCTAssertTrue(source.isNewer(than: install), "An install that did not finish needs the update again.")
+        try write(#"{"package_id": "abc", "state": "installed"}"#, to: "Coconut/.coconut-install.json")
+        XCTAssertFalse(source.isNewer(than: install))
+        try write(#"{"package_id": "old", "state": "installed"}"#, to: "Coconut/.coconut-install.json")
+        XCTAssertTrue(source.isNewer(than: install))
+        XCTAssertNil(BundledSource(resources: home.appendingPathComponent("Missing")))
+    }
+
+    func testDeployNeedsAFolderInsideTheHomeFolder() {
+        let home = URL(fileURLWithPath: "/Users/a")
+        XCTAssertEqual(Install(root: URL(fileURLWithPath: "/Users/a/Coconut")).relativePath(home: home), "Coconut")
+        XCTAssertEqual(Install(root: URL(fileURLWithPath: "/Users/a/Apps/Coconut")).relativePath(home: home), "Apps/Coconut")
+        XCTAssertNil(Install(root: URL(fileURLWithPath: "/Users/ab/Coconut")).relativePath(home: home))
+        XCTAssertNil(Install(root: URL(fileURLWithPath: "/srv/Coconut")).relativePath(home: home))
+        XCTAssertNil(Install(root: home).relativePath(home: home))
+    }
+
+    func testTheServiceWaitsOnlyWhileTheHoldLasts() throws {
+        let install = Install(root: home.appendingPathComponent("Coconut"))
+        let now = Date(timeIntervalSince1970: 1000)
+        XCTAssertFalse(install.isHeld(now: now))
+        try write("1600.5\n", to: "Coconut/.runtime/host/update-hold")
+        XCTAssertTrue(install.isHeld(now: now))
+        XCTAssertFalse(install.isHeld(now: Date(timeIntervalSince1970: 1601)), "A hold ends by itself.")
+        try write("garbage", to: "Coconut/.runtime/host/update-hold")
+        XCTAssertFalse(install.isHeld(now: now))
+    }
+
+    func testTheUpdateRunsDeployWithTheAppModeAndTheBundledSidecar() throws {
+        try write(#"{"package_id": "abc"}"#, to: "Resources/package.json")
+        let source = try XCTUnwrap(BundledSource(resources: home.appendingPathComponent("Resources")))
+        let install = Install(root: URL(fileURLWithPath: "/Users/a/Coconut"))
+        let launch = Launch.update(install: install, source: source, directory: "Coconut",
+                                   python: URL(fileURLWithPath: "/opt/homebrew/bin/python3"),
+                                   sidecar: URL(fileURLWithPath: "/App/Contents/Helpers/tunnel-sidecar"), environment: ["PATH": "/bin"])
+        XCTAssertEqual(launch.arguments, ["/opt/homebrew/bin/python3", source.deployScript.path, "receive", "--directory", "Coconut"])
+        XCTAssertEqual(launch.environment["COCONUT_APP_MANAGED"], "1")
+        XCTAssertEqual(launch.environment["COCONUT_SIDECAR"], "/App/Contents/Helpers/tunnel-sidecar")
+        XCTAssertEqual(launch.environment["PATH"], "/bin")
+        XCTAssertNil(launch.standardOutput)
+        let migrate = Launch.migrate(install: install, python: URL(fileURLWithPath: "/usr/local/bin/python3"), environment: [:])
+        XCTAssertEqual(migrate.arguments, ["/usr/local/bin/python3", "/Users/a/Coconut/scripts/host.py", "migrate-to-app"])
+    }
+
+    func testTheDeployResultIsTheLastResultLine() {
+        let failed = DeployResult(output: "log\nCOCONUT_DEPLOY_RESULT={\"ok\": false, \"error\": \"The update failed.\"}\n")
+        XCTAssertEqual(failed?.ok, false)
+        XCTAssertEqual(failed?.error, "The update failed.")
+        let done = DeployResult(output: "COCONUT_DEPLOY_RESULT={\"ok\": true, \"package_id\": \"abc\", \"mode\": \"app\"}")
+        XCTAssertEqual(done?.ok, true)
+        XCTAssertEqual(done?.packageID, "abc")
+        XCTAssertNil(DeployResult(output: "Traceback"))
+    }
+
     // MARK: Pairing
 
     func testThePairingOutputGivesTheLinkAndTheImage() {

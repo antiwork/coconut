@@ -32,6 +32,12 @@ MAX_FILE_BYTES = 4 * 1024 * 1024
 MAX_FILES = 4096
 REQUIRED_FILES = {'backend/coconut/__init__.py', 'backend/coconut/__main__.py', 'scripts/host.py'}
 MARKER_PATH = Path('.coconut-install.json')
+# "app": the login item of Coconut.app runs the service (host.inspect_for_update).
+SERVICE_MODES = ('managed', 'manual', 'stopped', 'app')
+# Coconut.app sets this variable when it runs the update. A first install then starts the app's login item and writes no
+# LaunchAgent.
+APP_MANAGED = 'COCONUT_APP_MANAGED'
+APP_SERVICE_LABEL = 'com.gumroad.coconut.service'
 # The service answers its health check after startup finishes.
 HEALTH_WAIT_SECONDS = 300
 # A probe whose failure is expected, such as the check for an already restored service, waits only this long.
@@ -273,7 +279,9 @@ if len(sys.argv)>3:
 else:
     spec.loader.exec_module(module)
 state=json.load(sys.stdin)
-if sys.argv[2]=='inspect':
+if sys.argv[2]=='inspect' and hasattr(module,'inspect_for_update'):
+    result=module.inspect_for_update()
+elif sys.argv[2]=='inspect':
     _,loaded=module.owned_agent()
     process=module.owned_process()
     result={'mode':'managed' if loaded else 'manual' if process else 'stopped','project':str(root),'data_dir':str(root/'.runtime/host')}
@@ -356,11 +364,18 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
         return result
 
     def install(self, root):
+        """Start the service of a first install. Return its mode."""
+        if os.environ.get(APP_MANAGED) == '1':
+            # The app registered its login item before the install. Its tool waits for the source, so start it again now.
+            self.command(['/bin/launchctl', 'kickstart', '-k', f'gui/{os.getuid()}/{APP_SERVICE_LABEL}'], root,
+                         'Login item start', timeout=30)
+            return 'app'
         plist = Path.home() / 'Library/LaunchAgents/local.coconut.agent.plist'
         if plist.exists() or plist.is_symlink():
             self.restore(root, {'mode': 'managed', 'project': str(root), 'data_dir': str(root / '.runtime/host')})
-            return
+            return 'managed'
         self.command([sys.executable, str(root / 'scripts/host.py'), 'install-service'], root, 'Login service installation', timeout=60)
+        return 'managed'
 
     def health(self, root, address=None):
         """Wait until the service answers its health check. `address` is unused: older updaters pass the HTTPS address."""
@@ -526,7 +541,7 @@ def reconcile(root, operations):
                 or record['new_package_id'] != sha256(canonical(record['new_files']))
                 or record['phase'] not in ('prepared', 'stopped', 'applying', 'starting', 'rollback_stopped', 'code_restored', 'rolled_back')
                 or not isinstance(record['service_state'], dict)
-                or record['service_state'].get('mode') not in ('managed', 'manual', 'stopped')):
+                or record['service_state'].get('mode') not in SERVICE_MODES):
             raise ValueError()
         for names in (old['files'], record['new_files']):
             if any(not allowed_path(name) or not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for name, value in names.items()):
@@ -726,7 +741,7 @@ def receive(directory, stream, *, home=None, operations=None):
         # The service saved its Hermes status at its last start. Read it before the new code checks Hermes again.
         previous_hermes = read_hermes_status(root)
         state = operations.inspect(root) if old_names else {'mode': 'stopped', 'project': str(root), 'data_dir': str(root / '.runtime/host')}
-        if not isinstance(state, dict) or state.get('mode') not in ('managed', 'manual', 'stopped'):
+        if not isinstance(state, dict) or state.get('mode') not in SERVICE_MODES:
             raise DeployError('The service returned an invalid execution mode.')
         record = {'version': 1, 'deployment_id': str(uuid4()), 'original': marker, 'new_files': package.hashes, 'new_package_id': package.package_id,
                   'staging': staging.name, 'backup': backup.name, 'service_state': state, 'phase': 'prepared'}
@@ -761,8 +776,7 @@ def receive(directory, stream, *, home=None, operations=None):
             record['phase'] = 'starting'
             write_json(journal, record)
             if initial_install:
-                operations.install(root)
-                mode = 'managed'
+                mode = operations.install(root) or 'managed'
             else:
                 operations.restore(root, state)
                 mode = state['mode']

@@ -7,6 +7,8 @@ let usage = """
     Usage: coconut <command>
 
       pair      Print a one-time iPhone setup link.
+      update    Install or update the Coconut source of this app. --if-needed skips an install that is current.
+      migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       status    Print the state of the service, Hermes and the relay as JSON.
       version   Print the version of Coconut.app.
       service   Run the Coconut service. The login item uses this command.
@@ -69,6 +71,10 @@ func readStatus() -> Status {
 let command = CommandLine.arguments.dropFirst().first ?? ""
 switch command {
 case "service":
+    // An update replaces the source now. launchd started this tool again after the update stopped the service.
+    while install.isHeld() {
+        sleep(2)
+    }
     guard install.isInstalled() else { waitAndExit("Coconut is not installed in \(install.root.path).") }
     let environment = LoginEnvironment.make(base: ProcessInfo.processInfo.environment,
                                             loginPath: LoginEnvironment.loginPath())
@@ -87,6 +93,43 @@ case "pair":
         fail("Coconut found no Python 3.11 or later.")
     }
     run(.pairingLink(install: install, python: python, environment: environment))
+case "update":
+    let resources = helpers.deletingLastPathComponent().appendingPathComponent("Resources")
+    guard let source = BundledSource(resources: resources) else { fail("This app has no Coconut source.") }
+    guard let directory = install.relativePath() else {
+        fail("The install folder \(install.root.path) must be inside your home folder.")
+    }
+    if CommandLine.arguments.contains("--if-needed") && !source.isNewer(than: install) {
+        print("Coconut is up to date.")
+        exit(0)
+    }
+    let environment = LoginEnvironment.make(base: ProcessInfo.processInfo.environment,
+                                            loginPath: LoginEnvironment.loginPath())
+    guard let python = PythonLocator(environment: environment).locate() else {
+        fail("Coconut found no Python 3.11 or later. Install Hermes, or Python 3.11 or later from Homebrew.")
+    }
+    let launch = Launch.update(install: install, source: source, directory: directory, python: python,
+                               sidecar: helpers.appendingPathComponent("tunnel-sidecar"), environment: environment)
+    let process = Process()
+    process.executableURL = launch.executable
+    process.arguments = Array(launch.arguments.dropFirst())
+    process.environment = launch.environment
+    process.currentDirectoryURL = launch.directory
+    do {
+        process.standardInput = try FileHandle(forReadingFrom: source.package)
+        try process.run()
+    } catch {
+        fail("Coconut could not start its update: \(error.localizedDescription)")
+    }
+    process.waitUntilExit()
+    exit(process.terminationStatus)
+case "migrate":
+    guard install.isInstalled() else { fail("Coconut is not installed in \(install.root.path).") }
+    let environment = LoginEnvironment.make(base: ProcessInfo.processInfo.environment, loginPath: nil)
+    guard let python = PythonLocator(environment: environment).locate() else {
+        fail("Coconut found no Python 3.11 or later.")
+    }
+    run(.migrate(install: install, python: python, environment: environment))
 case "status":
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]

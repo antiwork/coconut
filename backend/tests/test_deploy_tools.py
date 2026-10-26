@@ -106,6 +106,9 @@ class FakeOperations:
 
     def install(self, root):
         self.record('install', root)
+        return self.install_mode
+
+    install_mode = None
 
     def health(self, root):
         self.record('health', root)
@@ -231,6 +234,25 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.assertFalse(result['updated'])
         self.assertIn('install', [call[0] for call in operations.calls])
         self.assertEqual(result['health']['status'], 'ok')
+
+    def test_a_first_install_under_the_app_starts_its_login_item(self):
+        operations = FakeOperations()
+        operations.install_mode = 'app'
+        result = self.receive(operations=operations)
+        self.assertEqual(result['mode'], 'app')
+        self.assertIn('health', [call[0] for call in operations.calls])
+
+    def test_an_update_under_the_app_drains_stops_and_restores_the_login_item(self):
+        self.receive()
+        class DrainingOperations(FakeOperations):
+            def drain(self, root):
+                self.record('drain', root)
+        operations = DrainingOperations(mode='app')
+        result = self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
+        names = [call[0] for call in operations.calls]
+        self.assertLess(names.index('drain'), names.index('stop'))
+        self.assertIn(('restore', self.target, {'mode': 'app'}), operations.calls)
+        self.assertEqual(result['mode'], 'app')
 
     def test_existing_unowned_directory_is_rejected_before_any_operation(self):
         self.target.mkdir()
@@ -709,6 +731,31 @@ class DeploymentCommandTests(unittest.TestCase):
 
     def test_failed_command_stops_descendants(self):
         self.assert_descendants_stop(timeout=2, parent_exit='failure')
+
+
+class DeploymentAppTests(unittest.TestCase):
+    def test_a_first_install_under_the_app_starts_the_login_item_and_writes_no_launch_agent(self):
+        operations = deploy.Operations()
+        with patch.dict(deploy.os.environ, {deploy.APP_MANAGED: '1'}), \
+             patch.object(operations, 'command') as command:
+            self.assertEqual(operations.install(Path('/Coconut')), 'app')
+        self.assertEqual(command.call_args.args[0][:3], ['/bin/launchctl', 'kickstart', '-k'])
+        self.assertTrue(command.call_args.args[0][3].endswith('/com.gumroad.coconut.service'))
+
+    def test_a_first_install_without_the_app_installs_the_launch_agent(self):
+        operations = deploy.Operations()
+        with tempfile.TemporaryDirectory() as home, patch.dict(deploy.os.environ, {deploy.APP_MANAGED: ''}), \
+             patch.object(deploy.Path, 'home', return_value=Path(home)), patch.object(operations, 'command') as command:
+            self.assertEqual(operations.install(Path('/Coconut')), 'managed')
+        self.assertEqual(command.call_args.args[0][-1], 'install-service')
+
+    def test_the_inspect_helper_asks_an_installed_host_for_the_app_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'scripts').mkdir()
+            (root / 'scripts/host.py').write_text(
+                "def inspect_for_update():\n    return {'mode': 'app', 'project': 'p', 'data_dir': 'd'}\n")
+            self.assertEqual(deploy.Operations().inspect(root), {'mode': 'app', 'project': 'p', 'data_dir': 'd'})
 
 
 class DeploymentHealthTests(unittest.TestCase):
