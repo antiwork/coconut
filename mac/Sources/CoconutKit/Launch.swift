@@ -6,19 +6,43 @@ public struct Launch: Equatable {
     public var arguments: [String]
     public var environment: [String: String]
     public var directory: URL
-    public var standardOutput: URL
-    public var standardError: URL
+    /// The log files. Without them, the program keeps the output of the tool.
+    public var standardOutput: URL?
+    public var standardError: URL?
 
     /// The service: `host.py serve`. host.py finds the person's Hermes and starts again under its Python.
     public static func service(install: Install, python: URL, environment: [String: String]) -> Launch {
         var environment = environment
         environment["PYTHONUNBUFFERED"] = "1"
+        // host.py asks launchd whether this login item runs this process. Then a bot can ask for a restart: the service
+        // exits, and launchd starts it again.
+        environment["COCONUT_LOGIN_ITEM"] = Agent.service.rawValue
         return Launch(executable: python,
                       arguments: [python.path, install.hostScript.path, "serve", "--data-dir", install.data.path,
                                   "--provider", "hermes"],
                       environment: environment, directory: install.backend,
                       standardOutput: install.logs.appendingPathComponent("service.log"),
                       standardError: install.logs.appendingPathComponent("error.log"))
+    }
+
+    /// Print a new one-time setup link with scripts/pairing.py, in the "Setup link: …" line of `pairing.py --share`.
+    /// `pairing.py --share` also draws a QR image with `swift`, which needs the Command Line Tools. The app draws the QR
+    /// code itself, so this command makes the link only.
+    public static func pairingLink(install: Install, python: URL, environment: [String: String]) -> Launch {
+        let script = """
+            import subprocess, sys
+            sys.path.insert(0, sys.argv[1])
+            import pairing
+            try:
+                link = pairing.link(pairing.local_payload())
+            except (ValueError, KeyError, OSError, subprocess.CalledProcessError):
+                sys.exit('Coconut could not create a setup link. Check that the service runs, then try again.')
+            print('Setup link: ' + link)
+            print('The setup code works once and expires after ten minutes. Send it only to the person who pairs.')
+            """
+        return Launch(executable: python,
+                      arguments: [python.path, "-c", script, install.root.appendingPathComponent("scripts").path],
+                      environment: environment, directory: install.root, standardOutput: nil, standardError: nil)
     }
 
     /// The relay sidecar of the bundle. It forwards the iPhone's requests from the relay to the service's tunnel

@@ -21,7 +21,8 @@ public struct PairingLink: Equatable {
                 image = String(line.dropFirst("QR image: ".count)).trimmingCharacters(in: .whitespaces)
             }
         }
-        guard let link, link.hasPrefix("coconut://pair?") else { return nil }
+        // coconut://pair/<token>?setup=… holds a relay setup. coconut://pair?setup=… is the earlier TLS form.
+        guard let link, link.hasPrefix("coconut://pair/") || link.hasPrefix("coconut://pair?") else { return nil }
         self.link = link
         self.image = image
     }

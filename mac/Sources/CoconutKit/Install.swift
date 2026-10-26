@@ -2,8 +2,16 @@ import Foundation
 
 /// The folder that holds Coconut's source and its `.runtime` data. scripts/deploy.py installs and updates it.
 ///
-/// The default is `~/Coconut`, the folder that the setup command and the docs use. `COCONUT_INSTALL_DIR` selects another one.
+/// The default is `~/Coconut`, the folder that the setup command and the docs use. To use another folder, set it in
+/// the preferences of the app, which the app and its login items both read:
+///
+///     defaults write com.gumroad.coconut.mac InstallDirectory /path/to/folder
+///
+/// `COCONUT_INSTALL_DIR` overrides it for one command in Terminal. launchd gives the login items no such variable.
 public struct Install: Equatable {
+    public static let preferencesDomain = "com.gumroad.coconut.mac"
+    public static let preferenceKey = "InstallDirectory"
+
     public let root: URL
 
     public init(root: URL) {
@@ -11,9 +19,13 @@ public struct Install: Equatable {
     }
 
     public static func standard(environment: [String: String] = ProcessInfo.processInfo.environment,
+                                preference: String? = CFPreferencesCopyAppValue(preferenceKey as CFString,
+                                                                                  preferencesDomain as CFString) as? String,
                                 home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Install {
-        if let value = environment["COCONUT_INSTALL_DIR"], !value.isEmpty {
-            return Install(root: URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true))
+        for value in [environment["COCONUT_INSTALL_DIR"], preference] {
+            if let value, !value.isEmpty {
+                return Install(root: URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true))
+            }
         }
         return Install(root: home.appendingPathComponent("Coconut", isDirectory: true))
     }

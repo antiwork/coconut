@@ -16,7 +16,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var pairingError: String?
     @Published private(set) var isPairing = false
 
-    let install = Install.standard()
+    // The login items start without the environment of the app, so the app ignores COCONUT_INSTALL_DIR too. Both
+    // read the same preference.
+    let install = Install.standard(environment: [:])
     private var timer: Timer?
 
     init() {
@@ -79,7 +81,8 @@ final class AppModel: ObservableObject {
             registerIfNeeded()
         } else {
             loginError = nil
-            for agent in Agent.allCases where SMAppService.agent(plistName: agent.plistName).status == .enabled {
+            // A login item that waits for approval is registered too. Approval would start it later.
+            for agent in Agent.allCases where [.enabled, .requiresApproval].contains(SMAppService.agent(plistName: agent.plistName).status) {
                 do {
                     try SMAppService.agent(plistName: agent.plistName).unregister()
                 } catch {
