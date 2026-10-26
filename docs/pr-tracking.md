@@ -21,7 +21,8 @@ The displayed aggregate check state still includes optional checks.
 
 Assessment does not grant merge permission or waive a deployment requirement.
 The owner checks the original human request and scoped standing approval in its native profile.
-When approval covers the current changes and all checks pass, the owner can mark the draft ready and merge.
+How to verify a PR and when standing approval lets the owner merge without a card are the person's workflow.
+They live in the bot's own Hermes skills. Coconut ships no review workflow of its own.
 Otherwise, the owner creates one merge decision when the current evidence supports it.
 Human holds, pending decisions, and native tool approval checks remain effective.
 Coordinator handoffs cannot grant or revoke human authorization.

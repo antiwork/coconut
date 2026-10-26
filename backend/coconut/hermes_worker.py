@@ -318,9 +318,7 @@ def turn_context(request):
         text += ('\nLatest saved GitHub observations for these PRs: '
             + json.dumps(task['_tracked_pr_observations'])
             + '. Compare checked_at with earlier messages. Newer observations replace older check status reports. '
-            'A refresh error means the current state is unconfirmed. Verify the current head before a merge decision. '
-            'Use the existing worker result and review for that head. Do not request another readiness audit '
-            'unless a specific finding, changed head, or missing result requires it.')
+            'A refresh error means the current state is unconfirmed.')
     if not task.get('_native_outcome') and task.get('_tracked_work'):
         text += ('\nRetain existing work and its owner, decisions, files, and saved waits. '
             'Use coconut_track_work only to update these retained items until Coconut migrates them. '

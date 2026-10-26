@@ -2,21 +2,17 @@
 import json
 import threading
 
+# How to review a PR, and when to merge without a card, is the person's workflow. It lives in the bot's own Hermes skills.
+# Coconut keeps the merge card contract and the permission rails.
 PR_MERGE_INSTRUCTIONS = (
-    'Verify the current PR head, required checks, independent reviews, unresolved findings, conflicts, and required approvals before merging. '
+    'Before a merge decision or a merge, verify the PR as your skills for pull request review and merge say. '
     'Use the original human request and standing instructions in your native profile to determine merge permission. '
     'Standing approval applies only to its stated repository, changes, and conditions. Green CI alone does not grant permission. '
-    'If that approval covers the current changes and all conditions pass, mark the draft ready and merge without another card. '
     'Preserve explicit human holds, rejected decisions, visual approval requirements, and native tool approval checks. '
-    'While required checks run, finish the local verification the merge decision needs, such as tests that CI does not select, before waiting when possible. '
-    'Before a merge decision or authorized merge, complete the required local verification for the current head, even if first resumed after CI passes. '
-    'Reuse finished verification whose inputs are unchanged; perform any missing or invalidated checks within the approved scope. '
-    'Once all required verification passes, follow the merge permission rules without starting unrelated local work or repeating unchanged verified work. '
     'If merge permission is missing, ask once. Offer one coconut_ask merge decision yourself when the evidence supports it. '
     'Coconut preserves the recorded conversation route. Do not wait for the requesting bot to present the card. '
     'Reuse an existing pending merge decision for this PR. Do not bypass its unanswered choice or duplicate its action. '
-    'Recommend Merge when justified and include a Leave open option. Identify the PR and merge scope in each choice. '
-    'For a draft, the merge choice marks it ready and merges it. Offer a ready-only choice only when a standing human hold covers this exact PR. '
+    'Include a Leave open option. Identify the PR and merge scope in each choice. '
     'Set risk_level low, medium, or high and one risk sentence for the merge. '
     'Set merge_pr_url to the tracked PR URL so an external merge retires the card. '
     'Before an authorized merge, recheck the exact head and use a merge operation that rejects a changed head. '
@@ -36,16 +32,11 @@ PR_ARTIFACTS = "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='pr
 
 PR_REVIEW_INSTRUCTIONS = (
     'Coconut observed new check or review results for a tracked pull request. This is a request to assess merge readiness, not permission to merge. '
-    'Read the current PR head, required checks, reviews, unresolved findings, merge conflicts, and the original human instructions. '
+    'Assess it as your skills for pull request review and merge say. '
     'Do not repeat finished implementation work. Respect any visual approval or other pending decision. '
-    'A draft can be ready for a decision when its owner reports the current head ready. '
-    'If the PR remains a draft and needs a merge decision, include marking it ready in the proposed action. '
     'If the PR head changed, checks are incomplete, or a requirement remains unmet, do not claim it is ready. '
-    'Distinguish required checks from optional checks. A pending optional deployment must not silently block assessment. '
+    'The observation reports required checks apart from optional checks. '
     'If required_checks_state is unverified, a required status passed but its expected GitHub App is unconfirmed. Verify its source before recommending merge. '
-    'Read current-head Greptile findings, not only its successful check status. Resolve findings within the existing approval and verify the result. '
-    'If CI failed, inspect the failure and continue the authorized fix. Do not ask permission for a routine retry or review. '
-    'If an external requirement remains, record its specific reason on the existing task. '
     'Coconut monitors this PR without model calls and resumes you when results change. Do not start gh pr checks --watch. '
     'For a merged or closed PR, verify its current GitHub state and the original accepted scope. '
     'Verify whether the accepted outcome is complete and record evidence on the existing native task. '

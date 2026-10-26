@@ -200,7 +200,7 @@ class WorkerModelProcessTests(unittest.TestCase):
 
     def test_merge_policy_reaches_owner_but_not_read_only_card_checks(self):
         from coconut.hermes_worker import conversation_input
-        merge_action = 'mark the draft ready and merge without another card'
+        merge_action = 'verify the PR as your skills for pull request review and merge say'
         self.bot['instructions'] = 'Merge scoped maintenance fixes after CI and independent review pass.'
         for operation in ('start', 'resume', 'context'):
             with self.subTest(operation=operation):
