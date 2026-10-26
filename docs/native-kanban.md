@@ -144,7 +144,9 @@ continuation's message replaces it. The new input gets a successor in the same e
 result route. Its activity comes after the source left, so a later pass does not end it again. The flag on any other
 work refuses with `continue_closed_source applies only to work that Coconut ended because its sources closed.`
 
-An open assignment can wait for the person. Its label is in `awaiting_labels` of the source (default `awaiting-human`), and its latest comment comes from another GitHub account.
+An audit runs at the priority of ordinary bot work (10). A pull request assigned to the person, or an item that waits for the person, runs at 15. A source can map its own labels to a priority with `label_priority` in `work-sources.json`, for example `{"P1": 17, "P3": 5}`. Each value is an integer from 0 to 19, so an audit never comes before a returned result (20). Without the field, no label changes the priority. The audit stores the map on its task, so a later change applies to new audits only.
+
+An open assignment can wait for the person. Its label is in `awaiting_labels` of the source, and its latest comment comes from another GitHub account. Without `awaiting_labels`, no assignment waits for the person, and the audit reads no comments.
 The audit reads the latest comment of each labeled item with one GraphQL request. Only a card covers such an item: a pending card that names it, or an answer or dismissal that is not older than its latest change.
 Bot work, a delegated ruling, or a scheduled recheck does not cover it. The audit tells the bot to ask with one card that links the source, and to deliver the answer as its own Hermes skills say. How to ask, how to post the answer, and whether to close the source after it are the person's workflow, so they live in the bot's own Hermes skills. Coconut ships no workflow of its own. The source data carries `github_type`, so a skill can treat an issue and a pull request differently.
 When the GraphQL read fails, the audit uses its earlier rules.

@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4, uuid5
 
-from .pr_tracking import GitHubPRTracker, PRTrackingError, parse_pr_url
+from .pr_tracking import REVIEW_CHECK_NAMES, GitHubPRTracker, PRTrackingError, parse_pr_url
 from .routines import validate_schedule, next_run
 from .native_conversation import reaction_only_turn
 from .profiles import HermesProfiles, ProfileError, profile_id, settings_migrated
@@ -2892,7 +2892,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         # A tracker without a login expires sooner, so a new gh login takes effect soon.
         if cached and cached[0] > time.monotonic():
             return cached[1]
-        tracker = GitHubPRTracker.for_profile(home)
+        tracker = GitHubPRTracker.for_profile(home, review_check_names=self._setting('review_check_names', REVIEW_CHECK_NAMES))
         with self.lock:
             self._profile_trackers[home] = (time.monotonic() + (120 if tracker._token else 30), tracker)
         return tracker

@@ -28,22 +28,22 @@ def graphql(viewer, *authors, kind='Issue'):
 
 class AwaitingUserTests(unittest.TestCase):
     def setUp(self):
-        self.item = dict(id=URL, updated_at='2026-10-21T07:45:03Z', title='Payout decision', labels=['awaiting-human'])
+        self.item = dict(id=URL, updated_at='2026-10-21T07:45:03Z', title='Payout decision', labels=['needs-answer'])
 
     def test_latest_comment_by_another_account_waits_for_the_person(self):
         calls = []
         def run(args):
             calls.append(args)
             return graphql('Person', ('helper', 'helper'))
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], run), {URL: 'Issue'})
+        self.assertEqual(awaiting_user([self.item], ['needs-answer'], run), {URL: 'Issue'})
         self.assertEqual(len(calls), 1)
         self.assertIn(f'u0={URL}', calls[0])
 
     def test_question_without_comments_waits_for_the_person(self):
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: graphql('person', ('helper', None))), {URL: 'Issue'})
+        self.assertEqual(awaiting_user([self.item], ['needs-answer'], lambda args: graphql('person', ('helper', None))), {URL: 'Issue'})
 
     def test_answer_by_the_person_ends_the_wait(self):
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: graphql('person', ('helper', 'Person'))), {})
+        self.assertEqual(awaiting_user([self.item], ['needs-answer'], lambda args: graphql('person', ('helper', 'Person'))), {})
 
     def test_every_labeled_item_is_read_in_batches(self):
         items = [dict(self.item, id=f'{URL[:-1]}{number}') for number in range(1, 121)]
@@ -52,18 +52,18 @@ class AwaitingUserTests(unittest.TestCase):
             count = sum(arg.startswith('u') and '=' in arg for arg in args)
             calls.append(count)
             return graphql('person', *[('helper', 'helper')] * count)
-        self.assertEqual(set(awaiting_user(items, ['awaiting-human'], run)), {item['id'] for item in items})
+        self.assertEqual(set(awaiting_user(items, ['needs-answer'], run)), {item['id'] for item in items})
         self.assertEqual(calls, [50, 50, 20])
 
     def test_unlabeled_items_need_no_read(self):
         self.item['labels'] = ['enhancement']
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: self.fail('No read expected.')), {})
+        self.assertEqual(awaiting_user([self.item], ['needs-answer'], lambda args: self.fail('No read expected.')), {})
 
     def test_failed_read_keeps_the_earlier_rules(self):
         def run(args):
             raise subprocess.CalledProcessError(1, args)
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], run), {})
-        self.assertEqual(awaiting_user([self.item], ['awaiting-human'], lambda args: SimpleNamespace(stdout='{}')), {})
+        self.assertEqual(awaiting_user([self.item], ['needs-answer'], run), {})
+        self.assertEqual(awaiting_user([self.item], ['needs-answer'], lambda args: SimpleNamespace(stdout='{}')), {})
 
     def test_only_a_card_covers_an_awaiting_item(self):
         current = datetime.now(timezone.utc)
@@ -114,9 +114,10 @@ class AwaitingAuditTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.addCleanup(self.service.close)
         self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
-        self.source = dict(id='assigned', bot_id=self.bot['id'], command=['read-assignments'], bindings='coverage.json')
+        self.source = dict(id='assigned', bot_id=self.bot['id'], command=['read-assignments'], bindings='coverage.json',
+                           awaiting_labels=['needs-answer'])
         (self.root / 'work-sources.json').write_text(json.dumps([self.source]))
-        self.item = dict(id=URL, updated_at='2026-10-21T07:45:03Z', title='Payout decision', labels=['awaiting-human'])
+        self.item = dict(id=URL, updated_at='2026-10-21T07:45:03Z', title='Payout decision', labels=['needs-answer'])
         self.commenter = 'helper'
         self.kind = 'Issue'
 
@@ -173,6 +174,14 @@ class AwaitingAuditTests(unittest.TestCase):
         card = dict(id='card', title='Payout', action_type='question', status='modified', correction='Ask again.')
         prompt, _ = conversation_input(dict(operation='resume', task=task, decision=card, history=[]))
         self.assertNotIn(ANSWER_STEPS, prompt)
+
+    def test_no_label_waits_for_the_person_unless_the_source_names_one(self):
+        # Which label asks for the person is the person's choice. Without awaiting_labels, Coconut reads no comments.
+        del self.source['awaiting_labels']
+        (self.root / 'work-sources.json').write_text(json.dumps([self.source]))
+        state = self.audit()
+        prompt = self.service._get('tasks', state['task_id'])['_source_audit_prompt']
+        self.assertNotIn('This source waits for the person', prompt)
 
     def test_answer_by_the_person_restores_the_earlier_rules(self):
         self.commenter = 'person'

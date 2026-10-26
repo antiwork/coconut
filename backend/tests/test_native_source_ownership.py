@@ -77,14 +77,30 @@ print(identity)
 
     def test_new_source_audits_store_labels_and_schedule_by_urgency(self):
         self.source()
+        self.source_config['label_priority'] = {'high': 15, 'medium': 12}
+        (self.root / 'work-sources.json').write_text(json.dumps([self.source_config]))
         self.items = [dict(self.item, id=self.item['id'] + str(index), labels=[label])
-                      for index, label in enumerate(('priority/high', 'priority/medium'))]
+                      for index, label in enumerate(('high', 'medium'))]
         self.audit()
         priorities = {row['id']: row['priority'] for row in self.service._kanban_rows()}
         tasks = {task.get('_source_assignment', {}).get('id'): task for task in self.service._all('tasks')}
         for item, expected in zip(self.items, (15, 12)):
             task = tasks[item['id']]
             self.assertEqual(task['_source_assignment']['labels'], item['labels'])
+            self.assertEqual(priorities[task['id']], expected)
+
+    def test_source_label_priority_sets_the_label_scheme(self):
+        self.source()
+        self.source_config['label_priority'] = {'P1': 17, 'P3': 3}
+        (self.root / 'work-sources.json').write_text(json.dumps([self.source_config]))
+        self.items = [dict(self.item, id=self.item['id'] + str(index), labels=[label])
+                      for index, label in enumerate(('P1', 'P3', 'unknown'))]
+        self.audit()
+        priorities = {row['id']: row['priority'] for row in self.service._kanban_rows()}
+        tasks = {task.get('_source_assignment', {}).get('id'): task for task in self.service._all('tasks')}
+        for item, expected in zip(self.items, (17, 3, 10)):
+            task = tasks[item['id']]
+            self.assertEqual(task['_source_assignment']['label_priority'], self.source_config['label_priority'])
             self.assertEqual(priorities[task['id']], expected)
 
     def test_native_pause_and_completion_do_not_restart_an_assignment_audit(self):

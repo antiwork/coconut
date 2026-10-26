@@ -34,7 +34,21 @@ def audit_item(task):
 # the highest priority first, and a returned result has 20. An item that the person must act on comes first.
 AUDIT_PRIORITY = 10
 URGENT_AUDIT_PRIORITY = 15
-LABEL_PRIORITY = {'priority/high': URGENT_AUDIT_PRIORITY, 'priority/medium': 12, 'priority/low': 5}
+# Labels are the person's scheme, so no label changes the priority unless the source sets label_priority in
+# work-sources.json.
+LABEL_PRIORITY = {}
+
+
+def label_priority(source):
+    """Return the label map of a source: its label_priority, or no labels when it is missing or invalid.
+
+    A value must be an integer from 0 to 19, so an audit never comes before a returned result (20).
+    """
+    value = source.get('label_priority') if isinstance(source, dict) else None
+    if isinstance(value, dict) and all(isinstance(label, str) and type(priority) is int and 0 <= priority < 20
+                                       for label, priority in value.items()):
+        return dict(value)
+    return dict(LABEL_PRIORITY)
 
 
 def audit_priority(task):
@@ -55,8 +69,10 @@ def audit_priority(task):
             record = {}
         item = (record if isinstance(record, dict) else {}) | item
     labels = item.get('labels', [])
-    values = [LABEL_PRIORITY[label] for label in (labels if isinstance(labels, list) else [])
-              if isinstance(label, str) and label in LABEL_PRIORITY]
+    # An audit queued before the source map was stored has no label map.
+    priorities = label_priority(dict(label_priority=item.get('label_priority')))
+    values = [priorities[label] for label in (labels if isinstance(labels, list) else [])
+              if isinstance(label, str) and label in priorities]
     if item.get('awaiting_user') or item.get('kind') == 'pull_request' or '/pull/' in str(item.get('id', '')):
         values.append(URGENT_AUDIT_PRIORITY)
     return max(values, default=AUDIT_PRIORITY)
@@ -159,7 +175,8 @@ def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, 
 
 
 
-AWAITING_LABELS = ('awaiting-human',)
+# The labels that mark a question for the person are the person's choice: awaiting_labels of the source. None by default.
+AWAITING_LABELS = ()
 AWAITING_BATCH = 50
 
 
@@ -634,6 +651,7 @@ class WorkSources:
                             task['_source_answer_steps'] = dict(url=github_source(item['id'])[2])
                         task['_source_assignment'] = dict(source_id=source['id'], id=item['id'], updated_at=item['updated_at'],
                                                           labels=item.get('labels', []), kind=item.get('kind'),
+                                                          label_priority=label_priority(source),
                                                           awaiting_user=bool(item.get('awaiting_user')))
                         self._put('tasks', task)
                         state['task_id'] = task['id']

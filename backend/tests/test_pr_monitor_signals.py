@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
+from coconut.pr_tracking import REVIEW_CHECK_NAMES, review_check_names_setting
 from test_pr_tracking import PayloadTracker, pull, check, statuses, SHA, URL
 import test_pull_request_reviews as fixtures
 from test_service_pr import observation
@@ -97,14 +98,32 @@ class RequiredCheckTests(unittest.TestCase):
         self.assertTrue(a.check_failures)
         self.assertNotEqual(a.check_failures, b.check_failures)
 
-    def test_greptile_completion_changes_signal_without_waiting_for_optional_ci(self):
-        review = dict(check(2), name='Greptile Review', completed_at='2026-09-17T03:00:00Z')
-        first = self.tracker(review=review).observe(URL)
-        repeat = self.tracker(review=review).observe(URL)
-        later = self.tracker(review=dict(review, id=3)).observe(URL)
+    def reviewed(self, review):
+        tracker = self.tracker(review=review)
+        tracker._review_check_names = review_check_names_setting(['reviewer'])
+        return tracker.observe(URL)
+
+    def test_reviewer_completion_changes_signal_without_waiting_for_optional_ci(self):
+        review = dict(check(2), name='Reviewer Bot', completed_at='2026-09-17T03:00:00Z')
+        first = self.reviewed(review)
+        repeat = self.reviewed(review)
+        later = self.reviewed(dict(review, id=3))
         self.assertTrue(first.review_checks)
         self.assertEqual(first.review_checks, repeat.review_checks)
         self.assertNotEqual(first.review_checks, later.review_checks)
+
+    def test_review_check_names_are_a_setting(self):
+        # The reviewer app is the person's choice. No check counts as a review until the setting names it.
+        review = dict(check(2), name='CodeRabbit', completed_at='2026-09-17T03:00:00Z')
+        self.assertIsNone(self.tracker(review=review).observe(URL).review_checks)
+        self.assertEqual(REVIEW_CHECK_NAMES, ())
+        tracker = self.tracker(review=review)
+        tracker._review_check_names = review_check_names_setting(['CodeRabbit'])
+        self.assertTrue(tracker.observe(URL).review_checks)
+        # An empty list turns the review signal off. A missing or invalid value keeps the default.
+        self.assertEqual(review_check_names_setting([]), ())
+        for invalid in (None, 'reviewer', [''], [3]):
+            self.assertEqual(review_check_names_setting(invalid), REVIEW_CHECK_NAMES)
 
 
 class PRMonitorTests(unittest.TestCase):
@@ -139,7 +158,7 @@ class PRMonitorTests(unittest.TestCase):
             self.finish_assessment()
         self.assertEqual(len(self.service._get('artifacts', self.artifact_id)['_reviewed_states']), 1)
 
-    def test_greptile_rerun_resumes_once_even_when_aggregate_state_is_unchanged(self):
+    def test_reviewer_rerun_resumes_once_even_when_aggregate_state_is_unchanged(self):
         for signal in ('review-one', 'review-two'):
             self.green(draft=True, checks_state='running', review_checks=signal)
             self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'queued')

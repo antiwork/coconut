@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import re
 import threading
 import time
@@ -324,7 +325,7 @@ class SourceActivityTests(unittest.TestCase):
         for token, lifetime in (('secret', 120), ('', 30)):
             with self.subTest(token=token):
                 self.service._profile_trackers.clear()
-                login = Mock(side_effect=lambda home: GitHubPRTracker(token=token))
+                login = Mock(side_effect=lambda home, **settings: GitHubPRTracker(token=token, **settings))
                 with patch('coconut.service.GitHubPRTracker.for_profile', login):
                     first = self.service._pr_tracker_for(self.bot['id'])
                     second = self.service._pr_tracker_for(self.bot['id'])
@@ -336,6 +337,16 @@ class SourceActivityTests(unittest.TestCase):
                     self.service._profile_trackers[home] = (time.monotonic() - 1, first)
                     self.service._pr_tracker_for(self.bot['id'])
                     self.assertEqual(login.call_count, 2)
+                    self.assertEqual(first._review_check_names, ())
+
+    def test_profile_tracker_uses_the_review_check_setting(self):
+        with self.service.transaction():
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)',
+                                    ('review_check_names', json.dumps(['CodeRabbit'])))
+        self.service._profile_trackers.clear()
+        login = Mock(side_effect=lambda home, **settings: GitHubPRTracker(token='', **settings))
+        with patch('coconut.service.GitHubPRTracker.for_profile', login):
+            self.assertEqual(self.service._pr_tracker_for(self.bot['id'])._review_check_names, ('coderabbit',))
 
     def test_decision_lookup_skips_hidden_cards_and_keeps_older_links(self):
         with self.service.transaction():
