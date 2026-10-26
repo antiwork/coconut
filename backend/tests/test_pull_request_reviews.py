@@ -135,8 +135,8 @@ class PRReviewTests(unittest.TestCase):
     def test_verified_owner_offers_card_without_coordinator_turn(self):
         from coconut.pull_request_reviews import PR_MERGE_INSTRUCTIONS
         self.assertIn('Offer one coconut_ask merge decision yourself', PR_MERGE_INSTRUCTIONS)
-        # Local checks overlap CI, so the card follows required checks without a second wait.
-        self.assertIn('While required checks run, finish the local verification', PR_MERGE_INSTRUCTIONS)
+        # The bot's skills say how to verify the PR, for example local checks while CI runs.
+        self.assertIn('as your skills for pull request review and merge say', PR_MERGE_INSTRUCTIONS)
         revision = '2026-09-23T11:46:31Z'
         self.tracker.observe_issue = lambda url: dict(updated_at=revision)
         original_start = self.provider.start_task

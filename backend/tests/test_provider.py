@@ -1068,7 +1068,7 @@ class ProviderTests(unittest.TestCase):
         self.assertIn('when only the design was approved', output)
         self.assertNotIn('outcome is not complete, offer the next step', output)
 
-    def test_delivered_merge_rules_require_current_head_local_verification(self):
+    def test_delivered_merge_rules_point_to_the_bot_skills_and_keep_the_card_contract(self):
         provider = self.fake_hermes("kwargs['stream_callback'](self.system_prompt + '\\n' + prompt)\nreturn {'completed': True, 'final_response': ''}\n")
         for checks in ('running', 'passed'):
             with self.subTest(checks=checks):
@@ -1079,13 +1079,8 @@ class ProviderTests(unittest.TestCase):
                     provider.start_task(task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
                 self.assertEqual(events[-1][0], 'completed')
                 output = ''.join(data['text'] for kind, data in events if kind == 'text_delta')
-                for rule in ('before waiting when possible',
-                             'Before a merge decision or authorized merge, complete the required local verification for the current head',
-                             'even if first resumed after CI passes',
-                             'Reuse finished verification whose inputs are unchanged',
-                             'perform any missing or invalidated checks within the approved scope',
-                             'without starting unrelated local work or repeating unchanged verified work',
-                             'merge without another card',
+                # How to verify a PR is the person's workflow in the bot's skills. The card contract stays.
+                for rule in ('verify the PR as your skills for pull request review and merge say',
                              'If merge permission is missing, ask once',
                              'Preserve explicit human holds, rejected decisions',
                              'Do not bypass its unanswered choice',
@@ -1093,6 +1088,8 @@ class ProviderTests(unittest.TestCase):
                              'current-head', checks):
                     self.assertIn(rule, output)
                 self.assertNotIn('offer the merge decision without starting new local work', output)
+                self.assertNotIn('merge without another card', output)
+                self.assertNotIn('Greptile', output)
 
     def test_bot_contact_metadata_and_explicit_messages_exclude_private_fields(self):
         peer = self.configure_peer()
