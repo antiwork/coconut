@@ -31,6 +31,7 @@ struct ApprovalSettingsView: View {
                                     if effective == mode.id { Image(systemName: "checkmark") }
                                 }.padding(.vertical, 3)
                             }
+                            .accessibilityAddTraits(effective == mode.id ? .isSelected : [])
                         }
                     }
                 }
@@ -40,10 +41,10 @@ struct ApprovalSettingsView: View {
             } else {
                 Text("Connect to your Mac to read Hermes settings.").foregroundStyle(.secondary)
             }
-            if let error = store.error { Text(error).foregroundStyle(BoardStyle.accent) }
+            if let error = store.error { InlineError(error) }
         }
         .disabled(saving)
-        .scrollContentBackground(.hidden).background(BoardStyle.paper)
+        .settingsBackground()
         .navigationTitle("Access").navigationBarTitleDisplayMode(.inline)
     }
 

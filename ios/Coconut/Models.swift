@@ -591,15 +591,44 @@ enum ConnectionState: String, Sendable {
         }
     }
 
+    // Settings and the connection row use this one name for each state.
+    var title: String {
+        switch self {
+        case .unconfigured: "Not paired"
+        case .connecting: "Connecting…"
+        case .connected: "Connected"
+        case .disconnected: "Waiting for your Mac"
+        case .macOffline: "Mac offline"
+        case .relayUnreachable: "Relay unreachable"
+        case .needsRepair: "Needs a new pairing link"
+        case .preview: "Preview"
+        }
+    }
+
     // A calm banner names these states. The cached state stays visible below it.
     var bannerMessage: String? {
         switch self {
+        case .disconnected: "Coconut cannot reach your Mac. It tries again on its own."
         case .macOffline: "Your Mac is offline. Coconut shows the last known state."
         case .relayUnreachable: "Coconut cannot reach the relay. It tries again on its own."
         case .needsRepair: "This iPhone needs a new pairing link from your Hermes."
         default: nil
         }
     }
+
+    // A version 1 pairing works until the person pairs again. The banner asks for a new link and offers Pair.
+    func notice(legacyPairing: Bool) -> ConnectionNotice? {
+        if self == .needsRepair, let bannerMessage { return ConnectionNotice(message: bannerMessage, offersPairing: true) }
+        if legacyPairing {
+            return ConnectionNotice(message: "Pair this iPhone again with a new pairing link from your Hermes.", offersPairing: true)
+        }
+        return bannerMessage.map { ConnectionNotice(message: $0, offersPairing: false) }
+    }
+}
+
+struct ConnectionNotice: Equatable, Sendable {
+    let message: String
+    let offersPairing: Bool
 }
 
 struct HermesModelChoice: Codable, Equatable, Sendable {
@@ -644,6 +673,13 @@ struct HermesSetup: Codable, Equatable, Sendable {
     var model: HermesModelChoice?
     // A Mac before this field sends no MCP servers.
     var mcpServers: [HermesMCPServer]? = nil
+    // The Hermes that Coconut runs. A Mac before this field sends no status.
+    var hermes: HermesRuntimeStatus? = nil
+
+    // The setup page has nothing to choose: no profile to add, no key or sign-in, and no new MCP server.
+    func offersChoices(existingServers: [MCPServer]) -> Bool {
+        !importable.isEmpty || !logins.isEmpty || !signIns.isEmpty || !newMCPServers(existing: existingServers).isEmpty
+    }
 
     var importable: [HermesSetupProfile] { profiles.filter { $0.botId == nil } }
 
@@ -669,6 +705,17 @@ struct HermesSetup: Codable, Equatable, Sendable {
     model: HermesModelChoice(model: "claude-opus-5-5", provider: "anthropic"),
     mcpServers: [HermesMCPServer(id: "github", transport: "stdio", needsSetup: false),
                  HermesMCPServer(id: "notion", transport: "http", needsSetup: true)])
+}
+
+struct HermesRuntimeStatus: Codable, Equatable, Sendable {
+    var version: String?
+    // False when Coconut has not tested this Hermes version. Nil when the Mac does not know.
+    var tested: Bool?
+
+    var untestedWarning: String? {
+        guard tested == false else { return nil }
+        return "Hermes \(version ?? "on this Mac") is not tested with Coconut. Some features can fail."
+    }
 }
 
 struct HermesImportRequest: Encodable, Sendable {

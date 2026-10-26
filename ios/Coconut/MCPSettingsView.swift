@@ -4,13 +4,11 @@ struct MCPSettingsView: View {
     @Environment(AppStore.self) private var store
     @State private var adding = false
 
+    private var canEdit: Bool { store.isDemo || store.connection == .connected }
+
     var body: some View {
-        List {
-            Section {
-                NavigationLink { GoogleSettingsView() } label: {
-                    Text("Google")
-                }.accessibilityIdentifier("google-settings")
-            }
+        Form {
+            GoogleConnectionSection()
             Section {
                 ForEach(store.mcpServers) { server in
                     NavigationLink { MCPConnectionView(server: server) } label: {
@@ -23,15 +21,18 @@ struct MCPSettingsView: View {
                 }
                 Button { adding = true } label: {
                     Label("Add connection", systemImage: "plus")
-                }.accessibilityIdentifier("add-mcp")
+                }
+                .disabled(!canEdit)
+                .accessibilityIdentifier("add-mcp")
             } header: {
-                Text("MCP servers")
+                Text("Other tools (MCP)")
             } footer: {
-                Text("MCP connections are available to all bots. Hermes stores their settings on your Mac.")
+                Text(canEdit ? "All bots can use these tools. Hermes keeps their settings on your Mac."
+                     : "Connect to your Mac first. All bots can use these tools. Hermes keeps their settings on your Mac.")
             }
         }
         .navigationTitle("Connections").navigationBarTitleDisplayMode(.inline)
-        .scrollContentBackground(.hidden).background(BoardStyle.paper)
+        .settingsBackground()
         .sheet(isPresented: $adding) { NavigationStack { MCPConnectionView() } }
     }
 }
@@ -58,7 +59,7 @@ struct MCPConnectionView: View {
                     .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                     .disabled(server?.editable == false).accessibilityIdentifier("mcp-url")
                 if server?.editable != false {
-                    SecureField(server?.hasToken == true ? "Token saved · enter to replace" : "Bearer token (optional)", text: $token)
+                    SecureField(server?.hasToken == true ? "Access token saved · enter to replace" : "Access token (optional)", text: $token)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
                         .accessibilityIdentifier("mcp-token")
                         .disabled(removeAuthentication)
@@ -67,7 +68,7 @@ struct MCPConnectionView: View {
                     }
                 }
             } footer: {
-                Text(server?.editable == false ? "Manage this connection through Hermes on your Mac." : "Use an HTTP MCP server. The token stays on your Mac and is never returned to this app.")
+                Text(server?.editable == false ? "Manage this connection through Hermes on your Mac." : "Use an HTTP MCP server. The access token stays on your Mac. Coconut never shows it again.")
             }
             if server?.editable != false {
                 Section {
@@ -90,7 +91,7 @@ struct MCPConnectionView: View {
                             Label("Connected · \(test.tools.count) tools", systemImage: "checkmark")
                                 .foregroundStyle(BoardStyle.green)
                             ForEach(test.tools, id: \.self) { Text($0).font(.footnote) }
-                        } else { Text(test.error ?? "Connection failed.").font(.footnote) }
+                        } else { InlineError(test.error ?? "Connection failed.") }
                     }
                 }
                 if server.editable {
@@ -106,10 +107,10 @@ struct MCPConnectionView: View {
                     }
                 }
             }
-            if let error = store.error { Section { Text(error).font(.footnote) } }
+            if let error = store.error { Section { InlineError(error) } }
         }
         .navigationTitle(server?.id ?? "Add connection").navigationBarTitleDisplayMode(.inline)
-        .scrollContentBackground(.hidden).background(BoardStyle.paper)
+        .settingsBackground()
         .toolbar {
             if server == nil {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }

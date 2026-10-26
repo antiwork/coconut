@@ -60,12 +60,14 @@ struct NotificationSettingsView: View {
                         .accessibilityIdentifier("work-days-disclosure")
                     }
                     if push.workWeekdays.isEmpty {
-                        Text("Choose at least one work day.").font(.caption).foregroundStyle(.red)
+                        InlineError("Choose at least one work day.")
+                            .accessibilityElement(children: .ignore)
                             .accessibilityLabel("Work days are not valid. Choose at least one day.")
                             .accessibilityIdentifier("work-days-error")
                     }
                     if push.workStartMinutes >= push.workEndMinutes {
-                        Text("Start must be before end.").font(.caption).foregroundStyle(.red)
+                        InlineError("Start must be before end.")
+                            .accessibilityElement(children: .ignore)
                             .accessibilityLabel("Work hours are not valid. Start must be before end.")
                             .accessibilityIdentifier("work-hours-error")
                     }
@@ -94,11 +96,12 @@ struct NotificationSettingsView: View {
                     Text("App badges are off in iOS Settings.").font(.caption).foregroundStyle(.secondary)
                 }
                 if let error = store.pushRegistrationError ?? push.error {
-                    Text(error).font(.caption).foregroundStyle(.secondary)
+                    InlineError(error)
                 }
             }
         }
         .tint(BoardStyle.green)
+        .settingsBackground()
         .environment(\.timeZone, TimeZone(identifier: "UTC") ?? .gmt)
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)

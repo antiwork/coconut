@@ -13,7 +13,6 @@ final class GoogleConnectionFlowTests: XCTestCase {
         let connections = app.buttons["mcp-settings"]
         for _ in 0..<3 where !connections.isHittable { app.swipeUp() }
         connections.tap()
-        app.buttons["google-settings"].tap()
         XCTAssertTrue(app.buttons["google-connect"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["All bots can read Gmail and Calendar. This connection cannot send email or change events."].exists)
         XCTAssertFalse(app.buttons["google-bot"].exists)
@@ -34,7 +33,6 @@ final class GoogleConnectionFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 15))
         app.buttons["app-settings"].tap()
         app.buttons["mcp-settings"].tap()
-        app.buttons["google-settings"].tap()
         XCTAssertTrue(app.buttons["google-connect"].waitForExistence(timeout: 5))
         app.buttons["google-connect"].tap()
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")

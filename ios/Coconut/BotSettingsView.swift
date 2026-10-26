@@ -1,37 +1,36 @@
 import SwiftUI
 
+// Each change saves by itself: toggles and the character when they change, text when the field loses focus,
+// when the person submits it, and when the page closes. Back never drops an edit.
 struct BotSettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let botId: String
-    @State private var draft: Bot?
-    @State private var original: Bot?
-    @State private var appearanceOpen = false
+    @State private var edits: BotDraft?
     @State private var routineOpen = false
     @State private var deleteOpen = false
-    @State private var saving = false
+
+    private var draft: Bot? { edits?.bot }
 
     var body: some View {
         Form {
             if let draft {
+                BotIdentityFields(name: field(\.name), instructions: field(\.instructions),
+                                  avatar: field(\.avatar), color: field(\.color), identity: botId, commit: save)
                 Section {
-                    Button { appearanceOpen = true } label: {
-                        BotAvatar(bot: draft, size: 86)
-                            .frame(maxWidth: .infinity).padding(.vertical, 20)
+                    NavigationLink { ModelSettingsView(botId: botId) } label: {
+                        SettingsNavigationLabel(title: "Model", subtitle: modelSummary(draft))
                     }
-                    .buttonStyle(.plain).listRowBackground(Color.clear)
-                    .accessibilityLabel("Change character")
-                }
-                Section("Name") {
-                    TextField("Name", text: field(\.name)).accessibilityIdentifier("bot-name")
-                }
-                Section("Description") {
-                    TextField("What should this bot do?", text: field(\.instructions), axis: .vertical)
-                        .lineLimit(5...18).accessibilityIdentifier("bot-instructions")
+                    .accessibilityIdentifier("bot-model-settings")
+                    NavigationLink { ApprovalSettingsView(botId: botId) } label: {
+                        SettingsNavigationLabel(title: "Access", subtitle: accessSummary(draft))
+                    }
+                    .accessibilityIdentifier("bot-access-settings")
                 }
                 Section {
-                    Toggle("Notifications", isOn: Binding(get: { self.draft?.notifications ?? true }, set: { self.draft?.notifications = $0 }))
+                    Toggle("Notifications", isOn: Binding(get: { edits?.bot.notifications ?? true }, set: { edits?.bot.notifications = $0 }))
                         .tint(BoardStyle.green)
+                        .accessibilityIdentifier("bot-notifications")
                 } footer: { Text("Get notified when this bot needs a decision, finishes work, or fails.") }
                 Section("Routines") {
                     ForEach(store.routines.filter { $0.botId == botId }) { routine in
@@ -45,70 +44,127 @@ struct BotSettingsView: View {
                     Button("Add routine", systemImage: "plus") { routineOpen = true }.accessibilityIdentifier("add-routine")
                 }
             }
-            if let error = store.error { Section { Text(error).foregroundStyle(BoardStyle.accent) } }
+            if let error = store.error { Section { InlineError(error) } }
         }
-        .scrollContentBackground(.hidden).background(BoardStyle.paper)
+        .settingsBackground()
         .navigationTitle(draft?.name ?? "Bot").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                if let draft, let original, draft != original {
-                    Button(saving ? "Saving…" : "Save") {
-                        saving = true
-                        Task {
-                            await store.updateBot(draft, comparedTo: original)
-                            saving = false
-                            if store.error == nil, let current = store.bots.first(where: { $0.id == botId }) { refreshDraft(current) }
+                Menu {
+                    if let draft {
+                        Button(draft.archived ? "Restore bot" : "Archive bot") {
+                            Task { await store.archiveBot(draft); if store.error == nil { dismiss() } }
                         }
-                    }.disabled(saving || draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("save-bot")
-                } else {
-                    Menu {
-                        if let draft {
-                            Button(draft.archived ? "Restore bot" : "Archive bot") {
-                                Task { await store.archiveBot(draft); if store.error == nil { dismiss() } }
-                            }
-                            Button("Delete bot", role: .destructive) { deleteOpen = true }
-                        }
-                    } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Bot options")
-                }
+                        Button("Delete bot", role: .destructive) { deleteOpen = true }
+                    }
+                } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Bot options")
             }
         }
         .onAppear {
-            if draft == nil { draft = store.bots.first { $0.id == botId }; original = draft }
+            if edits == nil, let bot = store.bots.first(where: { $0.id == botId }) { edits = BotDraft(bot) }
         }
         .onChange(of: store.bots.first { $0.id == botId }) { _, current in
-            if let current { refreshDraft(current) }
+            if let current { edits?.receive(current) }
         }
-        .sheet(isPresented: $appearanceOpen) {
-            NavigationStack {
-                Form { BotAppearancePicker(avatar: field(\.avatar), color: field(\.color), identity: botId) }
-                    .navigationTitle("Character").navigationBarTitleDisplayMode(.inline)
-                    .toolbar { Button("Done") { appearanceOpen = false } }
-            }.presentationDetents([.large])
-        }
+        .onChange(of: draft?.notifications) { _, _ in save() }
+        .onChange(of: draft?.avatar) { _, _ in save() }
+        .onChange(of: draft?.color) { _, _ in save() }
+        .onDisappear(perform: save)
         .sheet(isPresented: $routineOpen) { NavigationStack { RoutineEditorView(botId: botId) } }
         .confirmationDialog("Delete \(draft?.name ?? "bot")?", isPresented: $deleteOpen, titleVisibility: .visible) {
             Button("Delete bot", role: .destructive) {
                 if let draft { Task { await store.deleteBot(draft); if store.error == nil { dismiss() } } }
             }
+        } message: {
+            Text("The Mac cancels this bot's work and removes its conversation. The audit record remains on your Mac.")
         }
     }
 
-    private func refreshDraft(_ current: Bot) {
-        var updated = current
-        if let draft, let original {
-            let fields: [WritableKeyPath<Bot, String>] = [\.name, \.instructions, \.avatar, \.color]
-            for field in fields where draft[keyPath: field] != original[keyPath: field] {
-                updated[keyPath: field] = draft[keyPath: field]
-            }
-            if draft.notifications != original.notifications { updated.notifications = draft.notifications }
+    private func modelSummary(_ bot: Bot) -> String {
+        guard let selection = bot.modelOverride else { return "Default model" }
+        return store.modelCatalog?.name(for: selection) ?? selection.model
+    }
+
+    private func accessSummary(_ bot: Bot) -> String {
+        guard let value = bot.approvalOverride else { return "Default access" }
+        return store.approvals?.label(for: value) ?? value
+    }
+
+    // One save at a time. A change during a save starts one more save after it.
+    private func save() {
+        guard let request = edits?.beginSave() else { return }
+        Task {
+            await store.updateBot(request.pending, comparedTo: request.original)
+            let current = store.error == nil ? store.bots.first(where: { $0.id == botId }) : nil
+            if edits?.finishSave(current) == true { save() }
         }
-        draft = updated
-        original = current
     }
 
     private func field(_ path: WritableKeyPath<Bot, String>) -> Binding<String> {
-        Binding(get: { draft?[keyPath: path] ?? "" }, set: { draft?[keyPath: path] = $0 })
+        Binding(get: { edits?.bot[keyPath: path] ?? "" }, set: { edits?.bot[keyPath: path] = $0 })
+    }
+}
+
+// The bot on the bot settings page, the newest bot from the Mac, and the save that runs.
+struct BotDraft: Equatable {
+    var bot: Bot
+    private(set) var saved: Bot
+    private(set) var submitted: Bot?
+    private var saveAgain = false
+
+    init(_ bot: Bot) {
+        self.bot = bot
+        saved = bot
+    }
+
+    // The bot to send and the bot it changes, or nil. A request during a save asks for one more save after it.
+    mutating func beginSave() -> (pending: Bot, original: Bot)? {
+        guard submitted == nil else {
+            saveAgain = true
+            return nil
+        }
+        guard let pending = BotAutosave.changes(bot, comparedTo: saved) else { return nil }
+        submitted = pending
+        return (pending, saved)
+    }
+
+    // An update from the Mac, also during a save. It keeps every edit that the Mac has not confirmed.
+    mutating func receive(_ current: Bot) {
+        bot = BotAutosave.merge(draft: bot, baseline: saved, into: current)
+        saved = current
+    }
+
+    // The save ended. `current` is the bot after a successful save, nil after a failure.
+    // Returns true when a change during the save needs one more save.
+    mutating func finishSave(_ current: Bot?) -> Bool {
+        if let current, let submitted {
+            // The confirmed result replaces only the fields that the person did not edit after the save started.
+            bot = BotAutosave.merge(draft: bot, baseline: submitted, into: current)
+            saved = current
+        }
+        submitted = nil
+        defer { saveAgain = false }
+        return saveAgain
+    }
+}
+
+enum BotAutosave {
+    // The bot to save, or nil when nothing changed. An empty name keeps the saved name, so the other edits still save.
+    static func changes(_ draft: Bot, comparedTo original: Bot) -> Bot? {
+        var pending = draft
+        if pending.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { pending.name = original.name }
+        return BotPatch(updated: pending, original: original).isEmpty ? nil : pending
+    }
+
+    // The bot from the Mac, with each draft field that differs from the baseline kept as the person left it.
+    static func merge(draft: Bot, baseline: Bot, into current: Bot) -> Bot {
+        var updated = current
+        let fields: [WritableKeyPath<Bot, String>] = [\.name, \.instructions, \.avatar, \.color]
+        for field in fields where draft[keyPath: field] != baseline[keyPath: field] {
+            updated[keyPath: field] = draft[keyPath: field]
+        }
+        if draft.notifications != baseline.notifications { updated.notifications = draft.notifications }
+        return updated
     }
 }
 
@@ -178,7 +234,7 @@ private struct RoutineEditorView: View {
                 Text("Use a Hermes schedule, such as ‘weekdays at 8am’, ‘every 30m’, or a cron expression. Times follow this bot’s Hermes time zone.")
             }
             if let current {
-                if let error = current.error { Section { Text(error).foregroundStyle(BoardStyle.accent) } }
+                if let error = current.error { Section { InlineError(error) } }
                 Section {
                     if let date = current.nextRunAt?.apiDate, current.enabled {
                         LabeledContent("Next run", value: date.formatted(date: .abbreviated, time: .shortened))
@@ -192,9 +248,9 @@ private struct RoutineEditorView: View {
                     Button("Delete routine", role: .destructive) { deleteOpen = true }
                 }
             }
-            if let error = store.error { Section { Text(error).foregroundStyle(BoardStyle.accent) } }
+            if let error = store.error { Section { InlineError(error) } }
         }
-        .scrollContentBackground(.hidden).background(BoardStyle.paper)
+        .settingsBackground()
         .navigationTitle(routine == nil ? "New routine" : "Routine").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if routine == nil { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }

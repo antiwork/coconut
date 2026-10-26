@@ -22,10 +22,8 @@ final class PhysicalPairingFlowTests: XCTestCase {
         app.launchArguments = []
         app.launchEnvironment = [:]
         app.launch()
-        // A first launch without a pairing opens onboarding, which pairs with a pasted setup.
-        let connect = app.buttons["Connect your Hermes"]
-        if connect.waitForExistence(timeout: 5) {
-            connect.tap()
+        // A first launch without a pairing opens the pairing page, which pairs with a pasted pairing link.
+        if app.buttons["onboarding-paste"].waitForExistence(timeout: 5) {
             try pairThroughOnboarding(setup, in: app)
             return
         }
@@ -39,45 +37,16 @@ final class PhysicalPairingFlowTests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         stage("settings")
 
-        if !app.buttons["scan-pairing-setup"].exists {
-            let mac = app.staticTexts["Your Mac"].firstMatch
+        // Every entry point opens the same pairing page.
+        if !app.buttons["pair-with-mac"].exists {
+            let mac = app.buttons["mac-settings"]
             XCTAssertTrue(mac.waitForExistence(timeout: 5))
             mac.tap()
-            let pair = app.buttons["Pair with a Mac"]
-            reveal(pair, in: app)
-            pair.tap()
         }
-        let address = app.textFields["Mac address"]
-        if !address.exists {
-            let details = app.buttons["Connection details"]
-            reveal(details, in: app)
-            details.tap()
-        }
-        stage("details")
-        replace(address, with: setup.serverURL, in: app)
-        stage("address")
-        replace(app.textFields["SHA-256 certificate fingerprint"], with: setup.fingerprint, in: app)
-        stage("fingerprint")
-        let code = app.textFields["pairing-code"]
-        replace(code, with: setup.code, in: app)
-        stage("code")
-        let pair = app.buttons["Pair iPhone"]
+        let pair = app.buttons["pair-with-mac"]
         reveal(pair, in: app)
-        XCTAssertTrue(pair.isEnabled, "The complete pairing form must enable Pair iPhone.")
         pair.tap()
-        stage("submitted")
-
-        let saved = NSPredicate { _, _ in
-            let connected = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Connected · Synced")).firstMatch
-            if connected.exists && !app.buttons["scan-pairing-setup"].exists { return true }
-            guard pair.exists, !pair.isEnabled, code.exists else { return false }
-            let value = code.value as? String ?? ""
-            return value.isEmpty || value == "Pairing code"
-        }
-        let expectation = XCTNSPredicateExpectation(predicate: saved, object: app)
-        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 35), .completed,
-                       "The app must save pairing after the user submits the normal form.")
-        stage("saved")
+        try pairThroughOnboarding(setup, in: app)
         #endif
     }
 
@@ -93,35 +62,18 @@ final class PhysicalPairingFlowTests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         editor.tap()
         editor.typeText(json)
-        app.buttons["Use setup details"].tap()
+        app.buttons["use-pairing-setup"].tap()
         stage("onboarding-setup")
         let pair = app.buttons["onboarding-pair"]
         XCTAssertTrue(pair.waitForExistence(timeout: 5), "A valid setup must show the Mac before pairing.")
         pair.tap()
+        // A phone that has a pairing confirms the replacement first.
+        let replace = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Pair with ")).firstMatch
+        if replace.waitForExistence(timeout: 2) { replace.tap() }
         stage("submitted")
         XCTAssertTrue(pair.waitForNonExistence(timeout: 35), "Onboarding must move on after the pairing is saved.")
         XCTAssertFalse(app.staticTexts["pairing-error"].exists)
         stage("saved")
-    }
-
-    @MainActor
-    private func replace(_ field: XCUIElement, with value: String, in app: XCUIApplication) {
-        reveal(field, in: app)
-        field.tap()
-        if let existing = field.value as? String, !existing.isEmpty, existing != field.placeholderValue {
-            field.press(forDuration: 1)
-            let menuItem = app.menuItems["Select All"]
-            let button = app.buttons["Select All"]
-            if menuItem.waitForExistence(timeout: 2) {
-                menuItem.tap()
-            } else {
-                XCTAssertTrue(button.waitForExistence(timeout: 2), "The text field must offer Select All.")
-                button.tap()
-            }
-            field.typeText(XCUIKeyboardKey.delete.rawValue)
-        }
-        field.typeText(value)
-        XCTAssertTrue((field.value as? String) == value, "The pairing field must contain the complete value.")
     }
 
     @MainActor

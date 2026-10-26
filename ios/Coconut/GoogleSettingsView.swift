@@ -95,7 +95,8 @@ final class GoogleSignIn: NSObject, ASWebAuthenticationPresentationContextProvid
     }
 }
 
-struct GoogleSettingsView: View {
+// The Google account shows inline on the Connections page.
+struct GoogleConnectionSection: View {
     @Environment(AppStore.self) private var store
     @State private var status: GoogleConnectionStatus?
     @State private var busy = false
@@ -105,38 +106,37 @@ struct GoogleSettingsView: View {
     @State private var confirmingDisconnect = false
     @State private var connectionTask: Task<Void, Never>?
 
+    private var canConnect: Bool { store.isDemo || store.connection == .connected }
+
     var body: some View {
-        Form {
-            Section {
-                if let status, status.connected {
-                    LabeledContent("Account", value: status.email ?? "Google")
-                        .accessibilityIdentifier("google-account")
-                    if status.needsReconnect {
-                        Button(busy ? "Connecting…" : "Reconnect Google") { connect() }
-                            .disabled(busy).accessibilityIdentifier("google-reconnect")
-                    }
-                    Button("Disconnect Google", role: .destructive) { confirmingDisconnect = true }
-                        .disabled(busy).accessibilityIdentifier("google-disconnect")
-                } else {
-                    Button(busy ? "Connecting…" : "Connect Google") { connect() }
-                        .disabled(busy || loading || (!store.isDemo && store.connection != .connected))
-                        .accessibilityIdentifier("google-connect")
+        Section {
+            if let status, status.connected {
+                LabeledContent("Account", value: status.email ?? "Google")
+                    .accessibilityIdentifier("google-account")
+                if status.needsReconnect {
+                    Button(busy ? "Connecting…" : "Reconnect Google") { connect() }
+                        .disabled(busy || !canConnect).accessibilityIdentifier("google-reconnect")
                 }
-            } footer: {
-                Text("All bots can read Gmail and Calendar. This connection cannot send email or change events.")
+                Button("Disconnect Google", role: .destructive) { confirmingDisconnect = true }
+                    .disabled(busy || !canConnect).accessibilityIdentifier("google-disconnect")
+                    .confirmationDialog("Disconnect Google from all bots?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
+                        Button("Disconnect", role: .destructive) { disconnect() }
+                    }
+            } else {
+                Button(busy ? "Connecting…" : "Connect Google") { connect() }
+                    .disabled(busy || loading || !canConnect)
+                    .accessibilityIdentifier("google-connect")
             }
-            if let error {
-                Section { Text(error).font(.footnote) }
-            }
+            if let error { InlineError(error) }
+        } header: {
+            Text("Google")
+        } footer: {
+            Text(canConnect ? "All bots can read Gmail and Calendar. This connection cannot send email or change events."
+                 : "Connect to your Mac first. All bots can read Gmail and Calendar. This connection cannot send email or change events.")
         }
-        .navigationTitle("Google").navigationBarTitleDisplayMode(.inline)
-        .scrollContentBackground(.hidden).background(BoardStyle.paper)
-        .task { await refresh() }
+        .task(id: canConnect) { if canConnect { await refresh() } }
         .onDisappear { connectionTask?.cancel(); signIn.cancel() }
         .onOpenURL { signIn.receive($0) }
-        .confirmationDialog("Disconnect Google from all bots?", isPresented: $confirmingDisconnect, titleVisibility: .visible) {
-            Button("Disconnect", role: .destructive) { disconnect() }
-        }
     }
 
     private func refresh() async {
