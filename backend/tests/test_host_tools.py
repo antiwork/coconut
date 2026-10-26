@@ -550,6 +550,13 @@ class HostLifecycleTests(unittest.TestCase):
         self.assertIn('Restore its LaunchAgent with:', str(raised.exception))
         self.assertEqual(self.path.read_bytes(), previous)
 
+    def test_the_update_does_not_drain_a_service_of_the_app_login_item(self):
+        self.write_process(drain=True)
+        with patch.object(host, 'login_item_loaded', return_value=True), \
+             patch.object(host, 'owned_process', return_value=(4242, self.options)):
+            self.assertFalse(host.drain_for_update(timeout=30))
+        self.assertFalse((self.data / 'drain-request').exists())
+
     def test_the_update_does_not_stop_a_service_of_the_app_login_item(self):
         loaded = subprocess.CompletedProcess([], 0, 'state = running\n', '')
         with patch.object(host, 'owned_agent', return_value=(self.path, False)), \
