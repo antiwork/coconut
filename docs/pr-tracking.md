@@ -10,9 +10,7 @@ An unexpected refresh error does not stop the monitor.
 
 The monitor checks the current head after each push.
 It resumes the existing owner when CI fails, checks pass, or a Greptile check finishes.
-The owner assesses merge readiness, including for draft PRs, as its own Hermes skills say.
-How to verify a PR and when to merge without a card are the person's workflow, so they live in the bot's skills
-(for the owner's bots: `hermes-skills/shared/review-and-merge-pull-requests`).
+The owner reads the review findings and assesses merge readiness, including for draft PRs.
 An unchanged result does not repeat the assessment on each poll.
 
 The monitor reads required checks from classic branch protection and effective branch rules.
@@ -23,7 +21,8 @@ The displayed aggregate check state still includes optional checks.
 
 Assessment does not grant merge permission or waive a deployment requirement.
 The owner checks the original human request and scoped standing approval in its native profile.
-The bot's skills say when standing approval lets the owner merge without a card.
+How to verify a PR and when standing approval lets the owner merge without a card are the person's workflow.
+They live in the bot's own Hermes skills (for the owner's bots: `hermes-skills/shared/review-and-merge-pull-requests`).
 Otherwise, the owner creates one merge decision when the current evidence supports it.
 Human holds, pending decisions, and native tool approval checks remain effective.
 Coordinator handoffs cannot grant or revoke human authorization.
