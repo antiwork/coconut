@@ -34,6 +34,10 @@ struct DecisionInboxView: View {
     @State private var exiting = false
     @State private var transitionId = UUID()
     @FocusState private var replyFocused: Bool
+    @ScaledMetric(relativeTo: .body) private var actionHeight = 44
+    @State private var cardWidth: CGFloat = 0
+    @ScaledMetric(relativeTo: .subheadline) private var undoWidth = 54
+    @ScaledMetric(relativeTo: .title2) private var swipeLabelWidth = 145
     private var pending: [Decision] { store.decisions.filter { $0.isPending && !store.answeringDecisionIds.contains($0.id) } }
     private var current: Decision? {
         if let confirmingChoice { return confirmingChoice.decision }
@@ -107,8 +111,13 @@ struct DecisionInboxView: View {
     @ToolbarContentBuilder
     private var inboxToolbar: some ToolbarContent {
         ToolbarItem(placement: .principal) {
-            Button("\(queue.remainingCount) left") { overviewOpen = true }
-                .font(.subheadline.weight(.semibold)).monospacedDigit().frame(minHeight: 44)
+            Button { overviewOpen = true } label: {
+                HStack(spacing: 4) {
+                    Text("\(queue.remainingCount) left").monospacedDigit()
+                    Image(systemName: "chevron.down").imageScale(.small).foregroundStyle(.secondary)
+                }
+            }
+                .font(.subheadline.weight(.semibold)).frame(minHeight: 44)
                 .opacity(current == nil ? 0 : 1)
                 .disabled(current == nil || restoringDecision != nil || confirmingChoice != nil)
                 .accessibilityHidden(current == nil)
@@ -131,7 +140,7 @@ struct DecisionInboxView: View {
             } else {
                 Color.clear.accessibilityHidden(true)
             }
-        }.frame(width: 54, height: 44)
+        }.frame(width: undoWidth, height: 44)
     }
 
     private var inboxContent: some View {
@@ -164,28 +173,24 @@ struct DecisionInboxView: View {
                         Spacer()
                     }.frame(maxWidth: .infinity)
                 }
-            }.padding(.horizontal, 16)
-
+            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { cardWidth = $0 }
+            // The buttons stay in place while the cards change above them.
+            if let decision = current { actionButtons(decision, width: cardWidth) }
         }
+        .padding(.horizontal, 16)
     }
 
     private func cardStack(_ decision: Decision, size: CGSize) -> some View {
         let progress = min(abs(offset) / size.width, 1)
         let cardHeight = max(0, size.height - 24)
         return ZStack(alignment: .top) {
-            if decisionsAfter(decision).count > 1 {
-                RoundedRectangle(cornerRadius: 24)
+            // The next card is a plain surface. Only the top card shows content.
+            if !decisionsAfter(decision).isEmpty {
+                RoundedRectangle(cornerRadius: BoardStyle.Radius.large)
                     .fill(BoardStyle.surface)
-                    .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(BoardStyle.line))
+                    .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.large).strokeBorder(BoardStyle.line))
                     .frame(height: cardHeight)
-                    .scaleEffect(0.92 + progress * 0.04, anchor: .bottom)
-                    .offset(y: 20 - progress * 10)
-                    .accessibilityHidden(true)
-            }
-            if let next = decisionsAfter(decision).first {
-                nextCard(next)
-                    .frame(height: cardHeight)
-                    .overlay(RoundedRectangle(cornerRadius: 24).strokeBorder(BoardStyle.line))
                     .scaleEffect(0.96 + progress * 0.04, anchor: .bottom)
                     .offset(y: 10 * (1 - progress))
                     .allowsHitTesting(false).accessibilityHidden(true)
@@ -202,11 +207,27 @@ struct DecisionInboxView: View {
                 .opacity(reduceMotion && exiting ? 0 : 1)
                 .simultaneousGesture(swipe(decision, width: size.width))
                 .accessibilityElement(children: .contain)
-                .accessibilityActions {
-                    Button("Later") { leave(decision, action: .later, width: size.width) }
-                    Button("Dismiss") { leave(decision, action: .dismiss, width: size.width, direction: 1) }
-                }
         }
+    }
+
+    // The buttons do what the swipe does: Later goes left, Dismiss goes right.
+    private func actionButtons(_ decision: Decision, width: CGFloat) -> some View {
+        HStack(spacing: 12) {
+            Button { leave(decision, action: .later, width: width) } label: {
+                Label("Later", systemImage: "clock").frame(maxWidth: .infinity, minHeight: actionHeight)
+            }
+            .accessibilityIdentifier("inbox-later")
+            Button { leave(decision, action: .dismiss, width: width, direction: 1) } label: {
+                Label("Dismiss", systemImage: "xmark").frame(maxWidth: .infinity, minHeight: actionHeight)
+            }
+            .accessibilityIdentifier("inbox-dismiss")
+        }
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(.primary)
+        .buttonStyle(HomePressStyle())
+        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
+        .disabled(!canRespond || exiting || horizontalDrag || restoringDecision != nil || confirmingChoice != nil
+                  || updatingIds.contains(decision.id))
     }
 
     private var overview: some View {
@@ -239,62 +260,20 @@ struct DecisionInboxView: View {
         queue.ids.filter { $0 != decision.id }.compactMap { id in pending.first { $0.id == id } }
     }
 
-    private func nextCard(_ decision: Decision) -> some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                if let bot = store.bots.first(where: { $0.id == decision.botId }) {
-                    BotAvatar(bot: bot, size: 24)
-                    Text(bot.name).font(.subheadline.weight(.medium)).lineLimit(1)
-                }
-                Spacer(minLength: 12)
-                Text("Open chat").font(.subheadline)
-                Image(systemName: "chevron.right").font(.caption2)
-            }.frame(height: 44).padding(.horizontal, 16)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    DecisionIntroduction(decision: decision)
-                    if let draft = decision.draft {
-                        MessageDraftContent(draft: draft)
-                        MessageDraftActions()
-                    } else {
-                        VStack(spacing: 8) {
-                            ForEach(decision.cardOptions, id: \.id) { option in
-                                DecisionChoiceContent(option: option, isRecommended: decision.recommendedOptionId == option.id, isCompact: true, showsAssessment: decision.assessmentStale != true)
-                            }
-                        }
-                    }
-                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-            }
-            HStack {
-                Text("Reply…").font(.subheadline).foregroundStyle(.tertiary).padding(.leading, 12)
-                Spacer()
-                Image(systemName: "arrow.up.circle.fill").font(.system(size: 28))
-                    .foregroundStyle(.tertiary).frame(width: 44, height: 44)
-            }
-            .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(BoardStyle.line))
-            .padding(12)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 24))
-        .clipShape(RoundedRectangle(cornerRadius: 24))
-    }
-
     private func swipeLabel(for decision: Decision, width: CGFloat) -> some View {
         let action: InboxSwipeAction = offset > 0 ? .dismiss : .later
         return ZStack(alignment: offset < 0 ? .topTrailing : .topLeading) {
             if offset != 0 {
-                let color = action == .dismiss ? Color(red: 0.7, green: 0.25, blue: 0.23) : Color.blue
-                RoundedRectangle(cornerRadius: 24).fill(color.opacity(min(abs(offset) / (width * 0.4), 0.85)))
+                let color = action == .dismiss ? BoardStyle.destructive : BoardStyle.ink
+                RoundedRectangle(cornerRadius: BoardStyle.Radius.large).fill(color.opacity(min(abs(offset) / (width * 0.4), 0.85)))
                 VStack(alignment: offset < 0 ? .trailing : .leading, spacing: 8) {
                     Image(systemName: action == .dismiss ? "xmark.circle" : "clock")
-                        .font(.system(size: 32))
+                        .font(.largeTitle)
                     Text(action == .dismiss ? "Dismiss" : "Later")
                         .font(.title2.weight(.bold)).fixedSize(horizontal: false, vertical: true)
                 }
-                .frame(maxWidth: 145, alignment: offset < 0 ? .trailing : .leading)
-                .foregroundStyle(.white).padding(24).opacity(min(abs(offset) / 60, 1))
+                .frame(maxWidth: swipeLabelWidth, alignment: offset < 0 ? .trailing : .leading)
+                .foregroundStyle(action == .dismiss ? Color.white : BoardStyle.controlLabel).padding(24).opacity(min(abs(offset) / 60, 1))
             }
         }.allowsHitTesting(false).accessibilityHidden(true)
     }

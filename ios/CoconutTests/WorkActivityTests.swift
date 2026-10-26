@@ -15,17 +15,6 @@ final class WorkActivityTests: XCTestCase {
         XCTAssertEqual(TrackedPullRequest.tracked(in: copies, visibility: [dismissed.url!: false]).count, 1)
     }
 
-    func testDisconnectedActivityCannotClaimReviewStillRuns() throws {
-        var active = artifact()
-        active.status = "ready"; active.prState = "open"
-        active.activity = "Reviewing with Fable"; active.activityState = "working"
-        active.activityObservedAt = active.createdAt
-        let row = try XCTUnwrap(TrackedPullRequest.tracked(in: [active]).first)
-        let date = try XCTUnwrap(active.createdAt.apiDate)
-        XCTAssertEqual(row.activityLabel(at: date), "Reviewing with Fable")
-        XCTAssertEqual(row.activityLabel(at: date.addingTimeInterval(61)), "Activity unconfirmed")
-    }
-
     @MainActor
     func testRapidDismissUndoAndRepeatedDismiss() async throws {
         let store = AppStore(demo: true)

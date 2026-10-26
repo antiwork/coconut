@@ -2,6 +2,7 @@ import SwiftUI
 
 struct MessageDraftContent: View {
     let draft: MessageDraft
+    @ScaledMetric(relativeTo: .subheadline) private var labelWidth = 58
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -21,12 +22,12 @@ struct MessageDraftContent: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 12))
+        .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
     }
 
     private func field(_ label: String, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(label).foregroundStyle(.secondary).frame(width: 58, alignment: .leading)
+            Text(label).foregroundStyle(.secondary).frame(width: labelWidth, alignment: .leading)
             Text(value).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
         }
         .accessibilityElement(children: .combine)
@@ -71,7 +72,7 @@ struct MessageDraftEditor: View {
                 } footer: {
                     Text("Changes stay in the draft until you select Send.")
                 }
-                if let saveError { Section { Text(saveError).foregroundStyle(BoardStyle.accent) } }
+                if let saveError { Section { Text(saveError).foregroundStyle(BoardStyle.attention) } }
             }
             .scrollContentBackground(.hidden).background(BoardStyle.paper)
             .navigationTitle("Edit draft").navigationBarTitleDisplayMode(.inline)
@@ -101,10 +102,10 @@ struct MessageDraftEditor: View {
 }
 
 struct MessageDraftActions: View {
-    var selected = false
-    var send: () -> Void = {}
-    var edit: () -> Void = {}
-    var discard: () -> Void = {}
+    let selected: Bool
+    let send: () -> Void
+    let edit: () -> Void
+    let discard: () -> Void
 
     var body: some View {
         ViewThatFits(in: .horizontal) {

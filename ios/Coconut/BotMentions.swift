@@ -94,15 +94,6 @@ enum BotMentions {
         return query.range.lowerBound..<max(end, query.range.upperBound)
     }
 
-    static func tokenRange(name: String, in text: String) -> Range<String.Index>? {
-        for at in text.indices where text[at] == "@" && startsToken(at, in: text) {
-            if matches(name: name, at: at, in: text) {
-                return at..<text.index(at, offsetBy: name.count + 1)
-            }
-        }
-        return nil
-    }
-
     private static func matches(name: String, at index: String.Index, in text: String) -> Bool {
         guard let range = text.range(of: "@" + name, options: [.anchored, .caseInsensitive], range: index..<text.endIndex) else { return false }
         if range.upperBound < text.endIndex, text[range.upperBound] == "." {
@@ -157,8 +148,8 @@ struct BotMentionPicker: View {
                 }
             }
             .frame(height: min(CGFloat(bots.count) * (max(50, nameHeight + 18) + 1), 260))
-            .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 22))
-            .overlay(RoundedRectangle(cornerRadius: 22).stroke(BoardStyle.line))
+            .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
+            .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.large).stroke(BoardStyle.line))
             .padding(.bottom, 8)
             .accessibilityIdentifier("bot-mention-picker")
         }
@@ -178,7 +169,7 @@ struct BotMentionRecipients: View {
                         Button { remove(recipient) } label: {
                             HStack(spacing: 5) {
                                 Text(recipient.name)
-                                Image(systemName: "xmark").font(.system(size: 9, weight: .semibold))
+                                Image(systemName: "xmark").imageScale(.small).fontWeight(.semibold)
                             }
                             .font(.caption.weight(.medium)).padding(.horizontal, 10)
                             .padding(.vertical, 7).background(BoardStyle.surface, in: Capsule())

@@ -61,4 +61,42 @@ final class WorkPresentationTests: XCTestCase {
         artifact.workState = "working"
         XCTAssertNil(TrackedWorkItem(artifact: artifact, pullRequests: []).queueLabel(botName: "Gumroad Dev"))
     }
+
+    func testTaskRowStatusNamesEachStateWithoutClaimingWaitingWorkNeedsYou() {
+        let now = Date()
+        func status(_ state: String, observed: Date = Date()) -> String {
+            var artifact = work(state, state: state, created: "2026-09-15T01:00:00Z")
+            artifact.activityObservedAt = ISO8601DateFormatter().string(from: observed)
+            return TrackedWorkItem(artifact: artifact, pullRequests: []).status(at: now)
+        }
+        XCTAssertEqual(status("working"), "working")
+        XCTAssertEqual(status("working", observed: now.addingTimeInterval(-120)), "status_out_of_date")
+        XCTAssertEqual(status("queued"), "queued")
+        XCTAssertEqual(status("needs_decision"), "needs_you")
+        XCTAssertEqual(status("waiting"), "paused")
+        XCTAssertEqual(status("completed"), "completed")
+        XCTAssertEqual(status("cancelled"), "cancelled")
+        XCTAssertEqual(status("needs_recovery"), "needs_recovery")
+        XCTAssertEqual(StatusLabel.label(for: "queued"), "Queued")
+        XCTAssertEqual(StatusLabel.label(for: "paused"), "Paused")
+    }
+
+    func testClosedPullRequestDoesNotReadComplete() throws {
+        var request = Artifact(id: "pr", botId: "dev", title: "Fix the retry", kind: "pr", status: "ready", preview: "",
+                               url: "https://github.com/team/repo/pull/9", createdAt: "2026-09-15T01:00:00Z", prState: "closed")
+        XCTAssertEqual(try XCTUnwrap(TrackedWorkItem.tracked(in: [request]).first).status(at: Date()), "closed")
+        request.prState = "merged"
+        XCTAssertEqual(try XCTUnwrap(TrackedWorkItem.tracked(in: [request]).first).status(at: Date()), "completed")
+    }
+
+    func testStopAsksFirstAndForgetsTheTaskWhenCancelled() {
+        var stop = StopConfirmation<String>()
+        XCTAssertFalse(stop.isPresented)
+        stop.request("task")
+        XCTAssertTrue(stop.isPresented, "A Stop control opens the confirmation instead of stopping.")
+        XCTAssertEqual(stop.item, "task")
+        stop.isPresented = false
+        XCTAssertNil(stop.item, "Cancel keeps no task to stop later.")
+        XCTAssertEqual(StopCopy.title(executor: "Forge"), "Stop Forge's task?")
+    }
 }

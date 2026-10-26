@@ -143,6 +143,12 @@ final class AppStore {
         }
         return nil
     }
+    func botName(_ id: String?) -> String { bots.first { $0.id == id }?.name ?? "Bot" }
+
+    // A card waits for an answer in this bot's chat.
+    func botNeedsYou(_ bot: Bot) -> Bool {
+        decisions.contains { $0.isPending && !answeringDecisionIds.contains($0.id) && conversationBotId(for: $0) == bot.id }
+    }
     func conversationBotId(for decision: Decision) -> String {
         tasks.first { $0.id == decision.taskId }?.chatBotId ?? decision.botId
     }

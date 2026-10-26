@@ -19,7 +19,6 @@ final class OlderWorkFlowTests: XCTestCase {
                                                     ["bot-conversation-" + botId, "pinned-bot-" + botId])).firstMatch
         XCTAssertTrue(chat.waitForExistence(timeout: 15))
         chat.tap()
-        app.buttons["Bot options"].tap()
         app.buttons["chat-task-details"].tap()
         XCTAssertTrue(app.navigationBars["Task details"].waitForExistence(timeout: 5))
         let older = app.buttons["load-older-tasks"]

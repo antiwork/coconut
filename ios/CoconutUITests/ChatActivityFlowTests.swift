@@ -17,30 +17,25 @@ final class ChatActivityFlowTests: XCTestCase {
         XCTAssertTrue(row.waitForExistence(timeout: 15))
         row.tap()
         let thinking = app.otherElements["bot-working-\(botId)"]
-        let dot = app.otherElements["bot-active-\(botId)"]
+        // The green activity dot shows only under Reduce Motion. MessageReplayTests cover its liveness rule.
         XCTAssertFalse(thinking.exists, "Queued work must not look like active thinking.")
-        XCTAssertFalse(dot.exists)
         capture(app, "Queued task is resting")
 
         stage("working")
         assertAppears(thinking, within: 3, stage: "working")
-        XCTAssertTrue(dot.waitForExistence(timeout: 3))
-        capture(app, "Working task shows thinking and activity")
+        capture(app, "Working task shows thinking")
 
         stage("waiting")
         assertDisappears(thinking, within: 3, stage: "waiting")
-        XCTAssertTrue(dot.waitForNonExistence(timeout: 3))
         capture(app, "Waiting task returns to rest")
 
         stage("streaming")
         assertAppears(thinking, within: 3, stage: "streaming")
-        XCTAssertFalse(dot.exists, "Streaming feedback does not invent backend worker liveness.")
         capture(app, "Streaming reply retains response feedback")
 
         for terminal in ["completed", "failed"] {
             stage(terminal)
             assertDisappears(thinking, within: 3, stage: terminal)
-            XCTAssertFalse(dot.exists)
             capture(app, "\(terminal.capitalized) task is resting")
         }
     }

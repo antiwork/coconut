@@ -62,7 +62,7 @@ private extension Theme {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(configuration.content)
             .accessibilityAddTraits(.isStaticText)
-            .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+            .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
             .markdownMargin(top: .em(0.3), bottom: .em(0.6))
         }
 }

@@ -79,11 +79,15 @@ struct BotAvatar: View {
 // One live presentation drives pinned tiles, rows, and the conversation header.
 struct LiveBotAvatar: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let bot: Bot
     var size: CGFloat = 52
     var body: some View {
         BotAvatar(bot: bot, size: size, phase: store.botPhase(bot))
-            .overlay(alignment: .bottomTrailing) { BotActivityDot(bot: bot).padding(size * BotAvatar.scale * 0.12) }
+            .overlay(alignment: .bottomTrailing) {
+                // The moving face shows the work. Reduce Motion keeps the face still, so the dot shows it.
+                if reduceMotion { BotActivityDot(bot: bot).padding(size * BotAvatar.scale * 0.12) }
+            }
     }
 }
 
