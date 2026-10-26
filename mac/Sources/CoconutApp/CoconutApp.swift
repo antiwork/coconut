@@ -6,10 +6,11 @@ import SwiftUI
 @main
 struct CoconutApp: App {
     @StateObject private var model = AppModel()
+    @StateObject private var updater = Updater()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuContent(model: model)
+            MenuContent(model: model, updater: updater)
         } label: {
             Image(systemName: model.status.service == .running ? "network" : "network.slash")
         }
@@ -24,6 +25,7 @@ struct CoconutApp: App {
 
 struct MenuContent: View {
     @ObservedObject var model: AppModel
+    @ObservedObject var updater: Updater
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -61,6 +63,11 @@ struct MenuContent: View {
         Button("Open Logs") { model.openLogs() }
         Divider()
         Text("Coconut \(model.version)")
+        Button("Check for Updates…") { updater.checkForUpdates() }
+            .disabled(!updater.canCheckForUpdates)
+        Picker("Update Channel", selection: Binding(get: { updater.channel }, set: { updater.setChannel($0) })) {
+            ForEach(UpdateChannel.allCases, id: \.self) { Text($0.title).tag($0) }
+        }
         Button("Quit Coconut") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
     }

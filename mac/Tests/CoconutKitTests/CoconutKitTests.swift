@@ -286,6 +286,19 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertNil(DeployResult(output: "Traceback"))
     }
 
+    // MARK: Update channel
+
+    func testTheChannelIsStableUntilThePersonChoosesNightly() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: "CoconutKitTests-\(UUID().uuidString)"))
+        XCTAssertEqual(UpdateChannel.current(defaults), .stable)
+        XCTAssertEqual(UpdateChannel.stable.allowedChannels, [], "Stable items have no channel, so every app sees them.")
+        defaults.set("nightly", forKey: UpdateChannel.preferenceKey)
+        XCTAssertEqual(UpdateChannel.current(defaults), .nightly)
+        XCTAssertEqual(UpdateChannel.nightly.allowedChannels, ["nightly"])
+        defaults.set("beta", forKey: UpdateChannel.preferenceKey)
+        XCTAssertEqual(UpdateChannel.current(defaults), .stable)
+    }
+
     // MARK: Pairing
 
     func testThePairingOutputGivesTheLinkAndTheImage() {
