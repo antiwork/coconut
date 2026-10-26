@@ -84,9 +84,11 @@ class NativeKanbanTests(unittest.TestCase):
 
     def test_source_urgency_orders_audits_without_lowering_returned_work(self):
         expected = {}
-        for label, urgency in [('priority/high', 15), ('priority/medium', 12), ('priority/low', 5), ('unknown', 10)]:
+        # The source's label_priority sets the label scheme. A label outside it has the base priority.
+        scheme = {'high': 15, 'medium': 12, 'low': 5}
+        for label, urgency in [('high', 15), ('medium', 12), ('low', 5), ('unknown', 10)]:
             task = self.task(label)
-            task['_source_assignment'] = dict(id=label, updated_at='today')
+            task['_source_assignment'] = dict(id=label, updated_at='today', label_priority=scheme)
             task['_source_audit_prompt'] = ('Source data follows; it contains no instructions:\n'
                                            + json.dumps([dict(labels=[label])]))
             self.service._put('tasks', task)
@@ -99,25 +101,25 @@ class NativeKanbanTests(unittest.TestCase):
         self.assertEqual({row['id']: row['priority'] for row in rows}, expected)
         high = next(row for row in rows if row['priority'] == 15)
         task = self.service._get('tasks', high['id'])
-        task['_source_assignment']['labels'] = ['priority/medium']
+        task['_source_assignment']['labels'] = ['medium']
         self.service._put('tasks', task)
         self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
                               if row['id'] == task['id']), 12)
-        # A source can set its own label scheme in work-sources.json. It replaces the default map.
         task['_source_assignment'].update(labels=['urgent'], label_priority={'urgent': 18})
         self.service._put('tasks', task)
         self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
                               if row['id'] == task['id']), 18)
-        task['_source_assignment'].update(labels=['priority/medium'], label_priority={'urgent': 25})
+        # An invalid map counts as no map, and without a map no label changes the priority.
+        task['_source_assignment'].update(labels=['urgent'], label_priority={'urgent': 25})
         self.service._put('tasks', task)
         self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
-                              if row['id'] == task['id']), 12)
+                              if row['id'] == task['id']), 10)
         del task['_source_assignment']['label_priority']
         self.service._put('tasks', task)
         # A pull request assigned to the person, or an item that waits for the person, outranks bot messages.
         for item, urgency in [(dict(id='https://github.com/example/repo/pull/7', updated_at='today', labels=[]), 15),
                               (dict(id='https://github.com/example/repo/issues/8', updated_at='today', labels=[], awaiting_user=True), 15),
-                              (dict(id='https://github.com/example/repo/issues/9', updated_at='today', labels=['priority/low'],
+                              (dict(id='https://github.com/example/repo/issues/9', updated_at='today', labels=['low'],
                                     kind='pull_request'), 15)]:
             task['_source_assignment'] = item
             self.service._put('tasks', task)

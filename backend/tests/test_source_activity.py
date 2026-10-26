@@ -337,7 +337,7 @@ class SourceActivityTests(unittest.TestCase):
                     self.service._profile_trackers[home] = (time.monotonic() - 1, first)
                     self.service._pr_tracker_for(self.bot['id'])
                     self.assertEqual(login.call_count, 2)
-                    self.assertEqual(first._review_check_names, ('greptile',))
+                    self.assertEqual(first._review_check_names, ())
 
     def test_profile_tracker_uses_the_review_check_setting(self):
         with self.service.transaction():

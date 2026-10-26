@@ -214,9 +214,9 @@ def _trusted(value: dict) -> bool:
 
 
 # A finished check run whose name contains one of these words is a review result, like a PR review. It resumes the
-# owner even when the aggregate check state does not change. The person sets the words in the Coconut setting
-# review_check_names, because the reviewer app is their choice.
-REVIEW_CHECK_NAMES = ('greptile',)
+# owner even when the aggregate check state does not change. The reviewer app is the person's choice, so the person
+# names it in the Coconut setting review_check_names. None by default.
+REVIEW_CHECK_NAMES = ()
 
 
 def review_check_names_setting(value):
