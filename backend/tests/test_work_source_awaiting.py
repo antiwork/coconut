@@ -11,7 +11,7 @@ from uuid import uuid4
 from coconut.hermes_worker import conversation_input
 from coconut.providers import FixtureProvider
 from coconut.service import Service
-from coconut.work_sources import answer_steps, awaiting_user, card_answer_steps, coverage
+from coconut.work_sources import ANSWER_STEPS, awaiting_user, card_answer_steps, coverage
 
 
 URL = 'https://github.com/example/private/issues/7'
@@ -84,28 +84,19 @@ class AwaitingUserTests(unittest.TestCase):
 
 
 class AnswerStepsTests(unittest.TestCase):
-    def test_answer_to_an_issue_closes_the_issue(self):
-        steps = answer_steps(URL + '#issuecomment-1', 'Issue')
-        self.assertIn('post their answer to the source as a comment', steps)
-        self.assertIn('then verify the comment. Then close the issue with gh issue close ' + URL
-                      + ' and verify that the issue is closed.', steps)
-        self.assertIn('Do not close it when the answer says to keep the issue open', steps)
-        self.assertIn('asks a question back instead of deciding', steps)
-
-    def test_answer_to_a_pull_request_leaves_it_open(self):
-        # GitHub also serves a pull request at /issues/N. Only the type that GitHub reports counts.
-        for url in ('https://github.com/example/private/pull/8', 'https://github.com/example/private/issues/8'):
-            for kind in ('PullRequest', None):
-                steps = answer_steps(url, kind)
-                self.assertIn('post their answer to the source as a comment', steps)
-                self.assertNotIn('close the issue', steps)
-                self.assertNotIn('gh issue close', steps)
-                self.assertIn('Do not close the source.', steps)
+    def test_answer_steps_leave_the_workflow_to_the_bot_skills(self):
+        # How to post an answer, and whether to close the source, is the person's workflow in the bot's skills.
+        self.assertIn('as your skills for sources that wait for the person say', ANSWER_STEPS)
+        self.assertNotIn('close', ANSWER_STEPS)
+        self.assertNotIn('gh ', ANSWER_STEPS)
 
     def test_only_a_question_card_about_the_source_gets_the_steps(self):
-        task = dict(_source_answer_steps=dict(url=URL, text=answer_steps(URL, 'Issue')))
+        task = dict(_source_answer_steps=dict(url=URL))
         card = dict(action_type='question', sources=[dict(kind='issue', title='Payout', url=URL + '#issuecomment-1')])
-        self.assertEqual(card_answer_steps(task, card), answer_steps(URL, 'Issue'))
+        self.assertEqual(card_answer_steps(task, card), ANSWER_STEPS)
+        # A task saved before the policy moved to the bot's skills gets the current text, not its saved close step.
+        old = dict(_source_answer_steps=dict(url=URL, text='Then close the issue with gh issue close ' + URL))
+        self.assertEqual(card_answer_steps(old, card), ANSWER_STEPS)
         self.assertIsNone(card_answer_steps(task, dict(card, action_type='native_approval')))
         self.assertIsNone(card_answer_steps(task, dict(card, sources=[dict(kind='issue', title='Other', url=URL[:-1] + '8')])))
         self.assertIsNone(card_answer_steps(task, dict(card, sources=[])))
@@ -154,31 +145,34 @@ class AwaitingAuditTests(unittest.TestCase):
         self.assertEqual(state['missing'], [URL])
         prompt = self.service._get('tasks', state['task_id'])['_source_audit_prompt']
         self.assertIn('This source waits for the person', prompt)
-        self.assertIn('post their answer to the source as a comment', prompt)
-        self.assertIn('Then close the issue with gh issue close ' + URL, prompt)
+        self.assertIn('Follow your skills for sources that wait for the person', prompt)
+        self.assertIn('use one coconut_ask card and include the source link in sources', prompt)
+        self.assertIn(ANSWER_STEPS, prompt)
+        self.assertNotIn('gh issue close', prompt)
         self.assertIn('"awaiting_user": true', prompt)
-        self.assertEqual(self.service._get('tasks', state['task_id'])['_source_answer_steps'],
-                         dict(url=URL, text=answer_steps(URL, 'Issue')))
+        self.assertIn('"github_type": "Issue"', prompt)
+        self.assertEqual(self.service._get('tasks', state['task_id'])['_source_answer_steps'], dict(url=URL))
 
-    def test_pull_request_behind_an_issue_url_stays_open(self):
+    def test_pull_request_behind_an_issue_url_reports_its_type(self):
+        # The bot's skills decide what to do with each type, so the source data carries the type that GitHub reports.
         self.kind = 'PullRequest'
         state = self.audit()
         prompt = self.service._get('tasks', state['task_id'])['_source_audit_prompt']
-        self.assertIn('post their answer to the source as a comment', prompt)
-        self.assertNotIn('gh issue close', prompt)
-        self.assertIn('Do not close the source.', prompt)
+        self.assertIn(ANSWER_STEPS, prompt)
+        self.assertIn('"github_type": "PullRequest"', prompt)
 
-    def test_answered_card_repeats_the_close_step_when_the_bot_resumes(self):
+    def test_answered_card_repeats_the_answer_steps_when_the_bot_resumes(self):
         state = self.audit()
         task = self.service._get('tasks', state['task_id'])
-        task = dict(task, _source_answer_steps=task['_source_answer_steps']['text'])
+        question = dict(action_type='question', sources=[dict(kind='issue', title='Payout', url=URL)])
+        task = dict(task, _source_answer_steps=card_answer_steps(task, question))
         for status in ('approved', 'replied'):
             card = dict(id='card', title='Payout', action_type='question', status=status, correction='Use option B.')
             prompt, _ = conversation_input(dict(operation='resume', task=task, decision=card, history=[]))
-            self.assertIn('Then close the issue with gh issue close ' + URL, prompt)
+            self.assertIn('This card asks about a source that waits for the person. ' + ANSWER_STEPS, prompt)
         card = dict(id='card', title='Payout', action_type='question', status='modified', correction='Ask again.')
         prompt, _ = conversation_input(dict(operation='resume', task=task, decision=card, history=[]))
-        self.assertNotIn('gh issue close', prompt)
+        self.assertNotIn(ANSWER_STEPS, prompt)
 
     def test_answer_by_the_person_restores_the_earlier_rules(self):
         self.commenter = 'person'

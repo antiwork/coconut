@@ -146,7 +146,7 @@ work refuses with `continue_closed_source applies only to work that Coconut ende
 
 An open assignment can wait for the person. Its label is in `awaiting_labels` of the source (default `awaiting-human`), and its latest comment comes from another GitHub account.
 The audit reads the latest comment of each labeled item with one GraphQL request. Only a card covers such an item: a pending card that names it, or an answer or dismissal that is not older than its latest change.
-Bot work, a delegated ruling, or a scheduled recheck does not cover it. The audit tells the bot to ask with the source's own choices, and to post the answer to the source.
+Bot work, a delegated ruling, or a scheduled recheck does not cover it. The audit tells the bot to ask with one card that links the source, and to deliver the answer as its own Hermes skills say. How to ask, how to post the answer, and whether to close the source after it are the person's workflow, so they live in the bot's skills (for Desk on the Mac mini: `hermes-skills/desk/answer-awaiting-human-issues`). The source data carries `github_type`, so a skill can treat an issue and a pull request differently.
 When the GraphQL read fails, the audit uses its earlier rules.
 
 When a work source command fails, the service logs one warning for the failure streak: `Work source <id> of bot <bot> failed:` with the error class, the exit status or signal, and a fixed hint to run the command by hand in the bot's environment. Command output can hold credentials, so the service neither stores nor logs it. The health check of Care reads this line. When the source works again, the service logs `Work source <id> of bot <bot> works again`. The source state keeps `error_detail` and `failing_since` until then.
