@@ -1245,6 +1245,7 @@ class NativeOutcomes:
             identity = require_text(payload, 'task_id', 100)
             text = require_text(payload, 'message', 16000)
             lane = technical_lane_request(payload)
+            declined = bool(lane and lane.get('declined_merge_pr_url'))
             selected_pr = require_text(payload, 'retained_pr_url', RETAINED_PR_URL_LIMIT) if 'retained_pr_url' in payload else None
             reopen = payload.get('continue_closed_source', False)
             if type(reopen) is not bool:
@@ -1266,7 +1267,8 @@ class NativeOutcomes:
                     or owner.get('_conversation_epoch') != self._setting('conversation_epoch')
                     or self._continuation_blocked(owner)
                     or self._get('exchanges', owner['exchange_id']).get('cancelled')
-                    or self._task_work_is_paused(owner)):
+                    or (self._task_work_is_paused(owner) and not declined)):
+                # Only an explicit declined-merge lane reads past a pause, and its own gate below checks that pause.
                 raise ServiceError(409, 'This work is paused, cancelled, or belongs to an earlier conversation.')
             scheduled = native.get('status') == 'scheduled'
             review = native.get('status') == 'review'
@@ -1304,8 +1306,10 @@ class NativeOutcomes:
             if queued and native.get('dispatch_blocker') not in (None, 'active_pr'):
                 raise ServiceError(409, 'This native outcome is guarded. Wait for its current activity.')
             related = [t for t in self._all('tasks') if execution_key(t) == execution_key(owner)]
-            # Only an explicit lane may leave one exact question pending. See technical_lane.py.
-            gate = self._technical_lane_gate(owner, native, lane, related) if lane else None
+            # Only an explicit lane may leave one exact question pending, or work under one declined merge.
+            # See technical_lane.py.
+            gate = self._technical_lane_gate(owner, native, lane, related) if lane and not declined else None
+            held = self._declined_merge_gate(owner, native, lane, related) if declined else None
             if (owner['status'] not in ('completed', 'failed', 'waiting') and not
                     (scheduled and owner['status'] == 'scheduled') and not queued and not gate and not closed) or owner.get('_waiting_on'):
                 raise ServiceError(409, 'Wait for this task and its existing dependencies.')
@@ -1330,7 +1334,7 @@ class NativeOutcomes:
             owner['_native_outcome_id'] = identity
             self._restore_native_work_owner(owner)
             previous_lane = owner.pop('_technical_lane', None)
-            if gate:
+            if gate or held:
                 owner['_technical_lane'] = dict(lane, native_task_id=identity, requester_task_id=source_id,
                                                 requester_bot_id=source['bot_id'], admitted_at=now(),
                                                 **self._technical_checkpoint(owner, previous_lane))
@@ -1359,7 +1363,7 @@ class NativeOutcomes:
             else:
                 retry_input = {}
             self._advance_input(owner)
-            if gate:
+            if gate or held:
                 self._technical_turn_advanced(owner)
             owner.update(retry_input)
             owner['_continuation_receipt_ids'] = list(dict.fromkeys(completed))

@@ -100,6 +100,9 @@ class WorkStatus:
     def _automatic_work_is_paused(self, task):
         if not any(task.get(key) for key in ('_self_recovery', '_pr_review', '_work_resume')):
             return False
+        if task.get('_technical_lane') and self._technical_declined_turn(task):
+            # The requested lane turn of a declined merge runs with its holds. The pause itself stays. See technical_lane.py.
+            return False
         items = self._task_work_items(task)
         return bool(items) and all((pause := self._work_pause(item))
                                   and not self._work_has_new_direction(task, pause, item) for item in items)
