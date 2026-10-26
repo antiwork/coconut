@@ -259,11 +259,14 @@ final class CoconutKitTests: XCTestCase {
         let install = Install(root: URL(fileURLWithPath: "/Users/a/Coconut"))
         let launch = Launch.update(install: install, source: source, directory: "Coconut",
                                    python: URL(fileURLWithPath: "/opt/homebrew/bin/python3"),
-                                   sidecar: URL(fileURLWithPath: "/App/Contents/Helpers/tunnel-sidecar"), environment: ["PATH": "/bin"])
+                                   sidecar: URL(fileURLWithPath: "/App/Contents/Helpers/tunnel-sidecar"), environment: ["PATH": "/bin"],
+                                   home: URL(fileURLWithPath: "/Users/a"))
         XCTAssertEqual(launch.arguments, ["/opt/homebrew/bin/python3", source.deployScript.path, "receive", "--directory", "Coconut"])
         XCTAssertEqual(launch.environment["COCONUT_APP_MANAGED"], "1")
         XCTAssertEqual(launch.environment["COCONUT_SIDECAR"], "/App/Contents/Helpers/tunnel-sidecar")
         XCTAssertEqual(launch.environment["PATH"], "/bin")
+        // The install folder and its parents may not exist yet. deploy.py creates them.
+        XCTAssertEqual(launch.directory.path, "/Users/a")
         XCTAssertNil(launch.standardOutput)
         let migrate = Launch.migrate(install: install, python: URL(fileURLWithPath: "/usr/local/bin/python3"), environment: [:])
         XCTAssertEqual(migrate.arguments, ["/usr/local/bin/python3", "/Users/a/Coconut/scripts/host.py", "migrate-to-app"])

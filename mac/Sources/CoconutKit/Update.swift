@@ -57,15 +57,15 @@ extension Launch {
     /// restores the earlier source when a check fails. With COCONUT_APP_MANAGED, a first install starts the login item
     /// instead of a LaunchAgent. COCONUT_SIDECAR names the sidecar of this bundle for scripts/tunnel.py.
     public static func update(install: Install, source: BundledSource, directory: String, python: URL, sidecar: URL,
-                              environment: [String: String]) -> Launch {
+                              environment: [String: String], home: URL = Install.homeFolder()) -> Launch {
         var environment = environment
         environment["COCONUT_APP_MANAGED"] = "1"
         environment["COCONUT_SIDECAR"] = sidecar.path
         environment["PYTHONUNBUFFERED"] = "1"
         return Launch(executable: python,
                       arguments: [python.path, source.deployScript.path, "receive", "--directory", directory],
-                      environment: environment, directory: install.root.deletingLastPathComponent(),
-                      standardOutput: nil, standardError: nil)
+                      // deploy.py creates the install folder and its parents. The home folder exists already.
+                      environment: environment, directory: home, standardOutput: nil, standardError: nil)
     }
 
     /// Hand the service from the LaunchAgents of host.py and tunnel.py to the login items (host.migrate_to_app).
