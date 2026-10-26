@@ -1052,6 +1052,10 @@ class AdapterCompletionTests(unittest.TestCase):
         self.addCleanup(board.conn.close)
         board.conn.execute('CREATE TABLE coconut_outcomes (native_id TEXT PRIMARY KEY, input_id TEXT)')
         board.conn.execute('CREATE TABLE task_runs (id INTEGER PRIMARY KEY, task_id TEXT, status TEXT, outcome TEXT, ended_at INTEGER)')
+        # Hermes' event and comment tables. archive_note reads them; this card was never archived.
+        board.conn.execute('CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, run_id INTEGER, kind TEXT, payload TEXT, '
+                           'created_at INTEGER)')
+        board.conn.execute('CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, author TEXT, body TEXT, created_at INTEGER)')
         board.conn.executemany('INSERT INTO task_runs VALUES (?,?,?,?,?)', [
             (5330, 't_orig', 'crashed', 'crashed', 1), (5332, 't_orig', 'done', 'completed', 2), (5380, 't_succ', 'running', None, None)])
         card = SimpleNamespace(id='t_orig', tenant='bot', idempotency_key='coconut:task', status='done',
@@ -1065,7 +1069,7 @@ class AdapterCompletionTests(unittest.TestCase):
         self.assertEqual(board.completion('t_orig'), dict(
             id='t_orig', tenant='bot', idempotency_key='coconut:task', status='done', current_run_id=None, worker_pid=None,
             input_id='turn-original', runs=[dict(id=5330, status='crashed', outcome='crashed', ended=True),
-                                           dict(id=5332, status='done', outcome='completed', ended=True)]))
+                                           dict(id=5332, status='done', outcome='completed', ended=True)], archive=None))
 
     def test_a_card_without_accepted_input_or_that_does_not_exist(self):
         board = self.board()
