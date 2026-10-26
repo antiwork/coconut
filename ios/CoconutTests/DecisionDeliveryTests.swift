@@ -46,7 +46,7 @@ final class DecisionDeliveryTests: XCTestCase {
         let paths = ["pairing.json", "snapshot.json", "outgoing.json"].map { folder.appendingPathComponent($0) }
         let saved = paths.map { try? Data(contentsOf: $0) }
         for path in paths { try? FileManager.default.removeItem(at: path) }
-        let variables = ["COCONUT_SERVER_URL": address, "COCONUT_CERT_SHA256": "", "COCONUT_DEVICE_TOKEN": "fixture-only"]
+        let variables = ["COCONUT_SERVER_URL": address, "COCONUT_DEVICE_TOKEN": "fixture-only"]
         let previous = ProcessInfo.processInfo.environment
         for (key, value) in variables { setenv(key, value, 1) }
         let store = AppStore(demo: false)

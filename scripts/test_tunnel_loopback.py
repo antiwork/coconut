@@ -141,7 +141,7 @@ class TunnelLoopbackTests(unittest.TestCase):
         relay.stdout.close()
         self.assertTrue(url.startswith('http://127.0.0.1:'), url)
         port, tunnel_port = free_port(), free_port()
-        self.start([sys.executable, '-m', 'coconut', '--data-dir', str(self.data), '--host', '127.0.0.1', '--port', str(port),
+        self.start([sys.executable, '-m', 'coconut', '--data-dir', str(self.data), '--port', str(port),
                     '--tunnel-port', str(tunnel_port), '--provider', 'fixture'], log='backend.log', cwd=ROOT / 'backend')
         wait(lambda: urllib.request.urlopen(f'http://127.0.0.1:{tunnel_port}/health', timeout=1).status == 200, 30,
              'The backend did not start.')

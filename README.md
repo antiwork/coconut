@@ -9,8 +9,8 @@ Coconut keeps the Hermes source unchanged.
 - Answer pending decisions from one inbox.
 - Receive encrypted notifications with message previews and task links.
 
-Your Mac runs the agents and stores their work. Your iPhone connects through HTTPS over Tailscale.
-Model requests can use remote providers. The shared Cloudflare relay delivers notifications without giving users Apple push keys.
+Your Mac runs the agents and stores their work. Your iPhone reaches it through a shared Cloudflare relay, end-to-end encrypted, so the Mac needs no VPN and no open port.
+Model requests can use remote providers. The same relay delivers notifications without giving users Apple push keys.
 
 ## Setup
 
@@ -21,7 +21,7 @@ If you use Hermes, Coconut onboarding gives you a message for your Hermes agent.
 python3 ~/Coconut/scripts/setup_coconut.py
 ```
 
-The command finds the Hermes that you already use, configures this Mac's Tailscale address, starts the login service, and prints the iPhone setup link.
+The command finds the Hermes that you already use, starts the login service and the relay sidecar, and prints the iPhone setup link.
 See [Pair through Hermes](docs/install-and-update.md#pair-through-hermes).
 Coconut runs on that Hermes. It does not install its own copy. Without a usable Hermes, the service starts but runs no bots, and the phone shows why.
 
@@ -49,7 +49,7 @@ See [architecture](docs/architecture.md) for implementation details, and [relay]
 ## Removal
 
 On the execution Mac, run `python3 scripts/cleanup.py --yes` to remove Coconut's service and stored work. Your Hermes stays.
-Delete the source folder separately. The uninstaller leaves Tailscale and Apple's tools installed.
+Delete the source folder separately. The uninstaller leaves Apple's tools installed.
 
 ### Concurrent work
 

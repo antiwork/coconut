@@ -72,8 +72,8 @@ class FakeOperations:
         if self.fail == name:
             raise deploy.DeployError('The injected operation failed.')
 
-    def preflight(self, root, address, package):
-        self.record('preflight', root, address, package)
+    def preflight(self, root, package):
+        self.record('preflight', root, package)
 
     def inspect(self, root):
         self.record('inspect', root)
@@ -93,8 +93,8 @@ class FakeOperations:
         self.record('stop_recovery', root, source)
         return self.state.copy()
 
-    def prepare(self, root, address, package):
-        self.record('prepare', root, address, package)
+    def prepare(self, root, package):
+        self.record('prepare', root, package)
 
     def restore(self, root, state):
         self.record('restore', root, state)
@@ -104,20 +104,20 @@ class FakeOperations:
         return {'status': self.hermes_status, 'version': '0.9.0',
                 'reason': None if self.hermes_status == 'ok' else 'Coconut found no Hermes on this Mac.'}
 
-    def install(self, root, address):
-        self.record('install', root, address)
+    def install(self, root):
+        self.record('install', root)
 
-    def health(self, root, address):
-        self.record('health', root, address)
+    def health(self, root):
+        self.record('health', root)
         return {'status': 'ok', 'provider': 'hermes', 'ready': True}
 
     def tunnel(self, root):
         self.record('tunnel', root)
         return {'ok': True}
 
-    def probe(self, root, address):
+    def probe(self, root):
         # A probe is a short health check. An injected health failure fails it too.
-        self.record('probe', root, address)
+        self.record('probe', root)
         if self.fail == 'health':
             raise deploy.DeployError('The injected operation failed.')
         return {'status': 'ok', 'provider': 'hermes', 'ready': True}
@@ -209,13 +209,12 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.home = self.parent / 'home'
         self.home.mkdir()
         self.target = self.home / 'Coconut'
-        self.address = 'https://mini.example.ts.net:8960'
 
     def tearDown(self):
         self.temporary.cleanup()
 
     def receive(self, *, files=None, operations=None):
-        return deploy.receive('Coconut', self.address, archive(files), home=self.home, operations=operations or FakeOperations())
+        return deploy.receive('Coconut', archive(files), home=self.home, operations=operations or FakeOperations())
 
     def test_fresh_install_writes_only_package_files_and_records_ownership(self):
         operations = FakeOperations()
@@ -256,7 +255,7 @@ class DeploymentLifecycleTests(unittest.TestCase):
     def test_invalid_package_cannot_stop_the_existing_service(self):
         operations = FakeOperations()
         with self.assertRaises(deploy.DeployError):
-            deploy.receive('Coconut', self.address, io.BytesIO(b'bad archive'), home=self.home, operations=operations)
+            deploy.receive('Coconut', io.BytesIO(b'bad archive'), home=self.home, operations=operations)
         self.assertEqual(operations.calls, [])
         self.assertFalse(self.target.exists())
 
@@ -495,8 +494,8 @@ class DeploymentLifecycleTests(unittest.TestCase):
         operations = FakeOperations(fail='health')
         prepare = operations.prepare
         history = self.target / '.runtime/host/coconut.sqlite3'
-        def prepare_with_history(root, address, package):
-            prepare(root, address, package)
+        def prepare_with_history(root, package):
+            prepare(root, package)
             history.parent.mkdir(parents=True, exist_ok=True)
             history.write_bytes(b'Durable history from the first service start.')
         operations.prepare = prepare_with_history
@@ -594,11 +593,11 @@ class DeploymentLifecycleTests(unittest.TestCase):
             tests.deploy.os.replace = interrupted_replace
             Path.unlink = interrupted_unlink
             with open(sys.argv[3], 'rb') as stream:
-                tests.deploy.receive('Coconut', sys.argv[5], stream, home=Path(sys.argv[2]), operations=operations)
+                tests.deploy.receive('Coconut', stream, home=Path(sys.argv[2]), operations=operations)
             raise AssertionError('The injected interruption did not happen.')
         ''')
         result = subprocess.run([sys.executable, '-c', program, str(Path(__file__).resolve()), str(self.home),
-                                 str(package), crash_point, self.address], capture_output=True, text=True, timeout=10)
+                                 str(package), crash_point], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 77, result.stderr)
 
     def assert_subprocess_recovery(self, crash_point, *, same_package=False, interrupt_recovery=False):
@@ -713,57 +712,51 @@ class DeploymentCommandTests(unittest.TestCase):
 
 
 class DeploymentHealthTests(unittest.TestCase):
-    def assert_health_uses_installed_trust(self, peer_certificate, *, delayed=False):
-        saved_certificate = b'The saved certificate DER bytes.'
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            cert = root / '.runtime/host/server.crt'
-            cert.parent.mkdir(parents=True)
-            cert.write_text(deploy.ssl.DER_cert_to_PEM_cert(saved_certificate))
-            context = MagicMock()
-            secured = context.wrap_socket.return_value
-            secured.getpeercert.return_value = peer_certificate
-            installed_host = Mock()
-            installed_host.trusted_certificate_context.return_value = context
-            raw = Mock()
+    def check_health(self, responses, *, delayed=False):
+        """Run the health check against fake connections that answer in order. Return the result and the connections."""
+        connections = []
+        for status, body in responses:
             connection = MagicMock()
-            response = connection.getresponse.return_value
-            response.status = 200
-            response.read.return_value = b'{"ok":true,"api_version":1}'
-            with patch.object(deploy, 'load_host', return_value=installed_host) as load_host, \
-                 patch.object(deploy.socket, 'create_connection', return_value=raw) as connect, \
-                 patch.object(deploy.http.client, 'HTTPConnection', return_value=connection) as http, \
-                 patch.object(deploy.time, 'monotonic', side_effect=[0, 21] if delayed else [0, 0]):
-                if peer_certificate != saved_certificate:
-                    with self.assertRaisesRegex(deploy.DeployError, 'certificate does not match'):
-                        deploy.Operations().health(root, 'https://mini.example.ts.net:9000')
-                    connection.request.assert_not_called()
-                else:
-                    result = deploy.Operations().health(root, 'https://mini.example.ts.net:9000')
-                    self.assertEqual(result['certificate_sha256'], hashlib.sha256(saved_certificate).hexdigest().upper())
-                    self.assertTrue(result['ok'])
-                    connection.request.assert_called_once_with('GET', '/health')
-                load_host.assert_called_once_with(root)
-                installed_host.trusted_certificate_context.assert_called_once_with(cafile=str(cert))
-                connect.assert_called_once_with(('127.0.0.1', 9000), timeout=2)
-                http.assert_called_once_with('mini.example.ts.net', 9000, timeout=2)
-                context.wrap_socket.assert_called_once_with(raw, server_hostname='mini.example.ts.net')
-                secured.getpeercert.assert_called_once_with(binary_form=True)
-                connection.close.assert_called_once()
+            connection.getresponse.return_value.status = status
+            connection.getresponse.return_value.read.return_value = body
+            connections.append(connection)
+        installed_host = Mock(TUNNEL_PORT=8961)
+        clock = [0, *([0] * (len(responses) - 1)), 400] if delayed else [0] * (len(responses) + 1)
+        with patch.object(deploy, 'load_host', return_value=installed_host) as load_host, \
+             patch.object(deploy.http.client, 'HTTPConnection', side_effect=connections) as http, \
+             patch.object(deploy.time, 'monotonic', side_effect=clock), patch.object(deploy.time, 'sleep'):
+            try:
+                return deploy.Operations().health(Path('/Coconut')), connections
+            finally:
+                load_host.assert_called_once_with(Path('/Coconut'))
+                for call in http.call_args_list:
+                    self.assertEqual(call.args, ('127.0.0.1', 8961))
+                for connection in connections[:http.call_count]:
+                    connection.close.assert_called_once()
 
-    def test_health_uses_installed_certificate_policy_with_exact_sni_and_pin(self):
-        self.assert_health_uses_installed_trust(b'The saved certificate DER bytes.')
+    def test_health_uses_plain_http_on_the_tunnel_listener(self):
+        # Every service since the tunnel listener answers there, also one that a rollback restores.
+        result, connections = self.check_health([(200, b'{"ok":true,"api_version":1}')])
+        self.assertEqual(result, {'ok': True, 'api_version': 1, 'scope': 'loopback'})
+        connections[0].request.assert_called_once_with('GET', '/health')
 
-    def test_health_rejects_a_different_certificate_before_the_http_request(self):
-        self.assert_health_uses_installed_trust(b'A different certificate.')
+    def test_health_waits_for_a_starting_service(self):
+        result, _ = self.check_health([(503, b'{"error":"starting"}'), (200, b'{"ok":true,"api_version":1}')])
+        self.assertTrue(result['ok'])
+
+    def test_health_fails_when_the_service_never_answers(self):
+        with self.assertRaisesRegex(deploy.DeployError, 'loopback health check'):
+            self.check_health([(200, b'{"ok":false}')], delayed=True)
+
+    def test_an_older_updater_can_still_pass_the_https_address(self):
+        with patch.object(deploy.Operations, '_health', return_value={'ok': True}) as check:
+            self.assertEqual(deploy.Operations().health(Path('/Coconut'), 'https://mini.example.ts.net:8960'), {'ok': True})
+        check.assert_called_once_with(Path('/Coconut'), deploy.HEALTH_WAIT_SECONDS)
 
     def test_the_recovery_probe_waits_less_than_a_real_start(self):
         waits = []
-        with patch.object(deploy.Operations, '_health', side_effect=lambda root, address, seconds: waits.append(seconds)):
-            deploy.Operations().probe(Path('/tmp'), 'https://localhost:8443')
-            deploy.Operations().health(Path('/tmp'), 'https://localhost:8443')
+        with patch.object(deploy.Operations, '_health', side_effect=lambda root, seconds: waits.append(seconds)):
+            deploy.Operations().probe(Path('/tmp'))
+            deploy.Operations().health(Path('/tmp'))
         self.assertEqual(waits, [deploy.PROBE_WAIT_SECONDS, deploy.HEALTH_WAIT_SECONDS])
         self.assertLess(deploy.PROBE_WAIT_SECONDS, deploy.HEALTH_WAIT_SECONDS)
-
-    def test_health_accepts_startup_after_twenty_seconds(self):
-        self.assert_health_uses_installed_trust(b'The saved certificate DER bytes.', delayed=True)

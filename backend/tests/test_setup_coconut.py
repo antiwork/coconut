@@ -1,6 +1,5 @@
 import contextlib
 import io
-import json
 from pathlib import Path
 import subprocess
 import sys
@@ -15,15 +14,8 @@ sys.path.insert(0, str(SCRIPTS))
 import setup_coconut
 
 
-ADDRESS = "https://mac.tail1234.ts.net:8960"
-
-
 def completed(arguments, returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(arguments, returncode, stdout, stderr)
-
-
-def tailscale_status(state="Running", name="mac.tail1234.ts.net.", addresses=("100.64.0.5", "fd7a::5")):
-    return json.dumps({"BackendState": state, "Self": {"DNSName": name, "TailscaleIPs": list(addresses)}})
 
 
 class SetupCoconutTests(unittest.TestCase):
@@ -47,44 +39,22 @@ class SetupCoconutTests(unittest.TestCase):
                              if arguments[0] == sys.executable else arguments)
         return completed(arguments, stdout=self.output if "--share" in arguments else "")
 
-    def save(self, address):
-        (self.data / "connection.json").write_text(json.dumps({"address": address}))
-        (self.data / "server.crt").write_text("certificate")
+    def prerequisites(self, *, platform="darwin", tools=0):
+        ran = []
 
-    def prerequisites(self, *, platform="darwin", tools=0, status=None, which="/usr/local/bin/tailscale"):
         def fake_run(arguments, **kwargs):
-            if arguments[0] == "/usr/bin/xcode-select":
-                return completed(arguments, tools)
-            return completed(arguments, stdout=status if status is not None else tailscale_status())
-        with patch.object(setup_coconut.sys, "platform", platform), \
-                patch.object(setup_coconut.subprocess, "run", fake_run), \
-                patch.object(setup_coconut.shutil, "which", return_value=which), \
-                patch.object(setup_coconut, "TAILSCALE_APP", Path(self.directory.name) / "missing"):
+            ran.append(arguments[0])
+            return completed(arguments, tools)
+        with patch.object(setup_coconut.sys, "platform", platform), patch.object(setup_coconut.subprocess, "run", fake_run):
             setup_coconut.prerequisites()
-            return setup_coconut.tailscale_address()
+        # The phone reaches the Mac through the relay, so setup needs no VPN.
+        self.assertEqual(ran, ["/usr/bin/xcode-select"])
 
-    def test_prerequisites_use_the_tailscale_name_and_default_port(self):
-        self.assertEqual(self.prerequisites(), ADDRESS)
-
-    def test_prerequisites_keep_a_saved_port_for_the_same_name(self):
-        self.save("https://mac.tail1234.ts.net:9443")
-        self.assertEqual(self.prerequisites(), "https://mac.tail1234.ts.net:9443")
-        self.save("https://old-name.tail1234.ts.net:9443")
-        self.assertEqual(self.prerequisites(), ADDRESS)
-
-    def test_prerequisites_use_the_ipv4_address_without_magicdns(self):
-        self.assertEqual(self.prerequisites(status=tailscale_status(name="")), "https://100.64.0.5:8960")
+    def test_prerequisites_need_only_macos_and_the_command_line_tools(self):
+        self.prerequisites()
 
     def test_each_missing_prerequisite_has_an_actionable_message(self):
-        cases = [
-            (dict(platform="linux"), "runs on macOS"),
-            (dict(tools=2), "xcode-select --install"),
-            (dict(which=None), "tailscale.com/download"),
-            (dict(status=tailscale_status(state="NeedsLogin")), "Open Tailscale on this Mac, sign in"),
-            (dict(status="not json"), "Open Tailscale on this Mac, sign in"),
-            (dict(status=tailscale_status(name="", addresses=("fd7a::5",))), "Reconnect Tailscale"),
-        ]
-        for options, message in cases:
+        for options, message in [(dict(platform="linux"), "runs on macOS"), (dict(tools=2), "xcode-select --install")]:
             with self.subTest(options=options), self.assertRaises(SystemExit) as raised:
                 self.prerequisites(**options)
             self.assertIn(message, str(raised.exception))
@@ -118,39 +88,22 @@ class SetupCoconutTests(unittest.TestCase):
         setup_coconut.prepare_notifications()
         self.assertEqual(self.commands, [["push.py", "--rebuild"]])
 
-    def test_configure_skips_a_saved_address(self):
-        self.save(ADDRESS)
-        with patch.object(setup_coconut, "service_running", side_effect=AssertionError):
-            setup_coconut.configure(ADDRESS)
-        self.assertEqual(self.commands, [])
-
-    def test_configure_saves_a_new_address(self):
-        with patch.object(setup_coconut, "service_running", return_value=False):
-            setup_coconut.configure(ADDRESS)
-        self.assertEqual(self.commands, [["host.py", "setup", "--address", ADDRESS]])
-
-    def test_configure_stops_a_running_service_before_it_changes_the_address(self):
-        self.save("https://old-name.tail1234.ts.net:8960")
-        with patch.object(setup_coconut, "service_running", return_value=True):
-            setup_coconut.configure(ADDRESS)
-        self.assertEqual(self.commands, [["host.py", "stop"], ["host.py", "setup", "--address", ADDRESS]])
-
     def service(self, *, plist_exists, loaded, process=None, health=None):
         plist = Path(self.directory.name) / "local.coconut.agent.plist"
         if plist_exists:
             plist.write_text("plist")
         checks = []
 
-        def check(operations, root, address):
-            checks.append(address)
+        def check(operations, root):
+            checks.append(root)
             if health:
                 raise health
 
         with patch.object(setup_coconut.host, "owned_agent", return_value=(plist, loaded)), \
                 patch.object(setup_coconut.host, "owned_process", return_value=process), \
                 patch.object(setup_coconut.deploy.Operations, "health", check):
-            setup_coconut.start_service(ADDRESS)
-        self.assertEqual(checks, [ADDRESS])
+            setup_coconut.start_service()
+        self.assertEqual(checks, [setup_coconut.ROOT])
         return plist
 
     def test_a_running_login_service_only_gets_a_health_check(self):
@@ -159,11 +112,11 @@ class SetupCoconutTests(unittest.TestCase):
 
     def test_installs_the_login_service_when_it_is_missing(self):
         self.service(plist_exists=False, loaded=False)
-        self.assertEqual(self.commands, [["host.py", "install-service", "--address", ADDRESS]])
+        self.assertEqual(self.commands, [["host.py", "install-service"]])
 
     def test_replaces_a_manual_process_with_the_login_service(self):
         self.service(plist_exists=False, loaded=False, process=(42, {}))
-        self.assertEqual(self.commands, [["host.py", "stop"], ["host.py", "install-service", "--address", ADDRESS]])
+        self.assertEqual(self.commands, [["host.py", "stop"], ["host.py", "install-service"]])
 
     def test_loads_an_existing_login_service(self):
         plist = self.service(plist_exists=True, loaded=False)
@@ -171,9 +124,15 @@ class SetupCoconutTests(unittest.TestCase):
 
     def test_a_failed_health_check_names_the_log(self):
         with self.assertRaises(SystemExit) as raised:
-            self.service(plist_exists=True, loaded=True, health=setup_coconut.deploy.DeployError("No answer."))
+            self.service(plist_exists=False, loaded=False, health=setup_coconut.deploy.DeployError("No answer."))
         self.assertIn("No answer.", str(raised.exception))
         self.assertIn("logs/error.log", str(raised.exception))
+
+    def test_a_running_service_without_the_tunnel_listener_restarts(self):
+        # The health check uses the tunnel listener, which a service from before that listener does not have.
+        with patch.object(setup_coconut, "ensure_tunnel_listener") as ensure:
+            self.service(plist_exists=True, loaded=True, health=setup_coconut.deploy.DeployError("No answer."))
+        ensure.assert_called_once_with()
 
     def test_share_prints_the_link_and_the_image_last(self):
         self.output = ("Setup link: coconut://pair?setup=abc\nQR image: /tmp/iphone-setup.png\n"
@@ -187,19 +146,17 @@ class SetupCoconutTests(unittest.TestCase):
         self.assertEqual(lines[-2:], ["Setup link: coconut://pair?setup=abc", "QR image: /tmp/iphone-setup.png"])
 
     def test_start_tunnel_installs_the_sidecar_in_the_data_folder(self):
-        with patch.object(setup_coconut, "tunnel_listener_ready", return_value=True):
-            setup_coconut.start_tunnel()
+        setup_coconut.start_tunnel()
         self.assertEqual(self.commands, [["tunnel.py", "install", "--data-dir", str(self.data)]])
 
-    def test_a_service_without_the_tunnel_listener_drains_and_restarts_before_the_link(self):
+    def test_a_service_without_the_tunnel_listener_drains_and_restarts(self):
         answers = iter([False, False, True])
         drain = Mock(side_effect=lambda: self.commands.append(["drain"]) or True)
         with patch.object(setup_coconut, "tunnel_listener_ready", lambda: next(answers)), \
                 patch.object(setup_coconut.host, "drain_for_update", drain), \
                 patch.object(setup_coconut.time, "sleep"):
-            setup_coconut.start_tunnel()
-        self.assertEqual(self.commands, [["drain"], ["host.py", "restart"],
-                                         ["tunnel.py", "install", "--data-dir", str(self.data)]])
+            setup_coconut.ensure_tunnel_listener()
+        self.assertEqual(self.commands, [["drain"], ["host.py", "restart"]])
 
     def test_a_running_listener_needs_no_drain_or_restart(self):
         drain = Mock()
@@ -209,14 +166,14 @@ class SetupCoconutTests(unittest.TestCase):
         drain.assert_not_called()
         self.assertEqual(self.commands, [])
 
-    def test_no_tunnel_and_no_link_when_the_listener_stays_away(self):
+    def test_setup_stops_when_the_listener_stays_away(self):
         clock = iter(range(0, 1000, 60))
         with patch.object(setup_coconut, "tunnel_listener_ready", return_value=False), \
                 patch.object(setup_coconut.host, "drain_for_update", return_value=False), \
                 patch.object(setup_coconut.time, "sleep"), \
                 patch.object(setup_coconut.time, "monotonic", lambda: next(clock)), \
                 self.assertRaises(SystemExit) as raised:
-            setup_coconut.start_tunnel()
+            setup_coconut.ensure_tunnel_listener()
         self.assertIn("127.0.0.1:8961", str(raised.exception))
         self.assertEqual(self.commands, [["host.py", "restart"]])
 
@@ -237,12 +194,11 @@ class SetupCoconutTests(unittest.TestCase):
 
     def test_main_runs_the_steps_in_order(self):
         calls = []
-        names = ["prerequisites", "use_hermes", "tailscale_address", "configure", "prepare_notifications",
-                 "start_service", "start_tunnel", "share"]
+        names = ["prerequisites", "use_hermes", "prepare_notifications", "start_service", "start_tunnel", "share"]
         with contextlib.ExitStack() as stack:
             for name in names:
                 stack.enter_context(patch.object(setup_coconut, name,
-                                                 lambda *args, name=name: calls.append(name) or ADDRESS))
+                                                 lambda *args, name=name: calls.append(name)))
             setup_coconut.main()
         self.assertEqual(calls, names)
 

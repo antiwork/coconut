@@ -98,7 +98,6 @@ class AutomaticUpdateTests(unittest.TestCase):
             source, live = root / 'source', root / 'live'
             source.mkdir(); live.mkdir()
             (live / '.runtime/host').mkdir(parents=True)
-            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
             (live / 'app.py').write_text('current')
             hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
             # The installed code is older than the merged commit, so the updater deploys.
@@ -138,7 +137,6 @@ class AutomaticUpdateTests(unittest.TestCase):
             source, live = root / 'source', root / 'live'
             source.mkdir(); live.mkdir()
             (live / '.runtime/host').mkdir(parents=True)
-            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
             (live / 'app.py').write_text('current')
             hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
             (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=dict(hashes, old='x'))))
@@ -178,7 +176,6 @@ class AutomaticUpdateTests(unittest.TestCase):
             source, live = root / 'source', root / 'live'
             source.mkdir(); live.mkdir()
             (live / '.runtime/host').mkdir(parents=True)
-            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
             (live / '.runtime/deploy').mkdir()
             (live / 'app.py').write_text('current')
             hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
@@ -253,7 +250,6 @@ class AutomaticUpdateTests(unittest.TestCase):
             source, live = root / 'source', root / 'live'
             source.mkdir(); live.mkdir()
             (live / '.runtime/host').mkdir(parents=True)
-            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
             (live / 'app.py').write_text('current')
             hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
             (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=dict(hashes, old='x'))))
@@ -269,7 +265,7 @@ class AutomaticUpdateTests(unittest.TestCase):
                 if 'receive' in args:
                     received.append(head[0])
                     if outcome[0] == 'fail':
-                        raise RuntimeError('COCONUT_DEPLOY_RESULT={"ok": false, "error": "The service did not pass its local TLS health check."}')
+                        raise RuntimeError('COCONUT_DEPLOY_RESULT={"ok": false, "error": "The service did not pass its loopback health check."}')
                     (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=hashes)))
                     return 'COCONUT_DEPLOY_RESULT={"ok":true}'
                 return ''
@@ -338,35 +334,31 @@ class AutomaticUpdateTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('automatic_test_host', Path(__file__).with_name('host.py'))
         host = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(host)
-        self.assertEqual(update.SERVICE_LABEL, host.LABEL)
-        with tempfile.TemporaryDirectory() as directory:
-            live = Path(directory)
-            (live / '.runtime/host').mkdir(parents=True)
-            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:1')))
-            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as listing:
-                self.assertTrue(update.service_supervised(live))
-            self.assertEqual(listing.call_args.args[0], ['launchctl', 'print', f'gui/{os.getuid()}/{host.LABEL}'])
-            # Without a loaded agent and without an answering port, nothing keeps the service running.
-            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)), \
-                    patch.object(update.socket, 'create_connection', side_effect=OSError):
-                self.assertFalse(update.service_supervised(live))
-            # A service in manual mode answers on its port without the agent.
-            with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)), \
-                    patch.object(update.socket, 'create_connection', return_value=contextlib.nullcontext()):
-                self.assertTrue(update.service_supervised(live))
+        self.assertEqual((update.SERVICE_LABEL, update.TUNNEL_PORT), (host.LABEL, host.TUNNEL_PORT))
+        with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as listing:
+            self.assertTrue(update.service_supervised())
+        self.assertEqual(listing.call_args.args[0], ['launchctl', 'print', f'gui/{os.getuid()}/{host.LABEL}'])
+        # Without a loaded agent and without an answering port, nothing keeps the service running.
+        with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)), \
+                patch.object(update.socket, 'create_connection', side_effect=OSError):
+            self.assertFalse(update.service_supervised())
+        # A service in manual mode answers on its tunnel listener without the agent.
+        with patch.object(update.subprocess, 'run', return_value=SimpleNamespace(returncode=113)), \
+                patch.object(update.socket, 'create_connection', return_value=contextlib.nullcontext()) as connect:
+            self.assertTrue(update.service_supervised())
+        self.assertEqual(connect.call_args.args[0], ('127.0.0.1', 8961))
 
     def test_a_failed_health_check_after_install_backs_off(self):
         class DeployError(Exception):
             pass
 
         def refuse(*args):
-            raise DeployError('The service did not pass its local TLS health check.')
+            raise DeployError('The service did not pass its loopback health check.')
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             source, live = root / 'source', root / 'live'
             source.mkdir(); live.mkdir()
             (live / '.runtime/host').mkdir(parents=True)
-            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address='https://localhost:8443')))
             (live / 'app.py').write_text('current')
             hashes = {'app.py': hashlib.sha256(b'current').hexdigest()}
             (live / '.coconut-install.json').write_text(json.dumps(dict(state='installed', files=hashes)))
@@ -475,17 +467,15 @@ class PostmergeRegressionTests(unittest.TestCase):
             root = Path(directory).resolve()
             live, source = root / 'live', root / 'source'
             source.mkdir()
-            address = 'https://mini.example:8960'
             files = package_files(**{'README.md': b'# Coconut, merged\n'})
-            deploy.receive('live', address, archive(package_files() if interrupted else files),
+            deploy.receive('live', archive(package_files() if interrupted else files),
                            home=root, operations=FakeOperations(mode='managed'))
             if interrupted:
                 with self.assertRaises(deploy.DeployError):
-                    deploy.receive('live', address, archive(files), home=root,
+                    deploy.receive('live', archive(files), home=root,
                                    operations=FakeOperations(mode='managed', fail='prepare', fail_stop_after=1))
                 self.assertTrue((live / '.runtime/deploy/update.json').exists())
             (live / '.runtime/host').mkdir(parents=True, exist_ok=True)
-            (live / '.runtime/host/connection.json').write_text(json.dumps(dict(address=address)))
             state_path = root / 'state.json'
             received = []
             def command(args, **kwargs):
@@ -495,7 +485,7 @@ class PostmergeRegressionTests(unittest.TestCase):
                 if 'receive' in args:
                     received.append(args)
                     if confirmed:
-                        result = deploy.receive('live', address, kwargs['stdin'], home=root,
+                        result = deploy.receive('live', kwargs['stdin'], home=root,
                                                 operations=FakeOperations(mode='managed'))
                         return 'COCONUT_DEPLOY_RESULT=' + json.dumps(dict(result, ok=True))
                     return 'COCONUT_DEPLOY_RESULT={"ok":true}'

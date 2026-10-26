@@ -1,5 +1,6 @@
-"""The deploy package carries the tunnel sidecar's sources, and a deploy rebuilds an installed sidecar."""
+"""The deploy package carries the tunnel sidecar's sources, and a deploy installs or rebuilds the sidecar."""
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -70,10 +71,28 @@ class TunnelRebuildTests(unittest.TestCase):
         (self.data / 'tunnel').mkdir()
         (self.data / 'tunnel/route.json').write_text('{}')
 
-    def test_a_mac_without_the_sidecar_stays_without_it(self):
-        self.assertFalse(self.rebuild(changed=True))
+    def test_a_mac_that_never_had_the_sidecar_gets_it(self):
+        # The relay is the only way from the phone to the Mac.
+        with patch.object(tunnel, 'install') as install:
+            self.assertFalse(self.rebuild(changed=True, loaded=False))
+        install.assert_called_once_with(self.data, tunnel.RELAY_URL)
+
+    def test_a_failed_install_is_retried_on_the_saved_relay(self):
+        # The install saved the route, but launchctl did not load the sidecar. The paired phones use the saved relay.
         self.install()
-        self.assertFalse(self.rebuild(changed=True, loaded=False))
+        (self.data / 'tunnel/route.json').write_text(json.dumps({'relay': 'https://relay.example', 'route': 'r'}))
+        with patch.object(tunnel, 'install') as install:
+            self.rebuild(changed=True, loaded=False)
+        install.assert_called_once_with(self.data, 'https://relay.example')
+
+    def test_an_uninstalled_sidecar_stays_uninstalled(self):
+        self.install()
+        with patch.object(tunnel, 'launchctl', lambda *arguments: self.launchctl(*arguments)), \
+                patch.object(tunnel, 'agent_path', return_value=self.data / 'agent.plist'):
+            tunnel.uninstall(self.data)
+        with patch.object(tunnel, 'install') as install:
+            self.assertFalse(self.rebuild(changed=True, loaded=False))
+        install.assert_not_called()
         self.assertNotIn('kickstart', self.calls)
 
     def test_new_sources_restart_the_sidecar(self):

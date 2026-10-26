@@ -10,7 +10,7 @@ final class ConnectionRecoveryTests: XCTestCase {
         let server = try DelayedConnectionServer()
         let address = try await server.start()
         defer { server.stop() }
-        let client = try APIClient(serverURL: address, fingerprint: "", token: "fixture-only")
+        let client = try APIClient(loopback: address, token: "fixture-only")
         async let poll: [String: Int] = client.request("updates?after=0&wait=20", retryTransient: false)
         let started = ContinuousClock.now
         do {
@@ -40,8 +40,7 @@ final class ConnectionRecoveryTests: XCTestCase {
         let savedFiles = paths.map { try? Data(contentsOf: $0) }
         // Start without a saved state, so the first request is always the state download.
         for path in paths { try? FileManager.default.removeItem(at: path) }
-        let variables = ["COCONUT_SERVER_URL": address,
-                         "COCONUT_CERT_SHA256": String(repeating: "0", count: 64), "COCONUT_DEVICE_TOKEN": "fixture-only"]
+        let variables = ["COCONUT_SERVER_URL": address, "COCONUT_DEVICE_TOKEN": "fixture-only"]
         let previous = ProcessInfo.processInfo.environment
         for (key, value) in variables { setenv(key, value, 1) }
         let store = AppStore(demo: false)

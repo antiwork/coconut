@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
-"""Install, update, and pair the Mac mini through SSH over Tailscale."""
+"""Install, update, and pair the Mac mini through SSH. The iPhone reaches the mini through the relay."""
 
 from __future__ import annotations
 
 import argparse
 import base64
 import hashlib
-import http.client
 import io
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
-import ssl
 import subprocess
 import sys
 import tarfile
 import tempfile
-from urllib.parse import urlsplit
 
 import host
 
@@ -40,24 +37,25 @@ def private_directory(path: Path) -> None:
 
 
 def validate_config(value: dict) -> dict:
-    if not isinstance(value, dict) or set(value) != {"version", "ssh", "directory", "address"} or type(value["version"]) is not int or value["version"] != 1:
+    # A configuration from before the relay also has the HTTPS address of the mini. Nothing uses it now.
+    if (not isinstance(value, dict) or set(value) - {"address"} != {"version", "ssh", "directory"}
+            or type(value["version"]) is not int or value["version"] != 1):
         raise SystemExit("Configure the Mac mini before continuing.")
     target = value["ssh"]
     if not isinstance(target, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*@[A-Za-z0-9][A-Za-z0-9.-]*", target):
-        raise SystemExit("Use the macOS login and Tailscale name, such as name@mini.example.ts.net.")
+        raise SystemExit("Use the macOS login and the host name of the mini, such as name@mini.local.")
     host.normalize_host(target.split("@", 1)[1])
     directory = value["directory"]
     if (not isinstance(directory, str) or not directory or not PurePosixPath(directory).parts or directory != str(PurePosixPath(directory))
             or PurePosixPath(directory).is_absolute() or any(part in {".", ".."} for part in PurePosixPath(directory).parts)
             or any(ord(character) < 32 for character in directory) or directory.startswith("-")):
         raise SystemExit("Use a relative folder below the Mac account's home, such as Coconut.")
-    address = host.address_parts(value["address"])[0]
-    return dict(version=1, ssh=target, directory=directory, address=address)
+    return dict(version=1, ssh=target, directory=directory)
 
 
 def configuration() -> dict:
     if not CONFIG.is_file() or CONFIG.is_symlink():
-        raise SystemExit("Run remote.py configure with the Mac mini login and Tailscale address first.")
+        raise SystemExit("Run remote.py configure with the Mac mini login first.")
     return validate_config(json.loads(CONFIG.read_text()))
 
 
@@ -128,7 +126,7 @@ def ssh(config: dict, arguments: list[str], *, input_data: bytes | None = None,
             diagnostic = result.stderr.decode(errors="replace").strip()
             if len(diagnostic) < 2000:
                 print(diagnostic, file=sys.stderr)
-        raise SystemExit("The Mac mini command failed. Check Tailscale, Remote Login, and SSH key access.")
+        raise SystemExit("The Mac mini command failed. Check the network, Remote Login, and SSH key access.")
     return result
 
 
@@ -225,32 +223,34 @@ for part in directory.parts:
 """
 
 
-def verify_remote_health(config: dict) -> None:
-    code = ROOT_CODE + """
-data = root / '.runtime/host'
-print(json.dumps({'certificate': (data / 'server.crt').read_text(),
-                  'address': json.loads((data / 'connection.json').read_text())['address']}))
-"""
-    result = ssh(config, ["python3", "-c", code, config["directory"]])
-    saved = json.loads(result.stdout)
-    if host.address_parts(saved["address"])[0] != config["address"]:
-        raise SystemExit("The mini advertises a different address. Check remote.py configure before pairing.")
-    context = host.trusted_certificate_context(cadata=saved["certificate"])
-    expected = hashlib.sha256(ssl.PEM_cert_to_DER_cert(saved["certificate"])).hexdigest()
-    address = urlsplit(config["address"])
-    connection = http.client.HTTPSConnection(address.hostname, address.port or 443, context=context, timeout=15)
+# Run on the mini: health() checks /health on the loopback listener of the service and reads the state of the tunnel sidecar.
+HEALTH_CODE = ROOT_CODE + """
+def health():
+    import urllib.request
+    sys.path.insert(0, str(root / 'scripts'))
+    import host
     try:
-        connection.connect()
-        if hashlib.sha256(connection.sock.getpeercert(binary_form=True)).hexdigest() != expected:
-            raise SystemExit("The remote API certificate differs from the mini's saved certificate.")
-        connection.request("GET", "/health")
-        response = connection.getresponse()
-        if response.status != 200 or json.loads(response.read(65537)) != {"ok": True, "api_version": 1}:
-            raise SystemExit("The remote API did not pass its versioned health check.")
-    except (OSError, http.client.HTTPException):
-        raise SystemExit("Coconut is installed, but this Mac cannot reach its HTTPS API. Check Tailscale access to port 8960.") from None
-    finally:
-        connection.close()
+        with urllib.request.urlopen('http://127.0.0.1:%d/health' % host.TUNNEL_PORT, timeout=5) as response:
+            healthy = json.load(response) == {'ok': True, 'api_version': 1}
+    except Exception:
+        healthy = False
+    try:
+        tunnel = json.loads((root / '.runtime/host/tunnel/status.json').read_text()).get('state', 'unknown')
+    except (OSError, ValueError, AttributeError):
+        tunnel = 'not_installed'
+    return {'healthy': healthy, 'tunnel': tunnel}
+"""
+
+
+def verify_remote_health(config: dict) -> None:
+    code = HEALTH_CODE + """
+print(json.dumps(health()))
+"""
+    result = json.loads(ssh(config, ["python3", "-c", code, config["directory"]]).stdout)
+    if not result["healthy"]:
+        raise SystemExit("Coconut is installed, but its service did not pass the health check on the mini.")
+    if result["tunnel"] != "connected":
+        print(f"The relay tunnel on the mini is {result['tunnel']}. The iPhone cannot reach the mini until it connects.")
 
 
 def preflight(config: dict) -> dict:
@@ -259,14 +259,14 @@ import platform, shutil, subprocess
 clt = subprocess.run(['/usr/bin/xcode-select', '-p'], capture_output=True).returncode == 0
 print(json.dumps({'platform': platform.system(), 'machine': platform.machine(),
     'python': platform.python_version(), 'command_line_tools': clt,
-    'git': bool(shutil.which('git')), 'openssl': bool(shutil.which('openssl')),
+    'git': bool(shutil.which('git')),
     'directory': str(root), 'installed': (root / '.coconut-install.json').is_file()}))
 """
     result = ssh(config, ["python3", "-c", code, config["directory"]])
     metadata = json.loads(result.stdout)
     if metadata["platform"] != "Darwin" or tuple(map(int, metadata["python"].split(".")[:2])) < (3, 9):
         raise SystemExit("The installer requires macOS and Python 3.9 or later from Xcode Command Line Tools.")
-    if not metadata["command_line_tools"] or not metadata["git"] or not metadata["openssl"]:
+    if not metadata["command_line_tools"] or not metadata["git"]:
         raise SystemExit("Install Xcode Command Line Tools on the mini with xcode-select --install, then retry.")
     return metadata
 
@@ -279,7 +279,7 @@ def deploy(config: dict) -> None:
         summary = package(archive)
         print(f"Sending {summary['file_count']} source files to the Mac mini.", flush=True)
         receiver = (ROOT / "scripts/deploy.py").read_text()
-        arguments = ["python3", "-c", receiver, "receive", "--directory", config["directory"], "--address", config["address"]]
+        arguments = ["python3", "-c", receiver, "receive", "--directory", config["directory"]]
         with archive.open("rb") as handle:
             result = ssh(config, arguments, input_file=handle, timeout=2400, allow_failure=True)
         lines = result.stdout.decode().splitlines()
@@ -292,31 +292,18 @@ def deploy(config: dict) -> None:
             raise SystemExit("Coconut kept the deployment result above. Resolve that error before retrying.")
         if receipt.get("health", {}).get("ok"):
             verify_remote_health(config)
-            print("Verified the Mac mini API through Tailscale with its exact certificate.")
+            print("Verified the Mac mini service over SSH.")
 
 
 def status(config: dict) -> None:
-    code = ROOT_CODE + """
-import ssl, urllib.request
+    code = HEALTH_CODE + """
 marker = root / '.coconut-install.json'
-if not marker.is_file() or not (root / '.runtime/host/connection.json').is_file():
-    print(json.dumps({'installed': False, 'source_present': marker.is_file(), 'healthy': False}))
+if not marker.is_file():
+    print(json.dumps({'installed': False, 'healthy': False}))
 else:
-    data = root / '.runtime/host'
-    connection = json.loads((data / 'connection.json').read_text())
-    from urllib.parse import urlsplit
-    port = urlsplit(connection['address']).port or 443
-    try:
-        sys.path.insert(0, str(root / 'scripts'))
-        import host
-        context = host.trusted_certificate_context(cafile=str(data / 'server.crt'))
-        with urllib.request.urlopen('https://localhost:%d/health' % port, context=context, timeout=5) as response:
-            healthy = json.load(response) == {'ok': True, 'api_version': 1}
-    except Exception:
-        healthy = False
-    print(json.dumps({'installed': True, 'healthy': healthy, 'address': connection['address'],
-        'model_access_saved': (data / 'credentials.json').is_file(),
-        'package_id': json.loads(marker.read_text()).get('package_id')}))
+    print(json.dumps(dict(health(), installed=True,
+        model_access_saved=(root / '.runtime/host/credentials.json').is_file(),
+        package_id=json.loads(marker.read_text()).get('package_id'))))
 """
     result = ssh(config, ["python3", "-c", code, config["directory"]])
     print(json.dumps(json.loads(result.stdout), indent=2))
@@ -373,9 +360,8 @@ def main() -> None:
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    setup = commands.add_parser("configure", help="Save the mini's SSH login and HTTPS address locally.")
+    setup = commands.add_parser("configure", help="Save the mini's SSH login locally.")
     setup.add_argument("--ssh", required=True)
-    setup.add_argument("--address", required=True)
     setup.add_argument("--directory", default="Coconut")
     for name in ("install", "update"):
         command = commands.add_parser(name, help="Send source files and verify the Mac mini service.")
@@ -386,7 +372,7 @@ def main() -> None:
     args = parser.parse_args()
     try:
         if args.command == "configure":
-            config = validate_config(dict(version=1, ssh=args.ssh, directory=args.directory, address=args.address))
+            config = validate_config(dict(version=1, ssh=args.ssh, directory=args.directory))
             private_directory(CONFIG.parent)
             if CONFIG.is_symlink():
                 raise SystemExit("The remote configuration must not be a symbolic link.")

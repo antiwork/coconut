@@ -94,8 +94,9 @@ def pair_device(db, data: dict, paired, peer: str | None = None) -> dict | Servi
     """Use a pairing code inside the caller's write transaction. Return the device token, or the error to raise.
 
     Failed attempts commit with the transaction, so retries cannot bypass the rate limit. `paired(device_id)` records the event.
-    `peer` is the phone's static key from the tunnel sidecar, or None for a request over TLS. A tunnel secret pairs only
-    through the tunnel, and a TLS code only over TLS. The device keeps the key, and `device_for_token` requires it.
+    `peer` is the phone's static key from the tunnel sidecar, or None for a request to the main loopback listener. A tunnel
+    secret pairs only through the tunnel, and a 10-digit code only on the main listener, for a tool on this Mac. The
+    device keeps the key, and `device_for_token` requires it.
     """
     stamp = time.time()
     db.execute('DELETE FROM pair_attempts WHERE created < ?', (stamp - 60,))

@@ -7,7 +7,7 @@ final class NotificationService: UNNotificationServiceExtension {
         guard let content = request.content.mutableCopy() as? UNMutableNotificationContent else {
             contentHandler(request.content); return
         }
-        // Decryption uses local keys. It never contacts the Mac or waits for Tailscale.
+        // Decryption uses local keys. It never contacts the Mac.
         if let payload = try? NotificationKeys.content(from: request.content.userInfo) {
             NotificationContent.apply(payload, to: content)
         }

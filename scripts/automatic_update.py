@@ -13,7 +13,6 @@ import sys
 import tempfile
 import time
 import uuid
-from urllib.parse import urlsplit
 
 
 # After a failed install of a commit, the updater waits this long before it tries the same commit again.
@@ -313,9 +312,10 @@ def retry_tunnel(live, state, state_path):
 
 # The launch agent that runs the installed service. scripts/host.py installs it.
 SERVICE_LABEL = 'local.coconut.agent'
+TUNNEL_PORT = 8961
 
 
-def service_supervised(live):
+def service_supervised():
     """Return True when the service keeps running without the updater.
 
     launchd restarts it when its launch agent is loaded in the user's GUI domain, as scripts/host.py installs it.
@@ -328,10 +328,10 @@ def service_supervised(live):
     except (OSError, subprocess.TimeoutExpired):
         return True
     try:
-        port = urlsplit(json.loads((live / '.runtime/host/connection.json').read_text())['address']).port or 443
-        with socket.create_connection(('127.0.0.1', port), timeout=3):
+        # Every service since the tunnel listener answers on this loopback port (TUNNEL_PORT in scripts/host.py).
+        with socket.create_connection(('127.0.0.1', TUNNEL_PORT), timeout=3):
             return True
-    except (OSError, ValueError, KeyError, TypeError):
+    except OSError:
         return False
 
 
@@ -356,7 +356,7 @@ def update(config, state_path):
     run(['git', 'fetch', 'origin', 'main'], cwd=source)
     sha = run(['git', 'rev-parse', 'origin/main'], cwd=source)
     failed = state.get('failed_deploy') or {}
-    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0) and service_supervised(live):
+    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0) and service_supervised():
         # Each failed attempt stops and restarts the service. Wait before the next install of the same commit.
         # launchd keeps the restored service running meanwhile. When a failed rollback left the launch agent
         # unloaded, nothing restarts the service, so the install runs now: it recovers from the journal first.
@@ -384,11 +384,10 @@ def update(config, state_path):
     matches = matches and all((live / name).is_file() and hashlib.sha256((live / name).read_bytes()).hexdigest() == digest
                               for name, digest in validated.hashes.items())
     if not matches:
-        address = json.loads((live / '.runtime/host/connection.json').read_text())['address']
         # The update changes Coconut only. deploy.py runs the contract check against the person's Hermes, and restores
         # the earlier Coconut when the new one fails on a Hermes that worked before.
         arguments = [sys.executable, str(source / 'scripts/deploy.py'), 'receive',
-                     '--directory', str(live.relative_to(Path.home())), '--address', address]
+                     '--directory', str(live.relative_to(Path.home()))]
     try:
         if not matches:
             with package.open('rb') as stream:
@@ -404,8 +403,7 @@ def update(config, state_path):
             else:
                 state['pending_tunnel'] = dict(source_sha=sha, error=str(tunnel.get('error', ''))[-500:],
                                                retry_at=time.time() + FAILED_DEPLOY_SECONDS)
-        address = json.loads((live / '.runtime/host/connection.json').read_text())['address']
-        expected.Operations().health(live, address)
+        expected.Operations().health(live)
         marker = json.loads(marker_path.read_text())
         if marker.get('state') != 'installed' or marker.get('files') != validated.hashes or any(
                 hashlib.sha256((live / name).read_bytes()).hexdigest() != digest

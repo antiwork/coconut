@@ -56,32 +56,63 @@ class RemoteToolsTests(unittest.TestCase):
                 remote.package(root / "source.tar.gz")
 
     def test_remote_config_rejects_shell_flags_and_path_escape(self):
-        base = dict(version=1, ssh="user@mini.example.ts.net", directory="Coconut", address="https://mini.example.ts.net:8960")
+        base = dict(version=1, ssh="user@mini.local", directory="Coconut")
         for changes in [{"ssh": "-oProxyCommand=evil"}, {"ssh": "user@mini;echo bad"}, {"directory": "../Coconut"},
                         {"directory": "/Users/shared/Coconut"}, {"directory": "."}, {"directory": "a//b"},
-                        {"address": "https://user:secret@mini:8960"}, {"address": "http://mini:8960"}, {"version": True}]:
+                        {"version": True}, {"token": "secret"}]:
             with self.subTest(changes=changes), self.assertRaises(SystemExit):
                 remote.validate_config(base | changes)
-        self.assertEqual(remote.validate_config(base)["address"], base["address"])
+        self.assertEqual(remote.validate_config(base), base)
+        # A configuration from before the relay also has the HTTPS address of the mini. Nothing uses it now.
+        self.assertEqual(remote.validate_config(base | {"address": "https://mini.example.ts.net:8960"}), base)
         self.assertEqual(remote.validate_config(base | {"directory": "Apps/Coconut Local"})["directory"], "Apps/Coconut Local")
+
+    def run_on_mini(self, directory, function, *, answer=None):
+        """Run a remote command's Python in this process, with the mini's home in `directory`. Return its output."""
+        def execute(_config, arguments):
+            output = io.StringIO()
+            with patch("pathlib.Path.home", return_value=Path(directory)), \
+                 patch.object(sys, "argv", ["-c", "Coconut"]), patch.object(sys, "stdout", output), \
+                 patch("urllib.request.urlopen", side_effect=answer or ConnectionRefusedError()) as opened:
+                exec(arguments[2], {"__name__": "__main__"})
+            self.opened = opened
+            return subprocess.CompletedProcess(arguments, 0, output.getvalue().encode())
+
+        with patch.object(remote, "ssh", side_effect=execute), patch.object(sys, "stdout", io.StringIO()) as output:
+            function(dict(directory="Coconut"))
+        return output.getvalue()
 
     def test_remote_status_handles_an_uninstalled_runtime(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "Coconut"
-            root.mkdir()
-            (root / ".coconut-install.json").write_text('{"state":"installed"}')
-            config = dict(directory="Coconut")
+            (Path(directory) / "Coconut").mkdir()
+            self.assertEqual(json.loads(self.run_on_mini(directory, remote.status)), dict(installed=False, healthy=False))
+            self.opened.assert_not_called()
 
-            def execute(_config, arguments):
-                output = io.StringIO()
-                with patch("pathlib.Path.home", return_value=Path(directory)), \
-                     patch.object(sys, "argv", ["-c", "Coconut"]), patch.object(sys, "stdout", output):
-                    exec(arguments[2], {"__name__": "__main__"})
-                return subprocess.CompletedProcess(arguments, 0, output.getvalue().encode())
+    def installed(self, directory, tunnel_state):
+        root = Path(directory) / "Coconut"
+        (root / ".runtime/host/tunnel").mkdir(parents=True)
+        (root / ".coconut-install.json").write_text('{"state":"installed","package_id":"package"}')
+        if tunnel_state:
+            (root / ".runtime/host/tunnel/status.json").write_text(json.dumps({"state": tunnel_state}))
 
-            with patch.object(remote, "ssh", side_effect=execute), patch.object(sys, "stdout", io.StringIO()) as output:
-                remote.status(config)
-            self.assertEqual(json.loads(output.getvalue()), dict(installed=False, source_present=True, healthy=False))
+    def healthy(self, url, timeout):
+        self.assertEqual(url, "http://127.0.0.1:8961/health")
+        return io.BytesIO(b'{"ok":true,"api_version":1}')
+
+    def test_remote_status_checks_loopback_health_and_the_tunnel_over_ssh(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.installed(directory, "connected")
+            result = json.loads(self.run_on_mini(directory, remote.status, answer=self.healthy))
+        self.assertEqual(result, dict(installed=True, healthy=True, tunnel="connected", model_access_saved=False,
+                                      package_id="package"))
+
+    def test_remote_health_requires_the_service_and_reports_the_tunnel(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.installed(directory, None)
+            with self.assertRaisesRegex(SystemExit, "health check"):
+                self.run_on_mini(directory, remote.verify_remote_health)
+            output = self.run_on_mini(directory, remote.verify_remote_health, answer=self.healthy)
+        self.assertIn("The relay tunnel on the mini is not_installed.", output)
 
     def test_installer_failure_keeps_the_remote_recovery_message(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -93,9 +124,10 @@ class RemoteToolsTests(unittest.TestCase):
             with patch.object(remote, "ROOT", root), patch.object(remote, "preflight"), \
                  patch.object(remote, "ssh", return_value=result) as ssh, \
                  patch.object(sys, "stdout", io.StringIO()) as output, self.assertRaises(SystemExit):
-                remote.deploy(dict(directory="Coconut", address="https://mini:8960"))
+                remote.deploy(dict(directory="Coconut"))
             self.assertIn("Previous source was restored.", output.getvalue())
             self.assertTrue(ssh.call_args.kwargs["allow_failure"])
+            self.assertEqual(ssh.call_args.args[1][3:], ["receive", "--directory", "Coconut"])
 
     def test_revoke_removes_only_this_installations_exact_public_key(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -140,14 +172,22 @@ class RemoteToolsTests(unittest.TestCase):
 
 class PairingToolsTests(unittest.TestCase):
     def payload(self):
-        return dict(version=1, server_url="https://mini.example.ts.net:8960", certificate_sha256="a" * 64, pairing_code="0123456789")
+        return dict(version=2, relay="https://coconut-push.gumroad.workers.dev", route="c" * 64,
+                    mac_key=base64.urlsafe_b64encode(bytes(32)).decode().rstrip("="),
+                    secret=base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("="), expires=1_800_000_000, name="Mac mini")
 
-    def test_pairing_rejects_unsafe_payloads(self):
-        for changes in [{"version": True}, {"version": 2}, {"server_url": "http://mini:8960"},
-                        {"server_url": "https://mini:8960/?token=secret"}, {"pairing_code": "١٢٣٤٥٦٧٨٩٠"},
-                        {"pairing_code": "12345"}, {"certificate_sha256": "a" * 63}, {"device_token": "secret"}]:
-            with self.subTest(changes=changes), self.assertRaises((ValueError, SystemExit)):
-                pairing.validate(self.payload() | changes)
+    def test_pairing_refuses_the_old_tls_setup(self):
+        old = dict(version=1, server_url="https://mini.example.ts.net:8960", certificate_sha256="a" * 64, pairing_code="0123456789")
+        with self.assertRaises(ValueError):
+            pairing.validate(old)
+        encoded = base64.urlsafe_b64encode(json.dumps(old).encode()).decode().rstrip("=")
+        with self.assertRaises(ValueError):
+            pairing.read_link("coconut://pair?setup=" + encoded)
+
+    def test_a_mac_without_the_tunnel_cannot_pair(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(pairing.host, "DEFAULT_DATA", Path(directory)), \
+                self.assertRaisesRegex(SystemExit, "setup_coconut.py"):
+            pairing.local_payload()
 
     @unittest.skipUnless(sys.platform == "darwin", "CoreImage and Vision require macOS.")
     def test_native_qr_roundtrip_keeps_exact_setup(self):
@@ -155,7 +195,7 @@ class PairingToolsTests(unittest.TestCase):
             root = Path(directory)
             (root / "scripts").mkdir()
             (root / "scripts/pairing-qr.swift").write_bytes((SCRIPTS / "pairing-qr.swift").read_bytes())
-            with patch.object(pairing, "ROOT", root):
+            with patch.object(pairing, "ROOT", root), patch.object(sys, "stdout", io.StringIO()):
                 shared = root / "shared.png"
                 pairing.render(self.payload(), show=False, share=True).rename(shared)
                 image = pairing.render(self.payload(), show=False)
@@ -168,22 +208,11 @@ try VNImageRequestHandler(url: URL(fileURLWithPath: CommandLine.arguments[1])).p
 guard let value = request.results?.first?.payloadStringValue else { exit(1) }
 print(value)
 ''')
-            result = subprocess.run(["swift", str(decoder), str(image)], check=True, capture_output=True, text=True)
-            self.assertEqual(json.loads(result.stdout), self.payload())
             self.assertEqual(image.stat().st_mode & 0o777, 0o600)
-            # A code that Hermes sends holds the link, so a tap or the Camera app opens Coconut.
-            result = subprocess.run(["swift", str(decoder), str(shared)], check=True, capture_output=True, text=True)
-            self.assertEqual(result.stdout.strip(), pairing.link(self.payload()))
-
-    def test_setup_link_holds_the_exact_payload(self):
-        link = pairing.link(self.payload())
-        self.assertTrue(link.startswith("coconut://pair?setup="))
-        encoded = link.split("setup=", 1)[1]
-        self.assertNotIn("=", encoded)
-        decoded = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
-        self.assertEqual(json.loads(decoded), self.payload())
-        with self.assertRaises((ValueError, SystemExit)):
-            pairing.link(self.payload() | {"pairing_code": "12345"})
+            # Both codes hold the link, so a tap or the Camera app opens Coconut.
+            for code in (image, shared):
+                result = subprocess.run(["swift", str(decoder), str(code)], check=True, capture_output=True, text=True)
+                self.assertEqual(result.stdout.strip(), pairing.link(self.payload()))
 
 
 if __name__ == "__main__":

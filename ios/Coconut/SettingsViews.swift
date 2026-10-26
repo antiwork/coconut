@@ -144,14 +144,15 @@ private struct MacConnectionSettingsView: View {
                 if store.isDemo {
                     Text("Preview uses sample conversations.").foregroundStyle(.secondary)
                 } else if store.hasPairing {
-                    LabeledContent(store.usesLegacyPairing ? "Address" : "Mac") {
+                    LabeledContent("Mac") {
                         Text(store.pairedMacDescription).font(.caption).textSelection(.enabled)
                     }
-                    Button("Reconnect") { Task { await store.reconnect() } }
                     if store.usesLegacyPairing {
-                        // A version 1 pairing works until the person pairs again. The next pairing link moves this iPhone to the relay.
-                        Text("Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link.")
-                            .font(.footnote).foregroundStyle(.secondary)
+                        // A version 1 pairing used Tailscale. Only a new pairing link connects this iPhone again.
+                        Text(PairingSetupError.legacyMessage).font(.footnote).foregroundStyle(.secondary)
+                        PairMacButton()
+                    } else {
+                        Button("Reconnect") { Task { await store.reconnect() } }
                     }
                 } else {
                     PairMacButton()

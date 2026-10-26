@@ -1,7 +1,8 @@
-"""Versioned HTTP API with bearer authentication and optional pinned TLS.
+"""Versioned HTTP API with bearer authentication, on loopback only.
 
-The tunnel listener is plain HTTP on loopback for the tunnel sidecar (scripts/tunnel-sidecar.swift). The sidecar sets
-X-Coconut-Peer to the static key of the phone at the other end of each Noise session. Only that listener reads the header.
+The main listener serves the tools on this Mac. The tunnel listener is for the tunnel sidecar
+(scripts/tunnel-sidecar.swift), which carries the phone's requests from the relay. The sidecar sets X-Coconut-Peer to
+the static key of the phone at the other end of each Noise session. Only that listener reads the header.
 """
 from __future__ import annotations
 
@@ -17,7 +18,6 @@ import re
 import signal
 import socket
 import sqlite3
-import ssl
 import sys
 import threading
 import time
@@ -33,15 +33,13 @@ PEER_KEY = re.compile(r'[0-9a-f]{64}')
 class APIServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
-    tls_handshake_timeout = 5
 
     # Only TunnelServer reads X-Coconut-Peer.
     tunnel = False
 
-    def __init__(self, address, service: Service, *, tls_context: ssl.SSLContext | None = None):
+    def __init__(self, address, service: Service):
         if ':' in address[0]:
             self.address_family = socket.AF_INET6
-        self.tls_context = tls_context
         super().__init__(address, Handler)
         self.service = service
 
@@ -50,15 +48,6 @@ class APIServer(ThreadingHTTPServer):
             raise KeyboardInterrupt
 
     def process_request_thread(self, request, client_address):
-        if self.tls_context is not None:
-            try:
-                # Each worker owns its handshake. A silent peer cannot block acceptance.
-                request = self.tls_context.wrap_socket(request, server_side=True, do_handshake_on_connect=False)
-                request.settimeout(self.tls_handshake_timeout)
-                request.do_handshake()
-            except OSError:
-                self.shutdown_request(request)
-                return
         request.settimeout(35)
         super().process_request_thread(request, client_address)
 
@@ -91,8 +80,8 @@ def accepts_gzip(header):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = 'Coconut/1'
-    # Keep the connection open between requests. Each new connection costs a TCP and TLS handshake over Tailscale.
-    # Every response sets Content-Length, so the phone can find the end of each response.
+    # A client can keep one connection open for many requests.
+    # Every response sets Content-Length, so the client can find the end of each response.
     protocol_version = 'HTTP/1.1'
 
     def log_message(self, format, *args):
@@ -341,11 +330,8 @@ def hermes_status(data_dir, argv) -> dict:
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Run Coconut on this Mac.')
     parser.add_argument('--data-dir', type=Path, required=True)
-    parser.add_argument('--host', default='127.0.0.1')
-    parser.add_argument('--port', type=int, default=8960)
+    parser.add_argument('--port', type=int, default=8960, help='The port of the main listener on 127.0.0.1.')
     parser.add_argument('--provider', choices=('fixture', 'hermes'), default='fixture')
-    parser.add_argument('--cert', type=Path)
-    parser.add_argument('--key', type=Path)
     parser.add_argument('--tunnel-port', type=int, default=0,
                         help='Also listen with plain HTTP on 127.0.0.1 at this port for the tunnel sidecar. 0 turns it off.')
     parser.add_argument('--pair', action='store_true')
@@ -361,10 +347,6 @@ def main(argv=None):
         except ServiceError as error:
             parser.error(str(error))
         return
-    if bool(args.cert) != bool(args.key):
-        parser.error('Supply both --cert and --key.')
-    if args.host not in ('127.0.0.1', '::1', 'localhost') and not args.cert:
-        parser.error('TLS is required for access outside this Mac. Supply --cert and --key.')
     from .providers import FixtureProvider, HermesProvider
     hermes = None
     try:
@@ -388,12 +370,8 @@ def main(argv=None):
         parser.error(str(error))
     server = tunnel = None
     try:
-        context = None
-        if args.cert:
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-            context.minimum_version = ssl.TLSVersion.TLSv1_2
-            context.load_cert_chain(args.cert, args.key)
-        server = APIServer((args.host, args.port), service, tls_context=context)
+        # The phone reaches this Mac only through the tunnel sidecar, so no listener accepts connections from the network.
+        server = APIServer(('127.0.0.1', args.port), service)
         if args.tunnel_port:
             tunnel = TunnelServer(args.tunnel_port, service)
     except OSError as error:
@@ -404,7 +382,7 @@ def main(argv=None):
     write_process_record(service)
     service.restart_enabled = os.environ.get("COCONUT_MANAGED_SERVICE") == "1"
     service.start()
-    print(f'Coconut is listening on {args.host}:{args.port}. Provider: {args.provider}.', flush=True)
+    print(f'Coconut is listening on 127.0.0.1:{args.port}. Provider: {args.provider}.', flush=True)
     if tunnel:
         threading.Thread(target=tunnel.serve_forever, kwargs={'poll_interval': .2}, name='tunnel-listener', daemon=True).start()
         print(f'The tunnel sidecar connects to 127.0.0.1:{args.tunnel_port}.', flush=True)
