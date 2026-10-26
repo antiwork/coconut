@@ -1,0 +1,116 @@
+name: Mac release
+
+# Builds Coconut.app, signs it with the Developer ID Application certificate, notarizes it, staples the ticket, and
+# keeps the archive as a workflow artifact. The Sparkle feed on Cloudflare R2 comes in a later change.
+#
+# The environment `mac-release` accepts only the main branch. It holds these secrets:
+#   MAC_DEVELOPER_ID_P12, MAC_DEVELOPER_ID_P12_PASSWORD   the Developer ID Application identity, base64 .p12
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8                  an App Store Connect API key for notarytool
+# Without the three ASC secrets, the job signs the app, skips notarization and says so.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'CFBundleShortVersionString, for example 0.1.0'
+        required: true
+        default: '0.1.0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    environment: mac-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # The build number is the commit count of HEAD.
+      - name: Check the version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The version must have the form 1.2.3."
+            exit 1
+          fi
+      - name: Import the Developer ID identity into a temporary keychain
+        env:
+          P12: ${{ secrets.MAC_DEVELOPER_ID_P12 }}
+          P12_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$P12" ] || [ -z "$P12_PASSWORD" ]; then
+            echo "::error::The environment mac-release needs MAC_DEVELOPER_ID_P12 and MAC_DEVELOPER_ID_P12_PASSWORD."
+            exit 1
+          fi
+          keychain="$RUNNER_TEMP/coconut-signing.keychain-db"
+          keychain_password="$(uuidgen)"
+          printf '%s' "$P12" | base64 --decode > "$RUNNER_TEMP/identity.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          # The .p12 uses the old RC2-40 key bag encryption. security import reads it.
+          security import "$RUNNER_TEMP/identity.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign -f pkcs12
+          rm -f "$RUNNER_TEMP/identity.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          # codesign searches the keychains of this list. The login keychain stays in it.
+          security list-keychains -d user -s "$keychain" "$HOME/Library/Keychains/login.keychain-db"
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | awk '/"Developer ID Application: Gumroad, Inc. \(66LJACJ2U7\)"/ { print $2; exit }')"
+          if [ -z "$identity" ]; then
+            echo "::error::The .p12 has no Developer ID Application identity of team 66LJACJ2U7."
+            exit 1
+          fi
+          echo "SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Build and sign Coconut.app
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 scripts/mac_app.py build --output "$RUNNER_TEMP/mac" --version "$VERSION" --identity "$SIGNING_IDENTITY"
+      - name: Notarize and staple
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_P8" ]; then
+            echo "::warning::Notarization skipped: the environment mac-release has no ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8. Gatekeeper refuses this build on other Macs."
+            echo "NOTARIZED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          key="$RUNNER_TEMP/AuthKey.p8"
+          (umask 077; printf '%s\n' "$ASC_KEY_P8" > "$key")
+          python3 scripts/mac_app.py notarize --output "$RUNNER_TEMP/mac" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID"
+          rm -f "$key"
+          echo "NOTARIZED=true" >> "$GITHUB_ENV"
+      - name: Make the archive
+        run: |
+          set -euo pipefail
+          archive="$(python3 scripts/mac_app.py archive --output "$RUNNER_TEMP/mac")"
+          if [ "$NOTARIZED" != true ]; then
+            mv "$archive" "${archive%.zip}-not-notarized.zip"
+            archive="${archive%.zip}-not-notarized.zip"
+          fi
+          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
+          echo "Built $(basename "$archive"), notarized: $NOTARIZED" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Coconut.app
+          path: ${{ env.ARCHIVE }}
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove the temporary keychain
+        if: always()
+        run: |
+          if [ -n "${SIGNING_KEYCHAIN:-}" ]; then
+            security delete-keychain "$SIGNING_KEYCHAIN" || true
+          fi
+          rm -f "$RUNNER_TEMP/identity.p12" "$RUNNER_TEMP/AuthKey.p8"

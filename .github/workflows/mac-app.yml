@@ -7,17 +7,21 @@ on:
     paths:
       - 'mac/**'
       - 'scripts/mac_app.py'
+      - 'scripts/test_mac_app.py'
       - 'scripts/tunnel-sidecar.swift'
       - 'ios/Tunnel/**'
       - '.github/workflows/mac-app.yml'
+      - '.github/workflows/mac-release.yml'
   push:
     branches: [main]
     paths:
       - 'mac/**'
       - 'scripts/mac_app.py'
+      - 'scripts/test_mac_app.py'
       - 'scripts/tunnel-sidecar.swift'
       - 'ios/Tunnel/**'
       - '.github/workflows/mac-app.yml'
+      - '.github/workflows/mac-release.yml'
 
 permissions:
   contents: read
@@ -39,6 +43,7 @@ jobs:
         run: |
           xcodebuild -version
           swift test --package-path mac
+          python3 -m unittest discover -s scripts -p test_mac_app.py
       - name: Build Coconut.app
         run: python3 scripts/mac_app.py build --output "$RUNNER_TEMP/mac"
       - name: Check the bundle

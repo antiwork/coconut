@@ -23,3 +23,15 @@ python3 scripts/mac_app.py build
 ```
 
 The build writes `build/mac/Coconut.app` with an ad-hoc signature.
+
+## Release
+
+The **Mac release** workflow runs on `main` when a person starts it. It runs in the GitHub environment `mac-release`.
+
+1. It imports the Developer ID Application identity into a temporary keychain.
+2. It builds the app and signs each binary with the hardened runtime and a timestamp.
+3. It sends the app to the notary service with `notarytool` and an App Store Connect API key, and staples the ticket.
+4. It keeps `Coconut-<version>-<build>.zip` as a workflow artifact for 30 days.
+
+Without the secrets `ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY_P8`, the workflow skips step 3 and says so.
+The archive then has the suffix `-not-notarized`, and Gatekeeper refuses it on other Macs.
