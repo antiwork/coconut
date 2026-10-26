@@ -74,9 +74,22 @@ class AwaitingUserTests(unittest.TestCase):
         card = dict(id='card', status='pending', sources=[dict(kind='issue', title='Payout', url=URL + '#issuecomment-1')])
         self.assertTrue(coverage(item, binding, tasks, {'card': card}, {}, current))
         card.update(status='executed', decided_at='2026-10-21T07:50:00Z')
+        just_after = datetime(2026, 10, 21, 8, 20, tzinfo=timezone.utc)
+        self.assertTrue(coverage(item, binding, tasks, {'card': card}, {}, just_after))
+        # The answer never reached the source: an hour later the item needs the recorded answer posted.
+        self.assertFalse(coverage(item, binding, tasks, {'card': card}, {}, datetime(2026, 10, 21, 8, 51, tzinfo=timezone.utc)))
+        for status, correction in (('replied', 'Gumclaw decides'), ('rejected', 'Use option B.'), ('approved', '')):
+            card.update(status=status, correction=correction)
+            self.assertTrue(coverage(item, binding, tasks, {'card': card}, {}, just_after))
+            self.assertFalse(coverage(item, binding, tasks, {'card': card}, {}, current))
+        # A rejection with no text means the person chose not to act: nothing to post, and no new card.
+        card.update(status='rejected', correction='')
         self.assertTrue(coverage(item, binding, tasks, {'card': card}, {}, current))
-        card['decided_at'] = '2026-10-21T07:40:00Z'
-        self.assertFalse(coverage(item, binding, tasks, {'card': card}, {}, current))
+        card.update(status='rejected', correction=None)
+        self.assertTrue(coverage(item, binding, tasks, {'card': card}, {}, current))
+        card.pop('correction')
+        card.update(status='executed', decided_at='2026-10-21T07:40:00Z')
+        self.assertFalse(coverage(item, binding, tasks, {'card': card}, {}, just_after))
         card.update(status='dismissed', decided_at=None, _inbox_dismissed_at='2026-10-21T08:00:00Z')
         self.assertTrue(coverage(item, binding, tasks, {'card': card}, {}, current))
         other = dict(id='other', status='pending', sources=[dict(kind='issue', title='Other', url=URL[:-1] + '8')])

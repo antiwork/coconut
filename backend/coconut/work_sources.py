@@ -260,19 +260,33 @@ def _instant(value):
     return instant if instant.tzinfo else instant.replace(tzinfo=timezone.utc)
 
 
-def card_covers(item, binding, decisions, cards):
+# How long an answered card covers an item while the bot posts the answer. An item that still waits for the person
+# after this time never got the answer, so the next audit posts the recorded answer.
+ANSWER_POST_SECONDS = 3600
+
+
+def card_covers(item, binding, decisions, cards, now=None):
     """An item that waits for the person needs a card. Bot work, a delegated check, or a recheck does not answer it.
 
-    A pending card covers the item. So does an answer to a card, or its dismissal, that is not older than the item's
-    latest change, because the bot posts that answer to the source next.
+    A pending card covers the item. So does a dismissal, or a rejection with no text, that is not older than the item's
+    latest change: the person chose not to act, so the bot posts nothing and does not ask again.
+    Any other answer that is not older than the item's latest change covers it for ANSWER_POST_SECONDS, because the
+    bot posts that answer to the source next. The item still waits for the person only while the latest comment is
+    not theirs, so after that time the answer did not reach the source, and the next audit posts it.
     """
     linked = list(cards.get(item['id'], [])) + [decisions[key] for key in binding.get('decision_ids', []) if key in decisions]
     changed = _instant(item.get('updated_at'))
+    now = now or datetime.now(timezone.utc)
     for decision in linked:
         if decision.get('status') == 'pending':
             return True
-        answered = _instant(decision.get('decided_at') or decision.get('_inbox_dismissed_at'))
-        if answered and changed and answered >= changed:
+        answered = _instant(decision.get('decided_at'))
+        declined = decision.get('status') == 'rejected' and not (decision.get('correction') or '').strip()
+        if answered and changed and answered >= changed and (
+                declined or (now - answered).total_seconds() < ANSWER_POST_SECONDS):
+            return True
+        dismissed = _instant(decision.get('_inbox_dismissed_at'))
+        if not answered and dismissed and changed and dismissed >= changed:
             return True
     return False
 
@@ -280,7 +294,8 @@ def card_covers(item, binding, decisions, cards):
 def coverage(item, binding, tasks, decisions, receipts, current, seen=None, *, include_task_decisions=False, native_tasks=None, cards=None):
     """Require a live dependency or an explicit, bounded deferral."""
     if item.get('awaiting_user'):
-        return card_covers(item, binding, decisions, cards if cards is not None else source_cards([item], decisions))
+        return card_covers(item, binding, decisions, cards if cards is not None else source_cards([item], decisions),
+                           current)
     if binding.get('updated_at') != item.get('updated_at'):
         return False
     if any(decisions.get(key, {}).get('status') == 'pending' for key in binding.get('decision_ids', [])):
@@ -628,6 +643,7 @@ class WorkSources:
                             'mark its recommendation, and include the source link in sources. '
                             'A delegated ruling, a scheduled recheck, or a wait for another party does not answer it. '
                             'Do not create a card for a choice that the latest comments already settle. '
+                            'If an answered card below has an answer that is not on the source yet, do not ask again: post that recorded answer now. '
                             + answer_steps(item['id'], item.get('github_type')) + 'Reuse a pending card about this source instead of creating another. '
                             if item.get('awaiting_user') else '')
                         text = ('Reconcile these open assignments against the original sources and existing work. '
