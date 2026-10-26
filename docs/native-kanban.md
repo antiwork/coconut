@@ -149,7 +149,7 @@ The audit reads the latest comment of each labeled item with one GraphQL request
 Bot work, a delegated ruling, or a scheduled recheck does not cover it. The audit tells the bot to ask with one card that links the source, and to deliver the answer as its own Hermes skills say. How to ask, how to post the answer, and whether to close the source after it are the person's workflow, so they live in the bot's own Hermes skills. Coconut ships no workflow of its own. The source data carries `github_type`, so a skill can treat an issue and a pull request differently.
 When the GraphQL read fails, the audit uses its earlier rules.
 
-When a work source command fails, the service logs one warning for the failure streak: `Work source <id> of bot <bot> failed:` with the error class, the exit status or signal, and a fixed hint to run the command by hand in the bot's environment. Command output can hold credentials, so the service neither stores nor logs it. The health check of Care reads this line. When the source works again, the service logs `Work source <id> of bot <bot> works again`. The source state keeps `error_detail` and `failing_since` until then.
+When a work source command fails, the service logs one warning for the failure streak: `Work source <id> of bot <bot> failed:` with the error class, the exit status or signal, and a fixed hint to run the command by hand in the bot's environment. Command output can hold credentials, so the service neither stores nor logs it. A health check of the person's bots can read this line. When the source works again, the service logs `Work source <id> of bot <bot> works again`. The source state keeps `error_detail` and `failing_since` until then.
 
 The work source audit records the source item that it gives a task in `_source_assignment`. A later audit of the same item
 runs in a separate execution, and it can ask the person about that item while the request's card waits archived.
@@ -262,7 +262,7 @@ an outcome settles after 15 minutes, and an outcome after a day.
 At most once in ten minutes, the dispatcher checks for a task that this pass should already have archived, one hour after its due time.
 It also counts the native tasks that no request owns. A task must stay on the list through two reports, ten minutes apart.
 If either count is not zero then, it logs one warning that starts with
-`Coconut and Hermes disagree`. The health check of Care reads this line. The settle pass and the report share `_native_orphans`,
+`Coconut and Hermes disagree`. A health check of the person's bots can read this line. The settle pass and the report share `_native_orphans`,
 so they cannot use different rules.
 
 ## Failure of the worker before its agent exists
