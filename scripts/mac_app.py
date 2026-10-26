@@ -33,6 +33,8 @@ MAC = ROOT / 'mac'
 BUNDLE_ID = 'com.gumroad.coconut.mac'
 MINIMUM_SYSTEM = '14.0'
 ARCHITECTURES = ('arm64', 'x86_64')
+# The update feed serves each archive as a Workers Static Asset, and Cloudflare accepts at most 25 MiB per file.
+ARCHIVE_LIMIT = 25 * 1024 * 1024
 
 
 def run(arguments: list, **options) -> subprocess.CompletedProcess:
@@ -114,10 +116,16 @@ def sign(app: Path, identity: str) -> None:
     run(['codesign', '--verify', '--deep', '--strict', app])
 
 
-def archive(app: Path, destination: Path) -> Path:
-    """Zip the app with ditto, which keeps the signature, the stapled ticket and the symbolic links."""
+def archive(app: Path, destination: Path, limit: int | None = None) -> Path:
+    """Zip the app with ditto, which keeps the signature, the stapled ticket and the symbolic links.
+
+    With a limit, a larger archive stops the release.
+    """
     destination.unlink(missing_ok=True)
     run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app, destination])
+    if limit is not None and (size := destination.stat().st_size) > limit:
+        raise SystemExit(f'{destination.name} has {size / 1048576:.1f} MiB. The update feed accepts at most '
+                         f'{limit / 1048576:.0f} MiB for each file.')
     return destination
 
 
@@ -176,7 +184,7 @@ def main() -> None:
         print('Notarized and stapled ' + str(output / 'Coconut.app'))
     else:
         app = output / 'Coconut.app'
-        print(archive(app, output / archive_name(app)))
+        print(archive(app, output / archive_name(app), ARCHIVE_LIMIT))
 
 
 if __name__ == '__main__':

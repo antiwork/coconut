@@ -40,6 +40,17 @@ class MacAppTests(unittest.TestCase):
     def test_the_archive_name_has_the_version_and_the_build(self):
         self.assertEqual(mac_app.archive_name(self.app), 'Coconut-1.2.0-512.zip')
 
+    def test_an_archive_over_the_limit_stops_the_release(self):
+        def zip_file(arguments):
+            Path(arguments[-1]).write_bytes(b'x' * 2048)
+        with mock.patch.object(mac_app, 'run', side_effect=zip_file):
+            self.assertEqual(mac_app.archive(self.app, self.folder / 'a.zip', 4096).stat().st_size, 2048)
+            with self.assertRaisesRegex(SystemExit, 'at most'):
+                mac_app.archive(self.app, self.folder / 'b.zip', 1024)
+            # The temporary archive for the notary service has no limit.
+            mac_app.archive(self.app, self.folder / 'c.zip')
+        self.assertEqual(mac_app.ARCHIVE_LIMIT, 25 * 1024 * 1024)
+
     def test_a_release_signature_signs_the_helpers_first_with_the_hardened_runtime_and_a_timestamp(self):
         with mock.patch.object(mac_app, 'run') as run:
             mac_app.sign(self.app, 'ABCDEF')

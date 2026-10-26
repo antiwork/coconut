@@ -55,6 +55,9 @@ jobs:
             test "$(lipo -archs "$binary")" = 'x86_64 arm64'
           done
           codesign --verify --deep --strict "$app"
+          # The archive must fit the 25 MiB limit of the update feed. The command fails above the limit.
+          archive="$(python3 scripts/mac_app.py archive --output "$RUNNER_TEMP/mac")"
+          echo "$(basename "$archive"): $(du -h "$archive" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
           "$app/Contents/Helpers/coconut" version
           # Without an install, the tool reports that, and it reads the files of an install.
           COCONUT_INSTALL_DIR="$RUNNER_TEMP/none" "$app/Contents/Helpers/coconut" status | grep -q '"service" : "not_installed"'
