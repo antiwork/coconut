@@ -20,6 +20,7 @@ final class AppModel: ObservableObject {
     // read the same preference.
     let install = Install.standard(environment: [:])
     private var timer: Timer?
+    private var couldRegister = false
 
     init() {
         UserDefaults.standard.register(defaults: [Self.startAtLoginKey: true])
@@ -55,6 +56,10 @@ final class AppModel: ObservableObject {
         if status != self.status { self.status = status }
         let legacyAgents = LegacyAgents.present()
         if legacyAgents != self.legacyAgents { self.legacyAgents = legacyAgents }
+        // Coconut can be installed, or the earlier LaunchAgents removed, while the app runs. Register then.
+        let canRegister = legacyAgents.isEmpty && status.service != .notInstalled
+        if canRegister && !couldRegister { registerIfNeeded() }
+        couldRegister = canRegister
         let loginItems = Dictionary(uniqueKeysWithValues: Agent.allCases.map { ($0, SMAppService.agent(plistName: $0.plistName).status) })
         if loginItems != self.loginItems { self.loginItems = loginItems }
     }

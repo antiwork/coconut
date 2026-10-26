@@ -550,6 +550,17 @@ class HostLifecycleTests(unittest.TestCase):
         self.assertIn('Restore its LaunchAgent with:', str(raised.exception))
         self.assertEqual(self.path.read_bytes(), previous)
 
+    def test_the_update_does_not_stop_a_service_of_the_app_login_item(self):
+        loaded = subprocess.CompletedProcess([], 0, 'state = running\n', '')
+        with patch.object(host, 'owned_agent', return_value=(self.path, False)), \
+             patch.object(host, 'owned_process', return_value=(4242, self.options)), \
+             patch.object(host.subprocess, 'run', return_value=loaded) as run, \
+             patch.object(host, 'stop_owned_process') as stop:
+            with self.assertRaisesRegex(SystemExit, 'Coconut.app runs this service'):
+                host.stop_for_update()
+            stop.assert_not_called()
+        self.assertTrue(run.call_args.args[0][2].endswith('/com.gumroad.coconut.service'))
+
     def test_manual_stop_retains_launch_options(self):
         with patch.object(host, 'owned_agent', return_value=(self.path, False)), \
              patch.object(host, 'owned_process', return_value=(4242, self.options)), \

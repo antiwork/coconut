@@ -29,8 +29,8 @@ public struct Status: Codable, Equatable {
 }
 
 public struct StatusReader {
-    /// The main listener of the service. After the relay-only change, it serves plain HTTP on 127.0.0.1 only.
-    public static let healthURL = URL(string: "http://127.0.0.1:8960/health")!
+    /// The tunnel listener of the service, which the relay sidecar uses. It serves plain HTTP on 127.0.0.1 (host.TUNNEL_PORT).
+    public static let healthURL = URL(string: "http://127.0.0.1:8961/health")!
 
     public let install: Install
     public let fileManager: FileManager

@@ -523,8 +523,21 @@ def drain_for_update(timeout: float = DRAIN_SECONDS) -> bool:
     return False
 
 
+def login_item_loaded() -> bool:
+    try:
+        return subprocess.run(['launchctl', 'print', f'gui/{os.getuid()}/{LOGIN_ITEM_LABEL}'],
+                              capture_output=True, text=True).returncode == 0
+    except OSError:
+        # No launchctl, for example on the Linux CI runner: no login item either.
+        return False
+
+
 def stop_for_update() -> dict:
     path, loaded = owned_agent()
+    if not loaded and login_item_loaded():
+        # launchd would start the service again while the update replaces its files.
+        raise SystemExit("Coconut.app runs this service with its login item. Update Coconut with Coconut.app. "
+                         "Its source and data remain unchanged.")
     process = owned_process()
     state = {"mode": "managed" if loaded else "manual" if process else "stopped",
              "project": str(ROOT), "data_dir": str(DEFAULT_DATA)}
