@@ -374,6 +374,7 @@ struct MessageBubble: View {
     @State private var actionsOpen = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ScaledMetric(relativeTo: .body) private var actionsWidth = 280
+    @State private var rowWidth: CGFloat = .infinity
     let message: Message
     var scrollToDecision: (String) -> Void = { _ in }
     var onReply: (() -> Void)? = nil
@@ -455,7 +456,9 @@ struct MessageBubble: View {
                     Button { UIPasteboard.general.string = message.text; actionsOpen = false } label: {
                         Label("Copy", systemImage: "doc.on.doc").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     }
-                }.buttonStyle(.plain).padding(12).frame(width: actionsWidth)
+                }.buttonStyle(.plain).padding(12)
+                    // Large text widens the menu, but never past the transcript.
+                    .frame(width: min(actionsWidth, rowWidth))
                     .presentationCompactAdaptation(.popover)
             }
                 let reactions = store.reactions(for: message)
@@ -474,6 +477,7 @@ struct MessageBubble: View {
             }
             if !isUser { Spacer(minLength: 18) }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rowWidth = $0 }
         .offset(x: replyOffset)
         .background(alignment: .leading) {
             Image(systemName: "arrowshape.turn.up.left.fill").font(.body)
