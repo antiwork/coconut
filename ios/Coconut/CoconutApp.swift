@@ -114,8 +114,8 @@ struct CoconutHome: View {
         .fullScreenCover(isPresented: $onboardingOpen) { OnboardingView(start: .pair, firstRun: onboardingFirstRun) }
         .onAppear { if OnboardingView.showsOnLaunch(store) { onboardingFirstRun = true; onboardingOpen = true } }
         .onChange(of: store.setupLink, initial: true) { _, link in
-            // A tapped setup link opens the pairing page, unless onboarding already shows.
-            guard link != nil, !onboardingOpen else { return }
+            // A tapped pairing link opens the pairing page. A pairing page that shows, also one from Settings, takes the link itself.
+            guard link != nil, !onboardingOpen, !OnboardingView.isOpen else { return }
             onboardingFirstRun = false
             let sheetOpen = settingsOpen || createOpen
             settingsOpen = false

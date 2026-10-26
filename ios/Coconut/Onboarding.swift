@@ -11,6 +11,9 @@ enum OnboardingStep: Int, Hashable, Comparable {
 // illustration, and one primary action. The Mac copies only what the person chooses.
 struct OnboardingView: View {
     static let completedKey = "coconut.onboarding.completed"
+    // The number of pairing pages on screen. A page that shows takes a tapped pairing link itself.
+    private(set) static var openCount = 0
+    static var isOpen: Bool { openCount > 0 }
 
     private enum SetupLoad: Equatable {
         case loading
@@ -134,7 +137,11 @@ struct OnboardingView: View {
         .sheet(isPresented: $pasteOpen) {
             PastePairingSetupView { payload in try parseSetup(payload) }
         }
-        .onDisappear { action?.cancel() }
+        .onAppear { Self.openCount += 1 }
+        .onDisappear {
+            Self.openCount -= 1
+            action?.cancel()
+        }
         .accessibilityIdentifier("onboarding")
     }
 

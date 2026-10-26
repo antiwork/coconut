@@ -39,6 +39,34 @@ final class SettingsFlowTests: XCTestCase {
         XCTAssertNil(BotAutosave.changes(draft, comparedTo: original))
     }
 
+    func testAnEditDuringASaveSurvivesTheSaveReply() throws {
+        let original = try decodedBot()
+        var submitted = original
+        submitted.notifications = false
+        // The person turns notifications on again while the first save runs.
+        var draft = submitted
+        draft.notifications = true
+        draft.instructions = "Read the release notes."
+
+        let merged = BotAutosave.merge(draft: draft, baseline: submitted, into: submitted)
+        XCTAssertTrue(merged.notifications)
+        XCTAssertEqual(merged.instructions, "Read the release notes.")
+        let pending = try XCTUnwrap(BotAutosave.changes(merged, comparedTo: submitted))
+        XCTAssertEqual(Set(try encodedObject(BotPatch(updated: pending, original: submitted)).keys), ["instructions", "notifications"])
+    }
+
+    func testTheMacValueWinsForFieldsThatThePersonDidNotEdit() throws {
+        let original = try decodedBot()
+        var current = original
+        current.name = "Researcher"
+        var draft = original
+        draft.color = "112233"
+
+        let merged = BotAutosave.merge(draft: draft, baseline: original, into: current)
+        XCTAssertEqual(merged.name, "Researcher")
+        XCTAssertEqual(merged.color, "112233")
+    }
+
     // MARK: Connection banner
 
     func testLegacyPairingAsksToPairAgainWhileConnected() {

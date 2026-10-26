@@ -12,6 +12,8 @@ struct BotSettingsView: View {
     @State private var deleteOpen = false
     @State private var saving = false
     @State private var saveAgain = false
+    // The bot that the running save sent. Edits after it stay in the draft when the reply arrives.
+    @State private var submitted: Bot?
 
     var body: some View {
         Form {
@@ -93,13 +95,15 @@ struct BotSettingsView: View {
 
     // One save at a time. A change during a save starts one more save after it.
     private func save() {
-        guard let draft, let original, let pending = BotAutosave.changes(draft, comparedTo: original) else { return }
         guard !saving else { saveAgain = true; return }
+        guard let draft, let original, let pending = BotAutosave.changes(draft, comparedTo: original) else { return }
         saving = true
+        submitted = pending
         Task {
             await store.updateBot(pending, comparedTo: original)
-            saving = false
             if store.error == nil, let current = store.bots.first(where: { $0.id == botId }) { refreshDraft(current) }
+            submitted = nil
+            saving = false
             if saveAgain {
                 saveAgain = false
                 save()
@@ -109,12 +113,9 @@ struct BotSettingsView: View {
 
     private func refreshDraft(_ current: Bot) {
         var updated = current
-        if let draft, let original {
-            let fields: [WritableKeyPath<Bot, String>] = [\.name, \.instructions, \.avatar, \.color]
-            for field in fields where draft[keyPath: field] != original[keyPath: field] {
-                updated[keyPath: field] = draft[keyPath: field]
-            }
-            if draft.notifications != original.notifications { updated.notifications = draft.notifications }
+        // During a save, the draft keeps only the edits made after the save started.
+        if let draft, let baseline = submitted ?? original {
+            updated = BotAutosave.merge(draft: draft, baseline: baseline, into: current)
         }
         draft = updated
         original = current
@@ -131,6 +132,17 @@ enum BotAutosave {
         var pending = draft
         if pending.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { pending.name = original.name }
         return BotPatch(updated: pending, original: original).isEmpty ? nil : pending
+    }
+
+    // The bot from the Mac, with each draft field that differs from the baseline kept as the person left it.
+    static func merge(draft: Bot, baseline: Bot, into current: Bot) -> Bot {
+        var updated = current
+        let fields: [WritableKeyPath<Bot, String>] = [\.name, \.instructions, \.avatar, \.color]
+        for field in fields where draft[keyPath: field] != baseline[keyPath: field] {
+            updated[keyPath: field] = draft[keyPath: field]
+        }
+        if draft.notifications != baseline.notifications { updated.notifications = draft.notifications }
+        return updated
     }
 }
 

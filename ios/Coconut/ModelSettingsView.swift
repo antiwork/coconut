@@ -205,7 +205,8 @@ struct ModelSettingsView: View {
                 accepted = false
             }
             saving = false
-            if accepted && store.error == nil { load() }
+            // A failed save returns the page to the saved choice, so choosing the same model again retries it.
+            load()
         }
     }
 
