@@ -139,11 +139,14 @@ struct PairingSetup: Equatable, Sendable {
 enum PairingSetupError: LocalizedError, Equatable {
     case invalidPayload, unsupportedVersion, legacyLink, damagedLink, invalidRelay, invalidRoute, invalidKey, invalidName
 
+    // A version 1 link or pairing used Tailscale and a TLS certificate.
+    static let legacyMessage = "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link."
+
     var errorDescription: String? {
         switch self {
         case .invalidPayload: "This is not a Coconut pairing link. Ask your Hermes for a new pairing link."
         case .unsupportedVersion: "This pairing link needs a different Coconut version. Update the app and try again."
-        case .legacyLink: "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link."
+        case .legacyLink: Self.legacyMessage
         case .invalidRelay: "The pairing link has an invalid relay address. Ask your Hermes for a new pairing link."
         case .damagedLink, .invalidRoute, .invalidKey: "The pairing link is damaged. Ask your Hermes for a new pairing link."
         case .invalidName: "The pairing link has an invalid Mac name. Ask your Hermes for a new pairing link."

@@ -18,106 +18,26 @@ enum ServiceError: LocalizedError {
     }
 }
 
-enum ConnectionFailure {
-    static func message(for error: URLError, serverURL: String) -> String {
-        let host = URLComponents(string: serverURL)?.host?.lowercased() ?? ""
-        let access = host.hasSuffix(".ts.net")
-            ? "Check that Tailscale is connected on this iPhone and your Mac."
-            : "Check network access to your Mac."
-        let message: String
-        let category: String
-        if error.networkUnavailableReason == .cellular || error.code == .dataNotAllowed {
-            message = "iOS did not allow cellular data for this request. Check Coconut’s cellular access in Settings."
-            category = "Cellular"
-        } else {
-            switch error.code {
-            case .cannotFindHost, .dnsLookupFailed:
-                message = "The phone cannot resolve the Mac address. " + access
-                category = "DNS"
-            case .cannotConnectToHost:
-                message = "The phone cannot connect to the Mac at this address and port. " + access
-                category = "Connection"
-            case .notConnectedToInternet:
-                message = "The phone has no usable network connection for this request. " + access
-                category = "Network"
-            case .timedOut:
-                message = "The Mac did not respond in time. " + access
-                category = "Timeout"
-            case .networkConnectionLost:
-                message = "The connection ended during the request. Reconnect to check the current state."
-                category = "Interrupted"
-            case .internationalRoamingOff:
-                message = "iOS did not allow this request while roaming. Check cellular settings or connect to Wi-Fi."
-                category = "Roaming"
-            case .appTransportSecurityRequiresSecureConnection:
-                message = "iOS rejected the connection under its transport security rules. Check the Mac’s HTTPS setup."
-                category = "Security"
-            case .serverCertificateHasBadDate, .serverCertificateNotYetValid:
-                message = "The Mac certificate is outside its valid dates. Check both device clocks and the certificate expiry."
-                category = "Certificate"
-            case .serverCertificateUntrusted, .serverCertificateHasUnknownRoot,
-                    .secureConnectionFailed, .clientCertificateRejected, .clientCertificateRequired:
-                message = "The secure connection failed. Check the Mac address and certificate fingerprint."
-                category = "TLS"
-            case .userCancelledAuthentication:
-                message = "Authentication was cancelled. Reconnect to try again."
-                category = "Authentication"
-            case .cancelled:
-                // URLSession also returns this code when the certificate pin check rejects the peer.
-                message = "The connection was cancelled. Check the Mac certificate fingerprint, then reconnect."
-                category = "Cancelled"
-            default:
-                message = "The request to your Mac failed. Reconnect to check the current state."
-                category = "Request"
-            }
-        }
-        return message + " (\(category) \(error.code.rawValue))"
-    }
-
-    static func diagnostic(for error: URLError) -> String {
-        var result = "URL error \(error.code.rawValue)"
-        if let reason = error.networkUnavailableReason { result += "; network reason \(reason.rawValue)" }
-        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError {
-            let domains = [NSURLErrorDomain, NSPOSIXErrorDomain, NSOSStatusErrorDomain, "kCFErrorDomainCFNetwork"]
-            let domain = domains.contains(underlying.domain) ? underlying.domain : "other"
-            result += "; underlying \(domain) \(underlying.code)"
-        }
-        return result
-    }
-}
-
 final class APIClient: @unchecked Sendable {
     private enum Transport {
-        // A version 1 pairing: TLS with a pinned certificate, through Tailscale. R5 removes it.
-        case tls(baseURL: URL, session: URLSession, foregroundSession: URLSession)
-        // A version 2 pairing: the end-to-end encrypted relay tunnel.
+        // The end-to-end encrypted relay tunnel of a version 2 pairing.
         case tunnel(TunnelConnection)
+        #if DEBUG && targetEnvironment(simulator)
+        // The test servers and scripts/desktop.py: plain HTTP on the Mac's loopback, which the simulator shares.
+        case loopback(baseURL: URL, session: URLSession, foregroundSession: URLSession)
+        #endif
     }
 
     private let transport: Transport
     private let token: String?
 
-    init(serverURL: String, fingerprint: String, token: String?) throws {
+    #if DEBUG && targetEnvironment(simulator)
+    init(loopback serverURL: String, token: String?) throws {
         guard let components = URLComponents(string: serverURL.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let host = components.host, !host.isEmpty,
-              components.user == nil, components.password == nil,
-              components.query == nil, components.fragment == nil,
-              components.path.isEmpty || components.path == "/",
-              let url = components.url else {
-            throw ServiceError.configuration("Enter the Mac address, including https:// and its port.")
-        }
-        let pin = Self.normalizeFingerprint(fingerprint)
-        var allowLoopbackHTTP = false
-        #if targetEnvironment(simulator) && DEBUG
-        allowLoopbackHTTP = components.scheme == "http" && ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host)
-        #endif
-        guard components.scheme == "https" || allowLoopbackHTTP else {
-            throw ServiceError.configuration("Pairing requires HTTPS. Use the secure address shown on your Mac.")
-        }
-        if !allowLoopbackHTTP {
-            guard pin.count == 64, pin.allSatisfy({ $0.isHexDigit && $0.isASCII }) else {
-                throw ServiceError.configuration("Enter the full SHA-256 certificate fingerprint shown on your Mac.")
-            }
+              components.scheme == "http", let host = components.host, ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host),
+              components.user == nil, components.password == nil, components.query == nil, components.fragment == nil,
+              components.path.isEmpty || components.path == "/", let url = components.url else {
+            throw ServiceError.configuration("Use an http:// address on this Mac's loopback.")
         }
         self.token = token
         let config = URLSessionConfiguration.ephemeral
@@ -127,13 +47,13 @@ final class APIClient: @unchecked Sendable {
         config.httpCookieStorage = nil
         config.httpShouldSetCookies = false
         config.waitsForConnectivity = true
-        let session = URLSession(configuration: config, delegate: PinDelegate(host: host, fingerprint: pin), delegateQueue: nil)
+        let session = URLSession(configuration: config)
         config.timeoutIntervalForRequest = 4
         config.timeoutIntervalForResource = 6
         config.waitsForConnectivity = false
-        let foregroundSession = URLSession(configuration: config, delegate: PinDelegate(host: host, fingerprint: pin), delegateQueue: nil)
-        transport = .tls(baseURL: url, session: session, foregroundSession: foregroundSession)
+        transport = .loopback(baseURL: url, session: session, foregroundSession: URLSession(configuration: config))
     }
+    #endif
 
     // The clients of one pairing share its connection, so the app keeps one socket.
     init(tunnel: TunnelConnection, token: String?) {
@@ -141,16 +61,14 @@ final class APIClient: @unchecked Sendable {
         self.token = token
     }
 
+    #if DEBUG && targetEnvironment(simulator)
     deinit {
-        if case .tls(_, let session, let foregroundSession) = transport {
+        if case .loopback(_, let session, let foregroundSession) = transport {
             session.invalidateAndCancel()
             foregroundSession.invalidateAndCancel()
         }
     }
-
-    static func normalizeFingerprint(_ value: String) -> String {
-        value.lowercased().filter { !$0.isWhitespace && $0 != ":" }
-    }
+    #endif
 
     func request<Response: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil,
                                       idempotencyKey: String? = nil, retryTransient: Bool = true,
@@ -193,9 +111,10 @@ final class APIClient: @unchecked Sendable {
                     try await Task.sleep(for: .milliseconds(400))
                 }
             }
-        case .tls(_, let session, let foregroundSession):
-            let request = try makeRequest(path, method: method, body: body, idempotencyKey: idempotencyKey,
-                                          fullState: fullState)
+        #if DEBUG && targetEnvironment(simulator)
+        case .loopback(let baseURL, let session, let foregroundSession):
+            let request = try makeLoopbackRequest(baseURL, path, method: method, body: body, idempotencyKey: idempotencyKey,
+                                                  fullState: fullState)
             for attempt in 0...1 {
                 do {
                     let (data, response) = try await (shortRead ? foregroundSession : session).data(for: request)
@@ -205,6 +124,7 @@ final class APIClient: @unchecked Sendable {
                     try await Task.sleep(for: .milliseconds(400))
                 }
             }
+        #endif
         }
         throw ServiceError.invalidResponse
     }
@@ -217,10 +137,10 @@ final class APIClient: @unchecked Sendable {
         return data
     }
 
-    func makeRequest(_ path: String, method: String = "GET", body: Data? = nil,
-                     idempotencyKey: String? = nil, fullState: Bool = false) throws -> URLRequest {
-        guard case .tls(let baseURL, _, _) = transport,
-              let url = URL(string: "/v1/" + path, relativeTo: baseURL)?.absoluteURL,
+    #if DEBUG && targetEnvironment(simulator)
+    private func makeLoopbackRequest(_ baseURL: URL, _ path: String, method: String, body: Data?,
+                                     idempotencyKey: String?, fullState: Bool) throws -> URLRequest {
+        guard let url = URL(string: "/v1/" + path, relativeTo: baseURL)?.absoluteURL,
               url.host == baseURL.host, url.scheme == baseURL.scheme, url.port == baseURL.port else {
             throw ServiceError.configuration("The service route is invalid.")
         }
@@ -232,6 +152,11 @@ final class APIClient: @unchecked Sendable {
         }
         return request
     }
+
+    private static func canRetry(_ error: URLError) -> Bool {
+        [.networkConnectionLost, .timedOut, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet].contains(error.code)
+    }
+    #endif
 
     func makeTunnelRequest(_ path: String, method: String = "GET", body: Data? = nil,
                            idempotencyKey: String? = nil, fullState: Bool = false) throws -> TunnelRequest {
@@ -267,54 +192,7 @@ final class APIClient: @unchecked Sendable {
         return headers
     }
 
-    private static func canRetry(_ error: URLError) -> Bool {
-        [.networkConnectionLost, .timedOut, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .notConnectedToInternet].contains(error.code)
-    }
-
     private struct ErrorBody: Decodable { let error: String }
-}
-
-private final class PinDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate, @unchecked Sendable {
-    let host: String
-    let fingerprint: String
-
-    init(host: String, fingerprint: String) {
-        self.host = host.lowercased()
-        self.fingerprint = fingerprint
-    }
-
-    func urlSession(_ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
-                    completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
-        guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,
-              challenge.protectionSpace.host.lowercased() == host,
-              let trust = challenge.protectionSpace.serverTrust,
-              let chain = SecTrustCopyCertificateChain(trust) as? [SecCertificate],
-              let certificate = chain.first else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
-        let digest = SHA256.hash(data: SecCertificateCopyData(certificate) as Data)
-            .map { String(format: "%02x", $0) }.joined()
-        guard digest == fingerprint else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
-        // Pinning permits a private certificate while retaining host and expiry checks.
-        SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host as CFString))
-        SecTrustSetAnchorCertificates(trust, [certificate] as CFArray)
-        SecTrustSetAnchorCertificatesOnly(trust, true)
-        guard SecTrustEvaluateWithError(trust, nil) else {
-            completionHandler(.cancelAuthenticationChallenge, nil)
-            return
-        }
-        completionHandler(.useCredential, URLCredential(trust: trust))
-    }
-
-    func urlSession(_ session: URLSession, task: URLSessionTask,
-                    willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
-                    completionHandler: @escaping (URLRequest?) -> Void) {
-        completionHandler(nil)
-    }
 }
 
 // One generic password in the Keychain, readable only on this device while it is unlocked.

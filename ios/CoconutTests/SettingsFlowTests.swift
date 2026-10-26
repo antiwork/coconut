@@ -121,14 +121,13 @@ final class SettingsFlowTests: XCTestCase {
 
     // MARK: Connection banner
 
-    func testLegacyPairingAsksToPairAgainWhileConnected() {
-        let notice = ConnectionState.connected.notice(legacyPairing: true)
-        XCTAssertEqual(notice?.offersPairing, true)
-        XCTAssertEqual(notice?.message, "Pair this iPhone again with a new pairing link from your Hermes.")
-    }
-
-    func testLegacyPairingAsksToPairAgainWhileDisconnected() {
-        XCTAssertEqual(ConnectionState.disconnected.notice(legacyPairing: true)?.offersPairing, true)
+    func testLegacyPairingSaysThatTailscaleIsNoLongerNeeded() {
+        // A version 1 pairing cannot connect, so it ends in needsRepair. The banner names the reason.
+        for state in [ConnectionState.needsRepair, .disconnected, .connecting] {
+            let notice = state.notice(legacyPairing: true)
+            XCTAssertEqual(notice?.offersPairing, true)
+            XCTAssertEqual(notice?.message, "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link.")
+        }
     }
 
     func testDisconnectedHasABannerWithoutPair() {

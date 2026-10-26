@@ -616,12 +616,10 @@ enum ConnectionState: String, Sendable {
         }
     }
 
-    // A version 1 pairing works until the person pairs again. The banner asks for a new link and offers Pair.
+    // A version 1 pairing used Tailscale and cannot connect. The banner asks for a new link and offers Pair.
     func notice(legacyPairing: Bool) -> ConnectionNotice? {
+        if legacyPairing { return ConnectionNotice(message: PairingSetupError.legacyMessage, offersPairing: true) }
         if self == .needsRepair, let bannerMessage { return ConnectionNotice(message: bannerMessage, offersPairing: true) }
-        if legacyPairing {
-            return ConnectionNotice(message: "Pair this iPhone again with a new pairing link from your Hermes.", offersPairing: true)
-        }
         return bannerMessage.map { ConnectionNotice(message: $0, offersPairing: false) }
     }
 }

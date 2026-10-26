@@ -157,11 +157,14 @@ final class PairingSetupTests: XCTestCase {
 
     // MARK: Saved pairings
 
-    func testVersionOnePairingFileStillLoads() throws {
+    func testVersionOnePairingFileLoadsAsALegacyPairing() throws {
+        // The phone keeps the pairing, so the app can ask for a new pairing link instead of starting over.
         let saved = Data(#"{"serverURL":"https://mac.tail1.ts.net:8960","fingerprint":"\#(String(repeating: "a", count: 64))","deviceId":"phone"}"#.utf8)
         let pairing = try JSONDecoder().decode(PairingConfiguration.self, from: saved)
         XCTAssertFalse(pairing.usesTunnel)
+        XCTAssertTrue(pairing.isLegacy)
         XCTAssertNil(pairing.tunnelEndpoint)
+        // A pending checkout recovery from before the relay still matches, so Settings keeps its warning.
         XCTAssertEqual(pairing.checkoutIdentity, CheckoutRecoveryPairing(deviceId: "phone", route: "https://mac.tail1.ts.net:8960",
                                                                          macKey: String(repeating: "a", count: 64)))
     }

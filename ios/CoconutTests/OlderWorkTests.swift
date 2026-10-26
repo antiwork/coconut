@@ -4,12 +4,11 @@ import Network
 
 final class OlderWorkTests: XCTestCase {
     func testRecentStateAndUpdatesAskForRecentWork() throws {
-        let client = try APIClient(serverURL: "https://mac.example:443", fingerprint: String(repeating: "a", count: 64),
-                                   token: "fixture-token")
-        XCTAssertEqual(try client.makeRequest("state").value(forHTTPHeaderField: "X-Coconut-Work"), "recent")
-        XCTAssertEqual(try client.makeRequest("updates?after=3&wait=20").value(forHTTPHeaderField: "X-Coconut-Work"), "recent")
-        XCTAssertNil(try client.makeRequest("state", fullState: true).value(forHTTPHeaderField: "X-Coconut-Work"))
-        XCTAssertNil(try client.makeRequest("cards/card").value(forHTTPHeaderField: "X-Coconut-Work"))
+        let client = APIClient.unconnected(token: "fixture-token")
+        XCTAssertEqual(try client.makeTunnelRequest("state").headers["X-Coconut-Work"], "recent")
+        XCTAssertEqual(try client.makeTunnelRequest("updates?after=3&wait=20").headers["X-Coconut-Work"], "recent")
+        XCTAssertNil(try client.makeTunnelRequest("state", fullState: true).headers["X-Coconut-Work"])
+        XCTAssertNil(try client.makeTunnelRequest("cards/card").headers["X-Coconut-Work"])
     }
 
     @MainActor
@@ -48,8 +47,7 @@ final class OlderWorkTests: XCTestCase {
         let savedFiles = paths.map { try? Data(contentsOf: $0) }
         // Start without a saved state, so the store reads only this fixture.
         for path in paths { try? FileManager.default.removeItem(at: path) }
-        let variables = ["COCONUT_SERVER_URL": address,
-                         "COCONUT_CERT_SHA256": String(repeating: "0", count: 64), "COCONUT_DEVICE_TOKEN": "fixture-only"]
+        let variables = ["COCONUT_SERVER_URL": address, "COCONUT_DEVICE_TOKEN": "fixture-only"]
         let previous = ProcessInfo.processInfo.environment
         for (key, value) in variables { setenv(key, value, 1) }
         let store = AppStore(demo: false)
