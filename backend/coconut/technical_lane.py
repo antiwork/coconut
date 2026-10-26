@@ -15,20 +15,37 @@ The lane binds its own turns. Its holds apply to every lane turn of the owner's 
 when the question is answered, withdrawn, resolved, or deleted during the turn. A lane turn whose question ended cannot
 finish the outcome: it returns the owner to the question's resume. Before the next turn, the dispatcher moves the owner
 to a normal turn that resumes the question. That grants nothing: the normal task, decision, and pause rules apply.
+
+A declined merge is a second, narrower gate. A person can decline a merge card, and its answer can pause the whole
+outcome. The requester then also names the card's exact merge_pr_url. The card must be a native merge question that a
+person rejected without an option or text, and it must be the only pause of every Work item of the owner, with no new
+direction since. The owner must be finished and idle in native triage, blocked, or scheduled. The decline stays as it
+is, and so does the pause. The lane lifts the automatic pause only for its own turns, with the same holds as above. A
+finished lane turn returns the owner to its earlier status and parks the native card in scheduled, so nothing
+completes, retries, or replays the decline. If the decline or the pause ends, the owner leaves the lane through a
+normal turn, which the normal pause rules hold. Nothing resumes the declined decision.
 """
 import json
 
 SCOPES = ('diagnosis', 'tests', 'local_fixes')
+URL_LIMIT = 500
+# Actors that the service records for its own rejections, such as a task stop. They are not a person's decline.
+SYSTEM_DECIDERS = frozenset({'cancellation', 'archive', 'workflow_permission', 'local'})
 
 SCHEMA = {
     'type': 'object', 'additionalProperties': False,
     'description': 'Optional. Continue only already-authorized local technical work while one existing question stays '
         'pending. Give its exact ID and current revision, and only the scopes that the person already authorized. '
-        'The owner must wait on that question in native review. This grants no permission and is not a sandbox. '
+        'The owner must wait on that question in native review. Or, with declined_merge_pr_url, continue a finished '
+        'outcome that a person’s declined merge card pauses. This grants no permission and is not a sandbox. '
         'Publication, pushes, ready, and merge stay with the person.',
     'properties': {
         'decision_id': {'type': 'string'},
         'decision_revision': {'type': 'integer'},
+        'declined_merge_pr_url': {'type': 'string', 'maxLength': URL_LIMIT, 'description':
+            'Only for a merge card that a person declined and whose answer pauses this work. Give its exact '
+            'merge_pr_url. decision_id and decision_revision then name that declined card. The decline and the pause '
+            'stay. The merge, and everything the card asked to approve, stays refused.'},
         'scope': {'type': 'array', 'minItems': 1, 'uniqueItems': True, 'items': {'type': 'string', 'enum': list(SCOPES)}},
         'authorization_decision_id': {'type': 'string', 'description':
             'Required with local_fixes, and only then. The ID of the question in this execution that a person approved '
@@ -54,13 +71,21 @@ def instructions(lane):
     limit = '' if 'local_fixes' in scope else 'Do not change product code. Report what a fix needs. '
     approved = ('The person approved this recorded choice. It is the whole fix scope: '
                 + json.dumps(lane['authorization'], ensure_ascii=False) + ' ') if 'local_fixes' in scope else ''
-    return ('Independent technical work. The pending decision below stays pending for the person. '
+    if lane.get('declined_merge_pr_url'):
+        # The recorded card names what stays refused. Nothing in it is read as permission.
+        held = ('The person declined this recorded decision, and its answer pauses this work: '
+                + json.dumps(lane.get('declined', {}), ensure_ascii=False) + ' The decline and the pause stay. Do not do '
+                  'anything that it asked the person to approve, in any environment. ')
+        until, back = 'until the person gives new direction', 'to its pause'
+    else:
+        held, until, back = 'The pending decision below stays pending for the person. ', 'until the person answers', 'to the decision'
+    return ('Independent technical work. ' + held
             + ' '.join(SCOPE_INSTRUCTIONS[item] for item in scope) + ' ' + limit + approved
             + 'Work only on this Mac. Do not push, publish, comment on or edit the PR or issue, mark it ready, merge, '
               'deploy, or answer or change any decision. Your local tools keep full access, so these limits are yours to '
               'keep. This lane grants no new permission. Coconut holds Kanban completion and board changes, bot messages, '
-              'routines, new cards, and decision answers until the person answers. Record verified progress with '
-              'kanban_comment on your own task, then finish the turn. Coconut returns this outcome to the decision.\n')
+              'routines, new cards, and decision answers ' + until + '. Record verified progress with '
+              'kanban_comment on your own task, then finish the turn. Coconut returns this outcome ' + back + '.\n')
 
 
 # Native actions that change the outcome lifecycle, the board, other bots, or routines. Local tools are not listed.
@@ -82,20 +107,47 @@ def requested(payload):
     lane = payload['independent_technical_work']
     scope = lane.get('scope') if isinstance(lane, dict) else None
     fixes = isinstance(scope, list) and 'local_fixes' in scope
-    keys = {'decision_id', 'decision_revision', 'scope'} | ({'authorization_decision_id'} if fixes else set())
+    declined = isinstance(lane, dict) and 'declined_merge_pr_url' in lane
+    keys = ({'decision_id', 'decision_revision', 'scope'} | ({'authorization_decision_id'} if fixes else set())
+            | ({'declined_merge_pr_url'} if declined else set()))
     if (not isinstance(lane, dict) or set(lane) != keys
             or any(not isinstance(lane[key], str) or not 0 < len(lane[key]) <= 100
                    for key in ('decision_id', 'authorization_decision_id') if key in keys)
+            or declined and (not isinstance(lane['declined_merge_pr_url'], str)
+                             or not 0 < len(lane['declined_merge_pr_url']) <= URL_LIMIT)
             or type(lane['decision_revision']) is not int
             or not isinstance(scope, list) or not scope or len(set(map(str, scope))) != len(scope)
             or any(item not in SCOPES for item in scope)):
         raise ServiceError(400, 'Give independent_technical_work the exact pending decision ID, its revision, and a local '
-                                'scope. local_fixes, and only local_fixes, needs authorization_decision_id.')
+                                'scope. local_fixes, and only local_fixes, needs authorization_decision_id. '
+                                'declined_merge_pr_url, if given, is the exact URL of the declined merge card.')
     result = dict(decision_id=lane['decision_id'], decision_revision=lane['decision_revision'],
                   scope=[item for item in SCOPES if item in scope])
     if fixes:
         result['authorization_decision_id'] = lane['authorization_decision_id']
+    if declined:
+        result['declined_merge_pr_url'] = lane['declined_merge_pr_url']
     return result
+
+
+def declined_merge(decision, lane):
+    """Whether this record is the person's plain decline of the exact merge card that the lane names.
+
+    Only structured fields count. A selected option, a correction, another answer, or a system actor fails closed.
+    """
+    answers = [answer for answer in decision.get('_answers') or [] if answer.get('decided_by')]
+    url = decision.get('merge_pr_url')
+    return bool(decision['id'] == lane['decision_id'] and decision.get('revision') == lane['decision_revision']
+                and decision['status'] == 'rejected' and decision.get('action_type') == 'question'
+                and decision.get('inbox_kind', 'decision') == 'decision' and decision.get('_native')
+                and isinstance(url, str) and url.lower() == lane['declined_merge_pr_url'].lower()
+                and decision.get('draft') is None and not decision.get('_receipt_id')
+                and not decision.get('_source_recheck') and not decision.get('_hidden') and not decision.get('_deleted')
+                and decision.get('decided_by') and decision['decided_by'] not in SYSTEM_DECIDERS
+                and decision.get('selected_option_id') is None and not (decision.get('correction') or '').strip()
+                and len(answers) == 1 and answers[0].get('choice') == 'reject' and answers[0].get('option_id') is None
+                and not (answers[0].get('correction') or '').strip()
+                and answers[0]['decided_by'] == decision['decided_by'])
 
 
 def held_action(action, native_task_id):
@@ -125,9 +177,36 @@ class TechnicalLane:
         with self.lock:
             row = self.db.execute('SELECT data FROM decisions WHERE id=?', (lane['decision_id'],)).fetchone()
         decision = json.loads(row[0]) if row else None
+        if lane.get('declined_merge_pr_url'):
+            # A declined merge holds while the same decline is the owner's whole pause, with no new direction.
+            if not decision or not declined_merge(decision, lane) or not self._declined_pause(task, decision['id']):
+                return None, None
+            return lane, decision
         if not decision or decision['status'] != 'pending':
             return None, None
         return lane, decision
+
+    def _declined_pause(self, owner, decision_id):
+        """Whether this one answered decision pauses every Work item of the owner and nothing else pauses them."""
+        items = self._task_work_items(owner)
+        peers = [peer for item in items for peer in self._work_pause_peers(item, shared=True)]
+        if not items or {peer.get('paused_by_decision_id') for peer in peers} - {None} != {decision_id}:
+            return False
+        return all((pause := self._work_pause(item)) and pause['id'] == decision_id
+                   and not self._work_has_new_direction(owner, pause, item) for item in items)
+
+    def _technical_declined_turn(self, task):
+        """Whether the automatic pause lets this declined-merge lane turn run. Only its own queued or working turn."""
+        lane = self._technical_lane(task)
+        return bool(lane and lane.get('declined_merge_pr_url') and task['status'] in ('queued', 'working')
+                    and self._technical_gate(task)[0])
+
+    def _technical_native_state(self, task):
+        """The native state of a finished declined-merge lane turn, or None. Scheduled neither completes nor retries."""
+        lane = self._technical_lane(task)
+        if lane and lane.get('declined_merge_pr_url') and task['status'] in ('completed', 'failed'):
+            return 'scheduled'
+        return None
 
     def _technical_lane(self, task):
         """The lane that holds the task's current turn, or None. Only the dispatcher's move to a resumed turn ends it."""
@@ -181,7 +260,8 @@ class TechnicalLane:
                 or self._technical_gate(task)[0] or self._technical_unknown(task, lane)):
             return False
         kept = {key: task[key] for key in ('_resume_decision', '_direct_reply_message_id', '_conversation_epoch') if key in task}
-        if '_resume_decision' not in kept and self._technical_decision_exists(lane):
+        # A declined merge has no answer to resume. Its normal turn keeps the normal pause rules.
+        if '_resume_decision' not in kept and not lane.get('declined_merge_pr_url') and self._technical_decision_exists(lane):
             # The question ended while a lane turn ran, for example after a restart. Its resume carries the resolution.
             kept['_resume_decision'] = lane['decision_id']
         self._advance_input(task)
@@ -242,6 +322,38 @@ class TechnicalLane:
             lane['authorization'] = authorization
         return gate
 
+    def _declined_merge_gate(self, owner, native, lane, related):
+        """Return the person's declined merge card that pauses this idle owner, or refuse. See the module docstring."""
+        from .service import ServiceError
+        ids = {t['id'] for t in related}
+        decisions = [d for d in self._all('decisions') if d['task_id'] in ids]
+        declined = next((d for d in decisions if d['id'] == lane['decision_id']), None)
+        if (owner['status'] not in ('completed', 'failed') or native.get('status') not in ('triage', 'blocked', 'scheduled')
+                or native.get('current_run_id') or native.get('worker_pid')
+                or (self.running.get(owner['id']) and self.running[owner['id']].is_alive())):
+            raise ServiceError(409, 'A declined merge continues only a finished owner whose native outcome waits idle.')
+        if not declined or not declined_merge(declined, lane):
+            raise ServiceError(409, 'The declined merge changed, or it is not a person’s plain decline of that exact '
+                                    'merge card. Read it and retry with its exact ID, revision, and merge URL.')
+        if any(d['status'] == 'rejected' and d['id'] != declined['id'] for d in decisions):
+            raise ServiceError(409, 'A person declined another part of this execution. Continue it in a normal turn.')
+        if not self._declined_pause(owner, declined['id']):
+            raise ServiceError(409, 'This work is paused by another decision, has new direction, or is not paused by '
+                                    'this declined merge.')
+        if ((owner.get('_self_recovery') or {}).get('unknown_tools')
+                or any(r['state'] in PENDING_RECEIPT_STATES for identity in ids for r in self._native_task_receipts(identity))):
+            raise ServiceError(409, 'A tool of this execution has no confirmed result. Check it before continuing.')
+        if any(c['task_id'] in ids and c['status'] in ('queued', 'working') for c in self._all('contexts')):
+            raise ServiceError(409, 'This execution has an active request. Wait for it.')
+        # A decline never authorizes fixes. local_fixes still needs a separate approved question of this execution.
+        authorization = self._technical_authorization(lane, decisions, declined)
+        if authorization:
+            lane['authorization'] = authorization
+        lane['declined'] = dict(decision_id=declined['id'], title=declined.get('title'),
+                                merge_pr_url=declined['merge_pr_url'], decided_at=declined.get('decided_at'))
+        lane['hold'] = dict(status=owner['status'], summary=owner.get('summary'))
+        return declined
+
     def _refuse_technical_event(self, task_id, kind):
         from .service import ServiceError
         if kind not in REFUSED_EVENTS:
@@ -262,16 +374,23 @@ class TechnicalLane:
             raise ServiceError(403, 'Independent technical work holds this native action. ' + reason)
 
     def _finish_technical_lane(self, task, kind, summary):
-        """Return a finished lane turn to its pending decision. Its result route stays for the final result."""
+        """Return a finished lane turn to its pending decision, or to the pause of its declined merge.
+
+        Its result route stays for the final result. A declined merge never resumes its decision.
+        """
         from .service import now
         lane = self._technical_lane(task)
         if not lane:
             return False
+        declined = bool(lane.get('declined_merge_pr_url'))
         if not self._technical_gate(task)[0]:
             # The question ended during this lane turn (an answer, a withdrawal, or a Work change). The lane turn cannot
             # finish the outcome, execute an approval, or return a result. The dispatcher resumes the question next.
-            task.update(status='queued', summary='Resuming the changed decision.', updated_at=now())
-            if self._technical_decision_exists(lane):
+            # A declined merge has no answer to resume: the dispatcher moves the owner to a normal turn, which the
+            # normal pause rules hold.
+            task.update(status='queued', summary='Continuing after the declined decision or its pause changed.' if declined
+                        else 'Resuming the changed decision.', updated_at=now())
+            if not declined and self._technical_decision_exists(lane):
                 task['_resume_decision'] = lane['decision_id']
             self._put('tasks', task)
             self._event('task.updated', self._public(task), task['bot_id'], task['id'])
@@ -288,7 +407,12 @@ class TechnicalLane:
             self._event('task.updated', self._public(task), task['bot_id'], task['id'])
             self._refresh_bot(task['bot_id'])
             return True
-        task.update(status='needs_you', summary=decision['title'], updated_at=now())
+        if declined:
+            # The owner returns to its earlier status and the pause holds it. The native card parks in scheduled.
+            hold = lane.get('hold') or {}
+            task.update(status=hold.get('status', 'completed'), summary=hold.get('summary') or decision['title'], updated_at=now())
+        else:
+            task.update(status='needs_you', summary=decision['title'], updated_at=now())
         if task.get('_steering'):
             # As in a normal failure, save the follow-up for the next continuation of this owner. A completed turn
             # with an unknown tool result saves it too, because the lane never leaves that turn.
@@ -296,7 +420,8 @@ class TechnicalLane:
         self._put('tasks', task)
         self._event('task.updated', self._public(task), task['bot_id'], task['id'])
         note = 'Technical work stopped: ' if kind == 'failed' else 'Technical work finished: '
-        self._message(task['bot_id'], (note + str(summary or ''))[:500] + ' The decision remains pending.',
+        self._message(task['bot_id'], (note + str(summary or ''))[:500] + (' The decline and its pause stay.' if declined
+                      else ' The decision remains pending.'),
                       task_id=task['id'], kind='activity')
         self._refresh_bot(task['bot_id'])
         return True

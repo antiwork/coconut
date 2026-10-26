@@ -1266,7 +1266,7 @@ def run_turn(request, emit, request_receipt):
             if operation == 'context':
                 return json.dumps({'error': 'Context requests cannot change a decision.'})
             if request['task'].get('_technical_lane'):
-                return json.dumps({'error': 'Independent technical work cannot create a decision while its decision is pending.'})
+                return json.dumps({'error': 'Independent technical work cannot create a decision while its decision is pending or declined.'})
             if proposed:
                 return json.dumps({'error': 'One proposal is already pending.'})
             if creation_errors:
