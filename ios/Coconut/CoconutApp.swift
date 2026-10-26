@@ -60,7 +60,8 @@ struct CoconutHome: View {
     @Environment(AppStore.self) private var store
     @State private var settingsOpen = false
     @State private var onboardingOpen = false
-    @State private var onboardingStart = OnboardingStep.welcome
+    // The first run hides Close, because Coconut needs a pairing before it can show anything.
+    @State private var onboardingFirstRun = false
     @State private var createOpen = false
     @State private var searchOpen = false
     @State private var searchText = ""
@@ -110,12 +111,12 @@ struct CoconutHome: View {
             }
         }
         .sheet(isPresented: $settingsOpen) { AppSettingsView() }
-        .fullScreenCover(isPresented: $onboardingOpen) { OnboardingView(start: onboardingStart) }
-        .onAppear { if OnboardingView.showsOnLaunch(store) { onboardingStart = .welcome; onboardingOpen = true } }
+        .fullScreenCover(isPresented: $onboardingOpen) { OnboardingView(start: .pair, firstRun: onboardingFirstRun) }
+        .onAppear { if OnboardingView.showsOnLaunch(store) { onboardingFirstRun = true; onboardingOpen = true } }
         .onChange(of: store.setupLink, initial: true) { _, link in
             // A tapped setup link opens the pairing page, unless onboarding already shows.
             guard link != nil, !onboardingOpen else { return }
-            onboardingStart = .pair
+            onboardingFirstRun = false
             let sheetOpen = settingsOpen || createOpen
             settingsOpen = false
             createOpen = false
@@ -150,7 +151,7 @@ struct CoconutHome: View {
                                 .focused($searchFocused).textInputAutocapitalization(.never)
                                 .autocorrectionDisabled().accessibilityIdentifier("home-search-input")
                             Button { searchFocused = false; searchOpen = false; searchText = "" } label: {
-                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary).frame(width: 44, height: 44)
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
                             }.accessibilityLabel("Close search").accessibilityIdentifier("close-search")
                         }
                         .padding(.leading, 16).padding(.trailing, 4)
@@ -159,9 +160,9 @@ struct CoconutHome: View {
                     }
                 }
                 .safeAreaInset(edge: .top, spacing: 0) {
-                    if !store.isDemo, let message = store.connection.bannerMessage {
-                        ConnectionBanner(message: message, needsRepair: store.connection == .needsRepair) {
-                            onboardingStart = .pair
+                    if !store.isDemo, let notice = store.connection.notice(legacyPairing: store.usesLegacyPairing) {
+                        ConnectionBanner(notice: notice) {
+                            onboardingFirstRun = false
                             onboardingOpen = true
                         }
                         .padding(.horizontal, 16).padding(.bottom, 8)
@@ -201,7 +202,7 @@ struct CoconutHome: View {
         // Settings is the one app-wide action, so both tabs show it.
         ToolbarItem(placement: .topBarLeading) {
             Button { settingsOpen = true } label: {
-                Image(systemName: "person.crop.circle")
+                Image(systemName: "gearshape")
             }.accessibilityLabel("App settings").accessibilityIdentifier("app-settings")
         }
         if !inbox {
@@ -274,7 +275,7 @@ struct ErrorBanner: View {
             Image(systemName: "exclamationmark.circle").padding(.top, 3)
             Text(message).font(.footnote).textSelection(.enabled)
             Spacer(minLength: 0)
-            Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 17)).frame(width: 44, height: 44) }
+            Button(action: dismiss) { Image(systemName: "xmark").font(.body).frame(minWidth: 44, minHeight: 44) }
                 .accessibilityLabel("Dismiss error")
         }
         .foregroundStyle(.secondary)
@@ -287,24 +288,30 @@ struct ErrorBanner: View {
 
 // A calm notice: the Mac or the relay is away, and the cached state below stays usable.
 struct ConnectionBanner: View {
-    let message: String
-    let needsRepair: Bool
+    let notice: ConnectionNotice
     let pair: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: needsRepair ? "link" : "moon.zzz").foregroundStyle(.secondary)
-            Text(message).font(.footnote).foregroundStyle(.secondary)
+            // VoiceOver reads the icon and the message as one element. The Pair button stays a separate element.
+            HStack(spacing: 10) {
+                Image(systemName: notice.offersPairing ? "link" : "moon.zzz").foregroundStyle(.secondary)
+                Text(notice.message).font(.footnote).foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
             Spacer(minLength: 0)
-            if needsRepair {
+            if notice.offersPairing {
                 Button("Pair", action: pair).font(.footnote.weight(.semibold))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
                     .accessibilityIdentifier("connection-banner-pair")
             }
         }
-        .padding(.horizontal, 14)
+        .padding(.leading, 14)
+        .padding(.trailing, notice.offersPairing ? 4 : 14)
         .frame(minHeight: 44)
         .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 16))
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("connection-banner")
     }
 }
@@ -314,7 +321,7 @@ struct ConnectionRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(title).font(.caption.weight(.medium))
+            Text(store.connection.title).font(.caption.weight(.medium))
             Spacer()
             if let lastSync = store.lastSync {
                 CompactAgeLabel(date: lastSync)
@@ -324,19 +331,6 @@ struct ConnectionRow: View {
         }
         .foregroundStyle(.secondary)
         .accessibilityElement(children: .combine)
-    }
-
-    private var title: String {
-        switch store.connection {
-        case .unconfigured: "Connect your Mac"
-        case .connecting: "Connecting to Mac"
-        case .connected: "Mac connected"
-        case .disconnected: "Waiting for connection"
-        case .macOffline: "Mac offline"
-        case .relayUnreachable: "Relay unreachable"
-        case .needsRepair: "Pair again"
-        case .preview: "Mac · Preview"
-        }
     }
 
 }

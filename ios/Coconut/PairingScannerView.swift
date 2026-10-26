@@ -18,11 +18,11 @@ struct PairingScannerView: View {
                         dismiss()
                     } onFailure: {
                         ready = false
-                        error = "The camera cannot scan right now. Paste the setup details instead."
+                        error = "The camera cannot scan right now. Paste the pairing link instead."
                     }
                     .ignoresSafeArea(edges: .bottom)
                     .safeAreaInset(edge: .bottom) {
-                        Text("Scan the setup code shown on your Mac.")
+                        Text("Scan the pairing QR code that Hermes sent.")
                             .font(.subheadline).padding().frame(maxWidth: .infinity).background(.regularMaterial)
                     }
                 } else if let error {
@@ -43,13 +43,13 @@ struct PairingScannerView: View {
                     ProgressView("Opening camera…")
                 }
             }
-            .navigationTitle("Scan setup code").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Scan pairing QR code").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
             .task {
                 guard DataScannerViewController.isSupported else {
-                    error = "This device cannot scan setup codes. Paste the setup details instead."
+                    error = "This device cannot scan QR codes. Paste the pairing link instead."
                     return
                 }
                 let allowed: Bool
@@ -63,8 +63,8 @@ struct PairingScannerView: View {
                 if allowed && DataScannerViewController.isAvailable {
                     ready = true
                 } else {
-                    error = allowed ? "The camera cannot scan right now. Paste the setup details instead."
-                        : "Allow camera access in Settings to scan, or paste the setup details instead."
+                    error = allowed ? "The camera cannot scan right now. Paste the pairing link instead."
+                        : "Allow camera access in Settings to scan, or paste the pairing link instead."
                 }
             }
         }
@@ -140,6 +140,7 @@ struct PastePairingSetupView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var payload = ""
     @State private var error: String?
+    @ScaledMetric(relativeTo: .caption) private var editorHeight = 180.0
     let importPayload: (String) throws -> Void
 
     var body: some View {
@@ -147,15 +148,15 @@ struct PastePairingSetupView: View {
             Form {
                 Section {
                     TextEditor(text: $payload)
-                        .font(.caption.monospaced()).frame(minHeight: 180)
+                        .font(.caption.monospaced()).frame(minHeight: editorHeight)
                         .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
-                        .accessibilityLabel("Setup details").accessibilityIdentifier("pairing-setup-payload")
+                        .accessibilityLabel("Pairing link").accessibilityIdentifier("pairing-setup-payload")
                 } footer: {
-                    Text("Paste the setup link that Hermes sent. Coconut shows the name of the Mac before you pair.")
+                    Text("Paste the pairing link that Hermes sent. Coconut shows the name of the Mac before you pair.")
                 }
-                if let error { Section { Text(error).foregroundStyle(.red).font(.footnote) } }
+                if let error { Section { InlineError(error) } }
                 Section {
-                    Button("Use setup details") {
+                    Button("Use this link") {
                         do {
                             try importPayload(payload)
                             payload = ""
@@ -166,7 +167,8 @@ struct PastePairingSetupView: View {
                     .accessibilityIdentifier("use-pairing-setup")
                 }
             }
-            .navigationTitle("Paste setup details").navigationBarTitleDisplayMode(.inline)
+            .settingsBackground()
+            .navigationTitle("Paste pairing link").navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }

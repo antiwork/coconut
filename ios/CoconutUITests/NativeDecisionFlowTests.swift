@@ -23,7 +23,6 @@ final class NativeDecisionFlowTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Workflow permissions"].exists)
         instructions.tap()
         instructions.typeText(" Keep progress updates concise.")
-        app.buttons["save-bot"].tap()
         app.swipeUp()
         let addRoutine = app.buttons["add-routine"]
         revealInList(addRoutine, in: app)

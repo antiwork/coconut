@@ -141,12 +141,12 @@ enum PairingSetupError: LocalizedError, Equatable {
 
     var errorDescription: String? {
         switch self {
-        case .invalidPayload: "This is not a Coconut setup code. Ask your Hermes for a new pairing link."
-        case .unsupportedVersion: "This setup code needs a different Coconut version. Update the app and try again."
+        case .invalidPayload: "This is not a Coconut pairing link. Ask your Hermes for a new pairing link."
+        case .unsupportedVersion: "This pairing link needs a different Coconut version. Update the app and try again."
         case .legacyLink: "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link."
-        case .invalidRelay: "The setup code has an invalid relay address. Ask your Hermes for a new pairing link."
-        case .damagedLink, .invalidRoute, .invalidKey: "The setup code is damaged. Ask your Hermes for a new pairing link."
-        case .invalidName: "The setup code has an invalid Mac name. Ask your Hermes for a new pairing link."
+        case .invalidRelay: "The pairing link has an invalid relay address. Ask your Hermes for a new pairing link."
+        case .damagedLink, .invalidRoute, .invalidKey: "The pairing link is damaged. Ask your Hermes for a new pairing link."
+        case .invalidName: "The pairing link has an invalid Mac name. Ask your Hermes for a new pairing link."
         }
     }
 }

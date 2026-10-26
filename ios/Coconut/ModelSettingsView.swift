@@ -11,7 +11,6 @@ struct ModelSettingsView: View {
     @State private var loaded = false
     @State private var refreshed = false
     @State private var saving = false
-    @State private var saved = false
     @State private var edited = false
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
@@ -47,7 +46,7 @@ struct ModelSettingsView: View {
             if let catalog {
                 if isBot {
                     Section {
-                        Toggle("Use default model", isOn: Binding(get: { useDefault }, set: { useDefault = $0; edited = true }))
+                        Toggle("Use default model", isOn: Binding(get: { useDefault }, set: { chooseDefault($0) }))
                             .tint(BoardStyle.green)
                             .accessibilityIdentifier("use-default-model")
                         if useDefault {
@@ -97,7 +96,7 @@ struct ModelSettingsView: View {
                         .pickerStyle(.navigationLink)
                         .accessibilityIdentifier("model-picker")
                         if let selectedModel, !selectedModel.reasoningEfforts.isEmpty {
-                            Picker("Effort", selection: Binding(get: { effort }, set: { effort = $0; edited = true })) {
+                            Picker("Effort", selection: Binding(get: { effort }, set: { effort = $0; edited = true; save() })) {
                                 Text("Model default · " + ModelPresentation.effortName(selectedModel.defaultReasoningEffort))
                                     .tag(String?.none)
                                 ForEach(selectedModel.reasoningEfforts, id: \.self) { value in
@@ -112,7 +111,7 @@ struct ModelSettingsView: View {
                     } header: {
                         Text(isBot ? "Custom model" : "Default model")
                     } footer: {
-                        if !isBot { Text("Hermes default. Shared by bots using the default model.") }
+                        if !isBot { Text("Hermes default. Shared by bots using the default model. Changes save when you make them.") }
                     }
                     .disabled(saving || !canEdit)
                 }
@@ -128,31 +127,21 @@ struct ModelSettingsView: View {
             }
             if !isBot { APIFallbackSection() }
             if !canEdit {
-                Section { Text("Connect to your Mac to save changes.").font(.footnote).foregroundStyle(.secondary) }
+                Section {} footer: { Text("Connect to your Mac first.") }
             }
             if let currentIssue {
-                Section { Text(currentIssue).font(.footnote).foregroundStyle(BoardStyle.accent).textSelection(.enabled) }
+                Section { InlineError(currentIssue) }
                     .accessibilityIdentifier("current-model-error")
             }
             if let error = store.error {
-                Section { Text(error).font(.footnote).foregroundStyle(BoardStyle.accent).textSelection(.enabled) }
+                Section { InlineError(error) }
             }
         }
-        .scrollContentBackground(.hidden).background(BoardStyle.paper)
+        .settingsBackground()
         .navigationTitle("Model").navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button { save() } label: {
-                    if saving {
-                        ProgressView().accessibilityLabel("Saving model settings")
-                    } else if saved && !changed {
-                        Image(systemName: "checkmark").accessibilityLabel(store.isDemo ? "Preview updated" : "Saved")
-                    } else {
-                        Text("Save")
-                    }
-                }
-                    .disabled(saving || !canEdit || !loaded || !valid || !changed || (isBot && bot == nil))
-                    .accessibilityIdentifier("save-model-settings")
+                if saving { ProgressView().accessibilityLabel("Saving model settings") }
             }
         }
         .onAppear { if !loaded { load() } }
@@ -175,6 +164,18 @@ struct ModelSettingsView: View {
         selectionKey = key
         effort = nil
         edited = true
+        save()
+    }
+
+    // A custom model starts from the default, so the bot keeps the same model until the person picks another one.
+    private func chooseDefault(_ value: Bool) {
+        useDefault = value
+        edited = true
+        if !value, selectedModel == nil, let catalog, let entry = catalog.entry(for: catalog.defaults.selection) {
+            selectionKey = entry.selectionKey
+            effort = catalog.defaults.selection.reasoningEffort
+        }
+        save()
     }
 
     private func load() {
@@ -188,11 +189,11 @@ struct ModelSettingsView: View {
         edited = false
     }
 
+    // Each change saves when it is valid. A model without a choice waits until the person picks one.
     private func save() {
-        guard !saving, valid else { return }
+        guard !saving, loaded, canEdit, valid, changed, !(isBot && bot == nil) else { return }
         let submitted = isBot && useDefault ? nil : selection
         saving = true
-        saved = false
         store.error = nil
         Task {
             let accepted: Bool
@@ -204,10 +205,7 @@ struct ModelSettingsView: View {
                 accepted = false
             }
             saving = false
-            if accepted && store.error == nil {
-                load()
-                saved = true
-            }
+            if accepted && store.error == nil { load() }
         }
     }
 

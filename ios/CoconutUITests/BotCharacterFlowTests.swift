@@ -18,7 +18,6 @@ final class BotCharacterFlowTests: XCTestCase {
         XCTAssertTrue(fruit.waitForExistence(timeout: 5))
         fruit.tap()
         app.buttons["Done"].tap()
-        app.buttons["save-bot"].tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
         app.buttons["bot-settings"].tap()
         app.buttons["Change character"].tap()

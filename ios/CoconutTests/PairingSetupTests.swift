@@ -142,7 +142,7 @@ final class PairingSetupTests: XCTestCase {
         for input in damaged {
             XCTAssertThrowsError(try PairingSetup.parse(input), input) { error in
                 XCTAssertEqual(error as? PairingSetupError, .damagedLink)
-                XCTAssertEqual(error.localizedDescription, "The setup code is damaged. Ask your Hermes for a new pairing link.")
+                XCTAssertEqual(error.localizedDescription, "The pairing link is damaged. Ask your Hermes for a new pairing link.")
             }
         }
     }

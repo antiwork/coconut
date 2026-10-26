@@ -70,7 +70,7 @@ final class ModelSettingsFlowTests: XCTestCase {
     @MainActor
     private func openBotModelSettings(in app: XCUIApplication) {
         app.buttons["app-settings"].tap()
-        let bot = app.buttons["Forge"]
+        let bot = app.buttons["settings-bot-" + forgeId]
         for _ in 0..<5 where !bot.isHittable { app.swipeUp() }
         XCTAssertTrue(bot.waitForExistence(timeout: 5))
         bot.tap()
@@ -79,7 +79,9 @@ final class ModelSettingsFlowTests: XCTestCase {
 
     @MainActor
     private func openModelFromBotSettings(in app: XCUIApplication) {
-        app.buttons["Model"].tap()
+        let model = app.buttons["bot-model-settings"]
+        XCTAssertTrue(model.waitForExistence(timeout: 5))
+        model.tap()
         XCTAssertTrue(app.switches["use-default-model"].waitForExistence(timeout: 5))
     }
 
@@ -106,21 +108,15 @@ final class ModelSettingsFlowTests: XCTestCase {
         let option = identifier == "model-effort-picker" ? app.buttons[label].firstMatch : app.staticTexts[label].firstMatch
         XCTAssertTrue(option.waitForExistence(timeout: 5))
         option.tap()
-        let save = app.buttons["save-model-settings"]
-        if !save.isHittable { app.navigationBars.buttons.element(boundBy: 0).tap() }
-        XCTAssertTrue(save.waitForExistence(timeout: 5))
+        if !picker.isHittable { app.navigationBars.buttons.element(boundBy: 0).tap() }
+        XCTAssertTrue(picker.waitForExistence(timeout: 5))
     }
 
+    // Each change saves by itself. The page shows a progress indicator until the Mac accepts it.
     @MainActor
     private func save(in app: XCUIApplication) {
-        let save = app.buttons["save-model-settings"]
-        XCTAssertTrue(save.isEnabled, "The edited model settings must enable Save.")
-        save.tap()
-        let saved = XCTNSPredicateExpectation(
-            predicate: NSPredicate(format: "label CONTAINS %@ AND enabled == false", "Preview updated"), object: save
-        )
-        XCTAssertEqual(XCTWaiter.wait(for: [saved], timeout: 5), .completed,
-                       "Save must show its completed state before the view closes.")
+        let saving = app.activityIndicators["Saving model settings"]
+        XCTAssertTrue(saving.waitForNonExistence(timeout: 5), "The change must save without a Save button.")
     }
 
     @MainActor

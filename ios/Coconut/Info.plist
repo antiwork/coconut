@@ -63,7 +63,7 @@
 		<string>_coconut._tcp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
-	<string>Coconut uses the camera only when you scan a setup code from your Mac.</string>
+	<string>Coconut uses the camera only when you scan a pairing QR code.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UISupportedInterfaceOrientations~ipad</key>

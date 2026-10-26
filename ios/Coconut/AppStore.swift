@@ -1496,11 +1496,15 @@ final class AppStore {
     }
 
     // The Mac reads an existing Hermes setup without changing it. Demo mode shows a sample.
-    func loadHermesSetup() async -> HermesSetup? {
+    // A quiet check passes reportsErrors: false, so a failure shows no error.
+    func loadHermesSetup(reportsErrors: Bool = true) async -> HermesSetup? {
         if isDemo { return HermesSetup.sample }
         guard let client else { return nil }
         do { return try await client.request("setup") }
-        catch { report(error); return nil }
+        catch {
+            if reportsErrors { report(error) }
+            return nil
+        }
     }
 
     func importHermesSetup(profileIds: [String], logins: Bool, mcpServers: Bool = false) async -> HermesImportResult? {

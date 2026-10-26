@@ -67,7 +67,7 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        NSCameraUsageDescription: Coconut uses the camera only when you scan a setup code from your Mac.
+        NSCameraUsageDescription: Coconut uses the camera only when you scan a pairing QR code.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
           NSExceptionDomains:

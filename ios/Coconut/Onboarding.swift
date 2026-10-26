@@ -2,7 +2,7 @@ import SwiftUI
 import UserNotifications
 
 enum OnboardingStep: Int, Hashable, Comparable {
-    case welcome, pair, setup, bots, logins, mcp, model, notifications, done
+    case pair, setup, bots, logins, mcp, model, notifications, done
 
     static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
 }
@@ -28,6 +28,8 @@ struct OnboardingView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let start: OnboardingStep
+    // The first run has no Close button, because Coconut shows nothing until it has a pairing.
+    let firstRun: Bool
     @State private var step: OnboardingStep
     @State private var history: [OnboardingStep] = []
     @State private var load = SetupLoad.loading
@@ -45,8 +47,9 @@ struct OnboardingView: View {
     @State private var pasteOpen = false
     @State private var serversNeedingSetup: [String] = []
 
-    init(start: OnboardingStep = .welcome) {
+    init(start: OnboardingStep = .pair, firstRun: Bool = false) {
         self.start = start
+        self.firstRun = firstRun
         _step = State(initialValue: start)
     }
 
@@ -65,15 +68,20 @@ struct OnboardingView: View {
     private var working: Bool { action != nil }
 
     private var steps: [OnboardingStep] {
-        var steps: [OnboardingStep] = switch start {
-        case .welcome: [.welcome, .pair, .setup]
-        case .pair: [.pair, .setup]
-        default: [.setup]
-        }
+        Self.steps(start: start, setup: setup, existingServers: store.mcpServers,
+                   modelConfigured: store.modelConfigured, askNotifications: askNotifications)
+    }
+
+    // The pages in order. `setup` is nil until the Mac answers the setup check.
+    static func steps(start: OnboardingStep, setup: HermesSetup?, existingServers: [MCPServer],
+                      modelConfigured: Bool, askNotifications: Bool) -> [OnboardingStep] {
+        var steps: [OnboardingStep] = start == .pair ? [.pair] : []
+        // After pairing, a setup with nothing to choose skips its page. Settings → Hermes setup always shows it.
+        if start == .setup || setup?.offersChoices(existingServers: existingServers) != false { steps.append(.setup) }
         if setup?.importable.isEmpty == false { steps.append(.bots) }
         if setup.map({ !$0.logins.isEmpty || !$0.signIns.isEmpty }) == true { steps.append(.logins) }
-        if !newServers.isEmpty { steps.append(.mcp) }
-        if !store.modelConfigured { steps.append(.model) }
+        if setup?.newMCPServers(existing: existingServers).isEmpty == false { steps.append(.mcp) }
+        if !modelConfigured { steps.append(.model) }
         if askNotifications { steps.append(.notifications) }
         steps.append(.done)
         return steps
@@ -104,7 +112,7 @@ struct OnboardingView: View {
         }
         .onChange(of: store.hasPairing) { _, paired in
             // The pair action advances by itself.
-            if paired && step == .pair && !working { advance() }
+            if paired && step == .pair && !working { perform { await checkSetupThenAdvance() } }
         }
         .onChange(of: store.setupLink, initial: true) { _, _ in takeSetupLink() }
         // A link that arrives during an action waits until the action ends.
@@ -136,17 +144,17 @@ struct OnboardingView: View {
         let index = steps.firstIndex(of: step) ?? max(0, (steps.lastIndex { $0 < step } ?? 0))
         return HStack(spacing: 12) {
             Button { back() } label: {
-                Image(systemName: "chevron.left").font(.system(size: 17, weight: .medium)).frame(width: 44, height: 44)
+                Image(systemName: "chevron.left").font(.body.weight(.medium)).frame(minWidth: 44, minHeight: 44)
             }
             .opacity(history.isEmpty || step == .done ? 0 : 1)
             .disabled(history.isEmpty || step == .done || working)
             .accessibilityLabel("Back")
             ProgressSegments(count: steps.count, index: index)
             Button { finish() } label: {
-                Image(systemName: "xmark").font(.system(size: 15, weight: .medium)).frame(width: 44, height: 44)
+                Image(systemName: "xmark").font(.subheadline.weight(.medium)).frame(minWidth: 44, minHeight: 44)
             }
-            .opacity(start == .welcome || step == .done ? 0 : 1)
-            .disabled(start == .welcome || step == .done)
+            .opacity(firstRun || step == .done ? 0 : 1)
+            .disabled(firstRun || step == .done)
             .accessibilityLabel("Close")
         }
         .foregroundStyle(.primary)
@@ -155,14 +163,11 @@ struct OnboardingView: View {
 
     @ViewBuilder private var page: some View {
         switch step {
-        case .welcome:
-            OnboardingPage(title: "Bots that keep work moving",
-                           subtitle: "Coconut runs your Hermes bots on your Mac. They work in the background and reach you when they need you.") {
-                WelcomeIllustration()
-            }
         case .pair:
-            OnboardingPage(title: "Connect your Hermes",
-                           subtitle: "Your Hermes agent sets up Coconut on its Mac, then sends you a setup link.") {
+            OnboardingPage(title: firstRun ? "Bots that keep work moving" : "Connect your Hermes",
+                           subtitle: firstRun
+                               ? "Coconut runs your Hermes bots on your Mac. Your Hermes agent sets up Coconut, then sends you a pairing link."
+                               : "Your Hermes agent sets up Coconut on its Mac, then sends you a pairing link.") {
                 HermesPairingSteps(setup: pairingSetup, error: pairingError)
             }
         case .setup:
@@ -225,25 +230,17 @@ struct OnboardingView: View {
             OnboardingPage(title: "You are all set", subtitle: doneSubtitle) {
                 CompletionBurst()
             }
-            .task {
-                // A note about skipped skills or servers that need setup stays until the person reads it.
-                guard skippedSkills.isEmpty && serversNeedingSetup.isEmpty else { return }
-                try? await Task.sleep(for: .seconds(1.6))
-                if !Task.isCancelled { finish() }
-            }
         }
     }
 
     @ViewBuilder private var footer: some View {
         VStack(spacing: 4) {
             if let importError, [.bots, .logins, .mcp, .model].contains(step) {
-                Text(importError).font(.footnote).foregroundStyle(BoardStyle.accent)
+                InlineError(importError)
                     .multilineTextAlignment(.center).padding(.bottom, 6)
                     .accessibilityIdentifier("onboarding-error")
             }
             switch step {
-            case .welcome:
-                PrimaryButton(title: "Connect your Hermes") { advance() }
             case .pair:
                 if let pairingSetup {
                     PrimaryButton(title: working ? "Connecting…" : "Pair with this Mac", enabled: !working,
@@ -251,11 +248,11 @@ struct OnboardingView: View {
                         if store.hasPairing { replaceConfirmation = true } else { perform { await pair(pairingSetup) } }
                     }
                     SecondaryButton(title: "Use another link", enabled: !working) { self.pairingSetup = nil }
-                } else if store.hasPairing && start == .welcome {
-                    PrimaryButton(title: "Continue") { advance() }
+                } else if store.hasPairing && firstRun {
+                    PrimaryButton(title: "Continue", enabled: !working) { perform { await checkSetupThenAdvance() } }
                 } else {
-                    PrimaryButton(title: "Scan the code", identifier: "onboarding-scan") { scannerOpen = true }
-                    SecondaryButton(title: "Paste the setup link", identifier: "onboarding-paste") { pasteOpen = true }
+                    PrimaryButton(title: "Scan the pairing QR code", identifier: "onboarding-scan") { scannerOpen = true }
+                    SecondaryButton(title: "Paste the pairing link", identifier: "onboarding-paste") { pasteOpen = true }
                 }
             case .setup:
                 if load == .failed {
@@ -289,11 +286,15 @@ struct OnboardingView: View {
                 SecondaryButton(title: store.modelConfigured ? "Continue" : "Later", enabled: !working) { advance() }
             case .notifications:
                 if notificationsOn {
-                    Label("Notifications on", systemImage: "checkmark")
-                        .font(.body.weight(.medium)).foregroundStyle(Color.green)
-                        .frame(maxWidth: .infinity, minHeight: 52)
-                        .background(Color.green.opacity(0.14), in: Capsule())
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                    Label {
+                        Text("Notifications on").foregroundStyle(.primary)
+                    } icon: {
+                        Image(systemName: "checkmark").foregroundStyle(BoardStyle.green)
+                    }
+                    .font(.body.weight(.medium))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+                    PrimaryButton(title: "Continue") { advance() }
                 } else {
                     PrimaryButton(title: "Turn on notifications", enabled: !working) { perform { await enableNotifications() } }
                     SecondaryButton(title: "Not now", enabled: !working) { advance() }
@@ -356,6 +357,21 @@ struct OnboardingView: View {
                 set: { if $0 { selected.insert(profile.id) } else { selected.remove(profile.id) } })
     }
 
+    // After pairing, the setup check runs before the next page, so a setup with nothing to choose skips its page.
+    private func checkSetupThenAdvance() async {
+        await checkSetup()
+        guard !Task.isCancelled else { return }
+        advance()
+    }
+
+    private func checkSetup() async {
+        guard load == .loading else { return }
+        let result = await store.loadHermesSetup()
+        guard !Task.isCancelled else { return }
+        selected = Set(result?.importable.map(\.id) ?? [])
+        load = result.map(SetupLoad.loaded) ?? .failed
+    }
+
     private func takeSetupLink() {
         guard let link = store.setupLink, !working else { return }
         store.setupLink = nil
@@ -382,12 +398,14 @@ struct OnboardingView: View {
         let saved = await store.pair(setup: setup)
         guard !Task.isCancelled else { return }
         if saved {
-            pairingSetup = nil
             // The setup page must describe the Mac that this iPhone now uses, not an earlier one.
             load = .loading
             selected = []
             importError = nil
             skippedSkills = []
+            await checkSetup()
+            guard !Task.isCancelled else { return }
+            pairingSetup = nil
             advance()
         } else {
             pairingError = store.error ?? "Coconut could not pair with this Mac. Ask your Hermes for a new pairing link."
@@ -413,6 +431,8 @@ struct OnboardingView: View {
         guard !Task.isCancelled else { return }
         selected = Set(result?.importable.map(\.id) ?? [])
         withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) { load = result.map(SetupLoad.loaded) ?? .failed }
+        // A setup with nothing to choose leaves the list. The flow moves on, and Back skips the empty page.
+        if step == .setup && !steps.contains(.setup), let next = steps.first(where: { $0 > .setup }) { step = next }
     }
 
     private func runImport(logins: Bool) async {
@@ -464,8 +484,6 @@ struct OnboardingView: View {
         guard !Task.isCancelled else { return }
         guard PushNotifications.shared.allowed else { return advance() }
         notificationsOn = true
-        try? await Task.sleep(for: .seconds(1))
-        if !Task.isCancelled { advance() }
     }
 
     // A step can leave the list while it shows, for example when the person chooses a model.
@@ -570,11 +588,12 @@ private struct PrimaryButton: View {
     var enabled = true
     var identifier: String? = nil
     let action: () -> Void
+    @ScaledMetric(relativeTo: .body) private var height = 52.0
 
     var body: some View {
         Button(action: action) {
             Text(title).font(.body.weight(.semibold))
-                .frame(maxWidth: .infinity, minHeight: 52)
+                .frame(maxWidth: .infinity, minHeight: height)
                 .foregroundStyle(BoardStyle.controlLabel)
                 .background(BoardStyle.control.opacity(enabled ? 1 : 0.35), in: Capsule())
                 .contentTransition(.opacity)
@@ -606,12 +625,14 @@ private struct HermesPairingSteps: View {
     // One command does the setup, so the agent has fewer steps that can fail.
     static let prompt = """
     Set up Coconut on this Mac for my iPhone. If ~/Coconut is missing, clone https://github.com/antiwork/coconut to ~/Coconut.
-    Then run python3 ~/Coconut/scripts/setup_coconut.py and send me the setup link and the QR image that it prints.
+    Then run python3 ~/Coconut/scripts/setup_coconut.py and send me the pairing link and the pairing QR code image that it prints.
     """
 
     let setup: PairingSetup?
     let error: String?
     @State private var copied = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .subheadline) private var numberSize = 28.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -625,11 +646,13 @@ private struct HermesPairingSteps: View {
                         .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
                     Button {
                         UIPasteboard.general.string = Self.prompt
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { copied = true }
+                        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) { copied = true }
                     } label: {
                         Label(copied ? "Copied" : "Copy message", systemImage: copied ? "checkmark" : "doc.on.doc")
                             .font(.subheadline.weight(.semibold))
                             .contentTransition(.symbolEffect(.replace))
+                            .frame(minHeight: 44)
+                            .contentShape(Rectangle())
                     }
                     .accessibilityIdentifier("copy-hermes-prompt")
                 }
@@ -638,26 +661,26 @@ private struct HermesPairingSteps: View {
                 if let setup {
                     Label(setup.name, systemImage: "desktopcomputer")
                         .font(.body.weight(.medium))
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
                 } else {
-                    Text("Tap the setup link on this iPhone, or scan the QR code below.")
+                    Text("Tap the pairing link on this iPhone, or scan the pairing QR code that Hermes sends.")
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
             }
             if let error {
-                Text(error).font(.footnote).foregroundStyle(BoardStyle.accent)
+                InlineError(error)
                     .accessibilityIdentifier("pairing-error")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.spring(response: 0.35, dampingFraction: 0.85), value: setup)
+        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: setup)
     }
 
     private func step<Content: View>(_ number: Int, _ title: String, @ViewBuilder content: () -> Content) -> some View {
         HStack(alignment: .top, spacing: 14) {
             Text("\(number)")
                 .font(.subheadline.weight(.semibold).monospacedDigit())
-                .frame(width: 28, height: 28)
+                .frame(width: numberSize, height: numberSize)
                 .background(Color.primary.opacity(0.08), in: Circle())
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 10) {
@@ -787,7 +810,7 @@ private struct SetupIllustration: View {
                     }
                     .stroke(Color.primary.opacity(0.18), style: StrokeStyle(lineWidth: 1.5, dash: [3, 5]))
                     HStack {
-                        Text("H").font(.system(size: 22, weight: .semibold, design: .serif))
+                        Text("H").font(.system(.title2, design: .serif, weight: .semibold))
                             .frame(width: 52, height: 52)
                             .background(Color.primary.opacity(0.06), in: Circle())
                         Spacer()
@@ -803,7 +826,7 @@ private struct SetupIllustration: View {
                     }
                     if let flying, flying < items.count {
                         Image(systemName: items[flying].icon)
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(.caption.weight(.semibold))
                             .frame(width: 28, height: 28)
                             .background(BoardStyle.paper, in: Circle())
                             .overlay(Circle().stroke(Color.primary.opacity(0.15)))
@@ -839,7 +862,7 @@ private struct SetupIllustration: View {
                 try? await Task.sleep(for: .milliseconds(120))
             }
             flying = nil
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) { landed = items.count }
+            withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.6)) { landed = items.count }
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(loaded ? items.map(\.text).joined(separator: ", ") : "Looking for Hermes")
@@ -906,7 +929,7 @@ private struct CompletionBurst: View {
             BotAvatar(symbol: "fruit.coconut", color: "", size: 72, identity: "complete")
                 .overlay(alignment: .bottomTrailing) {
                     Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 24))
+                        .font(.title2)
                         .foregroundStyle(Color.green)
                         .background(Circle().fill(BoardStyle.paper))
                         .scaleEffect(checked ? 1 : 0.2)
