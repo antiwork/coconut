@@ -1,21 +1,22 @@
 # Install Coconut and update it
 
 The iPhone runs the native app. The Mac mini runs Coconut, Hermes, and the database.
-The app connects through HTTPS over Tailscale. This Mac uses SSH to install and update the mini.
+The app reaches the Mac through Coconut's relay, end-to-end encrypted. The relay sees route IDs, timing, and sizes, never content. See [the relay transport](relay-transport.md).
+The Mac needs no VPN and no open port: Coconut listens only on `127.0.0.1`, and a sidecar keeps an outgoing connection to the relay.
+This Mac uses SSH to install and update the mini.
 
 Source files stay in this local folder. These commands do not publish a GitHub repository.
 
 ## Prepare the Mac mini once
 
 1. Sign into the Mac mini's macOS account.
-2. Connect Tailscale to the same private network as the iPhone.
-3. Enable **Remote Login** in **System Settings → General → Sharing**.
-4. Allow only the macOS account that will run Coconut.
-5. Install Xcode Command Line Tools with `xcode-select --install` if they are absent.
-6. Install Hermes with its [official installer](https://github.com/NousResearch/hermes-agent) in the same macOS account.
-7. Enable **Prevent automatic sleeping when the display is off** in Energy settings.
+2. Enable **Remote Login** in **System Settings → General → Sharing**.
+3. Allow only the macOS account that will run Coconut.
+4. Install Xcode Command Line Tools with `xcode-select --install` if they are absent.
+5. Install Hermes with its [official installer](https://github.com/NousResearch/hermes-agent) in the same macOS account.
+6. Enable **Prevent automatic sleeping when the display is off** in Energy settings.
 
-SSH needs working key access from this development Mac. The installer uses SSH through the mini's Tailscale address.
+SSH needs working key access from this development Mac, through any host name that reaches the mini.
 After saving the mini configuration, open **Connect Mac mini.command** if SSH key access is not ready.
 Enter the mini's password directly in Terminal. The command adds one Coconut-specific public key to the mini's `~/.ssh/authorized_keys`.
 The private key stays in this project's `.runtime/ssh` folder. The command does not store the password.
@@ -26,12 +27,10 @@ Apple documents [Remote Login](https://support.apple.com/guide/mac-help/allow-a-
 
 ## Install from this Mac
 
-Run these commands from the Coconut folder. Replace the example login and address with the mini's values.
+Run these commands from the Coconut folder. Replace the example login with the mini's values.
 
 ```sh
-python3 scripts/remote.py configure \
-  --ssh username@mini.example.ts.net \
-  --address https://mini.example.ts.net:8960
+python3 scripts/remote.py configure --ssh username@mini.local
 python3 scripts/remote.py authorize
 python3 scripts/remote.py doctor
 python3 scripts/remote.py install --copy-model-access
@@ -42,9 +41,10 @@ The installer refuses an unrelated folder. It does not install Hermes. See [The 
 
 `--copy-model-access` transfers this Mac's saved model keys through SSH. The receiver stores them with permissions `0600`.
 Omit this flag to configure separate model access on the mini.
-The source package never includes keys, bot data, certificates, logs, or builds.
+The source package never includes keys, bot data, logs, or builds.
 
 The first installation starts a user LaunchAgent. It restarts Coconut after a process failure and starts after macOS account login.
+It also installs the relay sidecar, the LaunchAgent `com.gumroad.coconut.tunnel`.
 FileVault or a restart can require login before this service becomes available.
 
 This command starts with a new database. It does not copy the development Mac's conversations or profiles.
@@ -158,14 +158,15 @@ The Mac account's Keychain must permit access. See [native credential storage](h
 
 Install the signed iPhone app before pairing. See [the iPhone setup](iphone-install.md).
 
-1. Enable Tailscale on the iPhone.
-2. Open **Pair iPhone.command** on this Mac.
-3. Open Coconut on the iPhone. A new installation opens onboarding. Otherwise, open Settings.
-4. Tap **Scan the code**, or **Scan setup code** in Settings.
-5. Scan the QR displayed on this Mac.
-6. Check the Mac address, then tap **Pair**.
+1. Open **Pair iPhone.command** on this Mac.
+2. Open Coconut on the iPhone. A new installation opens onboarding. Otherwise, open Settings.
+3. Tap **Scan the code**, or **Scan setup code** in Settings.
+4. Scan the QR displayed on this Mac.
+5. Check the Mac name, then tap **Pair**.
 
-The QR contains the Mac address, certificate fingerprint, and a one-time code. It does not contain a model key or device token.
+The QR holds a `coconut://pair` link with the relay route, the Mac's public key, and a one-time secret. It does not contain a model key or device token.
+The secret works once, for ten minutes. If it expires, open the launcher again.
+If no mini configuration exists, the launcher pairs with this development Mac instead.
 
 ### Pair through Hermes
 
@@ -180,27 +181,18 @@ The command does these steps:
 
 1. It checks for macOS and Xcode Command Line Tools.
 2. It finds and checks the Hermes that the person already uses, as the service does at each start. See [The Hermes that Coconut uses](#the-hermes-that-coconut-uses). It does not install its own copy. If Hermes is missing or does not pass the check, it stops and says why.
-3. It checks that Tailscale is connected, then configures the host with this Mac's Tailscale name and port 8960. It keeps a port that an earlier setup chose for the same name.
-4. It prepares notification encryption with `push.py --rebuild`.
-5. It installs or starts the login service, so Coconut starts again after a restart. The service runs under the Python of the Hermes that it finds. Then it waits for the local HTTPS health check.
-6. It runs `python3 scripts/pairing.py --share`. It prints the `coconut://pair` setup link and the path of a QR image that holds the same link last.
+3. It prepares notification encryption with `push.py --rebuild`.
+4. It installs or starts the login service, so Coconut starts again after a restart. Then it waits for the local health check.
+5. It installs the relay sidecar with `tunnel.py install`.
+6. It runs `python3 scripts/pairing.py --share`. It prints the setup link and the path of a QR image that holds the same link last.
 
 Each failed check prints what to do. You can run the command again at any time. It skips the steps that are complete, and it prints a new setup link.
-If the Tailscale name changes, the command stops Coconut before it saves the new address. Every paired iPhone must then pair again.
-If the certificate does not cover the new name, the command stops and prints how to replace the certificate.
-The iPhone needs Tailscale, signed in to the same tailnet as the Mac.
 
 The agent sends the link and the QR image to the person. On the same iPhone, the person taps the link. On another screen, the person scans the QR image in Coconut.
-The link and the image contain the one-time code. Send them only to the person who pairs.
+The link and the image contain the one-time secret. Send them only to the person who pairs.
 If the iPhone already has a pairing, Coconut asks before it replaces it.
-The code expires after five minutes. If it expires, open the launcher or run the command again.
-The app validates HTTPS and the certificate before it sends the code.
 
-If no mini configuration exists, the launcher pairs with this development Mac instead.
-The QR image stays in `.runtime/pairing`. Its expired code cannot create another pairing.
-
-For automatic Tailscale connection, enable VPN On Demand for Wi-Fi and cellular on the iPhone.
-See [Tailscale's instructions](https://tailscale.com/docs/features/client/ios-vpn-on-demand).
+An iPhone that paired before the relay used Tailscale. It shows "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link." Pair it again with a new link.
 
 ## Update the backend
 
@@ -215,10 +207,11 @@ Before it stops Coconut, the updater asks a running service to drain. The servic
 The updater waits up to ten minutes for that, and then it stops the service. A turn that a stop interrupts loses the results of its
 tool calls, and Coconut fails its task at the next start, so that it never repeats an action that may have run. The request ends by
 itself after the wait, so a failed update cannot leave the service paused. A service without this support is stopped at once.
-It retains bot profiles, decisions, events, receipts, artifacts, credentials, and the certificate.
+It retains bot profiles, decisions, events, receipts, artifacts, and credentials.
 Normal updates do not require another iPhone pairing.
 
-The updater runs the Hermes contract check and checks local HTTPS health. This development Mac then checks the mini's API through Tailscale.
+The updater runs the Hermes contract check and checks the service's health on loopback. It rebuilds the relay sidecar, and installs it on a Mac that does not have it yet.
+This development Mac then checks the health and the sidecar's state over SSH.
 If the mini's Hermes worked with the earlier version and fails with the new one, the updater restores the earlier version.
 An intentionally stopped service remains stopped.
 If startup fails, the updater attempts to restore the previous source files. It never restores an older database automatically.
@@ -238,14 +231,13 @@ Repeated requests do not extend the pause. Coconut does not interrupt active tur
 ## Check remote use
 
 1. Turn off Wi-Fi on the iPhone.
-2. Confirm that Tailscale connects through cellular.
-3. Open Coconut and check for a fresh synchronization time.
-4. Send a short task, then close the app.
-5. Reopen the app and inspect the result.
-6. Check that a pending decision survives a backend restart.
+2. Open Coconut and check for a fresh synchronization time.
+3. Send a short task, then close the app.
+4. Reopen the app and inspect the result.
+5. Check that a pending decision survives a backend restart.
 
 Physical iPhone and Mac mini checks remain separate from local tests.
-Tailscale does not provide push notifications. The mini sends encrypted alerts through Coconut's shared relay and APNs.
+The mini sends encrypted notifications through Coconut's shared relay and APNs.
 
 ## Remove Coconut
 
@@ -257,4 +249,4 @@ Delete `~/Coconut` to remove its source files afterward.
 On this development Mac, the same launcher removes its separate runtime.
 Before deleting its runtime, run `python3 scripts/remote.py revoke-access` to remove this installation's SSH authorization from the mini.
 This command removes only the exact public key added by **Connect Mac mini.command**. Other SSH keys remain unchanged.
-Delete the iPhone app to remove the client. Coconut does not uninstall Tailscale or Command Line Tools.
+Delete the iPhone app to remove the client. Coconut does not uninstall Command Line Tools.

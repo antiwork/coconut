@@ -1,8 +1,6 @@
 # Relay transport
 
-Status: the Mac has the tunnel sidecar and pairing v2 (R3), and the app pairs and connects through the tunnel (R4). A phone that paired before R4 keeps its Tailscale and TLS connection until it pairs again with a version 2 link. R5 removes TLS.
-
-The iPhone and the Mac will talk through the Cloudflare relay, not through Tailscale. The relay forwards ciphertext. It sees route IDs, timing, and sizes, never content.
+The iPhone and the Mac talk only through the Cloudflare relay. The relay forwards ciphertext. It sees route IDs, timing, and sizes, never content. The backend listens only on `127.0.0.1`, so the Mac needs no VPN and no open port.
 
 ## Encryption
 
@@ -168,14 +166,14 @@ The app shows these connection states:
 
 The phone's static key and the relay client token live in the Keychain (`local.coconut.tunnel`). Each pairing makes a new key. `pairing.json` holds `{version: 2, relay, route, macKey, deviceId, macName}`. A pending checkout recovery belongs to the route and the Mac key.
 
-A version 1 link shows "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link." `scripts/setup_coconut.py` installs the sidecar before it makes the link, so it always makes a version 2 link.
+A version 1 link, and a version 1 pairing from before the relay, show "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link." `scripts/pairing.py` makes only version 2 links.
 
-## Transition
+## Backend listeners
 
-Until R5, the backend listens on two ports:
+The backend listens with plain HTTP on two loopback ports:
 
-- TLS on `:8960`, for phones that paired before R4. They keep working until they pair with a version 2 link.
-- Plain HTTP on `127.0.0.1:8961`, for the sidecar. `host.py` adds `--tunnel-port 8961` to the service command.
+- `127.0.0.1:8960` for the tools on this Mac. A tool pairs there with a code from `host.py pair`.
+- `127.0.0.1:8961` for the sidecar. Only this listener reads `X-Coconut-Peer`. The deploy checks `/health` here.
 
 ## Loopback test
 

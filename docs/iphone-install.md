@@ -43,7 +43,7 @@ Build logs appear in `.build/iphone/build.log`.
 
 After a build succeeds, `python3 scripts/iphone.py install --skip-build` retries installation without another build.
 After cable pairing, Xcode also supports wireless use on the same Wi-Fi network with IPv6 enabled.
-Coconut’s HTTPS connection is separate from this development connection.
+Coconut’s relay connection is separate from this development connection.
 
 For a new development Mac, configure the signing account and paired phone before running the updater:
 
