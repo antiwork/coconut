@@ -113,10 +113,14 @@ final class AppModel: ObservableObject {
         pairingError = nil
         defer { isPairing = false }
         let tool = tool
+        // The tool must pair the folder that the menu shows, also when the app inherited another COCONUT_INSTALL_DIR.
+        var environment = ProcessInfo.processInfo.environment
+        environment["COCONUT_INSTALL_DIR"] = install.root.path
         let result = await Task.detached { () -> (Int32, String) in
             let process = Process()
             process.executableURL = tool
             process.arguments = ["pair"]
+            process.environment = environment
             let output = Pipe()
             process.standardOutput = output
             process.standardError = output
