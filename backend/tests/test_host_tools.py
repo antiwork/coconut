@@ -62,6 +62,21 @@ class HostToolsTests(unittest.TestCase):
                 self.assertTrue(host.managed_current_process(custom))
                 self.assertFalse(host.managed_current_process(home / 'different-data'))
 
+    def test_the_login_item_of_the_app_enables_restart_when_launchd_runs_this_process(self):
+        with patch.dict(host.os.environ, {'COCONUT_LOGIN_ITEM': host.LOGIN_ITEM_LABEL}), \
+             patch.object(host, 'owned_agent', side_effect=AssertionError('The login item needs no LaunchAgent file.')), \
+             patch.object(host.os, 'getpid', return_value=123), \
+             patch.object(host.subprocess, 'run') as run:
+            run.return_value = subprocess.CompletedProcess([], 0, '  pid = 123\n', '')
+            self.assertTrue(host.managed_current_process())
+            self.assertEqual(run.call_args.args[0][:2], ['launchctl', 'print'])
+            self.assertTrue(run.call_args.args[0][2].endswith('/com.gumroad.coconut.service'))
+            # The variable alone does not count: launchd must run this process.
+            run.return_value = subprocess.CompletedProcess([], 0, '  pid = 456\n', '')
+            self.assertFalse(host.managed_current_process())
+            run.return_value = subprocess.CompletedProcess([], 113, '', 'Could not find service')
+            self.assertFalse(host.managed_current_process())
+
     def test_unavailable_restart_support_does_not_block_manual_start(self):
         with patch.object(host, 'owned_agent', side_effect=SystemExit('Another installation owns the job')):
             self.assertFalse(host.managed_current_process())
@@ -534,6 +549,34 @@ class HostLifecycleTests(unittest.TestCase):
             stop.assert_not_called()
         self.assertIn('Restore its LaunchAgent with:', str(raised.exception))
         self.assertEqual(self.path.read_bytes(), previous)
+
+    def test_the_update_does_not_drain_a_service_of_the_app_login_item(self):
+        self.write_process(drain=True)
+        with patch.object(host, 'login_item_loaded', return_value=True), \
+             patch.object(host, 'owned_agent', return_value=(self.path, False)), \
+             patch.object(host, 'owned_process', return_value=(4242, self.options)):
+            self.assertFalse(host.drain_for_update(timeout=30))
+        self.assertFalse((self.data / 'drain-request').exists())
+
+    def test_the_update_drains_when_the_launch_agent_also_runs_the_service(self):
+        # stop_for_update stops a service of the host.py LaunchAgent, so the drain must happen first.
+        with patch.object(host, 'login_item_loaded', return_value=True), \
+             patch.object(host, 'owned_agent', return_value=(self.path, True)):
+            self.assertFalse(host.app_runs_service())
+        with patch.object(host, 'login_item_loaded', return_value=True), \
+             patch.object(host, 'owned_agent', side_effect=SystemExit('Another installation owns the job')):
+            self.assertFalse(host.app_runs_service())
+
+    def test_the_update_does_not_stop_a_service_of_the_app_login_item(self):
+        loaded = subprocess.CompletedProcess([], 0, 'state = running\n', '')
+        with patch.object(host, 'owned_agent', return_value=(self.path, False)), \
+             patch.object(host, 'owned_process', return_value=(4242, self.options)), \
+             patch.object(host.subprocess, 'run', return_value=loaded) as run, \
+             patch.object(host, 'stop_owned_process') as stop:
+            with self.assertRaisesRegex(SystemExit, 'Coconut.app runs this service'):
+                host.stop_for_update()
+            stop.assert_not_called()
+        self.assertTrue(run.call_args.args[0][2].endswith('/com.gumroad.coconut.service'))
 
     def test_manual_stop_retains_launch_options(self):
         with patch.object(host, 'owned_agent', return_value=(self.path, False)), \

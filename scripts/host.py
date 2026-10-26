@@ -436,7 +436,22 @@ def owned_agent(data_dir: Path | None = None) -> tuple[Path, bool]:
     return path, True
 
 
+# Coconut.app runs the service as this login item (mac/LaunchAgents). Its tool names the label in COCONUT_LOGIN_ITEM.
+LOGIN_ITEM_LABEL = "com.gumroad.coconut.service"
+
+
+def launchd_pid(label: str) -> int | None:
+    """Return the process that launchd runs for a job of this account, or None."""
+    result = subprocess.run(['launchctl', 'print', f'gui/{os.getuid()}/{label}'], capture_output=True, text=True)
+    match = re.search(r'^\s*pid = (\d+)\s*$', result.stdout, re.MULTILINE)
+    return int(match[1]) if result.returncode == 0 and match else None
+
+
 def managed_current_process(data_dir: Path | None = None) -> bool:
+    """Return True when launchd runs this process and starts it again after it exits, so a bot can ask for a restart."""
+    if os.environ.get('COCONUT_LOGIN_ITEM') == LOGIN_ITEM_LABEL:
+        # The login item keeps KeepAlive on (mac/LaunchAgents). The variable alone proves nothing, so launchd decides.
+        return launchd_pid(LOGIN_ITEM_LABEL) == os.getpid()
     try:
         path, loaded = owned_agent(data_dir)
     except (SystemExit, OSError):
@@ -444,9 +459,7 @@ def managed_current_process(data_dir: Path | None = None) -> bool:
         return False
     if not loaded or plistlib.loads(path.read_bytes()).get('KeepAlive') is not True:
         return False
-    result = subprocess.run(['launchctl', 'print', f'gui/{os.getuid()}/{LABEL}'], capture_output=True, text=True)
-    match = re.search(r'^\s*pid = (\d+)\s*$', result.stdout, re.MULTILINE)
-    return result.returncode == 0 and match is not None and int(match[1]) == os.getpid()
+    return launchd_pid(LABEL) == os.getpid()
 
 
 def stop_owned_process() -> None:
@@ -488,6 +501,9 @@ def drain_for_update(timeout: float = DRAIN_SECONDS) -> bool:
     The request ends by itself, so a failed update cannot leave the service paused. A service that does not say
     "drain" in its process record is stopped at once, as before.
     """
+    if app_runs_service():
+        # stop_for_update refuses this service. A drain would only pause its bots until the request ends.
+        return False
     try:
         record = json.loads((DEFAULT_DATA / "process.json").read_text())
     except (OSError, ValueError):
@@ -510,8 +526,30 @@ def drain_for_update(timeout: float = DRAIN_SECONDS) -> bool:
     return False
 
 
+def login_item_loaded() -> bool:
+    try:
+        return subprocess.run(['launchctl', 'print', f'gui/{os.getuid()}/{LOGIN_ITEM_LABEL}'],
+                              capture_output=True, text=True).returncode == 0
+    except OSError:
+        # No launchctl, for example on the Linux CI runner: no login item either.
+        return False
+
+
+def app_runs_service() -> bool:
+    """True when the login item of Coconut.app runs the service and no LaunchAgent of host.py does."""
+    try:
+        _, loaded = owned_agent()
+    except (SystemExit, OSError):
+        return False
+    return not loaded and login_item_loaded()
+
+
 def stop_for_update() -> dict:
     path, loaded = owned_agent()
+    if not loaded and login_item_loaded():
+        # launchd would start the service again while the update replaces its files.
+        raise SystemExit("Coconut.app runs this service with its login item. Update Coconut with Coconut.app. "
+                         "Its source and data remain unchanged.")
     process = owned_process()
     state = {"mode": "managed" if loaded else "manual" if process else "stopped",
              "project": str(ROOT), "data_dir": str(DEFAULT_DATA)}

@@ -32,3 +32,6 @@ xcuserdata/
 *.xcarchive/
 *.xcresult/
 *.ipa
+
+# Coconut.app builds (scripts/mac_app.py)
+/build/
