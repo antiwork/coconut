@@ -157,13 +157,17 @@ def publish(archive: Path, channel: str, signature: str, output: Path, *, feed: 
     if not signature:
         raise SystemExit('The archive needs its EdDSA signature from sign_update.')
     new = new_item(archive, channel, signature)
-    items = merge(parse(feed or b''), new)
+    previous = parse(feed or b'')
+    items = merge(previous, new)
     if output.exists():
         shutil.rmtree(output)
     folder = output / 'mac'
     folder.mkdir(parents=True)
     shutil.copy2(ROOT / 'updates/_headers', output / '_headers')
-    for item in items:
+    # Clients can keep the earlier appcast for its cache time. The archives that it names stay until the next release,
+    # also the ones that the new appcast drops.
+    files = {item.file: item for item in [*items, *previous]}
+    for item in files.values():
         target = folder / Path(item.file).name
         if item.file == new.file:
             shutil.copy2(archive, target)

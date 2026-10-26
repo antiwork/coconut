@@ -114,6 +114,18 @@ class FeedTests(unittest.TestCase):
         self.assertNotEqual(mac_feed.published_name(rebuilt), name)
         self.assertFalse(mac_feed.matches_name('Coconut-0.1.0-512.zip', archive.read_bytes()))
 
+    def test_the_archives_of_the_earlier_feed_stay_for_one_more_release(self):
+        old = self.archive(512, size=2048)
+        feed = mac_feed.render([mac_feed.new_item(old, 'stable', 'old-signature')])
+        old_bytes, old_name = old.read_bytes(), mac_feed.published_name(old)
+        rebuilt = self.archive(512, size=2049)
+        output = self.folder / 'public'
+        items = mac_feed.publish(rebuilt, 'stable', 'new-signature', output, feed=feed, download=lambda url: old_bytes)
+        # The rebuild replaces the item, but a client with the cached earlier appcast still finds its archive.
+        self.assertEqual([entry.file for entry in items], [mac_feed.published_name(rebuilt)])
+        self.assertEqual((output / 'mac' / old_name).read_bytes(), old_bytes)
+        self.assertNotIn(old_name.encode(), (output / 'mac/appcast.xml').read_bytes())
+
     def test_publish_stops_when_a_kept_archive_is_missing_or_changed(self):
         old = self.archive(510)
         feed = mac_feed.render([mac_feed.new_item(old, 'stable', 'old-signature')])
