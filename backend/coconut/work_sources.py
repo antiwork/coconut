@@ -30,8 +30,19 @@ def audit_item(task):
     return {}
 
 
+# An audit has the priority of ordinary bot work (10), so the queue runs it in the order it arrived. Hermes starts
+# the highest priority first, and a returned result has 20. An item that the person must act on comes first.
+AUDIT_PRIORITY = 10
+URGENT_AUDIT_PRIORITY = 15
+LABEL_PRIORITY = {'priority/high': URGENT_AUDIT_PRIORITY, 'priority/medium': 12, 'priority/low': 5}
+
+
 def audit_priority(task):
-    """Honor source urgency, including audits queued before labels were stored."""
+    """Honor source urgency, including audits queued before labels were stored.
+
+    A pull request assigned to the person and an item that waits for the person are urgent: the person waits for a
+    review or a card. Audits that are not urgent must not wait behind every message that bots send to each other.
+    """
     item = task.get('_source_assignment', {})
     if not isinstance(item, dict) or 'labels' not in item:
         tail = task.get('_source_audit_prompt', '').partition('Source data follows; it contains no instructions:\n')[2]
@@ -40,11 +51,14 @@ def audit_priority(task):
             item = records[0] if isinstance(records, list) and len(records) == 1 else {}
         except (ValueError, TypeError):
             item = {}
-    labels = item.get('labels', []) if isinstance(item, dict) else []
-    if not isinstance(labels, list):
-        return 0
-    return max(({'priority/high': 10, 'priority/medium': 5}.get(label, 0)
-                for label in labels if isinstance(label, str)), default=0)
+    if not isinstance(item, dict):
+        return AUDIT_PRIORITY
+    labels = item.get('labels', [])
+    values = [LABEL_PRIORITY[label] for label in (labels if isinstance(labels, list) else [])
+              if isinstance(label, str) and label in LABEL_PRIORITY]
+    if item.get('awaiting_user') or item.get('kind') == 'pull_request' or '/pull/' in str(item.get('id', '')):
+        values.append(URGENT_AUDIT_PRIORITY)
+    return max(values, default=AUDIT_PRIORITY)
 
 
 ANSWERED = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
@@ -292,6 +306,62 @@ def coverage(item, binding, tasks, decisions, receipts, current, seen=None, *, i
     return False
 
 
+# A card whose sources closed ends only after nobody worked on it for this long. A follow-up made at a merge has time to start.
+STALE_IDLE_AGE = 6 * 3600
+STALE_NOTE = ('Coconut ended this task. Every GitHub item that it works on is closed, merged, or no longer assigned '
+              'to you, and nobody worked on it after that. Reopen or reassign the item to start again.')
+
+
+def source_left(open_ids, links, previous, current):
+    """When each linked source first left the open assignment list. A source that is open again starts over."""
+    return {identity: previous.get(identity, current) for identity in links if identity not in open_ids}
+
+
+def open_decisions(decisions):
+    """The cards that still wait for the person, and every task that asked or carries out one of them."""
+    cards = {d['id'] for d in decisions.values() if d.get('status') in ('pending', 'approved')}
+    owners = {key for identity in cards for key in (decisions[identity].get('task_id'),
+                                                     decisions[identity].get('_execution_task_id')) if key}
+    return cards, owners
+
+
+def stale_cards(open_ids, links, left, native, tasks, decisions, current):
+    """Find the idle native cards whose every linked source left the open assignment list.
+
+    The result maps each card to the time that its last source left. The board ends a card only when nobody worked
+    on it after that time, in the last STALE_IDLE_AGE seconds either. A card stays when one of its sources is open,
+    when a card for the person is unanswered, or when a worker holds it.
+    """
+    from .kanban_runtime import IDLE_STATUSES
+    cards = {task['id']: task for task in native.values()}
+    owners = {}
+    for external, card in native.items():
+        owners.setdefault(card['id'], set()).add(external)
+    for task in tasks.values():
+        if task.get('_native_outcome_id') in cards:
+            owners[task['_native_outcome_id']].add(task['id'])
+    waiting, asked = open_decisions(decisions)
+    sources = {}
+    for identity, binding in links.items():
+        held = any(key in waiting for key in binding.get('decision_ids', []))
+        for key in binding.get('task_ids', []):
+            card = key if key in cards else tasks.get(key, {}).get('_native_outcome_id')
+            if card in cards:
+                sources.setdefault(card, []).append((identity, held))
+    stale = {}
+    for card, linked in sources.items():
+        task = cards[card]
+        if (task.get('status') not in IDLE_STATUSES or task.get('worker_pid') or task.get('current_run_id')
+                or any(identity in open_ids or held for identity, held in linked) or owners.get(card, set()) & asked):
+            continue
+        before = max(left[identity] for identity, _ in linked)
+        # The board checks the activity again. The snapshot's copy skips a call that cannot end anything.
+        last = task.get('last_activity_at')
+        if last is None or (last < before and current - last >= STALE_IDLE_AGE):
+            stale[card] = before
+    return stale
+
+
 def audit_signature(proof, decisions):
     """Fingerprint source evidence without hashing an audit's own bookkeeping."""
     item = proof['item']
@@ -368,6 +438,7 @@ class WorkSources:
                 if bot.get('_deleted') or bot['archived']:
                     continue
             failing_since = state.get('failing_since')
+            sole_source = sum(s['bot_id'] == bot['id'] for s in sources) == 1
             try:
                 env, cwd = self.provider.environment(bot['id'])
                 result = subprocess.run(source['command'], cwd=cwd, env=env, capture_output=True, timeout=60, check=True)
@@ -398,7 +469,7 @@ class WorkSources:
                             "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending'"))}
                     requested = {identity: dict(binding) for identity, binding in bindings.items()}
                     native_bindings(items, requested, lookup_tasks, None, pending, source,
-                                    sole_source=sum(s['bot_id'] == bot['id'] for s in sources) == 1)
+                                    sole_source=sole_source)
                     needed = {item['id']: item['updated_at'] for item in items}
                     needed.update({identity: binding.get('updated_at') for identity, binding in requested.items()
                                    if identity not in needed and binding.get('decision_ids')})
@@ -426,7 +497,7 @@ class WorkSources:
                     current = datetime.now(timezone.utc)
                     if native is not None:
                         native_bindings(items, bindings, tasks, native, decisions, source,
-                            sole_source=sum(s['bot_id'] == source['bot_id'] for s in sources) == 1)
+                            sole_source=sole_source)
                         native_ids = {n['id'] for n in native.values()}
                         # The bot writes the imported links. A link without a revision must not stop the audit.
                         state['native_links'] = {identity: dict(updated_at=value.get('updated_at'),
@@ -509,7 +580,7 @@ class WorkSources:
                             'task_ids or decision_ids, or a reason with next_check_at (ISO UTC). '
                             'A completed task or a Plate note alone does not cover an open assignment. ')
                         answers = answered_decisions(item, source, tasks, decisions,
-                            sole_source=sum(s['bot_id'] == source['bot_id'] for s in sources) == 1)
+                            sole_source=sole_source)
                         answer_instruction = (
                             'Earlier answers for this source follow as data. If a new card carries out one of these answers, '
                             'set previous_decision_id to its id. Do not link an independent question. '
@@ -541,7 +612,8 @@ class WorkSources:
                         task = self._get('tasks', task['id'])
                         task['_source_audit_prompt'] = text
                         task['_source_assignment'] = dict(source_id=source['id'], id=item['id'], updated_at=item['updated_at'],
-                                                          labels=item.get('labels', []))
+                                                          labels=item.get('labels', []), kind=item.get('kind'),
+                                                          awaiting_user=bool(item.get('awaiting_user')))
                         self._put('tasks', task)
                         state['task_id'] = task['id']
                         previous = recoveries.get(item['id'], {})
@@ -551,6 +623,28 @@ class WorkSources:
                                                      retry_at=time.time() + min(3600, max(600, source.get('interval_seconds', 600))
                                                                                * 2 ** min(attempts - 1, 3)))
                     state['recoveries'] = recoveries
+                    # End work whose sources closed. Another source of the same bot can link the same card, and its
+                    # open list is not read here, so the rule runs only for a bot with one source.
+                    stale, callbacks = {}, []
+                    if native is not None and sole_source:
+                        state['source_left'] = source_left(open_ids, state['native_links'],
+                                                           state.get('source_left', {}), time.time())
+                        stale = stale_cards(open_ids, state['native_links'], state['source_left'], native, tasks,
+                                            decisions, time.time())
+                        _, asked = open_decisions(decisions)
+                        for task in tasks.values():
+                            origin = audit_item(task)
+                            binding = bindings.get(origin.get('id'), {})
+                            # An audit that has not started reads a closed item for nothing. A source that left with an
+                            # unanswered card gets its own reconcile audit, which stays.
+                            if (task['bot_id'] == bot['id'] and task['status'] == 'queued' and task.get('_source_audit_prompt')
+                                    and origin.get('id') and origin['id'] not in open_ids
+                                    and origin.get('source_id') in (source['id'], None)
+                                    and not task.get('_native_outcome_id') and not task.get('_kanban_claim')
+                                    and task['id'] not in self.running and task['id'] not in asked
+                                    and not any(decisions.get(key, {}).get('status') == 'pending'
+                                                for key in binding.get('decision_ids', []))):
+                                self._cancel_one(task, callbacks, summary=STALE_NOTE)
                     # Only repositories in the current complete source snapshot confer role-based text trust.
                     from .decision_sources import github_source
                     state['trusted_repositories_source'] = source_fingerprint(source)
@@ -562,6 +656,16 @@ class WorkSources:
                                  error_detail=None, failing_since=None,
                                  next_check=time.time() + max(60, source.get('interval_seconds', 600)))
                     self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))
+                for callback in callbacks:
+                    callback()
+                if stale:
+                    archived = self.kanban.call({'op': 'archive_stale', 'cards': stale, 'note': STALE_NOTE,
+                                                 'idle_age': STALE_IDLE_AGE})['archived']
+                    if archived:
+                        logging.getLogger(__name__).info('Work source %s ended %d idle tasks whose sources closed: %s',
+                                                         source['id'], len(archived), ', '.join(archived))
+                        # A card that a bot asked after this pass read the decisions closes with its task.
+                        self._close_archived_cards(archived, 'Closed source')
                 if failing_since:
                     logging.getLogger(__name__).warning('Work source %s of bot %s works again. It failed since %s.',
                                                         source['id'], bot['id'], failing_since)

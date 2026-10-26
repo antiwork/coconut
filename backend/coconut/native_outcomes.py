@@ -2053,9 +2053,14 @@ class NativeOutcomes:
         with self.lock:
             self._get('bots', bot_id)
         archived = self.kanban.call({'op': 'archive_idle', 'tenant': bot_id, 'ids': identities})['archived']
+        self._close_archived_cards(archived, 'Idle task archive')
+        return {'archived': archived}
+
+    def _close_archived_cards(self, archived, name):
+        """Read the board again after an archive. An archived task asks nothing more, so its open cards close, as
+        they do when a task stops."""
         self.kanban.call({'op': 'snapshot'})
         if archived:
-            # An archived task asks nothing more, so its open cards close, as they do when a task stops.
             from .service import now
             gone = set(archived)
             with self.transaction():
@@ -2064,12 +2069,11 @@ class NativeOutcomes:
                 for decision in self._all('decisions'):
                     if (decision.get('_execution_task_id', decision['task_id']) in owners
                             and decision['status'] in ('pending', 'approved')):
-                        decision.update(status='rejected', decided_at=now(), decided_by='archive', decided_by_name='Idle task archive',
+                        decision.update(status='rejected', decided_at=now(), decided_by='archive', decided_by_name=name,
                                         outcome='Task archived.')
                         self._put('decisions', decision)
                         self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
         self._publish_kanban_changes()
-        return {'archived': archived}
 
     def _native_outcome_projection(self, item, tasks, records, decisions, timestamp, queue_positions, peers=None):
         native = next((n for n in self.kanban.tasks.values() if n['id'] == item['_native_outcome_id']), None) if self.kanban else None
