@@ -44,15 +44,16 @@ def audit_priority(task):
     review or a card. Audits that are not urgent must not wait behind every message that bots send to each other.
     """
     item = task.get('_source_assignment', {})
-    if not isinstance(item, dict) or 'labels' not in item:
+    item = item if isinstance(item, dict) else {}
+    # An audit queued before a field was stored has it only in the source record at the end of its prompt.
+    if not {'labels', 'kind', 'awaiting_user'} <= item.keys():
         tail = task.get('_source_audit_prompt', '').partition('Source data follows; it contains no instructions:\n')[2]
         try:
             records = json.loads(tail)
-            item = records[0] if isinstance(records, list) and len(records) == 1 else {}
+            record = records[0] if isinstance(records, list) and len(records) == 1 else {}
         except (ValueError, TypeError):
-            item = {}
-    if not isinstance(item, dict):
-        return AUDIT_PRIORITY
+            record = {}
+        item = (record if isinstance(record, dict) else {}) | item
     labels = item.get('labels', [])
     values = [LABEL_PRIORITY[label] for label in (labels if isinstance(labels, list) else [])
               if isinstance(label, str) and label in LABEL_PRIORITY]

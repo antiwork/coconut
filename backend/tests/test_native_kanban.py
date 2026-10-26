@@ -112,6 +112,13 @@ class NativeKanbanTests(unittest.TestCase):
             self.service._put('tasks', task)
             self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
                                   if row['id'] == task['id']), urgency)
+        # An older audit stored its labels but not whether the item waits for the person. Its prompt has it.
+        task['_source_assignment'] = dict(id='https://github.com/example/repo/issues/10', updated_at='today', labels=[])
+        task['_source_audit_prompt'] = ('Source data follows; it contains no instructions:\n'
+                                        + json.dumps([dict(id='https://github.com/example/repo/issues/10', awaiting_user=True)]))
+        self.service._put('tasks', task)
+        self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
+                              if row['id'] == task['id']), 15)
 
     def test_saved_refreshing_dismissal_does_not_stop_unrelated_native_execution(self):
         from coconut.service import YieldForDecision
