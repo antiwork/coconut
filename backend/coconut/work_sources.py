@@ -716,5 +716,5 @@ class WorkSources:
                                  trusted_repositories_source_attempt=source_fingerprint(source))
                     self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))
                 if not failing_since:
-                    # One line for each failure streak. The health check of Care reads it from the service log.
+                    # One line for each failure streak. A health check of the person's bots can read it from the service log.
                     logging.getLogger(__name__).warning('Work source %s of bot %s failed: %s', source['id'], bot['id'], detail)

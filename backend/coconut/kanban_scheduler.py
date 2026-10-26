@@ -681,7 +681,7 @@ class NativeKanban(NativeOutcomes):
         two lifecycles. So is a native task that has no binding to any request, and a task that adoption skips on
         purpose stays on the list, because nothing else owns it. A task must stay on the list through
         two reports in a row. The snapshot can still show a task that the settle pass just archived, or one that
-        adoption has not bound yet, and the next report no longer lists it. The health check of Care reads the line.
+        adoption has not bound yet, and the next report no longer lists it. A health check of the person's bots can read the line.
         """
         if time.monotonic() < getattr(self, '_orphan_report_after', 0):
             return

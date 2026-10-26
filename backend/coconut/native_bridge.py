@@ -403,7 +403,7 @@ class NativeBridge:
 
 QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Create a required decision card in chat and Inbox, then wait for the human answer. Use for choices, permission, confirmation, missing information, and manual-step results. Never ask for these only in prose. The person can choose an option or type a reply. Honor standing preferences. Do not duplicate an existing pending card.',
                   'parameters': {'type': 'object', 'properties': {
-                      'title': {'type': 'string', 'description': 'A short question naming the specific action and affected thing. Use Simplified Technical English. Example: Correct refunds in the tax report?'},
+                      'title': {'type': 'string', 'description': 'A short question naming the specific action and affected thing. Use plain words and the writing style in your native profile. Example: Correct the totals in the monthly report?'},
                       'explanation': {'type': 'string', 'description': 'Optional supporting detail for chat. Put only facts that change the choice in context or option explanations.'},
                       'options': {'type': 'array', 'minItems': 1, 'maxItems': 8,
                                   'items': {'type': 'object', 'properties': {'id': {'type': 'string'}, 'label': {'type': 'string', 'description': 'A specific, neutral action. Prefer Fix the PR or Leave unchanged to Fix or Leave blocked.'},
