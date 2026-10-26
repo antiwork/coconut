@@ -99,6 +99,10 @@ case "update":
     guard let directory = install.relativePath() else {
         fail("The install folder \(install.root.path) must be inside your home folder.")
     }
+    if install.isCheckout() {
+        print("\(install.root.path) is a Git checkout. Update its source with git pull.")
+        exit(CommandLine.arguments.contains("--if-needed") ? 0 : 1)
+    }
     if CommandLine.arguments.contains("--if-needed") && !source.isNewer(than: install) {
         print("Coconut is up to date.")
         exit(0)

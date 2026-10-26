@@ -49,7 +49,7 @@ final class AppModel: ObservableObject {
         Task {
             await refresh()
             // After Sparkle installs a new app, the new app updates the source that it carries.
-            if legacyAgents.isEmpty && install.isInstalled() {
+            if legacyAgents.isEmpty && install.isInstalled() && !install.isCheckout() {
                 await update(ifNeeded: true)
             }
         }

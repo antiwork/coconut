@@ -21,7 +21,8 @@ If you use Hermes, Coconut onboarding gives you a message for your Hermes agent.
 python3 ~/Coconut/scripts/setup_coconut.py
 ```
 
-The command finds the Hermes that you already use, starts the login service and the relay sidecar, and prints the iPhone setup link.
+The command finds the Hermes that you already use, installs Coconut.app, and prints the iPhone setup link.
+Coconut.app is a menu bar app. Its login items run the service and the relay sidecar, and it updates itself with Sparkle. See [mac/README.md](mac/README.md).
 See [Pair through Hermes](docs/install-and-update.md#pair-through-hermes).
 Coconut runs on that Hermes. It does not install its own copy. Without a usable Hermes, the service starts but runs no bots, and the phone shows why.
 

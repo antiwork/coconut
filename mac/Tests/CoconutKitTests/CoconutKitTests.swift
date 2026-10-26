@@ -233,6 +233,15 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertNil(BundledSource(resources: home.appendingPathComponent("Missing")))
     }
 
+    func testAGitCheckoutIsNotAnInstallOfTheApp() throws {
+        let install = Install(root: home.appendingPathComponent("Coconut"))
+        XCTAssertFalse(install.isCheckout())
+        try write("", to: "Coconut/.git/HEAD")
+        XCTAssertTrue(install.isCheckout())
+        try write(#"{"state": "installed"}"#, to: "Coconut/.coconut-install.json")
+        XCTAssertFalse(install.isCheckout(), "deploy.py owns a folder with its install record.")
+    }
+
     func testDeployNeedsAFolderInsideTheHomeFolder() {
         let home = URL(fileURLWithPath: "/Users/a")
         XCTAssertEqual(Install(root: URL(fileURLWithPath: "/Users/a/Coconut")).relativePath(home: home), "Coconut")
