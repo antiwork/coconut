@@ -9,7 +9,7 @@ Coconut runs on the Hermes that the person installed. Coconut does not install H
 - `minimum` is the oldest Hermes release that the compatibility CI checks.
 - `tested` lists the Hermes releases that passed the compatibility CI. It includes `minimum`.
 
-The contract check decides whether Coconut runs. The service runs `hermes_contract.verify_contract()` against the installed Hermes at each start. When the check passes, Coconut runs, also on a version outside the tested range. When the check fails, Coconut starts in refuse mode. See [Hermes integration](hermes-integration.md#checks).
+The contract check decides whether Coconut runs. The service runs `hermes_contract.verify_contract()` against the installed Hermes at each start. When the check passes, Coconut runs, also on a version outside the tested range. When the check fails, Coconut starts in refuse mode.
 
 The version file decides only whether Coconut reports the version as tested:
 

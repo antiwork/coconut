@@ -44,7 +44,7 @@ PYTHONPATH=backend python3 -m unittest discover -s backend/tests
 ```
 
 Run `CoconutTests` from Xcode for iOS checks.
-See [architecture](docs/architecture.md), [Hermes integration](docs/hermes-integration.md), and [notifications](docs/notifications.md) for implementation details.
+See [architecture](docs/architecture.md) for implementation details, and [relay](relay/README.md) to maintain the shared relay.
 
 ## Removal
 
