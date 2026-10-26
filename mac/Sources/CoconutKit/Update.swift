@@ -80,6 +80,8 @@ public struct DeployResult: Equatable {
     public let ok: Bool
     public let error: String?
     public let packageID: String?
+    /// The error of the relay step. deploy.py keeps a complete update when only that step fails.
+    public let relayError: String?
 
     public init?(output: String) {
         guard let line = output.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("COCONUT_DEPLOY_RESULT=") }),
@@ -89,5 +91,7 @@ public struct DeployResult: Equatable {
         self.ok = ok
         error = object["error"] as? String
         packageID = object["package_id"] as? String
+        let tunnel = object["tunnel"] as? [String: Any]
+        relayError = tunnel?["ok"] as? Bool == false ? (tunnel?["error"] as? String ?? "The relay step failed.") : nil
     }
 }
