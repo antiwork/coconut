@@ -530,7 +530,8 @@ class NativeKanban(NativeOutcomes):
                         if hasattr(self.provider, 'release_kanban_preparation'):
                             self.provider.release_kanban_preparation(identity)
                         finishes.append(dict(op='finish', id=native['id'], run_id=native['current_run_id'],
-                                             state=native_state(item['status']), summary='Worker preparation stopped before dispatch.'))
+                                             state=self._technical_native_state(item) or native_state(item['status']),
+                                             summary='Worker preparation stopped before dispatch.'))
                         continue
                     if not claim or native['current_run_id'] != claim['run_id'] or native['status'] != 'running':
                         continue
@@ -558,7 +559,8 @@ class NativeKanban(NativeOutcomes):
                     else:
                         if hasattr(self.provider, 'release_kanban_preparation'):
                             self.provider.release_kanban_preparation(identity)
-                        state = native_state(status)
+                        # A finished declined-merge lane turn parks its card. See technical_lane.py.
+                        state = self._technical_native_state(item) or native_state(status)
                         if state == 'running':
                             state = 'blocked'
                         finishes.append(dict(op='finish', id=claim['native_id'], run_id=claim['run_id'], state=state,
