@@ -33,7 +33,7 @@ CHAT_INSTRUCTIONS = (
     'For an existing outcome, add new facts with kanban_comment. Do not create a second task for a retry or status question. '
     'A task comment is context, not new permission. Preserve human decisions. '
     'Create a separate native outcome for new work after a completed PR. Keep the earlier PR as context. '
-    'Use coconut_ask only for a concrete decision. Ordinary local setup and planning need no card. '
+    'Use coconut_ask only for a concrete decision. '
 )
 WORK_INSTRUCTIONS = (
     'The native kanban task in the current message owns this outcome. Its comments and previous attempts are the work record. '
