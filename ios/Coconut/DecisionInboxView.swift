@@ -34,8 +34,6 @@ struct DecisionInboxView: View {
     @State private var exiting = false
     @State private var transitionId = UUID()
     @FocusState private var replyFocused: Bool
-    @ScaledMetric(relativeTo: .body) private var actionHeight = 44
-    @State private var cardWidth: CGFloat = 0
     @ScaledMetric(relativeTo: .subheadline) private var undoWidth = 54
     @ScaledMetric(relativeTo: .title2) private var swipeLabelWidth = 145
     private var pending: [Decision] { store.decisions.filter { $0.isPending && !store.answeringDecisionIds.contains($0.id) } }
@@ -174,9 +172,6 @@ struct DecisionInboxView: View {
                     }.frame(maxWidth: .infinity)
                 }
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { cardWidth = $0 }
-            // The buttons stay in place while the cards change above them.
-            if let decision = current { actionButtons(decision, width: cardWidth) }
         }
         .padding(.horizontal, 16)
     }
@@ -207,27 +202,16 @@ struct DecisionInboxView: View {
                 .opacity(reduceMotion && exiting ? 0 : 1)
                 .simultaneousGesture(swipe(decision, width: size.width))
                 .accessibilityElement(children: .contain)
+                // VoiceOver cannot swipe the card, so it gets the swipe's two actions.
+                .accessibilityAction(named: "Later") { leaveByAction(decision, action: .later, width: size.width) }
+                .accessibilityAction(named: "Dismiss") { leaveByAction(decision, action: .dismiss, width: size.width) }
         }
     }
 
-    // The buttons do what the swipe does: Later goes left, Dismiss goes right.
-    private func actionButtons(_ decision: Decision, width: CGFloat) -> some View {
-        HStack(spacing: 12) {
-            Button { leave(decision, action: .later, width: width) } label: {
-                Label("Later", systemImage: "clock").frame(maxWidth: .infinity, minHeight: actionHeight)
-            }
-            .accessibilityIdentifier("inbox-later")
-            Button { leave(decision, action: .dismiss, width: width, direction: 1) } label: {
-                Label("Dismiss", systemImage: "xmark").frame(maxWidth: .infinity, minHeight: actionHeight)
-            }
-            .accessibilityIdentifier("inbox-dismiss")
-        }
-        .font(.subheadline.weight(.medium))
-        .foregroundStyle(.primary)
-        .buttonStyle(HomePressStyle())
-        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
-        .disabled(!canRespond || exiting || horizontalDrag || restoringDecision != nil || confirmingChoice != nil
-                  || updatingIds.contains(decision.id))
+    private func leaveByAction(_ decision: Decision, action: InboxSwipeAction, width: CGFloat) {
+        guard canRespond, !exiting, !horizontalDrag, restoringDecision == nil, confirmingChoice == nil,
+              !updatingIds.contains(decision.id) else { return }
+        leave(decision, action: action, width: width, direction: action == .dismiss ? 1 : -1)
     }
 
     private var overview: some View {
