@@ -342,15 +342,14 @@ final class TrackedWorkItemTests: XCTestCase {
     }
 
     func testPendingStopRequestsCompleteStateBeforeSelectingSuccessor() throws {
-        let client = try APIClient(serverURL: recoveryPairing.route, fingerprint: recoveryPairing.macKey,
-                                   token: "fixture-token")
-        let recent = try client.makeRequest("state")
-        let full = try client.makeRequest("state", fullState: true)
-        XCTAssertEqual(recent.url?.path, "/v1/state")
-        XCTAssertEqual(recent.value(forHTTPHeaderField: "X-Coconut-State"), "recent")
-        XCTAssertEqual(full.url?.path, "/v1/state")
-        XCTAssertNil(full.value(forHTTPHeaderField: "X-Coconut-State"))
-        XCTAssertEqual(full.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-token")
+        let client = APIClient.unconnected(token: "fixture-token")
+        let recent = try client.makeTunnelRequest("state")
+        let full = try client.makeTunnelRequest("state", fullState: true)
+        XCTAssertEqual(recent.path, "/v1/state")
+        XCTAssertEqual(recent.headers["X-Coconut-State"], "recent")
+        XCTAssertEqual(full.path, "/v1/state")
+        XCTAssertNil(full.headers["X-Coconut-State"])
+        XCTAssertEqual(full.headers["Authorization"], "Bearer fixture-token")
 
         let confirmation = CheckoutRecoveryConfirmation(preview: try recoveryPreview(), pairing: recoveryPairing,
                                                         workItemId: "export")

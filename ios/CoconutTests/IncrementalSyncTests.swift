@@ -53,9 +53,8 @@ final class IncrementalSyncTests: XCTestCase {
                 else { try? FileManager.default.removeItem(at: path) }
             }
         }
-        store.serverURL = address; store.pairCode = "fixture"
         let start = ContinuousClock.now
-        await store.pair()
+        await store.pairOverLoopback(address: address, code: "fixture")
         XCTAssertEqual(store.connection, .connected, store.error ?? "No error")
         XCTAssertLessThan(start.duration(to: .now), .seconds(2), "Native settings wait five seconds in this test.")
         let target = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": ["version": 1, "device_id": device,
@@ -112,8 +111,7 @@ final class IncrementalSyncTests: XCTestCase {
         XCTAssertTrue(uncertain.isUncertain, "An incomplete receipt must retain recovery across a transport stop.")
         store.model = "previous-mac-model"
         store.mcpServers = [MCPServer(id: "previous-mac-server", url: "https://example.com/mcp", transport: "http", hasToken: false, editable: true)]
-        store.serverURL = address; store.pairCode = "fixture"
-        await store.pair()
+        await store.pairOverLoopback(address: address, code: "fixture")
         XCTAssertEqual(store.model, state.model)
         XCTAssertTrue(store.mcpServers.isEmpty)
         XCTAssertTrue(store.routines.isEmpty)

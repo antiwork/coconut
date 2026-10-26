@@ -39,9 +39,6 @@ final class AppStore {
     var lastSync: Date?
     var error: String?
     var syncIssue: String?
-    var serverURL = "https://mac-mini.local:8960"
-    var fingerprint = ""
-    var pairCode = ""
     var model = ""
     var modelBaseURL = ""
     var modelConfigured = false
@@ -70,7 +67,10 @@ final class AppStore {
     @ObservationIgnored private var foreground = false
     @ObservationIgnored private var cursor = 0
     @ObservationIgnored private var connectionGeneration = UUID()
-    @ObservationIgnored private var bootstrapPairing = false
+    #if DEBUG && targetEnvironment(simulator)
+    // A test server's loopback address and one-time code. The store pairs with them when it comes to the foreground.
+    @ObservationIgnored private var loopbackBootstrap: (address: String, code: String)?
+    #endif
     @ObservationIgnored private var uncertainWriteKeys: [String: String] = [:]
     @ObservationIgnored private var networkMonitor: NWPathMonitor?
     @ObservationIgnored private var networkAvailable: Bool?
@@ -94,12 +94,12 @@ final class AppStore {
     @ObservationIgnored private var snapshotRequest: (id: UUID, generation: UUID, epoch: UUID, client: APIClient, task: Task<StateSnapshot, Error>)?
 
     var hasPairing: Bool { pairing != nil }
-    // A version 1 pairing still uses Tailscale and TLS. The next pairing link moves it to the relay.
-    var usesLegacyPairing: Bool { pairing.map { !$0.usesTunnel } ?? false }
+    // A version 1 pairing from before the relay used Tailscale and TLS. It cannot connect, so the phone needs a new
+    // pairing link.
+    var usesLegacyPairing: Bool { pairing?.isLegacy ?? false }
     var pairedMacDescription: String {
         guard let pairing else { return "no Mac" }
-        if pairing.usesTunnel { return pairing.macName ?? "your Mac" }
-        return (pairing.serverURL ?? serverURL).replacingOccurrences(of: "https://", with: "")
+        return pairing.macName ?? "your Mac"
     }
     var canSubmitDecision: Bool { isDemo || hasPairing }
     var isBusy: Bool { writeCount > 0 }
@@ -191,10 +191,6 @@ final class AppStore {
         if let configuration: PairingConfiguration = ProtectedCache.read("pairing.json"), PairingToken.read() != nil {
             workVisibility = [:]; workUndo = []; workMutationIds = [:]
             pairing = configuration
-            if let address = configuration.serverURL, let pin = configuration.fingerprint {
-                serverURL = address
-                fingerprint = pin
-            }
             connection = .disconnected
             if let cache: OutgoingCache = ProtectedCache.read("outgoing.json"), cache.deviceId == configuration.deviceId {
                 outgoingMessages = cache.messages.map(\.afterRestart)
@@ -260,11 +256,13 @@ final class AppStore {
         guard !isDemo else { return }
         if active {
             Task { await PushNotifications.shared.refresh(); await syncPushRegistration() }
-            if bootstrapPairing {
-                bootstrapPairing = false
-                Task { await pair() }
+            #if DEBUG && targetEnvironment(simulator)
+            if let bootstrap = loopbackBootstrap {
+                loopbackBootstrap = nil
+                Task { await pairOverLoopback(address: bootstrap.address, code: bootstrap.code) }
                 return
             }
+            #endif
             guard pairing != nil, pollTask == nil, !repairRequired else { return }
             if lastSync.map({ Date().timeIntervalSince($0) > 30 }) ?? true { connection = .connecting }
             beginPolling()
@@ -292,7 +290,11 @@ final class AppStore {
 
     private func makeClient(_ pairing: PairingConfiguration, token: String) throws -> APIClient {
         guard pairing.usesTunnel else {
-            return try APIClient(serverURL: pairing.serverURL ?? "", fingerprint: pairing.fingerprint ?? "", token: token)
+            #if DEBUG && targetEnvironment(simulator)
+            if !pairing.isLegacy, let address = pairing.serverURL { return try APIClient(loopback: address, token: token) }
+            #endif
+            // A version 1 pairing reached the Mac through Tailscale and TLS. The Mac no longer serves that.
+            throw TunnelError.needsRepair
         }
         if let tunnel, tunnel.endpoint == pairing.tunnelEndpoint { return APIClient(tunnel: tunnel, token: token) }
         guard let endpoint = pairing.tunnelEndpoint, let credentials = TunnelCredentials.read(),
@@ -346,7 +348,6 @@ final class AppStore {
         ProtectedCache.remove("outgoing.json")
         workVisibility = [:]; workUndo = []; workMutationIds = [:]
         pairing = configuration
-        pairCode = ""
         cursor = 0
         error = nil
         await reconnect()
@@ -363,35 +364,28 @@ final class AppStore {
         }
     }
 
-    // A version 1 pairing over TLS. Only the simulator test servers use it now; R5 removes it.
-    func pair() async {
+    #if DEBUG && targetEnvironment(simulator)
+    // Pairs with a test server on the Mac's loopback, with its one-time code.
+    func pairOverLoopback(address: String, code: String) async {
         guard !isDemo else { return }
-        guard !pairCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            error = "Enter the one-time pairing code shown on your Mac."
-            return
-        }
         writeCount += 1
         defer { writeCount -= 1 }
         connection = .connecting
         do {
-            let address = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            let pin = APIClient.normalizeFingerprint(fingerprint)
-            let candidate = try APIClient(serverURL: address, fingerprint: pin, token: nil)
+            let candidate = try APIClient(loopback: address, token: nil)
             let response: PairResponse = try await candidate.request("pair", method: "POST", body: APIJSON.encode(
-                PairRequest(code: pairCode.trimmingCharacters(in: .whitespacesAndNewlines), deviceName: UIDevice.current.name)), retryTransient: false)
+                PairRequest(code: code, deviceName: UIDevice.current.name)), retryTransient: false)
             disconnect()
             try PairingToken.save(response.token)
-            let configuration = PairingConfiguration(serverURL: address, fingerprint: pin, deviceId: response.deviceId)
+            let configuration = PairingConfiguration(loopback: address, deviceId: response.deviceId)
             try ProtectedCache.write(configuration, name: "pairing.json")
             await adopt(configuration)
         } catch {
             report(error)
-            if let networkError = error as? URLError, [.networkConnectionLost, .timedOut].contains(networkError.code) {
-                self.error = "The pairing result is unknown. Get a fresh one-time code from your Mac, then pair again."
-            }
             connection = pairing == nil ? .unconfigured : .disconnected
         }
     }
+    #endif
 
     // A new pairing and the Reconnect button call this. Both try the pairing again, also after a refusal.
     func reconnect() async {
@@ -472,7 +466,6 @@ final class AppStore {
         remoteSearchQuery = ""
         remoteSearchBotIds = []
         provider = ""
-        pairCode = ""
         connection = .unconfigured
     }
 
@@ -1893,8 +1886,7 @@ final class AppStore {
             return
         }
         connection = .disconnected
-        syncIssue = (failure as? URLError).map { ConnectionFailure.message(for: $0, serverURL: serverURL) }
-            ?? failure.localizedDescription
+        syncIssue = failure is URLError ? Self.requestFailed : failure.localizedDescription
     }
 
     func syncPushRegistration() async {
@@ -2122,9 +2114,9 @@ final class AppStore {
     private func report(_ error: Error, updateConnection: Bool = true) {
         if let error = error as? URLError {
             self.error = "Couldn't complete this request. Try again."
-            if updateConnection { syncIssue = ConnectionFailure.message(for: error, serverURL: serverURL) }
+            if updateConnection { syncIssue = Self.requestFailed }
             #if DEBUG
-            NSLog("Coconut connection: %@", ConnectionFailure.diagnostic(for: error))
+            NSLog("Coconut connection: URL error %d", error.code.rawValue)
             #endif
         } else if let error = error as? TunnelError {
             self.error = error == .needsRepair ? error.message : "Couldn't complete this request. Try again."
@@ -2132,21 +2124,21 @@ final class AppStore {
         } else { self.error = error.localizedDescription }
     }
 
+    // Only the loopback transport of a simulator debug build fails with a URLError.
+    private static let requestFailed = "The request to your Mac failed. Reconnect to check the current state."
+
     #if DEBUG && targetEnvironment(simulator)
+    // The test servers and scripts/desktop.py start the simulator with a loopback address, and a pairing code or a token.
     private func configureFromLaunchEnvironment() {
         let environment = ProcessInfo.processInfo.environment
         guard let address = environment["COCONUT_SERVER_URL"] else { return }
-        let pin = environment["COCONUT_CERT_SHA256"] ?? ""
-        serverURL = address
-        fingerprint = pin
         if let code = environment["COCONUT_PAIR_CODE"], !code.isEmpty {
-            pairCode = code
-            bootstrapPairing = true
+            loopbackBootstrap = (address, code)
         } else if let token = environment["COCONUT_DEVICE_TOKEN"], !token.isEmpty {
             do {
-                _ = try APIClient(serverURL: address, fingerprint: pin, token: token)
+                _ = try APIClient(loopback: address, token: token)
                 try PairingToken.save(token)
-                let configuration = PairingConfiguration(serverURL: address, fingerprint: pin, deviceId: "simulator-bootstrap")
+                let configuration = PairingConfiguration(loopback: address, deviceId: "simulator-bootstrap")
                 try ProtectedCache.write(configuration, name: "pairing.json")
                 workVisibility = [:]; workUndo = []; workMutationIds = [:]
             pairing = configuration
@@ -2178,8 +2170,9 @@ private final class BackgroundTask {
     }
 }
 
-// pairing.json. Version 2 pairs through the relay tunnel. Version 1 (no `version` key) pairs over TLS through
-// Tailscale; a phone keeps it until it pairs with a version 2 link, and R5 removes it.
+// pairing.json. Version 2 pairs through the relay tunnel. Version 1 (no `version` key) paired over TLS through
+// Tailscale, and its `serverURL` is the Mac's HTTPS address. Such a pairing cannot connect: the phone needs a new pairing
+// link. A simulator debug build also uses version 1, with an http:// loopback address, for the test servers.
 struct PairingConfiguration: Codable, Equatable, Sendable {
     var version = 2
     let deviceId: String
@@ -2189,7 +2182,6 @@ struct PairingConfiguration: Codable, Equatable, Sendable {
     // The name of the Mac from the pairing link, for display only.
     var macName: String?
     var serverURL: String?
-    var fingerprint: String?
 
     init(setup: PairingSetup, deviceId: String) {
         self.deviceId = deviceId
@@ -2199,12 +2191,13 @@ struct PairingConfiguration: Codable, Equatable, Sendable {
         macName = setup.name
     }
 
-    init(serverURL: String, fingerprint: String, deviceId: String) {
+    #if DEBUG && targetEnvironment(simulator)
+    init(loopback serverURL: String, deviceId: String) {
         version = 1
         self.deviceId = deviceId
         self.serverURL = serverURL
-        self.fingerprint = fingerprint
     }
+    #endif
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -2215,13 +2208,20 @@ struct PairingConfiguration: Codable, Equatable, Sendable {
         macKey = try values.decodeIfPresent(String.self, forKey: .macKey)
         macName = try values.decodeIfPresent(String.self, forKey: .macName)
         serverURL = try values.decodeIfPresent(String.self, forKey: .serverURL)
-        fingerprint = try values.decodeIfPresent(String.self, forKey: .fingerprint)
-        guard version == 2 ? tunnelEndpoint != nil : (serverURL != nil && fingerprint != nil) else {
+        guard version == 2 ? tunnelEndpoint != nil : serverURL != nil else {
             throw DecodingError.dataCorruptedError(forKey: .version, in: values, debugDescription: "Incomplete pairing")
         }
     }
 
     var usesTunnel: Bool { version == 2 }
+    // Only a test pairing in a simulator debug build has a loopback address.
+    var isLegacy: Bool {
+        #if DEBUG && targetEnvironment(simulator)
+        return !usesTunnel && serverURL?.hasPrefix("http://") != true
+        #else
+        return !usesTunnel
+        #endif
+    }
 
     var tunnelEndpoint: TunnelEndpoint? {
         guard version == 2, let relay, let url = URL(string: relay), let route,
@@ -2230,10 +2230,9 @@ struct PairingConfiguration: Codable, Equatable, Sendable {
     }
 
     // A pending checkout recovery belongs to one device on one Mac: the route and the Mac key, or for a version 1
-    // pairing the address and the certificate pin.
+    // pairing the address.
     var checkoutIdentity: CheckoutRecoveryPairing {
-        usesTunnel ? CheckoutRecoveryPairing(deviceId: deviceId, route: route ?? "", macKey: macKey ?? "")
-            : CheckoutRecoveryPairing(deviceId: deviceId, route: serverURL ?? "", macKey: fingerprint ?? "")
+        CheckoutRecoveryPairing(deviceId: deviceId, route: (usesTunnel ? route : serverURL) ?? "", macKey: macKey ?? "")
     }
 }
 struct SnapshotCache: Codable, Sendable {
