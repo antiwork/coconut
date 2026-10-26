@@ -117,14 +117,27 @@ final class AppModel: ObservableObject {
     }
 
     /// Install Coconut in the install folder, with the source of this app.
+    /// The service of the app runs only as its login item, so a first install turns on Start at Login. The install
+    /// starts the login item, which must be registered and allowed first.
     func setUp() async {
+        guard activity == nil else { return }
+        UserDefaults.standard.set(true, forKey: Self.startAtLoginKey)
         registerIfNeeded(beforeInstall: true)
+        await refresh()
+        guard loginItems[.service] == .enabled else {
+            updateError = needsApproval
+                ? "Allow Coconut in Login Items, then choose Set Up Coconut again."
+                : loginError ?? "Coconut could not add its login items."
+            return
+        }
         await update(ifNeeded: false)
     }
 
     /// Install the source of this app when it is newer. deploy.py lets the running turns finish first.
-    func update(ifNeeded: Bool) async {
-        guard activity == nil else { return }
+    /// Return whether the install or the update succeeded.
+    @discardableResult
+    func update(ifNeeded: Bool) async -> Bool {
+        guard activity == nil else { return false }
         activity = install.isInstalled() ? "Updating Coconut. Running work finishes first." : "Installing Coconut…"
         updateError = nil
         let result = await runTool(ifNeeded ? ["update", "--if-needed"] : ["update"])
@@ -133,21 +146,25 @@ final class AppModel: ObservableObject {
             updateError = DeployResult(output: result.1)?.error ?? Self.lastLine(result.1) ?? "The update failed."
         }
         await refresh()
+        return result.0 == 0
     }
 
-    /// Hand the service from the earlier LaunchAgents to the login items of this app, then update its source.
+    /// Hand the service from the earlier LaunchAgents to the login items of this app.
+    ///
+    /// The earlier source has no migration command, so the source of this app goes in first, under the earlier
+    /// LaunchAgent: deploy.py drains, stops it, replaces the source and starts it again. Then the new host.py moves it.
     func moveToApp() async {
-        guard activity == nil else { return }
+        guard activity == nil, await update(ifNeeded: true) else { return }
         activity = "Moving Coconut to this app. Running work finishes first."
-        updateError = nil
         let result = await runTool(["migrate"])
         activity = nil
         guard result.0 == 0 else {
             updateError = Self.lastLine(result.1) ?? "Coconut could not move to this app."
             return
         }
+        UserDefaults.standard.set(true, forKey: Self.startAtLoginKey)
         registerIfNeeded()
-        await update(ifNeeded: true)
+        await refresh()
     }
 
     static func lastLine(_ text: String) -> String? {
