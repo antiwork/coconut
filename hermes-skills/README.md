@@ -10,10 +10,9 @@ The workflow of a bot is the person's choice. It lives in the bot's Hermes profi
 
 - `<bot>/BOT` names the bot and its Coconut bot ID.
 - `<bot>/<skill>/SKILL.md` is one skill: one workflow, with Hermes frontmatter (`name`, `description`).
+- `shared/<skill>/SKILL.md` is a skill that more than one bot uses. Each of those bots links it: `<bot>/<skill>` is a symbolic link to `../shared/<skill>`.
 
-| Folder | Bot | Skills |
-|---|---|---|
-| `desk` | Desk | `answer-awaiting-human-issues` |
+The folders of a bot are the list of its skills. For example, `ls hermes-skills/desk` shows Desk's skills.
 
 ## Install a change
 
