@@ -1,0 +1,25 @@
+# Coconut.app
+
+Coconut.app runs Coconut on the person's Mac. It is a menu bar app with two login items.
+
+- `com.gumroad.coconut.service` runs `coconut service`. The tool finds a Python 3.11 or later and starts `host.py serve` from the install folder. host.py then finds the person's Hermes and runs the service under its Python.
+- `com.gumroad.coconut.relay` runs `coconut sidecar`. The tool starts the bundled relay sidecar when the Mac has a relay route.
+
+The install folder is `~/Coconut`. Set `COCONUT_INSTALL_DIR` to use another folder.
+The app does not register its login items while the LaunchAgent of `host.py install-service` or `tunnel.py install` exists.
+
+The menu shows the state of the service, the relay and Hermes. **Pair iPhone…** shows a one-time setup link and its QR code.
+A Hermes agent can print the same link:
+
+```sh
+/Applications/Coconut.app/Contents/Helpers/coconut pair
+```
+
+## Build and test
+
+```sh
+swift test --package-path mac
+python3 scripts/mac_app.py build
+```
+
+The build writes `build/mac/Coconut.app` with an ad-hoc signature.

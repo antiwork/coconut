@@ -1,0 +1,56 @@
+name: Mac app
+
+# Coconut.app runs the service and the relay sidecar on the person's Mac. This job runs the unit tests of mac/, builds
+# the bundle with an ad-hoc signature, and checks that the bundle and its tool work.
+on:
+  pull_request:
+    paths:
+      - 'mac/**'
+      - 'scripts/mac_app.py'
+      - 'scripts/tunnel-sidecar.swift'
+      - 'ios/Tunnel/**'
+      - '.github/workflows/mac-app.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'mac/**'
+      - 'scripts/mac_app.py'
+      - 'scripts/tunnel-sidecar.swift'
+      - 'ios/Tunnel/**'
+      - '.github/workflows/mac-app.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-app-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mac-app:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # The build number is the commit count of HEAD.
+      - name: Run the unit tests
+        run: |
+          xcodebuild -version
+          swift test --package-path mac
+      - name: Build Coconut.app
+        run: python3 scripts/mac_app.py build --output "$RUNNER_TEMP/mac"
+      - name: Check the bundle
+        run: |
+          set -euo pipefail
+          app="$RUNNER_TEMP/mac/Coconut.app"
+          plutil -lint "$app/Contents/Info.plist" "$app"/Contents/Library/LaunchAgents/*.plist
+          for binary in "$app/Contents/MacOS/Coconut" "$app"/Contents/Helpers/*; do
+            test "$(lipo -archs "$binary")" = 'x86_64 arm64'
+          done
+          codesign --verify --deep --strict "$app"
+          "$app/Contents/Helpers/coconut" version
+          # Without an install, the tool reports that, and it reads the files of an install.
+          COCONUT_INSTALL_DIR="$RUNNER_TEMP/none" "$app/Contents/Helpers/coconut" status | grep -q '"service" : "not_installed"'
+          COCONUT_INSTALL_DIR="$PWD" "$app/Contents/Helpers/coconut" status | grep -q '"service" : "stopped"'
