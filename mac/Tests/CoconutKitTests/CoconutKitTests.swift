@@ -106,11 +106,35 @@ final class CoconutKitTests: XCTestCase {
         let launch = Launch.pairingLink(install: install, python: URL(fileURLWithPath: "/usr/local/bin/python3"), environment: [:])
         XCTAssertEqual(launch.arguments.first, "/usr/local/bin/python3")
         XCTAssertEqual(launch.arguments[1], "-c")
-        XCTAssertTrue(launch.arguments[2].contains("pairing.link(pairing.local_payload())"))
         XCTAssertFalse(launch.arguments[2].contains("render"))
         XCTAssertEqual(launch.arguments.last, "/Users/a/Coconut/scripts")
         XCTAssertNil(launch.standardOutput)
         XCTAssertNil(launch.standardError)
+    }
+
+    func testThePairingLinkSaysHowLongEachKindOfCodeLasts() throws {
+        let python = URL(fileURLWithPath: "/usr/bin/env")
+        for (version, minutes) in [(2, "ten"), (1, "five")] {
+            try write("""
+                def local_payload():
+                    return {'version': \(version)}
+                def link(payload):
+                    return 'coconut://pair/abc?setup=x'
+                """, to: "Coconut/scripts/pairing.py")
+            let launch = Launch.pairingLink(install: Install(root: home.appendingPathComponent("Coconut")),
+                                            python: python, environment: [:])
+            let process = Process()
+            process.executableURL = python
+            process.arguments = ["python3"] + launch.arguments.dropFirst()
+            let output = Pipe()
+            process.standardOutput = output
+            try process.run()
+            let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationStatus, 0)
+            XCTAssertEqual(PairingLink(output: text)?.link, "coconut://pair/abc?setup=x")
+            XCTAssertTrue(text.contains("expires after \(minutes) minutes"), text)
+        }
     }
 
     func testTheLoginItemUsesThePathOfTheLoginShell() {

@@ -501,6 +501,9 @@ def drain_for_update(timeout: float = DRAIN_SECONDS) -> bool:
     The request ends by itself, so a failed update cannot leave the service paused. A service that does not say
     "drain" in its process record is stopped at once, as before.
     """
+    if login_item_loaded():
+        # stop_for_update refuses this service. A drain would only pause its bots until the request ends.
+        return False
     try:
         record = json.loads((DEFAULT_DATA / "process.json").read_text())
     except (OSError, ValueError):
