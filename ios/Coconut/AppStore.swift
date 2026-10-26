@@ -2182,6 +2182,8 @@ struct PairingConfiguration: Codable, Equatable, Sendable {
     // The name of the Mac from the pairing link, for display only.
     var macName: String?
     var serverURL: String?
+    // The certificate pin of a version 1 pairing. Only its pending checkout recovery still uses it, to stay visible.
+    var fingerprint: String?
 
     init(setup: PairingSetup, deviceId: String) {
         self.deviceId = deviceId
@@ -2208,6 +2210,7 @@ struct PairingConfiguration: Codable, Equatable, Sendable {
         macKey = try values.decodeIfPresent(String.self, forKey: .macKey)
         macName = try values.decodeIfPresent(String.self, forKey: .macName)
         serverURL = try values.decodeIfPresent(String.self, forKey: .serverURL)
+        fingerprint = try values.decodeIfPresent(String.self, forKey: .fingerprint)
         guard version == 2 ? tunnelEndpoint != nil : serverURL != nil else {
             throw DecodingError.dataCorruptedError(forKey: .version, in: values, debugDescription: "Incomplete pairing")
         }
@@ -2230,9 +2233,10 @@ struct PairingConfiguration: Codable, Equatable, Sendable {
     }
 
     // A pending checkout recovery belongs to one device on one Mac: the route and the Mac key, or for a version 1
-    // pairing the address.
+    // pairing the address and the certificate pin.
     var checkoutIdentity: CheckoutRecoveryPairing {
-        CheckoutRecoveryPairing(deviceId: deviceId, route: (usesTunnel ? route : serverURL) ?? "", macKey: macKey ?? "")
+        usesTunnel ? CheckoutRecoveryPairing(deviceId: deviceId, route: route ?? "", macKey: macKey ?? "")
+            : CheckoutRecoveryPairing(deviceId: deviceId, route: serverURL ?? "", macKey: fingerprint ?? "")
     }
 }
 struct SnapshotCache: Codable, Sendable {

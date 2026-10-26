@@ -164,8 +164,9 @@ final class PairingSetupTests: XCTestCase {
         XCTAssertFalse(pairing.usesTunnel)
         XCTAssertTrue(pairing.isLegacy)
         XCTAssertNil(pairing.tunnelEndpoint)
+        // A pending checkout recovery from before the relay still matches, so Settings keeps its warning.
         XCTAssertEqual(pairing.checkoutIdentity, CheckoutRecoveryPairing(deviceId: "phone", route: "https://mac.tail1.ts.net:8960",
-                                                                         macKey: ""))
+                                                                         macKey: String(repeating: "a", count: 64)))
     }
 
     func testVersionTwoPairingRoundTripsAndNamesTheRouteAndKey() throws {
