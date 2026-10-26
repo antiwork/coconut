@@ -10,8 +10,11 @@ def raw_config(home):
 
 
 def save_config(home, config):
-    from utils import atomic_roundtrip_yaml_save
-    atomic_roundtrip_yaml_save(Path(home) / 'config.yaml', config)
+    if __package__:
+        from .model_catalog import save_yaml
+    else:
+        from model_catalog import save_yaml
+    save_yaml(Path(home) / 'config.yaml', config)
 
 
 def mode(value):

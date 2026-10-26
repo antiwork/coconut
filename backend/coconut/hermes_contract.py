@@ -81,6 +81,7 @@ def verify_contract():
                                   set_hermes_home_override, reset_hermes_home_override)
     from agent.reasoning_effort import codex_supported_efforts
     from utils import atomic_roundtrip_yaml_save
+    from hermes_yaml import roundtrip_yaml
     from .hermes_worker import BOT_CREATION_SCHEMA, BOT_DELETION_SCHEMA, PROPOSAL_SCHEMA
     from .native_bridge import QUESTION_SCHEMA
     from cron import jobs
@@ -200,7 +201,7 @@ def verify_contract():
         models.get_default_model_for_provider, profiles.resolve_profile_env, auth.resolve_provider,
         auth._provider_state_in, auth._load_auth_store, config.require_env_writable, config.save_env_value,
         parse_reasoning_effort, resolve_reasoning_config, codex_supported_efforts,
-        set_hermes_home_override, reset_hermes_home_override, atomic_roundtrip_yaml_save,
+        set_hermes_home_override, reset_hermes_home_override, atomic_roundtrip_yaml_save, roundtrip_yaml,
     ):
         if not callable(function):
             raise ValueError('Hermes removed a required native settings interface.')
