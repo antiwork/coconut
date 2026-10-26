@@ -200,8 +200,31 @@ def card_answer_steps(task, decision):
     steps = task.get('_source_answer_steps')
     if (isinstance(steps, dict) and decision and decision.get('action_type') == 'question'
             and str(steps.get('url')).lower() in {link.lower() for link in github_links(decision)}):
-        return steps['text']
+        return current_answer_steps(task)
     return None
+
+
+def current_answer_steps(task):
+    """Rebuild the saved answer steps of an audit task with today's rules.
+
+    A task saves its steps when it starts, and its card can resume much later. Older tasks saved only the text, so
+    their issue type comes from that text and their labels from the saved assignment.
+    """
+    steps = task.get('_source_answer_steps')
+    if not isinstance(steps, dict) or not steps.get('url'):
+        return None
+    kind = steps.get('kind', 'Issue' if 'gh issue close' in str(steps.get('text')) else None)
+    labels = steps.get('labels', (task.get('_source_assignment') or {}).get('labels') or ())
+    return answer_steps(steps['url'], kind, labels)
+
+
+def current_audit_prompt(task):
+    """Return the audit prompt of a task with its answer steps rebuilt by current_answer_steps."""
+    prompt = task.get('_source_audit_prompt')
+    steps = task.get('_source_answer_steps')
+    if not prompt or not isinstance(steps, dict) or not steps.get('text'):
+        return prompt
+    return prompt.replace(steps['text'], current_answer_steps(task) or steps['text'])
 
 
 def awaiting_user(items, labels, run):
@@ -654,7 +677,8 @@ class WorkSources:
                         task['_source_audit_prompt'] = text
                         if item.get('awaiting_user'):
                             from .decision_sources import github_source
-                            task['_source_answer_steps'] = dict(url=github_source(item['id'])[2],
+                            task['_source_answer_steps'] = dict(url=github_source(item['id'])[2], kind=item.get('github_type'),
+                                                                labels=list(item.get('labels') or []),
                                                                 text=answer_steps(item['id'], item.get('github_type'), item.get('labels')))
                         task['_source_assignment'] = dict(source_id=source['id'], id=item['id'], updated_at=item['updated_at'],
                                                           labels=item.get('labels', []), kind=item.get('kind'),

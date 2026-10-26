@@ -11,7 +11,7 @@ from uuid import uuid4
 from coconut.hermes_worker import conversation_input
 from coconut.providers import FixtureProvider
 from coconut.service import Service
-from coconut.work_sources import answer_steps, awaiting_user, card_answer_steps, coverage
+from coconut.work_sources import answer_steps, awaiting_user, card_answer_steps, coverage, current_audit_prompt
 
 
 URL = 'https://github.com/example/private/issues/7'
@@ -123,6 +123,28 @@ class AnswerStepsTests(unittest.TestCase):
         self.assertIsNone(card_answer_steps(task, None))
         self.assertIsNone(card_answer_steps({}, card))
 
+    def test_a_task_saved_before_the_label_rule_gets_todays_steps(self):
+        # Before the label rule, a task saved only the text, and that text closed every answered issue.
+        old = ('After the person answers, post their answer to the source as a comment in their words or with the chosen choice, '
+               'then verify the comment. Then close the issue with gh issue close ' + URL + ' and verify that the issue is closed. '
+               'Do not close it when the answer says to keep the issue open, '
+               'or when the answer asks a question back instead of deciding. ')
+        card = dict(action_type='question', sources=[dict(kind='issue', title='Plan', url=URL)])
+        task = dict(_source_answer_steps=dict(url=URL, text=old),
+                    _source_assignment=dict(labels=['enhancement', 'awaiting-human']),
+                    _source_audit_prompt='Reconcile these open assignments. ' + old + 'Reuse a pending card.')
+        steps = card_answer_steps(task, card)
+        self.assertNotIn('gh issue close', steps)
+        self.assertIn('Do not close the source.', steps)
+        self.assertEqual(current_audit_prompt(task), 'Reconcile these open assignments. ' + steps + 'Reuse a pending card.')
+        # Without a work label, the old task gets the settled-only rule.
+        task['_source_assignment'] = dict(labels=['awaiting-human'])
+        self.assertEqual(card_answer_steps(task, card), answer_steps(URL, 'Issue', ['awaiting-human']))
+        self.assertIn('If you are not sure, keep it open.', current_audit_prompt(task))
+        # A pull request saved before the rule had no close step, and still has none.
+        task['_source_answer_steps'] = dict(url=URL, text=answer_steps(URL, 'PullRequest'))
+        self.assertIn('Do not close the source.', card_answer_steps(task, card))
+
 
 class AwaitingAuditTests(unittest.TestCase):
     def setUp(self):
@@ -169,7 +191,7 @@ class AwaitingAuditTests(unittest.TestCase):
         self.assertIn('Then close it with gh issue close ' + URL, prompt)
         self.assertIn('"awaiting_user": true', prompt)
         self.assertEqual(self.service._get('tasks', state['task_id'])['_source_answer_steps'],
-                         dict(url=URL, text=answer_steps(URL, 'Issue')))
+                         dict(url=URL, kind='Issue', labels=['awaiting-human'], text=answer_steps(URL, 'Issue')))
 
     def test_pull_request_behind_an_issue_url_stays_open(self):
         self.kind = 'PullRequest'
