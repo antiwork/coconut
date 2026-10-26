@@ -260,8 +260,8 @@ def _instant(value):
     return instant if instant.tzinfo else instant.replace(tzinfo=timezone.utc)
 
 
-# How long an answered card covers an item while the bot posts the answer. An item that still waits for the person
-# after this time never got the answer, so the next audit posts the recorded answer.
+# How long an answered card covers an item while the bot delivers the answer. An item that still waits for the person
+# after this time did not get the answer, so the next audit gives the item and its answered cards to the bot again.
 ANSWER_POST_SECONDS = 3600
 
 
@@ -271,8 +271,9 @@ def card_covers(item, binding, decisions, cards, now=None):
     A pending card covers the item. So does a dismissal, or a rejection with no text, that is not older than the item's
     latest change: the person chose not to act, so the bot posts nothing and does not ask again.
     Any other answer that is not older than the item's latest change covers it for ANSWER_POST_SECONDS, because the
-    bot posts that answer to the source next. The item still waits for the person only while the latest comment is
-    not theirs, so after that time the answer did not reach the source, and the next audit posts it.
+    bot delivers that answer to the source next. The item still waits for the person only while the latest comment is
+    not theirs, so after that time the answer did not reach the source, and the next audit gives the item to the bot
+    again with its answered cards. The bot's own skills say what to do with them.
     """
     linked = list(cards.get(item['id'], [])) + [decisions[key] for key in binding.get('decision_ids', []) if key in decisions]
     changed = _instant(item.get('updated_at'))
@@ -643,7 +644,6 @@ class WorkSources:
                             'mark its recommendation, and include the source link in sources. '
                             'A delegated ruling, a scheduled recheck, or a wait for another party does not answer it. '
                             'Do not create a card for a choice that the latest comments already settle. '
-                            'If an answered card below has an answer that is not on the source yet, do not ask again: post that recorded answer now. '
                             + answer_steps(item['id'], item.get('github_type')) + 'Reuse a pending card about this source instead of creating another. '
                             if item.get('awaiting_user') else '')
                         text = ('Reconcile these open assignments against the original sources and existing work. '
