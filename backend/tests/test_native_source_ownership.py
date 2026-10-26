@@ -82,7 +82,7 @@ print(identity)
         self.audit()
         priorities = {row['id']: row['priority'] for row in self.service._kanban_rows()}
         tasks = {task.get('_source_assignment', {}).get('id'): task for task in self.service._all('tasks')}
-        for item, expected in zip(self.items, (10, 5)):
+        for item, expected in zip(self.items, (15, 12)):
             task = tasks[item['id']]
             self.assertEqual(task['_source_assignment']['labels'], item['labels'])
             self.assertEqual(priorities[task['id']], expected)

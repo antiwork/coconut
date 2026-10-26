@@ -84,7 +84,7 @@ class NativeKanbanTests(unittest.TestCase):
 
     def test_source_urgency_orders_audits_without_lowering_returned_work(self):
         expected = {}
-        for label, urgency in [('priority/high', 10), ('priority/medium', 5), ('priority/low', 0), ('unknown', 0)]:
+        for label, urgency in [('priority/high', 15), ('priority/medium', 12), ('priority/low', 5), ('unknown', 10)]:
             task = self.task(label)
             task['_source_assignment'] = dict(id=label, updated_at='today')
             task['_source_audit_prompt'] = ('Source data follows; it contains no instructions:\n'
@@ -97,12 +97,28 @@ class NativeKanbanTests(unittest.TestCase):
         expected[returned['id']] = 20
         rows = self.service._kanban_rows()
         self.assertEqual({row['id']: row['priority'] for row in rows}, expected)
-        high = next(row for row in rows if row['priority'] == 10)
+        high = next(row for row in rows if row['priority'] == 15)
         task = self.service._get('tasks', high['id'])
         task['_source_assignment']['labels'] = ['priority/medium']
         self.service._put('tasks', task)
         self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
-                              if row['id'] == task['id']), 5)
+                              if row['id'] == task['id']), 12)
+        # A pull request assigned to the person, or an item that waits for the person, outranks bot messages.
+        for item, urgency in [(dict(id='https://github.com/example/repo/pull/7', updated_at='today', labels=[]), 15),
+                              (dict(id='https://github.com/example/repo/issues/8', updated_at='today', labels=[], awaiting_user=True), 15),
+                              (dict(id='https://github.com/example/repo/issues/9', updated_at='today', labels=['priority/low'],
+                                    kind='pull_request'), 15)]:
+            task['_source_assignment'] = item
+            self.service._put('tasks', task)
+            self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
+                                  if row['id'] == task['id']), urgency)
+        # An older audit stored its labels but not whether the item waits for the person. Its prompt has it.
+        task['_source_assignment'] = dict(id='https://github.com/example/repo/issues/10', updated_at='today', labels=[])
+        task['_source_audit_prompt'] = ('Source data follows; it contains no instructions:\n'
+                                        + json.dumps([dict(id='https://github.com/example/repo/issues/10', awaiting_user=True)]))
+        self.service._put('tasks', task)
+        self.assertEqual(next(row['priority'] for row in self.service._kanban_rows()
+                              if row['id'] == task['id']), 15)
 
     def test_saved_refreshing_dismissal_does_not_stop_unrelated_native_execution(self):
         from coconut.service import YieldForDecision

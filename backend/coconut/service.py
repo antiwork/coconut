@@ -2535,11 +2535,12 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         for task_id in related - {task['id']}:
             self._cancel_one(self._get('tasks', task_id), callbacks)
 
-    def _cancel_one(self, task: dict, callbacks: list, *, include_finished=False):
+    def _cancel_one(self, task: dict, callbacks: list, *, include_finished=False,
+                    summary='Cancelled. An action already executing may have finished.'):
         if task['status'] == 'cancelled' or (task['status'] not in self.ACTIVE and not include_finished):
             return
         task.pop('_return_pending', None)
-        task.update(status='cancelled', summary='Cancelled. An action already executing may have finished.', updated_at=now())
+        task.update(status='cancelled', summary=summary, updated_at=now())
         self._put('tasks', task)
         for decision in self._all('decisions'):
             owner = decision.get('_execution_task_id', decision['task_id'])

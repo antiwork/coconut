@@ -488,15 +488,42 @@ class Board:
             cached = self._diagnostics[task.id] = (key, [dict(kind=d.kind, severity=d.severity, title=d.title) for d in found])
         return last, cached[1]
 
+    def _idle(self, identity, idle_age, before=None, tenant=None):
+        """Whether a task waits without a worker, unchanged for `idle_age` seconds and, with `before`, since that time."""
+        task = self.kb.get_task(self.conn, identity)
+        if (task is None or tenant is not None and task.tenant != tenant or task.status not in IDLE_STATUSES
+                or task.worker_pid or task.current_run_id):
+            return False
+        last, _ = self.activity(task)
+        return bool(last) and time.time() - last >= idle_age and (before is None or last < before)
+
     def archive_idle(self, tenant, identities):
         """Archive the person's idle tasks of one bot. A task that changed since the phone listed it stays."""
+        return [identity for identity in identities
+                if self._idle(identity, IDLE_AGE, tenant=tenant) and self.kb.archive_task(self.conn, identity)]
+
+    def archive_stale(self, cards, note, idle_age):
+        """Archive idle tasks whose sources closed, with a note on each task.
+
+        `cards` maps each task to the time its last source left. A source of one bot also links the tasks that it
+        delegated to other bots, so the tasks can belong to any bot. A task that changed after that time, or in the
+        last `idle_age` seconds, stays. So does a task with an open child outside this list, because its archive
+        would start the child.
+        """
+        eligible = {identity for identity, before in cards.items() if self._idle(identity, idle_age, before)}
+        children = {}
+        for parent, child in self.conn.execute(
+                'SELECT l.parent_id, l.child_id FROM task_links l JOIN tasks c ON c.id=l.child_id '
+                "WHERE c.status NOT IN ('done','archived') AND l.parent_id IN (SELECT value FROM json_each(?))",
+                (json.dumps(sorted(eligible)),)):
+            children.setdefault(parent, set()).add(child)
+        while kept := {identity for identity in eligible if children.get(identity, set()) - eligible}:
+            eligible -= kept
         archived = []
-        for identity in identities:
-            task = self.kb.get_task(self.conn, identity)
-            if task is None or task.tenant != tenant or task.status not in IDLE_STATUSES:
-                continue
-            last, _ = self.activity(task)
-            if last and time.time() - last >= IDLE_AGE and self.kb.archive_task(self.conn, identity):
+        for identity in sorted(eligible):
+            # The note comes after the archive. A note on a task that stays would count as new work on it.
+            if self.kb.archive_task(self.conn, identity):
+                self.kb.add_comment(self.conn, identity, 'coconut', note)
                 archived.append(identity)
         return archived
 
@@ -658,6 +685,8 @@ def main():
                                                  request.get('error_code'))}
                 elif request['op'] == 'archive_idle':
                     result = {'archived': board.archive_idle(request['tenant'], request['ids'])}
+                elif request['op'] == 'archive_stale':
+                    result = {'archived': board.archive_stale(request['cards'], request['note'], request['idle_age'])}
                 elif request['op'] == 'archive_settled':
                     result = {'ok': board.archive_settled(request['id'], request.get('summary'), request.get('rekind_event'))}
                 elif request['op'] == 'promote':
