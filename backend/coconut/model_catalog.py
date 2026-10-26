@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from copy import deepcopy
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -634,10 +635,60 @@ def _catalog(config, model, provider, base_url, rows):
             'default_configured': configured}
 
 
+def save_yaml(path, config):
+    """Save a Hermes config file through Hermes, in block style.
+
+    Coconut creates a new profile's config.yaml as JSON. Hermes's round-trip save keeps that flow style, and the flow
+    text that it writes can have a plain URL in a flow mapping, which libyaml rejects. Before the save, this function
+    rewrites a flow-style file in block style, so the result parses with a strict loader.
+    """
+    from utils import atomic_roundtrip_yaml_save
+    path = Path(path)
+    _block_style(path)
+    atomic_roundtrip_yaml_save(path, config)
+
+
+def _block_style(path):
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+    from hermes_yaml import roundtrip_yaml
+    try:
+        text = path.read_text(encoding='utf-8')
+    except FileNotFoundError:
+        return
+    yaml = roundtrip_yaml()
+    try:
+        data = yaml.load(text)
+    except Exception:
+        # Hermes's save refuses an unreadable file with its own error.
+        return
+    changed, pending = False, [data]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (CommentedMap, CommentedSeq)):
+            if node.fa.flow_style():
+                node.fa.set_block_style()
+                changed = True
+            pending.extend(node.values() if isinstance(node, CommentedMap) else node)
+    if not changed:
+        return
+    output = io.StringIO()
+    yaml.dump(data, output)
+    mode = path.stat().st_mode & 0o777
+    with tempfile.NamedTemporaryFile('w', encoding='utf-8', dir=path.parent, prefix='.config_', delete=False) as handle:
+        try:
+            handle.write(output.getvalue())
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.chmod(handle.name, mode)
+            os.replace(handle.name, path)
+        except BaseException:
+            os.unlink(handle.name)
+            raise
+
+
 def _write_default(selection, catalog):
     from hermes_cli.config import (clear_model_endpoint_credentials,
                                    get_config_path, require_readable_config_before_write)
-    from utils import atomic_roundtrip_yaml_save
     from hermes_constants import _canonical_model_variants
     selected = resolve_selection(selection, catalog)
     path = get_config_path()
@@ -676,7 +727,7 @@ def _write_default(selection, catalog):
     raw['agent'] = agent
     if (path.read_bytes() if path.exists() else None) != before:
         raise ModelCatalogError('Hermes settings changed. Refresh before saving again.')
-    atomic_roundtrip_yaml_save(path, raw)
+    save_yaml(path, raw)
 
 
 def _read_profile(home, inherited):
@@ -712,7 +763,6 @@ def _read_profile(home, inherited):
 def _write_profile(home, selection, catalog):
     from hermes_cli.config import require_readable_config_before_write
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from utils import atomic_roundtrip_yaml_save
     path = Path(home) / 'config.yaml'
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     token = set_hermes_home_override(home)
@@ -742,7 +792,7 @@ def _write_profile(home, selection, catalog):
                     raw.pop('agent', None)
             if (path.read_bytes() if path.exists() else None) != before:
                 raise ModelCatalogError('Hermes settings changed. Refresh before saving again.')
-            atomic_roundtrip_yaml_save(path, raw)
+            save_yaml(path, raw)
         return _read_profile(home, catalog['default'])
     finally:
         reset_hermes_home_override(token)

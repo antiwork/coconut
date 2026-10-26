@@ -203,6 +203,7 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_session_maintenance.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_model_catalog_native.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_settings_migration.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_config_yaml_style.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_runtime_environment.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_provider_failure_retry.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_settle_native_orphans.py 2> .runtime/settle-native-orphans.log || { cat .runtime/settle-native-orphans.log; exit 1; }
