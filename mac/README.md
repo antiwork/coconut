@@ -68,7 +68,7 @@ The version is in `mac/VERSION`. The build number is the commit count of `main`.
 2. It imports the Developer ID Application identity into a temporary keychain.
 3. It builds the app and signs each part with the hardened runtime and a timestamp.
 4. It sends the app to the notary service with `notarytool` and an App Store Connect API key, and staples the ticket.
-5. It makes `Coconut-<version>-<build>.zip`, or `Coconut-<version>-<build>-nightly.zip`, and signs it with Sparkle's `sign_update`. An archive over 25 MiB stops the release.
+5. It makes `Coconut-<version>-<build>.zip`, or `Coconut-<version>-<build>-nightly.zip`, and signs it with Sparkle's `sign_update`. An archive over 25 MiB stops the release. The feed publishes it with the start of its SHA-256 in the name, so each file has its own URL.
 6. `scripts/mac_feed.py publish` builds the feed: the new archive, plus the newest five archives of each channel from the live feed.
 7. It deploys the Worker `coconut-updates` with Wrangler and checks that the live feed has the new build.
 

@@ -4,7 +4,9 @@
 The Worker keeps no files between deployments, so each release builds the complete assets folder:
 
   mac/appcast.xml                     the feed, with the newest KEEP items of each channel
-  mac/Coconut-<version>-<build>.zip   the archives of those items: the new one, and the others from the live feed
+  mac/Coconut-<version>-<build>[-nightly]-<digest>.zip
+                                      the archives of those items: the new one, and the others from the live feed.
+                                      <digest> is the start of the SHA-256 of the file, so each file has its own URL.
   _headers                            the content types and cache times (updates/_headers)
 
   mac_feed.py latest-build --channel nightly
@@ -21,6 +23,7 @@ import argparse
 import base64
 import hashlib
 import plistlib
+import re
 import shutil
 import sys
 import urllib.error
@@ -35,6 +38,8 @@ ElementTree.register_namespace('sparkle', SPARKLE)
 # Each channel keeps this many items. An app that is older than all of them still updates to the newest one.
 KEEP = 5
 BASE_URL = FEED_URL.rsplit('/', 1)[0]
+# The hex digits of the SHA-256 that end each published archive name.
+DIGEST_LENGTH = 16
 
 
 def tag(name: str) -> str:
@@ -125,10 +130,23 @@ def app_info(archive: Path) -> dict:
         return plistlib.loads(bundle.read('Coconut.app/Contents/Info.plist'))
 
 
+def published_name(archive: Path) -> str:
+    """The archive name with the start of its SHA-256. A rebuild of the same build gets a new URL, so no client can
+    combine a cached earlier file with the signature of the new one."""
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()[:DIGEST_LENGTH]
+    return f'{archive.stem}-{digest}{archive.suffix}'
+
+
+def matches_name(name: str, data: bytes) -> bool:
+    """True when the data is the file that the name promises: the name ends with the start of its SHA-256."""
+    match = re.search(rf'-([0-9a-f]{{{DIGEST_LENGTH}}})\.zip$', name)
+    return match is not None and hashlib.sha256(data).hexdigest().startswith(match[1])
+
+
 def new_item(archive: Path, channel: str, signature: str, now: datetime | None = None) -> Item:
     info = app_info(archive)
     return Item(version=info['CFBundleShortVersionString'], build=int(info['CFBundleVersion']), channel=channel,
-                file=archive.name, length=archive.stat().st_size, signature=signature,
+                file=published_name(archive), length=archive.stat().st_size, signature=signature,
                 published=format_datetime(now or datetime.now(timezone.utc)),
                 minimum_system=info.get('LSMinimumSystemVersion', MINIMUM_SYSTEM))
 
@@ -138,7 +156,8 @@ def publish(archive: Path, channel: str, signature: str, output: Path, *, feed: 
     """Write the complete assets folder for a release. Return the items of the new feed."""
     if not signature:
         raise SystemExit('The archive needs its EdDSA signature from sign_update.')
-    items = merge(parse(feed or b''), new_item(archive, channel, signature))
+    new = new_item(archive, channel, signature)
+    items = merge(parse(feed or b''), new)
     if output.exists():
         shutil.rmtree(output)
     folder = output / 'mac'
@@ -146,12 +165,12 @@ def publish(archive: Path, channel: str, signature: str, output: Path, *, feed: 
     shutil.copy2(ROOT / 'updates/_headers', output / '_headers')
     for item in items:
         target = folder / Path(item.file).name
-        if item.file == archive.name:
+        if item.file == new.file:
             shutil.copy2(archive, target)
             continue
         data = download(f'{BASE_URL}/{item.file}')
         # A kept archive must be the file that its signature covers. A changed or missing file stops the release.
-        if data is None or len(data) != item.length:
+        if data is None or len(data) != item.length or not matches_name(item.file, data):
             raise SystemExit(f'The live feed has no complete {item.file}. Coconut did not publish a feed that names it.')
         target.write_bytes(data)
     (folder / 'appcast.xml').write_bytes(render(items))

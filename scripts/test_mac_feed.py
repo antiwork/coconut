@@ -83,7 +83,7 @@ class FeedTests(unittest.TestCase):
     def test_the_new_item_reads_the_version_and_the_build_from_the_archive(self):
         archive = self.archive(512, 'nightly')
         new = mac_feed.new_item(archive, 'nightly', 'sig', datetime(2026, 10, 26, 12, tzinfo=timezone.utc))
-        self.assertEqual((new.version, new.build, new.file, new.length), ('0.1.0', 512, archive.name, archive.stat().st_size))
+        self.assertEqual((new.version, new.build, new.file, new.length), ('0.1.0', 512, mac_feed.published_name(archive), archive.stat().st_size))
         self.assertEqual(new.published, 'Mon, 26 Oct 2026 12:00:00 +0000')
 
     def test_publish_writes_the_complete_assets_folder(self):
@@ -97,17 +97,30 @@ class FeedTests(unittest.TestCase):
         output = self.folder / 'public'
         items = mac_feed.publish(new, 'nightly', 'new-signature', output, feed=feed, download=download)
         self.assertEqual([entry.build for entry in items], [512, 510])
-        self.assertEqual(requested, [f'{BASE}/{old.name}'])
-        self.assertEqual(sorted(path.name for path in (output / 'mac').iterdir()), sorted(['appcast.xml', old.name, new.name]))
-        self.assertEqual((output / 'mac' / new.name).read_bytes(), new.read_bytes())
+        old_name, new_name = mac_feed.published_name(old), mac_feed.published_name(new)
+        self.assertEqual(requested, [f'{BASE}/{old_name}'])
+        self.assertEqual(sorted(path.name for path in (output / 'mac').iterdir()), sorted(['appcast.xml', old_name, new_name]))
+        self.assertEqual((output / 'mac' / new_name).read_bytes(), new.read_bytes())
         self.assertEqual((output / '_headers').read_text(), (mac_feed.ROOT / 'updates/_headers').read_text())
         self.assertEqual(mac_feed.parse((output / 'mac/appcast.xml').read_bytes()), items)
+
+    def test_each_published_archive_name_ends_with_its_digest(self):
+        archive = self.archive(512, 'nightly')
+        name = mac_feed.published_name(archive)
+        self.assertRegex(name, r'^Coconut-0\.1\.0-512-nightly-[0-9a-f]{16}\.zip$')
+        self.assertTrue(mac_feed.matches_name(name, archive.read_bytes()))
+        # A rebuild of the same build has other bytes, so it gets another URL.
+        rebuilt = self.archive(512, 'nightly', size=2049)
+        self.assertNotEqual(mac_feed.published_name(rebuilt), name)
+        self.assertFalse(mac_feed.matches_name('Coconut-0.1.0-512.zip', archive.read_bytes()))
 
     def test_publish_stops_when_a_kept_archive_is_missing_or_changed(self):
         old = self.archive(510)
         feed = mac_feed.render([mac_feed.new_item(old, 'stable', 'old-signature')])
         new = self.archive(512)
-        for data in (None, b'changed'):
+        same_length = bytearray(old.read_bytes())
+        same_length[-1] ^= 1
+        for data in (None, b'changed', bytes(same_length)):
             with self.subTest(data=data), self.assertRaisesRegex(SystemExit, 'no complete'):
                 mac_feed.publish(new, 'stable', 'sig', self.folder / 'public', feed=feed, download=lambda url: data)
 
