@@ -501,7 +501,7 @@ def drain_for_update(timeout: float = DRAIN_SECONDS) -> bool:
     The request ends by itself, so a failed update cannot leave the service paused. A service that does not say
     "drain" in its process record is stopped at once, as before.
     """
-    if login_item_loaded():
+    if app_runs_service():
         # stop_for_update refuses this service. A drain would only pause its bots until the request ends.
         return False
     try:
@@ -533,6 +533,15 @@ def login_item_loaded() -> bool:
     except OSError:
         # No launchctl, for example on the Linux CI runner: no login item either.
         return False
+
+
+def app_runs_service() -> bool:
+    """True when the login item of Coconut.app runs the service and no LaunchAgent of host.py does."""
+    try:
+        _, loaded = owned_agent()
+    except (SystemExit, OSError):
+        return False
+    return not loaded and login_item_loaded()
 
 
 def stop_for_update() -> dict:

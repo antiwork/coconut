@@ -114,14 +114,15 @@ final class CoconutKitTests: XCTestCase {
 
     func testThePairingLinkSaysHowLongEachKindOfCodeLasts() throws {
         let python = URL(fileURLWithPath: "/usr/bin/env")
+        // Each case has its own folder: Python would reuse the cached module of a file with the same size and time.
         for (version, minutes) in [(2, "ten"), (1, "five")] {
             try write("""
                 def local_payload():
                     return {'version': \(version)}
                 def link(payload):
                     return 'coconut://pair/abc?setup=x'
-                """, to: "Coconut/scripts/pairing.py")
-            let launch = Launch.pairingLink(install: Install(root: home.appendingPathComponent("Coconut")),
+                """, to: "Coconut\(version)/scripts/pairing.py")
+            let launch = Launch.pairingLink(install: Install(root: home.appendingPathComponent("Coconut\(version)")),
                                             python: python, environment: [:])
             let process = Process()
             process.executableURL = python
