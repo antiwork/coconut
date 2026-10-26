@@ -5,13 +5,16 @@ import json
 from uuid import UUID, uuid5
 
 from .native_failure import TRANSIENT_ERROR_CODES
-from .work_sources import ANSWERED, source_origin
+from .work_sources import ANSWERED, STALE_NOTE, source_origin
 
 
 # Statements of the routine pass. Each needs an index and no scan. A test reads the plan of each one.
 ROUTINE_EVENTS = 'SELECT type,data,created_at FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
 COMPLETION_EVENTS = 'SELECT type,data FROM events WHERE task_id=? AND bot_id=? ORDER BY seq'
 REQUEST_EVENTS = 'SELECT bot_id,type,data FROM events WHERE task_id=? ORDER BY seq'
+REQUEST_EVENT_TIMES = 'SELECT bot_id,type,data,created_at FROM events WHERE task_id=? ORDER BY seq'
+# The state of every work source. The key range uses the primary key, so the few rows need no scan.
+WORK_SOURCE_STATES = "SELECT value FROM settings WHERE key > 'work-source:' AND key < 'work-source;'"
 ROUTINE_DELIVERIES = "SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid DESC"
 # The first delivery that names a request. The creation of a relayed request saves it.
 CREATION_DELIVERY = "SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid LIMIT 1"
@@ -269,6 +272,106 @@ class NativeRoutines:
             if kind == 'task.created':
                 created.append(bot)
         return created in ([task['bot_id']], [task.get('conversation_bot_id')])
+
+    def settled_closed_source(self, task, card, completion):
+        """Whether the assignment pass ended this request because every source that it works on closed.
+
+        work_sources.stale_cards picks an idle card, Board.archive_stale archives it and comments STALE_NOTE at once,
+        and the reconciler then cancels the request of the archived input. The request can still continue, but only
+        when its owner or requesting bot asks for it explicitly (continue_work's continue_closed_source).
+
+        The checks read Coconut's records and the snapshot card first. The request has no routine record. The card is
+        its retained outcome, which is the only kind that the reconciler cancels. Its claim names the card, Coconut
+        started the run of that claim, and the card holds the request's current input. The Coconut card in its tenant
+        has no run, worker, or open parent. The request has no worker, unknown tool call, or open input, no archive
+        closed any of its cards, and no person cancelled or dismissed its Work. The turn's PR or process check is the
+        only input that may stay, and the continuation replaces it. completion() then reads the card from the adapter:
+        the same card and input, no completed run, the claim's run last and ended without success, and STALE_NOTE as
+        the next event after the latest archive, with only comments after it. Coconut created the request once, no Stop
+        or routine touched it, and its last cancellation came after that archive. Every source that links the card or
+        the request is still closed, left before the archive, and has no open card. Anything else stays final.
+        """
+        claim = task.get('_kanban_claim') or {}
+        turn = task.get('_native_turn_id')
+        if (task['status'] != 'cancelled' or any(field in task for field in ROUTINE_PROVENANCE)
+                or not card.get('id') or task.get('_native_outcome_id') != card['id']
+                or claim.get('native_id') != card.get('id') or claim.get('external_id') != task['id']
+                or not turn or card.get('input_id') != turn
+                or type(claim.get('run_id')) is not int or task.get('_kanban_started') != claim['run_id']
+                or (task.get('_self_recovery') or {}).get('unknown_tools')
+                or any(task.get(key) for key in OPEN_INTAKE if key not in FAILED_TURN_INPUT)
+                or card.get('status') != 'archived' or card.get('tenant') != task['bot_id']
+                or card.get('created_by') != 'coconut' or card.get('current_run_id') or card.get('worker_pid')
+                or card.get('dependencies')):
+            return False
+        worker = self.running.get(task['id'])
+        if (worker and worker.is_alive()) or self._native_task_receipts(task['id'], state='executing') or self.db.execute(
+                "SELECT 1 FROM decisions WHERE ? IN (json_extract(data,'$.task_id'), json_extract(data,'$._execution_task_id')) "
+                "AND json_extract(data,'$.decided_by')='archive' LIMIT 1", (task['id'],)).fetchone():
+            return False
+        # A person who cancelled or dismissed the request's Work after the archive ended it too.
+        items = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr')
+                 and (a['task_id'] == task['id'] or a['id'] == task.get('_work_context_id'))]
+        if any(self._setting(prefix + self._work_identity(item)) for item in items
+               for prefix in ('work.cancelled.', 'work.dismissed.')):
+            return False
+        native = completion()
+        runs = native.get('runs')
+        archive = native.get('archive')
+        if not (native.get('id') == card['id'] and native.get('tenant') == task['bot_id']
+                and native.get('idempotency_key') == card.get('idempotency_key') and native.get('status') == 'archived'
+                and native.get('input_id') == turn and not native.get('current_run_id') and not native.get('worker_pid')
+                and isinstance(runs, list) and runs
+                and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
+                and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim['run_id']
+                and isinstance(archive, dict) and archive.get('author') == 'coconut' and archive.get('note') == STALE_NOTE
+                and archive.get('run_id') is None and type(archive.get('at')) is int
+                and isinstance(archive.get('later'), list) and set(archive['later']) <= {'commented'}):
+            return False
+        return self._cancelled_by_archive(task, archive['at']) and self._sources_closed(task, card, archive['at'])
+
+    def _cancelled_by_archive(self, task, archived_at):
+        """Whether Coconut created the request once, no person stopped it or routine triggered it, and its last
+        cancellation came after the archive at `archived_at`. A Stop records task.cancelled; the reconciler does not."""
+        created, cancelled = [], None
+        for bot, kind, raw, stamp in self.db.execute(REQUEST_EVENT_TIMES, (task['id'],)):
+            if kind in ('routine.triggered', 'task.cancelled'):
+                return False
+            if kind == 'task.created':
+                created.append(bot)
+            if kind == 'task.updated' and json.loads(raw).get('status') == 'cancelled':
+                cancelled = stamp
+        try:
+            after = datetime.fromisoformat(cancelled.replace('Z', '+00:00')).timestamp() >= archived_at
+        except (AttributeError, ValueError):
+            return False
+        return after and created in ([task['bot_id']], [task.get('conversation_bot_id')])
+
+    def _sources_closed(self, task, card, archived_at):
+        """Whether every source item that links the card or the request is still closed and left before the archive.
+
+        Each work source saves its links and the time each linked item left its open list (work_sources.source_left).
+        An item that opened again has no such time. At least one link must exist, and no card that it names may wait.
+        """
+        linked = False
+        for (raw,) in self.db.execute(WORK_SOURCE_STATES):
+            state = json.loads(raw)
+            links = state.get('native_links') if isinstance(state, dict) else None
+            left = state.get('source_left') if isinstance(state, dict) else None
+            for item, binding in (links.items() if isinstance(links, dict) else ()):
+                names = binding.get('task_ids') if isinstance(binding, dict) else None
+                if not isinstance(names, list) or not any(name in (card['id'], task['id']) for name in names):
+                    continue
+                when = left.get(item) if isinstance(left, dict) else None
+                cards = binding.get('decision_ids', [])
+                if not isinstance(when, (int, float)) or int(when) > archived_at or not isinstance(cards, list):
+                    return False
+                for key in cards:
+                    row = self.db.execute('SELECT data FROM decisions WHERE id=?', (key,)).fetchone() if isinstance(key, str) else None
+                    if row and json.loads(row[0]).get('status') in ('pending', 'approved'):
+                        return False
+                linked = True
+        return linked
 
     def keeps_settled_failure(self, task, native):
         """Whether reconciliation keeps a failure whose native task Coconut's settle pass archived.
