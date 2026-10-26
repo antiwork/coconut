@@ -58,7 +58,7 @@ def main() -> None:
     def start():
         nonlocal process
         process = subprocess.Popen([sys.executable, '-m', 'coconut', '--data-dir', str(data_dir),
-                                    '--host', '127.0.0.1', '--port', str(port), '--provider', args.provider],
+                                    '--port', str(port), '--provider', args.provider],
                                    cwd=ROOT / 'backend', stdout=log, stderr=log, start_new_session=True)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:

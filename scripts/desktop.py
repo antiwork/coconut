@@ -4,17 +4,16 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shutil
-import ssl
 import subprocess
 import sys
 import time
-from urllib.parse import urlsplit
+
+import host
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,12 +22,8 @@ BUILD = ROOT / ".build/simulator"
 BUNDLE_ID = "com.gumroad.coconut"
 
 
-def simulator_address() -> str:
-    connection = DATA / "connection.json"
-    if not connection.exists():
-        return "https://localhost:8960"
-    address = json.loads(connection.read_text())["address"]
-    return f"https://localhost:{urlsplit(address).port or 443}"
+# The simulator shares this Mac's loopback. A debug build for the simulator connects there with plain HTTP.
+SIMULATOR_ADDRESS = f"http://127.0.0.1:{host.PORT}"
 
 
 def run(arguments: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -80,14 +75,10 @@ def simulator() -> None:
     code = result.stdout.strip()
     if not code or "\n" in code:
         raise SystemExit("The Mac did not return one pairing code. Open Coconut Settings to pair manually.")
-    cert = DATA / "server.crt"
-    pin = hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.read_text())).hexdigest()
     child_env = dict(os.environ)
     for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         child_env.pop(key, None)
-    child_env.update(SIMCTL_CHILD_COCONUT_SERVER_URL=simulator_address(),
-                     SIMCTL_CHILD_COCONUT_CERT_SHA256=pin,
-                     SIMCTL_CHILD_COCONUT_PAIR_CODE=code)
+    child_env.update(SIMCTL_CHILD_COCONUT_SERVER_URL=SIMULATOR_ADDRESS, SIMCTL_CHILD_COCONUT_PAIR_CODE=code)
     launched_at = time.time()
     run(["xcrun", "simctl", "launch", "--terminate-running-process", device["udid"], BUNDLE_ID],
         env=child_env, stdout=subprocess.DEVNULL)
@@ -100,7 +91,7 @@ def simulator() -> None:
         try:
             pairing = json.loads((cache / "pairing.json").read_text())
             snapshot = cache / "snapshot.json"
-            if pairing["fingerprint"].lower() == pin.lower() and snapshot.stat().st_mtime >= launched_at:
+            if pairing["serverURL"] == SIMULATOR_ADDRESS and snapshot.stat().st_mtime >= launched_at:
                 json.loads(snapshot.read_text())["snapshot"]
                 print("Coconut is paired. The app displays a fresh snapshot from this Mac.")
                 return

@@ -12,7 +12,6 @@ import hashlib
 import http.client
 import importlib.util
 import io
-import ipaddress
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -20,14 +19,11 @@ import platform
 import re
 import shutil
 import signal
-import socket
-import ssl
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
-from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 MAX_COMPRESSED_BYTES = 32 * 1024 * 1024
@@ -165,28 +161,6 @@ def destination(directory, home):
     return safe_path(home.joinpath(*relative.parts), home)
 
 
-def normalized_address(value):
-    try:
-        parsed = urlsplit(value)
-        port = parsed.port if parsed.port is not None else 443
-        if (parsed.scheme != 'https' or not parsed.hostname or parsed.username is not None or parsed.password is not None
-                or parsed.path not in ('', '/') or parsed.query or parsed.fragment or '?' in value or '#' in value
-                or not 1 <= port <= 65535 or any(char.isspace() or ord(char) < 32 for char in value)):
-            raise ValueError()
-        host = parsed.hostname.lower().rstrip('.')
-        if not re.fullmatch(r'(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(?::[0-9]+)?', parsed.netloc):
-            raise ValueError()
-        try:
-            host = str(ipaddress.ip_address(host))
-        except ValueError:
-            if len(host) > 253 or not all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in host.split('.')):
-                raise ValueError()
-        display = '[' + host + ']' if ':' in host else host
-        return f'https://{display}:{port}'
-    except (ValueError, TypeError, AttributeError):
-        raise DeployError('Use a valid HTTPS address without credentials or a path.') from None
-
-
 def read_marker(root):
     path = safe_path(root / MARKER_PATH, root)
     if not path.exists():
@@ -203,7 +177,7 @@ def read_marker(root):
             raise ValueError()
         if marker['files'] and marker.get('package_id') != sha256(canonical(marker['files'])):
             raise ValueError()
-        normalized_address(marker['address'])
+        # A marker from before the loopback-only service also has the HTTPS address of the Mac. Nothing reads it now.
         return marker
     except (ValueError, TypeError, KeyError, OSError, AttributeError):
         raise DeployError('The Coconut deployment marker is invalid.') from None
@@ -280,7 +254,7 @@ class Operations:
             raise DeployError(phase + f' failed (exit {process.returncode}). No command output was exposed.')
         return output
 
-    def preflight(self, root, address, package):
+    def preflight(self, root, package):
         if platform.system() != 'Darwin':
             raise DeployError('The execution host must run macOS.')
         self.command(['/usr/bin/xcode-select', '-p'], Path.home(), 'Command Line Tools check', timeout=15)
@@ -353,16 +327,11 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
     def restore(self, root, state):
         self.helper(root, 'restore', state)
 
-    def prepare(self, root, address, package):
+    def prepare(self, root, package):
         self.command([sys.executable, str(root / 'scripts/push.py'), '--rebuild'], root, 'Notification encryption build')
-        cert, key = root / '.runtime/host/server.crt', root / '.runtime/host/server.key'
-        if not cert.exists() and not key.exists():
-            self.command([sys.executable, str(root / 'scripts/host.py'), 'setup', '--address', address], root, 'Secure host setup')
-        elif not cert.is_file() or not key.is_file():
-            raise DeployError('The existing certificate pair is incomplete. Coconut kept it unchanged.')
 
     def tunnel(self, root):
-        """Give an installed tunnel sidecar the new code. A Mac without the sidecar stays without it.
+        """Give the tunnel sidecar the new code, and install it on a Mac that never had it. See tunnel.rebuild.
 
         This runs after the update is complete, so a rollback never leaves a newer sidecar running. A failure here
         keeps the update and goes into the result.
@@ -386,40 +355,37 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
             raise DeployError('The Hermes check returned an invalid result.') from None
         return result
 
-    def install(self, root, address):
+    def install(self, root):
         plist = Path.home() / 'Library/LaunchAgents/local.coconut.agent.plist'
         if plist.exists() or plist.is_symlink():
             self.restore(root, {'mode': 'managed', 'project': str(root), 'data_dir': str(root / '.runtime/host')})
             return
-        self.command([sys.executable, str(root / 'scripts/host.py'), 'install-service', '--address', address], root, 'Login service installation', timeout=60)
+        self.command([sys.executable, str(root / 'scripts/host.py'), 'install-service'], root, 'Login service installation', timeout=60)
 
-    def health(self, root, address):
-        return self._health(root, address, HEALTH_WAIT_SECONDS)
+    def health(self, root, address=None):
+        """Wait until the service answers its health check. `address` is unused: older updaters pass the HTTPS address."""
+        return self._health(root, HEALTH_WAIT_SECONDS)
 
-    def probe(self, root, address):
+    def probe(self, root):
         """Check health briefly, for a check whose failure is expected. This keeps the earlier 60-second wait."""
-        return self._health(root, address, PROBE_WAIT_SECONDS)
+        return self._health(root, PROBE_WAIT_SECONDS)
 
-    def _health(self, root, address, seconds):
-        cert = safe_path(root / '.runtime/host/server.crt', root)
+    def _health(self, root, seconds):
+        """Check /health on the tunnel listener, which carries the phone's requests.
+
+        The service answers there with plain HTTP on loopback. A service from before the loopback-only release does too,
+        so the check also confirms a rollback to it.
+        """
         try:
-            context = load_host(root).trusted_certificate_context(cafile=str(cert))
-            expected = sha256(ssl.PEM_cert_to_DER_cert(cert.read_text()))
-        except (OSError, ValueError, ssl.SSLError):
-            raise DeployError('The saved certificate cannot validate the service.') from None
-        parsed = urlsplit(address)
+            port = load_host(root).TUNNEL_PORT
+        except (OSError, AttributeError, SyntaxError, DeployError):
+            raise DeployError('The installed host helper does not name the tunnel listener.') from None
         # Startup migrations can take minutes on an active host with a large database. A deadline that is
         # too short fails a healthy update, rolls it back, and restarts the service again.
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            connection = http.client.HTTPConnection(parsed.hostname, parsed.port or 443, timeout=2)
-            raw = None
+            connection = http.client.HTTPConnection('127.0.0.1', port, timeout=2)
             try:
-                raw = socket.create_connection(('127.0.0.1', parsed.port or 443), timeout=2)
-                connection.sock = context.wrap_socket(raw, server_hostname=parsed.hostname)
-                raw = None
-                if sha256(connection.sock.getpeercert(binary_form=True)) != expected:
-                    raise DeployError('The running service certificate does not match its saved certificate.')
                 connection.request('GET', '/health')
                 response = connection.getresponse()
                 data = response.read(65537)
@@ -427,15 +393,13 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
                     raise DeployError('The service returned an oversized health response.')
                 result = json.loads(data)
                 if response.status == 200 and result == {'ok': True, 'api_version': 1}:
-                    return {'ok': True, 'api_version': 1, 'scope': 'local_tls', 'certificate_sha256': expected.upper()}
+                    return {'ok': True, 'api_version': 1, 'scope': 'loopback'}
             except (OSError, ValueError, http.client.HTTPException):
                 pass
             finally:
-                if raw is not None:
-                    raw.close()
                 connection.close()
             time.sleep(.25)
-        raise DeployError('The service did not pass its local TLS health check.')
+        raise DeployError('The service did not pass its loopback health check.')
 
 
 def journal_paths(root, record):
@@ -589,7 +553,7 @@ def reconcile(root, operations):
         try:
             if record['service_state']['mode'] != 'stopped':
                 # This probe usually fails on a stopped service, so it must not wait the full startup deadline.
-                operations.probe(root, old['address'])
+                operations.probe(root)
             else:
                 operations.assert_stopped(root)
         except DeployError:
@@ -628,7 +592,7 @@ def reconcile(root, operations):
         if old['files']:
             operations.restore(root, record['service_state'])
             if record['service_state']['mode'] != 'stopped':
-                operations.health(root, old['address'])
+                operations.health(root)
     except BaseException as error:
         raise DeployError('Previous source was restored, but its service could not restart. Runtime data was not rewound.') from error
     record['phase'] = 'rolled_back'
@@ -702,18 +666,15 @@ def recover(directory, *, home=None, operations=None):
     return True
 
 
-def receive(directory, address, stream, *, home=None, operations=None):
+def receive(directory, stream, *, home=None, operations=None):
     os.umask(0o077)
     home = Path(home or Path.home()).resolve()
     root = destination(directory, home)
-    address = normalized_address(address)
     package = validate_package(stream)
     marker = read_marker(root)
     runtime_receipt, runtime_present = check_runtime_receipt(root, marker)
     operations = operations or Operations()
-    operations.preflight(root, address, package)
-    if marker and normalized_address(marker['address']) != address:
-        raise DeployError('The saved address differs. Change the host address separately before updating.')
+    operations.preflight(root, package)
     if marker is None and root.exists() and any(root.iterdir()):
         raise DeployError('This destination is no longer empty.')
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -732,7 +693,7 @@ def receive(directory, address, stream, *, home=None, operations=None):
         elif (root / MARKER_PATH).exists() or any(path.name != '.runtime' for path in root.iterdir()):
             raise DeployError('Another deployment claimed this directory. Retry the update.')
         original = marker
-        marker = marker or {'version': 1, 'installation_id': str(uuid4()), 'files': {}, 'package_id': '', 'state': 'pending', 'address': address}
+        marker = marker or {'version': 1, 'installation_id': str(uuid4()), 'files': {}, 'package_id': '', 'state': 'pending'}
         write_json(root / MARKER_PATH, marker)
         reconcile(root, operations)
         marker = read_marker(root)
@@ -795,17 +756,17 @@ def receive(directory, address, stream, *, home=None, operations=None):
             for name in old_names - set(package.files):
                 safe_path(root / name, root).unlink()
                 sync_directory((root / name).parent)
-            operations.prepare(root, address, package)
+            operations.prepare(root, package)
             check_hermes(operations, root, previous_hermes, updating=bool(old_names))
             record['phase'] = 'starting'
             write_json(journal, record)
             if initial_install:
-                operations.install(root, address)
+                operations.install(root)
                 mode = 'managed'
             else:
                 operations.restore(root, state)
                 mode = state['mode']
-            health = operations.health(root, address) if mode != 'stopped' else {'ok': False, 'status': 'not_running'}
+            health = operations.health(root) if mode != 'stopped' else {'ok': False, 'status': 'not_running'}
             updated = dict(marker, deployment_id=record['deployment_id'], files=package.hashes, package_id=package.package_id, state='installed', updated_at=datetime.now(timezone.utc).isoformat())
             updated.pop('initial_install_pending', None)
             updated.pop('recovery_state', None)
@@ -813,7 +774,7 @@ def receive(directory, address, stream, *, home=None, operations=None):
             write_json(root / MARKER_PATH, updated)
             remove_journal(root, record)
             prune_runtime_copies(root)
-            result = {'version': 1, 'installation_id': marker['installation_id'], 'package_id': package.package_id, 'mode': mode, 'address': address, 'health': health, 'updated': original is not None}
+            result = {'version': 1, 'installation_id': marker['installation_id'], 'package_id': package.package_id, 'mode': mode, 'health': health, 'updated': original is not None}
         except BaseException as error:
             if not applied:
                 # A failed stop can have unloaded the job. Keep its recovery state.
@@ -837,15 +798,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['receive', 'recover'], help='recover replays a pending update journal and installs no package.')
     parser.add_argument('--directory', default='Coconut')
-    parser.add_argument('--address')
+    # Older updaters pass the HTTPS address of the Mac. The service no longer has one.
+    parser.add_argument('--address', help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.command == 'receive' and not args.address:
-        parser.error('receive needs --address.')
     try:
         if args.command == 'recover':
             result = {'recovered': recover(args.directory)}
         else:
-            result = receive(args.directory, args.address, sys.stdin.buffer)
+            result = receive(args.directory, sys.stdin.buffer)
     except (DeployError, KeyboardInterrupt) as error:
         if isinstance(error, KeyboardInterrupt):
             error = DeployError('The deployment was interrupted. Check host status before retrying.')

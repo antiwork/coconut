@@ -53,8 +53,14 @@ def launchctl(*arguments: str) -> subprocess.CompletedProcess:
     return subprocess.run(['launchctl', *arguments], check=False, capture_output=True, text=True)
 
 
+def uninstalled_marker(data_dir: Path) -> Path:
+    """`tunnel.py uninstall` writes this file. Without it, a sidecar that is not loaded failed to install."""
+    return data_dir.resolve() / 'tunnel/uninstalled'
+
+
 def install(data_dir: Path, relay: str) -> None:
     data_dir = data_dir.resolve()
+    uninstalled_marker(data_dir).unlink(missing_ok=True)
     route = setup(data_dir, relay)
     logs = data_dir / 'logs'
     private_directory(logs)
@@ -81,14 +87,27 @@ def loaded() -> bool:
     return launchctl('print', f'gui/{os.getuid()}/{LABEL}').returncode == 0
 
 
+def saved_relay(data_dir: Path) -> str | None:
+    """Return the relay of the saved route. The paired phones connect to that relay and route."""
+    try:
+        relay = json.loads((data_dir.resolve() / 'tunnel/route.json').read_text())['relay']
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return relay if isinstance(relay, str) and relay else None
+
+
 def rebuild(data_dir: Path) -> None:
     """The deploy step: rebuild an installed sidecar when its sources changed, and restart it.
 
-    A Mac without a route or without the loaded LaunchAgent stays without the sidecar. The pairing flow or setup
-    installs it.
+    The relay is the only way from the phone to this Mac, so a Mac without the loaded sidecar gets it now, also after an
+    install that failed. A repair keeps the saved relay, so the paired phones keep their route. Only a sidecar that
+    `tunnel.py uninstall` removed stays removed.
     """
-    if not (data_dir.resolve() / 'tunnel/route.json').is_file() or not loaded():
-        print('The tunnel sidecar is not installed. Nothing to rebuild.')
+    if not loaded():
+        if uninstalled_marker(data_dir).is_file():
+            print('The tunnel sidecar is uninstalled. Nothing to rebuild.')
+            return
+        install(data_dir, saved_relay(data_dir) or RELAY_URL)
         return
     if not compile_sidecar(data_dir):
         print('The tunnel sidecar is up to date.')
@@ -100,9 +119,11 @@ def rebuild(data_dir: Path) -> None:
     print('Rebuilt and restarted the tunnel sidecar.')
 
 
-def uninstall() -> None:
+def uninstall(data_dir: Path) -> None:
     launchctl('bootout', f'gui/{os.getuid()}/{LABEL}')
     agent_path().unlink(missing_ok=True)
+    tunnel_directory(data_dir)
+    uninstalled_marker(data_dir).write_text('')
     print(f'Removed {LABEL}. The identity key and route stay in the tunnel directory.')
 
 
@@ -132,7 +153,7 @@ def main() -> None:
         elif args.command == 'install':
             install(args.data_dir, args.relay)
         elif args.command == 'uninstall':
-            uninstall()
+            uninstall(args.data_dir)
         else:
             print(json.dumps(status(args.data_dir), indent=2))
     except subprocess.CalledProcessError as error:

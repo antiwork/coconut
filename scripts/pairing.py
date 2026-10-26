@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Open a private, one-time setup QR for the iPhone.
 
-A Mac with the tunnel sidecar (scripts/tunnel.py) makes a version 2 setup for the relay transport, in a version 3 link.
-Other Macs, and --legacy, make a version 1 setup for the TLS connection that earlier app builds use.
+The setup is for the relay transport of the tunnel sidecar (scripts/tunnel.py): a version 2 setup in a version 3 link.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 V2_FIELDS = {"version", "relay", "route", "mac_key", "secret", "expires", "name"}
 LINK_VERSION = 3
 # App builds before the version 3 link read only the setup field. This value is base64url of a JSON object with the
-# version 1 field names and version 3, so those builds ask the person to update the app. The space before the
+# field names of the old version 1 setup and version 3, so those builds ask the person to update the app. The space before the
 # object keeps the text from starting with "eyJ", which Hermes masks as a JSON Web Token.
 OLD_BUILD_SETUP = base64.urlsafe_b64encode(
     b' {"version":3,"server_url":"","certificate_sha256":"","pairing_code":""}').decode().rstrip("=")
@@ -40,8 +39,8 @@ def unpadded(value: str, size: int) -> bytes | None:
     return data if len(data) == size else None
 
 
-def validate_v2(payload: dict) -> dict:
-    if set(payload) != V2_FIELDS or type(payload["version"]) is not int or payload["version"] != 2:
+def validate(payload: dict) -> dict:
+    if not isinstance(payload, dict) or set(payload) != V2_FIELDS or type(payload["version"]) is not int or payload["version"] != 2:
         raise ValueError("The setup data uses an unsupported format.")
     relay, route, name, expires = payload["relay"], payload["route"], payload["name"], payload["expires"]
     # Plain HTTP is only for a relay on this Mac, for example in the loopback test.
@@ -56,36 +55,11 @@ def validate_v2(payload: dict) -> dict:
     return dict(payload, name=name.strip())
 
 
-def validate(payload: dict) -> dict:
-    if isinstance(payload, dict) and payload.get("version") == 2 and type(payload["version"]) is int:
-        return validate_v2(payload)
-    fields = {"version", "server_url", "certificate_sha256", "pairing_code"}
-    if not isinstance(payload, dict) or set(payload) != fields or type(payload["version"]) is not int or payload["version"] != 1:
-        raise ValueError("The setup data uses an unsupported format.")
-    address = host.address_parts(payload["server_url"])[0]
-    pin, code = payload["certificate_sha256"], payload["pairing_code"]
-    if not isinstance(pin, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", pin):
-        raise ValueError("The certificate fingerprint is invalid.")
-    if not isinstance(code, str) or not re.fullmatch(r"[0-9]{10}", code):
-        raise ValueError("The pairing code is invalid.")
-    return dict(version=1, server_url=address, certificate_sha256=pin.lower(), pairing_code=code)
-
-
-def local_payload(legacy: bool = False) -> dict:
+def local_payload() -> dict:
     data = host.DEFAULT_DATA
-    if not legacy and (data / "tunnel/route.json").is_file():
-        return tunnel_payload(data)
-    connection = data / "connection.json"
-    if not connection.is_file():
-        raise SystemExit("Configure the Mac address with host.py setup --address before pairing.")
-    address = host.address_parts(json.loads(connection.read_text())["address"])[0]
-    hostname = host.address_parts(address)[1]
-    host.verify_certificate(data / "server.crt", data / "server.key", hostname)
-    result = subprocess.run([sys.executable, str(ROOT / "scripts/host.py"), "pair"],
-                            check=True, capture_output=True, text=True)
-    return validate(dict(version=1, server_url=address,
-                         certificate_sha256=host.fingerprint(data / "server.crt"),
-                         pairing_code=result.stdout.strip()))
+    if not (data / "tunnel/route.json").is_file():
+        raise SystemExit("Install the relay tunnel with scripts/setup_coconut.py before pairing.")
+    return tunnel_payload(data)
 
 
 def hkdf(secret: bytes, label: str) -> bytes:
@@ -130,7 +104,7 @@ def tunnel_payload(data: Path) -> dict:
     temporary.write_text(json.dumps({"psk": psk, "expires": expires}))
     temporary.chmod(0o600)
     os.replace(temporary, path)
-    return validate_v2(dict(version=2, relay=route["relay"], route=route["route"], mac_key=route["mac_key"],
+    return validate(dict(version=2, relay=route["relay"], route=route["route"], mac_key=route["mac_key"],
                             secret=secret, expires=expires, name=mac_name()))
 
 
@@ -139,13 +113,9 @@ def link(payload: dict) -> str:
 
     A version 2 setup goes in a version 3 link: coconut://pair/<token>?setup=<OLD_BUILD_SETUP>. The token is the
     packed setup in lowercase base32. Hermes masks text that looks like a secret before its agent sends the link,
-    and no Hermes rule matches lowercase letters and the digits 2 to 7 after a slash. A version 1 setup keeps the
-    base64url JSON in the setup field, because only the earlier app builds read it.
+    and no Hermes rule matches lowercase letters and the digits 2 to 7 after a slash.
     """
     payload = validate(payload)
-    if payload["version"] == 1:
-        data = json.dumps(payload, separators=(",", ":")).encode()
-        return "coconut://pair?setup=" + base64.urlsafe_b64encode(data).decode().rstrip("=")
     token = base64.b32encode(pack(payload)).decode().rstrip("=").lower()
     return f"coconut://pair/{token}?setup={OLD_BUILD_SETUP}"
 
@@ -178,16 +148,14 @@ def read_link(text: str) -> dict:
     if len(data) < 103 or data[0] != LINK_VERSION or len(data) < 103 + size:
         raise ValueError("The setup link is damaged.")
     encode = lambda value: base64.urlsafe_b64encode(value).decode().rstrip("=")
-    return validate_v2(dict(version=2, route=data[1:33].hex(), mac_key=encode(data[33:65]), secret=encode(data[65:97]),
+    return validate(dict(version=2, route=data[1:33].hex(), mac_key=encode(data[33:65]), secret=encode(data[65:97]),
                             expires=int.from_bytes(data[97:101], "big"), relay=data[103:103 + size].decode(),
                             name=data[103 + size:].decode()))
 
 
 def render(payload: dict, *, show: bool = True, share: bool = False) -> Path:
-    payload = validate(payload)
-    # A shared code opens Coconut from a tapped link or from the Camera app. The Mac's own version 1 QR keeps
-    # the JSON format, which earlier app builds also read. Only the link holds a version 2 setup.
-    setup_link = link(payload) if share or payload["version"] == 2 else None
+    # The code opens Coconut from a tapped link or from the Camera app.
+    setup_link = link(payload)
     directory = ROOT / ".runtime/pairing"
     for path in (ROOT / ".runtime", directory):
         if path.is_symlink():
@@ -198,7 +166,7 @@ def render(payload: dict, *, show: bool = True, share: bool = False) -> Path:
     if output.is_symlink():
         raise SystemExit("The setup image must not be a symbolic link.")
     command = ["swift", str(ROOT / "scripts/pairing-qr.swift"), str(output)]
-    subprocess.run(command, input=(setup_link or json.dumps(payload)).encode(), check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(command, input=setup_link.encode(), check=True, stdout=subprocess.DEVNULL)
     output.chmod(0o600)
     if show:
         subprocess.run(["open", str(output)], check=True)
@@ -209,8 +177,7 @@ def render(payload: dict, *, show: bool = True, share: bool = False) -> Path:
         print("On the iPhone, tap the link, or scan the QR image in Coconut.")
     else:
         print("Open Coconut on the iPhone, then tap Scan.")
-    minutes = "ten" if payload["version"] == 2 else "five"
-    print(f"This setup code expires after {minutes} minutes. Generate another code if it expires.")
+    print("This setup code expires after ten minutes. Generate another code if it expires.")
     return output
 
 
@@ -221,11 +188,9 @@ def main() -> None:
     parser.add_argument("--no-open", action="store_true", help="Create the QR without opening Preview.")
     parser.add_argument("--share", action="store_true",
                         help="Print the setup link and the QR image path, so a Hermes agent can send them.")
-    parser.add_argument("--legacy", action="store_true",
-                        help="Make a version 1 link for app builds that connect over TLS, also on a Mac with the tunnel sidecar.")
     args = parser.parse_args()
     try:
-        payload = json.load(sys.stdin) if args.stdin else local_payload(args.legacy)
+        payload = json.load(sys.stdin) if args.stdin else local_payload()
         render(payload, show=not args.no_open and not args.share, share=args.share)
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError):
         raise SystemExit("Coconut could not create the setup QR. Check the host and Xcode Command Line Tools.") from None

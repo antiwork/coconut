@@ -10,7 +10,6 @@ import tempfile
 import uuid
 
 import iphone
-import physical_pairing
 import remote
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +18,19 @@ TESTS = {
     'closed': 'NotificationFlowTests/testNotificationOpensTaskAfterTermination',
 }
 
+
+
+def copy_cache(config, directory, name):
+    """Copy one file of the app's cache from the iPhone, or return None."""
+    destination = directory / name
+    command = ['xcrun', 'devicectl', 'device', 'copy', 'from', '--device', config['device'],
+               '--domain-type', 'appDataContainer', '--domain-identifier', config['bundle_id'],
+               '--source', 'Library/Application Support/Coconut/' + name,
+               '--destination', str(destination), '--timeout', '20']
+    result = subprocess.run(command, capture_output=True, timeout=30)
+    if result.returncode or not destination.exists():
+        return None
+    return json.loads(destination.read_text())
 
 def prepare(source, destination, tests, expected):
     def absolute(value):
@@ -105,7 +117,7 @@ def main():
     tests = list(TESTS.values()) if args.case == 'all' else [TESTS[args.case]]
     with tempfile.TemporaryDirectory(prefix='coconut-push-test-') as temporary:
         folder = Path(temporary)
-        pairing = physical_pairing.copy_cache(config, folder, 'pairing.json')
+        pairing = copy_cache(config, folder, 'pairing.json')
         if not pairing or not pairing.get('deviceId'):
             raise SystemExit('Unlock and pair the iPhone before this test.')
         runfile = folder / 'Push.xctestrun'

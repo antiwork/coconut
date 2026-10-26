@@ -75,7 +75,7 @@ class TunnelPairingTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.service.pair({'code': secret}, PHONE)
 
-    def test_a_tls_code_does_not_pair_through_the_tunnel(self):
+    def test_a_local_code_does_not_pair_through_the_tunnel(self):
         code = self.service.pairing_code()
         with self.assertRaises(ServiceError):
             self.service.pair({'code': code}, PHONE)
@@ -95,10 +95,10 @@ class TunnelPairingTests(unittest.TestCase):
         self.assertEqual(caught.exception.status, 429)
 
     def test_only_the_tunnel_listener_reads_the_peer_header(self):
-        tls, tunnel = self.serve(False), self.serve(True)
+        main, tunnel = self.serve(False), self.serve(True)
         secret = self.service.pairing_code(600, tunnel=True)
-        # The main listener ignores the header, so a TLS phone cannot claim a key.
-        self.assertEqual(self.call(tls, '/v1/pair', body={'code': secret}, peer=PHONE)[0], 401)
+        # The main listener ignores the header, so a local tool cannot claim a phone's key.
+        self.assertEqual(self.call(main, '/v1/pair', body={'code': secret}, peer=PHONE)[0], 401)
         self.assertEqual(self.call(tunnel, '/v1/pair', body={'code': secret})[0], 401)
         status, paired = self.call(tunnel, '/v1/pair', body={'code': secret}, peer=PHONE)
         self.assertEqual(status, 200)
@@ -107,10 +107,10 @@ class TunnelPairingTests(unittest.TestCase):
         self.assertEqual(self.call(tunnel, '/v1/state', token=token, peer=OTHER)[0], 401)
         self.assertEqual(self.call(tunnel, '/v1/state', token=token)[0], 401)
         self.assertEqual(self.call(tunnel, '/v1/state', token=token, peer=PHONE.upper())[0], 401)
-        self.assertEqual(self.call(tls, '/v1/state', token=token, peer=PHONE)[0], 401)
-        # A phone that paired over TLS keeps working there, and not through the tunnel.
+        self.assertEqual(self.call(main, '/v1/state', token=token, peer=PHONE)[0], 401)
+        # A tool that paired on the main listener keeps working there, and not through the tunnel.
         old = self.service.pair({'code': self.service.pairing_code()})['token']
-        self.assertEqual(self.call(tls, '/v1/state', token=old)[0], 200)
+        self.assertEqual(self.call(main, '/v1/state', token=old)[0], 200)
         self.assertEqual(self.call(tunnel, '/v1/state', token=old, peer=PHONE)[0], 401)
         with urllib.request.urlopen(tunnel + '/health') as response:
             self.assertEqual(response.status, 200)
