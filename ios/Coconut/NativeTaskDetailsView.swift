@@ -243,42 +243,6 @@ struct TrackedPullRequest: Identifiable {
         guard let canonical = URL(string: "https://github.com/\(parts[0])/\(parts[1])/pull/\(number)") else { return nil }
         return (canonical, String(parts[1]), String(number))
     }
-
-    func isStale(at date: Date) -> Bool {
-        artifact.isPRStatusStale(at: date)
-    }
-
-    func activityLabel(at date: Date) -> String? {
-        guard !isFinished, let label = artifact.activity else { return nil }
-        guard let observed = artifact.activityObservedAt?.apiDate,
-              date.timeIntervalSince(observed) < 60 else { return "Activity unconfirmed" }
-        return label
-    }
-
-    func checksColor(at date: Date, scheme: ColorScheme) -> Color {
-        if artifact.prState == "merged" || artifact.status == "merged" { return .purple }
-        if artifact.prState == "closed" { return .secondary }
-        guard !isStale(at: date) else { return .secondary }
-        switch artifact.checksState {
-        case "passed": return scheme == .dark ? .green : Color(red: 0.12, green: 0.44, blue: 0.22)
-        case "running": return scheme == .dark ? .yellow : Color(red: 0.50, green: 0.36, blue: 0)
-        case "failed": return scheme == .dark ? .red : Color(red: 0.75, green: 0.10, blue: 0.10)
-        default: return .secondary
-        }
-    }
-
-    func checksLabel(at date: Date) -> String {
-        if artifact.prState == "merged" || artifact.status == "merged" { return "Merged" }
-        if artifact.prState == "closed" { return "Closed" }
-        guard !isStale(at: date) else { return "Status out of date" }
-        switch artifact.checksState {
-        case "failed": return "Checks failed"
-        case "running": return "Checks running"
-        case "passed": return "Checks passed"
-        case "none": return "No checks"
-        default: return "Checking status"
-        }
-    }
 }
 
 struct NativeTaskDetailsView: View {
@@ -287,7 +251,7 @@ struct NativeTaskDetailsView: View {
     let botId: String
     @State private var cancelling: Set<String> = []
     @State private var error: NativeTaskDetailsError?
-    @State private var taskToStop: TrackedWorkItem?
+    @State private var stop = StopConfirmation<TrackedWorkItem>()
     @State private var recovery: CheckoutRecoveryCheck?
     @State private var confirming = false
     @State private var recovering: Set<String> = []
@@ -310,15 +274,27 @@ struct NativeTaskDetailsView: View {
 
     private func olderTitle(_ count: Int) -> String { "Show \(count) older" }
 
+    private func botName(_ item: TrackedWorkItem) -> String { store.botName(item.nativeOwnerBotId ?? botId) }
+
     @ViewBuilder private func row(_ item: TrackedWorkItem, idleLabel: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(item.artifact.title).font(.headline)
+            let queue = item.queueLabel(botName: botName(item))
+            TimelineView(.periodic(from: .now, by: 10)) { context in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        StatusLabel(status: item.status(at: context.date))
+                        if let queue { Text("· " + queue).font(.caption).foregroundStyle(.secondary) }
+                    }
+                    // A finished task has no live activity. Its status says how it ended.
+                    if !item.isFinished {
+                        Text(item.activity(at: context.date)).foregroundStyle(.secondary)
+                    }
+                }
+            }
             if let idleLabel {
                 Text(idleLabel).font(.subheadline).foregroundStyle(.secondary)
                     .accessibilityIdentifier("task-idle-" + item.artifact.id)
-            }
-            TimelineView(.periodic(from: .now, by: 10)) { context in
-                Text(item.activity(at: context.date)).foregroundStyle(.secondary)
             }
             ForEach(item.pullRequests) { request in
                 Link("\(request.repository) #\(request.number)", destination: request.url)
@@ -326,12 +302,8 @@ struct NativeTaskDetailsView: View {
             if let evidence = item.artifact.completionEvidence, item.isFinished {
                 Text(evidence).font(.footnote).foregroundStyle(.secondary)
             }
-            if !item.isFinished {
-                Button(cancelling.contains(item.id) ? "Stopping…" : "Stop task", role: .destructive) {
-                    taskToStop = item
-                }
-                .disabled(cancelling.contains(item.id))
-                .accessibilityIdentifier("task-stop-" + item.artifact.id)
+            if cancelling.contains(item.id) {
+                Text("Stopping…").font(.subheadline).foregroundStyle(.secondary)
             }
             if item.canOfferCheckoutRecovery {
                 Button(recovering.contains(item.id) ? "Checking…" : "Recover checkout") {
@@ -351,6 +323,21 @@ struct NativeTaskDetailsView: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("task-detail-" + item.artifact.id)
+        .accessibilityActions {
+            if !item.isFinished && !cancelling.contains(item.id) { Button("Stop task") { stop.request(item) } }
+        }
+        .swipeActions(edge: .trailing) {
+            if !item.isFinished && !cancelling.contains(item.id) { stopButton(item) }
+        }
+        .contextMenu {
+            if !item.isFinished && !cancelling.contains(item.id) { stopButton(item) }
+        }
+    }
+
+    private func stopButton(_ item: TrackedWorkItem) -> some View {
+        Button("Stop task", systemImage: "stop.circle", role: .destructive) { stop.request(item) }
+            .tint(BoardStyle.destructive)
+            .accessibilityIdentifier("task-stop-" + item.artifact.id)
     }
     private var confirmation: CheckoutRecoveryConfirmation? { store.checkoutConfirmation }
     private var canRetryError: Bool { error?.allowsRecoveryRetry(with: confirmation) == true }
@@ -368,14 +355,14 @@ struct NativeTaskDetailsView: View {
 
     @ViewBuilder private var pendingRecovery: some View {
         if confirmation?.isUncertain == true {
-            Text("The Mac may have accepted this checkout recovery. Check recovery status using the same saved confirmation and key; do not start a new recovery.")
+            Text("The Mac may have started this recovery. Tap Check recovery status to find out. Do not start a new recovery.")
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("uncertain-checkout-recovery")
         }
         if confirmation != nil {
             if let confirmation {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Pending checkout recovery target").font(.headline)
+                    Text("Checkout to recover").font(.headline)
                     Text(confirmation.targetSummary).font(.subheadline)
                 }
                 .accessibilityIdentifier("pending-checkout-recovery-target")
@@ -460,12 +447,12 @@ struct NativeTaskDetailsView: View {
                 Task {
                     let failure = await store.stopPendingCheckoutRecovery(pending)
                     error = failure.map { NativeTaskDetailsError(origin: .stopRecovery, message: $0) }
-                    stopConfirmationMessage = failure == nil ? "Stop sent. Check recovery status to reconcile the original request." : nil
+                    stopConfirmationMessage = failure == nil ? "The Mac got the stop. Tap Check recovery status to see the result." : nil
                     stoppingRecovery = false
                 }
             }.accessibilityIdentifier("confirm-stop-pending-checkout-recovery")
         } message: { pending in
-            Text("Stop targets:\n\(pending.targetSummary)\n\nThis sends a fresh Stop for the original Work. If recovery already resumed, it stops that Work. Check recovery status afterward; Stop never confirms a new recovery.")
+            Text("This stops:\n\(pending.targetSummary)\n\nIf the recovery already started, its task stops too. Stop does not start a new recovery. After you stop, tap Check recovery status.")
         }
         .alert("Archive idle tasks?", isPresented: Binding(
             get: { idleToArchive != nil }, set: { if !$0 { idleToArchive = nil } }),
@@ -481,10 +468,9 @@ struct NativeTaskDetailsView: View {
         } message: { items in
             Text("Hermes archives the tasks that still wait without activity for a week. A task that changed since this list loaded stays.")
         }
-        .alert("Stop this task?", isPresented: Binding(
-            get: { taskToStop != nil }, set: { if !$0 { taskToStop = nil } }),
-            presenting: taskToStop) { item in
-            Button("Cancel", role: .cancel) { taskToStop = nil }
+        .alert(StopCopy.title(executor: stop.item.map { botName($0) } ?? store.botName(botId)),
+               isPresented: $stop.isPresented, presenting: stop.item) { item in
+            Button("Cancel", role: .cancel) {}
             Button("Stop task", role: .destructive) {
                 cancelling.insert(item.id)
                 Task {
@@ -493,12 +479,12 @@ struct NativeTaskDetailsView: View {
                 }
             }.accessibilityIdentifier("confirm-stop-task")
         } message: { _ in
-            Text("The Mac records the stop request. An action already executing can finish before it stops.")
+            Text(StopCopy.message)
         }
-        .alert(canRetryError ? "Recovery confirmation uncertain" : "Request not confirmed",
+        .alert(canRetryError ? "Recovery not confirmed yet" : "Request not confirmed",
                isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
             if canRetryError {
-                Button("Retry same confirmation") {
+                Button("Try again") {
                     guard canRetryError else { return }
                     error = nil
                     retryConfirmation()
@@ -508,7 +494,7 @@ struct NativeTaskDetailsView: View {
                 Button("OK") { error = nil }
             }
         } message: { Text(!canRetryError ? (error?.message ?? "") :
-            "The Mac may have accepted this request. Retry uses the same confirmation and key. \(error?.message ?? "")") }
+            "The Mac may have started the recovery. Try again sends the same request, so the recovery cannot start twice. \(error?.message ?? "")") }
         .alert("Recover this checkout?", isPresented: Binding(
             get: { recovery != nil }, set: { if !$0 { recovery = nil } })) {
             Button("Not now", role: .cancel) { recovery = nil }
@@ -522,7 +508,7 @@ struct NativeTaskDetailsView: View {
                 } catch { self.error = NativeTaskDetailsError(origin: .storage, message: error.localizedDescription) }
             }.disabled(confirmation != nil).accessibilityIdentifier("confirm-checkout-recovery")
         } message: {
-            Text("\(recovery?.preview.confirmationSummary ?? "")\n\nThis resumes the stopped Work in its original workspace. The Mac will check these branches and edits before continuing. Nothing changes until you confirm.")
+            Text("\(recovery?.preview.confirmationSummary ?? "")\n\nThe stopped task continues in its own folder. Before it continues, the Mac checks these branches and edits. Nothing changes until you tap Recover checkout.")
         }
     }
 }

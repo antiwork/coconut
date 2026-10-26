@@ -26,7 +26,6 @@ final class WorkTabReturnTests: XCTestCase {
         app.buttons["close-settings"].tap()
         let chat = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch
         XCTAssertTrue(chat.waitForExistence(timeout: 5)); chat.tap()
-        app.buttons["Bot options"].tap()
         app.buttons["chat-task-details"].tap()
         XCTAssertTrue(app.navigationBars["Task details"].waitForExistence(timeout: 5))
         app.buttons["Done"].tap()

@@ -31,7 +31,7 @@ final class DecisionConnectionTests: XCTestCase {
         sleep(2)
         XCTAssertTrue(option.isEnabled)
         option.tap()
-        XCTAssertTrue(app.staticTexts["Choice received"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.images["Choice recorded"].waitForExistence(timeout: 10))
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "Choice recorded while background sync is unavailable"
         proof.lifetime = .keepAlways

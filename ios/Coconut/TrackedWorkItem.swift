@@ -14,7 +14,6 @@ struct TrackedWorkItem: Identifiable {
     }
     var pullRequest: TrackedPullRequest? { pullRequests.count == 1 ? pullRequests.first : nil }
     var id: String { artifact.workIdentity }
-    var needsDecision: Bool { artifact.workState == "needs_decision" && artifact.workDecisionId != nil }
     func groupOrder(at date: Date) -> Int {
         if isFinished { return 5 }
         switch artifact.workState ?? artifact.activityState ?? artifact.status {
@@ -156,8 +155,10 @@ struct TrackedWorkItem: Identifiable {
         return "\(ordinal) in \(botName)’s queue"
     }
 
+    private var wasStopped: Bool { (artifact.workState ?? artifact.status) == "cancelled" }
+
     func activity(at date: Date) -> String {
-        if isFinished { return (artifact.workState ?? artifact.status) == "cancelled" ? "Stopped" : "Completed" }
+        if isFinished { return wasStopped ? "Stopped" : "Completed" }
         guard let observed = artifact.activityObservedAt?.apiDate, date.timeIntervalSince(observed) < 60 else {
             return "Status unavailable"
         }
@@ -170,15 +171,22 @@ struct TrackedWorkItem: Identifiable {
         return date.timeIntervalSince(observed) < 60
     }
 
-    func color(at date: Date, scheme: ColorScheme) -> Color {
-        let green = scheme == .dark ? Color.green : Color(red: 0.12, green: 0.44, blue: 0.22)
-        if artifact.status == "completed" { return green }
-        guard !isFinished, let observed = artifact.activityObservedAt?.apiDate,
-              date.timeIntervalSince(observed) < 60 else { return .secondary }
-        switch artifact.activityState {
-        case "ready": return green
-        case "blocked": return scheme == .dark ? .orange : Color(red: 0.60, green: 0.27, blue: 0)
-        default: return .secondary
+    /// The StatusLabel key for a task row. Waiting work pauses on its own, so it does not claim that it needs you.
+    func status(at date: Date) -> String {
+        if isFinished {
+            if wasStopped { return "cancelled" }
+            // Without a Work state, pull requests end the task. A closed pull request did not complete it.
+            if artifact.workState == nil, !pullRequests.isEmpty, !pullRequests.contains(where: { $0.artifact.status == "merged" || $0.artifact.prState == "merged" }) {
+                return "closed"
+            }
+            return "completed"
+        }
+        switch artifact.workState ?? artifact.activityState ?? artifact.status {
+        case "working": return isWorking(at: date) ? "working" : "status_out_of_date"
+        case "queued": return "queued"
+        case "needs_decision": return "needs_you"
+        case "waiting": return "paused"
+        case let state: return state
         }
     }
 }

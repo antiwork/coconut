@@ -65,18 +65,6 @@ final class WorkTests: XCTestCase {
         XCTAssertTrue(TrackedPullRequest.active(in: [closed, failed]).isEmpty)
     }
 
-    func testDraftShowsRunningCIAndBecomesStale() throws {
-        let row = try XCTUnwrap(TrackedPullRequest.active(in: [artifact()]).first)
-        XCTAssertEqual(row.checksLabel(at: try XCTUnwrap(row.artifact.observedAt?.apiDate)), "Checks running")
-        XCTAssertEqual(row.checksLabel(at: try XCTUnwrap(row.artifact.observedAt?.apiDate).addingTimeInterval(121)), "Status out of date")
-    }
-
-    func testRefreshFailureDoesNotClaimChecksPassed() throws {
-        var failed = artifact(); failed.checksState = "passed"; failed.refreshError = "Unavailable"
-        let row = try XCTUnwrap(TrackedPullRequest.active(in: [failed]).first)
-        XCTAssertEqual(row.checksLabel(at: try XCTUnwrap(failed.observedAt?.apiDate)), "Status out of date")
-    }
-
     func testInvalidDestinationsNeverBecomeLinks() {
         for url in ["https://github.com.evil.test/a/b/pull/1", "https://token@github.com/a/b/pull/1", "http://github.com/a/b/pull/1"] {
             XCTAssertTrue(TrackedPullRequest.active(in: [artifact(url: url)]).isEmpty)
@@ -90,9 +78,8 @@ final class WorkTests: XCTestCase {
         let rows = TrackedPullRequest.tracked(in: [merged, closed, artifact(id: "open", url: "https://github.com/team/repo/pull/44")])
         XCTAssertEqual(rows.count, 3)
         XCTAssertFalse(try XCTUnwrap(rows.first).isFinished)
-        let later = try XCTUnwrap(merged.observedAt?.apiDate).addingTimeInterval(86400)
-        XCTAssertEqual(try XCTUnwrap(rows.first { $0.artifact.id == "merged" }).checksLabel(at: later), "Merged")
-        XCTAssertEqual(try XCTUnwrap(rows.first { $0.artifact.id == "closed" }).checksLabel(at: later), "Closed")
+        XCTAssertTrue(try XCTUnwrap(rows.first { $0.artifact.id == "merged" }).isFinished)
+        XCTAssertTrue(try XCTUnwrap(rows.first { $0.artifact.id == "closed" }).isFinished)
     }
 
 }

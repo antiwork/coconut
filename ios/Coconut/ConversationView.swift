@@ -20,8 +20,7 @@ struct ConversationView: View {
     @State private var messageScheduledAt = Date().addingTimeInterval(3600)
     @State private var messageMentions: [SelectedBotMention] = []
     @State private var taskDetailsOpen = false
-    @State private var stopOpen = false
-    @State private var taskToStop: AgentTask? = nil
+    @State private var stop = StopConfirmation<AgentTask>()
     @State private var didFocusDecision = false
     @State private var nearBottom = true
     @State private var userScrolling = false
@@ -29,6 +28,8 @@ struct ConversationView: View {
     @State private var isVisible = false
     @State private var transcript = TranscriptCache()
     @FocusState private var composerFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .headline) private var nameWidth = 150
 
     init(botId: String, focusDecisionId: String? = nil, focusMessageId: String? = nil, attachedWork: WorkReference? = nil) {
         self.botId = botId
@@ -115,8 +116,7 @@ struct ConversationView: View {
                             }
                             if let activity {
                                 BotStatusRow(bot: bot, activity: activity)
-                                    .transition(.asymmetric(insertion: .opacity.animation(.easeOut(duration: 0.2).delay(0.25)),
-                                                            removal: .opacity.animation(.easeOut(duration: 0.15))))
+                                    .transition(.opacity.animation(BoardStyle.fade(reduceMotion: reduceMotion)))
                             }
                             Color.clear.frame(height: 1).id("conversation-bottom")
                         }
@@ -192,7 +192,8 @@ struct ConversationView: View {
                     ConversationComposer(bot: bot, task: activeTask, text: $messageDraft,
                                          attachments: $messageAttachments, scheduling: $messageScheduling,
                                          scheduledAt: $messageScheduledAt, mentions: $messageMentions,
-                                         focused: $composerFocused, replyTo: $replyTo, workContext: $workContext)
+                                         focused: $composerFocused, replyTo: $replyTo, workContext: $workContext,
+                                         onStop: requestStop)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .onAppear { isVisible = true; footerScroll.reset() }
@@ -208,40 +209,30 @@ struct ConversationView: View {
                                 LiveBotAvatar(bot: bot, size: 28)
                                 Text(bot.name).font(.headline)
                                     .lineLimit(1).truncationMode(.tail)
-                                    .frame(maxWidth: 150, alignment: .leading)
+                                    .frame(maxWidth: nameWidth, alignment: .leading)
                             }
                             .fixedSize(horizontal: true, vertical: false)
                             .padding(.leading, 4).padding(.trailing, 10)
-                            .frame(height: 44).contentShape(Capsule())
+                            .frame(minHeight: 44).contentShape(Capsule())
                         }
                         .buttonStyle(.plain).labelStyle(.titleAndIcon).accessibilityLabel("\(bot.name) settings")
                         .accessibilityIdentifier("bot-settings")
                         .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                     }
                     ToolbarItem(placement: .topBarTrailing) {
-                        Menu {
-                            NavigationLink("Bot settings", value: BotSettingsRoute(botId: bot.id))
-                            Button("Task details", systemImage: "list.bullet.rectangle") {
-                                taskDetailsOpen = true
-                            }.accessibilityIdentifier("chat-task-details")
-                            if let activeTask {
-                                Button("Stop \(executorName(activeTask))'s task", systemImage: "stop.circle", role: .destructive) {
-                                    taskToStop = activeTask
-                                    stopOpen = true
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis").frame(width: 44, height: 44)
-                        }.accessibilityLabel("Bot options")
-                            .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
+                        Button { composerFocused = false; taskDetailsOpen = true } label: {
+                            Image(systemName: "list.bullet.rectangle").frame(minWidth: 44, minHeight: 44)
+                        }
+                        .accessibilityLabel("Task details")
+                        .accessibilityIdentifier("chat-task-details")
                     }
                 }
-                .confirmationDialog("Stop \(taskToStop.map { executorName($0) } ?? bot.name)'s task?", isPresented: $stopOpen, titleVisibility: .visible) {
-                    Button("Stop task", role: .destructive) {
-                        if let taskToStop { Task { await store.cancel(taskToStop) } }
-                    }
-                } message: {
-                    Text("The Mac records the stop request. An action already executing can finish before it stops.")
+                .confirmationDialog(StopCopy.title(executor: stop.item.map { executorName($0) } ?? bot.name),
+                                    isPresented: $stop.isPresented, titleVisibility: .visible, presenting: stop.item) { task in
+                    Button("Stop task", role: .destructive) { Task { await store.cancel(task) } }
+                        .accessibilityIdentifier("confirm-stop-task")
+                } message: { _ in
+                    Text(StopCopy.message)
                 }
             } else {
                 QuietEmptyState(symbol: "bubble.left", title: "Conversation unavailable", message: "This bot may have been deleted. Return to your team to continue.")
@@ -263,7 +254,7 @@ struct ConversationView: View {
             }
             if let date = messages.first?.createdAt.apiDate {
                 Text(date.formatted(date: .abbreviated, time: .omitted))
-                    .font(.caption2).foregroundStyle(.tertiary)
+                    .font(.caption2).foregroundStyle(.secondary)
                     .padding(.vertical, 12)
             }
             if messages.isEmpty {
@@ -279,8 +270,12 @@ struct ConversationView: View {
 
 
 
-    private func executorName(_ task: AgentTask) -> String {
-        store.bots.first { $0.id == task.botId }?.name ?? "Bot"
+    private func executorName(_ task: AgentTask) -> String { store.botName(task.botId) }
+
+    // Every Stop in the chat asks first, because a stop cannot be undone.
+    private func requestStop(_ task: AgentTask) {
+        composerFocused = false
+        stop.request(task)
     }
 
     @ViewBuilder
@@ -342,7 +337,7 @@ struct TranscriptMessageRow: View {
                     }.frame(minHeight: 44)
                 }.buttonStyle(.plain).accessibilityIdentifier("message-sender-\(sender.id)")
                 if let names = recipientNames, !names.isEmpty {
-                    Image(systemName: "arrow.right").font(.system(size: 10))
+                    Image(systemName: "arrow.right").imageScale(.small)
                     Text(names).lineLimit(1)
                 }
             }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 10)
@@ -378,6 +373,8 @@ struct MessageBubble: View {
     @State private var replyOffset: CGFloat = 0
     @State private var actionsOpen = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .body) private var actionsWidth = 280
+    @State private var rowWidth: CGFloat = .infinity
     let message: Message
     var scrollToDecision: (String) -> Void = { _ in }
     var onReply: (() -> Void)? = nil
@@ -426,13 +423,13 @@ struct MessageBubble: View {
                 if let requestId = message.clientRequestId,
                    let outgoing = store.outgoingMessages.first(where: { $0.id == requestId }) {
                     if outgoing.status == .failed {
-                        Button("Waiting to send. Retry", systemImage: "arrow.clockwise") {
+                        Button("Not sent · Retry", systemImage: "arrow.clockwise") {
                             Task { await store.retryOutgoing(requestId) }
                         }
                         .font(.caption).foregroundStyle(.secondary)
                         .frame(minHeight: 44).accessibilityIdentifier("retry-message-\(requestId)")
                     } else if outgoing.status == .rejected {
-                        Button("Not sent. Edit", systemImage: "pencil") { editingOutgoing = outgoing }
+                        Button("Not sent · Edit", systemImage: "pencil") { editingOutgoing = outgoing }
                             .font(.caption).foregroundStyle(.secondary)
                             .frame(minHeight: 44).accessibilityIdentifier("edit-message-\(requestId)")
                     }
@@ -440,7 +437,7 @@ struct MessageBubble: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
-            .background(isUser ? BoardStyle.userBubble : BoardStyle.surface, in: RoundedRectangle(cornerRadius: 22))
+            .background(isUser ? BoardStyle.userBubble : BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
             .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 actionsOpen = true
@@ -459,7 +456,9 @@ struct MessageBubble: View {
                     Button { UIPasteboard.general.string = message.text; actionsOpen = false } label: {
                         Label("Copy", systemImage: "doc.on.doc").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     }
-                }.buttonStyle(.plain).padding(12).frame(width: 280)
+                }.buttonStyle(.plain).padding(12)
+                    // Large text widens the menu, but never past the transcript.
+                    .frame(width: min(actionsWidth, rowWidth))
                     .presentationCompactAdaptation(.popover)
             }
                 let reactions = store.reactions(for: message)
@@ -467,7 +466,7 @@ struct MessageBubble: View {
                     HStack(spacing: 3) {
                         ForEach(MessageReactions.all.filter { reactions.contains($0) }, id: \.self) { emoji in
                             Button { Task { await store.react(to: message, emoji: emoji) } } label: {
-                                Text(emoji).font(.caption).frame(minWidth: 28, minHeight: 32)
+                                Text(emoji).font(.caption).frame(minWidth: 44, minHeight: 44)
                             }.buttonStyle(.plain).accessibilityLabel("Remove \(emoji) reaction")
                                 .disabled(onReply == nil)
                         }
@@ -478,6 +477,7 @@ struct MessageBubble: View {
             }
             if !isUser { Spacer(minLength: 18) }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rowWidth = $0 }
         .offset(x: replyOffset)
         .background(alignment: .leading) {
             Image(systemName: "arrowshape.turn.up.left.fill").font(.body)
@@ -488,17 +488,29 @@ struct MessageBubble: View {
                 if shouldReply { onReply?() }
                 withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.8)) { replyOffset = 0 }
             }))
-        .accessibilityAction(named: "Reply") { onReply?() }
         .accessibilityElement(children: .contain)
+        .accessibilityAction(named: "Copy") { UIPasteboard.general.string = message.text }
+        .accessibilityActions {
+            // VoiceOver gets the same Reply and reactions as the long-press menu, and only where that menu has them.
+            if onReply != nil, store.messageReference(for: message) != nil {
+                let reactions = store.reactions(for: message)
+                Button("Reply") { onReply?() }
+                ForEach(MessageReactions.selectable, id: \.self) { emoji in
+                    Button("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))") {
+                        Task { await store.react(to: message, emoji: emoji) }
+                    }
+                }
+            }
+        }
         .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted bot")")
         .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
     }
     private func reactionButton(_ index: Int) -> some View {
         let emoji = MessageReactions.selectable[index]
         return Button { actionsOpen = false; Task { await store.react(to: message, emoji: emoji) } } label: {
-            Text(emoji).font(.system(size: 30)).frame(maxWidth: .infinity, minHeight: 56)
-                .background(store.reactions(for: message).contains(emoji) ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 12))
-        }.accessibilityLabel(MessageReactions.names[index])
+            Text(emoji).font(.largeTitle).frame(maxWidth: .infinity, minHeight: 56)
+                .background(store.reactions(for: message).contains(emoji) ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+        }.accessibilityLabel(MessageReactions.name(emoji))
     }
 }
 
@@ -506,7 +518,7 @@ struct MessageQuote: View {
     let reference: MessageReference
     var body: some View {
         HStack(spacing: 8) {
-            RoundedRectangle(cornerRadius: 2).fill(.secondary).frame(width: 3)
+            Capsule().fill(.secondary).frame(width: 3)
             VStack(alignment: .leading, spacing: 3) {
                 Text(reference.author).font(.caption.weight(.semibold))
                 Text(reference.text).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
@@ -561,6 +573,8 @@ struct ConversationComposer: View {
     @FocusState.Binding var focused: Bool
     @Binding var replyTo: MessageReference?
     @Binding var workContext: WorkReference?
+    var onStop: (AgentTask) -> Void = { _ in }
+    @ScaledMetric(relativeTo: .body) private var sendSize = 34
 
     private var connected: Bool { store.hasPairing || store.isDemo }
     private var recipients: [SelectedBotMention] { BotMentions.recipients(in: text, selected: mentions, bots: store.bots) }
@@ -573,10 +587,10 @@ struct ConversationComposer: View {
                     Label(work.title, systemImage: "checklist")
                         .font(.subheadline).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                     Button { workContext = nil } label: {
-                        Image(systemName: "xmark").foregroundStyle(.secondary).frame(width: 44, height: 44)
+                        Image(systemName: "xmark").foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
                     }.accessibilityLabel("Remove work context")
                 }.padding(.leading, 16).padding(.trailing, 4)
-                    .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 16))
+                    .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
                     .padding(.horizontal, 12).padding(.bottom, 6)
                     .accessibilityIdentifier("work-context-preview")
             }
@@ -584,7 +598,7 @@ struct ConversationComposer: View {
                 HStack(spacing: 8) {
                     MessageQuote(reference: reference)
                     Button { replyTo = nil } label: {
-                        Image(systemName: "xmark").foregroundStyle(.secondary).frame(width: 44, height: 44)
+                        Image(systemName: "xmark").foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
                     }.accessibilityLabel("Cancel reply")
                 }.padding(.horizontal, 12).accessibilityIdentifier("reply-preview")
             }
@@ -614,22 +628,17 @@ struct ConversationComposer: View {
                         focused = true
                     }
                     Button("Attach file", systemImage: "paperclip") { importing = true }
-                    if let task {
-                        Button("Stop \(executorName)'s task", systemImage: "stop.circle", role: .destructive) {
-                            Task { await store.cancel(task) }
-                        }
-                    }
                     if workContext == nil {
                         Button(scheduling ? "Send now" : "Schedule task", systemImage: "clock") {
                             scheduling.toggle()
                         }
                     }
                 } label: {
-                    Image(systemName: uploading ? "hourglass" : "plus").font(.system(size: 22))
-                        .foregroundStyle(.secondary).frame(width: 44, height: 44)
+                    Image(systemName: uploading ? "hourglass" : "plus").font(.title2)
+                        .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
                 }
                 .disabled(!connected || uploading)
-                .accessibilityLabel("Add attachment or schedule")
+                .accessibilityLabel("More options")
                 HStack(alignment: .bottom, spacing: 4) {
                 TextField("Message \(bot.name)", text: $text, selection: $selection, axis: .vertical)
                     .lineLimit(1...5).font(.body)
@@ -639,26 +648,26 @@ struct ConversationComposer: View {
                 if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Button(action: send) {
                     Image(systemName: scheduling ? "clock.fill" : "arrow.up")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.body.weight(.semibold))
                         .foregroundStyle(canSend ? BoardStyle.controlLabel : .secondary)
-                        .frame(width: 34, height: 34)
+                        .frame(width: sendSize, height: sendSize)
                         .background(canSend ? BoardStyle.control : BoardStyle.ink.opacity(0.07), in: Circle())
-                        .frame(width: 44, height: 44)
+                        .frame(minWidth: 44, minHeight: 44)
                 }
                 .disabled(!canSend)
                 .accessibilityLabel(scheduling ? "Schedule task" : "Send message")
                 .accessibilityIdentifier("send-message")
                 } else if let task, task.isRunning, connected {
-                    Button { Task { await store.cancel(task) } } label: {
-                        Image(systemName: "stop.fill").font(.system(size: 14))
-                            .foregroundStyle(.secondary).frame(width: 44, height: 44)
+                    Button { onStop(task) } label: {
+                        Image(systemName: "stop.fill").font(.footnote)
+                            .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
                     }.accessibilityLabel("Stop \(executorName)'s task").accessibilityIdentifier("stop-current-task")
                 }
                 }
             }
                 .padding(.horizontal, 4)
-                .background(BoardStyle.surface.opacity(0.45), in: RoundedRectangle(cornerRadius: 24))
-                .overlay(RoundedRectangle(cornerRadius: 24).stroke(BoardStyle.line))
+                .background(BoardStyle.surface.opacity(0.45), in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
+                .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.large).stroke(BoardStyle.line))
         }
         .padding(.horizontal, 16)
         .padding(.top, 4)

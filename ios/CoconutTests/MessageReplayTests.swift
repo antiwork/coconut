@@ -82,6 +82,37 @@ final class MessageReplayTests: XCTestCase {
     }
 
     @MainActor
+    func testHomeRowShowsNeedsYouOnlyWhileACardWaitsInThatChat() throws {
+        let store = AppStore(demo: true)
+        let fixture = try PreviewStateFixture.load()
+        let bot = fixture.bots[0]
+        var card = try XCTUnwrap(fixture.decisions.first)
+        card.botId = bot.id; card.status = "pending"
+        store.tasks = []
+        store.decisions = [card]
+        XCTAssertTrue(store.botNeedsYou(bot))
+        XCTAssertEqual(BotRowSubtitle(needsYou: store.botNeedsYou(bot), phase: .thinking), .needsYou,
+                       "The face shows the work, so the row names the card.")
+        store.answeringDecisionIds = [card.id]
+        XCTAssertFalse(store.botNeedsYou(bot), "An answer on its way does not need you again.")
+        store.answeringDecisionIds = []
+        card.status = "approved"
+        store.decisions = [card]
+        XCTAssertFalse(store.botNeedsYou(bot))
+        XCTAssertEqual(BotRowSubtitle(needsYou: false, phase: .thinking), .phase(.thinking))
+        XCTAssertEqual(BotRowSubtitle(needsYou: false, phase: nil), .preview)
+    }
+
+    func testHomeRowReadsTheUnreadCountOnlyAboveZero() throws {
+        var bot = try PreviewStateFixture.load().bots[0]
+        bot.unreadCount = 0
+        XCTAssertEqual(BotRowSubtitle.needsYou.accessibilityLabel(bot: bot, preview: ""), "\(bot.name), Needs you")
+        bot.unreadCount = 2; bot.status = "idle"
+        XCTAssertEqual(BotRowSubtitle.preview.accessibilityLabel(bot: bot, preview: "You: Ship it"),
+                       "\(bot.name), idle, You: Ship it, 2 unread")
+    }
+
+    @MainActor
     func testDotRequiresWorkingBotAndConfirmedConnection() throws {
         let store = AppStore(demo: false)
         var bot = try PreviewStateFixture.load().bots[0]

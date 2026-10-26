@@ -20,16 +20,16 @@ struct DecisionReplyComposer: View {
                 .padding(.leading, 12).padding(.vertical, 12)
                 .accessibilityIdentifier("decision-reply-\(decision.id)")
                 Button(action: sendReply) {
-                    Image(systemName: "arrow.up.circle.fill").font(.system(size: 28))
-                        .frame(width: 44, height: 44)
+                    Image(systemName: "arrow.up.circle.fill").font(.title)
+                        .frame(minWidth: 44, minHeight: 44)
                 }
                 .buttonStyle(.plain).accessibilityLabel("Send reply")
                 .accessibilityIdentifier("send-decision-reply-\(decision.id)")
                 .disabled(!canRespond || sendingReply ||
                           (store.decisionReplyDrafts[decision.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(BoardStyle.line))
+            .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+            .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.small).stroke(BoardStyle.line))
             if sendingReply {
                 Text("Sending…").font(.caption).foregroundStyle(.secondary)
             }

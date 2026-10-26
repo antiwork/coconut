@@ -51,11 +51,11 @@ struct DecisionCard: View {
             } else { cardContent.padding(16) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 24))
-        .clipShape(RoundedRectangle(cornerRadius: 24))
+        .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
+        .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
         .overlay {
             if showsBot {
-                RoundedRectangle(cornerRadius: 24).strokeBorder(BoardStyle.line, lineWidth: 1)
+                RoundedRectangle(cornerRadius: BoardStyle.Radius.large).strokeBorder(BoardStyle.line, lineWidth: 1)
                     .allowsHitTesting(false).accessibilityHidden(true)
             }
         }
@@ -90,7 +90,7 @@ struct DecisionCard: View {
                 if !showsBot && !showsSelection {
                     Button(action: dismiss) {
                         Image(systemName: "xmark").font(.body).foregroundStyle(.secondary)
-                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .disabled(!canRespond || submitting || store.answeringDecisionIds.contains(decision.id))
@@ -110,7 +110,7 @@ struct DecisionCard: View {
                     Text("Pair with your Mac to respond.").font(.caption).foregroundStyle(.secondary)
                 }
                 if let responseError {
-                    Text(responseError).font(.caption).foregroundStyle(BoardStyle.accent)
+                    Text(responseError).font(.caption).foregroundStyle(BoardStyle.attention)
                         .textSelection(.enabled)
                 }
             } else if decision.isRefreshing {
@@ -186,20 +186,17 @@ struct DecisionCard: View {
                     .accessibilityIdentifier("decision-selection-\(decision.id)")
                 Image(systemName: isDismissed ? "xmark" : decision.status == "failed" ? "exclamationmark.circle" : decision.isPending ? "arrow.up" : "checkmark")
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(isDismissed ? .secondary : decision.status == "failed" ? BoardStyle.accent :
-                                        decision.isPending ? .secondary : BoardStyle.green)
+                    .foregroundStyle(isDismissed ? .secondary : decision.status == "failed" ? BoardStyle.attention :
+                                        decision.isPending ? .secondary : BoardStyle.positive)
                     .accessibilityLabel(isDismissed ? "Dismissed" : decision.isPending ? "Sending choice" :
                                             decision.status == "failed" ? "Action failed" : "Choice recorded")
             }
             .padding(.horizontal, 12).padding(.vertical, 12)
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(BoardStyle.line))
-            if decision.status == "approved" && decision.draft == nil {
-                Text("Choice received").font(.caption).foregroundStyle(.secondary)
-            }
+            .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+            .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.small).stroke(BoardStyle.line))
             if decision.status == "failed", let outcome = decision.outcome, !outcome.isEmpty {
-                Text(outcome).font(.caption).foregroundStyle(BoardStyle.accent)
+                Text(outcome).font(.caption).foregroundStyle(BoardStyle.attention)
             }
             if let replacement = decision.replacedByDecisionId {
                 NavigationLink(value: ConversationRoute(botId: store.conversationBotId(for: decision), decisionId: replacement)) {
@@ -347,6 +344,7 @@ struct DecisionChoiceContent: View {
     var isSelected = false
     var isCompact = false
     var showsAssessment = true
+    @ScaledMetric(relativeTo: .body) private var checkSize = 20
 
     var body: some View {
         HStack(alignment: .top, spacing: isCompact ? 8 : 12) {
@@ -354,13 +352,13 @@ struct DecisionChoiceContent: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     (Text(option.label) + Text(isRecommended ? "  Recommended" : "").font(.caption).foregroundColor(.secondary))
                         .font(.body)
-                        .foregroundStyle(option.answer == "reject" ? Color.red : .primary)
+                        .foregroundStyle(.primary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
                     Image(systemName: "checkmark")
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(BoardStyle.green)
-                        .frame(width: 20, height: 20)
+                        .foregroundStyle(BoardStyle.positive)
+                        .frame(width: checkSize, height: checkSize)
                         .opacity(isSelected || isSending ? 1 : 0)
                         .accessibilityHidden(true)
                 }
@@ -373,10 +371,10 @@ struct DecisionChoiceContent: View {
         }
         .padding(.horizontal, 12).padding(.vertical, isCompact ? 8 : 12)
         .frame(maxWidth: .infinity, minHeight: 44)
-        .background(isSelected ? BoardStyle.green.opacity(0.14) : BoardStyle.paper,
-                    in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12)
-            .stroke(isSelected ? BoardStyle.green.opacity(0.7) : BoardStyle.line, lineWidth: 1))
+        .background(isSelected ? BoardStyle.positive.opacity(0.14) : BoardStyle.paper,
+                    in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+        .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.small)
+            .stroke(isSelected ? BoardStyle.positive.opacity(0.7) : BoardStyle.line, lineWidth: 1))
         .animation(.easeOut(duration: 0.1), value: isSelected)
         .contentShape(Rectangle())
     }
@@ -388,6 +386,8 @@ struct ArtifactCard: View {
     @State private var previewURL: URL?
     @State private var downloading = false
     @State private var expanded = false
+    @ScaledMetric(relativeTo: .title3) private var iconWidth = 30
+    @ScaledMetric(relativeTo: .title3) private var iconHeight = 36
     private var shortResult: Bool {
         artifact.preview.count <= 160 && artifact.preview.components(separatedBy: "\n").count <= 3
     }
@@ -404,7 +404,7 @@ struct ArtifactCard: View {
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: artifact.kind == "pr" ? "arrow.triangle.pull" : artifact.kind == "task" ? "checkmark.circle" : "doc.text")
                         .font(.title3).foregroundStyle(.secondary)
-                        .frame(width: 30, height: 36)
+                        .frame(width: iconWidth, height: iconHeight)
                     VStack(alignment: .leading, spacing: 6) {
                         Text(artifact.title).font(.subheadline.weight(.semibold))
                         StatusLabel(status: artifact.cardStatus(at: context.date))
@@ -430,7 +430,7 @@ struct ArtifactCard: View {
                                 .font(.subheadline.weight(.medium)).frame(minHeight: 44)
                         }
                         Spacer()
-                        ShareLink(item: externalURL) { Image(systemName: "square.and.arrow.up").frame(width: 44, height: 44) }
+                        ShareLink(item: externalURL) { Image(systemName: "square.and.arrow.up").frame(minWidth: 44, minHeight: 44) }
                     } else if artifact.kind != "task" {
                         Button {
                             downloading = true
@@ -448,7 +448,7 @@ struct ArtifactCard: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 20))
+            .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
             .quickLookPreview($previewURL)
         }
     }

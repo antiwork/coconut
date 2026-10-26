@@ -14,6 +14,20 @@ enum BoardStyle {
     })
     static let control = Color.primary
     static let controlLabel = Color(uiColor: .systemBackground)
+    // Semantic tints. Each one names a meaning, not a hue.
+    static let positive = green
+    static let attention = accent
+    static let destructive = Color(uiColor: .systemRed)
+
+    /// The one fade for status text. Reduce Motion turns it off.
+    static func fade(reduceMotion: Bool) -> Animation? { reduceMotion ? nil : .easeOut(duration: 0.2) }
+
+    /// Corner radii. A shape uses the radius of its size class, not a value of its own.
+    enum Radius {
+        static let large: CGFloat = 24
+        static let medium: CGFloat = 16
+        static let small: CGFloat = 12
+    }
 }
 
 extension Color {
@@ -31,27 +45,33 @@ struct StatusLabel: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: symbol)
-                .font(.system(size: 9, weight: .bold))
-            Text(label)
+                .imageScale(.small)
+                .fontWeight(.bold)
+            Text(Self.label(for: status))
                 .font(compact ? .caption2.weight(.medium) : .caption.weight(.medium))
         }
         .foregroundStyle(tint)
     }
 
-    private var label: String {
+    static func label(for status: String) -> String {
         switch status {
         case "needs_you", "waiting", "pending": "Needs you"
         case "working", "running": "Working"
-        case "scheduled", "queued": "Scheduled"
+        case "scheduled": "Scheduled"
+        case "queued": "Queued"
         case "failed": "Failed"
         case "completed", "executed": "Complete"
         case "checks_running": "Checks running"
         case "ready_for_review": "Ready for review"
         case "opened": "Opened"
         case "merged": "Merged"
+        case "closed": "Closed"
+        case "blocked": "Blocked"
+        case "needs_recovery": "Needs recovery"
         case "preparing": "Preparing"
         case "status_out_of_date": "Status out of date"
         case "cancelled", "canceled": "Stopped"
+        case "paused": "Paused"
         default: status.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
@@ -61,7 +81,8 @@ struct StatusLabel: View {
         case "needs_you", "waiting", "pending": "circle.inset.filled"
         case "working", "running", "checks_running": "circle.dotted"
         case "scheduled", "queued": "clock"
-        case "failed": "exclamationmark.circle.fill"
+        case "paused": "pause"
+        case "failed", "blocked", "needs_recovery": "exclamationmark.circle.fill"
         case "completed", "executed", "merged": "checkmark"
         default: "circle"
         }
@@ -69,8 +90,8 @@ struct StatusLabel: View {
 
     private var tint: Color {
         switch status {
-        case "needs_you", "waiting", "pending", "failed": BoardStyle.accent
-        case "working", "running", "completed", "executed", "merged": BoardStyle.green
+        case "needs_you", "waiting", "pending", "failed", "blocked", "needs_recovery": BoardStyle.attention
+        case "working", "running", "completed", "executed", "merged": BoardStyle.positive
         default: .secondary
         }
     }
@@ -80,17 +101,19 @@ struct QuietEmptyState: View {
     let symbol: String
     let title: String
     let message: String
+    @ScaledMetric(relativeTo: .title) private var iconSize = 72
+    @ScaledMetric(relativeTo: .subheadline) private var messageWidth = 280
 
     var body: some View {
         VStack(spacing: 14) {
             Image(systemName: symbol)
-                .font(.system(size: 30, weight: .light))
+                .font(.largeTitle.weight(.light))
                 .foregroundStyle(.secondary)
-                .frame(width: 72, height: 72)
-                .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 24))
+                .frame(width: iconSize, height: iconSize)
+                .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
             Text(title).font(.title3.weight(.semibold))
             Text(message).font(.subheadline).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center).frame(maxWidth: 280)
+                .multilineTextAlignment(.center).frame(maxWidth: messageWidth)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 70)
@@ -98,12 +121,19 @@ struct QuietEmptyState: View {
     }
 }
 
-struct SectionEyebrow: View {
-    let text: String
-    var body: some View {
-        Text(text.uppercased())
-            .font(.caption2.weight(.semibold))
-            .tracking(1.1)
-            .foregroundStyle(.secondary)
+/// The words of every Stop confirmation, so the chat and task details say the same thing.
+enum StopCopy {
+    static let message = "The Mac records the stop request. An action that already runs can finish before it stops."
+    static func title(executor: String) -> String { "Stop \(executor)'s task?" }
+}
+
+/// A Stop asks before it acts. The confirmation holds the item until the person stops it or cancels.
+struct StopConfirmation<Item> {
+    private(set) var item: Item?
+    var isPresented: Bool {
+        get { item != nil }
+        set { if !newValue { item = nil } }
     }
+
+    mutating func request(_ item: Item) { self.item = item }
 }

@@ -131,9 +131,33 @@ func latestConversationMessage(in messages: [Message]) -> Message? {
     }
 }
 
+/// The second line of a home row. A pending card comes first, because the face already shows work.
+enum BotRowSubtitle: Equatable {
+    case needsYou
+    case phase(BotPhase)
+    case preview
+
+    init(needsYou: Bool, phase: BotPhase?) {
+        if needsYou { self = .needsYou } else if let phase { self = .phase(phase) } else { self = .preview }
+    }
+
+    /// VoiceOver reads what the row shows. It reads the unread count only when there is one.
+    func accessibilityLabel(bot: Bot, preview: String) -> String {
+        var parts = [bot.name]
+        switch self {
+        case .needsYou: parts.append(StatusLabel.label(for: "needs_you"))
+        case .phase(let phase): parts.append(phase.label)
+        case .preview: parts += [bot.status.replacingOccurrences(of: "_", with: " "), preview]
+        }
+        if bot.unreadCount > 0 { parts.append("\(bot.unreadCount) unread") }
+        return parts.joined(separator: ", ")
+    }
+}
+
 struct BotContactRow: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let bot: Bot
     private var latestMessage: Message? {
         latestConversationMessage(in: store.messages.filter { $0.botId == bot.id })
@@ -152,37 +176,43 @@ struct BotContactRow: View {
     private var phase: BotPhase? { store.botPhase(bot) }
 
     var body: some View {
+        let subtitle = BotRowSubtitle(needsYou: store.botNeedsYou(bot), phase: phase)
         HStack(spacing: 14) {
             LiveBotAvatar(bot: bot, size: 46)
             VStack(alignment: .leading, spacing: 5) {
                 if dynamicTypeSize.isAccessibilitySize {
                     name
-                    if let lastMessageDate { CompactAgeLabel(date: lastMessageDate).font(.caption).foregroundStyle(.tertiary) }
+                    if let lastMessageDate { CompactAgeLabel(date: lastMessageDate).font(.caption).foregroundStyle(.secondary) }
                 } else {
                     HStack(alignment: .firstTextBaseline) {
                         name
                         Spacer(minLength: 8)
                         if let lastMessageDate {
-                            CompactAgeLabel(date: lastMessageDate).font(.caption).foregroundStyle(.tertiary).fixedSize()
+                            CompactAgeLabel(date: lastMessageDate).font(.caption).foregroundStyle(.secondary).fixedSize()
                         }
                     }
                 }
-                // A working bot shows its phase in place of the last message, like a typing notice.
-                if let phase {
+                // A pending card or a working phase takes the place of the last message, like a typing notice.
+                switch subtitle {
+                case .needsYou:
+                    StatusLabel(status: "needs_you", compact: true)
+                        .transition(.opacity)
+                        .accessibilityIdentifier("bot-needs-you-\(bot.id)")
+                case .phase(let phase):
                     ShimmerText(text: phase.label).font(.subheadline)
                         .transition(.opacity)
-                } else {
+                case .preview:
                     Text(preview)
                         .font(.subheadline).foregroundStyle(.secondary)
                         .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
                         .transition(.opacity)
                 }
             }
-            .animation(.easeOut(duration: 0.2), value: phase)
+            .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: subtitle)
         }
         .frame(minHeight: 52)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(bot.name), \(phase?.label ?? bot.status.replacingOccurrences(of: "_", with: " ")), \(preview), \(bot.unreadCount) unread")
+        .accessibilityLabel(subtitle.accessibilityLabel(bot: bot, preview: subtitle == .preview ? preview : ""))
     }
 
     private var name: some View {
@@ -203,10 +233,11 @@ private struct UnreadMarker: View {
 
 struct BotActivityDot: View {
     @Environment(AppStore.self) private var store
+    @ScaledMetric(relativeTo: .caption) private var size = 10
     let bot: Bot
     var body: some View {
         if store.isBotActive(bot) {
-            Circle().fill(Color.green).frame(width: 10, height: 10)
+            Circle().fill(BoardStyle.positive).frame(width: size, height: size)
                 .overlay(Circle().stroke(BoardStyle.paper, lineWidth: 2))
                 .offset(x: 2, y: 2)
                 .accessibilityElement().accessibilityLabel("Working")

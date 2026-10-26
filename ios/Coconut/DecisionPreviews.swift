@@ -41,10 +41,10 @@ struct DecisionPreviewStrip: View {
                             Button { selection = preview } label: {
                                 VStack(alignment: .leading, spacing: 6) {
                                     ZStack {
-                                        RoundedRectangle(cornerRadius: 12).fill(BoardStyle.paper)
+                                        RoundedRectangle(cornerRadius: BoardStyle.Radius.small).fill(BoardStyle.paper)
                                         if let image = loaded[preview.id]?.thumbnail {
                                             Image(decorative: image, scale: 1).resizable().scaledToFit()
-                                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                                .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
                                         } else if failed {
                                             Image(systemName: "photo").foregroundStyle(.secondary)
                                         } else { ProgressView() }

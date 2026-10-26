@@ -217,6 +217,7 @@ enum MessageReactions {
     static let selectable = ["👍", "👎"]
     static let all = ["👍", "👎", "😄", "🎉", "😕", "❤️", "🚀", "👀"]
     static let names = ["Thumbs up", "Thumbs down", "Laugh", "Celebrate", "Confused", "Heart", "Rocket", "Eyes"]
+    static func name(_ emoji: String) -> String { all.firstIndex(of: emoji).map { names[$0] } ?? emoji }
 }
 
 struct Message: Codable, Identifiable, Equatable, Sendable {

@@ -133,7 +133,7 @@ struct BotExchangeView: View {
                     Spacer()
                     if !nearBottom {
                         Button { proxy.scrollTo("exchange-bottom", anchor: .bottom) } label: {
-                            Image(systemName: "arrow.down").frame(width: 44, height: 44)
+                            Image(systemName: "arrow.down").frame(minWidth: 44, minHeight: 44)
                         }.accessibilityLabel("Latest messages")
                     }
                 }.frame(minHeight: 44).padding(.horizontal, 16).background(.bar)
