@@ -148,6 +148,25 @@ AWAITING_LABELS = ('awaiting-human',)
 AWAITING_BATCH = 50
 
 
+def answer_steps(url):
+    """Tell the bot what to do with the person's answer to a source that waits for them.
+
+    The bot posts the answer as a comment. For an issue, the bot then closes it: the comment carries the decision,
+    and the source's author does the rest from it. A pull request stays open.
+    """
+    from .decision_sources import github_source
+    steps = ('After the person answers, post their answer to the source as a comment in their words or with the chosen choice, '
+             'then verify the comment. ')
+    location = github_source(url)
+    if location and location[0] == 'issues':
+        steps += ('Then close the issue with gh issue close ' + location[2] + ' and verify that the issue is closed. '
+                  'Do not close it when the answer says to keep the issue open, '
+                  'or when the answer asks a question back instead of deciding. ')
+    else:
+        steps += 'Leave the pull request open. '
+    return steps
+
+
 def awaiting_user(items, labels, run):
     """Return the IDs of labeled items whose latest comment is not by the GitHub account that reads them.
 
@@ -522,8 +541,7 @@ class WorkSources:
                             'mark its recommendation, and include the source link in sources. '
                             'A delegated ruling, a scheduled recheck, or a wait for another party does not answer it. '
                             'Do not create a card for a choice that the latest comments already settle. '
-                            'After the person answers, post their answer to the source as a comment in their words or with the chosen choice, '
-                            'then verify the comment. Reuse a pending card about this source instead of creating another. '
+                            + answer_steps(item['id']) + 'Reuse a pending card about this source instead of creating another. '
                             if item.get('awaiting_user') else '')
                         text = ('Reconcile these open assignments against the original sources and existing work. '
                                 + awaiting_instruction + removed_instruction +
@@ -540,6 +558,8 @@ class WorkSources:
                                           human_authored=False)
                         task = self._get('tasks', task['id'])
                         task['_source_audit_prompt'] = text
+                        if item.get('awaiting_user'):
+                            task['_source_answer_steps'] = answer_steps(item['id'])
                         task['_source_assignment'] = dict(source_id=source['id'], id=item['id'], updated_at=item['updated_at'],
                                                           labels=item.get('labels', []))
                         self._put('tasks', task)

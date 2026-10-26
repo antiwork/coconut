@@ -3465,7 +3465,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                                                        '_kanban_claim': task.get('_kanban_claim'),
                                                        '_kanban_external_id': task.get('_kanban_claim', {}).get('external_id'),
                                                        '_kanban_workspace': task.get('_kanban_claim', {}).get('workspace')}
-                for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_self_recovery', '_chat_session', '_native_intake', '_native_outcome_id', '_work_context_id', '_direct_reply_message_id'):
+                for field in ('_work_todos', '_work_resume', '_source_audit_prompt', '_source_answer_steps', '_self_recovery', '_chat_session', '_native_intake', '_native_outcome_id', '_work_context_id', '_direct_reply_message_id'):
                     if field in task:
                         provider_task[field] = task[field]
                 if task.get('_native_outcome_id'):

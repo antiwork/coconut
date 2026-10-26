@@ -8,9 +8,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
+from coconut.hermes_worker import conversation_input
 from coconut.providers import FixtureProvider
 from coconut.service import Service
-from coconut.work_sources import awaiting_user, coverage
+from coconut.work_sources import answer_steps, awaiting_user, coverage
 
 
 URL = 'https://github.com/example/private/issues/7'
@@ -82,6 +83,23 @@ class AwaitingUserTests(unittest.TestCase):
         self.assertFalse(coverage(item, binding, tasks, {'other': other}, {}, current))
 
 
+class AnswerStepsTests(unittest.TestCase):
+    def test_answer_to_an_issue_closes_the_issue(self):
+        steps = answer_steps(URL + '#issuecomment-1')
+        self.assertIn('post their answer to the source as a comment', steps)
+        self.assertIn('then verify the comment. Then close the issue with gh issue close ' + URL
+                      + ' and verify that the issue is closed.', steps)
+        self.assertIn('Do not close it when the answer says to keep the issue open', steps)
+        self.assertIn('asks a question back instead of deciding', steps)
+
+    def test_answer_to_a_pull_request_leaves_it_open(self):
+        steps = answer_steps('https://github.com/example/private/pull/8')
+        self.assertIn('post their answer to the source as a comment', steps)
+        self.assertNotIn('close the issue', steps)
+        self.assertNotIn('gh issue close', steps)
+        self.assertIn('Leave the pull request open.', steps)
+
+
 class AwaitingAuditTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -123,7 +141,20 @@ class AwaitingAuditTests(unittest.TestCase):
         prompt = self.service._get('tasks', state['task_id'])['_source_audit_prompt']
         self.assertIn('This source waits for the person', prompt)
         self.assertIn('post their answer to the source as a comment', prompt)
+        self.assertIn('Then close the issue with gh issue close ' + URL, prompt)
         self.assertIn('"awaiting_user": true', prompt)
+        self.assertEqual(self.service._get('tasks', state['task_id'])['_source_answer_steps'], answer_steps(URL))
+
+    def test_answered_card_repeats_the_close_step_when_the_bot_resumes(self):
+        state = self.audit()
+        task = self.service._get('tasks', state['task_id'])
+        for status in ('approved', 'replied'):
+            card = dict(id='card', title='Payout', action_type='question', status=status, correction='Use option B.')
+            prompt, _ = conversation_input(dict(operation='resume', task=task, decision=card, history=[]))
+            self.assertIn('Then close the issue with gh issue close ' + URL, prompt)
+        card = dict(id='card', title='Payout', action_type='question', status='modified', correction='Ask again.')
+        prompt, _ = conversation_input(dict(operation='resume', task=task, decision=card, history=[]))
+        self.assertNotIn('gh issue close', prompt)
 
     def test_answer_by_the_person_restores_the_earlier_rules(self):
         self.commenter = 'person'
