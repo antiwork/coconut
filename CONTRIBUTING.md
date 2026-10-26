@@ -19,7 +19,7 @@ A small client is easy to keep up to date with Hermes releases. This matters mor
 - Make one focused change per PR.
 - Write the PR title as one imperative sentence that describes the behavior, for example "Delete the recovery-question flow".
 - In the PR body, state the problem, the fix, what stays the same, and how you verified it. Give real numbers for speed changes.
-- Update the docs in `docs/` in the same PR when behavior changes.
+- `docs/` holds only setup, architecture and the relay protocol. Fix a page there in the same PR when your change makes it wrong. Do not add pages for reports, plans or one change; put that in the PR description.
 - Write docs and comments in short, plain sentences in the present tense.
 
 ## Code

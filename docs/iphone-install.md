@@ -96,7 +96,7 @@ The source and backend remain local. Apple receives only the signed app and its 
 Release builds register production APNs tokens. Development builds register sandbox tokens.
 Coconut's shared relay holds the Apple push keys. Each Mac encrypts previews before sending them to the relay.
 Users do not need their own Apple Developer account or push key.
-Open an updated app once to register its token. See [notification setup](notifications.md).
+Open an updated app once to register its token.
 
 ### Encryption declaration
 

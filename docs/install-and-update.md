@@ -245,7 +245,7 @@ Repeated requests do not extend the pause. Coconut does not interrupt active tur
 6. Check that a pending decision survives a backend restart.
 
 Physical iPhone and Mac mini checks remain separate from local tests.
-Tailscale does not provide push notifications. The mini sends encrypted alerts through Coconut's shared relay and APNs; see [notification setup](notifications.md).
+Tailscale does not provide push notifications. The mini sends encrypted alerts through Coconut's shared relay and APNs.
 
 ## Remove Coconut
 
