@@ -163,24 +163,58 @@ AWAITING_LABELS = ('awaiting-human',)
 AWAITING_BATCH = 50
 
 
-def awaiting_user(items, labels, run):
-    """Return the IDs of labeled items whose latest comment is not by the GitHub account that reads them.
+def answer_steps(url, kind):
+    """Tell the bot what to do with the person's answer to a source that waits for them.
 
-    The source asked the person a question and nobody answered it yet. run(args) runs one command in the bot's
+    The bot posts the answer as a comment. For an issue, the bot then closes it: the comment carries the decision,
+    and the source's author does the rest from it. kind is the GitHub type that awaiting_user read, because an
+    /issues/ URL can also name a pull request. A pull request, or a source of unknown type, stays open.
+    """
+    from .decision_sources import github_source
+    steps = ('After the person answers, post their answer to the source as a comment in their words or with the chosen choice, '
+             'then verify the comment. ')
+    location = github_source(url)
+    if location and kind == 'Issue':
+        steps += ('Then close the issue with gh issue close ' + location[2] + ' and verify that the issue is closed. '
+                  'Do not close it when the answer says to keep the issue open, '
+                  'or when the answer asks a question back instead of deciding. ')
+    else:
+        steps += 'Do not close the source. '
+    return steps
+
+
+def card_answer_steps(task, decision):
+    """Return the answer steps of an audit task for a resumed card, or None.
+
+    Only a question card that links the source carries the person's answer. A tool approval or a card about
+    another source does not answer the source.
+    """
+    from .decision_sources import github_links
+    steps = task.get('_source_answer_steps')
+    if (isinstance(steps, dict) and decision and decision.get('action_type') == 'question'
+            and str(steps.get('url')).lower() in {link.lower() for link in github_links(decision)}):
+        return steps['text']
+    return None
+
+
+def awaiting_user(items, labels, run):
+    """Map the IDs of labeled items whose latest comment is not by the GitHub account that reads them to their GitHub type.
+
+    The type is 'Issue' or 'PullRequest'. The source asked the person a question and nobody answered it yet. run(args) runs one command in the bot's
     environment. Each GraphQL request reads up to AWAITING_BATCH candidates. A failed read returns no items from
     its batch, so those items keep the earlier rules.
     """
     from .decision_sources import github_source
     candidates = [item['id'] for item in items
                   if set(item.get('labels') or []) & set(labels) and github_source(item['id'])]
-    result = set()
+    result = {}
     for start in range(0, len(candidates), AWAITING_BATCH):
         result |= _awaiting_batch(candidates[start:start + AWAITING_BATCH], run)
     return result
 
 
 def _awaiting_batch(candidates, run):
-    fields = '{ author { login } comments(last: 1) { nodes { author { login } } } }'
+    fields = '{ __typename author { login } comments(last: 1) { nodes { author { login } } } }'
     query = ('query(' + ', '.join(f'$u{index}: URI!' for index in range(len(candidates))) + ') { viewer { login } '
              + ' '.join(f'r{index}: resource(url: $u{index}) {{ ... on Issue {fields} ... on PullRequest {fields} }}'
                         for index in range(len(candidates))) + ' }')
@@ -193,14 +227,14 @@ def _awaiting_batch(candidates, run):
         login = data['viewer']['login'].lower()
     except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
         logging.getLogger(__name__).warning('Could not read the latest comments of awaiting assignments.')
-        return set()
-    result = set()
+        return {}
+    result = {}
     for index, url in enumerate(candidates):
         node = data.get(f'r{index}') or {}
         comments = (node.get('comments') or {}).get('nodes') or []
         last = ((comments[-1] if comments else node).get('author') or {}).get('login')
         if isinstance(last, str) and last.lower() != login:
-            result.add(url)
+            result[url] = node.get('__typename')
     return result
 
 
@@ -455,7 +489,7 @@ class WorkSources:
                                                                      timeout=60))
                 for item in items:
                     if item['id'] in awaiting:
-                        item['awaiting_user'] = True
+                        item.update(awaiting_user=True, github_type=awaiting[item['id']])
                 bindings_path = Path(cwd) / source['bindings']
                 bindings = dict(state.get('native_links', {}))
                 imported = json.loads(bindings_path.read_text()) if bindings_path.exists() else {}
@@ -594,8 +628,7 @@ class WorkSources:
                             'mark its recommendation, and include the source link in sources. '
                             'A delegated ruling, a scheduled recheck, or a wait for another party does not answer it. '
                             'Do not create a card for a choice that the latest comments already settle. '
-                            'After the person answers, post their answer to the source as a comment in their words or with the chosen choice, '
-                            'then verify the comment. Reuse a pending card about this source instead of creating another. '
+                            + answer_steps(item['id'], item.get('github_type')) + 'Reuse a pending card about this source instead of creating another. '
                             if item.get('awaiting_user') else '')
                         text = ('Reconcile these open assignments against the original sources and existing work. '
                                 + awaiting_instruction + removed_instruction +
@@ -612,6 +645,10 @@ class WorkSources:
                                           human_authored=False)
                         task = self._get('tasks', task['id'])
                         task['_source_audit_prompt'] = text
+                        if item.get('awaiting_user'):
+                            from .decision_sources import github_source
+                            task['_source_answer_steps'] = dict(url=github_source(item['id'])[2],
+                                                                text=answer_steps(item['id'], item.get('github_type')))
                         task['_source_assignment'] = dict(source_id=source['id'], id=item['id'], updated_at=item['updated_at'],
                                                           labels=item.get('labels', []), kind=item.get('kind'),
                                                           awaiting_user=bool(item.get('awaiting_user')))

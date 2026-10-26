@@ -595,6 +595,9 @@ def conversation_input(request):
             prompt = 'The service confirmed execution. Report the result briefly. Do not repeat the action.\n'
         else:
             raise ValueError('The decision has no valid continuation state.')
+        if decision.get('status') in ('approved', 'replied') and request['task'].get('_source_answer_steps'):
+            # The resumed session can lack the audit prompt, so repeat what to do with the answer.
+            prompt += 'This card asks about a source that waits for the person. ' + request['task']['_source_answer_steps'] + '\n'
         prompt += json.dumps(decision_context(request, decision))
     else:
         current = current_messages(request)
