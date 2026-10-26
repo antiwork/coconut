@@ -1,5 +1,6 @@
 """The deploy package carries the tunnel sidecar's sources, and a deploy installs or rebuilds the sidecar."""
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -76,12 +77,13 @@ class TunnelRebuildTests(unittest.TestCase):
             self.assertFalse(self.rebuild(changed=True, loaded=False))
         install.assert_called_once_with(self.data, tunnel.RELAY_URL)
 
-    def test_a_failed_install_is_retried(self):
-        # The install saved the route, but launchctl did not load the sidecar.
+    def test_a_failed_install_is_retried_on_the_saved_relay(self):
+        # The install saved the route, but launchctl did not load the sidecar. The paired phones use the saved relay.
         self.install()
+        (self.data / 'tunnel/route.json').write_text(json.dumps({'relay': 'https://relay.example', 'route': 'r'}))
         with patch.object(tunnel, 'install') as install:
             self.rebuild(changed=True, loaded=False)
-        install.assert_called_once_with(self.data, tunnel.RELAY_URL)
+        install.assert_called_once_with(self.data, 'https://relay.example')
 
     def test_an_uninstalled_sidecar_stays_uninstalled(self):
         self.install()

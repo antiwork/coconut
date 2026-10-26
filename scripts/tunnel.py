@@ -87,17 +87,27 @@ def loaded() -> bool:
     return launchctl('print', f'gui/{os.getuid()}/{LABEL}').returncode == 0
 
 
-def rebuild(data_dir: Path, relay: str = RELAY_URL) -> None:
+def saved_relay(data_dir: Path) -> str | None:
+    """Return the relay of the saved route. The paired phones connect to that relay and route."""
+    try:
+        relay = json.loads((data_dir.resolve() / 'tunnel/route.json').read_text())['relay']
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return relay if isinstance(relay, str) and relay else None
+
+
+def rebuild(data_dir: Path) -> None:
     """The deploy step: rebuild an installed sidecar when its sources changed, and restart it.
 
     The relay is the only way from the phone to this Mac, so a Mac without the loaded sidecar gets it now, also after an
-    install that failed. Only a sidecar that `tunnel.py uninstall` removed stays removed.
+    install that failed. A repair keeps the saved relay, so the paired phones keep their route. Only a sidecar that
+    `tunnel.py uninstall` removed stays removed.
     """
     if not loaded():
         if uninstalled_marker(data_dir).is_file():
             print('The tunnel sidecar is uninstalled. Nothing to rebuild.')
             return
-        install(data_dir, relay)
+        install(data_dir, saved_relay(data_dir) or RELAY_URL)
         return
     if not compile_sidecar(data_dir):
         print('The tunnel sidecar is up to date.')
@@ -139,7 +149,7 @@ def main() -> None:
         if args.command == 'build':
             print(build(args.data_dir))
         elif args.command == 'rebuild':
-            rebuild(args.data_dir, args.relay)
+            rebuild(args.data_dir)
         elif args.command == 'install':
             install(args.data_dir, args.relay)
         elif args.command == 'uninstall':
