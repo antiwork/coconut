@@ -50,8 +50,29 @@ class MacAppTests(unittest.TestCase):
         self.assertEqual(package.package_id, package_id)
         self.assertIn('scripts/host.py', package.files)
 
-    def test_the_archive_name_has_the_version_and_the_build(self):
+    def test_the_archive_name_has_the_version_the_build_and_a_nightly_suffix(self):
         self.assertEqual(mac_app.archive_name(self.app), 'Coconut-1.2.0-512.zip')
+        self.assertEqual(mac_app.archive_name(self.app, 'nightly'), 'Coconut-1.2.0-512-nightly.zip')
+
+    def test_the_bundle_names_the_feed_and_its_key_and_updates_by_itself(self):
+        info = mac_app.info_plist('1.2.0', '512')
+        self.assertEqual(info['SUFeedURL'], 'https://coconut-updates.gumroad.workers.dev/mac/appcast.xml')
+        self.assertEqual(info['SUPublicEDKey'], 'bsZLk/GXxQHmjyBDgQ/RY31DmKYvGBLPmJhzOFCkAWE=')
+        self.assertIs(info['SUEnableAutomaticChecks'], True)
+        self.assertIs(info['SUAutomaticallyUpdate'], True)
+
+    def test_sparkle_goes_in_without_the_xpc_services_of_a_sandboxed_app(self):
+        framework = self.folder / 'Sparkle.framework'
+        (framework / 'Versions/B/XPCServices/Installer.xpc').mkdir(parents=True)
+        (framework / 'Versions/B/Sparkle').write_text('')
+        (framework / 'Versions/Current').symlink_to('B')
+        (framework / 'XPCServices').symlink_to('Versions/Current/XPCServices')
+        destination = self.folder / 'Frameworks/Sparkle.framework'
+        mac_app.add_sparkle(framework, destination)
+        self.assertTrue((destination / 'Versions/Current').is_symlink())
+        self.assertTrue((destination / 'Versions/B/Sparkle').is_file())
+        self.assertFalse((destination / 'Versions/B/XPCServices').exists())
+        self.assertFalse((destination / 'XPCServices').is_symlink())
 
     def test_an_archive_over_the_limit_stops_the_release(self):
         def zip_file(arguments):
@@ -64,20 +85,25 @@ class MacAppTests(unittest.TestCase):
             mac_app.archive(self.app, self.folder / 'c.zip')
         self.assertEqual(mac_app.ARCHIVE_LIMIT, 25 * 1024 * 1024)
 
-    def test_a_release_signature_signs_the_helpers_first_with_the_hardened_runtime_and_a_timestamp(self):
+    def test_a_release_signature_signs_the_inner_code_first_with_the_hardened_runtime_and_a_timestamp(self):
         with mock.patch.object(mac_app, 'run') as run:
             mac_app.sign(self.app, 'ABCDEF')
         commands = [call.args[0] for call in run.call_args_list]
+        sparkle = self.app / 'Contents/Frameworks/Sparkle.framework'
+        # Sparkle's helpers come before the framework, and everything comes before the app.
         self.assertEqual([command[-1] for command in commands],
-                         [self.app / 'Contents/Helpers/coconut', self.app / 'Contents/Helpers/tunnel-sidecar', self.app, self.app])
-        for command in commands[:3]:
+                         [sparkle / 'Versions/B/Autoupdate', sparkle / 'Versions/B/Updater.app', sparkle,
+                          self.app / 'Contents/Helpers/coconut', self.app / 'Contents/Helpers/tunnel-sidecar', self.app, self.app])
+        for command in commands[:6]:
             self.assertEqual(command[:7], ['codesign', '--force', '--options', 'runtime', '--sign', 'ABCDEF', '--timestamp'])
-        self.assertEqual(commands[3][:4], ['codesign', '--verify', '--deep', '--strict'])
+        self.assertEqual(commands[6][:4], ['codesign', '--verify', '--deep', '--strict'])
 
-    def test_an_ad_hoc_signature_asks_for_no_timestamp(self):
+    def test_an_ad_hoc_signature_has_no_timestamp_and_no_hardened_runtime(self):
         with mock.patch.object(mac_app, 'run') as run:
             mac_app.sign(self.app, '-')
         self.assertIn('--timestamp=none', run.call_args_list[0].args[0])
+        # Library validation would refuse the ad-hoc Sparkle.framework, which has no Team ID.
+        self.assertNotIn('runtime', run.call_args_list[0].args[0])
 
     def test_an_accepted_app_is_stapled_and_assessed(self):
         accepted = completed(json.dumps({'id': 'abc', 'status': 'Accepted'}))

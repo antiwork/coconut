@@ -5,6 +5,7 @@ The bundle:
   Contents/MacOS/Coconut                      the menu bar app (mac/Sources/CoconutApp)
   Contents/Helpers/coconut                    the tool that the login items run (mac/Sources/CoconutTool)
   Contents/Helpers/tunnel-sidecar             the relay sidecar (scripts/tunnel-sidecar.swift)
+  Contents/Frameworks/Sparkle.framework       the updater, which reads FEED_URL
   Contents/Library/LaunchAgents/*.plist       the login items (mac/LaunchAgents)
   Contents/Resources/coconut-source.tar.gz    the source package of scripts/remote.py, which `coconut update` installs
   Contents/Resources/package.json             its package ID
@@ -17,7 +18,9 @@ Store Connect API key, staples the ticket, and makes the zip archive that Sparkl
 
   mac_app.py build --identity <SHA-1 of the Developer ID identity>
   mac_app.py notarize --key AuthKey.p8 --key-id <id> --issuer <issuer>
-  mac_app.py archive
+  mac_app.py archive --channel nightly
+
+The version is in mac/VERSION. The build number is the commit count of HEAD.
 """
 from __future__ import annotations
 
@@ -39,10 +42,21 @@ MINIMUM_SYSTEM = '14.0'
 ARCHITECTURES = ('arm64', 'x86_64')
 # The update feed serves each archive as a Workers Static Asset, and Cloudflare accepts at most 25 MiB per file.
 ARCHIVE_LIMIT = 25 * 1024 * 1024
+# The Sparkle feed: the Worker coconut-updates (updates/) serves the appcast and the archives next to it. This is the only
+# place that names it.
+FEED_URL = 'https://coconut-updates.gumroad.workers.dev/mac/appcast.xml'
+# The public half of the EdDSA key in the secret SPARKLE_ED_PRIVATE_KEY. Sparkle installs only archives that it signed.
+ED_PUBLIC_KEY = 'bsZLk/GXxQHmjyBDgQ/RY31DmKYvGBLPmJhzOFCkAWE='
+# Items for everyone have no channel. Items for the nightly channel name it.
+CHANNELS = ('stable', 'nightly')
 
 
 def run(arguments: list, **options) -> subprocess.CompletedProcess:
     return subprocess.run([str(argument) for argument in arguments], check=True, **options)
+
+
+def version() -> str:
+    return (MAC / 'VERSION').read_text().strip()
 
 
 def build_number() -> str:
@@ -66,6 +80,12 @@ def info_plist(version: str, build: str) -> dict:
         # A menu bar app: no Dock icon and no main menu.
         'LSUIElement': True,
         'NSHighResolutionCapable': True,
+        'SUFeedURL': FEED_URL,
+        'SUPublicEDKey': ED_PUBLIC_KEY,
+        # Check every six hours, and install an update without a question. The app updates its source after the relaunch.
+        'SUEnableAutomaticChecks': True,
+        'SUAutomaticallyUpdate': True,
+        'SUScheduledCheckInterval': 21600,
     }
 
 
@@ -101,6 +121,7 @@ def assemble(output: Path, version: str, build: str) -> Path:
         products = swift_products(MAC / '.build')
         shutil.copy2(products / 'CoconutApp', contents / 'MacOS/Coconut')
         shutil.copy2(products / 'CoconutTool', contents / 'Helpers/coconut')
+        add_sparkle(products / 'Sparkle.framework', contents / 'Frameworks/Sparkle.framework')
         compile_sidecar(contents / 'Helpers/tunnel-sidecar', scratch)
     for agent in sorted((MAC / 'LaunchAgents').glob('*.plist')):
         shutil.copy2(agent, contents / 'Library/LaunchAgents' / agent.name)
@@ -109,6 +130,16 @@ def assemble(output: Path, version: str, build: str) -> Path:
         plistlib.dump(info_plist(version, build), handle)
     (contents / 'PkgInfo').write_text('APPL????')
     return app
+
+
+def add_sparkle(framework: Path, destination: Path) -> None:
+    """Copy Sparkle.framework with its symbolic links, without the XPC services.
+
+    Only a sandboxed app needs the XPC services of Sparkle. Coconut.app is not sandboxed.
+    """
+    shutil.copytree(framework, destination, symlinks=True)
+    shutil.rmtree(destination / 'Versions/B/XPCServices', ignore_errors=True)
+    (destination / 'XPCServices').unlink(missing_ok=True)
 
 
 def bundle_source(resources: Path) -> str:
@@ -120,11 +151,19 @@ def bundle_source(resources: Path) -> str:
 
 
 def sign(app: Path, identity: str) -> None:
-    """Sign the inner binaries first, then the app, with the hardened runtime that notarization requires."""
-    options = ['--force', '--options', 'runtime', '--sign', identity]
-    options += ['--timestamp=none'] if identity == '-' else ['--timestamp']
-    for binary in sorted((app / 'Contents/Helpers').iterdir()):
-        run(['codesign', *options, binary])
+    """Sign the inner code first, then the app, with the hardened runtime that notarization requires.
+
+    An ad-hoc signature has no Team ID. The library validation of the hardened runtime then refuses to load
+    Sparkle.framework, so an ad-hoc build for tests has no hardened runtime.
+    """
+    if identity == '-':
+        options = ['--force', '--sign', identity, '--timestamp=none']
+    else:
+        options = ['--force', '--options', 'runtime', '--sign', identity, '--timestamp']
+    sparkle = app / 'Contents/Frameworks/Sparkle.framework'
+    for code in [sparkle / 'Versions/B/Autoupdate', sparkle / 'Versions/B/Updater.app', sparkle,
+                 *sorted((app / 'Contents/Helpers').iterdir())]:
+        run(['codesign', *options, code])
     run(['codesign', *options, app])
     run(['codesign', '--verify', '--deep', '--strict', app])
 
@@ -142,10 +181,12 @@ def archive(app: Path, destination: Path, limit: int | None = None) -> Path:
     return destination
 
 
-def archive_name(app: Path) -> str:
+def archive_name(app: Path, channel: str = 'stable') -> str:
+    """Coconut-<version>-<build>.zip, with -nightly for the nightly channel: both channels can build one commit."""
     with (app / 'Contents/Info.plist').open('rb') as handle:
         info = plistlib.load(handle)
-    return f"Coconut-{info['CFBundleShortVersionString']}-{info['CFBundleVersion']}.zip"
+    suffix = '' if channel == 'stable' else '-' + channel
+    return f"Coconut-{info['CFBundleShortVersionString']}-{info['CFBundleVersion']}{suffix}.zip"
 
 
 def notarize(app: Path, key: Path, key_id: str, issuer: str) -> None:
@@ -177,7 +218,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('command', choices=['build', 'notarize', 'archive'])
     parser.add_argument('--output', type=Path, default=ROOT / 'build/mac', help='The folder of Coconut.app.')
-    parser.add_argument('--version', default='0.1.0', help='build: CFBundleShortVersionString.')
+    parser.add_argument('--version', help='build: CFBundleShortVersionString. Defaults to mac/VERSION.')
+    parser.add_argument('--channel', choices=CHANNELS, default='stable', help='archive: the update channel.')
     parser.add_argument('--build', help='build: CFBundleVersion. Defaults to the commit count of HEAD.')
     parser.add_argument('--identity', default='-', help='build: a codesign identity. Defaults to an ad-hoc signature.')
     parser.add_argument('--key', type=Path, help='notarize: the App Store Connect API key file (.p8).')
@@ -187,7 +229,7 @@ def main() -> None:
     args.output.mkdir(parents=True, exist_ok=True)
     output = args.output.resolve()
     if args.command == 'build':
-        app = assemble(output, args.version, args.build or build_number())
+        app = assemble(output, args.version or version(), args.build or build_number())
         sign(app, args.identity)
         print(app)
     elif args.command == 'notarize':
@@ -197,7 +239,7 @@ def main() -> None:
         print('Notarized and stapled ' + str(output / 'Coconut.app'))
     else:
         app = output / 'Coconut.app'
-        print(archive(app, output / archive_name(app), ARCHIVE_LIMIT))
+        print(archive(app, output / archive_name(app, args.channel), ARCHIVE_LIMIT))
 
 
 if __name__ == '__main__':

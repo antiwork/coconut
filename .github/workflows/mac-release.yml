@@ -1,45 +1,98 @@
 name: Mac release
 
 # Builds Coconut.app, signs it with the Developer ID Application certificate, notarizes it, staples the ticket, and
-# keeps the archive as a workflow artifact. The Sparkle feed on Cloudflare R2 comes in a later change.
+# publishes it in the Sparkle feed of the Worker coconut-updates (updates/). Two channels:
+#   nightly   each night when main has new commits, and when a person starts the workflow with channel "nightly"
+#   stable    only when a person starts the workflow with channel "stable" (the promote step)
+# The version is in mac/VERSION. The build number is the commit count of main.
 #
 # The environment `mac-release` accepts only the main branch. It holds these secrets:
 #   MAC_DEVELOPER_ID_P12, MAC_DEVELOPER_ID_P12_PASSWORD   the Developer ID Application identity, base64 .p12
 #   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8                  an App Store Connect API key for notarytool
-# A missing secret stops the job: an archive that is not notarized must never reach a Mac.
+#   SPARKLE_ED_PRIVATE_KEY                                 the EdDSA key that signs each archive for Sparkle
+#   CLOUDFLARE_API_TOKEN                                   deploys the Worker coconut-updates
+# A missing secret stops the job: an archive that is not notarized and signed must never reach a Mac.
 on:
+  schedule:
+    - cron: '17 6 * * *'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'CFBundleShortVersionString, for example 0.1.0'
-        required: true
-        default: '0.1.0'
+      channel:
+        description: 'The update channel'
+        type: choice
+        options: [nightly, stable]
+        default: nightly
 
 permissions:
   contents: read
 
+# Two releases must not deploy the feed at the same time: the later one would drop the archive of the earlier one.
 concurrency:
   group: mac-release
   cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: macos-latest
-    timeout-minutes: 60
-    environment: mac-release
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      channel: ${{ steps.plan.outputs.channel }}
+      build: ${{ steps.plan.outputs.build }}
+      skip: ${{ steps.plan.outputs.skip }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
           fetch-depth: 0 # The build number is the commit count of HEAD.
-      - name: Check the version
+      - name: Choose the channel and the build
+        id: plan
         env:
-          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel || 'nightly' }}
         run: |
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::The version must have the form 1.2.3."
+          set -euo pipefail
+          version="$(cat mac/VERSION)"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::mac/VERSION must have the form 1.2.3."
             exit 1
           fi
+          build="$(git rev-list --count HEAD)"
+          live="$(python3 scripts/mac_feed.py latest-build --channel "$CHANNEL")"
+          skip=false
+          # A night without new commits on main publishes nothing.
+          if [ "$CHANNEL" = nightly ] && [ "$live" -ge "$build" ]; then
+            skip=true
+            echo "The nightly channel already has build $live. Nothing to publish." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          { echo "channel=$CHANNEL"; echo "build=$build"; echo "skip=$skip"; } >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    environment: mac-release
+    env:
+      CHANNEL: ${{ needs.plan.outputs.channel }}
+      BUILD: ${{ needs.plan.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Check that the Sparkle key belongs to the app
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            echo "::error::The environment mac-release needs SPARKLE_ED_PRIVATE_KEY."
+            exit 1
+          fi
+          python -m pip install --quiet --only-binary=:all: cryptography==44.0.0
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | python scripts/mac_feed.py check-key
       - name: Import the Developer ID identity into a temporary keychain
         env:
           P12: ${{ secrets.MAC_DEVELOPER_ID_P12 }}
@@ -72,9 +125,7 @@ jobs:
           fi
           echo "SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
       - name: Build and sign Coconut.app
-        env:
-          VERSION: ${{ inputs.version }}
-        run: python3 scripts/mac_app.py build --output "$RUNNER_TEMP/mac" --version "$VERSION" --identity "$SIGNING_IDENTITY"
+        run: python scripts/mac_app.py build --output "$RUNNER_TEMP/mac" --build "$BUILD" --identity "$SIGNING_IDENTITY"
       - name: Notarize and staple
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
@@ -88,14 +139,46 @@ jobs:
           fi
           key="$RUNNER_TEMP/AuthKey.p8"
           (umask 077; printf '%s\n' "$ASC_KEY_P8" > "$key")
-          python3 scripts/mac_app.py notarize --output "$RUNNER_TEMP/mac" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID"
+          python scripts/mac_app.py notarize --output "$RUNNER_TEMP/mac" --key "$key" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID"
           rm -f "$key"
-      - name: Make the archive
+      - name: Make and sign the archive
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          archive="$(python3 scripts/mac_app.py archive --output "$RUNNER_TEMP/mac")"
-          echo "ARCHIVE=$archive" >> "$GITHUB_ENV"
-          echo "Built, notarized and stapled $(basename "$archive")." >> "$GITHUB_STEP_SUMMARY"
+          archive="$(python scripts/mac_app.py archive --output "$RUNNER_TEMP/mac" --channel "$CHANNEL")"
+          # The Swift build put the tools of the pinned Sparkle version here.
+          sign_update=mac/.build/artifacts/sparkle/Sparkle/bin/sign_update
+          signature="$(printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$sign_update" --ed-key-file - -p "$archive")"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$sign_update" --ed-key-file - --verify "$archive" "$signature"
+          { echo "ARCHIVE=$archive"; echo "SIGNATURE=$signature"; } >> "$GITHUB_ENV"
+      - name: Build the feed
+        run: python scripts/mac_feed.py publish --archive "$ARCHIVE" --channel "$CHANNEL" --signature "$SIGNATURE" --output updates/public
+      - name: Deploy the feed to the Worker coconut-updates
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::The environment mac-release needs CLOUDFLARE_API_TOKEN."
+            exit 1
+          fi
+          # The relay uses the same Wrangler version (relay/package.json).
+          npx --yes wrangler@4.130.0 deploy --config updates/wrangler.toml
+      - name: Check the live feed
+        run: |
+          set -euo pipefail
+          # The appcast has a cache time of five minutes.
+          for _ in $(seq 1 42); do
+            live="$(python scripts/mac_feed.py latest-build --channel "$CHANNEL")"
+            if [ "$live" -ge "$BUILD" ]; then
+              echo "Published $(basename "$ARCHIVE") in the $CHANNEL channel." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::The live feed does not show build $BUILD in the $CHANNEL channel."
+          exit 1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: Coconut.app

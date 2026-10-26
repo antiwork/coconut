@@ -11,9 +11,18 @@ let package = Package(
         .executable(name: "CoconutApp", targets: ["CoconutApp"]),
         .executable(name: "CoconutTool", targets: ["CoconutTool"]),
     ],
+    dependencies: [
+        // The owner made the EdDSA key pair of the feed with this version. Update both together.
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.10.0"),
+    ],
     targets: [
         .target(name: "CoconutKit"),
-        .executableTarget(name: "CoconutApp", dependencies: ["CoconutKit"]),
+        .executableTarget(
+            name: "CoconutApp",
+            dependencies: ["CoconutKit", .product(name: "Sparkle", package: "Sparkle")],
+            // The bundle keeps Sparkle.framework in Contents/Frameworks.
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"])]
+        ),
         .executableTarget(name: "CoconutTool", dependencies: ["CoconutKit"]),
         .testTarget(name: "CoconutKitTests", dependencies: ["CoconutKit"]),
     ]

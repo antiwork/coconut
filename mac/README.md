@@ -44,14 +44,35 @@ python3 scripts/mac_app.py build
 
 The build writes `build/mac/Coconut.app` with an ad-hoc signature.
 
+## Updates
+
+Coconut.app updates itself with Sparkle 2.10.0. The feed is `https://coconut-updates.gumroad.workers.dev/mac/appcast.xml`.
+`FEED_URL` in `scripts/mac_app.py` is the only place that names it. `SUPublicEDKey` names the key that signs each archive.
+
+- The app checks the feed every six hours and installs an update without a question. **Check for Updates…** checks at once.
+- **Update Channel** in the menu chooses **Stable** or **Nightly**. A stable item has no channel, so every app sees it. A nightly item has the channel `nightly`. Sparkle takes the newest build that the app may see.
+- Sparkle replaces only the app. The service runs from `~/Coconut`, so it keeps running. After the relaunch, the new app runs `coconut update --if-needed`, which lets the running turns finish before it changes the service.
+
+The Worker `coconut-updates` (`updates/`) serves the feed. See `updates/README.md`.
+
 ## Release
 
-The **Mac release** workflow runs on `main` when a person starts it. It runs in the GitHub environment `mac-release`.
+The **Mac release** workflow runs in the GitHub environment `mac-release`, which accepts only `main`.
 
-1. It imports the Developer ID Application identity into a temporary keychain.
-2. It builds the app and signs each binary with the hardened runtime and a timestamp.
-3. It sends the app to the notary service with `notarytool` and an App Store Connect API key, and staples the ticket.
-4. It keeps `Coconut-<version>-<build>.zip` as a workflow artifact for 30 days.
+- **Nightly:** each night, when `main` has a build that the nightly channel does not have, and when a person starts the workflow with the channel `nightly`.
+- **Stable:** only when a person starts the workflow with the channel `stable`.
+
+The version is in `mac/VERSION`. The build number is the commit count of `main`. The release job does these steps:
+
+1. It checks that `SPARKLE_ED_PRIVATE_KEY` belongs to `SUPublicEDKey`.
+2. It imports the Developer ID Application identity into a temporary keychain.
+3. It builds the app and signs each part with the hardened runtime and a timestamp.
+4. It sends the app to the notary service with `notarytool` and an App Store Connect API key, and staples the ticket.
+5. It makes `Coconut-<version>-<build>.zip`, or `Coconut-<version>-<build>-nightly.zip`, and signs it with Sparkle's `sign_update`. An archive over 25 MiB stops the release.
+6. `scripts/mac_feed.py publish` builds the feed: the new archive, plus the newest five archives of each channel from the live feed.
+7. It deploys the Worker `coconut-updates` with Wrangler and checks that the live feed has the new build.
 
 A missing secret stops the workflow. The secrets are `MAC_DEVELOPER_ID_P12`, `MAC_DEVELOPER_ID_P12_PASSWORD`,
-`ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY_P8`.
+`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_P8`, `SPARKLE_ED_PRIVATE_KEY` and `CLOUDFLARE_API_TOKEN`.
+
+A local build has an ad-hoc signature without the hardened runtime: library validation refuses an ad-hoc Sparkle.framework.

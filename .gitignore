@@ -35,3 +35,6 @@ xcuserdata/
 
 # Coconut.app builds (scripts/mac_app.py)
 /build/
+
+# The assets of the update feed, which the Mac release workflow builds
+/updates/public/

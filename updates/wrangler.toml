@@ -1,0 +1,13 @@
+# The update feed of Coconut.app. Only static assets: no script, no index page and no folder listing. Any other path
+# answers 404. The Mac release workflow writes public/ (scripts/mac_feed.py) and deploys this Worker. It never deploys
+# the relay, coconut-push.
+name = "coconut-updates"
+account_id = "7c48de80b2886bfac114048cdb29febb"
+compatibility_date = "2026-09-10"
+workers_dev = true
+preview_urls = false
+
+[assets]
+directory = "./public"
+html_handling = "none"
+not_found_handling = "none"
