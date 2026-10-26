@@ -73,11 +73,21 @@ class TunnelRebuildTests(unittest.TestCase):
     def test_a_mac_that_never_had_the_sidecar_gets_it(self):
         # The relay is the only way from the phone to the Mac.
         with patch.object(tunnel, 'install') as install:
-            self.assertFalse(self.rebuild(changed=True))
+            self.assertFalse(self.rebuild(changed=True, loaded=False))
+        install.assert_called_once_with(self.data, tunnel.RELAY_URL)
+
+    def test_a_failed_install_is_retried(self):
+        # The install saved the route, but launchctl did not load the sidecar.
+        self.install()
+        with patch.object(tunnel, 'install') as install:
+            self.rebuild(changed=True, loaded=False)
         install.assert_called_once_with(self.data, tunnel.RELAY_URL)
 
     def test_an_uninstalled_sidecar_stays_uninstalled(self):
         self.install()
+        with patch.object(tunnel, 'launchctl', lambda *arguments: self.launchctl(*arguments)), \
+                patch.object(tunnel, 'agent_path', return_value=self.data / 'agent.plist'):
+            tunnel.uninstall(self.data)
         with patch.object(tunnel, 'install') as install:
             self.assertFalse(self.rebuild(changed=True, loaded=False))
         install.assert_not_called()

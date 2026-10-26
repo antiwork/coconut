@@ -104,6 +104,14 @@ class HostToolsTests(unittest.TestCase):
             self.assertEqual(server[server.index('--port') + 1], '9000')
             self.assertFalse((root / 'connection.json').exists())
 
+    def test_an_old_launchagent_keeps_the_port_of_its_connection_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            (Path(directory) / 'connection.json').write_text('{"address": "https://mini.example.ts.net:9443"}')
+            server = self.serve(['host.py', 'serve', '--data-dir', directory, '--host', '0.0.0.0', '--provider', 'fixture'])
+            self.assertEqual(server[server.index('--port') + 1], '9443')
+            server = self.serve(['host.py', 'serve', '--data-dir', directory, '--port', '9000', '--provider', 'fixture'])
+            self.assertEqual(server[server.index('--port') + 1], '9000')
+
     def test_old_launchagent_flags_start_the_loopback_service(self):
         # LaunchAgents from before the loopback-only service gave a network address.
         with tempfile.TemporaryDirectory() as directory:
@@ -409,6 +417,10 @@ class HostLifecycleTests(unittest.TestCase):
              patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')):
             host.restore_after_update(self.state('managed'))
         self.assertEqual(plistlib.loads(self.path.read_bytes())['ProgramArguments'], [*command, '--provider', 'hermes'])
+        # The service of such an agent read its port from connection.json. The repair keeps that port.
+        (self.data / 'connection.json').write_text('{"address": "https://mini.example.ts.net:9443"}')
+        repaired = host.repaired_agent(original)['ProgramArguments']
+        self.assertEqual(repaired, [*command[:3], '--port', '9443', *command[3:], '--provider', 'hermes'])
 
     def test_restore_managed_bootstraps_only_the_owned_agent(self):
         self.write_agent()

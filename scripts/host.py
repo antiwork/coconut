@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +46,18 @@ def normalize_host(value: str) -> str:
         if len(value) > 253 or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels):
             raise SystemExit("Use a DNS hostname or an IP address without a zone identifier.")
         return ".".join(labels)
+
+
+def saved_port(data: Path) -> int | None:
+    """Return the port that an installation from before the loopback-only service saved in connection.json.
+
+    Its LaunchAgent has no --port, because the service read the port from that file.
+    """
+    try:
+        port = urlsplit(json.loads((data / "connection.json").read_text())["address"]).port
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return port if isinstance(port, int) and 1 <= port <= 65535 else None
 
 
 @contextmanager
@@ -375,6 +388,7 @@ def repaired_agent(payload: dict) -> dict:
     installations started the service with the Python of the private Hermes runtime in .runtime/hermes. The update
     removed that runtime, so launchd cannot start the service until it has another Python. Earlier installations also
     gave the service a network address with --host, or --insecure-loopback. The service now listens on loopback only.
+    Their service read its port from connection.json, so the repair writes that port into the LaunchAgent.
     """
     repaired = dict(payload, ProcessType="Interactive")
     command = list(payload["ProgramArguments"])
@@ -382,6 +396,11 @@ def repaired_agent(payload: dict) -> dict:
         index = command.index("--host", 3)
         del command[index:index + 2]
     command = [argument for argument in command if argument != "--insecure-loopback"]
+    if "--port" not in command and "--data-dir" in command[3:-1]:
+        # Keep the port that the service read from connection.json.
+        port = saved_port(Path(command[command.index("--data-dir", 3) + 1]))
+        if port is not None:
+            command[3:3] = ["--port", str(port)]
     if command != payload["ProgramArguments"]:
         repaired["ProgramArguments"] = command
     if Path(command[0]).is_relative_to(ROOT / ".runtime/hermes"):
@@ -475,13 +494,15 @@ def main() -> None:
     parser.add_argument("command", choices=["serve", "start", "stop", "restart", "pair", "save-model-access",
                                             "install-service", "status", "hermes-status"])
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
-    parser.add_argument("--port", type=int, default=PORT, help="The port of the main listener on 127.0.0.1.")
+    parser.add_argument("--port", type=int, help="The port of the main listener on 127.0.0.1. Defaults to 8960.")
     parser.add_argument("--provider", choices=["hermes", "fixture"], default="hermes")
     # LaunchAgents from before the loopback-only service pass these. The service ignores them, and an update removes them.
     parser.add_argument("--host", help=argparse.SUPPRESS)
     parser.add_argument("--insecure-loopback", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.data_dir = args.data_dir.expanduser().resolve()
+    if args.port is None:
+        args.port = saved_port(args.data_dir) or PORT
     load_credentials(args.data_dir)
     if args.command == "pair":
         pair(args)
