@@ -279,6 +279,10 @@ final class CoconutKitTests: XCTestCase {
         let done = DeployResult(output: "COCONUT_DEPLOY_RESULT={\"ok\": true, \"package_id\": \"abc\", \"mode\": \"app\"}")
         XCTAssertEqual(done?.ok, true)
         XCTAssertEqual(done?.packageID, "abc")
+        XCTAssertNil(done?.relayError)
+        let relay = DeployResult(output: #"COCONUT_DEPLOY_RESULT={"ok": true, "tunnel": {"ok": false, "error": "Tunnel sidecar build failed (exit 1)."}}"#)
+        XCTAssertEqual(relay?.ok, true)
+        XCTAssertEqual(relay?.relayError, "Tunnel sidecar build failed (exit 1).")
         XCTAssertNil(DeployResult(output: "Traceback"))
     }
 

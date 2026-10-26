@@ -144,6 +144,9 @@ final class AppModel: ObservableObject {
         activity = nil
         if result.0 != 0 {
             updateError = DeployResult(output: result.1)?.error ?? Self.lastLine(result.1) ?? "The update failed."
+        } else if let relayError = DeployResult(output: result.1)?.relayError {
+            // The service runs, but without the relay the iPhone cannot reach it.
+            updateError = "The relay did not start: \(relayError)"
         }
         await refresh()
         return result.0 == 0
@@ -162,6 +165,8 @@ final class AppModel: ObservableObject {
             updateError = Self.lastLine(result.1) ?? "Coconut could not move to this app."
             return
         }
+        // The update ran under the earlier LaunchAgent, so the relay login item did not exist yet. It starts now.
+        updateError = nil
         UserDefaults.standard.set(true, forKey: Self.startAtLoginKey)
         registerIfNeeded()
         await refresh()
