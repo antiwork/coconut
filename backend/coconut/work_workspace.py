@@ -2523,7 +2523,7 @@ SCHEMA = {'name': 'coconut_workspace', 'description':
     'Get this work item\'s persistent Git worktree before editing code or running repository tests. '
     'Hermes creates it and reuses it for replies and recovery. Supply the local repository path. '
     'When continuing earlier changes, pass their existing_worktree to retain their branch and files. '
-    'Use the returned path as cwd for all commands. Use OrbStack for isolated test services when needed. '
+    'Use the returned path as cwd for all commands. '
     'To name a PR branch, rename the worktree branch with git branch -m <name>. Do not create or switch branches '
     'in the worktree with git checkout -b, git checkout <branch>, or git switch, and do not check out a commit '
     'without a branch: Coconut then stops this work item until a person recovers the checkout. To test another '

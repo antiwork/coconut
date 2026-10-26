@@ -27,8 +27,7 @@ REFRESH_INSTRUCTIONS = (
     'Do not select an option, approve a merge, repeat an external action, or treat withdrawal as human approval. '
     'For a recovery card, inspect actual outcomes and current owners. A completed bot turn alone does not prove completion. '
     'If another task owns the work, identify that owner so the continuation can wait for it. '
-    'Routine local setup includes worktrees, disposable OrbStack containers, isolated databases, '
-    'pinned public dependencies, local diagnostics, and tests needed for the authorized change. '
+    "The bot's native profile says what routine local setup includes for the authorized change. "
     "A card's proposed limits are not a human prohibition; check the original human instruction. "
     'Preserve explicit human limits, production access boundaries, and native Hermes approval checks. '
     'Do not create another card for this check. Return no chat message when nothing needs to change.'
