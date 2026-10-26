@@ -308,9 +308,6 @@ def drain_for_update(timeout: float = DRAIN_SECONDS) -> bool:
     The request ends by itself, so a failed update cannot leave the service paused. A service that does not say
     "drain" in its process record is stopped at once, as before.
     """
-    if app_runs_service():
-        # stop_for_update refuses this service. A drain would only pause its bots until the request ends.
-        return False
     try:
         record = json.loads((DEFAULT_DATA / "process.json").read_text())
     except (OSError, ValueError):
@@ -351,12 +348,79 @@ def app_runs_service() -> bool:
     return not loaded and login_item_loaded()
 
 
+# While this file exists, the `coconut service` tool of Coconut.app waits before it starts host.py serve. It holds the
+# time at which the hold ends, so a failed update cannot keep the service stopped.
+UPDATE_HOLD = "update-hold"
+UPDATE_HOLD_SECONDS = 1800
+
+
+def hold_login_item() -> None:
+    hold = DEFAULT_DATA / UPDATE_HOLD
+    if hold.is_symlink():
+        raise SystemExit("The update hold must not be a symbolic link.")
+    pending = hold.with_name(hold.name + ".tmp")
+    pending.write_text(str(time.time() + UPDATE_HOLD_SECONDS))
+    os.replace(pending, hold)
+
+
+def release_login_item() -> None:
+    (DEFAULT_DATA / UPDATE_HOLD).unlink(missing_ok=True)
+
+
+def inspect_for_update() -> dict:
+    """The mode that stop_for_update will return. "app": the login item of Coconut.app runs the service."""
+    if app_runs_service():
+        return {"mode": "app", "project": str(ROOT), "data_dir": str(DEFAULT_DATA)}
+    _, loaded = owned_agent()
+    process = owned_process()
+    state = {"mode": "managed" if loaded else "manual" if process else "stopped",
+             "project": str(ROOT), "data_dir": str(DEFAULT_DATA)}
+    if state["mode"] == "manual":
+        state["options"] = process[1]
+    return state
+
+
+def stop_for_app_update() -> dict:
+    """Stop a service of the login item. launchd starts the tool again at once, and the tool waits for the hold."""
+    private_directory(DEFAULT_DATA)
+    hold_login_item()
+    try:
+        stop_owned_process()
+        with stopped_service(DEFAULT_DATA, "updating its source"):
+            pass
+    except (SystemExit, OSError):
+        release_login_item()
+        raise
+    return {"mode": "app", "project": str(ROOT), "data_dir": str(DEFAULT_DATA)}
+
+
+TUNNEL_LABEL = "com.gumroad.coconut.tunnel"
+
+
+def migrate_to_app() -> Path:
+    """Stop the service of the LaunchAgents of host.py and tunnel.py, and move their files aside. Return that folder.
+
+    Coconut.app then registers its own login items. The data stays in place, so bots and paired phones keep working.
+    The running turns finish first, as in an update.
+    """
+    agents = Path.home() / "Library/LaunchAgents"
+    backup = DEFAULT_DATA.parent / "legacy-agents"
+    drain_for_update()
+    stop_for_update()
+    # The sidecar has no data to protect. It stops at once.
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{TUNNEL_LABEL}"], capture_output=True, text=True)
+    private_directory(backup)
+    for label in (LABEL, TUNNEL_LABEL):
+        source = agents / f"{label}.plist"
+        if source.is_file() and not source.is_symlink():
+            os.replace(source, backup / source.name)
+    return backup
+
+
 def stop_for_update() -> dict:
     path, loaded = owned_agent()
     if not loaded and login_item_loaded():
-        # launchd would start the service again while the update replaces its files.
-        raise SystemExit("Coconut.app runs this service with its login item. Update Coconut with Coconut.app. "
-                         "Its source and data remain unchanged.")
+        return stop_for_app_update()
     process = owned_process()
     state = {"mode": "managed" if loaded else "manual" if process else "stopped",
              "project": str(ROOT), "data_dir": str(DEFAULT_DATA)}
@@ -452,9 +516,13 @@ def repaired_agent(payload: dict) -> dict:
 
 def restore_after_update(state: dict) -> None:
     if (not isinstance(state, dict) or state.get("project") != str(ROOT) or state.get("data_dir") != str(DEFAULT_DATA)
-            or state.get("mode") not in {"manual", "managed", "stopped"}):
+            or state.get("mode") not in {"manual", "managed", "stopped", "app"}):
         raise SystemExit("The saved service state does not belong to this Coconut installation.")
     if state["mode"] == "stopped":
+        return
+    if state["mode"] == "app":
+        # The waiting tool starts the service from the current source. The deploy health check confirms it.
+        release_login_item()
         return
     path, loaded = owned_agent()
     current = owned_process()
@@ -530,7 +598,7 @@ def main() -> None:
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["serve", "start", "stop", "restart", "pair", "save-model-access",
-                                            "install-service", "status", "hermes-status"])
+                                            "install-service", "status", "hermes-status", "migrate-to-app"])
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
     parser.add_argument("--port", type=int, help="The port of the main listener on 127.0.0.1. Defaults to 8960.")
     parser.add_argument("--provider", choices=["hermes", "fixture"], default="hermes")
@@ -557,6 +625,10 @@ def main() -> None:
         print("Saved configured model access in the private local runtime.")
     elif args.command == "start":
         start(args)
+    elif args.command == "migrate-to-app":
+        if args.data_dir != DEFAULT_DATA:
+            raise SystemExit("Use the default data directory to move Coconut to Coconut.app.")
+        print(f"Moved the earlier LaunchAgents to {migrate_to_app()}.")
     elif args.command == "hermes-status":
         # Find and check the person's Hermes with this code. The saved status stays the one of the running service.
         status = hermes_runtime().status(args.data_dir, environ=service_environment(), save=False)
@@ -565,6 +637,9 @@ def main() -> None:
         if args.data_dir != DEFAULT_DATA:
             raise SystemExit("Use the default data directory for status, stop, and restart.")
         if args.command == "stop":
+            if app_runs_service():
+                # A stop under the app holds the login item only until the hold ends.
+                raise SystemExit("Coconut.app runs this service. Turn off Start at Login in its menu to stop it.")
             stop_for_update()
             print("Coconut is stopped. Its data remains in .runtime.")
         elif args.command == "restart":

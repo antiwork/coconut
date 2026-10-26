@@ -15,6 +15,8 @@ from host import DEFAULT_DATA, ROOT, TUNNEL_PORT, private_directory, write_agent
 from push import compile_swift
 
 LABEL = 'com.gumroad.coconut.tunnel'
+# Coconut.app runs its own signed sidecar with this login item. Its `coconut` tool names that binary in COCONUT_SIDECAR.
+APP_LABEL = 'com.gumroad.coconut.relay'
 RELAY_URL = 'https://coconut-push.gumroad.workers.dev'
 SOURCES = [ROOT / 'scripts/tunnel-sidecar.swift', ROOT / 'ios/Tunnel/Noise.swift', ROOT / 'ios/Tunnel/TunnelFrames.swift']
 
@@ -33,7 +35,15 @@ def compile_sidecar(data_dir: Path) -> bool:
     return compile_swift(SOURCES, directory / 'tunnel-sidecar', directory / 'sidecar.sha256')
 
 
+def app_sidecar() -> Path | None:
+    value = os.environ.get('COCONUT_SIDECAR')
+    return Path(value) if value else None
+
+
 def build(data_dir: Path) -> Path:
+    if app_sidecar() is not None:
+        tunnel_directory(data_dir)
+        return app_sidecar()
     compile_sidecar(data_dir)
     return data_dir.resolve() / 'tunnel/tunnel-sidecar'
 
@@ -103,6 +113,9 @@ def rebuild(data_dir: Path) -> None:
     install that failed. A repair keeps the saved relay, so the paired phones keep their route. Only a sidecar that
     `tunnel.py uninstall` removed stays removed.
     """
+    if app_sidecar() is not None:
+        app_rebuild(data_dir)
+        return
     if not loaded():
         if uninstalled_marker(data_dir).is_file():
             print('The tunnel sidecar is uninstalled. Nothing to rebuild.')
@@ -117,6 +130,18 @@ def rebuild(data_dir: Path) -> None:
         (data_dir.resolve() / 'tunnel/sidecar.sha256').unlink(missing_ok=True)
         raise SystemExit('The tunnel sidecar was rebuilt, but launchctl did not restart it.')
     print('Rebuilt and restarted the tunnel sidecar.')
+
+
+def app_rebuild(data_dir: Path) -> None:
+    """The deploy step under Coconut.app: register a route once, then restart the login item with the app's sidecar.
+
+    The app replaces its sidecar with each app update, so nothing compiles here.
+    """
+    if not (data_dir.resolve() / 'tunnel/route.json').is_file():
+        setup(data_dir, saved_relay(data_dir) or RELAY_URL)
+    if launchctl('kickstart', '-k', f'gui/{os.getuid()}/{APP_LABEL}').returncode:
+        raise SystemExit(f'launchctl did not restart {APP_LABEL}. Open Coconut.app and turn on Start at Login.')
+    print('Restarted the tunnel sidecar of Coconut.app.')
 
 
 def uninstall(data_dir: Path) -> None:

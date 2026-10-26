@@ -18,10 +18,18 @@ public struct Install: Equatable {
         self.root = root.standardizedFileURL
     }
 
+    /// The home folder: `HOME`, as scripts/deploy.py and launchd use it, else the folder of the account.
+    public static func homeFolder(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let value = environment["HOME"], !value.isEmpty {
+            return URL(fileURLWithPath: value, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
+
     public static func standard(environment: [String: String] = ProcessInfo.processInfo.environment,
                                 preference: String? = CFPreferencesCopyAppValue(preferenceKey as CFString,
                                                                                   preferencesDomain as CFString) as? String,
-                                home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Install {
+                                home: URL = Install.homeFolder()) -> Install {
         for value in [environment["COCONUT_INSTALL_DIR"], preference] {
             if let value, !value.isEmpty {
                 return Install(root: URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true))

@@ -30,8 +30,19 @@ struct MenuContent: View {
         Text("Mac: \(Self.describe(model.status.service))")
         Text("Relay: \(model.status.relay.replacingOccurrences(of: "_", with: " "))")
         Text("Hermes: \(Self.describe(hermes: model.status))")
+        if let activity = model.activity {
+            Text(activity)
+        }
+        if let error = model.updateError {
+            Text(error)
+        }
         if !model.legacyAgents.isEmpty {
             Text("Runs from the earlier LaunchAgent")
+            Button("Move Coconut to This App") { Task { await model.moveToApp() } }
+                .disabled(model.activity != nil || model.status.service == .notInstalled)
+        } else if model.status.service == .notInstalled {
+            Button("Set Up Coconut") { Task { await model.setUp() } }
+                .disabled(model.activity != nil)
         }
         if let error = model.loginError {
             Text(error)

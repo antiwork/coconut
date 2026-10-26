@@ -11,8 +11,22 @@ The install folder is `~/Coconut`. The app and its login items read another fold
 defaults write com.gumroad.coconut.mac InstallDirectory /path/to/folder
 ```
 
-`COCONUT_INSTALL_DIR` changes the folder for one `coconut` command in Terminal.
+`COCONUT_INSTALL_DIR` changes the folder for one `coconut` command in Terminal. The folder must be inside the home folder.
 The app does not register its login items while the LaunchAgent of `host.py install-service` or `tunnel.py install` exists.
+
+## Install and update
+
+The app carries the Coconut source: `Contents/Resources/coconut-source.tar.gz`, its package ID, and `scripts/deploy.py`.
+`coconut update` installs that source with `deploy.py receive`, the same installer that `remote.py` and the Mac mini updater use.
+
+- **Set Up Coconut** in the menu registers the login items, then installs the source. The service tool waits until the source exists, and the install starts it.
+- At each start, the app runs `coconut update --if-needed`. After an update of the app, the new source goes in at once.
+- An update lets the running turns finish first, for up to ten minutes (`host.drain_for_update`). Then `host.py` writes `.runtime/host/update-hold` and stops the service. launchd starts the tool again, and the tool waits while the hold lasts. After the source changes, the hold goes away, the service starts, and `deploy.py` checks Hermes and health. A failed check restores the earlier source.
+- The hold ends after 30 minutes, also when an update stops halfway.
+- `scripts/tunnel.py` uses the sidecar of the app (`COCONUT_SIDECAR`). It registers a relay route once, then restarts the relay login item. It compiles nothing.
+- **Move Coconut to This App** in the menu runs `coconut migrate` (`host.py migrate-to-app`). The running turns finish first, then the earlier LaunchAgents stop, and their files move to `.runtime/legacy-agents`. The data stays in place, so bots and paired iPhones keep working. Then the app registers its login items and updates the source.
+
+The update still needs the Command Line Tools, because `push.py` compiles its notification helpers.
 
 The menu shows the state of the service, the relay and Hermes. **Pair iPhone…** shows a one-time setup link and its QR code.
 A Hermes agent can print the same link. This command does not need the Command Line Tools:
