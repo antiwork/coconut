@@ -2081,9 +2081,13 @@ final class AppStore {
         } catch { report(error) }
     }
 
-    /// Read what the Mac last delivered to this iPhone, for the notification settings.
+    /// Read what the Mac last delivered to this iPhone, for the notification settings. A failed read leaves no status,
+    /// so the screen says that it is not available instead of showing an empty history.
     func refreshPushStatus() async {
-        guard !isDemo, let client, connection == .connected else { return }
+        guard !isDemo, let client, connection == .connected else {
+            pushStatus = nil
+            return
+        }
         let status: PushStatus? = try? await client.request("device/push")
         guard self.client === client else { return }
         pushStatus = status

@@ -90,7 +90,8 @@ struct NotificationSettingsView: View {
                     .accessibilityIdentifier("after-hours-footer")
             }
             Section("Delivery") {
-                LabeledContent("Last notification", value: PushStatus.describe(store.pushStatus?.lastDeliveredAt) ?? "None yet")
+                LabeledContent("Last notification", value: store.pushStatus == nil ? "Not available"
+                                                           : PushStatus.describe(store.pushStatus?.lastDeliveredAt) ?? "None yet")
                     .accessibilityIdentifier("last-notification")
                 if let error = store.pushStatus?.lastError {
                     LabeledContent("Last error") {
@@ -124,7 +125,8 @@ struct NotificationSettingsView: View {
         .environment(\.timeZone, TimeZone(identifier: "UTC") ?? .gmt)
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await store.refreshPushStatus() }
+        // Read again when the connection returns, so the screen does not keep an unavailable status.
+        .task(id: store.connection) { await store.refreshPushStatus() }
     }
 
     private func weekday(_ number: Int) -> Binding<Bool> {
