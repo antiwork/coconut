@@ -47,11 +47,15 @@ class PushTests(unittest.TestCase):
 
     def flush(self):
         with self.service.transaction():
-            self.service.db.execute('UPDATE push_outbox SET not_before=0')
+            self.service.db.execute('UPDATE push_items SET created=created-900')
+            self.service.db.execute('UPDATE push_outbox SET not_before=0,created=created-900,sent=sent-900')
         return self.service.push.deliver_one()
 
     def states(self):
         return self.service.db.execute('SELECT status,reason FROM push_outbox ORDER BY rowid').fetchall()
+
+    def items(self):
+        return self.service.db.execute('SELECT kind,status,reason FROM push_items ORDER BY created,rowid').fetchall()
 
     def test_badge_matches_visible_pending_inbox_and_clears(self):
         self.run_task('Write report')
@@ -127,8 +131,8 @@ class PushTests(unittest.TestCase):
         decision = self.service.snapshot()['decisions'][0]
         self.write('POST', f'/v1/decisions/{decision["id"]}/answer', dict(choice='reject', revision=decision['revision']))
         self.flush()
-        self.assertEqual(self.transport.calls, [])
-        self.assertEqual(self.states()[0][0], 'discarded')
+        self.assertEqual([call[2]['coconut']['kind'] for call in self.transport.calls], ['completed'])
+        self.assertEqual(self.items()[0], ('decision', 'dropped', 'NoLongerRelevant'))
 
     def test_bot_preference_is_checked_again_at_delivery(self):
         self.run_task()
@@ -147,9 +151,10 @@ class PushTests(unittest.TestCase):
             current = self.service._get('tasks', task['id'])
             self.service._event('task.updated', self.service._public(current), self.bot['id'], task['id'])
         self.register()
-        self.assertEqual(len(self.states()), 1)
+        self.assertEqual(len(self.items()), 1)
         self.flush()
         self.assertFalse(self.flush())
+        self.assertEqual(len(self.transport.calls), 1)
 
     def test_network_retry_reuses_notification_id(self):
         self.run_task()
@@ -161,13 +166,56 @@ class PushTests(unittest.TestCase):
         self.assertEqual(self.transport.calls[0][3], self.transport.calls[1][3])
         self.assertEqual(self.states()[0][0], 'accepted')
 
-    def test_invalid_token_stops_delivery_until_registration(self):
-        self.run_task()
-        self.transport.result = (410, 'Unregistered')
-        self.flush()
-        self.assertEqual(self.service.db.execute('SELECT enabled FROM push_devices').fetchone()[0], 0)
+    def test_invalid_token_removes_the_registration_until_the_app_registers_again(self):
+        for result in ((410, 'Unregistered'), (400, 'BadDeviceToken'), (400, 'DeviceTokenNotForTopic')):
+            self.register()
+            self.run_task()
+            self.transport.result = result
+            self.flush()
+            for table in ('push_devices', 'push_routes', 'push_preferences', 'push_schedules'):
+                self.assertEqual(self.service.db.execute(f'SELECT count(*) FROM {table}').fetchone()[0], 0, (table, result))
+            status = self.service.push_status(self.device)
+            self.assertEqual((status['registered'], status['last_error']), (False, result[1]))
+            self.assertIsNotNone(status['last_error_at'])
         self.register(token='b' * 64)
+        self.assertTrue(self.service.push_status(self.device)['registered'])
+
+    def test_other_failures_keep_the_registration_and_record_the_error(self):
+        self.run_task()
+        self.transport.result = (401, 'RelayRejected')
+        self.flush()
         self.assertEqual(self.service.db.execute('SELECT enabled FROM push_devices').fetchone()[0], 1)
+        self.assertEqual(self.service.push_status(self.device)['last_error'], 'RelayRejected')
+
+    def test_status_shows_the_last_delivery_and_the_last_error(self):
+        status = self.service.push_status(self.device)
+        self.assertEqual({key: status[key] for key in ('registered', 'last_delivered_at', 'last_error', 'last_error_at')},
+                         dict(registered=True, last_delivered_at=None, last_error=None, last_error_at=None))
+        self.assertEqual(status['preferences'], dict(level='grouped', messages=False))
+        self.run_task()
+        self.transport.result = (503, 'ServiceUnavailable')
+        self.flush()
+        self.transport.result = (200, 'Accepted')
+        self.flush()
+        status = self.service.push_status(self.device)
+        self.assertEqual(status['last_error'], 'ServiceUnavailable')
+        self.assertTrue(status['last_delivered_at'].endswith('Z'))
+        self.assertGreaterEqual(status['last_delivered_at'], status['last_error_at'])
+
+    def test_registrations_without_a_pairing_or_a_recent_refresh_are_removed(self):
+        other = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        self.service.push.registration(other, dict(token='b' * 64, environment='development', enabled=True))
+        self.service.db.execute('DELETE FROM devices WHERE id=?', (other,))
+        old = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        self.service.push.registration(old, dict(token='c' * 64, environment='development', enabled=True,
+                                                 preferences=dict(level='every', messages=True)))
+        self.service.db.execute('UPDATE push_devices SET updated=updated-31*86400 WHERE device_id=?', (old,))
+        with self.service.transaction():
+            self.service.push.plan(__import__('time').time())
+        self.assertEqual(self.service.db.execute('SELECT device_id FROM push_devices').fetchall(), [(self.device,)])
+        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_preferences WHERE device_id<>?', (self.device,)).fetchone()[0], 0)
+        self.assertEqual(self.service.push_status(old)['last_error'], 'NotRefreshed')
+        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_status WHERE device_id=?', (other,)).fetchone()[0], 0)
 
     def test_new_token_is_not_invalidated_by_old_attempt(self):
         self.run_task()
@@ -192,7 +240,8 @@ class PushTests(unittest.TestCase):
         self.run_task()
         self.write('DELETE', '/v1/device/push')
         self.assertFalse(self.flush())
-        self.assertEqual(self.states()[0][0], 'discarded')
+        self.assertEqual(self.items(), [('completed', 'dropped', 'Disabled')])
+        self.assertEqual(self.states(), [])
 
     def test_registration_rejects_invalid_or_unpaired_input(self):
         with self.assertRaises(ServiceError):

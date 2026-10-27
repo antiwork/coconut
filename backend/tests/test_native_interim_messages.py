@@ -99,7 +99,7 @@ with patch('socket.socket.connect', side_effect=AssertionError('Unexpected netwo
         assert service._get('tasks', task['id'])['status'] == 'completed'
         assert service._get('messages', messages[0]['id'])['_interim'] is True
         assert '_interim' not in service._get('messages', messages[1]['id'])
-        assert service.db.execute("SELECT message_id FROM push_outbox WHERE kind='message'").fetchall() == [(messages[1]['id'],)]
+        assert service.db.execute("SELECT message_id FROM push_items WHERE kind='message'").fetchall() == [(messages[1]['id'],)]
         assert 'PRIVATE_REASONING' not in json.dumps(messages), messages
         assert [kind for kind, _ in output] == ['interim_message', 'interim_message', 'text_delta', 'completed'], output
         assert output[-2] == ('text_delta', dict(text=final, finalize_interim=True)), output
@@ -135,7 +135,7 @@ with patch('socket.socket.connect', side_effect=AssertionError('Unexpected netwo
                 assert result == 0, (origin, alias, result, output)
                 assert service._get('tasks', task['id'])['status'] == 'completed', (origin, alias, output)
                 assert replies() == [], (origin, alias, replies())
-                assert not service.db.execute('SELECT 1 FROM push_outbox WHERE task_id=?', (task['id'],)).fetchone()
+                assert not service.db.execute('SELECT 1 FROM push_items WHERE task_id=?', (task['id'],)).fetchone()
                 assert not any(kind == 'text_delta' for kind, _ in output), (origin, alias, output)
         print('NATIVE_JOB_AND_REACTION_SILENCE_ALIASES; native final callbacks stay hidden')
         print('CODEX_COMPLETE_MESSAGES_ONLY; native bridge, no model request or native tool')

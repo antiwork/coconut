@@ -119,7 +119,7 @@ class DecisionSourcePreflightTests(unittest.TestCase):
                     self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'working')
                     self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'executing')
                     self.assertFalse(self.service.db.execute("SELECT 1 FROM events WHERE type='decision.created'").fetchone())
-                    self.assertFalse(self.service.db.execute('SELECT 1 FROM push_outbox').fetchone())
+                    self.assertFalse(self.service.db.execute('SELECT 1 FROM push_items').fetchone())
                     self.event('native_result', dict(id=call['id'], result='Source changed; continue within existing permission.'))
 
     def test_source_outage_does_not_publish_an_unchecked_card(self):

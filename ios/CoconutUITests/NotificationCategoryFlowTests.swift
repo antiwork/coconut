@@ -28,7 +28,8 @@ final class NotificationCategoryFlowTests: XCTestCase {
         for id in ["work-hours-start", "work-hours-end", "work-hours-timezone", "work-days-disclosure"] {
             XCTAssertTrue(control(id).exists, id)
         }
-        XCTAssertTrue(app.switches["honor-routine-schedules"].exists)
+        XCTAssertTrue(control("notification-level").exists)
+        XCTAssertTrue(control("last-notification").exists)
         XCTAssertTrue(control("after-hours-footer").exists)
         attach("Off-hours settings - Days collapsed")
 
@@ -64,13 +65,14 @@ final class NotificationCategoryFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 15))
         app.buttons["app-settings"].tap()
         app.buttons["notification-settings"].tap()
-        let decisions = app.switches["decision-notifications"]
         let messages = app.switches["message-notifications"]
-        XCTAssertTrue(decisions.waitForExistence(timeout: 5))
+        XCTAssertTrue(messages.waitForExistence(timeout: 5))
+        for level in ["every", "grouped", "urgent_only"] {
+            XCTAssertTrue(app.descendants(matching: .any)["notification-level-" + level].exists, level)
+        }
         let original = messages.value as? String
         messages.tap()
         XCTAssertNotEqual(messages.value as? String, original)
-        XCTAssertEqual(decisions.value as? String, "1")
         messages.tap()
         let afterHours = app.switches["after-hours-toggle"]
         XCTAssertTrue(afterHours.exists)
@@ -78,7 +80,7 @@ final class NotificationCategoryFlowTests: XCTestCase {
         XCTAssertTrue(app.datePickers["work-hours-start"].exists || app.buttons["work-hours-start"].exists)
         XCTAssertTrue(app.datePickers["work-hours-end"].exists || app.buttons["work-hours-end"].exists)
         XCTAssertTrue(app.buttons["work-hours-timezone"].exists)
-        XCTAssertTrue(app.staticTexts["Routine alerts wait in Inbox until work hours. Important and urgent alerts come through."].exists)
+        XCTAssertTrue(app.staticTexts["Outside work hours, cards wait in Inbox. When work hours start, one notification counts them."].exists)
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "Separate notification settings"; proof.lifetime = .keepAlways; add(proof)
         if app.buttons["Enable notifications"].exists {
