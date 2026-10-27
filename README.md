@@ -22,6 +22,7 @@ curl -fsSL https://coconut-updates.gumroad.workers.dev/install | bash -s <code>
 ```
 
 The command installs the notarized Coconut.app on the agent's Mac, starts Coconut, and pairs the iPhone by itself. You do not touch the Mac.
+Coconut.app is a menu bar app. Its login items run the service and the relay sidecar, and it updates itself with Sparkle. See [mac/README.md](mac/README.md).
 See [Pair through Hermes](docs/install-and-update.md#pair-through-hermes).
 Coconut runs on that Hermes. It does not install its own copy. Without a usable Hermes, the service starts but runs no bots, and the phone shows why.
 

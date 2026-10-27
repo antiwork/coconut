@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """Set up Coconut on this Mac for a Hermes agent, then print the iPhone setup link.
 
-The iPhone reaches this Mac through the end-to-end encrypted relay, so no VPN or open port is necessary. Run it again at
-any time. Each step skips the work that is already done, and each run prints a new setup link.
+Coconut.app runs the service of this folder with its login items. This command installs the app from the update feed
+when it is missing, and moves a service of the earlier LaunchAgents to the app. The iPhone reaches this Mac through the
+end-to-end encrypted relay, so no VPN or open port is necessary. Run it again at any time. Each step skips the work that
+is already done, and each run prints a new setup link.
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 from pathlib import Path
+import platform
+import plistlib
 import subprocess
 import sys
-import time
-import urllib.request
+import tempfile
 
 import deploy
 import host
+import mac_feed
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -73,62 +78,203 @@ def prepare_notifications() -> None:
     print("Notifications are ready.")
 
 
-def start_service() -> None:
-    plist, loaded = host.owned_agent()
-    if loaded:
-        print("The Coconut login service is already running.")
-    else:
-        # A process from host.py start would hold the port that the login service needs.
-        if host.owned_process() is not None:
-            run(script("host.py", "stop"), "Stopping Coconut")
-        if plist.exists():
-            run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], "Starting the Coconut login service")
-        else:
-            run(script("host.py", "install-service"), "The login service installation")
-        print("Coconut starts again after a restart, when this Mac account logs in.")
+APP_NAME = "Coconut.app"
+BUNDLE_ID = "com.gumroad.coconut.mac"
+SERVICE_LABEL = "com.gumroad.coconut.service"
+RELAY_LABEL = "com.gumroad.coconut.relay"
+# The settings that choose another Hermes. See hermes_runtime.candidates.
+HERMES_SETTINGS = ("COCONUT_HERMES_PYTHON", "COCONUT_HERMES_ROOT", "HERMES_HOME")
+
+
+def app_folders() -> list[Path]:
+    return [Path("/Applications"), Path.home() / "Applications"]
+
+
+def find_app() -> Path | None:
+    """Return an installed Coconut.app, or None."""
+    for folder in app_folders():
+        app = folder / APP_NAME
+        try:
+            with (app / "Contents/Info.plist").open("rb") as handle:
+                if plistlib.load(handle).get("CFBundleIdentifier") == BUNDLE_ID:
+                    return app
+        except (OSError, ValueError, plistlib.InvalidFileException):
+            continue
+    return None
+
+
+def version_key(value: str) -> tuple:
+    return tuple(int(part) for part in value.split(".") if part.isdigit())
+
+
+def choose_item(feed: bytes | None, channel: str, system: str | None = None) -> tuple[mac_feed.Item, str]:
+    """The newest archive of the channel that runs on this macOS. Before the first stable release, the stable channel
+    takes the nightly one."""
+    system = system or platform.mac_ver()[0]
+    items = mac_feed.parse(feed or b"")
+    if items and not any(version_key(item.minimum_system) <= version_key(system) for item in items):
+        lowest = min((item.minimum_system for item in items), key=version_key)
+        raise SystemExit(f"Coconut.app needs macOS {lowest} or later. This Mac has macOS {system}.")
+    items = [item for item in items if version_key(item.minimum_system) <= version_key(system)]
+    for name in [channel, *(["nightly"] if channel == "stable" else [])]:
+        found = [item for item in items if item.channel == name]
+        if found:
+            return max(found, key=lambda item: item.build), name
+    raise SystemExit(f"The update feed {mac_feed.FEED_URL} has no Coconut.app yet. Try again later.")
+
+
+def verify_app(app: Path) -> None:
+    """Accept only an app with a valid signature that Gatekeeper accepts, which means that Apple notarized it."""
+    for command, label in ((["codesign", "--verify", "--deep", "--strict", str(app)], "The signature check of Coconut.app"),
+                           (["spctl", "--assess", "--type", "execute", str(app)], "The Gatekeeper check of Coconut.app")):
+        run(command, label)
+
+
+def install_app(channel: str) -> Path:
+    """Download Coconut.app from the update feed, check it, and put it in Applications."""
+    item, used = choose_item(mac_feed.fetch(mac_feed.FEED_URL), channel)
+    print(f"Downloading Coconut {item.version} ({item.build}) from the {used} channel.", flush=True)
+    data = mac_feed.fetch(f"{mac_feed.BASE_URL}/{item.file}")
+    if data is None or len(data) != item.length or not mac_feed.matches_name(item.file, data):
+        raise SystemExit(f"The download of {item.file} is incomplete. Run this command again.")
+    with tempfile.TemporaryDirectory() as temporary:
+        archive = Path(temporary) / item.file
+        archive.write_bytes(data)
+        unpacked = Path(temporary) / "app"
+        run(["ditto", "-x", "-k", str(archive), str(unpacked)], "Unpacking Coconut.app")
+        verify_app(unpacked / APP_NAME)
+        system, personal = app_folders()
+        folder = system if os.access(system, os.W_OK) else personal
+        folder.mkdir(exist_ok=True)
+        run(["ditto", str(unpacked / APP_NAME), str(folder / APP_NAME)], "Copying Coconut.app")
+    if used == "nightly":
+        # The app then keeps the channel of this build.
+        run(["defaults", "write", BUNDLE_ID, "updateChannel", "nightly"], "Choosing the nightly channel")
+    return folder / APP_NAME
+
+
+def app_folder() -> Path:
+    """The folder that the app runs now: its preference, else ~/Coconut."""
+    result = subprocess.run(["defaults", "read", BUNDLE_ID, "InstallDirectory"], capture_output=True, text=True)
+    value = result.stdout.strip() if result.returncode == 0 else ""
+    return Path(value).expanduser() if value else Path.home() / "Coconut"
+
+
+def use_this_folder() -> Path | None:
+    """Make the app and its login items run this checkout. Sparkle then updates the app, and git pull updates the source.
+
+    Return the earlier folder of the app when it was another one.
+    """
+    previous = app_folder()
+    run(["defaults", "write", BUNDLE_ID, "InstallDirectory", str(ROOT)], "Choosing the Coconut folder")
+    print(f"Coconut.app runs Coconut from {ROOT}.")
+    return None if previous.resolve() == ROOT.resolve() else previous
+
+
+def saved_hermes_settings() -> dict:
+    """The Hermes settings in the app's preference ServiceEnvironment."""
+    result = subprocess.run(["defaults", "export", BUNDLE_ID, "-"], capture_output=True)
+    try:
+        saved = plistlib.loads(result.stdout).get("ServiceEnvironment") if result.returncode == 0 else None
+    except (ValueError, plistlib.InvalidFileException):
+        saved = None
+    if not isinstance(saved, dict):
+        return {}
+    return {name: value for name, value in saved.items() if name in HERMES_SETTINGS and isinstance(value, str) and value}
+
+
+def load_hermes_settings(reset: bool) -> bool:
+    """Use the saved Hermes settings where this shell has none, so use_hermes checks the Hermes that the service uses.
+
+    With `reset`, forget them: the service then finds Hermes as this shell does. Return True when it forgot settings.
+    """
+    if reset:
+        forgot = bool(saved_hermes_settings())
+        subprocess.run(["defaults", "delete", BUNDLE_ID, "ServiceEnvironment"], capture_output=True)
+        print("Coconut.app forgot its saved Hermes settings.")
+        return forgot
+    for name, value in saved_hermes_settings().items():
+        os.environ.setdefault(name, value)
+    return False
+
+
+def save_hermes_settings() -> bool:
+    """Keep the Hermes settings that use_hermes checked. The login items start without the environment of this shell,
+    and the earlier LaunchAgent that kept them goes away. The `coconut` tool reads them from the app's preferences.
+
+    The settings come from this shell, which load_hermes_settings filled from the saved ones, else from the earlier
+    LaunchAgent. Without any, the saved preference stays as it is. Return True when the saved settings changed.
+    """
+    service = host.service_environment()
+    settings = {name: os.environ.get(name) or service.get(name) for name in HERMES_SETTINGS}
+    settings = {name: value for name, value in settings.items() if value}
+    if not settings or settings == saved_hermes_settings():
+        return False
+    arguments = ["defaults", "write", BUNDLE_ID, "ServiceEnvironment", "-dict"]
+    for name, value in sorted(settings.items()):
+        arguments += [name, value]
+    run(arguments, "Saving the Hermes settings")
+    print("Coconut.app keeps these Hermes settings: " + ", ".join(sorted(settings)) + ".")
+    return True
+
+
+def login_item_loaded(label: str) -> bool:
+    return subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True).returncode == 0
+
+
+def restart_login_items(previous: Path) -> None:
+    """The app and its login items read the folder and the Hermes settings only when they start. Let the turns of the
+    service in `previous` finish, then start the login items again, and quit the app, which `start_app` opens again.
+
+    `previous` is the earlier folder of the app, or this checkout when only the Hermes settings changed."""
+    subprocess.run(["osascript", "-e", f'quit app id "{BUNDLE_ID}"'], capture_output=True)
+    if not login_item_loaded(SERVICE_LABEL):
+        return
+    if (previous / "scripts/host.py").is_file():
+        print(f"Coconut restarts the service of {previous}. Its running bot turns finish first.", flush=True)
+        drain = "import sys; sys.path.insert(0, sys.argv[1]); import host; host.drain_for_update()"
+        run([sys.executable, "-c", drain, str(previous / "scripts")], "Waiting for the earlier service")
+    for label in (SERVICE_LABEL, RELAY_LABEL):
+        if login_item_loaded(label):
+            run(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"], f"Restarting {label}")
+
+
+def leave_launch_agents() -> None:
+    """Stop a service of the earlier LaunchAgents or of host.py start. Coconut.app runs it with its login items."""
+    agents = Path.home() / "Library/LaunchAgents"
+    if any((agents / f"{label}.plist").exists() for label in (host.LABEL, host.TUNNEL_LABEL)):
+        # The running bot turns finish first, as in an update.
+        print("Moving Coconut from its earlier LaunchAgents to Coconut.app. Running bot turns finish first.", flush=True)
+        run(script("host.py", "migrate-to-app"), "The move to Coconut.app")
+    elif host.owned_process() is not None and not host.app_runs_service():
+        run(script("host.py", "stop"), "Stopping Coconut")
+
+
+def start_app(app: Path) -> None:
+    """Open the app. It registers its login items, and the service login item starts Coconut."""
+    run(["open", "-g", str(app)], "Opening Coconut.app")
     print("Waiting for Coconut to answer its health check.", flush=True)
     try:
         deploy.Operations().health(ROOT)
     except deploy.DeployError as error:
-        if not loaded:
-            raise SystemExit(f"{error} Read {DATA / 'logs/error.log'}, then run this command again.") from None
-        # The health check uses the tunnel listener. A service from before that listener must restart.
-        ensure_tunnel_listener()
-    print("Coconut is healthy.")
+        raise SystemExit(f"{error} Open the Coconut menu in the menu bar. If it asks, allow Coconut in "
+                         f"System Settings → General → Login Items. Then run this command again.") from None
+    # The health check answers for any Coconut on this Mac. The process record says that this checkout serves.
+    if host.owned_process() is None:
+        raise SystemExit(f"Another Coconut answers on this Mac, not the one in {ROOT}. Open the Coconut menu, "
+                         "check its folder, then run this command again.")
+    print("Coconut is healthy. It starts again after a restart, when this Mac account logs in.")
 
 
-def tunnel_listener_ready() -> bool:
-    """True when the backend answers on the loopback listener that the tunnel sidecar forwards to."""
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{host.TUNNEL_PORT}/health", timeout=2) as response:
-            return response.status == 200
-    except (OSError, ValueError):
-        return False
-
-
-def ensure_tunnel_listener(seconds: float = 180) -> None:
-    if tunnel_listener_ready():
-        return
-    # A service that started before the tunnel listener existed has no --tunnel-port. A restart reads the
-    # current launch settings. Without the listener, the phone cannot pair through a version 2 link.
-    print("Coconut has no tunnel listener yet. Restarting it with the current launch settings.", flush=True)
-    # A stop interrupts the running bot turns, and they lose their tool results. Let them finish first, as the
-    # deploy does. A service that cannot drain stops at once, as before.
-    print("Waiting for running bot turns to finish. This can take up to 10 minutes.", flush=True)
-    host.drain_for_update()
-    run(script("host.py", "restart"), "Restarting Coconut")
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        if tunnel_listener_ready():
-            return
-        time.sleep(1)
-    raise SystemExit(f"Coconut does not answer on 127.0.0.1:{host.TUNNEL_PORT}. "
-                     f"Read {DATA / 'logs/error.log'}, then run this command again.")
-
-
-def start_tunnel() -> None:
-    # The app reaches this Mac through the relay tunnel. start_service made sure that the backend's tunnel listener answers.
-    run(script("tunnel.py", "install", "--data-dir", str(DATA)), "The relay tunnel installation")
+def start_tunnel(app: Path) -> None:
+    """Register the relay route once, with the sidecar of the app, and restart the relay login item."""
+    environment = dict(os.environ, COCONUT_SIDECAR=str(app / "Contents/Helpers/tunnel-sidecar"))
+    result = subprocess.run(script("tunnel.py", "rebuild", "--data-dir", str(DATA)), cwd=ROOT, env=environment,
+                            text=True, capture_output=True)
+    if result.returncode:
+        sys.stderr.write(result.stdout + result.stderr)
+        raise SystemExit(f"The relay setup failed with exit code {result.returncode}. Read the output above, "
+                         "then run this command again.")
     print("The relay tunnel is running.")
 
 
@@ -146,17 +292,34 @@ def share() -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--channel", choices=["stable", "nightly"], default="stable",
+                        help="The update channel of a new Coconut.app.")
+    parser.add_argument("--reset-hermes-settings", action="store_true",
+                        help="Forget the saved COCONUT_HERMES_PYTHON, COCONUT_HERMES_ROOT and HERMES_HOME of Coconut.app.")
+    args = parser.parse_args()
     os.umask(0o077)
     step("Checking this Mac")
     prerequisites()
+    settings_changed = load_hermes_settings(args.reset_hermes_settings)
     step("Finding Hermes")
     use_hermes()
     step("Preparing notifications")
     prepare_notifications()
+    step("Installing Coconut.app")
+    app = find_app()
+    if app is None:
+        app = install_app(args.channel)
+    print(f"Coconut.app is in {app.parent}. It updates itself.")
+    settings_changed = save_hermes_settings() or settings_changed
+    previous = use_this_folder()
     step("Starting the Coconut service")
-    start_service()
+    leave_launch_agents()
+    if previous is not None or settings_changed:
+        restart_login_items(previous or ROOT)
+    start_app(app)
     step("Starting the relay tunnel")
-    start_tunnel()
+    start_tunnel(app)
     step("Creating the iPhone setup link")
     share()
 
