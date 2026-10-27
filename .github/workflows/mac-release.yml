@@ -4,7 +4,7 @@ name: Mac release
 # publishes it in the Sparkle feed of the Worker coconut-updates (updates/). Two channels:
 #   nightly   on each push to main, each night when main has new commits, and when a person starts the workflow with
 #             channel "nightly"
-#   stable    each day, the newest nightly build when it has been nightly for 24 hours, every check of its commit
+#   stable    each day, the newest nightly build that has been nightly for 24 hours, when every check of its commit
 #             passed, and no release failed after it (the automatic promote); and when a person starts the workflow
 #             with channel "stable", which releases the head of main (the manual promote)
 # The version is in mac/VERSION. The build number is the commit count of main.

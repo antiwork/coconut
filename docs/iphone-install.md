@@ -115,7 +115,7 @@ The workflow `.github/workflows/testflight.yml` runs on each push to `main` that
 A person can also start it from the Actions tab.
 
 1. The workflow sets the version to the UTC date and the build number to the highest App Store Connect build plus one.
-2. It archives Release without a signature.
+2. It generates the Xcode project from `ios/project.yml` and archives Release without a signature.
 3. `scripts/testflight.py sign` signs the archive ad hoc with the entitlements of the project.
 4. `xcodebuild -exportArchive` signs the archive for distribution with a cloud-managed certificate and uploads it.
 5. The workflow waits until App Store Connect lists the build.

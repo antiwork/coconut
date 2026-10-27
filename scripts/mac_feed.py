@@ -219,17 +219,21 @@ def check_key(private_key: str) -> None:
 
 
 def promote_candidate(feed: bytes | None, min_age_hours: float, now: datetime | None = None) -> dict | None:
-    """The newest nightly item when it is newer than every stable item and at least `min_age_hours` old, else None.
+    """The newest nightly item that is newer than every stable item and at least `min_age_hours` old, else None.
 
-    The release workflow then checks the commit and the later releases before it publishes the build as stable.
+    A push to main publishes a nightly build, so a newer nightly that is younger than a day does not block an older
+    one that is old enough. The release workflow then checks the commit and the later releases before it publishes the
+    build as stable.
     """
     items = parse(feed or b'')
-    nightly = max((item for item in items if item.channel == 'nightly'), key=lambda item: item.build, default=None)
-    if nightly is None or nightly.build <= latest_build(feed, 'stable'):
+    stable = latest_build(feed, 'stable')
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=min_age_hours)
+    aged = [item for item in items if item.channel == 'nightly' and item.build > stable
+            and parsedate_to_datetime(item.published) <= cutoff]
+    nightly = max(aged, key=lambda item: item.build, default=None)
+    if nightly is None:
         return None
     published = parsedate_to_datetime(nightly.published)
-    if (now or datetime.now(timezone.utc)) - published < timedelta(hours=min_age_hours):
-        return None
     return {'build': nightly.build, 'version': nightly.version,
             'published': published.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
 

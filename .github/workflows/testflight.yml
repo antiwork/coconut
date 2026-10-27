@@ -71,6 +71,12 @@ jobs:
           version="$(date -u '+%Y.%-m.%-d')"
           { echo "BUILD=$build"; echo "VERSION=$version"; } >> "$GITHUB_ENV"
           echo "Coconut $version ($build) from $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
+      # scripts/iphone.py also generates the project before each build, so a change of ios/project.yml reaches the app.
+      - name: Generate the Xcode project
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          xcodegen generate --spec ios/project.yml
       - name: Archive without a signature
         run: |
           set -euo pipefail
