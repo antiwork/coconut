@@ -207,6 +207,17 @@ class PushTests(unittest.TestCase):
         self.assertTrue(status['last_delivered_at'].endswith('Z'))
         self.assertGreaterEqual(status['last_delivered_at'], status['last_error_at'])
 
+    def seed_items(self, device_id):
+        """Give a device one waiting item and one sent item, as an old registration left them."""
+        task = self.run_task()
+        for key, status in (('old-waiting', 'waiting'), ('old-sent', 'sent')):
+            self.service.db.execute('''INSERT INTO push_items
+                (device_id,event_key,kind,bot_id,task_id,decision_id,message_id,turn_id,urgent,created,status)
+                VALUES (?,?,'completed',?,?,NULL,NULL,'turn',0,?,?)''', (device_id, key, self.bot['id'], task['id'], __import__('time').time(), status))
+
+    def old_items(self, device_id):
+        return self.service.db.execute('SELECT event_key,status FROM push_items WHERE device_id=? ORDER BY event_key', (device_id,)).fetchall()
+
     def test_a_device_without_a_peer_key_gets_no_notifications(self):
         # An old version 1 pairing or a tool on this Mac has no static key, so it cannot connect as a phone.
         old = self.service.pair({'code': self.service.pairing_code()})['device_id']
@@ -220,10 +231,12 @@ class PushTests(unittest.TestCase):
                                     (old, 'b' * 64, 'development', 1, stamp))
             for table in ('push_routes', 'push_preferences', 'push_schedules'):
                 self.service.db.execute(f'INSERT INTO {table} VALUES (?,?)', (old, '{}'))
+        self.seed_items(old)
         self.run_task('Write report')
-        self.assertEqual({row[0] for row in self.service.db.execute('SELECT device_id FROM push_items')}, {self.device})
+        self.assertEqual(len(self.service.db.execute("SELECT 1 FROM push_items WHERE device_id=?", (old,)).fetchall()), 2)
         with self.service.transaction():
             self.service.push.plan(stamp)
+        self.assertEqual(self.old_items(old), [('old-sent', 'sent'), ('old-waiting', 'dropped')])
         for table in ('push_devices', 'push_routes', 'push_preferences', 'push_schedules'):
             self.assertEqual(self.service.db.execute(f'SELECT count(*) FROM {table} WHERE device_id=?', (old,)).fetchone()[0], 0, table)
         self.assertIsNotNone(self.service.db.execute('SELECT 1 FROM devices WHERE id=?', (old,)).fetchone())
@@ -234,9 +247,11 @@ class PushTests(unittest.TestCase):
         with self.service.transaction():
             self.service.db.execute('INSERT INTO push_devices (device_id,token,environment,enabled,updated) VALUES (?,?,?,?,?)',
                                     (old, 'b' * 64, 'development', 1, __import__('time').time()))
+        self.seed_items(old)
         self.service.close()
         self.service = Service(self.directory.name, ControlledProvider(), start_workers=False)
         self.assertEqual(self.service.db.execute('SELECT device_id FROM push_devices').fetchall(), [(self.device,)])
+        self.assertEqual(self.old_items(old), [('old-sent', 'sent'), ('old-waiting', 'dropped')])
 
     def test_registrations_without_a_pairing_or_a_recent_refresh_are_removed(self):
         other = pair_phone(self.service)
