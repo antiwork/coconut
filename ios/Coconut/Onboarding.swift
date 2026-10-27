@@ -34,6 +34,10 @@ struct OnboardingView: View {
     // A setup from a QR code or a tapped link. The person confirms the Mac name before Coconut pairs.
     @State private var linkSetup: PairingSetup?
     @State private var confirmOpen = false
+    // One pairing at a time: the rendezvous and a link could both arrive. Each success replaces the saved Mac.
+    @State private var pairingNow = false
+    // A closed screen starts no pairing, so a late setup cannot replace the Mac.
+    @State private var closed = false
 
     init(firstRun: Bool = false) {
         self.firstRun = firstRun
@@ -110,8 +114,14 @@ struct OnboardingView: View {
         } message: {
             Text(store.hasPairing ? "This replaces the pairing with \(store.pairedMacDescription)." : "Check that this is your Mac.")
         }
-        .onAppear { Self.openCount += 1 }
-        .onDisappear { Self.openCount -= 1 }
+        .onAppear {
+            Self.openCount += 1
+            closed = false
+        }
+        .onDisappear {
+            Self.openCount -= 1
+            closed = true
+        }
         .accessibilityIdentifier("onboarding")
     }
 
@@ -224,6 +234,11 @@ struct OnboardingView: View {
             }
             await box.close(current)
             ProtectedCache.remove(PendingPairing.cacheName)
+            // The box is used. Copy and Share must not offer its code again, and Try again makes a new box.
+            pending = nil
+            copied = false
+            // A link that the person confirmed pairs already.
+            guard !pairingNow else { return }
             guard let plaintext = try? current.pairingCode.open(sealed),
                   let setup = try? PairingSetup.parse(String(decoding: plaintext, as: UTF8.self)) else {
                 phase = .failed("The setup from the Mac is damaged. Send a new message to Hermes.")
@@ -251,6 +266,9 @@ struct OnboardingView: View {
     }
 
     private func pair(_ setup: PairingSetup) async {
+        guard !pairingNow, !closed else { return }
+        pairingNow = true
+        defer { pairingNow = false }
         phase = .pairing(setup.name)
         linkSetup = nil
         if await store.pair(setup: setup) {
