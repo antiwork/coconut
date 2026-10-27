@@ -144,11 +144,11 @@ def next_opening(schedule, at):
     return at + 3600
 
 
-def due(schedule, level, first, last):
-    """When the items that wait for a phone may notify together, or None when they never do.
+def due(schedule, level, first, last, at):
+    """When the items that wait for a phone may notify together, or None when they never do. Never earlier than `at`.
 
-    `first` is when the oldest waiting item arrived and `last` is the phone's last notification. Outside the window,
-    everything waits for the next opening and then notifies once."""
+    `first` is when the oldest waiting item arrived and `last` is the phone's last delivered notification. Outside the
+    window, everything waits for the next opening and then notifies once."""
     if level not in SETTLE:
         return None
-    return next_opening(schedule, max(first + SETTLE[level], last + INTERVAL[level]))
+    return next_opening(schedule, max(first + SETTLE[level], last + INTERVAL[level], at))
