@@ -6,6 +6,8 @@ RESTART_DRAIN_SECONDS = 60
 # next start so that it never repeats an action. So the updater first asks the service to drain (see `poll_service_drain`).
 DRAIN_REQUEST_FILE = 'drain-request'
 DRAINED_FILE = 'drained'
+# A restart for a new Hermes waits for the running turns as long as an update does (host.DRAIN_SECONDS).
+HERMES_DRAIN_SECONDS = 600
 
 RESTART_SCHEMA = {
     'name': 'coconut_restart_service',
@@ -31,8 +33,9 @@ class ServiceRestart:
             self._draining = False
             if getattr(self, '_drain_holds_dispatch', False):
                 self._drain_holds_dispatch = False
-                # A restart that a bot asked for, or a workspace recovery, keeps the pause that it also needs.
-                if self.restart_deadline is None and not getattr(self, '_workspace_recovery_hold', False):
+                # A restart that a bot asked for, a new Hermes, or a workspace recovery keeps the pause that it also needs.
+                if (self.restart_deadline is None and self.hermes_restart_deadline is None
+                        and not getattr(self, '_workspace_recovery_hold', False)):
                     self.restart_pending = False
                 with self.changed:
                     self.changed.notify_all()
@@ -46,11 +49,25 @@ class ServiceRestart:
             self._drain_holds_dispatch = True
             self.restart_pending = True
         with self.lock:
-            # The same work that keeps a bot's restart from taking effect: turns, claims, uncertain dispatch and worker cleanup.
-            active = (any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()])
-                      or bool(self._kanban_claiming) or bool(self._kanban_dispatch_uncertain) or bool(self._kanban_trimming))
+            active = self._service_busy()
         if not active and not drained.exists():
             drained.write_text('1')
+
+    def _service_busy(self):
+        # Caller holds self.lock. The same work that keeps a bot's restart from taking effect: turns, claims, uncertain
+        # dispatch and worker cleanup.
+        return (any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()])
+                or bool(self._kanban_claiming) or bool(self._kanban_dispatch_uncertain) or bool(self._kanban_trimming))
+
+    def poll_hermes_change(self):
+        """After a change of Hermes, start no new turn until the restart. See hermes_changed and take_service_restart."""
+        if self.hermes_restart_deadline is None:
+            if not self.hermes_changed():
+                return
+            self.hermes_restart_deadline = time.monotonic() + HERMES_DRAIN_SECONDS
+            print('Hermes changed. Coconut restarts when the running turns finish.', flush=True)
+        # The end of another pause releases dispatch (see poll_service_drain). This pause holds until the restart.
+        self.restart_pending = True
 
     def clear_service_drain(self):
         for name in (DRAIN_REQUEST_FILE, DRAINED_FILE):
@@ -95,11 +112,17 @@ class ServiceRestart:
             return False
         try:
             recovery = self._pending_workspace_recovery()
-            if ((self.restart_deadline is None and not recovery) or self.stopping.is_set()
+            # A workspace recovery restarts the service too, so a new Hermes waits for it.
+            hermes = self.hermes_restart_deadline is not None and not recovery
+            if ((self.restart_deadline is None and not recovery and not hermes) or self.stopping.is_set()
                     or getattr(self, '_workspace_recovery_hold', False)):
                 return False
             active_turns = any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()])
-            if active_turns or self._kanban_trimming:
+            if hermes:
+                # As an update does: wait for the running work, but not longer than HERMES_DRAIN_SECONDS.
+                if self._service_busy() and time.monotonic() < self.hermes_restart_deadline:
+                    return False
+            elif active_turns or self._kanban_trimming:
                 if (not recovery and self.restart_pending and time.monotonic() >= self.restart_deadline
                         and not getattr(self, '_draining', False)):
                     with self.transaction():

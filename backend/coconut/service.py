@@ -3132,6 +3132,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
 
     def _dispatch_pending(self):
         self.poll_service_drain()
+        self.poll_hermes_change()
         with self.dispatch_gate:
             if getattr(self, '_workspace_recovery_hold', False):
                 return

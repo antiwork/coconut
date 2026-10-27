@@ -383,6 +383,9 @@ def main(argv=None):
         parser.error(f'The service could not listen: {error}')
     write_process_record(service)
     service.restart_enabled = os.environ.get("COCONUT_MANAGED_SERVICE") == "1"
+    if service.restart_enabled and hermes is not None:
+        # launchd starts the service again after it exits, so it can restart for a new Hermes.
+        service.watch_hermes(hermes)
     service.start()
     print(f'Coconut is listening on 127.0.0.1:{args.port}. Provider: {args.provider}.', flush=True)
     if tunnel:
