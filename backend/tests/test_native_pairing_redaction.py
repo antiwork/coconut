@@ -1,4 +1,4 @@
-"""A pairing link must reach the iPhone unchanged after the secret redaction of the installed Hermes.
+"""A pairing link and the iPhone's message for Hermes must pass the secret redaction of the installed Hermes unchanged.
 
 Hermes masks text that looks like a secret before the agent sees a tool result and before a message leaves the
 gateway. Hermes v0.22.5 masked the base64url JSON of the earlier link as a JSON Web Token, because it starts with "eyJ".
@@ -38,6 +38,10 @@ json.dump([[call(text) for call in calls] for text in texts], sys.stdout)
 '''
 
 
+# The message that the iPhone shows for Hermes (ios/Coconut/PairingCode.swift reads the same file).
+MESSAGE = (Path(__file__).resolve().parents[2] / 'ios/Coconut/Resources/hermes-pairing-message.txt').read_text().strip()
+
+
 def encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).decode().rstrip('=')
 
@@ -70,6 +74,17 @@ class PairingLinkRedactionTests(unittest.TestCase):
                 self.assertEqual(result, text, f'redaction {call} changed the link')
         for link, payload in zip(links, self.payloads()):
             self.assertEqual(pairing.read_link(link), payload)
+
+    def test_the_message_for_hermes_passes_every_redaction_unchanged(self):
+        generator = random.Random(11)
+        codes = [base64.b32encode(generator.randbytes(16)).decode().rstrip('=').lower() for _ in range(300)]
+        # Codes that start like the secret shapes that Hermes knows, in the lowercase letters that a code can have.
+        codes += [(prefix + 'a' * 26)[:26] for prefix in ['eyj', 'sk', 'ghp', 'xox', 'aiza', 'akia', 'hf', 'npm', 'gaaaa', 'bot2']]
+        messages = [MESSAGE.replace('{code}', code) for code in codes]
+        self.assertTrue(all(len(code) == 26 for code in codes))
+        for text, results in zip(messages, self.redact(messages)):
+            for call, result in enumerate(results):
+                self.assertEqual(result, text, f'redaction {call} changed the message')
 
     def test_the_earlier_link_format_is_masked(self):
         # A negative control: the real Hermes rules run, and they break the earlier format.

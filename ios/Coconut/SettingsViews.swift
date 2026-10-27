@@ -3,8 +3,6 @@ import SwiftUI
 struct AppSettingsView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
-    @State private var hermesSetupOpen = false
-
     private var paired: Bool { store.hasPairing || store.isDemo }
 
     var body: some View {
@@ -50,13 +48,6 @@ struct AppSettingsView: View {
                     }
                 }
                 Section("Advanced") {
-                    if paired {
-                        Button { hermesSetupOpen = true } label: {
-                            SettingsNavigationLabel(title: "Hermes setup", subtitle: "Import profiles and model logins")
-                        }
-                        .foregroundStyle(.primary)
-                        .accessibilityIdentifier("hermes-setup")
-                    }
                     NavigationLink { ParallelWorkSettingsView() } label: {
                         SettingsNavigationLabel(title: "Parallel work", subtitle: parallelWorkSummary)
                     }
@@ -69,7 +60,6 @@ struct AppSettingsView: View {
                     Text("Coconut \(appVersion) · Execution stays on your Mac.")
                 }
             }
-            .fullScreenCover(isPresented: $hermesSetupOpen) { OnboardingView(start: .setup) }
             .listSectionSpacing(24)
             .settingsBackground()
             .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)

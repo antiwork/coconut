@@ -32,11 +32,12 @@ enum SettingsBackground {
 
 // Every pairing entry point opens the same pairing page. The page asks before it replaces a pairing.
 struct PairMacButton: View {
+    @Environment(AppStore.self) private var store
     @State private var open = false
 
     var body: some View {
-        Button("Pair with your Mac") { open = true }
+        Button(store.hasPairing ? "Pair a new Mac" : "Pair with your Mac") { open = true }
             .accessibilityIdentifier("pair-with-mac")
-            .fullScreenCover(isPresented: $open) { OnboardingView(start: .pair) }
+            .fullScreenCover(isPresented: $open) { OnboardingView() }
     }
 }

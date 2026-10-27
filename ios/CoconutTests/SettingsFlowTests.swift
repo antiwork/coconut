@@ -150,38 +150,6 @@ final class SettingsFlowTests: XCTestCase {
         XCTAssertEqual(Set(states.map(\.title)).count, states.count)
     }
 
-    // MARK: Pairing entry points
-
-    func testEveryPairingEntryPointStartsOnThePairingPage() {
-        let steps = OnboardingView.steps(start: .pair, setup: nil, existingServers: [], modelConfigured: true, askNotifications: false)
-        XCTAssertEqual(steps, [.pair, .setup, .done])
-    }
-
-    func testAfterPairingASetupWithNothingToChooseSkipsItsPage() {
-        let empty = HermesSetup(found: false, profiles: [], logins: [], signIns: [], model: nil)
-        let steps = OnboardingView.steps(start: .pair, setup: empty, existingServers: [], modelConfigured: false, askNotifications: true)
-        XCTAssertEqual(steps, [.pair, .model, .notifications, .done])
-    }
-
-    func testHermesSetupFromSettingsAlwaysShowsTheSetupPage() {
-        let empty = HermesSetup(found: false, profiles: [], logins: [], signIns: [], model: nil)
-        let steps = OnboardingView.steps(start: .setup, setup: empty, existingServers: [], modelConfigured: true, askNotifications: false)
-        XCTAssertEqual(steps, [.setup, .done])
-    }
-
-    func testASetupWithChoicesKeepsItsPages() {
-        let steps = OnboardingView.steps(start: .pair, setup: .sample, existingServers: [], modelConfigured: true, askNotifications: false)
-        XCTAssertEqual(steps, [.pair, .setup, .bots, .logins, .mcp, .done])
-    }
-
-    func testServersThatCoconutHasAreNotAChoice() {
-        var setup = HermesSetup(found: true, profiles: [], logins: [], signIns: [], model: nil)
-        setup.mcpServers = [HermesMCPServer(id: "github", transport: "stdio", needsSetup: false)]
-        let existing = [MCPServer(id: "github", url: "", transport: "stdio", hasToken: false, editable: false)]
-        XCTAssertFalse(setup.offersChoices(existingServers: existing))
-        XCTAssertTrue(setup.offersChoices(existingServers: []))
-    }
-
     // MARK: Hermes version
 
     func testUntestedHermesShowsAWarning() throws {
@@ -196,7 +164,6 @@ final class SettingsFlowTests: XCTestCase {
     func testTestedOrUnknownHermesShowsNoWarning() {
         XCTAssertNil(HermesRuntimeStatus(version: "0.11.0", tested: true).untestedWarning)
         XCTAssertNil(HermesRuntimeStatus(version: nil, tested: nil).untestedWarning)
-        XCTAssertNil(HermesSetup.sample.hermes)
     }
 
     private func decodedBot() throws -> Bot {
