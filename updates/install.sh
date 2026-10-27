@@ -10,11 +10,14 @@
 #   2. checks the length and the SHA-256 that the feed names, the code signature, the team ID and Gatekeeper,
 #   3. installs the app in /Applications, or in ~/Applications without write access to /Applications,
 #   4. opens the app, which sets up Coconut and its login items, and waits for the service and the relay,
-#   5. runs `coconut pair <code>`, which pairs the iPhone through the relay.
-# It keeps an installed Coconut.app (Sparkle updates it), so it is safe to run again. It prints one plain line for each
-# step. The script holds no secret: the code works once, for 10 minutes, and only for the iPhone that made it.
+#   5. turns on automatic updates, so a Mac that nobody watches stays current,
+#   6. runs `coconut pair <code>`, which pairs the iPhone through the relay,
+#   7. prints a note for Hermes: how to turn automatic updates off, and how to update Coconut.
+# It keeps an installed Coconut.app that can pair with a code (Sparkle updates it), so it is safe to run again. It
+# prints one plain line for each step. The script holds no secret: the code works once, for 10 minutes, and only for
+# the iPhone that made it.
 #
-# Tests set COCONUT_FEED_URL and COCONUT_APP_FOLDERS.
+# Tests set COCONUT_FEED_URL, and COCONUT_APP_FOLDERS as folders separated by colons.
 
 set -euo pipefail
 
@@ -22,6 +25,11 @@ FEED_URL="${COCONUT_FEED_URL:-https://coconut-updates.gumroad.workers.dev/mac/ap
 BUNDLE_ID="com.gumroad.coconut.mac"
 TEAM_ID="66LJACJ2U7"
 MINIMUM_MACOS=14
+if [ -n "${COCONUT_APP_FOLDERS:-}" ]; then
+  IFS=: read -r -a APP_FOLDERS <<<"$COCONUT_APP_FOLDERS"
+else
+  APP_FOLDERS=("/Applications" "$HOME/Applications")
+fi
 
 say() { printf 'Coconut: %s\n' "$1"; }
 fail() { printf 'Coconut: %s\n' "$1" >&2; exit 1; }
@@ -39,7 +47,7 @@ item_path() {
 # Print the installed Coconut.app, if any.
 installed_app() {
   local folder
-  for folder in ${COCONUT_APP_FOLDERS:-/Applications $HOME/Applications}; do
+  for folder in "${APP_FOLDERS[@]}"; do
     if [ -d "$folder/Coconut.app" ]; then
       printf '%s\n' "$folder/Coconut.app"
       return
@@ -47,9 +55,19 @@ installed_app() {
   done
 }
 
-# Print one field of `coconut status`, or nothing when the tool fails.
+# The `coconut` tool in an app.
+tool_of() { printf '%s\n' "$1/Contents/Helpers/coconut"; }
+
+# True when the tool of the app pairs with a code from the iPhone. An earlier tool prints a setup link for any
+# `coconut pair` and ignores the code.
+pairs_with_code() {
+  "$(tool_of "$1")" help </dev/null 2>/dev/null | grep -q 'pair <code>'
+}
+
+# Print one field of the service state, or nothing when the tool fails. An earlier tool prints JSON for `status` and
+# ignores --json.
 status_field() {
-  "$TOOL" status </dev/null 2>/dev/null | plutil -extract "$1" raw -o - - 2>/dev/null || true
+  "$TOOL" status --json </dev/null 2>/dev/null | plutil -extract "$1" raw -o - - 2>/dev/null || true
 }
 
 # Check that the app is Coconut, signed by Gumroad's team and accepted by Gatekeeper (notarized).
@@ -62,9 +80,19 @@ verify_app() {
   spctl --assess --type execute "$app" 2>/dev/null || fail "Gatekeeper refused the downloaded app. Nothing was installed."
 }
 
-# Download, check and install the newest app of the channel. Print the path of the installed app.
+# A running app ignores new arguments and keeps its old files open, so it quits first. It loses nothing: the service
+# runs apart from it.
+quit_app() {
+  if pgrep -qx Coconut; then
+    osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+    sleep 2
+  fi
+}
+
+# Download, check and install the newest app of the channel, in the folder or the first writable Applications folder.
+# Print the path of the installed app, then the channel of the build.
 install_app() {
-  local channel="$1" work feed path url length name digest folder
+  local channel="$1" folder="$2" work feed path url length name digest
   # Global, so the trap can still read it when the script exits.
   WORK="$(mktemp -d)"
   trap 'rm -rf "$WORK"' EXIT
@@ -94,19 +122,20 @@ install_app() {
   [ -d "$work/unpacked/Coconut.app" ] || fail "The download holds no Coconut.app."
   say "Checking the code signature and the notarization." >&2
   verify_app "$work/unpacked/Coconut.app"
-  folder="$(first_writable_folder)"
-  ditto "$work/unpacked/Coconut.app" "$folder/Coconut.app" || fail "Could not copy Coconut.app to $folder."
-  if [ "$channel" != stable ]; then
-    defaults write "$BUNDLE_ID" updateChannel "$channel" >/dev/null
+  [ -n "$folder" ] || folder="$(first_writable_folder)"
+  if [ -d "$folder/Coconut.app" ]; then
+    quit_app
+    rm -rf "$folder/Coconut.app" || fail "Could not replace $folder/Coconut.app."
   fi
+  ditto "$work/unpacked/Coconut.app" "$folder/Coconut.app" || fail "Could not copy Coconut.app to $folder."
   say "Installed Coconut.app in $folder." >&2
-  printf '%s\n' "$folder/Coconut.app"
+  printf '%s\n%s\n' "$folder/Coconut.app" "$channel"
 }
 
 # /Applications needs admin rights. Without them, ~/Applications works the same for one account.
 first_writable_folder() {
   local folder
-  for folder in ${COCONUT_APP_FOLDERS:-/Applications $HOME/Applications}; do
+  for folder in "${APP_FOLDERS[@]}"; do
     mkdir -p "$folder" 2>/dev/null || continue
     if [ -w "$folder" ]; then
       printf '%s\n' "$folder"
@@ -116,7 +145,15 @@ first_writable_folder() {
   fail "No Applications folder is writable."
 }
 
-# Wait until `coconut status` shows the value for the field. Return 1 after the seconds.
+# Set the update channel with the tool, or in the preferences of an earlier app that has no such command.
+set_channel() {
+  if ! "$TOOL" settings channel "$1" </dev/null >/dev/null 2>&1; then
+    defaults write "$BUNDLE_ID" updateChannel "$1" >/dev/null
+  fi
+  say "The update channel is $1."
+}
+
+# Wait until the service state shows the value for the field. Return 1 after the seconds.
 wait_for() {
   local field="$1" value="$2" seconds="$3" start=$SECONDS
   while [ $((SECONDS - start)) -lt "$seconds" ]; do
@@ -128,7 +165,7 @@ wait_for() {
 
 main() {
   CHANNEL_OPTION=""
-  local code="" app
+  local code="" app="" installed="" channel="" automatic=no tool
   while [ $# -gt 0 ]; do
     case "$1" in
       --channel) CHANNEL_OPTION="${2:-}"; shift 2 || fail "--channel needs stable or nightly." ;;
@@ -148,21 +185,27 @@ main() {
   [ "$major" -ge "$MINIMUM_MACOS" ] || fail "Coconut needs macOS $MINIMUM_MACOS or later."
 
   app="$(installed_app)"
-  if [ -n "$app" ]; then
+  if [ -n "$app" ] && [ -n "$code" ] && ! pairs_with_code "$app"; then
+    say "The Coconut.app in ${app%/Coconut.app} cannot pair with a code yet, so Coconut installs the newest version."
+    installed="$(install_app "${CHANNEL_OPTION:-stable}" "${app%/Coconut.app}")"
+  elif [ -n "$app" ]; then
     say "Coconut.app is already in ${app%/Coconut.app}. It updates itself."
   else
-    app="$(install_app "${CHANNEL_OPTION:-stable}")"
+    installed="$(install_app "${CHANNEL_OPTION:-stable}" "")"
   fi
-  TOOL="$app/Contents/Helpers/coconut"
+  if [ -n "$installed" ]; then
+    app="${installed%%$'\n'*}"
+    channel="${installed##*$'\n'}"
+  fi
+  TOOL="$(tool_of "$app")"
   [ -x "$TOOL" ] || fail "$app has no coconut tool. Delete it, then run this command again."
+  if [ -n "$code" ] && ! pairs_with_code "$app"; then
+    fail "This Coconut.app cannot pair with a code yet. A newer build adds it. Try again after the next Coconut release."
+  fi
 
   if [ "$(status_field service)" != running ]; then
     say "Opening Coconut.app. It sets up Coconut, which can take a few minutes."
-    # A running app ignores new arguments, so it quits first. It loses nothing: the service runs apart from it.
-    if pgrep -qx Coconut; then
-      osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
-      sleep 2
-    fi
+    quit_app
     open -g "$app" --args --set-up
     wait_for service running 900 || fail "The Coconut service did not start. Open Coconut in the menu bar to see why."
   fi
@@ -173,11 +216,34 @@ main() {
   fi
   say "The relay is connected."
 
-  if [ -z "$code" ]; then
-    say "Coconut is ready. To pair an iPhone, open Coconut on the iPhone and send its message to Hermes."
-    return
+  # An explicit channel applies also to an installed app. The nightly fallback before the first stable release too.
+  if [ -n "$CHANNEL_OPTION" ]; then
+    set_channel "$CHANNEL_OPTION"
+  elif [ "$channel" = nightly ]; then
+    set_channel nightly
   fi
-  "$TOOL" pair "$code" </dev/null
+  # A Mac that runs Coconut for Hermes often has nobody who watches it, so it updates by itself.
+  if "$TOOL" settings automatic-updates on </dev/null >/dev/null 2>&1; then
+    automatic=yes
+    say "Automatic updates are on."
+  fi
+
+  local done_text="Coconut is installed."
+  if [ -n "$code" ]; then
+    "$TOOL" pair "$code" </dev/null
+    done_text="Coconut is installed and paired."
+  fi
+
+  tool="$(printf '%q' "$TOOL")"
+  say "Note for Hermes:"
+  if [ "$automatic" = yes ]; then
+    say "$done_text Automatic updates are on. Ask the person whether to keep them on. To turn them off, run: $tool settings automatic-updates off. To update Coconut at any time, run: $tool update."
+  else
+    say "$done_text This Coconut.app cannot change its update settings yet. It still checks for updates by itself."
+  fi
+  if [ -z "$code" ]; then
+    say "To pair an iPhone, open Coconut on the iPhone and send its message to Hermes."
+  fi
 }
 
 # The whole script is read before it runs, so a command that reads standard input cannot take the rest of the script.
