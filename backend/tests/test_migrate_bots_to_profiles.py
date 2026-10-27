@@ -168,6 +168,42 @@ class MigrationTests(unittest.TestCase):
         self.assertIsNone(profile_registry.lookup(self.root, first['bot_id']))
         self.assertNotIn('instructions', json.dumps(ledger))
 
+    def test_a_failed_first_move_changes_nothing_and_starts_coconut(self):
+        def rename(source, destination):
+            raise OSError(errno.EACCES, 'Permission denied')
+
+        with self.assertRaises(SystemExit) as raised:
+            self.run_quietly(migration.migrate, self.root, self.hermes, rename=rename)
+        self.assertIn('No bot moved', raised.exception.output)
+        self.assertEqual(self.steps(), ['drain_for_update', 'stop_for_update', 'restore_after_update'])
+        self.assertFalse((self.root / migration.LEDGER).exists())
+        for bot in self.bots:
+            self.assertEqual(tree(self.home(bot)), self.before[bot['id']])
+
+    def test_a_failed_last_ledger_write_still_starts_coconut(self):
+        original = migration.write_ledger
+
+        def write(data_dir, ledger):
+            if 'completed_at' in ledger:
+                raise OSError(errno.ENOSPC, 'No space left on device')
+            original(data_dir, ledger)
+
+        with patch.object(migration, 'write_ledger', side_effect=write):
+            _, output = self.run_quietly(migration.migrate, self.root, self.hermes)
+        self.assertIn('the ledger could not record it', output)
+        self.assertEqual(self.steps()[-1], 'restore_after_update')
+        self.assertIsNotNone(profile_registry.lookup(self.root, self.bots[0]['id']))
+
+    def test_login_folders_inside_the_old_home_follow_the_move(self):
+        home = self.home(self.bots[2])
+        (home / '.env').write_text(f'GH_CONFIG_DIR={home}/.config/gh\nCODEX_HOME="{home}/codex"\nXDG_CONFIG_HOME=/elsewhere/config\n'
+                                   f'OTHER={home}-sibling\n')
+        ledger, _ = self.run_quietly(migration.migrate, self.root, self.hermes)
+        destination = next(Path(move['destination']) for move in ledger['moves'] if move['bot_id'] == self.bots[2]['id'])
+        self.assertEqual((destination / '.env').read_text(),
+                         f'GH_CONFIG_DIR={destination}/.config/gh\nCODEX_HOME="{destination}/codex"\n'
+                         f'XDG_CONFIG_HOME=/elsewhere/config\nOTHER={home}-sibling\n')
+
     def test_running_workers_stop_the_migration_before_any_change(self):
         with patch.object(migration, 'coconut_workers', return_value=[123]):
             with self.assertRaises(SystemExit):

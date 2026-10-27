@@ -17,13 +17,12 @@ with tempfile.TemporaryDirectory(prefix='coconut-native-check-') as temporary:
  from coconut.profiles import HermesProfiles
  from coconut.native_settings import worker
  bot=dict(id=str(uuid.uuid4()),session_id=str(uuid.uuid4()),name='Native check',role='Checks',instructions='Keep it brief',memory='Retain this native memory.',preferences=[{'text':'Always offer do nothing.'}])
- profiles=HermesProfiles(home);profiles.sync(bot);profiles.sync(bot)
- ph=profiles.home(bot)
- assert (ph/'memories/USER.md').read_text().count('Always offer do nothing.')==1
+ ph=home/'profiles'/'native-check';ph.mkdir(parents=True);(ph/'SOUL.md').write_text(bot['instructions'])
+ profiles=HermesProfiles(home,{bot['id']:dict(bot_id=bot['id'],name='native-check',home=str(ph),state='active')})
+ assert profiles.sync(bot)['status']=='active'
  request=dict(data_root=str(home),homes={bot['id']:str(ph)})
  def call(op,**kwargs):return worker(dict(request,native_operation=op,**kwargs),home/'default')
- call('migrate')
- state=call('read');assert state['approvals']['default']=='off',state
+ state=call('read')
  assert state['profiles'][bot['id']]['approval_override'] is None
  state=call('update_profile',bot_id=bot['id'],changes={'name':'Changed','role':'','approval_override':'manual'})
  assert state['name']=='Changed' and state['effective_approval']=='manual',state

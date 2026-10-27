@@ -146,6 +146,16 @@ class ProfileTests(unittest.TestCase):
     def test_settings_are_native(self):
         self.provider.catalog.use_hermes_home.assert_called_with(self.hermes.absolute())
 
+    def test_default_settings_stay_in_the_base_home_when_the_cli_uses_another_profile(self):
+        from coconut.model_catalog import HermesModelCatalog
+        source = self.base / 'source'
+        source.mkdir()
+        (self.hermes / 'active_profile').write_text('work\n')
+        catalog = HermesModelCatalog(self.base / 'catalog-data', source=source, python=sys.executable)
+        catalog.use_hermes_home(self.hermes)
+        self.assertEqual(catalog._settings_home(), self.hermes.absolute())
+        self.assertIn(str(self.hermes / 'config.yaml'), [entry[0] for entry in catalog._signature()])
+
     def test_remove_from_coconut_keeps_the_folder_and_it_does_not_return(self):
         bot = self.bots()['work']
         self.write('DELETE', f'/v1/bots/{bot["id"]}')
@@ -181,7 +191,10 @@ class ProfileTests(unittest.TestCase):
         bot_id = str(uuid4())
         with self.service.transaction():
             self.service._put('bots', dict(self.bots()['work'], id=bot_id, profile_id=bot_id, session_id=str(uuid4())))
+        # The service still starts, so GET /v1/setup can say what to do.
+        self.open()
         self.assertTrue(self.service.hermes_setup()['migration_required'])
+        self.assertEqual(self.service.profiles.sync(self.service._get('bots', bot_id))['status'], 'unmigrated')
         with self.assertRaisesRegex(Exception, 'migrate_bots_to_profiles'):
             self.provider_environment({'id': bot_id})
 

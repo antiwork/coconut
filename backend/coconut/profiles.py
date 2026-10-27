@@ -192,7 +192,10 @@ class HermesProfiles:
     def sync(self, bot: dict) -> dict:
         """Check the profile of this bot. Coconut changes no profile here."""
         status = 'deleted' if bot.get('_deleted') else 'archived' if bot.get('archived') else 'active'
-        if status != 'deleted' and not self.home(bot).is_dir():
+        if status != 'deleted' and self.row(bot) is None:
+            # A bot from before the migration. The service starts, and the bot runs no turns until the migration.
+            status = 'unmigrated'
+        elif status != 'deleted' and not self.home(bot).is_dir():
             status = 'missing'
         return dict(profile_id=profile_id(bot), bot_id=bot['id'], session_id=bot['session_id'], status=status, created=False)
 

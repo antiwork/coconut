@@ -19,6 +19,7 @@ import errno
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import stat
@@ -207,6 +208,16 @@ def recovery_steps(data_dir: Path, ledger: dict) -> str:
     return '\n'.join(lines)
 
 
+def follow_env_paths(source: Path, destination: Path) -> None:
+    """A bot's .env can name a login folder inside its old home (GH_CONFIG_DIR, CODEX_HOME, XDG_*). Point it at the new home."""
+    path = destination / '.env'
+    if path.is_file() and not path.is_symlink():
+        text = path.read_text(encoding='utf-8')
+        moved = re.sub(re.escape(str(source)) + r'(?=/|["\'\s]|$)', str(destination).replace('\\', '\\\\'), text, flags=re.M)
+        if moved != text:
+            path.write_text(moved, encoding='utf-8')
+
+
 def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, rename=os.rename) -> dict | None:
     if (data_dir / LEDGER).exists():
         raise SystemExit(f'{data_dir / LEDGER} exists: the migration ran before. Read it before you run it again.')
@@ -215,7 +226,8 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
     if not moves:
         return None
     state = stop_service(manage_service)
-    moving = False
+    # restart: whether the folders and the database agree, so Coconut can start again.
+    restart = True
     try:
         # The service lock stays held until the database has the new rows, so the service cannot start halfway.
         with host.stopped_service(data_dir, 'migrating the bots'):
@@ -228,34 +240,40 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
             ledger = dict(created_at=datetime.now(timezone.utc).isoformat(), hermes_home=str(hermes_home),
                           backup=str(backup(data_dir)), moves=moves)
             write_ledger(data_dir, ledger)
-            moving = True
             try:
                 for move in moves:
                     say(f'Moving {move["bot_name"]!r} to {move["destination"]}...')
                     move['state'] = 'moving'
                     write_ledger(data_dir, ledger)
-                    destination = Path(move['destination'])
-                    move_tree(Path(move['source']), destination, rename=rename)
+                    source, destination = Path(move['source']), Path(move['destination'])
+                    move_tree(source, destination, rename=rename)
+                    move['state'] = 'moved'
+                    restart = False
                     if not any((destination / name).exists() for name in registry.IDENTITY_FILES):
                         # Hermes lists a folder as a profile only with a profile file.
                         (destination / 'SOUL.md').write_text(souls[move['bot_id']])
-                    move['state'] = 'moved'
+                    follow_env_paths(source, destination)
                     write_ledger(data_dir, ledger)
                 record_rows(data_dir, moves)
+                restart = True
             except BaseException as error:
                 say(f'The migration failed: {error}')
-                say(recovery_steps(data_dir, ledger))
+                if restart:
+                    # No folder moved. The ledger describes nothing, so it goes.
+                    (data_dir / LEDGER).unlink(missing_ok=True)
+                    say('No bot moved. Coconut starts again as before.')
+                else:
+                    say(recovery_steps(data_dir, ledger))
                 raise SystemExit(1) from error
             ledger['completed_at'] = datetime.now(timezone.utc).isoformat()
-            write_ledger(data_dir, ledger)
-    except BaseException:
-        # Before the first move, nothing changed, and Coconut starts again. After it, Coconut stays stopped.
-        if state is not None and not moving:
+            try:
+                write_ledger(data_dir, ledger)
+            except OSError as error:
+                say(f'The migration finished, but the ledger could not record it: {error}')
+            add_skills_folder([Path(move['destination']) for move in moves])
+    finally:
+        if state is not None and restart:
             host.restore_after_update(state)
-        raise
-    add_skills_folder([Path(move['destination']) for move in moves])
-    if state is not None:
-        host.restore_after_update(state)
     say(f'Done. {len(moves)} bots are Hermes profiles. Coconut adds your other profiles as bots when it starts.')
     for move in moves:
         say(f'  {move["bot_name"]!r}: hermes -p {move["name"]}')

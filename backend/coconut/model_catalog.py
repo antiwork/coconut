@@ -173,7 +173,7 @@ class HermesModelCatalog:
         self.on_change = None
 
     def _signature(self):
-        selected = native_home(self.root)
+        selected = self._settings_home()
         paths = [self.root / 'active_profile', self.source / 'hermes_constants.py',
                  selected / 'config.yaml', selected / '.env', selected / 'auth.json',
                  self.root / 'auth.json', selected / '.anthropic_oauth.json',
@@ -333,8 +333,13 @@ class HermesModelCatalog:
         """Read and write the default settings in the person's Hermes home, the `default` profile, as Hermes does."""
         with self._lock:
             self.root = self.root_boundary = Path(hermes_home).expanduser().absolute()
+            # The `default` profile is the Hermes home itself, whatever `hermes profile use` selected for the CLI.
+            self.base_home = True
             self._cache = self._cache_key = self._worker_limit_cache = None
             self._profile_cache = {}
+
+    def _settings_home(self):
+        return self.root if getattr(self, 'base_home', False) else native_home(self.root)
 
     def _profile_roots(self):
         """The profile folders outside Coconut storage that a settings process may read and change."""
@@ -383,7 +388,7 @@ class HermesModelCatalog:
         """Return the worker limit of the Coconut settings, which each turn applies. Read it again after a change."""
         with self._lock:
             try:
-                state = _contained(native_home(self.root) / 'config.yaml', self.root).stat()
+                state = _contained(self._settings_home() / 'config.yaml', self.root).stat()
                 signature = (state.st_ino, state.st_mtime_ns, state.st_size)
             except FileNotFoundError:
                 signature = None
@@ -445,7 +450,7 @@ class HermesModelCatalog:
     def migrate_legacy_default(self, model, base_url=None):
         """Import one existing Coconut selection only when Hermes has no config file."""
         with self._lock:
-            if (native_home(self.root) / 'config.yaml').exists() or not model:
+            if (self._settings_home() / 'config.yaml').exists() or not model:
                 return False
             catalog = self.get()
             matches = [item for item in catalog['models'] if item['id'] == model
@@ -479,7 +484,8 @@ class HermesModelCatalog:
             environment['HERMES_MACHINE_ID'] = 'coconut-' + hashlib.sha256(str(self.data_dir).encode()).hexdigest()[:24]
         try:
             with ExitStack() as files:
-                request = dict(operation=operation, data_root=str(self.data_dir), profile_roots=self._profile_roots(), **payload)
+                request = dict(operation=operation, data_root=str(self.data_dir), profile_roots=self._profile_roots(),
+                               base_home=getattr(self, 'base_home', False), **payload)
                 text_field = NATIVE_TEXT_FIELDS.get(payload.get('native_operation')) if operation == 'native' else None
                 if text_field:
                     # Completed results can exceed the settings request bound.
@@ -929,7 +935,7 @@ def _native_runtime(selection, profile_home=None):
 
 def _worker(request):
     root = Path(os.environ['HERMES_HOME'])
-    selected_home = native_home(root)
+    selected_home = root if request.get('base_home') else native_home(root)
     # Native profile resolution also checks deleted profiles and validates names.
     from hermes_cli.profiles import resolve_profile_env
     expected = resolve_profile_env(selected_home.name if selected_home != root else 'default')
