@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import SQLite3
 
 /// A one-time pairing code from the iPhone, for `coconut pair <code>`. docs/relay-transport.md, "Pairing code from the
 /// iPhone", describes the protocol.
@@ -98,22 +99,25 @@ public enum Rendezvous {
     }
 }
 
-/// The ticket file of a version 2 setup in `tunnel/tickets`, as scripts/pairing.py names it. The sidecar removes the
-/// file when an iPhone connects with this setup's secret, so its absence marks this setup as used, not another one.
-public func pairingTicketFile(install: Install, secret: String) -> URL? {
-    var text = secret.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-    text += String(repeating: "=", count: (4 - text.count % 4) % 4)
-    guard let bytes = Data(base64Encoded: text), bytes.count == 32 else { return nil }
-    let ticket = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: bytes), salt: Data(),
-                                        info: Data("coconut pairing ticket".utf8), outputByteCount: 32)
-        .withUnsafeBytes { Data($0) }.map { String(format: "%02x", $0) }.joined()
-    let hash = SHA256.hash(data: Data(ticket.utf8)).map { String(format: "%02x", $0) }.joined()
-    return install.tunnel.appendingPathComponent("tickets/\(hash).json")
-}
-
-/// The iPhone keys in `tunnel/peers.json`. The sidecar adds a key when an iPhone pairs.
-public func pairedPhoneKeys(install: Install) -> Set<String> {
-    guard let data = try? Data(contentsOf: install.tunnel.appendingPathComponent("peers.json")),
-          let peers = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [] }
-    return Set(peers.compactMap { $0["key"] as? String })
+/// True when the service used the secret of a version 2 setup: the iPhone that got this setup paired. The service marks
+/// the secret in its `pairing` table (backend/coconut/service.py, `pair_device`), so another iPhone that pairs at the same
+/// time with another setup cannot look like this one. Nil when the database cannot be read.
+public func pairingSecretUsed(install: Install, secret: String) -> Bool? {
+    var db: OpaquePointer?
+    defer { sqlite3_close(db) }
+    let path = install.data.appendingPathComponent("coconut.sqlite3").path
+    guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return nil }
+    sqlite3_busy_timeout(db, 2000)
+    var statement: OpaquePointer?
+    defer { sqlite3_finalize(statement) }
+    guard sqlite3_prepare_v2(db, "SELECT used FROM pairing WHERE hash = ?", -1, &statement, nil) == SQLITE_OK else { return nil }
+    // The service keeps only the SHA-256 of the secret, as the iPhone sends it in POST /v1/pair.
+    let hash = SHA256.hash(data: Data(secret.utf8)).map { String(format: "%02x", $0) }.joined()
+    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    sqlite3_bind_text(statement, 1, hash, -1, transient)
+    switch sqlite3_step(statement) {
+    case SQLITE_ROW: return sqlite3_column_int(statement, 0) == 1
+    case SQLITE_DONE: return false
+    default: return nil
+    }
 }

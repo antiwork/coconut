@@ -178,8 +178,7 @@ func pairPhone(code: PairingCode, launch: Launch) -> Never {
           let fields = try? JSONSerialization.jsonObject(with: setup) as? [String: Any],
           let relay = (fields["relay"] as? String).flatMap(URL.init(string:)),
           let expires = fields["expires"] as? Double,
-          let ticket = (fields["secret"] as? String).flatMap({ pairingTicketFile(install: install, secret: $0) }) else { exit(1) }
-    let known = pairedPhoneKeys(install: install)
+          let secret = fields["secret"] as? String else { exit(1) }
     print("Sending the setup to the iPhone.")
     fflush(stdout)
     let semaphore = DispatchSemaphore(value: 0)
@@ -193,26 +192,16 @@ func pairPhone(code: PairingCode, launch: Launch) -> Never {
     if let failure { fail("\(failure)") }
     print("Waiting for the iPhone to pair.")
     fflush(stdout)
-    let expired = "The iPhone did not pair before the code expired. Make a new code on the iPhone, then try again."
-    // The sidecar removes this setup's ticket when the iPhone connects with it. Another iPhone that pairs at the same
-    // time uses another ticket, so it cannot end this wait.
-    while FileManager.default.fileExists(atPath: ticket.path) {
-        guard Date().timeIntervalSince1970 < expires else { fail(expired) }
-        sleep(1)
-    }
-    // The sidecar also removes an expired ticket. A ticket that is gone after the expiry can also be an iPhone that
-    // connected just before it, so a short wait for its key tells the two apart.
-    let goneAfterExpiry = Date().timeIntervalSince1970 >= expires
-    // Then the iPhone sends its pairing request, and the sidecar records its key before it answers. That often happens
-    // within a second of the connection, so the keys from before the send are the reference.
-    for _ in 0..<(goneAfterExpiry ? 15 : 60) {
-        if !pairedPhoneKeys(install: install).subtracting(known).isEmpty {
+    // The service marks this setup's secret when its iPhone pairs. The service refuses the secret after the expiry, so a
+    // few seconds more cover a pairing request that started just before it.
+    while Date().timeIntervalSince1970 < expires + 5 {
+        if pairingSecretUsed(install: install, secret: secret) == true {
             print("The iPhone is paired with this Mac.")
             exit(0)
         }
         sleep(1)
     }
-    fail(goneAfterExpiry ? expired : "The iPhone connected but did not finish pairing. Make a new code on the iPhone, then try again.")
+    fail("The iPhone did not pair before the code expired. Make a new code on the iPhone, then try again.")
 }
 
 let command = CommandLine.arguments.dropFirst().first ?? ""

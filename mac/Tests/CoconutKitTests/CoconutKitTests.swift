@@ -461,20 +461,23 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertEqual(Rendezvous.failure(status: 500), .relay(500))
     }
 
-    // The same name as scripts/pairing.py gives the ticket of this secret.
-    func testTheTicketFileOfASetupMatchesThePairingScript() throws {
-        let install = Install(root: URL(fileURLWithPath: "/Users/a/Coconut"))
-        XCTAssertEqual(pairingTicketFile(install: install, secret: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")?.path,
-                       "/Users/a/Coconut/.runtime/host/tunnel/tickets/6c6c03d38311686e55eb805e6adda5a54039b724450be426be47b78e6cfc4d26.json")
-        XCTAssertNil(pairingTicketFile(install: install, secret: "short"))
-    }
-
-    func testThePairedPhonesAreTheKeysOfThePeersFile() throws {
+    func testThePairingCheckReadsTheSecretThatTheServiceMarked() throws {
         let install = Install(root: home)
-        XCTAssertEqual(pairedPhoneKeys(install: install), [])
-        try write(#"[{"key":"a","token_hash":"x","created":"2026-10-26T00:00:00Z"},{"key":"b","token_hash":"y"}]"#,
-                  to: ".runtime/host/tunnel/peers.json")
-        XCTAssertEqual(pairedPhoneKeys(install: install), ["a", "b"])
+        XCTAssertNil(pairingSecretUsed(install: install, secret: "a"))
+        try FileManager.default.createDirectory(at: install.data, withIntermediateDirectories: true)
+        let sqlite = Process()
+        sqlite.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        // The service stores the SHA-256 of the secret (backend/coconut/service.py).
+        let used = SHA256.hash(data: Data("used".utf8)).map { String(format: "%02x", $0) }.joined()
+        let open = SHA256.hash(data: Data("open".utf8)).map { String(format: "%02x", $0) }.joined()
+        sqlite.arguments = [install.data.appendingPathComponent("coconut.sqlite3").path,
+                            "CREATE TABLE pairing (hash TEXT PRIMARY KEY, expires REAL NOT NULL, used INTEGER NOT NULL DEFAULT 0);" +
+                            "INSERT INTO pairing VALUES ('\(used)', 0, 1), ('\(open)', 0, 0);"]
+        try sqlite.run()
+        sqlite.waitUntilExit()
+        XCTAssertEqual(pairingSecretUsed(install: install, secret: "used"), true)
+        XCTAssertEqual(pairingSecretUsed(install: install, secret: "open"), false)
+        XCTAssertEqual(pairingSecretUsed(install: install, secret: "other"), false)
     }
 
     func testThePairingSetupPrintsTheSetupAsJSON() throws {
