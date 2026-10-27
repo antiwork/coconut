@@ -40,6 +40,8 @@ struct OnboardingView: View {
     @State private var pairingNow = false
     // A closed screen starts no pairing, so a late setup cannot replace the Mac.
     @State private var closed = false
+    // The pairing from a confirmed link. Closing the screen cancels it, as SwiftUI cancels the rendezvous task.
+    @State private var linkPairing: Task<Void, Never>?
 
     init(firstRun: Bool = false) {
         self.firstRun = firstRun
@@ -117,7 +119,7 @@ struct OnboardingView: View {
             }
         }
         .confirmationDialog("Pair with \(linkSetup?.name ?? "this Mac")?", isPresented: $confirmOpen, titleVisibility: .visible) {
-            Button("Pair") { if let linkSetup { Task { await pair(linkSetup) } } }
+            Button("Pair") { if let linkSetup { linkPairing = Task { await pair(linkSetup) } } }
             Button("Cancel", role: .cancel) { linkSetup = nil }
         } message: {
             Text(store.hasPairing ? "This replaces the pairing with \(store.pairedMacDescription)." : "Check that this is your Mac.")
@@ -129,6 +131,7 @@ struct OnboardingView: View {
         .onDisappear {
             Self.openCount -= 1
             closed = true
+            linkPairing?.cancel()
         }
         .accessibilityIdentifier("onboarding")
     }
@@ -281,6 +284,8 @@ struct OnboardingView: View {
         linkSetup = nil
         if await store.pair(setup: setup) {
             finish()
+        } else if Task.isCancelled {
+            return
         } else {
             phase = .failed(store.error ?? "Coconut could not pair with \(setup.name). Send a new message to Hermes.")
         }

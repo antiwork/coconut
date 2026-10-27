@@ -328,6 +328,8 @@ final class AppStore {
             let response: PairResponse = try await candidate.request("pair", method: "POST", body: APIJSON.encode(
                 PairRequest(code: setup.code, deviceName: UIDevice.current.name)), retryTransient: false)
             guard let handshakeHash = await pairingTunnel.handshakeHash else { throw TunnelError.protocolViolation }
+            // A closed pairing screen cancels its pairing. Nothing is saved after that, so a late answer keeps the Mac.
+            try Task.checkCancellation()
             let credentials = TunnelCredentials(phoneKey: phoneKey, clientToken: TunnelKeys.clientToken(handshakeHash: handshakeHash))
             disconnect()
             try PairingToken.save(response.token)
@@ -337,7 +339,7 @@ final class AppStore {
             await adopt(configuration)
             return true
         } catch {
-            self.error = Self.pairingFailure(error)
+            if !(error is CancellationError) { self.error = Self.pairingFailure(error) }
             connection = pairing == nil ? .unconfigured : previousConnection
             return false
         }
