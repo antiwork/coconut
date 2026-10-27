@@ -362,10 +362,11 @@ class PushDelivery:
             items = self._items("device_id=? AND status='waiting'", (device_id,))
             waiting = [item for item in items if not item['urgent']]
             schedule, level = self.schedule(device_id), self.preferences(device_id)['level']
-            # The gap counts from the last delivered notification. While a notification still retries, new items wait for it.
+            # The gap counts from the last delivered notification. With Grouped, new items also wait while a group retries.
+            # Every card has no gap, so a retrying group does not hold its new items.
             last = db.execute("SELECT MAX(sent) FROM push_outbox WHERE device_id=? AND status='accepted'", (device_id,)).fetchone()[0]
-            pending = db.execute("SELECT 1 FROM push_outbox WHERE device_id=? AND status='queued' AND event_key LIKE 'group:%'",
-                                 (device_id,)).fetchone()
+            pending = level == 'grouped' and db.execute(
+                "SELECT 1 FROM push_outbox WHERE device_id=? AND status='queued' AND event_key LIKE 'group:%'", (device_id,)).fetchone()
             opens = due(schedule, level, waiting[0]['created'], last or 0, current) if waiting and not pending else None
             # Items are checked only when they would notify, so a long wait outside work hours costs no reads.
             ready = [item for item in items if item['urgent'] or (opens is not None and opens <= current)]

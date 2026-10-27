@@ -354,6 +354,19 @@ class DeliveryTimingTests(unittest.TestCase):
         self.deliver(self.NOON + 1300)
         self.assertEqual(len(self.sent()), 3)
 
+    def test_a_retrying_group_does_not_hold_new_cards_at_every_card(self):
+        self.register(level='every')
+        self.decision()
+        self.decision()
+        self.transport.result = (503, 'Unavailable')
+        self.deliver(self.MORNING)
+        self.assertEqual([payload['coconut'].get('count') for payload in self.sent()], [2])
+        self.transport.result = (200, 'Accepted')
+        later = self.decision(ts=self.MORNING + 60)
+        self.deliver(self.MORNING + 62)
+        self.assertEqual(self.sent()[-1]['coconut'].get('decision_id'), later['id'])
+        self.assertNotIn('count', self.sent()[-1]['coconut'])
+
     def test_a_retry_stops_when_the_bot_is_muted(self):
         route = {'route_id': 'a' * 64, 'send_token': 'b' * 64, 'public_key': base64.b64encode(b'x' * 32).decode()}
         relay = EncryptedTransport()
