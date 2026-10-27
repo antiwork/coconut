@@ -320,21 +320,23 @@ class PushDelivery:
             db.execute("DELETE FROM push_outbox WHERE status<>'queued' AND created<?", (current - HISTORY,))
         for (device_id,) in db.execute("SELECT DISTINCT device_id FROM push_items WHERE status='waiting'").fetchall():
             device = db.execute('SELECT enabled FROM push_devices WHERE device_id=?', (device_id,)).fetchone()
-            waiting = []
-            for item in self._items("device_id=? AND status='waiting'", (device_id,)):
+            items = self._items("device_id=? AND status='waiting'", (device_id,))
+            waiting = [item for item in items if not item['urgent']]
+            last = db.execute("SELECT MAX(created) FROM push_outbox WHERE device_id=? AND status<>'discarded'", (device_id,)).fetchone()[0]
+            opens = due(self.schedule(device_id), self.preferences(device_id)['level'], waiting[0]['created'], last or 0) if waiting else None
+            # Items are checked only when they would notify, so a long wait outside work hours costs no reads.
+            ready = [item for item in items if item['urgent'] or (opens is not None and opens <= current)]
+            for item in ready:
                 if not device or not device[0] or not self.relevant(item):
                     db.execute("UPDATE push_items SET status='dropped',reason='NoLongerRelevant' WHERE device_id=? AND event_key=?",
                                (device_id, item['event_key']))
-                elif item['urgent']:
+                    item['dropped'] = True
+            for item in ready:
+                if item['urgent'] and not item.get('dropped'):
                     self._queue(device_id, 'item:' + item['event_key'], [item], current)
-                else:
-                    waiting.append(item)
-            if not waiting:
-                continue
-            last = db.execute("SELECT MAX(created) FROM push_outbox WHERE device_id=? AND status<>'discarded'", (device_id,)).fetchone()[0]
-            opens = due(self.schedule(device_id), self.preferences(device_id)['level'], waiting[0]['created'], last or 0)
-            if opens is not None and opens <= current:
-                self._queue(device_id, 'group:' + waiting[0]['event_key'], waiting, current)
+            group = [item for item in ready if not item['urgent'] and not item.get('dropped')]
+            if group:
+                self._queue(device_id, 'group:' + group[0]['event_key'], group, current)
 
     def _payload(self, device_id, items, sealed):
         """The notification for one item, or the count of several. Items are rechecked when the text is written."""
