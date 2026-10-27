@@ -49,7 +49,9 @@ final class AppStore {
     var provider = ""
     var pushConfigured = false
     var pushRegistrationError: String?
+    var pushStatus: PushStatus?
     @ObservationIgnored private var registeredPushSignature: String?
+    @ObservationIgnored private var registeredPushAt = Date.distantPast
     @ObservationIgnored private var registeringPush = false
     @ObservationIgnored private var pushSyncRequested = false
     let isDemo: Bool
@@ -427,6 +429,7 @@ final class AppStore {
             Task { await previousTunnel.close() }
         }
         registeredPushSignature = nil
+        pushStatus = nil
         pushConfigured = false
         PushNotifications.shared.target = nil
         stopPolling()
@@ -1908,7 +1911,8 @@ final class AppStore {
         let schedule = push.schedule.registrable
         let signature = PushRegistration.signature(deviceId: pairing.deviceId, environment: push.environment, token: push.deviceToken,
                                                    allowed: push.allowed, preferences: preferences, schedule: schedule)
-        guard registeredPushSignature != signature else { return }
+        // The Mac removes a registration that is not refreshed for 30 days, so a running app refreshes it twice a day.
+        guard registeredPushSignature != signature || Date().timeIntervalSince(registeredPushAt) > 12 * 3600 else { return }
         do {
             let response: PushRegistrationResponse
             if push.allowed {
@@ -1929,6 +1933,7 @@ final class AppStore {
             }
             guard self.client === client else { return }
             registeredPushSignature = signature
+            registeredPushAt = Date()
             pushConfigured = response.configured
             pushRegistrationError = nil
         } catch {
@@ -2076,8 +2081,17 @@ final class AppStore {
         } catch { report(error) }
     }
 
+    /// Read what the Mac last delivered to this iPhone, for the notification settings.
+    func refreshPushStatus() async {
+        guard !isDemo, let client, connection == .connected else { return }
+        let status: PushStatus? = try? await client.request("device/push")
+        guard self.client === client else { return }
+        pushStatus = status
+    }
+
     func notificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {
         guard acceptsNotification(target) else { return nil }
+        if target.group { return .inboxList }
         if target.decisionId == nil { return .conversation(target.conversationRoute) }
         guard let client else { return nil }
         let epoch = snapshotEpoch

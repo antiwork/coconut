@@ -19,19 +19,30 @@ struct NotificationSettingsView: View {
     var body: some View {
         Form {
             Section {
-                Toggle(isOn: $push.decisionNotifications) {
-                    Text("Decisions").frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle()).onTapGesture { push.decisionNotifications.toggle() }
-                }.accessibilityIdentifier("decision-notifications")
+                Picker("Notify me", selection: $push.notificationLevel) {
+                    ForEach(NotificationLevel.allCases, id: \.self) { level in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(level.title)
+                            Text(level.detail).font(.caption).foregroundStyle(.secondary)
+                        }
+                        .tag(level)
+                        .accessibilityIdentifier("notification-level-" + level.rawValue)
+                    }
+                }
+                .pickerStyle(.inline)
+                .labelsHidden()
+                .accessibilityIdentifier("notification-level")
                 Toggle(isOn: $push.messageNotifications) {
-                    Text("Messages").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Messages and failed tasks").frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle()).onTapGesture { push.messageNotifications.toggle() }
                 }.accessibilityIdentifier("message-notifications")
+            } header: {
+                Text("Notify me")
             } footer: {
-                Text("Decisions open the card in Inbox. Messages open the bot’s chat.")
+                Text("A card that needs your attention now always notifies at once. A group opens Inbox.")
             }
             Section {
-                Toggle("Only important and urgent alerts after hours", isOn: $push.afterHoursImportantOnly)
+                Toggle("Use work hours", isOn: $push.afterHoursImportantOnly)
                     .accessibilityIdentifier("after-hours-toggle")
                 if push.afterHoursImportantOnly {
                     DatePicker("Start", selection: minutes($push.workStartMinutes), displayedComponents: .hourAndMinute)
@@ -71,20 +82,28 @@ struct NotificationSettingsView: View {
                             .accessibilityLabel("Work hours are not valid. Start must be before end.")
                             .accessibilityIdentifier("work-hours-error")
                     }
-                    Toggle(isOn: $push.honorRoutineSchedules) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Let routine hold decisions and failures")
-                            Text("Off, decisions and failures always come through. On, a bot’s routine label can hold them until work hours.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    .accessibilityIdentifier("honor-routine-schedules")
                 }
             } header: {
-                Text("After hours")
+                Text("Work hours")
             } footer: {
-                Text("Routine alerts wait in Inbox until work hours. Important and urgent alerts come through.")
+                Text("Outside work hours, cards wait in Inbox. When work hours start, one notification counts them.")
                     .accessibilityIdentifier("after-hours-footer")
+            }
+            Section("Delivery") {
+                LabeledContent("Last notification", value: PushStatus.describe(store.pushStatus?.lastDeliveredAt) ?? "None yet")
+                    .accessibilityIdentifier("last-notification")
+                if let error = store.pushStatus?.lastError {
+                    LabeledContent("Last error") {
+                        VStack(alignment: .trailing, spacing: 2) {
+                            Text(PushStatus.explain(error))
+                            if let at = PushStatus.describe(store.pushStatus?.lastErrorAt) {
+                                Text(at).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .multilineTextAlignment(.trailing)
+                    }
+                    .accessibilityIdentifier("last-notification-error")
+                }
             }
             Section {
                 Button(push.allowed ? "iOS notification settings" : "Enable notifications") {
@@ -105,6 +124,7 @@ struct NotificationSettingsView: View {
         .environment(\.timeZone, TimeZone(identifier: "UTC") ?? .gmt)
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)
+        .task { await store.refreshPushStatus() }
     }
 
     private func weekday(_ number: Int) -> Binding<Bool> {
@@ -123,9 +143,71 @@ struct NotificationSettingsView: View {
     }
 }
 
+/// How often non-urgent items notify. The Mac applies it; see `push_schedule.py`.
+enum NotificationLevel: String, Codable, CaseIterable, Sendable {
+    case every
+    case grouped
+    case urgentOnly = "urgent_only"
+
+    var title: String {
+        switch self {
+        case .every: "Every card"
+        case .grouped: "Grouped"
+        case .urgentOnly: "Only urgent"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .every: "One notification for each card during work hours."
+        case .grouped: "At most one notification every 10 minutes."
+        case .urgentOnly: "Only cards that need your attention now."
+        }
+    }
+
+    /// The saved level. Before levels existed, turning decisions off meant only urgent cards.
+    static func load(from defaults: UserDefaults = .standard) -> NotificationLevel {
+        if let saved = defaults.string(forKey: "notificationLevel"), let level = NotificationLevel(rawValue: saved) { return level }
+        return defaults.object(forKey: "decisionNotifications") as? Bool == false ? .urgentOnly : .grouped
+    }
+}
+
 struct NotificationPreferences: Encodable, Equatable, Sendable {
-    let decisions: Bool
+    let level: NotificationLevel
     let messages: Bool
+}
+
+/// What the Mac last did for this iPhone. Times are ISO 8601 text from the Mac.
+struct PushStatus: Decodable, Equatable, Sendable {
+    let registered: Bool
+    let lastDeliveredAt: String?
+    let lastError: String?
+    let lastErrorAt: String?
+
+    static func date(_ text: String?) -> Date? {
+        guard let text else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: text) ?? ISO8601DateFormatter().date(from: text)
+    }
+
+    static func describe(_ text: String?, relativeTo now: Date = Date()) -> String? {
+        guard let date = date(text) else { return nil }
+        return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: now)
+    }
+
+    /// A short explanation of the reason that the relay or APNs gave.
+    static func explain(_ reason: String) -> String {
+        switch reason {
+        case "Unregistered", "BadDeviceToken", "DeviceTokenNotForTopic": "iOS no longer accepts this iPhone’s address. Open Coconut to register again."
+        case "RelayRejected": "The notification service refused this iPhone. Open Coconut to register again."
+        case "NotRefreshed": "This iPhone did not connect for 30 days. Open Coconut to register again."
+        case "RateLimited", "RetryLater", "TooManyRequests": "Too many notifications. Coconut retries later."
+        case "EncryptionUnavailable": "Your Mac could not encrypt a notification. Coconut retries later."
+        case "TransportUnavailable", "PushNotConfigured": "Your Mac could not reach the notification service. Coconut retries later."
+        default: reason
+        }
+    }
 }
 
 struct NotificationSchedule: Codable, Equatable, Sendable {
@@ -139,8 +221,6 @@ struct NotificationSchedule: Codable, Equatable, Sendable {
     var end = "18:00"
     var timezone = NotificationSchedule.defaultTimeZone
     var weekdays = NotificationSchedule.allWeekdays
-    /// Whether a bot's explicit routine may hold a decision or failure. Off unless the person turns it on.
-    var honorRoutine = false
 
     var hasValidDays: Bool {
         !weekdays.isEmpty && weekdays.allSatisfy { (1...7).contains($0) } && Set(weekdays).count == weekdays.count
@@ -191,8 +271,7 @@ struct NotificationSchedule: Codable, Equatable, Sendable {
                              start: clock(defaults.object(forKey: "workStartMinutes") as? Int ?? 9 * 60),
                              end: clock(defaults.object(forKey: "workEndMinutes") as? Int ?? 18 * 60),
                              timezone: defaults.string(forKey: "workTimeZone") ?? defaultTimeZone,
-                             weekdays: (defaults.array(forKey: "workWeekdays") as? [Int]) ?? allWeekdays,
-                             honorRoutine: defaults.object(forKey: "honorRoutineSchedules") as? Bool ?? false)
+                             weekdays: (defaults.array(forKey: "workWeekdays") as? [Int]) ?? allWeekdays)
     }
 
     /// Minutes since midnight for an `HH:MM` clock text, or nil when it is not one.
@@ -206,6 +285,8 @@ struct NotificationSchedule: Codable, Equatable, Sendable {
 
 enum NotificationDestination: Equatable {
     case inbox(String)
+    /// A group notification opens the Inbox list.
+    case inboxList
     case conversation(ConversationRoute)
 }
 
@@ -215,10 +296,13 @@ struct NotificationTarget: Equatable, Sendable {
     let taskId: String
     let decisionId: String?
     let messageId: String?
+    /// A group counts several items and names none of them.
+    var group = false
 
     var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId, messageId: messageId) }
 
     func destination(pendingDecisionIds: Set<String>, snapshotReady: Bool) -> NotificationDestination? {
+        if group { return .inboxList }
         if let decisionId {
             guard snapshotReady else { return nil }
             if pendingDecisionIds.contains(decisionId) { return .inbox(decisionId) }
@@ -230,8 +314,12 @@ struct NotificationTarget: Equatable, Sendable {
         let decoded = try? NotificationKeys.content(from: userInfo)
         guard userInfo["coconut_encrypted"] == nil || decoded != nil else { return nil }
         guard let data = (decoded?["coconut"] ?? userInfo["coconut"]) as? [String: Any], data["version"] as? Int == 1,
-              let device = data["device_id"] as? String, UUID(uuidString: device) != nil,
-              let bot = data["bot_id"] as? String, UUID(uuidString: bot) != nil,
+              let device = data["device_id"] as? String, UUID(uuidString: device) != nil else { return nil }
+        if data["kind"] as? String == "group" {
+            deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; group = true
+            return
+        }
+        guard let bot = data["bot_id"] as? String, UUID(uuidString: bot) != nil,
               let task = data["task_id"] as? String, UUID(uuidString: task) != nil else { return nil }
         let decision = data["decision_id"] as? String
         guard decision == nil || UUID(uuidString: decision!) != nil else { return nil }
@@ -250,14 +338,14 @@ final class PushNotifications {
     @ObservationIgnored private var badgeTask: Task<Void, Never>?
     var deviceToken: String?
     var error: String?
-    var decisionNotifications = UserDefaults.standard.object(forKey: "decisionNotifications") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(decisionNotifications, forKey: "decisionNotifications") }
+    var notificationLevel = NotificationLevel.load() {
+        didSet { UserDefaults.standard.set(notificationLevel.rawValue, forKey: "notificationLevel") }
     }
     var messageNotifications = UserDefaults.standard.object(forKey: "messageNotifications") as? Bool ?? true {
         didSet { UserDefaults.standard.set(messageNotifications, forKey: "messageNotifications") }
     }
     var preferences: NotificationPreferences {
-        NotificationPreferences(decisions: decisionNotifications, messages: messageNotifications)
+        NotificationPreferences(level: notificationLevel, messages: messageNotifications)
     }
     private static let saved = NotificationSchedule.load()
     var afterHoursImportantOnly = saved.enabled {
@@ -276,13 +364,10 @@ final class PushNotifications {
     var workWeekdays = saved.weekdays {
         didSet { UserDefaults.standard.set(workWeekdays, forKey: "workWeekdays") }
     }
-    var honorRoutineSchedules = saved.honorRoutine {
-        didSet { UserDefaults.standard.set(honorRoutineSchedules, forKey: "honorRoutineSchedules") }
-    }
     var schedule: NotificationSchedule {
         NotificationSchedule(enabled: afterHoursImportantOnly, start: NotificationSchedule.clock(workStartMinutes),
                              end: NotificationSchedule.clock(workEndMinutes), timezone: workTimeZone,
-                             weekdays: Array(Set(workWeekdays)).sorted(), honorRoutine: honorRoutineSchedules)
+                             weekdays: Array(Set(workWeekdays)).sorted())
     }
 
     var allowed: Bool { [.authorized, .provisional, .ephemeral].contains(authorization) }
@@ -372,8 +457,8 @@ struct PushRegistration: Encodable {
     /// sent, so it adds nothing; turning the schedule off always changes it.
     static func signature(deviceId: String, environment: String, token: String?, allowed: Bool,
                           preferences: NotificationPreferences, schedule: NotificationSchedule?) -> String {
-        let window = schedule.map { [String($0.enabled), $0.start, $0.end, $0.timezone, $0.weekdays.map(String.init).joined(), String($0.honorRoutine)].joined(separator: ",") } ?? ""
-        return [deviceId, environment, token ?? "", String(allowed), String(preferences.decisions), String(preferences.messages), window].joined(separator: ":")
+        let window = schedule.map { [String($0.enabled), $0.start, $0.end, $0.timezone, $0.weekdays.map(String.init).joined()].joined(separator: ",") } ?? ""
+        return [deviceId, environment, token ?? "", String(allowed), preferences.level.rawValue, String(preferences.messages), window].joined(separator: ":")
     }
 }
 
