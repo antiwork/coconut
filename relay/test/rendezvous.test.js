@@ -87,6 +87,16 @@ test('the box takes one message only', async t => {
   assert.deepEqual(await bytes(await read(id, phone)), new Uint8Array(message));
 });
 
+test('of two Macs that send at once, only the first gets the box', async t => {
+  const { create, read, send } = relay(t);
+  const id = token(), phone = token(), first = sealed(), second = sealed();
+  await create(id, phone);
+  const responses = await Promise.all([send(id, first), send(id, second)]);
+  assert.deepEqual(responses.map(response => response.status).sort(), [204, 409]);
+  const winner = responses[0].status === 204 ? first : second;
+  assert.deepEqual(await bytes(await read(id, phone)), new Uint8Array(winner));
+});
+
 test('the message stays until the phone deletes the box', async t => {
   const { create, read, remove, send } = relay(t);
   const id = token(), phone = token(), message = sealed();

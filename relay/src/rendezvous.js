@@ -73,11 +73,14 @@ export class Rendezvous {
 
   async fetch(request) {
     const url = new URL(request.url);
+    // The body is read first. An input gate holds other events only while storage works, so the check and the write
+    // below must have no other await between them, or two Macs could both see an empty box.
+    const sent = url.pathname === '/message' ? new Uint8Array(await request.arrayBuffer()) : null;
     const box = await this.box();
-    if (url.pathname === '/message') {
+    if (sent) {
       if (!box) return new Response(null, { status: 404 });
       if (box.message) return new Response(null, { status: 409 });
-      await this.ctx.storage.put('box', { ...box, message: new Uint8Array(await request.arrayBuffer()) });
+      await this.ctx.storage.put('box', { ...box, message: sent });
       for (const wake of this.waiters) wake();
       return new Response(null, { status: 204 });
     }
