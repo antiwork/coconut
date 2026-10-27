@@ -1997,11 +1997,11 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if not waiting:
                 assignment.update(status='completed' if result_status == 'rejected' else result_status,
                                   summary=task['summary'], updated_at=now(), _result_task_id=task['id'])
-                self._prepare_return(assignment, text, result_status)
+                self._prepare_return(assignment, text, result_status, finishing=task)
         self._put('tasks', assignment)
         self._event('task.updated', self._public(assignment), assignment['bot_id'], assignment['id'])
 
-    def _prepare_return(self, task: dict, text: str, result_status: str):
+    def _prepare_return(self, task: dict, text: str, result_status: str, finishing: dict | None = None):
         result_key = None
         if task.get('_native_outcome_id') and result_status == 'completed':
             native = self.kanban.tasks.get(task['id'], {}) if self.kanban else {}
@@ -2014,7 +2014,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 return
         if result_status == 'failed':
             self._hold_failed_followup(task)
-        if not self._prepare_native_reply(task, text, result_status):
+        if not self._prepare_native_reply(task, text, result_status, finishing=finishing):
             return
         if result_key:
             task['_native_return_prepared'] = list(result_key)
@@ -2773,6 +2773,10 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if digest(content) != artifact.get('_content_hash'):
                 raise ServiceError(409, 'This artifact changed on the Mac.')
             return content, artifact['title']
+
+    def push_status(self, device: str) -> dict:
+        with self.lock:
+            return self.push.status(device)
 
     def learning(self) -> dict:
         groups: dict[tuple, dict] = {}

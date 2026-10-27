@@ -179,4 +179,4 @@ class SilentNotificationTests(unittest.TestCase):
             self.service._put('tasks', stored)
             self.service._message(self.bot['id'], '[SILENT]', task_id=task['id'])
         self.service.emit(task['id'], 'completed', dict(summary='Complete.', silent_response=True))
-        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_outbox').fetchone()[0], 0)
+        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_items').fetchone()[0], 0)

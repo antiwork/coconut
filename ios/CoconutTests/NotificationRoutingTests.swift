@@ -41,7 +41,48 @@ final class NotificationRoutingTests: XCTestCase {
         XCTAssertEqual(schedule, NotificationSchedule(enabled: true, start: "09:00", end: "18:00", timezone: "America/New_York"))
         XCTAssertTrue(schedule.isValid)
         XCTAssertEqual(schedule.weekdays, [1, 2, 3, 4, 5, 6, 7])
-        XCTAssertFalse(schedule.honorRoutine)
+    }
+
+    func testGroupNotificationOpensTheInboxList() throws {
+        let target = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": ["version": 1, "device_id": UUID().uuidString, "kind": "group", "count": 4]]))
+        XCTAssertTrue(target.group)
+        XCTAssertNil(target.decisionId)
+        XCTAssertEqual(target.destination(pendingDecisionIds: [], snapshotReady: false), .inboxList)
+        XCTAssertNil(NotificationTarget(userInfo: ["coconut": ["version": 1, "device_id": "bad", "kind": "group"]]))
+    }
+
+    func testLevelDefaultsToGroupedAndOldDecisionsOffBecomesOnlyUrgent() throws {
+        let isolated = try isolatedDefaults()
+        defer { isolated.defaults.removePersistentDomain(forName: isolated.suiteName) }
+        XCTAssertEqual(NotificationLevel.load(from: isolated.defaults), .grouped)
+        isolated.defaults.set(true, forKey: "decisionNotifications")
+        XCTAssertEqual(NotificationLevel.load(from: isolated.defaults), .grouped)
+        isolated.defaults.set(false, forKey: "decisionNotifications")
+        XCTAssertEqual(NotificationLevel.load(from: isolated.defaults), .urgentOnly)
+        isolated.defaults.set("every", forKey: "notificationLevel")
+        XCTAssertEqual(NotificationLevel.load(from: isolated.defaults), .every)
+        isolated.defaults.set("loud", forKey: "notificationLevel")
+        XCTAssertEqual(NotificationLevel.load(from: isolated.defaults), .urgentOnly)
+    }
+
+    func testPreferencesEncodeTheLevelTheMacExpects() throws {
+        for (level, raw) in [(NotificationLevel.every, "every"), (.grouped, "grouped"), (.urgentOnly, "urgent_only")] {
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: APIJSON.encode(NotificationPreferences(level: level, messages: false))) as? [String: Any])
+            XCTAssertEqual(object["level"] as? String, raw)
+            XCTAssertEqual(object["messages"] as? Bool, false)
+            XCTAssertEqual(Set(object.keys), ["level", "messages"])
+        }
+    }
+
+    func testDeliveryStatusDecodesTheMacTimesAndExplainsErrors() throws {
+        let json = #"{"registered": true, "configured": true, "preferences": {"level": "grouped", "messages": true}, "schedule": {}, "last_delivered_at": "2026-10-26T14:00:00.123456Z", "last_error": "Unregistered", "last_error_at": "2026-10-26T13:00:00Z"}"#
+        let status = try APIJSON.decoder().decode(PushStatus.self, from: Data(json.utf8))
+        XCTAssertTrue(status.registered)
+        XCTAssertNotNil(PushStatus.date(status.lastDeliveredAt))
+        XCTAssertNotNil(PushStatus.date(status.lastErrorAt))
+        XCTAssertNil(PushStatus.describe(nil))
+        XCTAssertTrue(PushStatus.explain("Unregistered").contains("Open Coconut"))
+        XCTAssertEqual(PushStatus.explain("SomethingNew"), "SomethingNew")
     }
 
     func testRejectsNoDaysOutOfRangeAndRepeatedDays() {
@@ -55,7 +96,7 @@ final class NotificationRoutingTests: XCTestCase {
     }
 
     func testTurningOffWithNoDaysStillSendsAValidImmediateSchedule() {
-        let off = NotificationSchedule(enabled: false, weekdays: [], honorRoutine: true)
+        let off = NotificationSchedule(enabled: false, weekdays: [])
         let sent = off.registrable
         XCTAssertEqual(sent?.enabled, false)
         XCTAssertEqual(sent?.isValid, true)
@@ -69,12 +110,11 @@ final class NotificationRoutingTests: XCTestCase {
         XCTAssertEqual(NotificationSchedule.summary(of: []), "None")
     }
 
-    func testScheduleEncodesWeekdaysAndHonorRoutineWithSnakeCaseKeys() throws {
-        let schedule = NotificationSchedule(weekdays: [1, 3, 5], honorRoutine: true)
+    func testScheduleEncodesOnlyTheWindowFields() throws {
+        let schedule = NotificationSchedule(weekdays: [1, 3, 5])
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: APIJSON.encode(schedule)) as? [String: Any])
         XCTAssertEqual(object["weekdays"] as? [Int], [1, 3, 5])
-        XCTAssertEqual(object["honor_routine"] as? Bool, true)
-        XCTAssertNil(object["honorRoutine"])
+        XCTAssertEqual(Set(object.keys), ["enabled", "start", "end", "timezone", "weekdays"])
         let decoded = try APIJSON.decoder().decode(NotificationSchedule.self, from: APIJSON.encode(schedule))
         XCTAssertEqual(decoded, schedule)
     }
@@ -93,9 +133,9 @@ final class NotificationRoutingTests: XCTestCase {
 
     func testRegistrationSendsTheEditedScheduleToTheBackend() throws {
         let schedule = NotificationSchedule(enabled: false, start: "08:30", end: "17:15", timezone: "Europe/Paris",
-                                            weekdays: [1, 2, 3, 4, 5], honorRoutine: true)
+                                            weekdays: [1, 2, 3, 4, 5])
         let registration = PushRegistration(token: "ab", environment: "development", enabled: true,
-                                            preferences: NotificationPreferences(decisions: true, messages: false), schedule: schedule)
+                                            preferences: NotificationPreferences(level: .grouped, messages: false), schedule: schedule)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: APIJSON.encode(registration)) as? [String: Any])
         let sent = try XCTUnwrap(object["schedule"] as? [String: Any])
         XCTAssertEqual(sent["enabled"] as? Bool, false)
@@ -103,8 +143,7 @@ final class NotificationRoutingTests: XCTestCase {
         XCTAssertEqual(sent["end"] as? String, "17:15")
         XCTAssertEqual(sent["timezone"] as? String, "Europe/Paris")
         XCTAssertEqual(sent["weekdays"] as? [Int], [1, 2, 3, 4, 5])
-        XCTAssertEqual(sent["honor_routine"] as? Bool, true)
-        XCTAssertEqual(Set(sent.keys), ["enabled", "start", "end", "timezone", "weekdays", "honor_routine"])
+        XCTAssertEqual(Set(sent.keys), ["enabled", "start", "end", "timezone", "weekdays"])
     }
 
     func testRegistrationOmitsAnInvalidOrMissingSchedule() throws {
@@ -170,7 +209,7 @@ final class NotificationRoutingTests: XCTestCase {
         defaults.set([1, 3, 5], forKey: "workWeekdays")
         defaults.set(true, forKey: "honorRoutineSchedules")
         XCTAssertEqual(NotificationSchedule.load(from: defaults),
-                       NotificationSchedule(enabled: false, start: "08:30", end: "17:15", timezone: "Europe/Paris", weekdays: [1, 3, 5], honorRoutine: true))
+                       NotificationSchedule(enabled: false, start: "08:30", end: "17:15", timezone: "Europe/Paris", weekdays: [1, 3, 5]))
         XCTAssertEqual(NotificationSchedule.minutes(fromClock: "08:30"), 8 * 60 + 30)
         XCTAssertNil(NotificationSchedule.minutes(fromClock: "nonsense"))
         defaults.set("not days", forKey: "workWeekdays")
@@ -179,13 +218,13 @@ final class NotificationRoutingTests: XCTestCase {
 
     private func signature(_ schedule: NotificationSchedule?, token: String? = "ab") -> String {
         PushRegistration.signature(deviceId: "d", environment: "development", token: token, allowed: true,
-                                   preferences: NotificationPreferences(decisions: true, messages: true), schedule: schedule)
+                                   preferences: NotificationPreferences(level: .grouped, messages: true), schedule: schedule)
     }
 
     func testEveryScheduleFieldChangesTheRegistrationSignature() {
         let base = NotificationSchedule()
         let variants = [NotificationSchedule(enabled: false), NotificationSchedule(start: "08:00"), NotificationSchedule(end: "19:00"),
-                        NotificationSchedule(timezone: "Europe/Paris"), NotificationSchedule(weekdays: [1, 2]), NotificationSchedule(honorRoutine: true)]
+                        NotificationSchedule(timezone: "Europe/Paris"), NotificationSchedule(weekdays: [1, 2])]
         let signatures = Set(variants.map { signature($0) } + [signature(base)])
         XCTAssertEqual(signatures.count, variants.count + 1)
         XCTAssertEqual(signature(base), signature(NotificationSchedule()))

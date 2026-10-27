@@ -92,7 +92,7 @@ try:
                 report['first_reply_before_command_finished'] = True
                 report['first_reply_while_working'] = True
                 with service.lock:
-                    assert service.db.execute('SELECT COUNT(*) FROM push_outbox WHERE message_id=?',
+                    assert service.db.execute('SELECT COUNT(*) FROM push_items WHERE message_id=?',
                                               (progress_id,)).fetchone()[0] == 0, 'Progress must not queue a push notification.'
                 report['progress_has_no_push_job'] = True
             if final_messages and final_seen is None:
@@ -116,9 +116,9 @@ try:
         messages = visible(task['id'])
         assert [m['text'] for m in messages] == [progress, final], 'The transcript must contain each reply once, in order.'
         with service.lock:
-            assert service.db.execute('SELECT COUNT(*) FROM push_outbox WHERE message_id=?',
+            assert service.db.execute('SELECT COUNT(*) FROM push_items WHERE message_id=?',
                                       (progress_id,)).fetchone()[0] == 0, 'Progress must not queue a push notification.'
-            assert service.db.execute('SELECT COUNT(*) FROM push_outbox WHERE message_id=?',
+            assert service.db.execute('SELECT COUNT(*) FROM push_items WHERE message_id=?',
                                       (final_id,)).fetchone()[0] == 1, 'The final reply must queue one push notification.'
         report.update(final_reply_seconds=round(final_seen - submitted, 3),
                       command_started_seconds=round(timer_started - submitted, 3),

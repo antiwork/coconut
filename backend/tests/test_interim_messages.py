@@ -44,7 +44,7 @@ class InterimMessageTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'working')
         events = self.service.events(cursor)['events']
         self.assertTrue(any(event['type'] == 'message.created' and event['data']['id'] == message['id'] for event in events))
-        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_outbox').fetchone()[0], 0)
+        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_items').fetchone()[0], 0)
 
     def test_final_reply_stays_separate_and_can_notify(self):
         self.commentary()
@@ -58,7 +58,7 @@ class InterimMessageTests(unittest.TestCase):
             saved['streaming'] = False
             self.service._put('messages', saved)
             self.service.push.record('message.completed', saved, self.bot['id'], self.task['id'])
-        self.assertEqual(self.service.db.execute("SELECT message_id FROM push_outbox WHERE kind='message'").fetchall(),
+        self.assertEqual(self.service.db.execute("SELECT message_id FROM push_items WHERE kind='message'").fetchall(),
                          [(final['id'],)])
 
     def test_failure_keeps_commentary_and_removes_unfinished_text(self):
@@ -81,7 +81,7 @@ class InterimMessageTests(unittest.TestCase):
         self.assertFalse(self.replies()[-1]['streaming'])
         self.assertNotIn('_interim', self.service._get('messages', final['id']))
         self.assertEqual(finish.call_args.args[1:], ('The test passes.', 'completed'))
-        self.assertEqual(self.service.db.execute("SELECT message_id FROM push_outbox WHERE kind='message'").fetchall(),
+        self.assertEqual(self.service.db.execute("SELECT message_id FROM push_items WHERE kind='message'").fetchall(),
                          [(final['id'],)])
 
     def test_final_confirmation_does_not_replace_different_commentary(self):
@@ -165,7 +165,7 @@ class InterimMessageTests(unittest.TestCase):
         after = self.service._get('bots', self.bot['id'])
         self.assertEqual(after['last_message'], bot['last_message'])
         self.assertEqual(after['unread_count'], bot['unread_count'])
-        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_outbox').fetchone()[0], 0)
+        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_items').fetchone()[0], 0)
 
     def test_native_job_keeps_its_normal_final_reply_and_alert(self):
         with self.service.transaction():
@@ -183,7 +183,7 @@ class InterimMessageTests(unittest.TestCase):
         self.assertEqual(reply['text'], 'The scheduled check finds a failure.')
         self.assertFalse(reply['streaming'])
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'completed')
-        self.assertEqual(self.service.db.execute("SELECT message_id FROM push_outbox WHERE kind='message'").fetchall(),
+        self.assertEqual(self.service.db.execute("SELECT message_id FROM push_items WHERE kind='message'").fetchall(),
                          [(reply['id'],)])
 
 
