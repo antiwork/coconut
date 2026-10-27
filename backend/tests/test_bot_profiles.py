@@ -105,6 +105,26 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(self.service.rescan_profiles(), [('returned', 'work')])
         self.assertEqual(self.service._get('bots', bot['id'])['profile_state'], 'active')
 
+    def test_a_new_hermes_home_moves_the_rows_of_the_same_names(self):
+        bots = self.bots()
+        old_default = self.service.profiles.home(bots['default'])
+        # HERMES_HOME of the service changes to another folder with a profile of the same name, and the service starts again.
+        self.hermes = self.base / 'other-hermes'
+        (self.hermes / 'profiles').mkdir(parents=True)
+        (self.hermes / 'config.yaml').write_text('model: {}\n')
+        moved = self.profile('work')
+        self.open()
+        after = self.bots()
+        self.assertEqual({name: bot['id'] for name, bot in after.items()}, {name: bot['id'] for name, bot in bots.items()})
+        self.assertNotEqual(old_default, self.hermes)
+        self.assertEqual(self.service.profiles.home(after['default']), self.hermes)
+        self.assertEqual(self.service.profiles.home(after['work']), moved)
+        rows = {row['name']: row for row in profile_registry.rows(self.service.db).values()}
+        self.assertEqual((rows['default']['home'], rows['work']['home']), (str(self.hermes), str(moved)))
+        self.assertEqual({row['state'] for row in rows.values()}, {'active'})
+        # A scan without a change changes nothing.
+        self.assertEqual(self.service.rescan_profiles(), [])
+
     def provider_environment(self, bot):
         from coconut.providers import HermesProvider as Real
         provider = Real(self.root, catalog=Mock())

@@ -215,6 +215,95 @@ class MigrationTests(unittest.TestCase):
         runtime = migration.host.backend_module('runtime_environment')
         self.assertEqual(runtime.login_folders(destination)['XDG_DATA_HOME'], f'{destination}/data')
 
+    def test_shell_init_files_inside_the_old_home_follow_the_move(self):
+        home = self.home(self.bots[2])
+        (home / 'config.yaml').write_text(
+            f'model:\n  default: gpt\nterminal:\n  shell_init_files:\n  - {home}/.profile\n  - \'{home}/.zshrc\'\n'
+            f'  - "{home}/.bashrc"  # login\n  cwd: {home}\n  other: {home}-sibling\n  middle: /mirror{home}/x\n'
+            f'  list: /a:{home}/bin\n# {home}/comment\nhooks:\n- path: {home}/hooks/a.sh\n')
+        ledger, _ = self.run_quietly(migration.migrate, self.root, self.hermes)
+        destination = next(Path(move['destination']) for move in ledger['moves'] if move['bot_id'] == self.bots[2]['id'])
+        self.assertEqual((destination / 'config.yaml').read_text(),
+            f'model:\n  default: gpt\nterminal:\n  shell_init_files:\n  - {destination}/.profile\n  - \'{destination}/.zshrc\'\n'
+            f'  - "{destination}/.bashrc"  # login\n  cwd: {destination}\n  other: {home}-sibling\n  middle: /mirror{home}/x\n'
+            f'  list: /a:{home}/bin\n# {home}/comment\nhooks:\n- path: {destination}/hooks/a.sh\n')
+
+    def test_the_backup_leaves_out_folders_that_hermes_makes_again(self):
+        home = self.home(self.bots[0])
+        for folder in ('installs/abc/venv', 'tools/node', 'cache/x', 'skills/a/__pycache__', 'skills/a/node_modules/m',
+                       'skills/a/cache', 'memories/tools'):
+            (home / folder).mkdir(parents=True)
+            (home / folder / 'file').write_text('data')
+        (home / 'tools.md').write_text('A file of this name stays.')
+        target = migration.backup(self.root)
+        copy = target / 'bots' / self.bots[0]['id'] / 'home'
+        for folder in ('installs', 'tools', 'cache', 'skills/a/__pycache__', 'skills/a/node_modules'):
+            self.assertFalse((copy / folder).exists(), folder)
+        for folder in ('skills/a/cache/file', 'memories/tools/file', 'tools.md', 'SOUL.md', 'memories/MEMORY.md'):
+            self.assertTrue((copy / folder).is_file(), folder)
+        self.assertTrue((copy / 'link.md').is_symlink())
+        # The estimate counts the copied files only.
+        self.assertLess(migration.backup_size(self.root), sum(path.stat().st_size for path in self.root.rglob('*') if path.is_file()))
+
+    def test_the_backup_clones_each_file_and_copies_when_a_clone_fails(self):
+        cloned = []
+        def clone(source, destination, flags):
+            cloned.append(os.fsdecode(source))
+            self.assertEqual(flags, migration.CLONE_NOFOLLOW)
+            return -1  # For example another volume: the copy takes over.
+        with patch.object(migration, 'CLONEFILE', side_effect=clone):
+            target = migration.backup(self.root)
+        home = self.home(self.bots[0])
+        # copytree calls itself for each folder, and the nested files use the same copy function.
+        self.assertIn(str(home / 'memories/MEMORY.md'), cloned)
+        self.assertEqual((target / 'bots' / self.bots[0]['id'] / 'home/memories/MEMORY.md').read_text(), 'Remember ' + self.bots[0]['id'])
+
+    @unittest.skipUnless(sys.platform == 'darwin' and migration.CLONEFILE is not None, 'clonefile is a macOS call')
+    def test_a_clone_on_macos_has_the_content_and_the_mode(self):
+        source = self.root / 'clone-source'
+        source.write_text('content')
+        source.chmod(0o640)
+        destination = self.root / 'clone-destination'
+        with patch.object(migration.shutil, 'copy2', side_effect=AssertionError('The clone fell back to a copy.')):
+            migration.clone_or_copy(source, destination)
+        self.assertEqual((destination.read_text(), destination.stat().st_mode & 0o777), ('content', 0o640))
+
+    def test_too_little_free_space_refuses_before_the_service_stops(self):
+        usage = migration.shutil.disk_usage(self.root)
+        small = usage._replace(free=migration.BACKUP_MARGIN // 2)
+        with patch.object(migration.shutil, 'disk_usage', return_value=small), self.assertRaises(SystemExit) as raised:
+            self.run_quietly(migration.migrate, self.root, self.hermes)
+        self.assertIn('Free some space', str(raised.exception.code))
+        self.assertIn('Nothing changed', str(raised.exception.code))
+        self.assertEqual(self.steps(), [])
+        self.assertEqual(sorted(path.name for path in self.root.parent.iterdir()), ['host'])
+        for bot in self.bots:
+            self.assertEqual(tree(self.home(bot)), self.before[bot['id']])
+
+    def test_the_space_estimate_counts_full_copies_without_clones(self):
+        with patch.object(migration, 'clones_work', return_value=False), \
+                patch.object(migration, 'backup_size', return_value=10 * 1024 ** 3), \
+                patch.object(migration.shutil, 'disk_usage', return_value=migration.shutil.disk_usage(self.root)._replace(free=9 * 1024 ** 3)):
+            with self.assertRaisesRegex(SystemExit, r'needs about 10\.5 GB.*only 9\.0 GB is free'):
+                migration.check_backup_space(self.root)
+        with patch.object(migration, 'clones_work', return_value=True), \
+                patch.object(migration, 'backup_size', return_value=10 * 1024 ** 3), \
+                patch.object(migration.shutil, 'disk_usage', return_value=migration.shutil.disk_usage(self.root)._replace(free=9 * 1024 ** 3)):
+            migration.check_backup_space(self.root)
+
+    def test_a_failed_backup_removes_its_partial_copy_and_starts_coconut(self):
+        copies = []
+        def copy(source, destination):
+            copies.append(source)
+            if len(copies) == 3:
+                raise OSError(errno.ENOSPC, 'No space left on device')
+            return migration.shutil.copy2(source, destination)
+        with patch.object(migration, 'clone_or_copy', side_effect=copy), self.assertRaises(OSError):
+            self.run_quietly(migration.migrate, self.root, self.hermes)
+        self.assertEqual(self.steps(), ['drain_for_update', 'stop_for_update', 'restore_after_update'])
+        self.assertEqual(sorted(path.name for path in self.root.parent.iterdir()), ['host'])
+        self.assertFalse((self.root / migration.LEDGER).exists())
+
     def test_a_copy_that_fails_after_its_destination_exists_keeps_coconut_stopped(self):
         def rename(source, destination):
             if 'bots' in str(source):

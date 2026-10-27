@@ -236,7 +236,7 @@ class HostLifecycleTests(unittest.TestCase):
 
     def test_process_check_handles_paths_with_spaces_and_preserves_options(self):
         self.write_process()
-        command = f'/usr/bin/python3 -m coconut --data-dir {self.data}'
+        command = f'Ss   /usr/bin/python3 -m coconut --data-dir {self.data}'
         tls = f' --cert {self.data}/server.crt --key {self.data}/server.key'
         # A process from before the loopback-only service has --host, and with TLS --cert and --key. A process from
         # before the tunnel listener has no --tunnel-port.
@@ -257,12 +257,50 @@ class HostLifecycleTests(unittest.TestCase):
 
     def test_reused_pid_with_different_command_cannot_be_stopped(self):
         self.write_process()
-        command = f'/usr/bin/python3 -m coconut --data-dir {self.data}-other --host 127.0.0.1 --port 9000 --provider fixture'
+        command = f'S    /usr/bin/python3 -m coconut --data-dir {self.data}-other --host 127.0.0.1 --port 9000 --provider fixture'
         with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, command, '')), \
              patch.object(host.os, 'kill') as kill:
             with self.assertRaisesRegex(SystemExit, 'does not match'):
                 host.stop_owned_process()
             kill.assert_not_called()
+
+    def test_a_service_that_exits_after_the_signal_is_stopped_and_not_foreign(self):
+        # A service of the login item: launchd is its parent. ps shows it as "(Python)" while it exits, and as
+        # "<defunct>" until launchd collects it. Then the PID is gone.
+        self.write_process()
+        command = f'Ss   /Users/me/.hermes/hermes-agent/venv/bin/python -m coconut --data-dir {self.data} --port 8960 --provider hermes --tunnel-port 8961'
+        outputs = iter([command, command, '?Es  (Python)', '?Es  (Python)', 'Z    <defunct>', 'Z    <defunct>'])
+        calls = []
+        def run(arguments, **kwargs):
+            calls.append(arguments)
+            output = next(outputs)
+            return subprocess.CompletedProcess(arguments, 1 if output is None else 0, output or '', '')
+        with patch.object(host.subprocess, 'run', side_effect=run), patch.object(host.os, 'kill') as kill, \
+             patch.object(host.time, 'sleep'):
+            host.stop_owned_process()
+        kill.assert_called_once_with(4242, host.signal.SIGTERM)
+        self.assertEqual(calls[0], ['ps', '-ww', '-p', '4242', '-o', 'stat=,command='])
+        # The stop waits for the zombie, which no longer holds service.lock. It does not need the PID to vanish.
+        self.assertEqual(len(calls), 6)
+
+    def test_an_exiting_service_is_not_running_and_the_stop_waits_for_its_end(self):
+        self.write_process()
+        outputs = iter(['?Es  (Python)', '?Es  (Python)', '?Es  (Python)', None, None])
+        def run(arguments, **kwargs):
+            output = next(outputs)
+            return subprocess.CompletedProcess(arguments, 1 if output is None else 0, output or '', '')
+        with patch.object(host.subprocess, 'run', side_effect=run), patch.object(host.os, 'kill') as kill, \
+             patch.object(host.time, 'sleep') as sleep:
+            host.stop_owned_process()
+        kill.assert_not_called()
+        sleep.assert_called_once()
+
+    def test_a_live_process_with_another_command_still_does_not_match(self):
+        self.write_process()
+        result = subprocess.CompletedProcess([], 0, 'Ss   /usr/bin/python3 -c pass', '')
+        with patch.object(host.subprocess, 'run', return_value=result):
+            with self.assertRaisesRegex(SystemExit, 'does not match'):
+                host.owned_process()
 
     def test_loaded_agent_must_match_the_current_project(self):
         self.write_agent()

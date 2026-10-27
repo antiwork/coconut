@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+import ctypes
 from datetime import datetime, timezone
 import errno
 import json
@@ -37,6 +38,13 @@ APP_ID = 'com.gumroad.coconut.mac'
 # The backup leaves out the folders that the migration does not change. They can be large.
 BACKUP_SKIP_ROOT = {'workspaces', 'runtimes', 'artifacts'}
 BACKUP_SKIP_BOT = {'workspace', 'browser', 'tmp'}
+# A bot home can hold a Hermes dependency environment (installs/, about 355 MB) and tools. Hermes makes them again, so
+# the backup leaves them out. __pycache__ and node_modules are left out at any depth of a bot home.
+BACKUP_SKIP_HOME = {'installs', 'tools', 'cache'}
+BACKUP_SKIP_ANYWHERE = {'__pycache__', 'node_modules'}
+# The backup keeps this much space free on the disk, for the service and the moves.
+BACKUP_MARGIN = 512 * 1024 * 1024
+CLONE_NOFOLLOW = 0x0001
 
 
 def say(text: str = '') -> None:
@@ -115,21 +123,108 @@ def coconut_workers(data_dir: Path) -> list[int]:
             if line.strip() and any(marker in line + ' ' for marker in markers) and int(line.split(None, 1)[0]) != os.getpid()]
 
 
-def backup(data_dir: Path) -> Path:
-    target = data_dir.parent / f'{data_dir.name}-backup-before-profiles-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}'
-
+def backup_ignore(data_dir: Path):
+    """The ignore function of shutil.copytree for the backup: the folders that the migration does not change or that
+    Hermes makes again, special files, and the live database (backup() copies it with SQLite)."""
     def ignore(directory, names):
         directory = Path(directory)
-        skipped = [name for name in names if special(directory / name)]
+        skipped = {name for name in names if special(directory / name)}
         if directory == data_dir:
-            skipped += [name for name in names if name in BACKUP_SKIP_ROOT or name.startswith('coconut.sqlite3')]
+            skipped |= {name for name in names if name in BACKUP_SKIP_ROOT or name.startswith('coconut.sqlite3')}
         if directory.parent == data_dir / 'bots':
-            skipped += [name for name in names if name in BACKUP_SKIP_BOT]
+            skipped |= {name for name in names if name in BACKUP_SKIP_BOT}
+        relative = directory.relative_to(data_dir).parts
+        if len(relative) >= 3 and relative[0] == 'bots' and relative[2] == 'home':
+            skipped |= {name for name in names if name in BACKUP_SKIP_ANYWHERE and (directory / name).is_dir()}
+            if len(relative) == 3:
+                skipped |= {name for name in names if name in BACKUP_SKIP_HOME and (directory / name).is_dir()}
         return skipped
+    return ignore
 
-    shutil.copytree(data_dir, target, symlinks=True, ignore=ignore)
-    with closing(sqlite3.connect(data_dir / 'coconut.sqlite3')) as source, closing(sqlite3.connect(target / 'coconut.sqlite3')) as copy:
-        source.backup(copy)
+
+def backup_size(data_dir: Path) -> int:
+    """The bytes of the files that the backup copies, with the database."""
+    ignore = backup_ignore(data_dir)
+    total = 0
+    for directory, folders, files in os.walk(data_dir):
+        skipped = ignore(directory, folders + files)
+        folders[:] = [name for name in folders if name not in skipped and not os.path.islink(os.path.join(directory, name))]
+        for name in files:
+            if name not in skipped:
+                try:
+                    info = os.lstat(os.path.join(directory, name))
+                except OSError:
+                    continue
+                total += info.st_size if stat.S_ISREG(info.st_mode) else 0
+    database = data_dir / 'coconut.sqlite3'
+    return total + (database.stat().st_size if database.is_file() else 0)
+
+
+def _clonefile():
+    """clonefile(2) of macOS, or None. On APFS, a clone shares the blocks of its source until one of them changes."""
+    if sys.platform != 'darwin':
+        return None
+    try:
+        function = ctypes.CDLL(None, use_errno=True).clonefile
+    except (OSError, AttributeError):
+        return None
+    function.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32)
+    function.restype = ctypes.c_int
+    return function
+
+
+CLONEFILE = _clonefile()
+
+
+def clone_or_copy(source, destination):
+    """The copy_function of the backup: an APFS clone when the disk supports it, else shutil.copy2."""
+    if CLONEFILE is not None and CLONEFILE(os.fsencode(source), os.fsencode(destination), CLONE_NOFOLLOW) == 0:
+        return destination
+    return shutil.copy2(source, destination)
+
+
+def clones_work(folder: Path) -> bool:
+    """True when a clone of a file in this folder works, so the backup takes almost no space."""
+    if CLONEFILE is None:
+        return False
+    probe = folder / f'.coconut-clone-check-{os.getpid()}'
+    copy = probe.with_name(probe.name + '-copy')
+    try:
+        probe.write_bytes(b'clone')
+        return CLONEFILE(os.fsencode(probe), os.fsencode(copy), CLONE_NOFOLLOW) == 0
+    except OSError:
+        return False
+    finally:
+        probe.unlink(missing_ok=True)
+        copy.unlink(missing_ok=True)
+
+
+def check_backup_space(data_dir: Path) -> None:
+    """Refuse the migration when the disk has too little free space for the backup. A clone counts as no space, but
+    the database copy of SQLite is a real copy."""
+    database = data_dir / 'coconut.sqlite3'
+    files = backup_size(data_dir)
+    needed = (database.stat().st_size if database.is_file() else 0) if clones_work(data_dir.parent) else files
+    needed += BACKUP_MARGIN
+    free = shutil.disk_usage(data_dir.parent).free
+    if free < needed:
+        gigabytes = lambda value: f'{value / 1024 ** 3:.1f} GB'
+        raise SystemExit(f'The backup needs about {gigabytes(needed)} on the disk of {data_dir.parent}, but only '
+                         f'{gigabytes(free)} is free. Free some space, then run this command again. Nothing changed.')
+
+
+def backup(data_dir: Path) -> Path:
+    check_backup_space(data_dir)
+    target = data_dir.parent / f'{data_dir.name}-backup-before-profiles-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}'
+    try:
+        shutil.copytree(data_dir, target, symlinks=True, ignore=backup_ignore(data_dir), copy_function=clone_or_copy)
+        with closing(sqlite3.connect(data_dir / 'coconut.sqlite3')) as source, \
+                closing(sqlite3.connect(target / 'coconut.sqlite3')) as copy:
+            source.backup(copy)
+    except BaseException:
+        # A partial backup only takes space, for example on a full disk.
+        shutil.rmtree(target, ignore_errors=True)
+        raise
     return target
 
 
@@ -250,6 +345,46 @@ def follow_env_paths(source: Path, destination: Path) -> None:
         path.write_text('\n'.join(lines), encoding='utf-8')
 
 
+# One line of a block-style YAML file, as Hermes writes config.yaml: indentation, list dashes, an optional key, and the
+# value. A key is plain or quoted, and ends with a colon and a space.
+YAML_LINE = re.compile(r"""^(?P<lead>[ \t]*(?:-[ \t]+)*(?:(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^\s#'"\-?:,\[\]{}][^#]*?)[ \t]*:[ \t]+)?)(?P<rest>.*)$""")
+
+
+def follow_config_paths(source: Path, destination: Path) -> None:
+    """A profile's config.yaml can name files inside its old home, for example terminal.shell_init_files. Point them
+    at the new home.
+
+    Each scalar value on one line is read as written: plain, or in single or double quotes. When the whole value is
+    the old home or a path below it, only that prefix changes. A comment, the quotes and the rest of the line stay.
+    """
+    path = destination / 'config.yaml'
+    if not path.is_file() or path.is_symlink():
+        return
+    old, new = str(source), str(destination)
+    lines = path.read_text(encoding='utf-8').split('\n')
+    changed = False
+    for number, line in enumerate(lines):
+        match = YAML_LINE.match(line)
+        if not match or line.lstrip().startswith('#'):
+            continue
+        start = match.start('rest')
+        rest = match['rest']
+        if rest[:1] in ('"', "'"):
+            # The value ends at its closing quote. A value over several lines stays.
+            quoted = re.match(r"'[^']*'" if rest[0] == "'" else r'"(?:[^"\\]|\\.)*"', rest)
+            if not quoted:
+                continue
+            first, last = start + 1, start + quoted.end() - 1
+        else:
+            first, last = start, start + len(re.split(r'\s+#', rest, maxsplit=1)[0].rstrip())
+        raw = line[first:last]
+        if raw == old or raw.startswith(old + '/'):
+            lines[number] = line[:first] + new + line[first + len(old):]
+            changed = True
+    if changed:
+        path.write_text('\n'.join(lines), encoding='utf-8')
+
+
 def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, rename=os.rename) -> dict | None:
     if (data_dir / LEDGER).exists():
         raise SystemExit(f'{data_dir / LEDGER} exists: the migration ran before. Read it before you run it again.')
@@ -257,6 +392,7 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
     show(moves, data_dir, hermes_home)
     if not moves:
         return None
+    check_backup_space(data_dir)
     state = stop_service(manage_service)
     # restart: whether the folders and the database agree, so Coconut can start again.
     restart = True
@@ -292,6 +428,7 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
                         # Hermes lists a folder as a profile only with a profile file.
                         (destination / 'SOUL.md').write_text(souls[move['bot_id']])
                     follow_env_paths(source, destination)
+                    follow_config_paths(source, destination)
                     write_ledger(data_dir, ledger)
                 record_rows(data_dir, moves)
                 restart = True

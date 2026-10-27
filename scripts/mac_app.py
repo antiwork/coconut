@@ -83,6 +83,9 @@ def info_plist(version: str, build: str) -> dict:
         # Check every six hours, and install an update without a question. The app updates its source after the relaunch.
         'SUEnableAutomaticChecks': True,
         'SUAutomaticallyUpdate': True,
+        # Without this key, Sparkle allows automatic installs only while automatic checks are on. Then `coconut update`
+        # with automatic updates off made Sparkle ask in a window that nobody saw. See Updater.checkForRequest.
+        'SUAllowsAutomaticUpdates': True,
         'SUScheduledCheckInterval': 21600,
     }
 

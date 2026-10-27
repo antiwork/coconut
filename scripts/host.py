@@ -174,6 +174,42 @@ def start(args: argparse.Namespace) -> None:
     raise SystemExit("The service did not become ready. Inspect its service.log before retrying.")
 
 
+def process_state(pid: int) -> tuple[str, str] | None:
+    """Return the state letters and the command of a process, or None when no such process exists."""
+    result = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "stat=,command="], capture_output=True, text=True)
+    if result.returncode == 1:
+        return None
+    if result.returncode:
+        raise SystemExit("Coconut could not inspect its process. No process was stopped.")
+    state, _, command = result.stdout.strip().partition(" ")
+    return state, command.strip()
+
+
+# The state letters of ps: E, a process that exits (macOS). Z, a zombie: it exited and waits for its parent. X, dead
+# (Linux). Between its exit and the moment launchd collects it, ps shows the process as "(Python)" or "<defunct>", not
+# as its launch command. A service of the login item, a child of launchd, passes through these states at each stop.
+EXITED = "ZX"
+EXITING = "E" + EXITED
+
+
+def exiting(state: str) -> bool:
+    return any(letter in state for letter in EXITING)
+
+
+def recorded_pid() -> int | None:
+    """The process ID in process.json, without any check. Use it only after owned_process accepted the record."""
+    try:
+        return int(json.loads((DEFAULT_DATA / "process.json").read_text())["pid"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def ended(pid: int) -> bool:
+    """True when the process is gone or is a zombie. A zombie has closed its files, so service.lock is free."""
+    state = process_state(pid)
+    return state is None or any(letter in state[0] for letter in EXITED)
+
+
 def owned_process() -> tuple[int, dict] | None:
     if DEFAULT_DATA.is_symlink() or (ROOT / ".runtime").is_symlink():
         raise SystemExit("The runtime must not be a symbolic link. Coconut did not stop any process.")
@@ -189,11 +225,10 @@ def owned_process() -> tuple[int, dict] | None:
             raise ValueError()
     except (OSError, ValueError, KeyError, TypeError):
         raise SystemExit("The process record does not identify this Coconut installation. No process was stopped.") from None
-    result = subprocess.run(["ps", "-ww", "-p", str(pid), "-o", "command="], capture_output=True, text=True)
-    if result.returncode == 1:
+    state = process_state(pid)
+    if state is None or exiting(state[0]):
+        # An exiting process serves nothing. stop_owned_process waits until it is gone.
         return None
-    if result.returncode:
-        raise SystemExit("Coconut could not inspect its process. No process was stopped.")
     pattern = (
         # A process from before the loopback-only service has --host, and with TLS also --cert and --key. An update
         # stops such a process, and a failed update starts it again.
@@ -204,7 +239,7 @@ def owned_process() -> tuple[int, dict] | None:
         # A process from before the tunnel listener has no --tunnel-port.
         + r"(?: --tunnel-port " + str(TUNNEL_PORT) + r")?"
     )
-    match = re.fullmatch(pattern, result.stdout.strip())
+    match = re.fullmatch(pattern, state[1])
     if not match or not re.fullmatch(r"python[0-9.]*", Path(match["python"]).name, re.IGNORECASE):
         raise SystemExit("The recorded process does not match Coconut's launch command. No process was stopped.")
     return pid, {"port": int(match["port"]), "provider": match["provider"]}
@@ -272,18 +307,22 @@ def managed_current_process(data_dir: Path | None = None) -> bool:
 def stop_owned_process() -> None:
     current = owned_process()
     if current is None:
-        return
-    pid = current[0]
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
+        # A service that exits already can still hold service.lock. Wait until it is gone.
+        pid = recorded_pid()
+        if pid is None or pid <= 1 or pid == os.getpid():
+            return
+    else:
+        pid = current[0]
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
     for _ in range(100):
         current = owned_process()
-        if current is None:
-            return
-        if current[0] != pid:
+        if current is not None and current[0] != pid:
             raise SystemExit("Another Coconut process started during the stop. Coconut kept its data unchanged.")
+        if current is None and ended(pid):
+            return
         time.sleep(.1)
     raise SystemExit("Coconut did not stop. Its source and data remain unchanged.")
 
