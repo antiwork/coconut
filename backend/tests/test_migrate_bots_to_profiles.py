@@ -1,0 +1,205 @@
+"""scripts/migrate_bots_to_profiles.py moves the earlier bot homes into Hermes profiles, once."""
+import contextlib
+import errno
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import sqlite3
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+from uuid import uuid4
+
+from coconut import hermes_runtime, profile_registry
+from coconut.service import Service
+from test_service import ControlledProvider
+
+SCRIPTS = Path(__file__).resolve().parents[2] / 'scripts'
+sys.path.insert(0, str(SCRIPTS))
+spec = importlib.util.spec_from_file_location('migrate_bots_to_profiles', SCRIPTS / 'migrate_bots_to_profiles.py')
+migration = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(migration)
+
+
+def tree(folder):
+    return {str(path.relative_to(folder)): path.read_bytes() for path in sorted(Path(folder).rglob('*'))
+            if path.is_file() and not path.name.startswith('coconut.sqlite3-')}
+
+
+class MigrationTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve()
+        self.root = base / 'Coconut/.runtime/host'
+        self.hermes = base / '.hermes'
+        (self.hermes / 'profiles/ada').mkdir(parents=True)  # The person already has a profile named ada.
+        (self.hermes / 'profiles/ada/SOUL.md').write_text('The own Ada.\n')
+        (self.hermes / 'config.yaml').write_text('model: {}\n')
+        self.root.mkdir(parents=True)
+        # An install from before the profile layout: a database with bots, and a home for each bot.
+        self.bots = [dict(id=str(uuid4()), session_id=str(uuid4()), name=name, role='', instructions=name + ' soul',
+                          created_at=f'2026-10-0{index + 1}', archived=False, pinned=False, status='idle')
+                     for index, name in enumerate(('Ada', 'Ada', 'Research Lead'))]
+        deleted = dict(self.bots[0], id=str(uuid4()), _deleted=True)
+        with contextlib.closing(sqlite3.connect(self.root / 'coconut.sqlite3')) as db:
+            db.execute('CREATE TABLE bots (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
+            for bot in (*self.bots, deleted):
+                bot['profile_id'] = bot['id']
+                db.execute('INSERT INTO bots VALUES (?, ?)', (bot['id'], json.dumps(bot)))
+            db.commit()
+        for bot in (*self.bots, deleted):
+            home = self.home(bot)
+            (home / 'memories').mkdir(parents=True)
+            (home / 'SOUL.md').write_text(bot['instructions'])
+            (home / 'memories/MEMORY.md').write_text('Remember ' + bot['id'])
+            (home / 'cron').mkdir()
+            (home / 'cron/jobs.json').write_text('{"jobs": []}')
+            os.symlink('SOUL.md', home / 'link.md')
+            (self.root / 'bots' / bot['id'] / 'workspace').mkdir()
+        self.deleted = deleted
+        self.before = {bot['id']: tree(self.home(bot)) for bot in self.bots}
+        self.calls = []
+        for name, value in (('coconut_workers', []), ('add_skills_folder', None)):
+            patcher = patch.object(migration, name, side_effect=lambda *args, value=value, name=name: self.calls.append((name, args)) or value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for name, value in (('drain_for_update', None), ('stop_for_update', {'mode': 'app'}), ('restore_after_update', None)):
+            patcher = patch.object(migration.host, name, side_effect=lambda *args, value=value, name=name: self.calls.append((name, args)) or value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def home(self, bot):
+        return self.root / 'bots' / bot['id'] / 'home'
+
+    def run_quietly(self, function, *args, **kwargs):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            try:
+                return function(*args, **kwargs), output.getvalue()
+            except SystemExit as error:
+                error.output = output.getvalue()
+                raise
+
+    def steps(self):
+        return [call[0] for call in self.calls if call[0] != 'coconut_workers']
+
+    def test_dry_run_shows_unique_names_and_changes_nothing(self):
+        before = tree(self.root)
+        _, output = self.run_quietly(migration.main, ['--data-dir', str(self.root), '--hermes-home', str(self.hermes), '--dry-run'])
+        self.assertEqual(tree(self.root), before)
+        for name in ('ada-2', 'ada-3', 'research-lead'):
+            self.assertIn(name, output)
+        self.assertNotIn(self.deleted['id'], output)
+        self.assertEqual(self.steps(), [])
+
+    def test_the_migration_moves_each_home_and_the_service_runs_the_bots_as_profiles(self):
+        ledger, output = self.run_quietly(migration.migrate, self.root, self.hermes)
+        self.assertEqual(self.steps(), ['drain_for_update', 'stop_for_update', 'add_skills_folder', 'restore_after_update'])
+        names = {move['bot_id']: move['name'] for move in ledger['moves']}
+        self.assertEqual(sorted(names.values()), ['ada-2', 'ada-3', 'research-lead'])
+        for bot in self.bots:
+            folder = self.hermes / 'profiles' / names[bot['id']]
+            self.assertEqual(tree(folder), self.before[bot['id']])
+            self.assertTrue((folder / 'link.md').is_symlink())
+            self.assertFalse(self.home(bot).exists())
+            self.assertTrue((self.root / 'bots' / bot['id'] / 'workspace').is_dir())
+        self.assertTrue(self.home(self.deleted).is_dir())
+        skill_homes = next(args[0] for name, args in self.calls if name == 'add_skills_folder')
+        self.assertEqual(sorted(skill_homes), sorted(self.hermes / 'profiles' / name for name in names.values()))
+        self.assertTrue((Path(ledger['backup']) / 'coconut.sqlite3').is_file())
+        self.assertTrue((Path(ledger['backup']) / 'bots' / self.bots[0]['id'] / 'home/SOUL.md').is_file())
+        self.assertFalse((Path(ledger['backup']) / 'bots' / self.bots[0]['id'] / 'workspace').exists())
+        self.assertIn('hermes -p research-lead', output)
+        service = Service(self.root, ControlledProvider(), start_workers=False, hermes_home=self.hermes)
+        try:
+            bots = {bot['id']: bot for bot in service.snapshot()['bots']}
+            for bot in self.bots:
+                self.assertEqual(bots[bot['id']]['session_id'], bot['session_id'])
+                self.assertEqual(service.profiles.home(bot), self.hermes / 'profiles' / names[bot['id']])
+            self.assertEqual(sorted(bot['profile'] for bot in bots.values()), ['ada', 'ada-2', 'ada-3', 'default', 'research-lead'])
+            self.assertFalse(service.hermes_setup()['migration_required'])
+        finally:
+            service.close()
+        with self.assertRaises(SystemExit):
+            self.run_quietly(migration.migrate, self.root, self.hermes)
+
+    def test_another_disk_copies_then_removes(self):
+        def rename(source, destination):
+            if 'bots' in str(source):
+                raise OSError(errno.EXDEV, 'Cross-device link')
+            os.rename(source, destination)
+
+        ledger, _ = self.run_quietly(migration.migrate, self.root, self.hermes, rename=rename)
+        for move in ledger['moves']:
+            self.assertFalse(Path(move['source']).exists())
+            self.assertEqual(tree(move['destination']), self.before[move['bot_id']])
+
+    def test_a_failure_before_the_first_move_changes_nothing_and_starts_coconut(self):
+        with patch.object(migration, 'backup', side_effect=OSError(errno.ENOSPC, 'No space left on device')):
+            with self.assertRaises(OSError):
+                self.run_quietly(migration.migrate, self.root, self.hermes)
+        self.assertEqual(self.steps(), ['drain_for_update', 'stop_for_update', 'restore_after_update'])
+        self.assertFalse((self.root / migration.LEDGER).exists())
+        for bot in self.bots:
+            self.assertEqual(tree(self.home(bot)), self.before[bot['id']])
+
+    def test_a_failure_halfway_stops_and_prints_the_recovery_steps(self):
+        moved = []
+
+        def rename(source, destination):
+            if len(moved) == 1:
+                raise OSError(errno.ENOSPC, 'No space left on device')
+            moved.append(source)
+            os.rename(source, destination)
+
+        with self.assertRaises(SystemExit) as raised:
+            self.run_quietly(migration.migrate, self.root, self.hermes, rename=rename)
+        output = raised.exception.output
+        self.assertEqual(self.steps(), ['drain_for_update', 'stop_for_update'])
+        ledger = json.loads((self.root / migration.LEDGER).read_text())
+        first = ledger['moves'][0]
+        self.assertEqual([move['state'] for move in ledger['moves']], ['moved', 'moving', 'planned'])
+        self.assertIn(f'mv "{first["destination"]}" "{first["source"]}"', output)
+        self.assertIn('Coconut stays stopped', output)
+        self.assertIsNone(profile_registry.lookup(self.root, first['bot_id']))
+        self.assertNotIn('instructions', json.dumps(ledger))
+
+    def test_running_workers_stop_the_migration_before_any_change(self):
+        with patch.object(migration, 'coconut_workers', return_value=[123]):
+            with self.assertRaises(SystemExit):
+                self.run_quietly(migration.migrate, self.root, self.hermes)
+        self.assertEqual(self.steps(), ['drain_for_update', 'stop_for_update', 'restore_after_update'])
+        for bot in self.bots:
+            self.assertTrue(self.home(bot).is_dir())
+
+    def test_a_running_service_stops_the_migration_before_any_change(self):
+        import fcntl
+        with open(self.root / 'service.lock', 'a') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            with self.assertRaises(SystemExit):
+                self.run_quietly(migration.migrate, self.root, self.hermes, manage_service=False)
+        for bot in self.bots:
+            self.assertTrue(self.home(bot).is_dir())
+
+    def test_the_hermes_home_must_be_the_one_of_the_service(self):
+        hermes_runtime.write_status(self.root, {'status': 'ok', 'home': str(migration.host.ROOT / '.runtime/hermes/terminal/hermes')})
+        problem = migration.home_problem(self.root, self.hermes)
+        self.assertIn('ServiceEnvironment -dict-add HERMES_HOME', problem)
+        with self.assertRaises(SystemExit) as raised:
+            self.run_quietly(migration.main, ['--data-dir', str(self.root), '--hermes-home', str(self.hermes), '--no-service'])
+        self.assertIn('Nothing changed', str(raised.exception.code))
+        self.assertTrue(all(self.home(bot).is_dir() for bot in self.bots))
+        _, output = self.run_quietly(migration.main, ['--data-dir', str(self.root), '--hermes-home', str(self.hermes), '--dry-run'])
+        self.assertIn('Before the migration', output)
+        # Without --hermes-home, the script takes the home of the service, which is a folder of Coconut here.
+        self.assertIn('is a folder of Coconut', migration.home_problem(self.root, migration.host.ROOT / '.runtime/hermes/terminal/hermes'))
+        hermes_runtime.write_status(self.root, {'status': 'ok', 'home': str(self.hermes)})
+        self.assertIsNone(migration.home_problem(self.root, self.hermes))
+
+
+if __name__ == '__main__':
+    unittest.main()

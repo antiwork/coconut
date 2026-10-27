@@ -23,7 +23,7 @@ class NativeRelayRecoveryTests(unittest.TestCase):
         envelope = dict(id=uuid4().hex, target_connection=peer['id'], message='Native transport wrapper')
         intent = dict(call_id=call['id'], task_id=self.task['id'], target_bot_id=peer['id'],
                       text=arguments['message'], previous_ids=[])
-        home = self.root / 'bots' / self.bot['id'] / 'home'
+        home = self.service.profiles.home(self.bot)
         folder = home / '.coconut-relay'
         folder.mkdir()
         (folder / (call['id'] + '.json')).write_text(json.dumps(intent))

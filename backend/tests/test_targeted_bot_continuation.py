@@ -596,7 +596,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         previous, source = self.prepare()
         arguments = dict(target=self.dev['id'], message='Continue the correction.', continuation_task_id=previous['id'])
         call = self.service.emit(source['id'], 'native_call', dict(name='message_agent', arguments=arguments))
-        home = Path(self.temp.name) / 'bots' / self.desk['id'] / 'home'
+        home = self.service.profiles.home(self.desk)
         request = dict(operation='start', bot=self.desk, task=dict(source, _available_bots=[self.dev]))
         with patch.dict(os.environ, HERMES_HOME=str(home)), patch.object(
                 sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]):
@@ -622,7 +622,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         previous, source = self.prepare()
         arguments = dict(target=self.dev['id'], message='Continue the correction.', continuation_task_id=previous['id'])
         call = self.service.emit(source['id'], 'native_call', dict(name='message_agent', arguments=arguments))
-        home = Path(self.temp.name) / 'bots' / self.desk['id'] / 'home'
+        home = self.service.profiles.home(self.desk)
         request = dict(operation='start', bot=self.desk,
                        task=dict(source, _available_bots=[self.dev]))
         with patch.dict(os.environ, HERMES_HOME=str(home)), patch.object(

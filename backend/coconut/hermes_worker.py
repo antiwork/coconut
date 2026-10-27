@@ -103,7 +103,7 @@ BOT_CREATION_SCHEMA = {
 
 BOT_DELETION_SCHEMA = {
     'name': 'coconut_delete_bot',
-    'description': 'Delete another Coconut bot when a listed direct human message requests deletion. Use its listed ID and current name. Ask which bot when the name is ambiguous. This removes the contact and stops its work and routines. The service retains its deleted profile. Wait for a confirmed receipt before claiming success.',
+    'description': 'Delete another Coconut bot when a listed direct human message requests deletion. Use its listed ID and current name. Ask which bot when the name is ambiguous. This removes the contact from Coconut and stops its work and routines. Its Hermes profile folder stays on the Mac: only the person can delete a Hermes profile, with a typed confirmation. Wait for a confirmed receipt before claiming success.',
     'parameters': {
         'type': 'object', 'additionalProperties': False,
         'properties': {
@@ -188,7 +188,8 @@ BOT_DELETION_INSTRUCTIONS = (
     'A capability question alone requests no deletion. Use the listed exact ID and name. '
     'If several contacts match, ask the person which one. Never choose the first match. '
     'Do not delete yourself or the bot whose conversation is open. '
-    'Deletion removes the contact and stops its work and routines. The deleted profile remains on the Mac. '
+    'Deletion removes the contact from Coconut and stops its work and routines. Its Hermes profile remains on the Mac. '
+    'You cannot delete a Hermes profile. '
     'Do not claim success without a matching deleted or duplicate service receipt in this turn. '
     'After an unconfirmed result, retry only the same source, target ID, and name. Never delete a replacement with the same name. '
     'Give one short confirmation after the receipt. Do not repeat internal IDs or add an approval footer.')
@@ -254,6 +255,15 @@ def bot_creation_receipt(value, payload, current_bot=None):
     if (value['profile_id'] != value['bot_id'] or value['session_id'] == value['bot_id']
             or value['bot_id'] == current_bot.get('id') or value['session_id'] == current_bot.get('session_id')):
         raise ValueError('The service did not confirm a separate bot profile and session.')
+    # The profile ID is the key of the profiles table: the new bot must have its own Hermes profile there.
+    if os.environ.get('COCONUT_DATA_DIR') and (Path(os.environ['COCONUT_DATA_DIR']) / 'coconut.sqlite3').is_file():
+        try:
+            from . import profile_registry
+        except ImportError:
+            import profile_registry
+        row = profile_registry.lookup(os.environ['COCONUT_DATA_DIR'], value['profile_id'])
+        if row is None or row['state'] != 'active':
+            raise ValueError('The service did not confirm a Hermes profile for the new bot.')
     return {key: value[key] for key in ('status', 'bot_id', 'profile_id', 'session_id', 'name', 'role', 'source_message_id')}
 
 
@@ -344,8 +354,8 @@ def bot_directory(request, profile_home=None):
                 from .profiles import HermesProfiles
             else:
                 from profiles import HermesProfiles
-            profiles = HermesProfiles(Path(profile_home).parents[2])
-        except (ImportError, OSError, ValueError):
+            profiles = HermesProfiles(os.environ['COCONUT_DATA_DIR'])
+        except (ImportError, KeyError, OSError, ValueError):
             return contacts
         for contact in contacts:
             try:

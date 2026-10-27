@@ -78,7 +78,10 @@ class SessionMaintenance:
         for bot in bots:
             if self.stopping.is_set() or self.restart_pending:
                 break
-            if not (self.root / 'bots' / bot['id'] / 'home' / 'state.db').exists():
+            try:
+                if not (self.profiles.home(bot) / 'state.db').exists():
+                    continue
+            except ValueError:
                 continue
             pending = list(outcomes.get(bot['id'], {}).values())
             if pending:

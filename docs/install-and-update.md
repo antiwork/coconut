@@ -89,20 +89,42 @@ Older versions installed their own Hermes in `.runtime/hermes` and their own `~/
 The service deletes that command at its next start, but only when the file has Coconut's marker line.
 Their LaunchAgent started the service with the Python of that runtime. When an update reloads the service, after the drain step, it changes only that Python in the LaunchAgent.
 It uses the Python that runs the update when that Python is not in a virtual environment, else `/opt/homebrew/bin/python3`, `/usr/local/bin/python3`, or `/usr/bin/python3`, the first that can load Coconut.
-Until bots become Hermes profiles, the shared model settings of the bots stay in `.runtime/hermes/terminal/hermes`.
-To change them in Terminal, set that folder as the Hermes home:
-
-```sh
-HERMES_HOME="$HOME/Coconut/.runtime/hermes/terminal/hermes" hermes model
-```
+The default model, approvals, and MCP servers in the phone's settings are those of your default Hermes profile. `hermes model` and `hermes config` change the same settings. Each other profile keeps its own settings.
 
 Native Hermes owns login and credential refresh. Coconut does not copy OAuth tokens into bot profiles.
+
+## Move the bots into Hermes profiles (once)
+
+Each bot is a Hermes profile (see [Architecture](architecture.md#bots-are-hermes-profiles)). An earlier install keeps each bot home in `.runtime/host/bots/<uuid>/home`. Those bots run no turns until you run the migration. The migration is one way.
+
+Run these commands on the Mac that runs Coconut, in `~/Coconut`:
+
+1. Make sure that the service uses your Hermes home. Read `home` in `.runtime/host/hermes.json`. An earlier install can have `HERMES_HOME` set to `~/Coconut/.runtime/hermes/terminal/hermes`. Then change it, restart the service, and read `home` again:
+
+   ```sh
+   defaults write com.gumroad.coconut.mac ServiceEnvironment -dict-add HERMES_HOME "$HOME/.hermes"
+   launchctl kickstart -k "gui/$(id -u)/com.gumroad.coconut.service"
+   ```
+
+2. Show the plan. This changes nothing: `python3 scripts/migrate_bots_to_profiles.py --dry-run`. Each profile name comes from the bot name, and no name replaces a profile that you have.
+3. Migrate: `python3 scripts/migrate_bots_to_profiles.py`.
+
+The migration:
+
+1. Lets the running turns finish, stops Coconut, and checks that no Coconut worker runs.
+2. Backs up `.runtime/host`, without workspaces, into `.runtime/host-backup-before-profiles-<time>`.
+3. Moves each bot home to `<Hermes home>/profiles/<name>`. On another disk, it copies the folder and then removes the original.
+4. Writes the `profiles` rows, and the ledger `.runtime/host/profile-migration.json`.
+5. Adds `<install folder>/skills` to `skills.external_dirs` of each moved profile.
+6. Starts Coconut. Coconut then adds your default profile and your other profiles as bots.
+
+The script refuses a Hermes home inside the Coconut folder, and a Hermes home that is not the service's. A failure before the first move changes nothing. A failure after it leaves Coconut stopped and prints the commands that move each folder back, from the ledger. Bot IDs stay the same, so the iPhone keeps every chat.
 
 ## The coconut skill for Hermes
 
 Coconut ships a Hermes skill, `coconut`, in `skills/coconut` of the install folder. It tells Hermes how to update Coconut, pair an iPhone, and find the cause of a problem. Then the Hermes of the Telegram gateway or of the CLI can answer "update Coconut" or "why is Coconut offline".
 
-Setup adds `<install folder>/skills` to `skills.external_dirs` in the `config.yaml` of the default Hermes profile (`HERMES_HOME`, else `~/.hermes`), of each profile in `<Hermes home>/profiles`, and of each bot profile. `scripts/hermes_skills.py add` does this. It runs in `deploy.py` on a first install and on each setup that the person asks for (`Coconut.app --set-up`, **Set Up Coconut**, which run `coconut install-source --set-up`), and in `scripts/setup_coconut.py`. An automatic update does not run it.
+Setup adds `<install folder>/skills` to `skills.external_dirs` in the `config.yaml` of the default Hermes profile (`HERMES_HOME`, else `~/.hermes`), and of each profile in `<Hermes home>/profiles`. The bots are those profiles. `scripts/hermes_skills.py add` does this. It runs in `deploy.py` on a first install and on each setup that the person asks for (`Coconut.app --set-up`, **Set Up Coconut**, which run `coconut install-source --set-up`), and in `scripts/setup_coconut.py`. An automatic update does not run it.
 The edit uses the config reader and writer of Hermes, so comments and the other settings stay. A second run changes nothing. Coconut changes the Hermes config only during setup. An install from before this version gets the entry when setup runs again. While the service runs, the menu has no **Set Up Coconut**, so run `/Applications/Coconut.app/Contents/Helpers/coconut install-source --set-up`. It reinstalls the source like an update: the running turns finish first. A setup that failed to add the entry retries it the same way.
 A new bot profile gets the entry when Coconut creates it.
 

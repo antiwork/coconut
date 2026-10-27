@@ -421,13 +421,15 @@ class ModelSelectionTests(unittest.TestCase):
         from uuid import uuid4
         with tempfile.TemporaryDirectory() as directory:
             catalog = HermesModelCatalog(directory, source=Path(directory) / 'source')
+            from profile_layout import LayoutRows
+            catalog.profile_rows = LayoutRows(directory)
             catalog.root.mkdir(parents=True)
             config = catalog.root / 'config.yaml'
             config.write_text('model: first\n')
             bots = [str(uuid4()), str(uuid4())]
             for bot_id in bots:
                 home = catalog._profile_home(bot_id)
-                home.mkdir(parents=True)
+                home.mkdir(parents=True, exist_ok=True)
                 (home / 'config.yaml').write_text('agent: {reasoning_effort: low}\n')
             calls = []
             def call(operation, homes):
@@ -446,11 +448,13 @@ class ModelSelectionTests(unittest.TestCase):
         from uuid import uuid4
         with tempfile.TemporaryDirectory() as directory:
             catalog = HermesModelCatalog(directory, source=Path(directory) / 'source')
+            from profile_layout import LayoutRows
+            catalog.profile_rows = LayoutRows(directory)
             catalog.root.mkdir(parents=True)
             (catalog.root / 'config.yaml').write_text('model: first\n')
             bot = str(uuid4())
             home = catalog._profile_home(bot)
-            home.mkdir(parents=True)
+            home.mkdir(parents=True, exist_ok=True)
             (home / 'config.yaml').write_text('{}\n')
             calls = []
             def call(operation, homes):

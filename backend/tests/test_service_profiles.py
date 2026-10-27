@@ -26,7 +26,7 @@ class ServiceProfileTests(unittest.TestCase):
         return self.write('POST', '/v1/bots', {'name': name, 'instructions': name + ' instructions', 'memory': name + ' memory'})
 
     def home(self, bot):
-        return self.root / 'bots' / bot['id'] / 'home'
+        return self.service.profiles.home(bot)
 
     def test_bots_have_distinct_stable_profile_ids_and_managed_context(self):
         first, second = self.bot(), self.bot('Lin')

@@ -50,6 +50,11 @@ class ProviderTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.bot = {'id': str(uuid4()), 'session_id': str(uuid4()), 'instructions': 'Keep replies brief.'}
         self.task = {'id': str(uuid4()), 'title': 'Check the total', 'bot_id': self.bot['id']}
+        # Each bot home is <root>/bots/<id>/home, as these tests lay it out. The service keeps the real rows.
+        from profile_layout import LayoutRows
+        rows = patch.object(HermesProvider, 'profile_rows', LayoutRows(self.root), create=True)
+        rows.start()
+        self.addCleanup(rows.stop)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -334,6 +339,9 @@ class ProviderTests(unittest.TestCase):
                     return emit(kind, payload)
                 return super()._run(operation, task, bot, history, acknowledge, **extra)
         provider = ReceiptProvider(self.root / 'data', python=sys.executable, hermes_root=source, catalog=FakeNativeCatalog(self.root / 'data'))
+        # Each bot home is <data>/bots/<id>/home, as these tests lay it out. A service keeps the real rows.
+        from profile_layout import LayoutRows
+        provider.profile_rows = LayoutRows(provider.data_dir)
         self.addCleanup(provider.close)
         return provider
 
@@ -744,8 +752,7 @@ class ProviderTests(unittest.TestCase):
         self.assertNotIn('noisy', json.dumps(events))
         self.assertEqual([kind for kind, _ in events], ['text_delta', 'completed'])
         self.assertFalse(provider._processes)
-        home = provider.data_dir / 'bots' / self.bot['id'] / 'home'
-        self.assertTrue((home / '.no-bundled-skills').is_file())
+        home = Path(provider.profile_rows.get(self.bot['id'])['home'])
         self.assertEqual((home / 'skill-sync-called').read_text(), 'True')
 
     def wait_for_path(self, path):
@@ -1009,6 +1016,8 @@ class ProviderTests(unittest.TestCase):
 
     def test_worker_start_reads_native_instructions_before_hermes_import(self):
         provider = self.fake_hermes("from pathlib import Path\nimport os\nassert (Path(os.environ['HERMES_HOME']) / 'SOUL.md').read_text() == 'Keep replies brief.'\nassert self.skip_memory is False\nreturn {'completed': True, 'final_response': 'Native profile ready.'}\n")
+        # Hermes owns SOUL.md of the profile. Coconut does not write it during a turn.
+        (Path(provider.profile_rows.get(self.bot['id'])['home']) / 'SOUL.md').write_text('Keep replies brief.')
         events = []
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             provider.start_task(self.task, self.bot, [], lambda kind, data: kind == 'phase' or events.append((kind, data)))
@@ -1154,7 +1163,7 @@ class ProviderTests(unittest.TestCase):
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
             env, cwd = provider.environment(self.bot['id'])
         from coconut.profiles import HermesProfiles
-        HermesProfiles(provider.data_dir).sync(self.bot)
+        provider.profile_rows.get(self.bot['id'])
         worker = Path(__file__).resolve().parents[1] / 'coconut' / 'hermes_worker.py'
         process = subprocess.Popen([sys.executable, str(worker)], cwd=cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         try:

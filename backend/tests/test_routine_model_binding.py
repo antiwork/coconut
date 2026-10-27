@@ -15,6 +15,8 @@ class RoutineModelBindingTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.current = dict(model='current-model', provider='current-provider', reasoning_effort='high')
         self.catalog = Mock()
+        # A change needs the profile folder of the bot.
+        self.catalog._profile_home.return_value = self.tmp.name
         self.provider = HermesProvider(self.tmp.name, catalog=self.catalog)
         self.provider.resolve_model = Mock(return_value=self.current)
 

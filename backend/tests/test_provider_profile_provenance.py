@@ -75,6 +75,8 @@ class ProviderProfileProvenanceTests(unittest.TestCase):
         provider.__class__ = HermesProvider
         service = Service(provider.data_dir, FixtureProvider(provider.data_dir), start_workers=False)
         self.addCleanup(service.close)
+        # The worker runs in the profile that the service created.
+        provider.profile_rows = service.profiles.rows
 
         def write(path, data):
             return service.mutate('POST', path, data, str(uuid4()), 'test-phone')

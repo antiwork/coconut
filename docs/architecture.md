@@ -29,7 +29,7 @@ Each bot stores its MCP servers, approval settings and API fallback in its own n
 ## Native integration
 
 Coconut installs no files into the Hermes source checkout.
-Coconut ships its `coconut` skill in `skills/` of the install folder. Hermes loads it through `skills.external_dirs`: setup adds that folder to the person's Hermes profiles, and each bot profile gets it at creation. The person's other Hermes surfaces, such as the Telegram gateway, then know how to update, pair, and repair Coconut. See [the coconut skill](install-and-update.md#the-coconut-skill-for-hermes).
+Coconut ships its `coconut` skill in `skills/` of the install folder. Hermes loads it through `skills.external_dirs`: setup adds that folder to the person's Hermes profiles, which are also the bots, and a profile that Coconut creates gets it at creation. The person's other Hermes surfaces, such as the Telegram gateway, then know how to update, pair, and repair Coconut. See [the coconut skill](install-and-update.md#the-coconut-skill-for-hermes).
 The worker loads `AIAgent`, native CLI tool configuration, profile context, memory, and skill discovery.
 The worker records a revision of native identity and memory files in the session metadata.
 Each file must contain valid UTF-8 in a regular file of at most 1 MiB.
@@ -75,6 +75,21 @@ Advanced native jobs that Coconut cannot preserve do not execute through its dis
 ## Isolation and routing
 
 Each bot has a separate Hermes profile, session, workspace, and browser directory.
+
+### Bots are Hermes profiles
+
+Each bot is one Hermes profile of the person, keyed by the profile name. `default` is the Hermes home (`$HERMES_HOME`, else `~/.hermes`). Each other profile is `<Hermes home>/profiles/<name>`. The `profiles` table in `coconut.sqlite3` maps the bot UUID to the profile, so bot IDs never change.
+
+- The service scans the profiles at its start and when `<Hermes home>/profiles` changes. A new profile folder becomes a new bot.
+- A folder that disappears makes its bot `missing`. The bot keeps its history and returns with a folder of the same name. Coconut does not follow renames: a renamed folder is a missing bot and a new bot.
+- A worker runs with `HERMES_HOME` set to the profile. Coconut chats, `hermes -p <name>`, and the gateway share the same skills, memories, config, and cron jobs. A worker belongs to one `HERMES_HOME`, so a changed folder starts a new worker.
+- Settings are native. The default settings are those of `<Hermes home>/config.yaml`. Each other profile uses its own config.
+- Coconut creates a profile only through the Hermes profile API, once. A failure fails the request. A folder that Hermes left behind becomes a bot at the next scan.
+- A settings write to a missing profile fails. Coconut never creates a profile folder itself.
+- Coconut keeps its own files of a bot in `<data-dir>/bots/<uuid>`: workspace, browser, temporary files, routine receipts, and terminal scripts.
+- Deleting a bot means "Remove from Coconut": the folder stays, and a scan does not add it again. To delete the Hermes profile itself, the person sends `POST /v1/bots/<id>/profile/delete` with `{"confirm": "<profile name>"}`. Coconut uses Hermes's `delete_profile` and never deletes `default`. A bot cannot request this deletion.
+
+A bot of an earlier install has its home in `<data-dir>/bots/<uuid>/home` and no profiles row. It runs no turns until a person runs `scripts/migrate_bots_to_profiles.py`, and `GET /v1/setup` returns `migration_required: true`.
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.
 Coconut scopes Codex, GitHub CLI, and XDG settings through their native environment variables.

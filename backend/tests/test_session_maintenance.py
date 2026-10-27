@@ -25,8 +25,7 @@ class SessionSelectionTests(unittest.TestCase):
         self.service = Service(self.temp.name, self.provider, start_workers=False)
         self.addCleanup(self.service.close)
         self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
-        home = self.service.root / 'bots' / self.bot['id'] / 'home'
-        home.mkdir(parents=True, exist_ok=True)
+        home = self.service.profiles.home(self.bot)
         (home / 'state.db').write_bytes(b'')
 
     def task(self, **fields):
@@ -99,7 +98,7 @@ class SessionSelectionTests(unittest.TestCase):
     def test_a_due_vacuum_holds_new_turns_of_its_bot_and_only_that_bot(self):
         queued = self.task(status='queued', conversation_bot_id=self.bot['id'])
         other = self.service.mutate('POST', '/v1/bots', {'name': 'Tuner', 'role': ''}, str(uuid4()))
-        (self.service.root / 'bots' / other['id'] / 'home').mkdir(parents=True, exist_ok=True)
+        self.service.profiles.home(other).mkdir(parents=True, exist_ok=True)
         elsewhere = self.task(status='queued', bot_id=other['id'], conversation_bot_id=other['id'])
         seen = []
         self.pending_vacuum(during=lambda: seen.append((self.service._dispatch_eligible(queued, 0), self.service._dispatch_eligible(elsewhere, 0),
@@ -264,7 +263,7 @@ class SessionSelectionTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
 
     def test_a_bot_without_a_session_store_is_skipped(self):
-        (self.service.root / 'bots' / self.bot['id'] / 'home' / 'state.db').unlink()
+        (self.service.profiles.home(self.bot) / 'state.db').unlink()
         with patch.object(self.service, '_finished_outcomes', return_value=set()):
             self.service.maintain_native_sessions(current=0)
         self.assertEqual(self.calls, [])

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 from uuid import UUID, uuid5
 
 
@@ -53,6 +54,10 @@ def worker(operation, request, homes):
         from native_routine_receipts import completion_receipts
         result, completions = [], {}
         for bot_id, home in homes.items():
+            if not Path(home).is_dir():
+                # A missing profile folder has no routines. Hermes would create its cron folder on a read.
+                completions[bot_id] = {}
+                continue
             with profile(home):
                 result.extend(view(bot_id, job) for job in jobs.list_jobs(include_disabled=True))
                 completions[bot_id] = completion_receipts(home)

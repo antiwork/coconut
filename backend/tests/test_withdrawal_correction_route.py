@@ -51,6 +51,8 @@ class WithdrawalCorrectionRouteTests(corrections.Fixture, unittest.TestCase):
                                    .replace('INVALID', repr(list(invalid))).replace('CAPTURE', repr(str(capture))))
         self.service.provider = HermesProvider(fixture.data_dir, python=fixture.python,
                                                hermes_root=fixture.hermes_root, catalog=fixture.catalog)
+        from profile_layout import LayoutRows
+        self.service.provider.profile_rows = LayoutRows(fixture.data_dir)
         self.addCleanup(self.service.provider.close)
         self.set_task(task['id'], status='queued')
         with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):

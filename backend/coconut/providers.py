@@ -17,8 +17,6 @@ from uuid import UUID, uuid4
 from .worker_protocol import MAX_EVENT_CHARACTERS
 
 Emit = Callable[[str, dict], Optional[dict]]
-# After a failed one-time settings step for a new bot, the next try waits this many seconds.
-SETTINGS_RETRY_SECONDS = 600
 
 
 class ExecutionProvider(Protocol):
@@ -233,8 +231,13 @@ class HermesProvider(FixtureProvider):
             payload = dict(payload, changes=dict(payload['changes'],
                            model=selection['model'], provider=selection['provider'],
                            reasoning_effort=selection.get('reasoning_effort')))
-        return self.catalog._call('native', native_operation=operation,
-                                  homes={bot['id']: str(self.catalog._profile_home(bot['id'])) for bot in bots}, **payload)
+        # A change needs the profile folder of each bot. A read also lists a bot whose folder is missing.
+        homes = {bot['id']: str(self.catalog._profile_home(bot['id'])) for bot in bots}
+        if operation not in ('read', 'routines_read', 'snapshot_read'):
+            for home in homes.values():
+                if not Path(home).is_dir():
+                    raise RuntimeError(f'The Hermes profile folder {home} is missing. Restore it, or remove the bot from Coconut.')
+        return self.catalog._call('native', native_operation=operation, homes=homes, **payload)
 
     def process_completions(self, bot, processes):
         groups = {}
@@ -403,7 +406,11 @@ class HermesProvider(FixtureProvider):
     def environment(self, bot_id):
         UUID(bot_id)
         root = self.data_dir / 'bots' / bot_id
-        for name in ('home', 'workspace', 'browser', 'tmp'):
+        from .profiles import HermesProfiles
+        # The worker runs in the bot's Hermes profile, so Coconut, `hermes -p <name>` and the gateway share its skills,
+        # memories, config and cron jobs. Coconut's own files stay in <data>/bots/<uuid>.
+        home = HermesProfiles(self.data_dir, getattr(self, 'profile_rows', None)).existing_home({'id': bot_id})
+        for name in ('workspace', 'browser', 'tmp'):
             (root / name).mkdir(parents=True, exist_ok=True, mode=0o700)
         # Homebrew manages one Mac installation, so its trust must have one scope.
         shared_config = self.data_dir / 'shared'
@@ -411,17 +418,20 @@ class HermesProvider(FixtureProvider):
         # Native tool configuration stays in the bot profile. HOME remains the OS account home.
         env = {k: os.environ[k] for k in ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY') if k in os.environ}
         from .runtime_environment import login_folders, prepare_profile
-        env.update(prepare_profile(root / 'home'))
+        env.update(prepare_profile(home))
         # A bot that keeps its own logins sets their folders in its .env. The worker loads that file, and every other
         # process for this bot (work sources, process and session checks) must use the same logins.
-        env.update(login_folders(root / 'home'))
+        env.update(login_folders(home))
         env['COCONUT_GOOGLE_HOME'] = str(self.data_dir / 'connections' / 'google' / 'home')
-        env.update(HERMES_HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
+        # Workspace recovery finds Coconut workers by COCONUT_DATA_DIR, not by HERMES_HOME, which the person's own Hermes
+        # processes can share.
+        env.update(COCONUT_DATA_DIR=str(self.data_dir), COCONUT_BOT_ID=bot_id, COCONUT_BOT_DIR=str(root))
+        env.update(HERMES_HOME=str(home), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
         from .hermes_runtime import NO_LAZY_INSTALLS
         env.update(NO_LAZY_INSTALLS)
         # Hermes finds its tool store from the source folder, which the Hermes home of the official installer owns.
         # The bot's terminal `hermes` installs tools into <HERMES_HOME>/tools, so the worker reads that store too.
-        env['HERMES_RUNTIME_DIR'] = str(root / 'home' / 'tools')
+        env['HERMES_RUNTIME_DIR'] = str(home / 'tools')
         env.update(HERMES_KANBAN_DB=str(self.data_dir / 'kanban/kanban.db'),
                    HERMES_KANBAN_BOARD='default', HERMES_TENANT=bot_id,
                    HERMES_KANBAN_WORKSPACES_ROOT=str(self.data_dir / 'kanban/kanban/workspaces'))
@@ -430,17 +440,18 @@ class HermesProvider(FixtureProvider):
     def prepare_kanban_worker(self, identity, bot, workspace, execution_id, worker_id=None):
         """Start a dedicated process before Hermes records its claim PID."""
         cache_key = worker_id or execution_id
+        env, _ = self.environment(bot['id'])
         with self._lock:
             if self._closed or bot['id'] in self._stopped_bots:
                 raise RuntimeError('This bot stopped before worker preparation.')
             previous = self._kanban_runtimes.get(cache_key)
             if (previous is not None and previous.poll() is None
-                    and not getattr(self._transports.get(previous), 'closed', False)):
+                    and not getattr(self._transports.get(previous), 'closed', False)
+                    and self._runtime_envs.get(previous, ({},))[0].get('HERMES_HOME') == env['HERMES_HOME']):
                 self._prepared[identity] = previous
                 return previous.pid
         if previous is not None:
             self._terminate(previous)
-        env, _ = self.environment(bot['id'])
         env['TERMINAL_CWD'] = workspace
         env['COCONUT_WORKSPACE_ROOT'] = str(self.data_dir / 'workspaces')
         env['COCONUT_WORKSPACE_OUTCOME'] = execution_id
@@ -531,26 +542,6 @@ class HermesProvider(FixtureProvider):
         with lock:
             self._run_turn(operation, task, bot, history, emit, **extra)
 
-    def _prepare_profile(self, bot):
-        """Create the profile of a new bot. Before its first turn, give it a copy of the default settings.
-
-        The service runs the same one-time step for existing bots at its start (see settings_migration). A failed step
-        does not stop the turn: the bot then runs with its own settings only. A turn after SETTINGS_RETRY_SECONDS tries
-        again.
-        """
-        from .profiles import HermesProfiles, settings_migrated
-        profiles = HermesProfiles(self.data_dir)
-        profiles.sync(bot)
-        failed = getattr(self, '_settings_failures', {})
-        if settings_migrated(profiles.home(bot)) or time.monotonic() < failed.get(bot['id'], float('-inf')):
-            return
-        try:
-            self.native_settings('migrate', [bot])
-        except Exception:
-            # Wait before the next try, so a lasting failure does not start Hermes at every turn.
-            self._settings_failures = dict(failed, **{bot['id']: time.monotonic() + SETTINGS_RETRY_SECONDS})
-            logging.getLogger(__name__).exception('Bot %s did not get the default settings. A later turn tries again.', bot['id'])
-
     def _run_turn(self, operation, task, bot, history, emit, *, isolated=False, **extra):
         from .turn_timings import TurnTimings
         timing = TurnTimings(task['id'], 'provider')
@@ -558,8 +549,6 @@ class HermesProvider(FixtureProvider):
             raise RuntimeError('The Hermes checkout contains a shared .env file. Use a clean checkout for Coconut.')
         if not Path(self.python).is_file() or not (self.hermes_root / 'run_agent.py').is_file():
             raise RuntimeError('Install Hermes on this Mac before starting this bot.')
-        if not isolated:
-            self._prepare_profile(bot)
         bot = self.observe_bot(bot)
         timing.mark('profile_read')
         selection = self.resolve_task_model(bot, task)
@@ -600,7 +589,9 @@ class HermesProvider(FixtureProvider):
             if prepared:
                 isolated = False
             # Work sessions apply their own conversation epoch without stopping peer turns.
-            epoch = (bot['session_id'], None if task.get('_execution_session_id') else task.get('_conversation_epoch'))
+            # A worker belongs to one HERMES_HOME. When the profile folder of the bot changes, a new worker starts.
+            epoch = (bot['session_id'], None if task.get('_execution_session_id') else task.get('_conversation_epoch'),
+                     env['HERMES_HOME'])
             if not prepared and (process is None or process.poll() is not None or self._runtime_epochs.get(bot['id']) != epoch
                     or (self._transports.get(process) is not None and self._transports[process].closed)):
                 if process is not None:

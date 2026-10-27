@@ -136,6 +136,8 @@ class RelayWakeupTests(unittest.TestCase):
         """.replace('TARGET', repr(self.dev['id'])).replace('OWNER', repr(self.child)))
         provider = HermesProvider(fixture.data_dir, python=fixture.python,
                                   hermes_root=fixture.hermes_root, catalog=fixture.catalog)
+        from profile_layout import LayoutRows
+        provider.profile_rows = LayoutRows(fixture.data_dir)
         self.addCleanup(provider.close)
         with self.service.transaction():
             task = self.service._get('tasks', reply_id)
