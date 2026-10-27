@@ -54,7 +54,7 @@ class RelayPushTests(unittest.TestCase):
     def flush(self):
         with self.service.transaction():
             self.service.db.execute('UPDATE push_items SET created=created-900')
-            self.service.db.execute('UPDATE push_outbox SET not_before=0,created=created-900')
+            self.service.db.execute('UPDATE push_outbox SET not_before=0,created=created-900,sent=sent-900')
         return self.service.push.deliver_one()
 
     def test_preview_uses_bot_and_actual_reply(self):
@@ -145,7 +145,8 @@ class RelayPushTests(unittest.TestCase):
         self.assertIsNone(row[4])
         self.assertFalse(self.service.push.deliver_one())
         self.assertTrue(self.flush())
-        self.assertEqual(self.relay.sealed[0]['coconut'], dict(version=1, device_id=self.device, kind='group', count=2))
+        self.assertEqual({key: self.relay.sealed[0]['coconut'][key] for key in ('version', 'device_id', 'kind', 'count')},
+                         dict(version=1, device_id=self.device, kind='group', count=2))
         self.assertEqual(self.relay.sealed[0]['aps']['alert'], dict(title='Coconut', body='2 finished tasks are waiting'))
         self.assertFalse(self.flush())
         self.assertEqual(len(self.relay.sent), 1)

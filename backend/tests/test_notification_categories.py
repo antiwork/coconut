@@ -40,7 +40,7 @@ class NotificationCategoryTests(unittest.TestCase):
 
     def flush(self):
         self.service.db.execute('UPDATE push_items SET created=created-900')
-        self.service.db.execute('UPDATE push_outbox SET not_before=0,created=created-900')
+        self.service.db.execute('UPDATE push_outbox SET not_before=0,created=created-900,sent=sent-900')
         while self.service.push.deliver_one():
             pass
 

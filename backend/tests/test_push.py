@@ -48,7 +48,7 @@ class PushTests(unittest.TestCase):
     def flush(self):
         with self.service.transaction():
             self.service.db.execute('UPDATE push_items SET created=created-900')
-            self.service.db.execute('UPDATE push_outbox SET not_before=0,created=created-900')
+            self.service.db.execute('UPDATE push_outbox SET not_before=0,created=created-900,sent=sent-900')
         return self.service.push.deliver_one()
 
     def states(self):
