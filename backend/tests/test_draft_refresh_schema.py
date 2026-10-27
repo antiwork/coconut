@@ -57,6 +57,7 @@ class DraftRefreshSchemaTests(unittest.TestCase):
             return {{'completed': True, 'final_response': ''}}
         ''')
         provider.data_dir = self.service.root
+        provider.profile_rows = self.service.profiles.rows  # The worker runs in the profile of the service's bot.
         provider.catalog = workers.FakeNativeCatalog(self.service.root)
         self.service._queue_decision_refreshes()
         context = self.service._all('contexts')[-1]
