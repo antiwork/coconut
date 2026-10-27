@@ -67,6 +67,9 @@ class NativeToolStoreTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
         self.provider = HermesProvider(self.root / 'data', python=PYTHON, hermes_root=SOURCE, home=self.root / 'terminal')
+        # Each bot home is <data>/bots/<id>/home in this test. A service keeps the real profiles rows.
+        from profile_layout import LayoutRows
+        self.provider.profile_rows = LayoutRows(self.root / 'data')
 
     def run_bot(self, bot_id, operation):
         env, cwd = self.provider.environment(bot_id)

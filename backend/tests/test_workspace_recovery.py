@@ -744,9 +744,8 @@ class WorkspaceRecoveryTests(unittest.TestCase):
 
         self.restart(MigrationProvider(self.data))
         self.assertEqual(self.receipt()['state'], 'applied')
-        self.assertEqual([entry[0] for entry in calls], ['model', 'native'])
-        self.assertEqual(calls[1][1], 'migrate')
-        self.assertTrue(calls[1][2])
+        # Bots are Hermes profiles with their own settings, so no settings step runs after the model default.
+        self.assertEqual([entry[0] for entry in calls], ['model'])
         self.assertFalse(self.service._workspace_recovery_hold)
 
     def test_checkout_recovery_disables_post_checkout_hook(self):
@@ -935,7 +934,7 @@ class WorkspaceRecoveryTests(unittest.TestCase):
         self.assertEqual(git(self.workspace, 'branch', '--show-current'), payload['attached_branch'])
         artifact['bot_id'] = self.bot['id']
         self.service._put('artifacts', artifact)
-        checkpoint = self.data / 'bots' / self.bot['id'] / 'home' / 'processes.json'
+        checkpoint = self.service.profiles.home(self.bot) / 'processes.json'
         checkpoint.write_text(json.dumps([dict(pid=os.getpid())]))
         self.assertEqual(self.http('/v1/maintenance/checkout-recovery', payload, key=self.key)[0], 200)
         self.assertFalse(self.service.take_service_restart())
@@ -1306,7 +1305,7 @@ print(identity)
         self.provider.release.set()
 
     def test_active_or_ambiguous_durable_delegation_holds_repair(self):
-        ledger = self.data / 'bots' / self.bot['id'] / 'home' / 'state.db'
+        ledger = self.service.profiles.home(self.bot) / 'state.db'
         with sqlite3.connect(ledger) as db:
             db.execute('CREATE TABLE async_delegations (state TEXT)')
             db.execute("INSERT INTO async_delegations VALUES ('finalizing')")
@@ -1364,7 +1363,7 @@ print(identity)
 
     def test_startup_active_writer_holds_before_recovery_or_dispatch(self):
         self.assertEqual(self.request()[0], 200)
-        checkpoint = self.data / 'bots' / self.bot['id'] / 'home' / 'processes.json'
+        checkpoint = self.service.profiles.home(self.bot) / 'processes.json'
         checkpoint.write_text(json.dumps([dict(pid=os.getpid())]))
         with patch.object(Service, '_recover', side_effect=AssertionError('must not recover')):
             self.restart()
@@ -1760,7 +1759,7 @@ print(parent)
         with self.assertRaises(ProcessLookupError):
             os.kill(wrapper.pid, 0)
         self.assertEqual(os.getpgid(child), wrapper.pid)
-        checkpoint = self.data / 'bots' / self.bot['id'] / 'home' / 'processes.json'
+        checkpoint = self.service.profiles.home(self.bot) / 'processes.json'
         evidence = json.dumps([dict(pid=wrapper.pid, pid_scope='host', host_start_time=123, systemd_unit='')])
         checkpoint.write_text(evidence)
         self.assertEqual(self.request()[0], 200)
@@ -1779,7 +1778,7 @@ print(parent)
     def test_uninspectable_group_holds_without_cleanup(self):
         wrapper = subprocess.Popen([sys.executable, '-B', '-c', 'pass'], start_new_session=True)
         wrapper.wait(timeout=5)
-        checkpoint = self.data / 'bots' / self.bot['id'] / 'home' / 'processes.json'
+        checkpoint = self.service.profiles.home(self.bot) / 'processes.json'
         evidence = json.dumps([dict(pid=wrapper.pid, pid_scope='host', host_start_time=123, systemd_unit='')])
         checkpoint.write_text(evidence)
         self.assertEqual(self.request()[0], 200)
@@ -1797,7 +1796,7 @@ print(parent)
     def test_systemd_scope_holds_with_dead_wrapper_and_absent_group(self):
         wrapper = subprocess.Popen([sys.executable, '-B', '-c', 'pass'], start_new_session=True)
         wrapper.wait(timeout=5)
-        checkpoint = self.data / 'bots' / self.bot['id'] / 'home' / 'processes.json'
+        checkpoint = self.service.profiles.home(self.bot) / 'processes.json'
         for unit in ('hermes-worker-fixture.scope', None):
             with self.subTest(unit=unit):
                 evidence = json.dumps([dict(pid=wrapper.pid, pid_scope='host', host_start_time=123, systemd_unit=unit)])
@@ -1815,7 +1814,7 @@ print(parent)
     def test_dead_wrapper_and_absent_group_allow_recovery(self):
         wrapper = subprocess.Popen([sys.executable, '-B', '-c', 'pass'], start_new_session=True)
         wrapper.wait(timeout=5)
-        checkpoint = self.data / 'bots' / self.bot['id'] / 'home' / 'processes.json'
+        checkpoint = self.service.profiles.home(self.bot) / 'processes.json'
         checkpoint.write_text(json.dumps([dict(pid=wrapper.pid, pid_scope='host', systemd_unit='')]))
         self.assertEqual(self.request()[0], 200)
         self.assertTrue(self.service.take_service_restart())
@@ -1835,7 +1834,7 @@ print(parent)
         old.parent.mkdir()
         old.write_text('import time\ntime.sleep(90)\n')
         process = subprocess.Popen([sys.executable, str(old)], env=dict(os.environ,
-            HERMES_HOME=str(self.data / 'bots' / self.bot['id'] / 'home')))
+            HERMES_HOME=str(self.data / 'bots' / self.bot['id'] / 'home')))  # A worker of an earlier version.
         self.addCleanup(lambda: (process.terminate(), process.wait(timeout=5)))
         self.assertEqual(self.request()[0], 200)
         self.restart()
@@ -1949,7 +1948,7 @@ print(parent)
         env, cwd = self.provider._runtime_envs[runtime]
         self.assertEqual(cwd, self.workspace)
         self.assertEqual(env['HOME'], os.environ['HOME'])
-        self.assertEqual(env['HERMES_HOME'], str(self.data / 'bots' / self.bot['id'] / 'home'))
+        self.assertEqual(env['HERMES_HOME'], str(self.service.profiles.home(self.bot)))
         # Tools use the Mac account folders. A profile .env can still select its own.
         self.assertNotIn('CODEX_HOME', env)
         self.assertNotIn('CLAUDE_CONFIG_DIR', env)

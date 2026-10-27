@@ -25,7 +25,7 @@ from uuid import UUID, uuid4, uuid5
 from .pr_tracking import REVIEW_CHECK_NAMES, GitHubPRTracker, PRTrackingError, parse_pr_url
 from .routines import validate_schedule, next_run
 from .native_conversation import reaction_only_turn
-from .profiles import HermesProfiles, ProfileError, profile_id, settings_migrated
+from .profiles import HermesProfiles, ProfileError, profile_id
 from .state_sync import StateSync
 
 
@@ -177,6 +177,7 @@ from .withdrawal_corrections import WithdrawalCorrections
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 from .technical_lane import TechnicalLane
 from .hermes_setup import HermesSetup
+from .bot_profiles import BotProfiles
 
 
 # The statements of Service._refresh_bot. Each needs an index and no sort. A test reads the plan of each one.
@@ -198,13 +199,15 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup):
+class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
     ACTIONS = {'create_file'}
 
-    def __init__(self, data_dir: str | Path, provider: Any, *, start_workers: bool = True, pr_tracker: Any = None):
+    def __init__(self, data_dir: str | Path, provider: Any, *, start_workers: bool = True, pr_tracker: Any = None,
+                 hermes_home: str | Path | None = None):
+        """hermes_home is the person's Hermes home. Each of its profiles is a bot (bot_profiles)."""
         self.root = Path(data_dir).expanduser().resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.root, 0o700)
@@ -286,6 +289,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         CREATE TABLE IF NOT EXISTS receipts (decision_id TEXT PRIMARY KEY, state TEXT NOT NULL, artifact_id TEXT NOT NULL, content_hash TEXT NOT NULL, detail TEXT NOT NULL);
         ''')
         migrate_device_peers(self.db)
+        self._init_profiles(hermes_home)
         self.db.execute('CREATE INDEX IF NOT EXISTS native_receipts_pending_completion ON native_receipts (id) WHERE ' + PENDING_COMPLETIONS)
         for field in MARKS:
             self.db.execute(f'CREATE INDEX IF NOT EXISTS tasks{field} ON tasks (id) WHERE ' + marked(field))
@@ -350,7 +354,6 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
             self.process_lock.close()
             raise
-        self._migrate_profile_settings(self._all('bots'))
         with self.transaction():
             for bot in self._all('bots'):
                 bot.pop('memory', None)
@@ -367,7 +370,6 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                     self.provider.migrate_model_default(self._setting('model'), self._setting('base_url'))
                 elif hasattr(self.provider, 'configure') and self._setting('model'):
                     self.provider.configure(model=self._setting('model'), base_url=self._setting('base_url') or None)
-                self._migrate_profile_settings(self._all('bots'))
         except BaseException:
             if self.kanban:
                 self.kanban.close()
@@ -375,6 +377,10 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
             self.process_lock.close()
             raise
+        try:
+            self.rescan_profiles()
+        except Exception:
+            logging.getLogger(__name__).exception('The Hermes profile scan failed at start. The watcher tries again.')
         if start_workers:
             self.start()
         if hasattr(self.provider, 'subscribe_model_catalog'):
@@ -414,6 +420,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 # The kept tasks can hold rows that this rollback removes. Forget them first: ROLLBACK can raise.
                 self._forget_cached_tasks()
                 self.db.execute('ROLLBACK')
+                if getattr(self.profiles, 'rows', None) is not None:
+                    self._reload_profile_rows()
                 raise
             pending, self._profile_pending = self._profile_pending, {}
             for bot in pending.values():
@@ -686,21 +694,6 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             raise ServiceError(409, str(error)) from error
         except OSError as error:
             raise ServiceError(503, 'The bot settings were saved, but its Hermes profile could not sync.') from error
-
-    def _migrate_profile_settings(self, bots):
-        """Write the settings that each bot inherited into its own profile, once. settings_migration describes the step.
-
-        Its report file marks a bot as done, so this check costs one file read. A failed step stops the start, so the
-        automatic update keeps the earlier version. The step waits while workspace recovery holds the start, because a
-        worker of the earlier service can still run. The provider gives a new bot the same step before its first turn.
-        """
-        if not hasattr(self.provider, 'native_settings') or getattr(self, '_workspace_recovery_hold', False):
-            return
-        pending = [bot for bot in bots if not bot.get('_deleted') and self.profiles.home(bot).is_dir()
-                   and not settings_migrated(self.profiles.home(bot))]
-        if pending:
-            # One Hermes process runs the step for all bots.
-            self.provider.native_settings('migrate', pending)
 
 
     def _human_source(self, task: dict, source_id: str, binding: dict, purpose: str) -> dict:
@@ -1152,6 +1145,11 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                     self._sync_profile(bot)
                 if method == 'DELETE' and len(parts) == 3 and parts[:2] == ['v1', 'bots']:
                     callbacks.append(lambda: self._finish_bot_deletion(parts[2]))
+                if method == 'POST' and len(parts) == 5 and parts[:2] == ['v1', 'bots'] and parts[3:] == ['profile', 'delete']:
+                    callbacks.append(lambda: self._finish_bot_deletion(parts[2]))
+                    row = self.profiles.rows.get(parts[2])
+                    if row is not None:
+                        callbacks.append(lambda: self._finish_profile_deletion(parts[2], row['name']))
             else:
                 self._request_device_id = device_id
                 self._request_key = key
@@ -1296,6 +1294,9 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                     self.provider.set_bot_settings(bot, {field: expected[field] for field in ('name', 'role', 'approval_override', 'worker_limit') if field in expected})
                 if 'instructions' in expected:
                     self.profiles.write_instructions(bot, expected['instructions'])
+            except ProfileError as error:
+                # For example a missing profile folder. Coconut never creates one here.
+                raise ServiceError(409, str(error)) from None
             except Exception:
                 raise ServiceError(503, 'The Mac could not confirm the profile change. Retry with the same request key.') from None
             return self._finish_model_update(key, catalog, intent=intent)
@@ -1338,7 +1339,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 raise ServiceError(503, 'The Mac could not confirm the model change. Retry with the same request key.') from None
             return self._finish_model_update(key, catalog)
 
-    def _create_bot(self, data: dict, *, audit: dict | None = None) -> dict:
+    def _create_bot(self, data: dict, *, audit: dict | None = None, profile: dict | None = None) -> dict:
+        """Create a bot. `profile` is {name, home} of a profile that a scan found. Without it, Hermes creates one."""
         if data.get('model_override') is not None:
             raise ServiceError(400, 'Create the bot, then choose its model in bot settings.')
         if not isinstance(data.get('pinned', False), bool):
@@ -1351,7 +1353,12 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         bot = dict(id=uid(), session_id=uid(), name=require_text(data, 'name', 80), role=str(data.get('role', ''))[:160], avatar=str(data.get('avatar', f'coconut.{avatar}'))[:80], color=str(data.get('color', color))[:20], instructions=data.get('instructions', ''), notifications=True, status='idle', last_message='', unread_count=0, archived=False, pinned=data.get('pinned', False), created_at=now())
         bot['profile_id'] = profile_id(bot)
         bot['model_override'] = None
-        self._sync_profile(bot)
+        if profile is None:
+            try:
+                profile = self._new_profile(bot)
+            except (ProfileError, OSError) as error:
+                raise ServiceError(503, f'Hermes did not create the profile of this bot: {error}') from None
+        self._attach_profile(bot, profile)
         self._put('bots', bot)
         self._event('bot.created', bot | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
         return bot
@@ -1383,6 +1390,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                     self._event('routine.updated', self._public(routine), bot['id'])
             bot.update(_deleted=True, archived=True, _delete_task_ids=cancelled)
             self._put('bots', bot)
+            # Remove from Coconut keeps the Hermes profile folder.
+            self._remove_profile_row(bot['id'])
             self._event('bot.deleted', {'id': bot['id']} | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
             # A deleted bot publishes no more rows, so its record has no use. Forget it when the transaction commits.
             self.__dict__.setdefault('_forget_bots_on_commit', set()).add(bot['id'])
@@ -1524,6 +1533,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if len(parts) == 3 and method == 'DELETE':
                 self._delete_bot(bot, callbacks, audit={'deleted_by': device})
                 return {'ok': True}
+            if parts[3:] == ['profile', 'delete'] and method == 'POST':
+                return self._delete_profile_request(bot, data, callbacks, device)
             if parts[3:] == ['read'] and method == 'POST':
                 bot['unread_count'] = 0
                 self._put('bots', bot)
@@ -2819,6 +2830,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self.tool_checker.start()
         self.source_poller = threading.Thread(target=self._poll_work_sources, name='coconut-source-poll', daemon=True)
         self.source_poller.start()
+        self._start_profile_watcher()
         self.push.start()
 
     def _register_pr_artifact(self, task_id: str | None, payload: dict, *, bot_id=None):
@@ -4265,6 +4277,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             self.tool_checker.join(timeout=20)
         if self.source_poller:
             self.source_poller.join(timeout=65)
+        if getattr(self, 'profile_watcher', None):
+            self.profile_watcher.join(timeout=10)
         self.push.close()
         with self.lock:
             context_task_ids = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}

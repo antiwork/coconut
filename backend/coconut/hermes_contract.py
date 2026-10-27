@@ -308,39 +308,39 @@ def verify_contract():
     verify_parallel_work_contract()
     verify_delegation_contract()
     verify_terminal_contract()
-    verify_skills_contract()
+    verify_profile_api_contract()
 
     return {'native_terminal_path': True, 'provider_contract': 'compatible', 'tool_registration': True, 'tool_dispatch': True,
             'native_model_effort_roundtrip': True,
-            'native_essential_skills': True, 'model_request_sent': False}
+            'native_profile_api': True, 'model_request_sent': False}
 
 
-def verify_skills_contract():
-    from uuid import uuid4
-    from agent.skill_utils import ESSENTIAL_SKILLS
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from tools.skills_sync import sync_skills
-    from .profiles import HermesProfiles
-    with tempfile.TemporaryDirectory(prefix='coconut-skills-contract-') as temporary:
-        profiles = HermesProfiles(temporary)
-        bot = dict(id=str(uuid4()), session_id=str(uuid4()), name='Skills check')
-        profiles.sync(bot)
-        home = profiles.home(bot)
-        token = set_hermes_home_override(str(home))
-        try:
-            result = sync_skills(quiet=True)
-            if not ESSENTIAL_SKILLS or set(result['copied']) != set(ESSENTIAL_SKILLS):
-                raise ValueError('Hermes did not seed exactly its essential skills.')
-            custom = home / 'skills' / 'custom-check' / 'SKILL.md'
-            custom.parent.mkdir(parents=True)
-            custom.write_text('A user-created skill.\n')
-            result = sync_skills(quiet=True)
-            if result['copied'] or not result.get('skipped_opt_out'):
-                raise ValueError('Hermes added bundled skills after profile setup.')
-            if custom.read_text() != 'A user-created skill.\n':
-                raise ValueError('Hermes changed a user-created skill during sync.')
-        finally:
-            reset_hermes_home_override(token)
+def verify_profile_api_contract():
+    """Create and delete a profile with the Hermes profile API, as bot_profiles does, in a temporary Hermes home."""
+    import os
+    import sys
+    import hermes_cli
+    from .bot_profiles import run_profile_command
+    source = Path(hermes_cli.__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory(prefix='coconut-profile-contract-') as temporary:
+        root = Path(temporary)
+        hermes_home = root / '.hermes'
+        hermes_home.mkdir()
+        (hermes_home / 'config.yaml').write_text('{}\n')
+        # HOME is the temporary folder too, so the `<name>` command goes into its .local/bin.
+        environment = dict(PATH=os.environ.get('PATH', '/usr/bin:/bin'), HOME=str(root), TMPDIR=str(root))
+        created = run_profile_command(sys.executable, source, hermes_home, 'create', environment=environment,
+                                      name='coconut-check', display_name='Coconut check', description='A check.',
+                                      soul='Contract soul.\n', skills=str(root / 'skills'),
+                                      coconut=str(Path(__file__).resolve().parent))
+        home = hermes_home / 'profiles' / 'coconut-check'
+        if Path(created['home']).resolve() != home.resolve() or (home / 'SOUL.md').read_text() != 'Contract soul.\n':
+            raise ValueError('Hermes did not create the profile with its SOUL.')
+        if created.get('skills') != 'added' or str(root / 'skills') not in (home / 'config.yaml').read_text():
+            raise ValueError('Coconut could not add its skills folder to a new profile: ' + str(created.get('skills_error')))
+        run_profile_command(sys.executable, source, hermes_home, 'delete', environment=environment, name='coconut-check')
+        if home.exists():
+            raise ValueError('Hermes did not delete the profile.')
 
 
 def verify_terminal_contract():

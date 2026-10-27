@@ -19,7 +19,8 @@ FRESH_SECONDS = 120
 def progress_path(identity):
     from uuid import UUID
     UUID(identity)
-    return Path(os.environ['HERMES_HOME']) / 'coconut-worker-progress' / (identity + '.json')
+    # Coconut's own folder of the bot, never its Hermes profile.
+    return Path(os.environ.get('COCONUT_BOT_DIR') or os.environ['HERMES_HOME']) / 'coconut-worker-progress' / (identity + '.json')
 
 
 def command_phase(command):

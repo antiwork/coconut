@@ -44,17 +44,17 @@ def configure_terminal(home, directory=None):
     """Prepare the native shell of one bot. Coconut writes nothing into the Hermes profile.
 
     Hermes's register_task_env_overrides carries only the sandbox image, the backend and cwd, so it cannot carry shell
-    setup. Coconut writes its scripts into its own folder of the bot (`directory`, by default the parent of the
-    profile) and adds them, in this process only, to the files that the native shell sources.
+    setup. Coconut writes its scripts into its own folder of the bot (`directory`, by default profiles.bot_folder of
+    the profile) and adds them, in this process only, to the files that the native shell sources.
     """
     try:
-        from .profiles import _safe, _write
+        from .profiles import _safe, _write, bot_folder
         from .runtime_environment import CLAUDE_PROFILE_OVERRIDES, prepare_profile
     except ImportError:
-        from profiles import _safe, _write
+        from profiles import _safe, _write, bot_folder
         from runtime_environment import CLAUDE_PROFILE_OVERRIDES, prepare_profile
     home = Path(home)
-    directory = Path(directory) if directory is not None else home.parent
+    directory = Path(directory) if directory is not None else bot_folder(home)
     folder = directory / 'terminal'
     _safe(folder, directory)
     folder.mkdir(exist_ok=True, mode=0o700)

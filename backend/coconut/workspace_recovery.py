@@ -49,11 +49,12 @@ def lifecycle_homes(root):
         return result
     for owner in children(root / 'runtimes'):
         yield from children(owner)
-    for bot in children(root / 'bots'):
-        home = bot / 'home'
+    # Each bot keeps its state.db and processes.json in its Hermes profile.
+    from .profile_registry import homes
+    for home in map(Path, homes(root)):
         if home.is_symlink():
             raise ValueError('A native profile lifecycle directory is unsafe.')
-        if home.exists():
+        if home.is_dir():
             yield home
 
 
@@ -132,11 +133,13 @@ def check_writers(root, allowed=()):
             if alive(pid):
                 raise ValueError('An orphan worker cannot be inspected.')
             continue
+        # A bot's HERMES_HOME is a Hermes profile that the person's own processes share. COCONUT_DATA_DIR marks a worker.
         if (f'COCONUT_WORKSPACE_ROOT={root}/workspaces ' in result.stdout + ' '
                 or f'COCONUT_PROCESS_HOME={root}/runtimes/' in result.stdout
+                or f'COCONUT_DATA_DIR={root} ' in result.stdout + ' '
                 or f'HERMES_HOME={root}/bots/' in result.stdout):
             raise ValueError('An unaccounted Coconut worker requires inspection.')
-        if script in fields[1] and not any(marker in result.stdout for marker in ('COCONUT_WORKSPACE_ROOT=', 'HERMES_HOME=')):
+        if script in fields[1] and not any(marker in result.stdout for marker in ('COCONUT_WORKSPACE_ROOT=', 'COCONUT_DATA_DIR=', 'HERMES_HOME=')):
             raise ValueError('An unscoped Coconut worker requires inspection.')
 
 

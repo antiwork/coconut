@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
+from coconut.profiles import ProfileError
 from coconut.service import Service, ServiceError
 from test_service import ControlledProvider
 
@@ -57,7 +58,7 @@ class BotCreationTests(unittest.TestCase):
         return self.service.emit(task['id'], 'bot_create', payload or self.payload(task))
 
     def home(self, bot_id):
-        return self.root / 'bots' / bot_id / 'home'
+        return self.service.profiles.home({'id': bot_id})
 
     def restart(self):
         self.service.close()
@@ -75,7 +76,6 @@ class BotCreationTests(unittest.TestCase):
         self.assertFalse(bot['pinned'])
         self.assertEqual((self.home(bot['id']) / 'SOUL.md').read_text(), self.payload(task)['instructions'])
         self.assertFalse((self.home(bot['id']) / 'COCONUT_MEMORY.md').exists())
-        self.assertTrue((self.home(bot['id']) / 'config.yaml').is_file())
         self.assertFalse((self.home(bot['id']) / 'coconut-profile.json').exists())
         self.assertEqual(self.service._get('bots', bot['id'])['session_id'], receipt['session_id'])
         self.assertFalse(any(t['bot_id'] == bot['id'] for t in self.service._all('tasks')))
@@ -212,35 +212,21 @@ class BotCreationTests(unittest.TestCase):
             self.create(task, self.payload(task) | {'name': 'Ninth'})
         self.assertEqual(len(self.service._all('bot_creation_receipts')), 8)
 
-    def test_profile_failure_commits_once_then_retry_syncs_before_confirmation(self):
+    def test_a_failed_profile_creation_fails_the_request_and_a_retry_creates_the_bot(self):
+        # Hermes creates the profile once per request. A failure fails the request, and nothing is committed.
         task = self.working(self.send())
-        with patch.object(self.service.profiles, 'sync', side_effect=OSError('Simulated storage failure')):
-            with self.assertRaisesRegex(ServiceError, 'profile could not sync'):
+        with patch.object(self.service, '_new_profile', side_effect=ProfileError('Hermes refused the profile request.')):
+            with self.assertRaisesRegex(ServiceError, 'Hermes did not create the profile'):
                 self.create(task)
-        record = self.service._all('bot_creation_receipts')[0]
-        self.assertFalse(self.home(record['receipt']['bot_id']).exists())
-        with patch.object(self.service.profiles, 'sync', side_effect=OSError('Still unavailable')):
-            with self.assertRaises(ServiceError):
-                self.create(task)
+        self.assertEqual(self.service._all('bot_creation_receipts'), [])
+        self.assertEqual(len(self.service._all('bots')), 2)
         receipt = self.create(task)
-        self.assertEqual(receipt, record['receipt'] | {'status': 'duplicate'})
-        self.assertTrue((self.home(receipt['bot_id']) / 'config.yaml').is_file())
+        self.assertEqual(receipt['status'], 'created')
+        self.assertEqual(self.create(task), receipt | {'status': 'duplicate'})
+        self.assertTrue((self.home(receipt['bot_id']) / 'SOUL.md').is_file())
         self.assertEqual(len(self.service._all('bots')), 3)
 
-    def test_restart_reconciles_profile_before_receipt_enters_provider_input(self):
-        task = self.working(self.send())
-        with patch.object(self.service.profiles, 'sync', side_effect=OSError('Simulated storage failure')):
-            with self.assertRaises(ServiceError):
-                self.create(task)
-        receipt = self.service._all('bot_creation_receipts')[0]['receipt']
-        self.restart()
-        self.service._run_task(task['id'])
-        provider_task = self.provider.starts[-1][0]
-        self.assertEqual(provider_task['_bot_creation_sources'], [{'id': receipt['source_message_id'], 'text': 'Create a bot named Scout for research.'}])
-        self.assertEqual(provider_task['_bot_creation_receipts'], [receipt | {'status': 'duplicate'}])
-        self.assertTrue((self.home(receipt['bot_id']) / 'config.yaml').is_file())
-
-    def test_transaction_failure_leaves_no_bot_profile_receipt_or_event(self):
+    def test_transaction_failure_leaves_no_bot_profile_row_receipt_or_event(self):
         task = self.working(self.send())
         cursor = self.service._cursor()
         with patch.object(self.service, '_event', side_effect=RuntimeError('Before commit')):
@@ -249,16 +235,16 @@ class BotCreationTests(unittest.TestCase):
         self.assertEqual(len(self.service._all('bots')), 2)
         self.assertEqual(self.service._all('bot_creation_receipts'), [])
         self.assertEqual(self.service._cursor(), cursor)
-        self.assertEqual(len(list((self.root / 'bots').iterdir())), 2)
+        self.assertEqual(set(self.service.profiles.rows), {self.bot['id'], self.peer['id']})
 
-    def test_manual_creation_shares_defaults_and_reconciles_same_key_profile_failure(self):
+    def test_manual_creation_fails_with_its_profile_and_a_retry_creates_it(self):
         key = str(uuid4())
         data = {'name': 'Manual', 'role': 'Research', 'instructions': ''}
-        with patch.object(self.service.profiles, 'sync', side_effect=OSError('Simulated storage failure')):
+        with patch.object(self.service, '_new_profile', side_effect=ProfileError('Hermes did not answer the profile request.')):
             with self.assertRaises(ServiceError):
                 self.write('POST', '/v1/bots', data, key)
         bot = self.write('POST', '/v1/bots', data, key)
-        self.assertTrue((self.home(bot['id']) / 'config.yaml').is_file())
+        self.assertTrue(self.home(bot['id']).is_dir())
         self.assertIsNone(bot['model_override'])
         self.assertEqual(len(self.service._all('bots')), 3)
         self.write('DELETE', f'/v1/bots/{bot["id"]}')

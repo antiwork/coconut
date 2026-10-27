@@ -29,7 +29,11 @@ class HermesSetup:
             'tested': None}
         if self.hermes_restart_deadline is not None:
             hermes = dict(hermes, reason=RESTARTING, restarting=True)
-        return {'hermes': hermes}
+        result = {'hermes': hermes}
+        if getattr(self, 'scan_profiles', False):
+            # Bots from before the profile layout run no turns until a person runs the migration.
+            result['migration_required'] = bool(self.unmigrated_bots())
+        return result
 
     def watch_hermes(self, status: dict):
         """Note the Hermes that this process started with. See hermes_changed."""

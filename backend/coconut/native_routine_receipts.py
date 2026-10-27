@@ -9,7 +9,11 @@ from uuid import uuid4
 
 def runs_directory(home):
     """Coconut keeps its routine receipts in its own folder of the bot, `<data>/bots/<uuid>/runs`, not in the profile."""
-    return Path(home).parent / 'runs'
+    try:
+        from .profiles import bot_folder
+    except ImportError:
+        from profiles import bot_folder
+    return bot_folder(home) / 'runs'
 
 
 def receipt_path(home, identity):

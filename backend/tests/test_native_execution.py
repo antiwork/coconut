@@ -273,10 +273,11 @@ class NativeExecutionTests(unittest.TestCase):
 class NativeMemoryTests(unittest.TestCase):
     def test_sync_leaves_native_memory_unchanged(self):
         with tempfile.TemporaryDirectory() as temporary:
-            profiles = HermesProfiles(temporary)
+            from profile_layout import LayoutRows
+            profiles = HermesProfiles(temporary, LayoutRows(temporary))
             bot = dict(id=str(uuid4()), session_id=str(uuid4()), name='Memory', instructions='Native instructions', memory='Older note.', preferences=[{'text': 'Always offer do nothing.'}])
             home = profiles.home(bot)
-            (home / 'memories').mkdir(parents=True)
+            (home / 'memories').mkdir(parents=True, exist_ok=True)
             (home / 'memories/USER.md').write_text('Existing native preference.\n')
             profiles.sync(bot)
             profiles.sync(bot)

@@ -150,7 +150,7 @@ class BotModelSettingsTests(unittest.TestCase):
 
     def test_native_instructions_survive_rename_and_explicit_edit_can_clear(self):
         bot = self.bot()
-        soul = self.root / 'bots' / bot['id'] / 'home/SOUL.md'
+        soul = self.service.profiles.home(bot) / 'SOUL.md'
         soul.write_text('Instructions from Hermes Terminal.')
         self.write('PATCH', '/v1/bots/' + bot['id'], {'name': 'Renamed'})
         self.assertEqual(soul.read_text(), 'Instructions from Hermes Terminal.')

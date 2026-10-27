@@ -95,18 +95,6 @@ def check(source, python):
                 def migrate_model_default(self, *_): pass
                 def subscribe_model_catalog(self, *_): pass
                 def native_settings(self, operation='read', bots=(), **_kwargs):
-                    if operation == 'migrate':
-                        # The one-time settings step gives a new bot a copy of the default fallback and its key.
-                        for bot in bots:
-                            profile = home / 'data' / 'bots' / bot['id'] / 'home'
-                            config = json.loads((profile / 'config.yaml').read_text())
-                            config['fallback_providers'] = json.loads((Catalog.root / 'config.yaml').read_text())['fallback_providers']
-                            (profile / 'config.yaml').write_text(json.dumps(config))
-                            (profile / '.env').write_text((Catalog.root / '.env').read_text())
-                            report = profile.parent / 'settings-migration' / 'report.json'
-                            report.parent.mkdir(parents=True, exist_ok=True)
-                            report.write_text('{"status": "done", "version": 1}')
-                        return {'ok': True}
                     return {'routines': []}
                 def observe_bot(self, bot): return bot
                 def model_catalog(self): return {'default': self.resolve_task_model({}, {}), 'models': []}
@@ -117,6 +105,13 @@ def check(source, python):
             service = Service(home / 'data', provider, start_workers=False)
             def write(path, data):
                 return service.mutate('POST', path, data, str(uuid4()))
+            def create(name):
+                # Each bot is a Hermes profile with its own settings, as `hermes -p <name> config` writes them.
+                bot = write('/v1/bots', {'name': name, 'role': ''})
+                profile = service.profiles.home(bot)
+                (profile / 'config.yaml').write_text((Catalog.root / 'config.yaml').read_text())
+                (profile / '.env').write_text((Catalog.root / '.env').read_text())
+                return bot
             def reply(bot, expected, text='Reply with one short sentence.'):
                 task = write('/v1/bots/' + bot['id'] + '/messages', {'text': text, 'mode': 'queue'})
                 deadline = time.monotonic() + 60
@@ -138,7 +133,7 @@ def check(source, python):
                     time.sleep(.05)
                 raise AssertionError('The chat did not finish.')
             try:
-                bot = write('/v1/bots', {'name': 'Research check', 'role': ''})
+                bot = create('Research check')
                 reply(bot, 'Primary reply.')
                 assert calls == ['primary'], calls
                 write('/v1/bots/restart', {})
@@ -148,7 +143,7 @@ def check(source, python):
                 assert calls.count('fallback') == 2, calls
                 assert calls.count('primary') >= 2, calls
                 quota.clear()
-                peer = write('/v1/bots', {'name': 'Recipient', 'role': ''})
+                peer = create('Recipient')
                 task = reply(bot, 'Primary reply.', 'Send this local check to relay-probe:' + peer['id'])
                 deliveries = [row for row in service._all('deliveries') if row['source_task_id'] == task['id']]
                 assert len(deliveries) == 1, deliveries

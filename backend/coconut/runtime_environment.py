@@ -42,6 +42,18 @@ def _quoted(text, start, quote):
     return None, len(text)
 
 
+def env_key(text, start):
+    """Read the key of a .env line at `start`, after an optional `export`. It can be quoted.
+
+    Return the key and the index after it. Return (None, len(text)) for a quoted key without its end, and (None, start)
+    for a line without a key. scripts/migrate_bots_to_profiles.py reads keys with this function too.
+    """
+    if start < len(text) and text[start] in '"\'':
+        return _quoted(text, start + 1, text[start])
+    match = re.match(r'[^=#\s]+', text[start:])
+    return (match.group(0), start + match.end()) if match else (None, start)
+
+
 def _env_values(path):
     """Read a .env file with the rules of python-dotenv's dotenv_values, which the worker uses.
 
@@ -80,15 +92,11 @@ def _env_values(path):
             continue
         if re.match(r'export\s', line):
             start += len(re.match(r'export\s+', line).group(0))
-        if text[start] in '"\'':
-            key, start = _quoted(text, start + 1, text[start])
-            if key is None:
+        key, start = env_key(text, start)
+        if key is None:
+            if start >= len(text):
                 break
-        else:
-            match = re.match(r'[^=#\s]+', text[start:])
-            if not match:
-                continue
-            key, start = match.group(0), start + match.end()
+            continue
         while start < len(text) and text[start] in ' \t':
             start += 1
         if start >= len(text) or text[start] != '=':

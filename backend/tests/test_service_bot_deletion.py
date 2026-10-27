@@ -48,7 +48,7 @@ class BotDeletionTests(unittest.TestCase):
         return self.service.emit(task['id'], 'bot_delete', payload or self.payload(task))
 
     def profile(self, bot=None):
-        return self.root / 'bots' / (bot or self.target)['id'] / 'home'
+        return self.service.profiles.home(bot or self.target)
 
     def status(self, bot=None):
         # Coconut keeps no status file in the profile. The database records the bot's state.

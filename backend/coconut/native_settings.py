@@ -58,9 +58,9 @@ def validate_mode(value, nullable=False):
 
 def worker(request, default_home):
     from hermes_cli.profiles import write_profile_meta
-    from model_catalog import _contained
+    from model_catalog import profile_contained
     op = request['native_operation']
-    homes = {identity: _contained(home, request['data_root']) for identity, home in request.get('homes', {}).items()}
+    homes = {identity: profile_contained(home, request) for identity, home in request.get('homes', {}).items()}
     if op == 'mcp':
         from native_mcp import manage
         from hermes_constants import set_hermes_home_override, reset_hermes_home_override
@@ -83,17 +83,6 @@ def worker(request, default_home):
     if op.startswith('routine'):
         from native_routines import worker as routines
         return routines(op, request, homes)
-    if op == 'migrate':
-        marker = Path(request.get('settings_root', default_home)) / 'coconut-native-settings.json'
-        if not marker.exists():
-            config = raw_config(default_home)
-            config.setdefault('approvals', {})['mode'] = 'off'
-            save_config(default_home, config)
-            from profiles import _write
-            _write(marker, '{"version":1}\n', marker.parent)
-        # Each bot gets the settings that it inherited from this default home, once. A new bot gets a copy of them.
-        from settings_migration import migrate
-        return {'ok': True, 'reports': migrate(default_home, homes, request.get('settings_root', default_home))}
     if op == 'snapshot_read':
         from native_routines import worker as routines
         result = worker(dict(request, native_operation='read'), default_home)
