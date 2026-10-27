@@ -171,9 +171,38 @@ def use_this_folder() -> Path | None:
     return None if previous.resolve() == ROOT.resolve() else previous
 
 
+def saved_hermes_settings() -> dict:
+    """The Hermes settings in the app's preference ServiceEnvironment."""
+    result = subprocess.run(["defaults", "export", BUNDLE_ID, "-"], capture_output=True)
+    try:
+        saved = plistlib.loads(result.stdout).get("ServiceEnvironment") if result.returncode == 0 else None
+    except (ValueError, plistlib.InvalidFileException):
+        saved = None
+    if not isinstance(saved, dict):
+        return {}
+    return {name: value for name, value in saved.items() if name in HERMES_SETTINGS and isinstance(value, str) and value}
+
+
+def load_hermes_settings(reset: bool) -> None:
+    """Use the saved Hermes settings where this shell has none, so use_hermes checks the Hermes that the service uses.
+
+    With `reset`, forget them: the service then finds Hermes as this shell does.
+    """
+    if reset:
+        subprocess.run(["defaults", "delete", BUNDLE_ID, "ServiceEnvironment"], capture_output=True)
+        print("Coconut.app forgot its saved Hermes settings.")
+        return
+    for name, value in saved_hermes_settings().items():
+        os.environ.setdefault(name, value)
+
+
 def save_hermes_settings() -> None:
     """Keep the Hermes settings that use_hermes checked. The login items start without the environment of this shell,
-    and the earlier LaunchAgent that kept them goes away. The `coconut` tool reads them from the app's preferences."""
+    and the earlier LaunchAgent that kept them goes away. The `coconut` tool reads them from the app's preferences.
+
+    The settings come from this shell, which load_hermes_settings filled from the saved ones, else from the earlier
+    LaunchAgent. Without any, the saved preference stays as it is.
+    """
     service = host.service_environment()
     settings = {name: os.environ.get(name) or service.get(name) for name in HERMES_SETTINGS}
     settings = {name: value for name, value in settings.items() if value}
@@ -183,8 +212,6 @@ def save_hermes_settings() -> None:
             arguments += [name, value]
         run(arguments, "Saving the Hermes settings")
         print("Coconut.app keeps these Hermes settings: " + ", ".join(sorted(settings)) + ".")
-    else:
-        subprocess.run(["defaults", "delete", BUNDLE_ID, "ServiceEnvironment"], capture_output=True)
 
 
 def login_item_loaded(label: str) -> bool:
@@ -262,10 +289,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--channel", choices=["stable", "nightly"], default="stable",
                         help="The update channel of a new Coconut.app.")
+    parser.add_argument("--reset-hermes-settings", action="store_true",
+                        help="Forget the saved COCONUT_HERMES_PYTHON, COCONUT_HERMES_ROOT and HERMES_HOME of Coconut.app.")
     args = parser.parse_args()
     os.umask(0o077)
     step("Checking this Mac")
     prerequisites()
+    load_hermes_settings(args.reset_hermes_settings)
     step("Finding Hermes")
     use_hermes()
     step("Preparing notifications")

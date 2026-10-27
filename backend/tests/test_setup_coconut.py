@@ -170,11 +170,31 @@ class SetupCoconutTests(unittest.TestCase):
         self.assertEqual(self.commands, [["defaults", "write", "com.gumroad.coconut.mac", "ServiceEnvironment", "-dict",
                                           "COCONUT_HERMES_PYTHON", "/shell/python", "COCONUT_HERMES_ROOT", "/agent/root"]])
 
-    def test_without_hermes_settings_the_saved_ones_go(self):
+    def test_without_hermes_settings_the_saved_ones_stay(self):
         with patch.object(setup_coconut.host, "service_environment", return_value={}), \
                 patch.dict(setup_coconut.os.environ, {}, clear=True), \
-                patch.object(setup_coconut.subprocess, "run", return_value=completed([])) as ran:
+                patch.object(setup_coconut.subprocess, "run") as ran:
             setup_coconut.save_hermes_settings()
+        ran.assert_not_called()
+        self.assertEqual(self.commands, [])
+
+    def preferences(self, settings):
+        return completed([], stdout=plistlib.dumps({"ServiceEnvironment": settings, "updateChannel": "nightly"}))
+
+    def test_the_saved_hermes_settings_fill_only_what_the_shell_lacks(self):
+        saved = {"COCONUT_HERMES_PYTHON": "/saved/python", "HERMES_HOME": "/saved/home", "PATH": "/evil"}
+        with patch.dict(setup_coconut.os.environ, {"HERMES_HOME": "/shell/home"}, clear=True), \
+                patch.object(setup_coconut.subprocess, "run", return_value=self.preferences(saved)):
+            setup_coconut.load_hermes_settings(reset=False)
+            self.assertEqual(setup_coconut.os.environ.get("COCONUT_HERMES_PYTHON"), "/saved/python")
+            self.assertEqual(setup_coconut.os.environ.get("HERMES_HOME"), "/shell/home")
+            self.assertNotEqual(setup_coconut.os.environ.get("PATH"), "/evil")
+
+    def test_only_a_reset_forgets_the_saved_hermes_settings(self):
+        with patch.dict(setup_coconut.os.environ, {}, clear=True), \
+                patch.object(setup_coconut.subprocess, "run", return_value=completed([])) as ran:
+            setup_coconut.load_hermes_settings(reset=True)
+            self.assertNotIn("COCONUT_HERMES_PYTHON", setup_coconut.os.environ)
         self.assertEqual(ran.call_args.args[0], ["defaults", "delete", "com.gumroad.coconut.mac", "ServiceEnvironment"])
 
     def test_another_folder_of_the_app_drains_and_its_login_items_start_again(self):
@@ -266,11 +286,13 @@ class SetupCoconutTests(unittest.TestCase):
                 stack.enter_context(patch.object(setup_coconut, name, lambda *args, name=name: calls.append(name)
                                                  or (Path("/Users/a/Other") if name == "use_this_folder" else None)))
             stack.enter_context(patch.object(setup_coconut, "find_app", return_value=None))
+            stack.enter_context(patch.object(setup_coconut, "load_hermes_settings",
+                                             lambda reset: calls.append(f"load_hermes_settings {reset}")))
             stack.enter_context(patch.object(setup_coconut, "install_app",
                                              lambda channel: calls.append("install_app " + channel) or Path("/A/Coconut.app")))
             stack.enter_context(patch.object(setup_coconut.sys, "argv", ["setup_coconut.py"]))
             setup_coconut.main()
-        self.assertEqual(calls, names[:3] + ["install_app stable"] + names[3:])
+        self.assertEqual(calls, names[:1] + ["load_hermes_settings False"] + names[1:3] + ["install_app stable"] + names[3:])
 
 
 class RunTests(unittest.TestCase):
