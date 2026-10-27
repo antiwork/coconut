@@ -67,6 +67,23 @@ class IdentityTests(unittest.TestCase):
                 change()
                 self.assertNotEqual(self.identity(), before)
 
+    def test_an_update_of_the_running_hermes_counts_when_the_search_finds_another_first(self):
+        # The first Hermes on PATH failed the check, so the service runs the one in ~/.hermes/hermes-agent.
+        other = self.home / 'other/venv/bin/python'
+        other.parent.mkdir(parents=True)
+        other.write_text('')
+        other.chmod(0o755)
+        command = self.home / 'bin/hermes'
+        command.parent.mkdir()
+        command.write_text(f'#!{other}\n')
+        command.chmod(0o755)
+        self.environ['PATH'] = str(command.parent)
+        self.status.update(python=str(self.source / '.venv/bin/python'), root=str(self.source))
+        self.assertEqual(hermes_runtime.locate(self.environ, self.home)[0], other)
+        before = self.identity()
+        (self.source / '.git/refs/heads/main').write_text('b' * 40 + '\n')
+        self.assertNotEqual(self.identity(), before)
+
     def test_the_check_starts_no_program(self):
         with patch('subprocess.run') as run, patch('subprocess.Popen') as popen:
             self.identity()

@@ -415,22 +415,23 @@ def modified(path) -> list | None:
 
 
 def identity(status: dict, environ=None, home=None) -> str:
-    """Describe the Hermes that the next start finds first. It runs no program, so the service can compare it often.
+    """Describe the Hermes that the next start finds first and the Hermes that runs. It runs no program, so the service
+    can compare it often.
 
     It changes with the Python or the source folder that the search finds, the checked-out commit, the dependency
     environment that the installer committed (facts.json), and the installed packages: the parts that `hermes update`
-    changes. The status is the one that this process started with.
+    changes. The status is the one that this process started with. The search can find a Hermes that fails the check,
+    and the service then runs a later one, so the identity covers both.
     """
+    def describe(python: Path, root: Path) -> list:
+        homes = dict.fromkeys((hermes_home(environ, home), root.parent, Path(home or Path.home()) / '.hermes'))
+        return [str(python), str(root), git_commit(root),
+                [modified(folder / 'installs' / install_key(root) / 'facts.json') for folder in homes]]
+
     found = locate(environ, home)
-    if found is None:
-        return 'none'
-    python, root = found
-    root = root or python.parent.parent.parent
-    key = install_key(root)
-    homes = dict.fromkeys((hermes_home(environ, home), root.parent, Path(home or Path.home()) / '.hermes'))
-    return json.dumps([str(python), str(root), git_commit(root),
-                       [modified(folder / 'installs' / key / 'facts.json') for folder in homes],
-                       modified(status.get('packages'))])
+    first = describe(found[0], found[1] or found[0].parent.parent.parent) if found else None
+    running = describe(Path(status.get('python') or ''), Path(status['root'])) if status.get('root') else None
+    return json.dumps([first, running, modified(status.get('packages'))])
 
 
 def read_status(data_dir) -> dict | None:
