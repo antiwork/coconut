@@ -154,6 +154,8 @@ class HermesModelCatalog:
         self.source = Path(source or MISSING_SOURCE).resolve()
         self.home = Path(home).absolute()
         self.root = self.home / 'hermes'
+        # The folder that contains the settings home. It is Coconut's folder, until use_hermes_home names another.
+        self.root_boundary = self.home
         self.private_home = self.home / 'home'
         supplied = os.environ if env is None else env
         self.env = {key: supplied[key] for key in ENV_KEYS if key in supplied}
@@ -181,7 +183,7 @@ class HermesModelCatalog:
             if path == self.source / 'hermes_constants.py':
                 boundary = self.source
             elif path == self.root / 'active_profile':
-                boundary = self.home
+                boundary = self.root_boundary
             else:
                 boundary = self.root
             _contained(path, boundary)
@@ -325,6 +327,19 @@ class HermesModelCatalog:
             raise ModelCatalogError(str(error)) from None
         return _contained(home, _boundary(self.data_dir, home))
 
+    def use_hermes_home(self, hermes_home):
+        """Read and write the default settings in the person's Hermes home, which is the `default` profile.
+
+        Once the bots are Hermes profiles, the default model, approvals and MCP servers that the phone shows are those
+        of the default profile, as in `hermes model` and `hermes config`. Before the migration, they stay in Coconut's
+        shared home.
+        """
+        hermes_home = Path(hermes_home).expanduser().absolute()
+        with self._lock:
+            self.root = self.root_boundary = hermes_home
+            self._cache = self._cache_key = self._worker_limit_cache = None
+            self._profile_cache = {}
+
     def _profile_roots(self):
         """The Hermes profile folders outside Coconut storage that a settings process may read and change."""
         rows = getattr(self, 'profile_rows', None)
@@ -452,7 +467,7 @@ class HermesModelCatalog:
             raise ModelCatalogError('Install Hermes on this Mac before choosing a model.')
         if (self.source / '.env').exists() or (self.source / '.env').is_symlink():
             raise ModelCatalogError('Use a clean Hermes checkout without a shared .env file.')
-        _contained(self.root, self.home)
+        _contained(self.root, self.root_boundary)
         _contained(self.private_home, self.home)
         for path in (self.root, self.private_home, self.private_home / 'tmp'):
             path.mkdir(parents=True, exist_ok=True, mode=0o700)

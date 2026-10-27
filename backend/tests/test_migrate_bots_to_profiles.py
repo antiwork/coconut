@@ -184,6 +184,33 @@ class MigrationTests(unittest.TestCase):
         finally:
             service.close()
 
+    def test_rollback_finds_the_moved_folder_by_identity_not_by_path(self):
+        ledger, _ = self.run_quietly(migration.migrate, self.root, self.hermes, manage_service=False)
+        move = ledger['moves'][0]
+        original = Path(move['destination'])
+        # While Coconut is stopped, the person renames the profile and creates another one at its earlier path.
+        original.rename(self.hermes / 'profiles' / 'renamed')
+        original.mkdir()
+        (original / 'SOUL.md').write_text('A different profile.\n')
+        self.run_quietly(migration.rollback, self.root, manage_service=False)
+        bot = next(bot for bot in self.bots if bot['id'] == move['bot_id'])
+        self.assertEqual(tree(self.home(bot)), self.before[bot['id']])
+        self.assertEqual((original / 'SOUL.md').read_text(), 'A different profile.\n')
+        self.assertFalse((self.hermes / 'profiles' / 'renamed').exists())
+
+    def test_rollback_moves_nothing_when_a_moved_folder_is_gone(self):
+        ledger, _ = self.run_quietly(migration.migrate, self.root, self.hermes, manage_service=False)
+        first, last = ledger['moves'][0], ledger['moves'][-1]
+        # The last folder is replaced by another folder with the same name.
+        Path(last['destination']).rename(self.root.parent / 'elsewhere')
+        Path(last['destination']).mkdir()
+        (Path(last['destination']) / 'SOUL.md').write_text('Another.\n')
+        with self.assertRaises(SystemExit) as raised:
+            self.run_quietly(migration.rollback, self.root, manage_service=False)
+        self.assertIn('device and inode', str(raised.exception.code))
+        self.assertTrue(Path(first['destination']).is_dir())
+        self.assertTrue((self.root / migration.LEDGER).exists())
+
     def test_a_running_service_stops_the_migration_before_any_change(self):
         import fcntl
         with open(self.root / 'service.lock', 'a') as handle:

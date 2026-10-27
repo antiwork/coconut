@@ -89,7 +89,8 @@ Older versions installed their own Hermes in `.runtime/hermes` and their own `~/
 The service deletes that command at its next start, but only when the file has Coconut's marker line.
 Their LaunchAgent started the service with the Python of that runtime. When an update reloads the service, after the drain step, it changes only that Python in the LaunchAgent.
 It uses the Python that runs the update when that Python is not in a virtual environment, else `/opt/homebrew/bin/python3`, `/usr/local/bin/python3`, or `/usr/bin/python3`, the first that can load Coconut.
-Until bots become Hermes profiles, the shared model settings of the bots stay in `.runtime/hermes/terminal/hermes`.
+After the migration below, the default model, approvals, and MCP servers in the phone's settings are those of your default Hermes profile (the Hermes home). `hermes model` and `hermes config` change the same settings. Each other profile keeps its own settings, as in Hermes.
+Before the migration, the shared model settings of the bots stay in `.runtime/hermes/terminal/hermes`.
 To change them in Terminal, set that folder as the Hermes home:
 
 ```sh

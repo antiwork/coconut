@@ -422,6 +422,9 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 # The kept tasks can hold rows that this rollback removes. Forget them first: ROLLBACK can raise.
                 self._forget_cached_tasks()
                 self.db.execute('ROLLBACK')
+                # The profiles rows in memory follow the table, so they forget the rows of this transaction too.
+                if getattr(self.profiles, 'rows', None) is not None:
+                    self._reload_profile_rows()
                 raise
             pending, self._profile_pending = self._profile_pending, {}
             for bot in pending.values():
@@ -774,7 +777,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if sum(record['source_message_id'] == source_id for record in self._all('bot_creation_receipts')) >= self.BOT_CHANGE_LIMIT:
                 raise ServiceError(409, 'This message created eight bots. Send a new human request to create more.')
             audit = {'source_message_id': source_id, 'source_task_id': task_id, 'created_by': source['_human_device_id']}
-            bot = self._create_bot({'name': name, 'role': role, 'instructions': instructions}, audit=audit)
+            bot = self._create_bot({'name': name, 'role': role, 'instructions': instructions}, audit=audit,
+                                   intent_key='chat:' + receipt_id)
             receipt = dict(status='created', bot_id=bot['id'], profile_id=bot['profile_id'], session_id=bot['session_id'], name=bot['name'], role=bot['role'], source_message_id=source_id)
             self._put('bot_creation_receipts', dict(id=receipt_id, fingerprint=fingerprint, source_message_id=source_id, source_task_id=task_id, source_bot_id=task['bot_id'], created_by=source['_human_device_id'], created_at=now(), receipt=receipt))
             return receipt
@@ -1350,7 +1354,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 raise ServiceError(503, 'The Mac could not confirm the model change. Retry with the same request key.') from None
             return self._finish_model_update(key, catalog)
 
-    def _create_bot(self, data: dict, *, audit: dict | None = None, profile: dict | None = None) -> dict:
+    def _create_bot(self, data: dict, *, audit: dict | None = None, profile: dict | None = None,
+                    intent_key: str | None = None) -> dict:
         """Create a bot. `profile` is the profiles row of an existing Hermes profile, from a rescan.
 
         Without it, and once the bots are Hermes profiles, the Hermes profile API creates a profile for the bot first.
@@ -1369,7 +1374,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         bot['model_override'] = None
         if profile is None and self.profiles_ready:
             try:
-                profile = self._new_hermes_profile(bot)
+                profile = self._new_hermes_profile(bot, intent_key)
             except ProfileError as error:
                 raise ServiceError(503, str(error)) from None
         if profile is not None:
@@ -1516,7 +1521,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             self._event('bots.restarted', result | {'requested_by': device})
             return result
         if parts == ['v1', 'bots'] and method == 'POST':
-            return self._bot_view(self._create_bot(data), self._request_model_catalog)
+            return self._bot_view(self._create_bot(data, intent_key='request:' + str(self._request_key)),
+                                  self._request_model_catalog)
         if len(parts) >= 3 and parts[1] == 'bots':
             bot = self._get('bots', parts[2])
             if bot.get('_deleted'):

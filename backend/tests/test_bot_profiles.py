@@ -385,6 +385,98 @@ class ReviewFindingTests(ServiceProfileRescanTests):
         self.assertNotEqual(profile_registry.signature(self.hermes), before)
 
 
+class SecondReviewTests(unittest.TestCase):
+    """Checks for the second review of PR #274."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.root = self.base / 'data'
+        self.hermes = self.base / '.hermes'
+        (self.hermes / 'profiles').mkdir(parents=True)
+        (self.hermes / 'config.yaml').write_text('model: {}\n')
+        self.provider = ControlledProvider()
+        self.provider.catalog = Mock()
+        self.service = Service(self.root, self.provider, start_workers=False, hermes_home=self.hermes)
+        self.addCleanup(self.service.close)
+        self.created = []
+
+    def create(self, operation, **payload):
+        home = self.hermes / 'profiles' / payload['name']
+        home.mkdir()
+        (home / 'SOUL.md').write_text(payload['soul'])
+        self.created.append(payload['name'])
+        return {'home': str(home)}
+
+    def profile_names(self):
+        return sorted(path.name for path in (self.hermes / 'profiles').iterdir())
+
+    def test_a_retry_after_a_timeout_takes_the_folder_of_the_first_try(self):
+        key = str(uuid4())
+
+        def times_out(operation, **payload):
+            self.create(operation, **payload)
+            raise ProfileError('Hermes did not answer the profile request.')
+
+        with patch.object(self.service, '_hermes_profile_command', side_effect=times_out):
+            with self.assertRaises(ServiceError):
+                self.service.mutate('POST', '/v1/bots', {'name': 'Lin'}, key, 'phone')
+        # A rescan before the retry does not add the folder as another bot.
+        self.service.rescan_profiles()
+        self.assertEqual([bot['profile'] for bot in self.service.snapshot()['bots']], ['default'])
+        with patch.object(self.service, '_hermes_profile_command', side_effect=self.create):
+            bot = self.service.mutate('POST', '/v1/bots', {'name': 'Lin'}, key, 'phone')
+        self.assertEqual(self.created, ['lin'])
+        self.assertEqual(bot['profile'], 'lin')
+        self.assertEqual(self.profile_names(), ['lin'])
+        self.service.rescan_profiles()
+        self.assertEqual(sorted(b['profile'] for b in self.service.snapshot()['bots']), ['default', 'lin'])
+        self.assertEqual(list((self.root / 'profile-creations').glob('*.json')), [])
+
+    def test_a_retry_after_a_failed_database_write_creates_no_second_profile(self):
+        key = str(uuid4())
+        original = self.service._event
+
+        def fails(kind, *args, **kwargs):
+            if kind == 'bot.created':
+                raise RuntimeError('The disk is full.')
+            return original(kind, *args, **kwargs)
+
+        with patch.object(self.service, '_hermes_profile_command', side_effect=self.create), \
+                patch.object(self.service, '_event', side_effect=fails):
+            with self.assertRaises(RuntimeError):
+                self.service.mutate('POST', '/v1/bots', {'name': 'Lin'}, key, 'phone')
+        with patch.object(self.service, '_hermes_profile_command', side_effect=self.create):
+            bot = self.service.mutate('POST', '/v1/bots', {'name': 'Lin'}, key, 'phone')
+        self.assertEqual(self.created, ['lin'])
+        self.assertEqual(self.service.profiles.home(bot), self.hermes / 'profiles' / 'lin')
+
+    def test_default_settings_are_those_of_the_default_profile(self):
+        self.provider.catalog.use_hermes_home.assert_called_once_with(self.hermes.absolute())
+
+    def test_the_catalog_reads_the_person_s_hermes_home(self):
+        from coconut.model_catalog import HermesModelCatalog
+        import sys
+        source = self.base / 'source'
+        source.mkdir()
+        catalog = HermesModelCatalog(self.base / 'catalog-data', source=source, python=sys.executable)
+        self.assertEqual(catalog.root, source.parent / 'terminal' / 'hermes')
+        catalog.use_hermes_home(self.hermes)
+        self.assertEqual(catalog.root, self.hermes)
+        paths = [entry[0] for entry in catalog._signature()]
+        self.assertIn(str(self.hermes / 'config.yaml'), paths)
+        self.assertIn(str(self.hermes / 'active_profile'), paths)
+
+    def test_the_earlier_layout_keeps_coconut_s_settings_home(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            provider = ControlledProvider()
+            provider.catalog = Mock()
+            service = Service(Path(temporary), provider, start_workers=False)
+            service.close()
+        provider.catalog.use_hermes_home.assert_not_called()
+
+
 class ProfileCommandTests(unittest.TestCase):
     """PROFILE_COMMAND runs against a small stand-in for hermes_cli.profiles, so the command itself is checked here.
 

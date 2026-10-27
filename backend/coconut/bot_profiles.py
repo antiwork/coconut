@@ -15,12 +15,14 @@ earlier behavior: it does not rescan, and a new bot gets a home in the data dire
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 from pathlib import Path
 import subprocess
 import threading
+import time
 
 from . import profile_registry
 from .profiles import SKILLS, ProfileError
@@ -29,6 +31,9 @@ LOG = logging.getLogger(__name__)
 SCAN_SECONDS = 5
 COMMAND_SECONDS = 300
 DEFAULT_BOT_NAME = 'Hermes'
+# Create requests keep their intent here until their bot exists. After this time, a rescan adds the folder as a bot.
+CREATION_INTENTS = 'profile-creations'
+INTENT_SECONDS = 3600
 
 # Runs in the Python of the person's Hermes. argv[1] is the Hermes source folder. It follows the dashboard flow of
 # hermes_cli/web_routers/profiles.py: create the profile, seed the bundled skills, and add the `<name>` command when
@@ -95,6 +100,10 @@ class BotProfiles:
         # The earlier homes must move first. A deploy cannot do that safely while workers run, so the person runs the
         # migration script. Until then, Coconut keeps the earlier layout for every new bot too.
         self.profiles_ready = self.hermes_home is not None and not legacy
+        catalog = getattr(self.provider, 'catalog', None)
+        if self.profiles_ready and hasattr(catalog, 'use_hermes_home'):
+            # The default settings are those of the default profile, which is also a bot now.
+            catalog.use_hermes_home(self.hermes_home)
         if self.hermes_home is not None and legacy:
             LOG.warning('%d bots still use homes in %s. Run scripts/migrate_bots_to_profiles.py to move them into '
                         'Hermes profiles.', len(legacy), self.root / 'bots')
@@ -137,7 +146,11 @@ class BotProfiles:
     def _apply_profile_changes(self, found) -> list[tuple[str, dict]]:
         with self.transaction():
             changes = profile_registry.plan(profile_registry.rows(self.db), found)
+            pending = self._settle_creation_intents()
             for change, row in changes:
+                if change == 'new' and row['name'] in pending:
+                    # A create request that did not finish owns this folder. Its retry adds the bot.
+                    continue
                 if change == 'new':
                     name = profile_registry.display_name(row['home']) or (
                         DEFAULT_BOT_NAME if row['name'] == profile_registry.DEFAULT else row['name'])
@@ -176,10 +189,63 @@ class BotProfiles:
         self._write_profile_row(row)
         bot.update(profile=row['name'], profile_state='active')
 
-    def _new_hermes_profile(self, bot: dict) -> dict:
-        """Create a Hermes profile for a new bot with the Hermes profile API. Return its profiles row without bot_id."""
-        taken = profile_registry.taken_names(self.hermes_home) | {row['name'] for row in self.profiles.rows.values()}
-        name = profile_registry.slug(bot['name'], taken)
+    def _intent_path(self, key: str) -> Path:
+        return self.root / CREATION_INTENTS / (hashlib.sha256(key.encode()).hexdigest() + '.json')
+
+    def _creation_intents(self) -> dict[Path, dict]:
+        """The profile creations of requests that did not finish, as {file: {name, created_at}}."""
+        result = {}
+        for path in sorted((self.root / CREATION_INTENTS).glob('*.json')):
+            try:
+                result[path] = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+        return result
+
+    def _settle_creation_intents(self) -> set[str]:
+        """Forget the intents whose bot exists or that expired. Return the profile names that a retry can still claim."""
+        used = {row['home'] for row in self.profiles.rows.values() if row['state'] != 'removed'}
+        pending = set()
+        for path, intent in self._creation_intents().items():
+            home = str(self.hermes_home / 'profiles' / str(intent.get('name')))
+            if home in used or time.time() - intent.get('created_at', 0) > INTENT_SECONDS:
+                path.unlink(missing_ok=True)
+            else:
+                pending.add(intent.get('name'))
+        return pending
+
+    def _new_hermes_profile(self, bot: dict, key: str | None = None) -> dict:
+        """Create a Hermes profile for a new bot with the Hermes profile API. Return its profiles row without bot_id.
+
+        The request key names a durable intent, written before Hermes runs. A retry of a request whose database write
+        failed after Hermes created the folder (or whose Hermes process timed out) takes that folder, so a retry never
+        creates a second profile. A rescan does not add the folder of a pending intent as another bot.
+        """
+        intent = self._intent_path(key) if key else None
+        saved = None
+        if intent is not None and intent.is_file():
+            try:
+                saved = json.loads(intent.read_text())
+            except (OSError, ValueError):
+                saved = None
+        used = {row['home'] for row in self.profiles.rows.values() if row['state'] != 'removed'}
+        if saved is not None:
+            name = saved['name']
+            home = self.hermes_home / 'profiles' / name
+            if str(home) not in used and profile_registry.is_profile(home):
+                state = home.stat()
+                return dict(name=name, home=str(home), dev=state.st_dev, ino=state.st_ino, state='active')
+            if home.exists():
+                raise ProfileError(f'The profile folder {home} of an earlier try is not usable. Check it in Terminal.')
+        else:
+            taken = (profile_registry.taken_names(self.hermes_home) | {row['name'] for row in self.profiles.rows.values()}
+                     | self._settle_creation_intents())
+            name = profile_registry.slug(bot['name'], taken)
+            if intent is not None:
+                intent.parent.mkdir(exist_ok=True, mode=0o700)
+                pending = intent.with_name(intent.name + '.tmp')
+                pending.write_text(json.dumps({'name': name, 'created_at': time.time()}))
+                os.replace(pending, intent)
         result = self._hermes_profile_command('create', name=name, display_name=bot['name'], description=bot.get('role') or '',
                                               soul=bot.get('instructions', ''), skills=str(SKILLS),
                                               coconut=str(Path(__file__).resolve().parent))

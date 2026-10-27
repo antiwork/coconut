@@ -380,7 +380,9 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
                 write_ledger(data_dir, ledger)
                 move['method'] = move_tree(source, destination, rename=rename)
                 ensure_identity(destination, instructions.get(move['bot_id'], ''))
-                move['state'] = 'moved'
+                info = destination.stat()
+                # A rollback finds this folder by its identity, also after a rename.
+                move.update(dev=info.st_dev, ino=info.st_ino, state='moved')
                 write_ledger(data_dir, ledger)
             record_rows(data_dir, moves)
         except BaseException as error:
@@ -449,21 +451,56 @@ def undo_moves(data_dir: Path, ledger: dict, rename=os.rename) -> None:
         write_ledger(data_dir, ledger)
 
 
+def migrated_folder(data_dir: Path, ledger: dict, move: dict) -> Path | None:
+    """The folder that the migration moved for this bot, wherever it is now.
+
+    The person can rename a profile, or put another profile at its earlier path. The folder must have the device and
+    inode that the migration recorded. A ledger of an earlier version has no identity, so its recorded path counts.
+    """
+    candidates = [current_home(data_dir, move['bot_id']), move['destination']]
+    if 'ino' not in move:
+        return next((Path(path) for path in candidates if path and Path(path).exists()), None)
+    profiles = Path(ledger['hermes_home']) / 'profiles'
+    try:
+        candidates += sorted(map(str, profiles.iterdir()))
+    except OSError:
+        pass
+    for path in dict.fromkeys(candidate for candidate in candidates if candidate):
+        try:
+            info = Path(path).stat(follow_symlinks=False)
+        except OSError:
+            continue
+        if (info.st_dev, info.st_ino) == (move['dev'], move['ino']):
+            return Path(path)
+    return None
+
+
 def rollback(data_dir: Path, *, manage_service: bool = True, rename=os.rename) -> dict:
     ledger = read_ledger(data_dir)
     say(f'Rolling back the migration of {ledger["created_at"]} ({len(ledger["moves"])} bots).')
     with stopped_service(data_dir, manage_service) as control:
         # A rollback that stops halfway leaves Coconut stopped, so the service never sees half of the bots moved.
         control['restart'] = False
+        # Find every folder first, so a problem stops the rollback before it moves anything.
+        found = {}
+        for move in ledger['moves']:
+            source = Path(move['source'])
+            if move['state'] == 'planned':
+                continue
+            moved = migrated_folder(data_dir, ledger, move)
+            if moved is None and source.exists():
+                continue
+            if moved is None:
+                raise MigrationError(f'Coconut cannot find the moved folder of {move["bot_name"]!r}: no folder has its '
+                                     f'device and inode. Restore it from {ledger["backup"]}. Nothing moved back.')
+            if source.exists():
+                raise MigrationError(f'Both {source} and {moved} exist. Check them by hand. Nothing moved back.')
+            found[move['bot_id']] = moved
         for move in reversed(ledger['moves']):
             source = Path(move['source'])
-            moved = Path(current_home(data_dir, move['bot_id']) or move['destination'])
-            if move['state'] == 'planned' or (source.exists() and not moved.exists()):
+            moved = found.get(move['bot_id'])
+            if moved is None:
                 continue
-            if source.exists():
-                raise MigrationError(f'Both {source} and {moved} exist. Check them by hand. The rollback stopped.')
-            if not moved.exists():
-                raise MigrationError(f'{moved} is missing. Restore it from {ledger["backup"]}. The rollback stopped.')
             say(f'Moving {move["bot_name"]!r} back to {source}...')
             move_tree(moved, source, rename=rename)
             move['state'] = 'planned'
