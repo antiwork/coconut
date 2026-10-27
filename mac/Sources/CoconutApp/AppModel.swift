@@ -48,8 +48,11 @@ final class AppModel: ObservableObject {
         registerIfNeeded()
         Task {
             await refresh()
-            // After Sparkle installs a new app, the new app updates the source that it carries.
-            if legacyAgents.isEmpty && install.isInstalled() {
+            // The install script (updates/install.sh) opens the app with --set-up, so the person needs no click.
+            if CommandLine.arguments.contains("--set-up") && legacyAgents.isEmpty && status.service != .running {
+                await setUp()
+            } else if legacyAgents.isEmpty && install.isInstalled() {
+                // After Sparkle installs a new app, the new app updates the source that it carries.
                 await update(ifNeeded: true)
             }
         }
