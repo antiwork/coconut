@@ -196,13 +196,30 @@ class MigrationTests(unittest.TestCase):
 
     def test_login_folders_inside_the_old_home_follow_the_move(self):
         home = self.home(self.bots[2])
-        (home / '.env').write_text(f'GH_CONFIG_DIR={home}/.config/gh\nCODEX_HOME="{home}/codex"\nXDG_CONFIG_HOME=/elsewhere/config\n'
-                                   f'OTHER={home}-sibling\n')
+        (home / '.env').write_text(f'GH_CONFIG_DIR={home}/.config/gh\nexport CODEX_HOME="{home}/codex"  # login\n'
+                                   f"HOME_COPY='{home}'\nXDG_CONFIG_HOME=/elsewhere/config\nOTHER={home}-sibling\n"
+                                   f'MIDDLE=/mirror{home}/gh\nLIST=/a:{home}/bin\n')
         ledger, _ = self.run_quietly(migration.migrate, self.root, self.hermes)
         destination = next(Path(move['destination']) for move in ledger['moves'] if move['bot_id'] == self.bots[2]['id'])
         self.assertEqual((destination / '.env').read_text(),
-                         f'GH_CONFIG_DIR={destination}/.config/gh\nCODEX_HOME="{destination}/codex"\n'
-                         f'XDG_CONFIG_HOME=/elsewhere/config\nOTHER={home}-sibling\n')
+                         f'GH_CONFIG_DIR={destination}/.config/gh\nexport CODEX_HOME="{destination}/codex"  # login\n'
+                         f"HOME_COPY='{destination}'\nXDG_CONFIG_HOME=/elsewhere/config\nOTHER={home}-sibling\n"
+                         f'MIDDLE=/mirror{home}/gh\nLIST=/a:{home}/bin\n')
+
+    def test_a_copy_that_fails_after_its_destination_exists_keeps_coconut_stopped(self):
+        def rename(source, destination):
+            if 'bots' in str(source):
+                raise OSError(errno.EXDEV, 'Cross-device link')
+            os.rename(source, destination)
+
+        with patch.object(migration.shutil, 'rmtree', side_effect=OSError(errno.EBUSY, 'Resource busy')), \
+                self.assertRaises(SystemExit) as raised:
+            self.run_quietly(migration.migrate, self.root, self.hermes, rename=rename)
+        self.assertEqual(self.steps(), ['drain_for_update', 'stop_for_update'])
+        self.assertIn('Coconut stays stopped', raised.exception.output)
+        ledger = json.loads((self.root / migration.LEDGER).read_text())
+        self.assertEqual(ledger['moves'][0]['state'], 'moving')
+        self.assertTrue(Path(ledger['moves'][0]['destination']).is_dir())
 
     def test_running_workers_stop_the_migration_before_any_change(self):
         with patch.object(migration, 'coconut_workers', return_value=[123]):

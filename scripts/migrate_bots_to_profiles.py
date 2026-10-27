@@ -208,14 +208,29 @@ def recovery_steps(data_dir: Path, ledger: dict) -> str:
     return '\n'.join(lines)
 
 
+# One `KEY=value` line of a .env file, with an optional `export`, quotes and comment.
+ENV_LINE = re.compile(r'^(?P<key>[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*)(?P<quote>["\']?)(?P<value>.*?)'
+                      r'(?P=quote)(?P<rest>[ \t]*(?:#.*)?)$', re.M)
+
+
 def follow_env_paths(source: Path, destination: Path) -> None:
     """A bot's .env can name a login folder inside its old home (GH_CONFIG_DIR, CODEX_HOME, XDG_*). Point it at the new home."""
     path = destination / '.env'
-    if path.is_file() and not path.is_symlink():
-        text = path.read_text(encoding='utf-8')
-        moved = re.sub(re.escape(str(source)) + r'(?=/|["\'\s]|$)', str(destination).replace('\\', '\\\\'), text, flags=re.M)
-        if moved != text:
-            path.write_text(moved, encoding='utf-8')
+    if not path.is_file() or path.is_symlink():
+        return
+    old, new = str(source), str(destination)
+
+    def follow(match):
+        # Only a value that is the old home, or a path below it. A match inside another value stays.
+        value = match['value']
+        if value == old or value.startswith(old + '/'):
+            value = new + value[len(old):]
+        return match['key'] + match['quote'] + value + match['quote'] + match['rest']
+
+    text = path.read_text(encoding='utf-8')
+    moved = ENV_LINE.sub(follow, text)
+    if moved != text:
+        path.write_text(moved, encoding='utf-8')
 
 
 def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, rename=os.rename) -> dict | None:
@@ -246,7 +261,14 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
                     move['state'] = 'moving'
                     write_ledger(data_dir, ledger)
                     source, destination = Path(move['source']), Path(move['destination'])
-                    move_tree(source, destination, rename=rename)
+                    try:
+                        move_tree(source, destination, rename=rename)
+                    except BaseException:
+                        # A copy to another disk can fail after the destination exists. That bot then has two
+                        # folders, so Coconut stays stopped and the ledger stays.
+                        if destination.exists():
+                            restart = False
+                        raise
                     move['state'] = 'moved'
                     restart = False
                     if not any((destination / name).exists() for name in registry.IDENTITY_FILES):
