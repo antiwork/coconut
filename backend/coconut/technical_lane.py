@@ -286,7 +286,8 @@ class TechnicalLane:
         """Whether the hold is the owner's whole pause with no new direction, here or in the execution that asked it.
 
         The asking execution is a return of the owner, below it, so the owner's own direction check does not read it.
-        A person's message or answer there after the pause, or any refusal there, ends the hold for this lane.
+        A person's message or answer there after the pause, or any refusal there, ends the hold for this lane. So does a
+        person's answer after the pause to any other card of the owner's lineage, whatever that card's status is now.
         """
         from .work_capacity import execution_key
         if not self._declined_pause(owner, decision['id']):
@@ -300,8 +301,26 @@ class TechnicalLane:
                 "SELECT data FROM tasks WHERE json_extract(data,'$._execution_session_id')=?", (execution_key(asker),))}
         peers = [peer for item in self._task_work_items(owner) for peer in self._work_pause_peers(item, shared=True)]
         after = max((p.get('_work_pause_at', '') for p in peers), default='') or decision.get('decided_at') or decision['created_at']
+        roots, _ = self._direction_roots(owner)
         return not (self._human_direction_after(asked, after, decision)
+                    or self._human_answer_after(asked | roots, after, decision)
                     or any(d['task_id'] in asked and d['status'] == 'rejected' for d in self._all_shared('decisions')))
+
+    def _human_answer_after(self, task_ids, after, pause):
+        """Whether a person answered another card of these tasks after the pause, whatever the card's status is now.
+
+        An approved question becomes executed or failed when its turn ends, and the shared direction check reads only
+        the current approved or modified status. The person's recorded answer is the provenance. A system actor is no
+        answer. A native answer carries no time of its own, so the card's decided_at stands for it. That is the latest
+        answer or a later system close, so an unclear time counts as new direction and fails closed.
+        """
+        for card in self._all_shared('decisions'):
+            if card['task_id'] not in task_ids or card['id'] == pause['id']:
+                continue
+            answers = [a for a in card.get('_answers') or [] if a.get('decided_by') and a['decided_by'] not in SYSTEM_DECIDERS]
+            if any((a.get('decided_at') or card.get('decided_at') or '') > after for a in answers):
+                return True
+        return False
 
     def _technical_declined_turn(self, task):
         """Whether the automatic pause lets this declined- or held-merge lane turn run. Only its own queued or working turn."""

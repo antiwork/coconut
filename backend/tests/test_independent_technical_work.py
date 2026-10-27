@@ -8,8 +8,8 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from coconut.native_outcomes import CONTINUE_SCHEMA
-from coconut.service import ServiceError
-from coconut.technical_lane import held_action, instructions
+from coconut.service import ServiceError, YieldForDecision
+from coconut.technical_lane import SYSTEM_DECIDERS, held_action, instructions
 import test_native_claim_continuation as native_claims
 import test_native_work_continuation as continuation
 import test_provider as provider_fixtures
@@ -2077,6 +2077,114 @@ class HeldMergeLaneTests(unittest.TestCase):
         self.assertNotIn('_technical_lane', moved)
         self.assertNotIn('_resume_decision', moved, 'Nothing replays the hold')
         self.assertTrue(self.service._task_work_is_paused(moved))
+        self.assert_hold_kept()
+
+    def answer_later_question(self, task_id, option='continue'):
+        """A later native question of this task, answered by the person and finished through its real resumed turn."""
+        task = self.service._get('tasks', task_id)
+        self.service._put('tasks', dict(task, status='working', _native_turn_id=str(uuid4())))
+        with self.assertRaises(YieldForDecision):
+            self.service.emit(task_id, 'native_question', dict(title='Keep reviewing #8669 after the new delta?',
+                options=[dict(id='continue', label='Keep reviewing', explanation=''),
+                         dict(id='stop', label='Stop reviewing', explanation='')]))
+        question = next(d for d in self.service._all('decisions') if d['task_id'] == task_id and d['status'] == 'pending')
+        self.service._put('decisions', dict(question, _profile_revision=self.service.profiles.prompt_revision(
+            self.service._get('bots', question['bot_id']))))
+        self.service.mutate('POST', '/v1/decisions/%s/answer' % question['id'],
+                            {'option_id': option, 'revision': question['revision']}, str(uuid4()), 'test-phone')
+        self.assertEqual(self.service._get('decisions', question['id'])['status'], 'approved')
+        seen = {}
+        def resume(task, bot, history, decision, emit):
+            seen['decision'] = decision['id']
+            emit('completed', {'summary': 'Kept reviewing.'})
+        self.service.provider.resume_task = resume
+        self.service._run_task(task_id)
+        self.assertEqual(seen, {'decision': question['id']}, 'The answer resumed its own turn')
+        return self.service._get('decisions', question['id'])
+
+    def assert_answer_is_the_only_direction(self, owner, question, tasks):
+        # The answer finished: the card is executed, its execution is idle, and no human message stands in for it.
+        self.assertEqual((question['status'], question['decided_by']), ('executed', 'test-phone'))
+        self.assertEqual([a['decided_by'] for a in question['_answers']], ['test-phone'])
+        self.assertGreater(question['decided_at'], self.paused_at)
+        # No turn runs and no card waits. A coordinating requester keeps waiting for its delegate, as before the card.
+        self.assertTrue(all(self.service._get('tasks', t)['status'] in ('completed', 'waiting') for t in tasks))
+        self.assertFalse(any(d['status'] in ('pending', 'approved') for d in self.service._all('decisions')
+                             if d['task_id'] in tasks))
+        self.assertFalse(any(t in self.service.running for t in tasks))
+        self.assertFalse(any(m.get('_human_device_id') and m['created_at'] > self.paused_at
+                             for m in self.service._all('messages')))
+        self.assertFalse(self.service._human_direction_after(set(tasks), self.paused_at, self.held),
+                         'The shared check reads only approved or modified cards, so it misses the executed answer')
+
+    def test_a_later_answer_that_finished_in_the_asking_thread_ends_the_hold(self):
+        owner, source = self.held_native()
+        question = self.answer_later_question('asker')
+        self.assert_answer_is_the_only_direction(owner, question, ['asker'])
+        self.refused(owner, source, 'has new direction')
+        self.assert_hold_kept()
+        self.assertEqual(self.service._get('decisions', question['id'])['status'], 'executed')
+
+    def test_a_later_answer_that_finished_in_the_owner_lineage_ends_the_hold(self):
+        owner, source = self.held_native()
+        self.assertIn(source['id'], (owner.get('parent_task_id'), owner.get('source_task_id')),
+                      'The calling requester task is in the owner lineage')
+        question = self.answer_later_question(source['id'])
+        self.assert_answer_is_the_only_direction(owner, question, [source['id']])
+        self.service._put('tasks', dict(self.service._get('tasks', source['id']), status='working'))
+        self.refused(self.service._get('tasks', owner['id']), source, 'has new direction')
+        self.assert_hold_kept()
+
+    def test_earlier_system_and_pausing_card_answers_do_not_end_the_hold(self):
+        owner, source = self.held_native()
+        answered = dict(task_id='asker', bot_id=source['bot_id'], status='executed', action_type='question',
+                        inbox_kind='decision', revision=1, _native=True, selected_option_id='continue')
+        cards = [dict(answered, id='before', decided_by='person-device', decided_at='2026-10-27T00:00:00Z',
+                      _answers=[dict(choice='approve', option_id='continue', decided_by='person-device')])]
+        for actor in sorted(SYSTEM_DECIDERS):
+            cards.append(dict(answered, id='system-' + actor, decided_by=actor, decided_at='2999-01-01T00:00:00Z',
+                              status='failed', _answers=[dict(choice='approve', option_id='continue', decided_by=actor)]))
+        cards.append(dict(answered, id='agent-revision', decided_by=None, decided_at=None, status='executed',
+                          _answers=[dict(choice='revise', correction='Findings changed.', decided_by=None)]))
+        for card in cards:
+            self.service._put('decisions', card)
+        # The pausing card's own later revision of its answer time is not new direction either.
+        self.service._put('decisions', dict(self.held, decided_at='2999-01-01T00:00:00Z'))
+        self.assertEqual(self.lane(source)['status'], 'queued')
+
+    def test_a_later_answer_that_finishes_during_the_turn_ends_it_without_replay(self):
+        owner, source = self.held_native()
+        self.lane(source)
+        lane_turn = self.service._get('tasks', owner['id'])['_native_turn_id']
+        finished = {}
+        def later_answer():
+            asker = self.service._get('tasks', 'asker')
+            self.service._put('tasks', dict(asker, status='working', _native_turn_id=str(uuid4())))
+            try:
+                self.service.emit('asker', 'native_question', dict(title='Keep reviewing #8669?',
+                    options=[dict(id='continue', label='Keep reviewing', explanation='')]))
+            except YieldForDecision:
+                pass
+            question = next(d for d in self.service._all('decisions') if d['task_id'] == 'asker' and d['status'] == 'pending')
+            self.service._put('decisions', dict(question, _profile_revision=self.service.profiles.prompt_revision(
+                self.service._get('bots', question['bot_id']))))
+            self.service.mutate('POST', '/v1/decisions/%s/answer' % question['id'],
+                                {'option_id': 'continue', 'revision': question['revision']}, str(uuid4()), 'test-phone')
+            # The resumed turn of the asking task finishes through the real completion route, which executes the answer.
+            self.service._put('tasks', dict(self.service._get('tasks', 'asker'), status='working'))
+            self.service.emit('asker', 'completed', {'summary': 'Kept reviewing.'})
+            finished.update(self.service._get('decisions', question['id']))
+        seen = self.drive(owner, during=later_answer)
+        self.assertEqual(finished['status'], 'executed')
+        self.assertEqual(seen['held']['kanban_complete'], 403, 'The lane turn keeps its holds')
+        held = self.service._get('tasks', owner['id'])
+        self.assertEqual((held['status'], held['_native_turn_id'], held['summary']),
+                         ('queued', lane_turn, 'Continuing after the held decision or its pause changed.'))
+        self.assertNotIn('_resume_decision', held)
+        self.service._kanban_rows()
+        moved = self.service._get('tasks', owner['id'])
+        self.assertNotIn('_technical_lane', moved)
+        self.assertNotIn('_resume_decision', moved, 'Nothing replays the hold')
         self.assert_hold_kept()
 
     def test_the_lane_refuses_a_stopped_foreign_active_or_open_owner(self):
