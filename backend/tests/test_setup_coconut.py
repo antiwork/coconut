@@ -134,6 +134,8 @@ class SetupCoconutTests(unittest.TestCase):
 
     def test_a_downloaded_app_must_match_its_name_and_pass_gatekeeper(self):
         _, system, _ = self.folders()
+        # CI runs on Linux, where mac_ver gives no version.
+        self.use(patch.object(setup_coconut.platform, "mac_ver", return_value=("15.0", ("", "", ""), "arm64")))
         data = b"zip"
         name = f"Coconut-0.1.0-7-nightly-{hashlib.sha256(data).hexdigest()[:16]}.zip"
         item = setup_coconut.mac_feed.Item(version="0.1.0", build=7, channel="nightly", file=name, length=3,
