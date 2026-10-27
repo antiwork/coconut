@@ -3,7 +3,9 @@ name: Mac release
 # Builds Coconut.app, signs it with the Developer ID Application certificate, notarizes it, staples the ticket, and
 # publishes it in the Sparkle feed of the Worker coconut-updates (updates/). Two channels:
 #   nightly   each night when main has new commits, and when a person starts the workflow with channel "nightly"
-#   stable    only when a person starts the workflow with channel "stable" (the promote step)
+#   stable    each day, the newest nightly build when it has been nightly for 24 hours, every check of its commit
+#             passed, and no release failed after it (the automatic promote); and when a person starts the workflow
+#             with channel "stable", which releases the head of main (the manual promote)
 # The version is in mac/VERSION. The build number is the commit count of main.
 #
 # The environment `mac-release` accepts only the main branch. It holds these secrets:
@@ -14,7 +16,8 @@ name: Mac release
 # A missing secret stops the job: an archive that is not notarized and signed must never reach a Mac.
 on:
   schedule:
-    - cron: '17 6 * * *'
+    - cron: '17 6 * * *' # nightly
+    - cron: '47 7 * * *' # automatic promote
   workflow_dispatch:
     inputs:
       channel:
@@ -25,6 +28,9 @@ on:
 
 permissions:
   contents: read
+  # The automatic promote reads the checks of a commit and the earlier release runs.
+  checks: read
+  actions: read
 
 # Two releases must not deploy the feed at the same time: the later one would drop the archive of the earlier one.
 concurrency:
@@ -38,6 +44,7 @@ jobs:
     outputs:
       channel: ${{ steps.plan.outputs.channel }}
       build: ${{ steps.plan.outputs.build }}
+      ref: ${{ steps.plan.outputs.ref }}
       skip: ${{ steps.plan.outputs.skip }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -48,6 +55,9 @@ jobs:
         id: plan
         env:
           CHANNEL: ${{ inputs.channel || 'nightly' }}
+          PROMOTE: ${{ github.event.schedule == '47 7 * * *' }}
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           version="$(cat mac/VERSION)"
@@ -55,15 +65,43 @@ jobs:
             echo "::error::mac/VERSION must have the form 1.2.3."
             exit 1
           fi
-          build="$(git rev-list --count HEAD)"
-          live="$(python3 scripts/mac_feed.py latest-build --channel "$CHANNEL")"
           skip=false
-          # A night without new commits on main publishes nothing.
-          if [ "$CHANNEL" = nightly ] && [ "$live" -ge "$build" ]; then
-            skip=true
-            echo "The nightly channel already has build $live. Nothing to publish." >> "$GITHUB_STEP_SUMMARY"
+          ref=""
+          build="$(git rev-list --count HEAD)"
+          if [ "$PROMOTE" = true ]; then
+            CHANNEL=stable
+            candidate="$(python3 scripts/mac_feed.py promote-candidate --min-age-hours 24)"
+            if [ -z "$candidate" ]; then
+              skip=true
+              echo "No nightly build is newer than stable and 24 hours old. Nothing to promote." >> "$GITHUB_STEP_SUMMARY"
+            else
+              build="$(printf '%s' "$candidate" | python3 -c 'import json, sys; print(json.load(sys.stdin)["build"])')"
+              published="$(printf '%s' "$candidate" | python3 -c 'import json, sys; print(json.load(sys.stdin)["published"])')"
+              ref="$(python3 scripts/mac_feed.py commit-for-build --build "$build")"
+              # Every check of the commit must have passed. A running check counts as not passed.
+              open_checks="$(gh api "repos/$REPOSITORY/commits/$ref/check-runs?per_page=100" \
+                --jq '[.check_runs[] | select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")] | length')"
+              failed_releases="$(gh run list --repo "$REPOSITORY" --workflow mac-release.yml --status failure --limit 50 \
+                --json createdAt --jq "[.[] | select(.createdAt > \"$published\")] | length")"
+              if [ "$open_checks" != 0 ]; then
+                skip=true
+                echo "Build $build ($ref) has $open_checks checks that did not pass. Nothing to promote." >> "$GITHUB_STEP_SUMMARY"
+              elif [ "$failed_releases" != 0 ]; then
+                skip=true
+                echo "$failed_releases release runs failed after build $build. Nothing to promote." >> "$GITHUB_STEP_SUMMARY"
+              else
+                echo "Promoting nightly build $build ($ref) to stable." >> "$GITHUB_STEP_SUMMARY"
+              fi
+            fi
+          else
+            live="$(python3 scripts/mac_feed.py latest-build --channel "$CHANNEL")"
+            # A night without new commits on main publishes nothing.
+            if [ "$CHANNEL" = nightly ] && [ "$live" -ge "$build" ]; then
+              skip=true
+              echo "The nightly channel already has build $live. Nothing to publish." >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
-          { echo "channel=$CHANNEL"; echo "build=$build"; echo "skip=$skip"; } >> "$GITHUB_OUTPUT"
+          { echo "channel=$CHANNEL"; echo "build=$build"; echo "ref=$ref"; echo "skip=$skip"; } >> "$GITHUB_OUTPUT"
 
   release:
     needs: plan
@@ -78,6 +116,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          # The automatic promote builds the commit of the nightly build. Otherwise the head of main.
+          ref: ${{ needs.plan.outputs.ref }}
           fetch-depth: 0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:

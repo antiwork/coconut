@@ -140,10 +140,13 @@ final class AppModel: ObservableObject {
         guard activity == nil else { return false }
         activity = install.isInstalled() ? "Updating Coconut. Running work finishes first." : "Installing Coconut…"
         updateError = nil
-        let result = await runTool(ifNeeded ? ["update", "--if-needed"] : ["update"])
+        let result = await runTool(ifNeeded ? ["install-source", "--if-needed"] : ["install-source"])
         activity = nil
         if result.0 != 0 {
             updateError = DeployResult(output: result.1)?.error ?? Self.lastLine(result.1) ?? "The update failed."
+            // `coconut update` waits for this step after an app update.
+            UpdatePreferences().record(UpdateResult(time: Date(), outcome: .failed,
+                                                    message: "The service update failed: \(updateError ?? "")"))
         } else if let relayError = DeployResult(output: result.1)?.relayError {
             // The service runs, but without the relay the iPhone cannot reach it.
             updateError = "The relay did not start: \(relayError)"

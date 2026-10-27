@@ -6,11 +6,20 @@ import Foundation
 let usage = """
     Usage: coconut <command>
 
+      status    Print the version, the update settings, the last update check and error, and the state of the
+                service, the relay and Hermes. --json prints the service state as JSON.
+      update    Check for a newer Coconut.app now, and install it. The service updates after its running bot
+                work finishes. Prints the result.
+      settings automatic-updates on|off
+                Turn automatic updates on or off. When on, Coconut.app checks every six hours and installs.
+      settings channel stable|nightly
+                Choose the update channel.
       pair      Print a one-time iPhone setup link.
-      update    Install or update the Coconut source of this app. --if-needed skips an install that is current.
-      migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
-      status    Print the state of the service, Hermes and the relay as JSON.
       version   Print the version of Coconut.app.
+      install-source
+                Install the Coconut source that this app carries. --if-needed skips an install that is current.
+                The app runs this after each update.
+      migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       service   Run the Coconut service. The login item uses this command.
       sidecar   Run the relay sidecar. The login item uses this command.
     """
@@ -56,6 +65,77 @@ func run(_ launch: Launch) -> Never {
     fail("Coconut could not start \(launch.executable.path): \(String(cString: strerror(errno)))")
 }
 
+/// The version of the app around this tool, read again each time: Sparkle can replace the app while the tool runs.
+func appVersion() -> String {
+    // The tool lives in Contents/Helpers. Its app's Info.plist is in Contents.
+    let info = NSDictionary(contentsOf: helpers.deletingLastPathComponent().appendingPathComponent("Info.plist"))
+    return "\(info?["CFBundleShortVersionString"] as? String ?? "unknown") (\(info?["CFBundleVersion"] as? String ?? "unknown"))"
+}
+
+/// `coconut update`: ask the app to check now, wait for its result, and wait for the new version to serve.
+func checkForUpdates() -> Int32 {
+    let preferences = UpdatePreferences()
+    let start = Date()
+    let before = appVersion()
+    preferences.requestCheck(at: start)
+    DistributedNotificationCenter.default().postNotificationName(.init(UpdatePreferences.checkRequested), object: nil,
+                                                                 userInfo: nil, deliverImmediately: true)
+    // A running app gets the notification. A stopped app reads the request when `open` starts it.
+    let open = Process()
+    open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    // The tool lives in Contents/Helpers of the app, so it opens that app, also one that Launch Services does not know.
+    open.arguments = ["-g", helpers.deletingLastPathComponent().deletingLastPathComponent().path]
+    open.standardError = FileHandle.nullDevice
+    try? open.run()
+    open.waitUntilExit()
+    print("Checking for updates on the \(preferences.channel.rawValue) channel.")
+    guard let result = waitForResult(preferences, after: start, seconds: 300) else {
+        print("Coconut.app did not answer within five minutes. Open the Coconut menu, then run coconut update again.")
+        return 1
+    }
+    switch result.outcome {
+    case .upToDate:
+        print("Coconut.app \(before) is up to date.")
+        return 0
+    case .failed:
+        print("The update check failed: \(result.message ?? "unknown error")")
+        return 1
+    case .installing:
+        print("Installing Coconut \(result.version ?? "") now. The app restarts. Running bot work finishes before the service updates.")
+    }
+    // The new app updates the service with `install-source` when it starts. That can wait up to ten minutes for bot work.
+    let deadline = Date().addingTimeInterval(1800)
+    while Date() < deadline {
+        sleep(5)
+        if let failure = preferences.lastResult, failure.outcome == .failed, failure.time > result.time {
+            print("The update failed: \(failure.message ?? "unknown error")")
+            return 1
+        }
+        let resources = helpers.deletingLastPathComponent().appendingPathComponent("Resources")
+        let current = appVersion()
+        guard current != before, let source = BundledSource(resources: resources) else { continue }
+        // A folder without the record of deploy.py (a Git checkout) gets no bundled source.
+        let managed = FileManager.default.fileExists(atPath: install.root.appendingPathComponent(".coconut-install.json").path)
+        if !install.isInstalled() || !managed || !source.isNewer(than: install) {
+            print("Coconut.app \(current) runs, and the service has its source.")
+            return 0
+        }
+    }
+    print("The update did not finish within 30 minutes. Run coconut status to see the last error.")
+    return 1
+}
+
+func waitForResult(_ preferences: UpdatePreferences, after start: Date, seconds: TimeInterval) -> UpdateResult? {
+    let deadline = Date().addingTimeInterval(seconds)
+    while Date() < deadline {
+        if let result = preferences.lastResult, result.time >= start {
+            return result
+        }
+        sleep(1)
+    }
+    return nil
+}
+
 func readStatus() -> Status {
     let semaphore = DispatchSemaphore(value: 0)
     var healthy = false
@@ -93,7 +173,7 @@ case "pair":
         fail("Coconut found no Python 3.11 or later.")
     }
     run(.pairingLink(install: install, python: python, environment: environment))
-case "update":
+case "install-source":
     let resources = helpers.deletingLastPathComponent().appendingPathComponent("Resources")
     guard let source = BundledSource(resources: resources) else { fail("This app has no Coconut source.") }
     guard let directory = install.relativePath() else {
@@ -131,13 +211,35 @@ case "migrate":
     }
     run(.migrate(install: install, python: python, environment: environment))
 case "status":
-    let encoder = JSONEncoder()
-    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-    print(String(decoding: try encoder.encode(readStatus()), as: UTF8.self))
+    if CommandLine.arguments.contains("--json") {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        print(String(decoding: try encoder.encode(readStatus()), as: UTF8.self))
+    } else {
+        StatusText.lines(version: appVersion(), preferences: UpdatePreferences(), status: readStatus()).forEach { print($0) }
+    }
+case "update":
+    exit(checkForUpdates())
+case "settings":
+    let arguments = Array(CommandLine.arguments.dropFirst(2))
+    let preferences = UpdatePreferences()
+    switch (arguments.first, arguments.dropFirst().first) {
+    case ("automatic-updates", "on"?), ("automatic-updates", "off"?):
+        preferences.setAutomaticUpdates(arguments[1] == "on")
+    case ("channel", let value?):
+        guard let channel = UpdateChannel(rawValue: value) else { fail(usage, code: 64) }
+        preferences.setChannel(channel)
+    case (nil, nil):
+        break
+    default:
+        fail(usage, code: 64)
+    }
+    DistributedNotificationCenter.default().postNotificationName(.init(UpdatePreferences.settingsChanged), object: nil,
+                                                                 userInfo: nil, deliverImmediately: true)
+    print("Automatic updates: \(preferences.automaticUpdates ? "on" : "off")")
+    print("Update channel: \(preferences.channel.rawValue)")
 case "version":
-    // The tool lives in Contents/Helpers. Its app's Info.plist is in Contents.
-    let info = NSDictionary(contentsOf: helpers.deletingLastPathComponent().appendingPathComponent("Info.plist"))
-    print("\(info?["CFBundleShortVersionString"] as? String ?? "unknown") (\(info?["CFBundleVersion"] as? String ?? "unknown"))")
+    print(appVersion())
 case "", "-h", "--help", "help":
     print(usage)
 default:

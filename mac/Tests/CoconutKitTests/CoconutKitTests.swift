@@ -299,6 +299,63 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertEqual(UpdateChannel.current(defaults), .stable)
     }
 
+    // MARK: Update preferences
+
+    func testAutomaticUpdatesAreOnUntilTurnedOff() {
+        let store = MemoryPreferences()
+        let preferences = UpdatePreferences(store: store)
+        XCTAssertTrue(preferences.automaticUpdates)
+        XCTAssertEqual(preferences.channel, .stable)
+        preferences.setAutomaticUpdates(false)
+        // Sparkle reads the same two keys.
+        XCTAssertEqual(store.values["SUEnableAutomaticChecks"] as? Bool, false)
+        XCTAssertEqual(store.values["SUAutomaticallyUpdate"] as? Bool, false)
+        XCTAssertFalse(preferences.automaticUpdates)
+        preferences.setAutomaticUpdates(true)
+        XCTAssertTrue(preferences.automaticUpdates)
+        preferences.setChannel(.nightly)
+        XCTAssertEqual(store.values["updateChannel"] as? String, "nightly")
+        XCTAssertEqual(preferences.channel, .nightly)
+    }
+
+    func testARequestWaitsUntilAResultAnswersIt() {
+        let preferences = UpdatePreferences(store: MemoryPreferences())
+        XCTAssertNil(preferences.pendingRequest)
+        preferences.requestCheck(at: Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(preferences.pendingRequest, Date(timeIntervalSince1970: 100))
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 99), outcome: .upToDate))
+        XCTAssertNotNil(preferences.pendingRequest, "An older result does not answer a newer request.")
+        let result = UpdateResult(time: Date(timeIntervalSince1970: 101), outcome: .installing, version: "0.2.0 (510)")
+        preferences.record(result)
+        XCTAssertNil(preferences.pendingRequest)
+        XCTAssertEqual(preferences.lastResult, result)
+    }
+
+    func testTheStatusTextNamesTheSettingsAndTheLastError() {
+        let store = MemoryPreferences(["SULastCheckTime": Date(timeIntervalSince1970: 1_793_000_000), "updateChannel": "nightly",
+                                       "SUAutomaticallyUpdate": false])
+        let preferences = UpdatePreferences(store: store)
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 1_793_000_100), outcome: .failed,
+                                        message: "The feed is unavailable."))
+        let status = Status(install: "/Users/a/Coconut", service: .running, hermes: "ok", hermesVersion: "0.22.5",
+                            hermesReason: nil, relay: "connected")
+        let lines = StatusText.lines(version: "0.1.0 (502)", preferences: preferences, status: status)
+        XCTAssertEqual(lines, [
+            "Coconut.app: 0.1.0 (502)",
+            "Update channel: nightly",
+            "Automatic updates: off",
+            "Last update check: 2026-10-26T07:33:20Z",
+            "Last update result: failed (2026-10-26T07:35:00Z)",
+            "Last update error: The feed is unavailable.",
+            "Service: running (/Users/a/Coconut)",
+            "Relay: connected",
+            "Hermes: 0.22.5",
+        ])
+        let fresh = StatusText.lines(version: "0.1.0 (502)", preferences: UpdatePreferences(store: MemoryPreferences()), status: status)
+        XCTAssertTrue(fresh.contains("Last update check: never"))
+        XCTAssertTrue(fresh.contains("Last update error: none"))
+    }
+
     // MARK: Pairing
 
     func testThePairingOutputGivesTheLinkAndTheImage() {
