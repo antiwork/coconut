@@ -10,7 +10,7 @@ import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
 from .push_relay import RelayTransport, validate_route, notification_alert
-from .push_schedule import LEGACY_SCHEDULE, effective_importance, explicit_importance, in_window, merge as merge_schedule, next_opening, stored as stored_schedule
+from .push_schedule import LEGACY_SCHEDULE, in_window, merge as merge_schedule, next_opening, stored as stored_schedule
 
 
 class APNsTransport:
@@ -70,10 +70,16 @@ class PushDelivery:
             device_id TEXT PRIMARY KEY, data TEXT NOT NULL);
         ''')
         columns = {row[1] for row in service.db.execute('PRAGMA table_info(push_outbox)')}
-        for column, kind in (('envelope', 'TEXT'), ('message_id', 'TEXT'), ('importance', 'TEXT'), ('explicit_importance', 'TEXT'), ('importance_reason', 'TEXT'),
+        for column, kind in (('envelope', 'TEXT'), ('message_id', 'TEXT'), ('urgent', 'INTEGER NOT NULL DEFAULT 0'),
                              ('deferred_reason', 'TEXT'), ('deferred_until', 'REAL')):
             if column not in columns:
                 service.db.execute(f'ALTER TABLE push_outbox ADD COLUMN {column} {kind}')
+        # The three importance levels are retired. Only a bot's explicit urgent still skips work hours.
+        if 'explicit_importance' in columns:
+            service.db.execute("UPDATE push_outbox SET urgent=1 WHERE explicit_importance='urgent'")
+        for column in ('importance', 'explicit_importance', 'importance_reason'):
+            if column in columns:
+                service.db.execute(f'ALTER TABLE push_outbox DROP COLUMN {column}')
 
     @property
     def configured(self):
@@ -96,7 +102,7 @@ class PushDelivery:
         if schedule is not None:
             schedule = merge_schedule(self.schedule(device_id), schedule)
             if schedule is None:
-                raise ServiceError(400, 'Supply start before end as HH:MM, an IANA timezone, at least one weekday from 1 to 7, and true or false for enabled and honor_routine.')
+                raise ServiceError(400, 'Supply start before end as HH:MM, an IANA timezone, at least one weekday from 1 to 7, and and true or false for enabled.')
         token = token.lower()
         route = data.get('relay')
         if route is not None:
@@ -197,15 +203,15 @@ class PushDelivery:
         turn = task.get('_native_turn_id') or task.get('updated_at') or task['created_at']
         event_key = ':'.join((task_id, kind, decision_id or message_id or turn))
         stamp = time.time()
-        explicit = explicit_importance(data.get('notification_importance')) if kind == 'decision' else None
+        urgent = int(kind == 'decision' and data.get('needs_attention_now') is True)
         for (device_id,) in self.service.db.execute('SELECT device_id FROM push_devices WHERE enabled=1'):
             if not self.allows(device_id, kind):
                 continue
             notification_id = str(uuid5(NAMESPACE_URL, device_id + ':' + event_key))
             self.service.db.execute('''INSERT OR IGNORE INTO push_outbox
-                (id,device_id,event_key,bot_id,task_id,decision_id,kind,turn_id,message_id,status,not_before,expires,explicit_importance)
+                (id,device_id,event_key,bot_id,task_id,decision_id,kind,turn_id,message_id,status,not_before,expires,urgent)
                 VALUES (?,?,?,?,?,?,?,?,?,'queued',?,?,?)''',
-                (notification_id, device_id, event_key, bot_id, task_id, decision_id, kind, turn, message_id, stamp + 2, stamp + 86400, explicit))
+                (notification_id, device_id, event_key, bot_id, task_id, decision_id, kind, turn, message_id, stamp + 2, stamp + 86400, urgent))
 
     def inbox_badge_count(self):
         visible = {b['id'] for b in self.service._all('bots') if not b.get('_deleted')}
@@ -268,13 +274,11 @@ class PushDelivery:
             if stale:
                 service.db.execute("UPDATE push_outbox SET status='discarded',reason='NoLongerRelevant' WHERE id=?", (job['id'],))
                 return True
-            # Only routine alerts wait. The kind's floor, or an explicit urgent or important, keeps immediate delivery.
+            # Outside work hours, every alert waits except a card that the bot marked as needing attention now.
             schedule, current = self.schedule(job['device_id']), time.time()
-            level, why = effective_importance(job['kind'], job['explicit_importance'], schedule['honor_routine'])
             # A sealed envelope fixes its text, badge, and expiry, so a retry never waits again.
-            held = schedule['enabled'] and level == 'routine' and not in_window(schedule, current) and not job['envelope']
+            held = schedule['enabled'] and not job['urgent'] and not in_window(schedule, current) and not job['envelope']
             opening = next_opening(schedule, current) if held else None
-            service.db.execute('UPDATE push_outbox SET importance=?,importance_reason=? WHERE id=?', (level, why, job['id']))
             if not held:
                 service.db.execute('UPDATE push_outbox SET deferred_until=NULL,deferred_reason=NULL WHERE id=?', (job['id'],))
             if held:
