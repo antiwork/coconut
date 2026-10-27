@@ -65,8 +65,8 @@ Each time the service starts, it looks for Hermes in this order:
 
 The official installer keeps the Python packages of Hermes in a dependency environment in the Hermes home, under `installs/<id>`. Its `facts.json` names the active environment, and Coconut runs Hermes with that environment's Python.
 The Hermes home is `HERMES_HOME`. A LaunchAgent does not get the variables of your shell, so when the service has no `HERMES_HOME`, Coconut reads it from your login shell, for example from `~/.zprofile`. Without either, it uses `~/.hermes`.
-Coconut starts each Hermes process with `HERMES_DISABLE_LAZY_INSTALLS=1`. Each bot has its own Hermes home, and without this setting, Hermes would install a dependency environment for each of them.
-A bot's worker also gets `HERMES_RUNTIME_DIR=<bot's Hermes home>/tools`. That is where the bot's terminal `hermes` installs tools such as the browser. Without this setting, the worker would read the tools of the Hermes home that owns the source folder. Bots do not share tools.
+Coconut starts each Hermes process with `HERMES_DISABLE_LAZY_INSTALLS=1`. Each bot runs in its own Hermes profile, and without this setting, Hermes would install a dependency environment for each of them.
+A bot's worker also gets `HERMES_RUNTIME_DIR=<bot's Hermes profile>/tools`. That is where the bot's terminal `hermes` installs tools such as the browser. Without this setting, the worker would read the tools of the Hermes home that owns the source folder. Bots do not share tools.
 A bot's worker also gives the browser-harness daemons of `browser_exec` a private folder for their sockets: `BH_RUNTIME_DIR=/tmp/cbh-<random id>`, one for each worker process, removed when the worker stops. An AF_UNIX socket path has at most 103 bytes on macOS, which a folder in the bot's Hermes home exceeds. The daemon logs and the browser profiles stay where they were.
 After `hermes update`, restart Coconut, so that it uses the new dependency environment.
 
@@ -94,6 +94,39 @@ HERMES_HOME="$HOME/Coconut/.runtime/hermes/terminal/hermes" hermes model
 ```
 
 Native Hermes owns login and credential refresh. Coconut does not copy OAuth tokens into bot profiles.
+
+## Move the bots into Hermes profiles (once)
+
+Each bot is a Hermes profile of the person (see [Architecture](architecture.md#bots-are-hermes-profiles)).
+Installs from before this change keep each bot home in `.runtime/host/bots/<uuid>/home`. The update does not move them, because a move is not safe while workers run. Until you run the migration, Coconut works as before, and your Hermes profiles do not show up as bots.
+
+To move the bots, run these commands on the Mac that runs Coconut, in the Coconut folder (`~/Coconut`):
+
+1. Show the plan. This step changes nothing.
+
+   ```sh
+   python3 scripts/migrate_bots_to_profiles.py --dry-run
+   ```
+
+2. Check the profile names in the plan. Each name comes from the bot name, and no name replaces a profile that you have.
+3. Run the migration:
+
+   ```sh
+   python3 scripts/migrate_bots_to_profiles.py
+   ```
+
+The migration:
+
+1. Asks Coconut to finish its turns, stops it, and waits until no Coconut worker runs.
+2. Backs up `.runtime/host`, without the workspaces, into `.runtime/host-backup-before-profiles-<time>`.
+3. Moves each bot home to `<Hermes home>/profiles/<name>`. On another disk, it copies the folder, compares the SHA-256 of every file, and then removes the original.
+4. Writes the `profiles` rows, and a ledger in `.runtime/host/profile-migration.json`.
+5. Starts Coconut again.
+
+Bot IDs stay the same, so the iPhone keeps every chat. Sessions, memories, skills, and cron jobs move with the folder. Kanban and workspaces stay in `.runtime/host`.
+At its start, Coconut adds your default profile and your other profiles as bots. After the migration, `hermes -p <name>` opens the same profile as the bot.
+
+To undo the migration, run `python3 scripts/migrate_bots_to_profiles.py --rollback`. It moves the folders back, also from a profile that you renamed. The bots that Coconut added from your profiles stay.
 
 ## GitHub access for a bot
 

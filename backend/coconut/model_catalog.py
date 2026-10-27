@@ -64,6 +64,22 @@ def public_endpoint(value):
     return value.rstrip('/')
 
 
+def _boundary(data_dir, home):
+    """A bot home is in Coconut storage (the earlier layout) or is a Hermes profile folder of the person."""
+    data_dir, home = Path(data_dir).absolute(), Path(home).absolute()
+    return data_dir if home == data_dir or data_dir in home.parents else home
+
+
+def profile_contained(path, request):
+    """Check a bot path in a settings process: it is in Coconut storage, or in a Hermes profile that the service named."""
+    path = Path(path).absolute()
+    for root in (request['data_root'], *request.get('profile_roots', ())):
+        root = Path(root).absolute()
+        if path == root or root in path.parents:
+            return _contained(path, root)
+    raise ModelCatalogError('The Hermes profile must remain inside Coconut storage or a Hermes profile of this bot.')
+
+
 def _contained(path, root):
     path, root = Path(path).absolute(), Path(root).absolute()
     try:
@@ -302,7 +318,22 @@ class HermesModelCatalog:
     def _profile_home(self, bot_id):
         if not isinstance(bot_id, str) or str(UUID(bot_id)) != bot_id:
             raise ModelCatalogError('The Hermes bot profile ID is invalid.')
-        return _contained(self.data_dir / 'bots' / bot_id / 'home', self.data_dir)
+        from .profiles import HermesProfiles, ProfileError
+        try:
+            home = HermesProfiles(self.data_dir, getattr(self, 'profile_rows', None)).home({'id': bot_id})
+        except ProfileError as error:
+            raise ModelCatalogError(str(error)) from None
+        return _contained(home, _boundary(self.data_dir, home))
+
+    def _profile_roots(self):
+        """The Hermes profile folders outside Coconut storage that a settings process may read and change."""
+        rows = getattr(self, 'profile_rows', None)
+        if rows is None:
+            from .profile_registry import homes
+            found = homes(self.data_dir)
+        else:
+            found = [row['home'] for row in rows.values() if row['state'] != 'removed']
+        return sorted({home for home in found if _boundary(self.data_dir, home) != self.data_dir})
 
     def profile_signature(self, bot_id):
         """Identify the files that native_settings.profile_state reads for this bot, with the default profile files."""
@@ -310,7 +341,7 @@ class HermesModelCatalog:
         files = []
         for name in ('profile.yaml', 'config.yaml', 'SOUL.md'):
             try:
-                state = _contained(home / name, self.data_dir).stat()
+                state = _contained(home / name, _boundary(self.data_dir, home)).stat()
                 files.append((name, state.st_ino, state.st_mtime_ns, state.st_size))
             except FileNotFoundError:
                 files.append((name, None))
@@ -323,15 +354,16 @@ class HermesModelCatalog:
         completion receipts in the runs folder beside the profile. The settings set the time zone and the routine model.
         """
         home = self._profile_home(bot_id)
-        from .native_routine_receipts import runs_directory
-        receipts = _contained(runs_directory(home), self.data_dir)
+        # Coconut's own folder of the bot holds the receipts (native_routine_receipts.runs_directory).
+        receipts = _contained(self.data_dir / 'bots' / bot_id / 'runs', self.data_dir)
         paths = [(name, home / name) for name in ('cron/jobs.json', 'cron/executions.db', 'cron/executions.db-wal',
                                                    'config.yaml', '.env')]
         paths += sorted(('runs/' + path.name, path) for path in receipts.glob('*.json'))
         files = []
         for name, path in paths:
             try:
-                state = _contained(path, self.data_dir).stat()
+                state = _contained(path, _boundary(self.data_dir, home) if name in ('config.yaml', '.env') or name.startswith('cron/')
+                                   else self.data_dir).stat()
                 files.append((name, state.st_ino, state.st_mtime_ns, state.st_size))
             except FileNotFoundError:
                 files.append((name, None))
@@ -366,7 +398,7 @@ class HermesModelCatalog:
                 global_signature = None
             result = {}
             for bot_id, home in homes.items():
-                path = _contained(home / 'config.yaml', self.data_dir)
+                path = _contained(home / 'config.yaml', _boundary(self.data_dir, home))
                 stat = path.stat() if path.exists() else None
                 signature = (global_signature, (stat.st_mtime_ns, stat.st_size, stat.st_ino) if stat else None)
                 cached = self._profile_cache.get(bot_id)
@@ -431,13 +463,13 @@ class HermesModelCatalog:
         environment.update(NO_LAZY_INSTALLS)
         environment.update(HERMES_HOME=str(self.root), PYTHONPATH=str(self.source),
                            TMPDIR=str(self.private_home / 'tmp'), HERMES_DISABLE_TELEMETRY='1',
-                           PYTHONUNBUFFERED='1')
+                           PYTHONUNBUFFERED='1', COCONUT_DATA_DIR=str(self.data_dir))
         if operation == 'native' and payload.get('native_operation', '').startswith('routine_'):
             # Coconut retains job ownership after the settings subprocess exits.
             environment['HERMES_MACHINE_ID'] = 'coconut-' + hashlib.sha256(str(self.data_dir).encode()).hexdigest()[:24]
         try:
             with ExitStack() as files:
-                request = dict(operation=operation, data_root=str(self.data_dir), **payload)
+                request = dict(operation=operation, data_root=str(self.data_dir), profile_roots=self._profile_roots(), **payload)
                 text_field = NATIVE_TEXT_FIELDS.get(payload.get('native_operation')) if operation == 'native' else None
                 if text_field:
                     # Completed results can exceed the settings request bound.
@@ -906,9 +938,9 @@ def _worker(request):
         selection = _selection(request['selection'])
         profile = request.get('profile_home')
         if profile:
-            profile = _contained(profile, request['data_root'])
+            profile = profile_contained(profile, request)
             for name in ('config.yaml', '.env', 'auth.json', '.anthropic_oauth.json'):
-                _contained(profile / name, request['data_root'])
+                profile_contained(profile / name, request)
             # A profile with no selection uses native global routing and credentials.
             config, model, provider, base_url = _native_state()
             inherited = _catalog(config, model, provider, base_url, [])['default']
@@ -924,16 +956,16 @@ def _worker(request):
         if request['operation'] == 'read_profiles':
             result = {}
             for bot_id, home in request['homes'].items():
-                home = _contained(home, request['data_root'])
-                _contained(home / 'config.yaml', request['data_root'])
+                home = profile_contained(home, request)
+                profile_contained(home / 'config.yaml', request)
                 try:
                     result[bot_id] = _read_profile(home, inherited)
                 except Exception:
                     result[bot_id] = {'model_override': None, 'effective_model': None,
                                       'error': 'The Hermes profile config is invalid. Fix it in Terminal.'}
             return result
-        home = _contained(request['profile_home'], request['data_root'])
-        _contained(home / 'config.yaml', request['data_root'])
+        home = profile_contained(request['profile_home'], request)
+        profile_contained(home / 'config.yaml', request)
         catalog = dict(request['catalog'], default=inherited)
         return _write_profile(home, request['selection'], catalog)
     if request['operation'] in ('set_default', 'migrate'):

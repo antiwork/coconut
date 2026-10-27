@@ -1,4 +1,8 @@
-"""Keep one project-contained Hermes profile for each Coconut bot."""
+"""Find the Hermes profile of each Coconut bot.
+
+A bot with a row in the `profiles` table (profile_registry) uses that Hermes profile of the person. A bot without a row
+still uses its earlier home in `<data>/bots/<uuid>/home`, until scripts/migrate_bots_to_profiles.py moves it.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +15,12 @@ import sqlite3
 import stat
 import tempfile
 from uuid import UUID
+
+
+try:
+    from . import profile_registry
+except ImportError:
+    import profile_registry
 
 
 class ProfileError(ValueError):
@@ -100,9 +110,38 @@ def prompt_revision(home: str | Path, *, boundary: str | Path | None = None) -> 
     return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
 
 
+def legacy_home(home: str | Path) -> bool:
+    """True for a home in the earlier layout, `<data>/bots/<uuid>/home`."""
+    home = Path(home)
+    return home.name == 'home' and home.parent.parent.name == 'bots'
+
+
+def bot_folder(home: str | Path) -> Path:
+    """Return Coconut's own folder of a bot, `<data>/bots/<uuid>`, for its profile home.
+
+    Coconut keeps its files (routine receipts, terminal scripts, worker progress) there, never in the profile. A worker
+    knows its folder from COCONUT_BOT_DIR. Another process finds it in the profiles table of COCONUT_DATA_DIR.
+    """
+    home = Path(home).absolute()
+    if legacy_home(home):
+        return home.parent
+    folder, current = os.environ.get('COCONUT_BOT_DIR'), os.environ.get('HERMES_HOME')
+    if folder and current and Path(current).absolute() == home:
+        return Path(folder)
+    data_dir = os.environ.get('COCONUT_DATA_DIR')
+    if not data_dir:
+        # Every Coconut process that can reach a Hermes profile of the person (workers and settings processes) sets
+        # COCONUT_DATA_DIR. Without it, the home has the earlier layout beside its own folder.
+        return home.parent
+    bot_id = profile_registry.bot_for_home(data_dir, home)
+    if bot_id is None:
+        raise ProfileError('Coconut cannot find the bot of this Hermes profile.')
+    return Path(data_dir) / 'bots' / bot_id
+
+
 def settings_report(home: str | Path) -> Path:
     """The report of the one-time settings step (settings_migration) for this profile home. It marks the step as done."""
-    return Path(home).parent / 'settings-migration' / 'report.json'
+    return bot_folder(home) / 'settings-migration' / 'report.json'
 
 
 def settings_migrated(home: str | Path) -> bool:
@@ -112,26 +151,50 @@ def settings_migrated(home: str | Path) -> bool:
 class HermesProfiles:
     """Hermes files own behavior. Coconut records identity and phone presentation."""
 
-    def __init__(self, data_dir: str | Path):
+    def __init__(self, data_dir: str | Path, rows: dict | None = None):
         self.root = Path(data_dir).expanduser().absolute()
+        # The service keeps the profiles table in memory and passes it here. Without it, each lookup reads the table.
+        self.rows = rows
+
+    def row(self, bot: dict) -> dict | None:
+        """The profiles row of this bot, or None for a bot that still uses its earlier home."""
+        identity = profile_id(bot)
+        return self.rows.get(identity) if self.rows is not None else profile_registry.lookup(self.root, identity)
+
+    def native(self, bot: dict) -> bool:
+        return self.row(bot) is not None
+
+    def folder(self, bot: dict) -> Path:
+        """Coconut's own folder of the bot. It stays in the data directory for every bot."""
+        return self.root / 'bots' / profile_id(bot)
+
+    def boundary(self, home: Path) -> Path:
+        return self.root if home == self.root or self.root in home.parents else home
 
     def home(self, bot: dict) -> Path:
-        path = self.root / 'bots' / profile_id(bot) / 'home'
-        _safe(path, self.root)
+        row = self.row(bot)
+        path = self.folder(bot) / 'home' if row is None else Path(row['home'])
+        _safe(path, self.boundary(path))
         return path
 
     def read_instructions(self, bot: dict) -> str:
-        path = self.home(bot) / 'SOUL.md'
-        _safe(path, self.root)
+        home = self.home(bot)
+        path = home / 'SOUL.md'
+        _safe(path, self.boundary(home))
         return path.read_text() if path.exists() else bot.get('instructions', '')
 
     def prompt_revision(self, bot: dict) -> str:
-        return prompt_revision(self.home(bot), boundary=self.root)
+        home = self.home(bot)
+        return prompt_revision(home, boundary=self.boundary(home))
 
     def write_instructions(self, bot: dict, text: str) -> None:
         home = self.home(bot)
-        home.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _write(home / 'SOUL.md', text, self.root)
+        if self.native(bot):
+            if not home.is_dir():
+                raise ProfileError('The Hermes profile of this bot is missing.')
+        else:
+            home.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _write(home / 'SOUL.md', text, self.boundary(home))
 
     def sync(self, bot: dict) -> dict:
         """Check the profile identity of this bot. Create the profile only when the bot has none.
@@ -143,6 +206,11 @@ class HermesProfiles:
         home = self.home(bot)
         status = 'deleted' if bot.get('_deleted') else 'archived' if bot.get('archived') else 'active'
         created = False
+        if self.native(bot):
+            # The person's Hermes owns this profile. Coconut never creates or repairs it here.
+            if status != 'deleted' and not home.is_dir():
+                status = 'missing'
+            return dict(profile_id=identity, bot_id=bot['id'], session_id=bot['session_id'], status=status, created=False)
         # Deleting an unused bot does not create a new Hermes home.
         if status != 'deleted' and not home.exists():
             self._create(bot, home)

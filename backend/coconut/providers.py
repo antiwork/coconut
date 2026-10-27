@@ -403,25 +403,36 @@ class HermesProvider(FixtureProvider):
     def environment(self, bot_id):
         UUID(bot_id)
         root = self.data_dir / 'bots' / bot_id
-        for name in ('home', 'workspace', 'browser', 'tmp'):
+        from .profiles import HermesProfiles
+        profiles = HermesProfiles(self.data_dir, getattr(self, 'profile_rows', None))
+        native = profiles.native({'id': bot_id})
+        # A bot with a profiles row runs in the person's Hermes profile, so the Hermes CLI, the gateway and Coconut
+        # share its skills, memories, config and cron. Coconut's own files stay in <data>/bots/<uuid>.
+        home = profiles.home({'id': bot_id})
+        for name in ('workspace', 'browser', 'tmp') if native else ('home', 'workspace', 'browser', 'tmp'):
             (root / name).mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not home.is_dir():
+            raise RuntimeError('The Hermes profile of this bot is missing. Restore its folder, or remove the bot from Coconut.')
         # Homebrew manages one Mac installation, so its trust must have one scope.
         shared_config = self.data_dir / 'shared'
         shared_config.mkdir(exist_ok=True, mode=0o700)
         # Native tool configuration stays in the bot profile. HOME remains the OS account home.
         env = {k: os.environ[k] for k in ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY') if k in os.environ}
         from .runtime_environment import login_folders, prepare_profile
-        env.update(prepare_profile(root / 'home'))
+        env.update(prepare_profile(home))
         # A bot that keeps its own logins sets their folders in its .env. The worker loads that file, and every other
         # process for this bot (work sources, process and session checks) must use the same logins.
-        env.update(login_folders(root / 'home'))
+        env.update(login_folders(home))
         env['COCONUT_GOOGLE_HOME'] = str(self.data_dir / 'connections' / 'google' / 'home')
-        env.update(HERMES_HOME=str(root / 'home'), TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
+        # Workspace recovery finds Coconut workers by these values, never by HERMES_HOME, which the person's own Hermes
+        # processes can share.
+        env.update(COCONUT_DATA_DIR=str(self.data_dir), COCONUT_BOT_ID=bot_id, COCONUT_BOT_DIR=str(root))
+        env.update(HERMES_HOME=str(home),TMPDIR=str(root / 'tmp'), PYTHONPATH=str(self.hermes_root), PYTHONUNBUFFERED='1', COCONUT_BROWSER_PROFILE=str(root / 'browser'), HERMES_DISABLE_TELEMETRY='1', HOMEBREW_XDG_CONFIG_HOME=str(shared_config))
         from .hermes_runtime import NO_LAZY_INSTALLS
         env.update(NO_LAZY_INSTALLS)
         # Hermes finds its tool store from the source folder, which the Hermes home of the official installer owns.
         # The bot's terminal `hermes` installs tools into <HERMES_HOME>/tools, so the worker reads that store too.
-        env['HERMES_RUNTIME_DIR'] = str(root / 'home' / 'tools')
+        env['HERMES_RUNTIME_DIR'] = str(home / 'tools')
         env.update(HERMES_KANBAN_DB=str(self.data_dir / 'kanban/kanban.db'),
                    HERMES_KANBAN_BOARD='default', HERMES_TENANT=bot_id,
                    HERMES_KANBAN_WORKSPACES_ROOT=str(self.data_dir / 'kanban/kanban/workspaces'))
@@ -539,8 +550,11 @@ class HermesProvider(FixtureProvider):
         again.
         """
         from .profiles import HermesProfiles, settings_migrated
-        profiles = HermesProfiles(self.data_dir)
+        profiles = HermesProfiles(self.data_dir, getattr(self, 'profile_rows', None))
         profiles.sync(bot)
+        if profiles.native(bot):
+            # A Hermes profile of the person keeps its own settings. Coconut copies nothing into it.
+            return
         failed = getattr(self, '_settings_failures', {})
         if settings_migrated(profiles.home(bot)) or time.monotonic() < failed.get(bot['id'], float('-inf')):
             return

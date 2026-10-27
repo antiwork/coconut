@@ -132,11 +132,14 @@ def check_writers(root, allowed=()):
             if alive(pid):
                 raise ValueError('An orphan worker cannot be inspected.')
             continue
+        # A worker of a bot in a Hermes profile has the HERMES_HOME of that profile, which the person's own Hermes
+        # processes share. COCONUT_DATA_DIR marks it as a Coconut worker.
         if (f'COCONUT_WORKSPACE_ROOT={root}/workspaces ' in result.stdout + ' '
                 or f'COCONUT_PROCESS_HOME={root}/runtimes/' in result.stdout
+                or f'COCONUT_DATA_DIR={root} ' in result.stdout + ' '
                 or f'HERMES_HOME={root}/bots/' in result.stdout):
             raise ValueError('An unaccounted Coconut worker requires inspection.')
-        if script in fields[1] and not any(marker in result.stdout for marker in ('COCONUT_WORKSPACE_ROOT=', 'HERMES_HOME=')):
+        if script in fields[1] and not any(marker in result.stdout for marker in ('COCONUT_WORKSPACE_ROOT=', 'COCONUT_DATA_DIR=', 'HERMES_HOME=')):
             raise ValueError('An unscoped Coconut worker requires inspection.')
 
 

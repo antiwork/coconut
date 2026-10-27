@@ -364,7 +364,8 @@ def main(argv=None):
                 os.environ.update(hermes_runtime.NO_LAZY_INSTALLS)
                 provider = HermesProvider(args.data_dir, python=hermes['python'], hermes_root=hermes['root'],
                                           home=hermes_runtime.DEFAULT_HOME)
-                service = Service(args.data_dir, provider, start_workers=False)
+                # Each Hermes profile of the person is a bot (bot_profiles).
+                service = Service(args.data_dir, provider, start_workers=False, hermes_home=hermes.get('home'))
                 service.hermes_status = hermes_runtime.public(hermes)
             else:
                 service = UnavailableService(args.data_dir, hermes)

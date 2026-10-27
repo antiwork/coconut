@@ -58,9 +58,9 @@ def validate_mode(value, nullable=False):
 
 def worker(request, default_home):
     from hermes_cli.profiles import write_profile_meta
-    from model_catalog import _contained
+    from model_catalog import profile_contained
     op = request['native_operation']
-    homes = {identity: _contained(home, request['data_root']) for identity, home in request.get('homes', {}).items()}
+    homes = {identity: profile_contained(home, request) for identity, home in request.get('homes', {}).items()}
     if op == 'mcp':
         from native_mcp import manage
         from hermes_constants import set_hermes_home_override, reset_hermes_home_override

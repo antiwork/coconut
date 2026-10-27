@@ -74,6 +74,29 @@ Advanced native jobs that Coconut cannot preserve do not execute through its dis
 ## Isolation and routing
 
 Each bot has a separate Hermes profile, session, workspace, and browser directory.
+
+### Bots are Hermes profiles
+
+Each bot is one Hermes profile of the person. The `profiles` table in `coconut.sqlite3` maps the bot UUID to the profile:
+
+- `default` is the Hermes home: `$HERMES_HOME`, or `~/.hermes`.
+- Each other profile is `<Hermes home>/profiles/<name>`.
+
+The table also keeps the device and inode of each folder. The service rescans at its start, and when `<Hermes home>/profiles` changes:
+
+- A new profile folder becomes a new bot.
+- A renamed folder keeps its bot.
+- A missing folder makes its bot `missing`. The history stays, and the bot reattaches when the folder returns.
+
+Coconut writes no marker file into a profile. A worker runs with `HERMES_HOME` set to the profile folder. So Coconut chats, `hermes -p <name>`, and the gateway share the same skills, memories, config, and cron jobs.
+Coconut keeps its own files of a bot in `<data-dir>/bots/<uuid>`: workspace, browser, temporary files, routine receipts, and terminal scripts. Kanban stays in `<data-dir>/kanban`.
+
+A new bot gets its profile from the Hermes profile API (`hermes_cli.profiles.create_profile`), with its SOUL and description. The model comes from the Hermes config of the profile.
+Deleting a bot means "Remove from Coconut": the bot leaves Coconut, and the profile folder stays. A rescan does not add it again.
+To delete the Hermes profile itself, the person sends `POST /v1/bots/<id>/profile/delete` with `{"confirm": "<profile name>"}`. Coconut never deletes `default`. A bot cannot request this deletion: `coconut_delete_bot` only removes a bot from Coconut.
+
+Installs from before this change keep their bot homes in `<data-dir>/bots/<uuid>/home` until a person runs `scripts/migrate_bots_to_profiles.py` (see [Install and update](install-and-update.md)). Until then, the service does not rescan, and a new bot also gets a home in the data directory.
+
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.
 Coconut scopes Codex, GitHub CLI, and XDG settings through their native environment variables.
