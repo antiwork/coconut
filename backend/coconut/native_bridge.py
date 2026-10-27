@@ -428,9 +428,9 @@ QUESTION_SCHEMA['parameters']['properties'].update({
 QUESTION_SCHEMA['parameters']['properties']['risk_level'] = {
     'type': 'string', 'enum': ['low', 'medium', 'high', 'not_assessed'],
     'description': 'Required with risk, and on every merge card (low, medium, or high). Assessment of the proposed action. Low: small verified impact and clear recovery. Medium: meaningful bounded impact. High: broad impact or difficult recovery. Not assessed: evidence is insufficient. Always explain the reason in risk. This does not express confidence or merge readiness.'}
-QUESTION_SCHEMA['parameters']['properties']['notification_importance'] = {
-    'type': 'string', 'enum': ['urgent', 'important', 'routine'],
-    'description': 'Optional. How soon the person should get a phone alert for this card when it is outside their work hours. Use urgent only when waiting could cause real harm or a missed deadline. Important and omitted both mean it should not wait until morning, so omit it for an ordinary decision. Routine asks to wait for work hours, and the person’s settings decide whether that is honored. This is not risk_level and does not change the card or its approval.'}
+QUESTION_SCHEMA['parameters']['properties']['needs_attention_now'] = {
+    'type': 'boolean',
+    'description': 'Optional. Set true only when waiting for the person’s next work hours would cause harm or a missed deadline. Coconut decides when to notify for every other card. This is not risk_level and does not change the card or its approval.'}
 QUESTION_SCHEMA['parameters']['properties']['options']['items']['properties'].update({
     key: QUESTION_SCHEMA['parameters']['properties'][key] for key in ('risk_level', 'risk')})
 try:
@@ -453,7 +453,7 @@ REPLY_SCHEMA = {
         'choice': {'type': 'string', 'enum': ['approve', 'reject', 'modify']},
         'option_id': {'type': 'string', 'description': 'The current option ID for an explicit selection.'},
         'revision': dict(QUESTION_SCHEMA['parameters'],
-                         properties=dict({k: v for k, v in QUESTION_SCHEMA['parameters']['properties'].items() if k != 'notification_importance'}, draft=DRAFT_SCHEMA),
+                         properties=dict({k: v for k, v in QUESTION_SCHEMA['parameters']['properties'].items() if k != 'needs_attention_now'}, draft=DRAFT_SCHEMA),
                          required=[], anyOf=[{'required': ['title', 'options']}, {'required': ['draft']}]),
         'quote': {'type': 'string', 'description': 'Exact words from this human reply that give the instruction.'},
     }, 'required': ['choice', 'quote']},

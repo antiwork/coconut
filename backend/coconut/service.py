@@ -150,7 +150,7 @@ from .work_sources import WorkSources, card_answer_steps
 from .work_status import WorkStatus
 from .background_processes import BackgroundProcesses, PENDING_COMPLETIONS
 from .native_execution import NativeExecution
-from .decision_inbox import DecisionInbox
+from .decision_inbox import DecisionInbox, migrate_notification_importance
 from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PullRequestReviews
 from .work_progress import WorkProgress, work_enabled
 
@@ -339,6 +339,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
+                migrate_notification_importance(self.db)
                 self._move_artifact_content()
                 if not getattr(self, '_workspace_recovery_hold', False):
                     self._recover()
@@ -3760,7 +3761,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 self._message(bot_id, str(payload.get('text', payload.get('summary', 'Working')))[:500], task_id=task_id, kind='activity')
             elif kind == 'decision':
                 action = payload.get('action', {})
-                decision = dict(id=uid(), bot_id=bot_id, task_id=task_id, title=str(payload.get('title', 'Review proposed action'))[:160], explanation=str(payload.get('explanation', ''))[:2000], action_type=str(payload.get('action_type', action.get('type', 'unknown'))), resource=str(payload.get('resource', action.get('filename', ''))), consequences=str(payload.get('consequences', 'Creates a file on the Mac.'))[:2000], recommended=payload.get('recommended', 'approve'), options=[], status='pending', urgency=payload.get('urgency', 'normal'), notification_importance=payload.get('notification_importance') if payload.get('notification_importance') in ('urgent', 'important', 'routine') else None, created_at=now(), decided_at=None, decided_by=None, decided_by_name=None, correction=None, outcome=None, revision=1, _action=action, _action_hash=digest(encoded(action)), _prediction=payload.get('predicted_choice', payload.get('prediction')), _answers=[])
+                decision = dict(id=uid(), bot_id=bot_id, task_id=task_id, title=str(payload.get('title', 'Review proposed action'))[:160], explanation=str(payload.get('explanation', ''))[:2000], action_type=str(payload.get('action_type', action.get('type', 'unknown'))), resource=str(payload.get('resource', action.get('filename', ''))), consequences=str(payload.get('consequences', 'Creates a file on the Mac.'))[:2000], recommended=payload.get('recommended', 'approve'), options=[], status='pending', urgency=payload.get('urgency', 'normal'), needs_attention_now=payload.get('needs_attention_now') is True, created_at=now(), decided_at=None, decided_by=None, decided_by_name=None, correction=None, outcome=None, revision=1, _action=action, _action_hash=digest(encoded(action)), _prediction=payload.get('predicted_choice', payload.get('prediction')), _answers=[])
                 if decision['_prediction'] not in ('approve', 'reject'):
                     decision['_prediction'] = None
                 prior_id = task.get('_resume_decision')
