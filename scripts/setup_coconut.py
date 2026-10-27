@@ -183,49 +183,55 @@ def saved_hermes_settings() -> dict:
     return {name: value for name, value in saved.items() if name in HERMES_SETTINGS and isinstance(value, str) and value}
 
 
-def load_hermes_settings(reset: bool) -> None:
+def load_hermes_settings(reset: bool) -> bool:
     """Use the saved Hermes settings where this shell has none, so use_hermes checks the Hermes that the service uses.
 
-    With `reset`, forget them: the service then finds Hermes as this shell does.
+    With `reset`, forget them: the service then finds Hermes as this shell does. Return True when it forgot settings.
     """
     if reset:
+        forgot = bool(saved_hermes_settings())
         subprocess.run(["defaults", "delete", BUNDLE_ID, "ServiceEnvironment"], capture_output=True)
         print("Coconut.app forgot its saved Hermes settings.")
-        return
+        return forgot
     for name, value in saved_hermes_settings().items():
         os.environ.setdefault(name, value)
+    return False
 
 
-def save_hermes_settings() -> None:
+def save_hermes_settings() -> bool:
     """Keep the Hermes settings that use_hermes checked. The login items start without the environment of this shell,
     and the earlier LaunchAgent that kept them goes away. The `coconut` tool reads them from the app's preferences.
 
     The settings come from this shell, which load_hermes_settings filled from the saved ones, else from the earlier
-    LaunchAgent. Without any, the saved preference stays as it is.
+    LaunchAgent. Without any, the saved preference stays as it is. Return True when the saved settings changed.
     """
     service = host.service_environment()
     settings = {name: os.environ.get(name) or service.get(name) for name in HERMES_SETTINGS}
     settings = {name: value for name, value in settings.items() if value}
-    if settings:
-        arguments = ["defaults", "write", BUNDLE_ID, "ServiceEnvironment", "-dict"]
-        for name, value in sorted(settings.items()):
-            arguments += [name, value]
-        run(arguments, "Saving the Hermes settings")
-        print("Coconut.app keeps these Hermes settings: " + ", ".join(sorted(settings)) + ".")
+    if not settings or settings == saved_hermes_settings():
+        return False
+    arguments = ["defaults", "write", BUNDLE_ID, "ServiceEnvironment", "-dict"]
+    for name, value in sorted(settings.items()):
+        arguments += [name, value]
+    run(arguments, "Saving the Hermes settings")
+    print("Coconut.app keeps these Hermes settings: " + ", ".join(sorted(settings)) + ".")
+    return True
 
 
 def login_item_loaded(label: str) -> bool:
     return subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{label}"], capture_output=True).returncode == 0
 
 
-def leave_other_folder(previous: Path) -> None:
-    """The app and its login items read the folder only when they start. Let the turns of the earlier folder's service
-    finish, then start the login items again with this checkout, and quit the app, which `start_app` opens again."""
+def restart_login_items(previous: Path) -> None:
+    """The app and its login items read the folder and the Hermes settings only when they start. Let the turns of the
+    service in `previous` finish, then start the login items again, and quit the app, which `start_app` opens again.
+
+    `previous` is the earlier folder of the app, or this checkout when only the Hermes settings changed."""
     subprocess.run(["osascript", "-e", f'quit app id "{BUNDLE_ID}"'], capture_output=True)
     if not login_item_loaded(SERVICE_LABEL):
         return
     if (previous / "scripts/host.py").is_file():
-        print(f"Coconut.app ran {previous}. Its running bot turns finish first.", flush=True)
+        print(f"Coconut restarts the service of {previous}. Its running bot turns finish first.", flush=True)
         drain = "import sys; sys.path.insert(0, sys.argv[1]); import host; host.drain_for_update()"
         run([sys.executable, "-c", drain, str(previous / "scripts")], "Waiting for the earlier service")
     for label in (SERVICE_LABEL, RELAY_LABEL):
@@ -295,7 +301,7 @@ def main() -> None:
     os.umask(0o077)
     step("Checking this Mac")
     prerequisites()
-    load_hermes_settings(args.reset_hermes_settings)
+    settings_changed = load_hermes_settings(args.reset_hermes_settings)
     step("Finding Hermes")
     use_hermes()
     step("Preparing notifications")
@@ -305,12 +311,12 @@ def main() -> None:
     if app is None:
         app = install_app(args.channel)
     print(f"Coconut.app is in {app.parent}. It updates itself.")
-    save_hermes_settings()
+    settings_changed = save_hermes_settings() or settings_changed
     previous = use_this_folder()
     step("Starting the Coconut service")
     leave_launch_agents()
-    if previous is not None:
-        leave_other_folder(previous)
+    if previous is not None or settings_changed:
+        restart_login_items(previous or ROOT)
     start_app(app)
     step("Starting the relay tunnel")
     start_tunnel(app)

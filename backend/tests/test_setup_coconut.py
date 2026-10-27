@@ -165,10 +165,19 @@ class SetupCoconutTests(unittest.TestCase):
     def test_the_hermes_settings_of_the_shell_or_the_earlier_launch_agent_stay(self):
         service = {"COCONUT_HERMES_ROOT": "/agent/root", "PATH": "/bin"}
         with patch.object(setup_coconut.host, "service_environment", return_value=service), \
+                patch.object(setup_coconut, "saved_hermes_settings", return_value={}), \
                 patch.dict(setup_coconut.os.environ, {"COCONUT_HERMES_PYTHON": "/shell/python"}, clear=True):
-            setup_coconut.save_hermes_settings()
+            self.assertTrue(setup_coconut.save_hermes_settings())
         self.assertEqual(self.commands, [["defaults", "write", "com.gumroad.coconut.mac", "ServiceEnvironment", "-dict",
                                           "COCONUT_HERMES_PYTHON", "/shell/python", "COCONUT_HERMES_ROOT", "/agent/root"]])
+
+    def test_unchanged_hermes_settings_need_no_write_and_no_restart(self):
+        saved = {"COCONUT_HERMES_PYTHON": "/shell/python"}
+        with patch.object(setup_coconut.host, "service_environment", return_value={}), \
+                patch.object(setup_coconut, "saved_hermes_settings", return_value=saved), \
+                patch.dict(setup_coconut.os.environ, saved, clear=True):
+            self.assertFalse(setup_coconut.save_hermes_settings())
+        self.assertEqual(self.commands, [])
 
     def test_without_hermes_settings_the_saved_ones_stay(self):
         with patch.object(setup_coconut.host, "service_environment", return_value={}), \
@@ -192,8 +201,10 @@ class SetupCoconutTests(unittest.TestCase):
 
     def test_only_a_reset_forgets_the_saved_hermes_settings(self):
         with patch.dict(setup_coconut.os.environ, {}, clear=True), \
+                patch.object(setup_coconut, "saved_hermes_settings", return_value={"HERMES_HOME": "/h"}), \
                 patch.object(setup_coconut.subprocess, "run", return_value=completed([])) as ran:
-            setup_coconut.load_hermes_settings(reset=True)
+            # A forgotten setting needs a restart of the service, which still has it.
+            self.assertTrue(setup_coconut.load_hermes_settings(reset=True))
             self.assertNotIn("COCONUT_HERMES_PYTHON", setup_coconut.os.environ)
         self.assertEqual(ran.call_args.args[0], ["defaults", "delete", "com.gumroad.coconut.mac", "ServiceEnvironment"])
 
@@ -203,7 +214,7 @@ class SetupCoconutTests(unittest.TestCase):
         (previous / "scripts/host.py").write_text("")
         with patch.object(setup_coconut.subprocess, "run", return_value=completed([])) as ran, \
                 patch.object(setup_coconut, "login_item_loaded", return_value=True):
-            setup_coconut.leave_other_folder(previous)
+            setup_coconut.restart_login_items(previous)
         self.assertEqual(ran.call_args_list[0].args[0][0], "osascript")
         self.assertEqual(self.commands[0][0], "-c")
         self.assertIn("drain_for_update", self.commands[0][1])
@@ -280,19 +291,38 @@ class SetupCoconutTests(unittest.TestCase):
     def test_main_runs_the_steps_in_order(self):
         calls = []
         names = ["prerequisites", "use_hermes", "prepare_notifications", "save_hermes_settings", "use_this_folder",
-                 "leave_launch_agents", "leave_other_folder", "start_app", "start_tunnel", "share"]
+                 "leave_launch_agents", "restart_login_items", "start_app", "start_tunnel", "share"]
         with contextlib.ExitStack() as stack:
             for name in names:
                 stack.enter_context(patch.object(setup_coconut, name, lambda *args, name=name: calls.append(name)
                                                  or (Path("/Users/a/Other") if name == "use_this_folder" else None)))
             stack.enter_context(patch.object(setup_coconut, "find_app", return_value=None))
             stack.enter_context(patch.object(setup_coconut, "load_hermes_settings",
-                                             lambda reset: calls.append(f"load_hermes_settings {reset}")))
+                                             lambda reset: calls.append(f"load_hermes_settings {reset}") or False))
             stack.enter_context(patch.object(setup_coconut, "install_app",
                                              lambda channel: calls.append("install_app " + channel) or Path("/A/Coconut.app")))
             stack.enter_context(patch.object(setup_coconut.sys, "argv", ["setup_coconut.py"]))
             setup_coconut.main()
         self.assertEqual(calls, names[:1] + ["load_hermes_settings False"] + names[1:3] + ["install_app stable"] + names[3:])
+
+
+class SettingsRestartTests(unittest.TestCase):
+    def test_changed_hermes_settings_restart_the_service_of_this_checkout(self):
+        calls = []
+        steps = ["prerequisites", "use_hermes", "prepare_notifications", "leave_launch_agents", "start_app",
+                 "start_tunnel", "share"]
+        with contextlib.ExitStack() as stack:
+            for name in steps:
+                stack.enter_context(patch.object(setup_coconut, name, lambda *args: None))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            stack.enter_context(patch.object(setup_coconut, "find_app", return_value=Path("/A/Coconut.app")))
+            stack.enter_context(patch.object(setup_coconut, "load_hermes_settings", return_value=True))
+            stack.enter_context(patch.object(setup_coconut, "save_hermes_settings", return_value=False))
+            stack.enter_context(patch.object(setup_coconut, "use_this_folder", return_value=None))
+            stack.enter_context(patch.object(setup_coconut, "restart_login_items", lambda folder: calls.append(folder)))
+            stack.enter_context(patch.object(setup_coconut.sys, "argv", ["setup_coconut.py", "--reset-hermes-settings"]))
+            setup_coconut.main()
+        self.assertEqual(calls, [setup_coconut.ROOT])
 
 
 class RunTests(unittest.TestCase):

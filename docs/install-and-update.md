@@ -191,7 +191,7 @@ The command does these steps:
 
 Each failed check prints what to do. You can run the command again at any time. It skips the steps that are complete, and it prints a new setup link.
 `--channel nightly` installs the nightly build of a new app.
-A later run uses the saved Hermes settings where the shell has none. `--reset-hermes-settings` forgets them.
+A later run uses the saved Hermes settings where the shell has none. `--reset-hermes-settings` forgets them. When the saved settings change, the service finishes its running turns and starts again with them.
 
 Sparkle updates Coconut.app by itself. The source in this checkout stays yours: update it with `git pull`, then run `python3 scripts/host.py restart` while no bot works. The restart stops running bot turns at once.
 The menu bar icon shows the state of the service, the relay and Hermes. **Pair iPhone…** shows a new setup link and its QR code.
