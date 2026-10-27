@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 export { PushDevice } from './device.js';
 import { handleTunnel } from './tunnel.js';
 export { Tunnel } from './tunnel.js';
+import { handleRendezvous } from './rendezvous.js';
+export { Rendezvous } from './rendezvous.js';
 
 export default {
   async fetch(request, env) {
@@ -10,6 +12,8 @@ export default {
     try {
       const tunnel = await handleTunnel(request, env);
       if (tunnel) return tunnel;
+      const rendezvous = await handleRendezvous(request, env);
+      if (rendezvous) return rendezvous;
       // The 24 KB body cap applies to the push routes only.
       if (Number(request.headers.get('content-length') || 0) > 24000) return new Response(null, { status: 413 });
       const chunks = [];
