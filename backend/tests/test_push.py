@@ -47,11 +47,15 @@ class PushTests(unittest.TestCase):
 
     def flush(self):
         with self.service.transaction():
-            self.service.db.execute('UPDATE push_outbox SET not_before=0')
+            self.service.db.execute('UPDATE push_items SET created=created-900')
+            self.service.db.execute('UPDATE push_outbox SET not_before=0,created=created-900')
         return self.service.push.deliver_one()
 
     def states(self):
         return self.service.db.execute('SELECT status,reason FROM push_outbox ORDER BY rowid').fetchall()
+
+    def items(self):
+        return self.service.db.execute('SELECT kind,status,reason FROM push_items ORDER BY created,rowid').fetchall()
 
     def test_badge_matches_visible_pending_inbox_and_clears(self):
         self.run_task('Write report')
@@ -127,8 +131,8 @@ class PushTests(unittest.TestCase):
         decision = self.service.snapshot()['decisions'][0]
         self.write('POST', f'/v1/decisions/{decision["id"]}/answer', dict(choice='reject', revision=decision['revision']))
         self.flush()
-        self.assertEqual(self.transport.calls, [])
-        self.assertEqual(self.states()[0][0], 'discarded')
+        self.assertEqual([call[2]['coconut']['kind'] for call in self.transport.calls], ['completed'])
+        self.assertEqual(self.items()[0], ('decision', 'dropped', 'NoLongerRelevant'))
 
     def test_bot_preference_is_checked_again_at_delivery(self):
         self.run_task()
@@ -147,9 +151,10 @@ class PushTests(unittest.TestCase):
             current = self.service._get('tasks', task['id'])
             self.service._event('task.updated', self.service._public(current), self.bot['id'], task['id'])
         self.register()
-        self.assertEqual(len(self.states()), 1)
+        self.assertEqual(len(self.items()), 1)
         self.flush()
         self.assertFalse(self.flush())
+        self.assertEqual(len(self.transport.calls), 1)
 
     def test_network_retry_reuses_notification_id(self):
         self.run_task()
@@ -192,7 +197,8 @@ class PushTests(unittest.TestCase):
         self.run_task()
         self.write('DELETE', '/v1/device/push')
         self.assertFalse(self.flush())
-        self.assertEqual(self.states()[0][0], 'discarded')
+        self.assertEqual(self.items(), [('completed', 'dropped', 'Disabled')])
+        self.assertEqual(self.states(), [])
 
     def test_registration_rejects_invalid_or_unpaired_input(self):
         with self.assertRaises(ServiceError):

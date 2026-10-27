@@ -27,9 +27,9 @@ class NotificationCategoryTests(unittest.TestCase):
     def write(self, method, path, data):
         return self.service.mutate(method, path, data, str(uuid4()), self.device)
 
-    def preferences(self, decisions=True, messages=True):
+    def preferences(self, level='grouped', messages=True):
         return self.write('PUT', '/v1/device/push', dict(token='a' * 64, environment='development', enabled=True,
-            preferences=dict(decisions=decisions, messages=messages)))
+            preferences=dict(level=level, messages=messages)))
 
     def task(self, text='Hello'):
         return self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', dict(text=text, mode='queue'))
@@ -39,7 +39,8 @@ class NotificationCategoryTests(unittest.TestCase):
             return self.service._message(self.bot['id'], text, task_id=task['id'], **values)
 
     def flush(self):
-        self.service.db.execute('UPDATE push_outbox SET not_before=0')
+        self.service.db.execute('UPDATE push_items SET created=created-900')
+        self.service.db.execute('UPDATE push_outbox SET not_before=0,created=created-900')
         while self.service.push.deliver_one():
             pass
 
@@ -77,17 +78,32 @@ class NotificationCategoryTests(unittest.TestCase):
         self.assertEqual(target['message_id'], reply['id'])
         self.assertIsNone(target['decision_id'])
 
-    def test_categories_are_independent(self):
+    def test_messages_toggle_and_only_urgent_level(self):
         self.preferences(messages=False)
         self.service._run_task(self.task()['id'])
         self.service._run_task(self.task('Write report')['id'])
         self.flush()
         self.assertEqual([c[2]['coconut']['kind'] for c in self.transport.calls], ['decision'])
-        self.preferences(decisions=False)
+        self.preferences(level='urgent_only')
         self.service._run_task(self.task('Write another report')['id'])
         self.service._run_task(self.task()['id'])
         self.flush()
-        self.assertEqual([c[2]['coconut']['kind'] for c in self.transport.calls], ['decision', 'message'])
+        self.assertEqual(len(self.transport.calls), 1)
+
+    def test_older_apps_preferences_map_to_a_level(self):
+        for old, new in ((dict(decisions=True, messages=False), dict(level='grouped', messages=False)),
+                         (dict(decisions=False, messages=True), dict(level='urgent_only', messages=True))):
+            self.write('PUT', '/v1/device/push', dict(token='a' * 64, environment='development', enabled=True, preferences=old))
+            self.assertEqual(self.service.push.preferences(self.device), new)
+            self.service.db.execute('UPDATE push_preferences SET data=?', (json.dumps(old),))
+            self.service.close()
+            self.service = Service(self.directory.name, ControlledProvider(), start_workers=False)
+            stored = self.service.db.execute('SELECT data FROM push_preferences').fetchone()[0]
+            self.assertEqual(json.loads(stored), new)
+        for bad in (dict(level='loud', messages=True), dict(level='grouped'), dict(level='grouped', messages=1),
+                    dict(decisions=True, messages=True, level='grouped')):
+            with self.subTest(bad=bad), self.assertRaises(ServiceError):
+                self.write('PUT', '/v1/device/push', dict(token='a' * 64, environment='development', enabled=True, preferences=bad))
 
     def test_disabling_discards_queued_messages_without_replaying_on_enable(self):
         self.message(self.task())
@@ -119,8 +135,11 @@ class NotificationCategoryTests(unittest.TestCase):
         task.update(_native_turn_id=str(uuid4()), status='working')
         self.service._put('tasks', task)
         self.flush()
-        self.assertEqual([c[2]['coconut']['message_id'] for c in self.transport.calls], [first['id'], second['id']])
-        self.assertNotEqual(self.transport.calls[0][4], self.transport.calls[1][4])
+        # Both replies arrived together, so they notify once as a group.
+        self.assertEqual([c[2]['coconut'].get('count') for c in self.transport.calls], [2])
+        self.assertEqual(self.transport.calls[0][2]['aps']['alert']['body'], '2 messages are waiting')
+        self.assertEqual(self.service.db.execute("SELECT message_id FROM push_items WHERE status='sent' ORDER BY created,rowid").fetchall(),
+                         [(first['id'],), (second['id'],)])
         alert = notification_alert(self.service, {'kind': 'message', 'message_id': first['id']}, self.bot, task, None)
         self.assertEqual(alert, {'title': 'Desk', 'body': 'First reply'})
 
@@ -128,7 +147,7 @@ class NotificationCategoryTests(unittest.TestCase):
         self.preferences(messages=False)
         other = self.service.pair({'code': self.service.pairing_code()})['device_id']
         self.service.push.registration(other, dict(token='b' * 64, environment='development', enabled=True,
-            preferences=dict(decisions=False, messages=True)))
+            preferences=dict(level='every', messages=True)))
         self.service.close()
         self.service = Service(self.directory.name, ControlledProvider(), start_workers=False)
         self.service.push.transport = self.transport

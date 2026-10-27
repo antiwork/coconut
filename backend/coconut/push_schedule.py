@@ -10,6 +10,11 @@ DEFAULT_SCHEDULE = {'enabled': True, 'start': '09:00', 'end': '18:00', 'timezone
                     'weekdays': [1, 2, 3, 4, 5, 6, 7]}
 # Older apps still send this field. It no longer has an effect.
 RETIRED_FIELDS = ('honor_routine',)
+# Inside work hours, the first item after a quiet period waits SETTLE seconds, so a burst from one bot run becomes one
+# notification. After a notification, the phone waits INTERVAL seconds before the next one. Ten minutes keeps a busy
+# day to at most six notifications an hour; a card that needs attention now never waits.
+SETTLE = {'every': 2, 'grouped': 30}
+INTERVAL = {'every': 0, 'grouped': 600}
 # A device with no stored schedule has not registered with an app that knows work hours.
 # It keeps the old behavior, every alert at once, until the updated app registers its window.
 LEGACY_SCHEDULE = dict(DEFAULT_SCHEDULE, enabled=False)
@@ -137,3 +142,13 @@ def next_opening(schedule, at):
         if openings:
             return min(openings)
     return at + 3600
+
+
+def due(schedule, level, first, last):
+    """When the items that wait for a phone may notify together, or None when they never do.
+
+    `first` is when the oldest waiting item arrived and `last` is the phone's last notification. Outside the window,
+    everything waits for the next opening and then notifies once."""
+    if level not in SETTLE:
+        return None
+    return next_opening(schedule, max(first + SETTLE[level], last + INTERVAL[level]))
