@@ -11,20 +11,24 @@ The Worker keeps no files between deployments, so each release builds the comple
 
   mac_feed.py latest-build --channel nightly
   printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | mac_feed.py check-key
+  mac_feed.py promote-candidate --min-age-hours 24
+  mac_feed.py commit-for-build --build 512
   mac_feed.py publish --archive Coconut-0.1.0-512-nightly.zip --channel nightly --signature <EdDSA> --output updates/public
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from email.utils import format_datetime
-from datetime import datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import argparse
 import base64
 import hashlib
+import json
 import plistlib
 import re
 import shutil
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -202,13 +206,48 @@ def check_key(private_key: str) -> None:
         raise SystemExit('SPARKLE_ED_PRIVATE_KEY does not belong to SUPublicEDKey in scripts/mac_app.py.')
 
 
+def promote_candidate(feed: bytes | None, min_age_hours: float, now: datetime | None = None) -> dict | None:
+    """The newest nightly item when it is newer than every stable item and at least `min_age_hours` old, else None.
+
+    The release workflow then checks the commit and the later releases before it publishes the build as stable.
+    """
+    items = parse(feed or b'')
+    nightly = max((item for item in items if item.channel == 'nightly'), key=lambda item: item.build, default=None)
+    if nightly is None or nightly.build <= latest_build(feed, 'stable'):
+        return None
+    published = parsedate_to_datetime(nightly.published)
+    if (now or datetime.now(timezone.utc)) - published < timedelta(hours=min_age_hours):
+        return None
+    return {'build': nightly.build, 'version': nightly.version,
+            'published': published.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
+
+
+def commit_for_build(build: int) -> str:
+    """The commit of main whose commit count is the build number (mac_app.build_number).
+
+    The count falls along the first-parent line of main, so the walk stops at the first commit at or below the build.
+    """
+    commits = subprocess.run(['git', '-C', str(ROOT), 'rev-list', '--first-parent', 'HEAD'],
+                             check=True, capture_output=True, text=True).stdout.split()
+    for commit in commits:
+        count = int(subprocess.run(['git', '-C', str(ROOT), 'rev-list', '--count', commit], check=True,
+                                   capture_output=True, text=True).stdout)
+        if count == build:
+            return commit
+        if count < build:
+            break
+    raise SystemExit(f'main has no commit for build {build}.')
+
+
 def latest_build(feed: bytes | None, channel: str) -> int:
     return max((item.build for item in parse(feed or b'') if item.channel == channel), default=0)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('command', choices=['latest-build', 'publish', 'check-key'])
+    parser.add_argument('command', choices=['latest-build', 'publish', 'check-key', 'promote-candidate', 'commit-for-build'])
+    parser.add_argument('--min-age-hours', type=float, default=24, help='promote-candidate: the minimum age.')
+    parser.add_argument('--build', type=int, help='commit-for-build: the build number.')
     parser.add_argument('--channel', choices=CHANNELS, default='stable')
     parser.add_argument('--archive', type=Path, help='publish: the new archive.')
     parser.add_argument('--signature', help='publish: the EdDSA signature of the archive (sign_update -p).')
@@ -218,9 +257,16 @@ def main() -> None:
         check_key(sys.stdin.read())
         print('The Sparkle key matches SUPublicEDKey.')
         return
+    if args.command == 'commit-for-build':
+        print(commit_for_build(args.build))
+        return
     feed = fetch(FEED_URL)
     if args.command == 'latest-build':
         print(latest_build(feed, args.channel))
+        return
+    if args.command == 'promote-candidate':
+        candidate = promote_candidate(feed, args.min_age_hours)
+        print(json.dumps(candidate) if candidate else '')
         return
     if args.archive is None:
         parser.error('publish needs --archive.')
