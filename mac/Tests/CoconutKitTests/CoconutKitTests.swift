@@ -365,6 +365,14 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertEqual(Rendezvous.failure(status: 500), .relay(500))
     }
 
+    // The same name as scripts/pairing.py gives the ticket of this secret.
+    func testTheTicketFileOfASetupMatchesThePairingScript() throws {
+        let install = Install(root: URL(fileURLWithPath: "/Users/a/Coconut"))
+        XCTAssertEqual(pairingTicketFile(install: install, secret: "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")?.path,
+                       "/Users/a/Coconut/.runtime/host/tunnel/tickets/6c6c03d38311686e55eb805e6adda5a54039b724450be426be47b78e6cfc4d26.json")
+        XCTAssertNil(pairingTicketFile(install: install, secret: "short"))
+    }
+
     func testThePairedPhonesAreTheKeysOfThePeersFile() throws {
         let install = Install(root: home)
         XCTAssertEqual(pairedPhoneKeys(install: install), [])

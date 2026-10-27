@@ -98,6 +98,19 @@ public enum Rendezvous {
     }
 }
 
+/// The ticket file of a version 2 setup in `tunnel/tickets`, as scripts/pairing.py names it. The sidecar removes the
+/// file when an iPhone connects with this setup's secret, so its absence marks this setup as used, not another one.
+public func pairingTicketFile(install: Install, secret: String) -> URL? {
+    var text = secret.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+    text += String(repeating: "=", count: (4 - text.count % 4) % 4)
+    guard let bytes = Data(base64Encoded: text), bytes.count == 32 else { return nil }
+    let ticket = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: bytes), salt: Data(),
+                                        info: Data("coconut pairing ticket".utf8), outputByteCount: 32)
+        .withUnsafeBytes { Data($0) }.map { String(format: "%02x", $0) }.joined()
+    let hash = SHA256.hash(data: Data(ticket.utf8)).map { String(format: "%02x", $0) }.joined()
+    return install.tunnel.appendingPathComponent("tickets/\(hash).json")
+}
+
 /// The iPhone keys in `tunnel/peers.json`. The sidecar adds a key when an iPhone pairs.
 public func pairedPhoneKeys(install: Install) -> Set<String> {
     guard let data = try? Data(contentsOf: install.tunnel.appendingPathComponent("peers.json")),

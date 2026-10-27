@@ -6,7 +6,9 @@ import Foundation
 let usage = """
     Usage: coconut <command>
 
-      pair      Print a one-time iPhone setup link. With the code from the iPhone, pair that iPhone.
+      pair      Print a one-time iPhone setup link.
+      pair <code>
+                Pair the iPhone that shows this code. Hermes runs this from the iPhone's message.
       update    Install or update the Coconut source of this app. --if-needed skips an install that is current.
       migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       status    Print the state of the service, Hermes and the relay as JSON.
@@ -88,7 +90,8 @@ func pairPhone(code: PairingCode, launch: Launch) -> Never {
     guard process.terminationStatus == 0,
           let fields = try? JSONSerialization.jsonObject(with: setup) as? [String: Any],
           let relay = (fields["relay"] as? String).flatMap(URL.init(string:)),
-          let expires = fields["expires"] as? Double else { exit(1) }
+          let expires = fields["expires"] as? Double,
+          let ticket = (fields["secret"] as? String).flatMap({ pairingTicketFile(install: install, secret: $0) }) else { exit(1) }
     let known = pairedPhoneKeys(install: install)
     print("Sending the setup to the iPhone.")
     fflush(stdout)
@@ -103,14 +106,24 @@ func pairPhone(code: PairingCode, launch: Launch) -> Never {
     if let failure { fail("\(failure)") }
     print("Waiting for the iPhone to pair.")
     fflush(stdout)
-    while Date().timeIntervalSince1970 < expires {
+    // The sidecar removes this setup's ticket when the iPhone connects with it. Another iPhone that pairs at the same
+    // time uses another ticket, so it cannot end this wait.
+    while FileManager.default.fileExists(atPath: ticket.path) {
+        guard Date().timeIntervalSince1970 < expires else {
+            fail("The iPhone did not pair before the code expired. Make a new code on the iPhone, then try again.")
+        }
+        sleep(1)
+    }
+    // Then the iPhone sends its pairing request, and the sidecar records its key before it answers. That often happens
+    // within a second of the connection, so the keys from before the send are the reference.
+    for _ in 0..<60 {
         if !pairedPhoneKeys(install: install).subtracting(known).isEmpty {
             print("The iPhone is paired with this Mac.")
             exit(0)
         }
         sleep(1)
     }
-    fail("The iPhone did not pair before the code expired. Make a new code on the iPhone, then try again.")
+    fail("The iPhone connected but did not finish pairing. Make a new code on the iPhone, then try again.")
 }
 
 let command = CommandLine.arguments.dropFirst().first ?? ""
