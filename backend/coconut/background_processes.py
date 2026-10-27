@@ -505,7 +505,7 @@ class BackgroundProcesses:
             finally:
                 bot_lock.release()
 
-    def _prepare_native_reply(self, task, text, result_status):
+    def _prepare_native_reply(self, task, text, result_status, finishing=None):
         from .native_outcomes import outcome_owner_id
         ready = True
         owners = {task['id']} if task.get('_native_relay') or task.get('_native_intake') else set()
@@ -522,7 +522,8 @@ class BackgroundProcesses:
             # The parent's other dependencies can include the sender itself.
             pending = any(self._get('tasks', identity).get('_requester_reply_task_id') == owner_id
                           for identity in waiting)
-            turns = [t for t in self._all('tasks')
+            # The continuation that finishes this assignment is saved after its return. Use its final state.
+            turns = [finishing if finishing and t['id'] == finishing['id'] else t for t in self._all('tasks')
                      if t['id'] == owner_id or t.get('_relay_callback_owner') == owner_id]
             # Creation finishes before the scheduler adopts the native task.
             adopted = {t['id'] for t in turns if t.get('_native_outcome_id')}
@@ -536,7 +537,7 @@ class BackgroundProcesses:
             pending = pending or any(t['id'] != task['id'] and t.get('_native_outcome_id')
                                      and (self.kanban.tasks.get(t['id'], {}) if self.kanban else {}).get('status')
                                      not in ('done', 'archived') for t in turns)
-            pending = pending or any(self._background_pending(t['id'], finishing_task_id=task['id'])
+            pending = pending or any(self._background_pending(t['id'], finishing_task_id=(finishing or task)['id'])
                                      or (t['id'] != task['id'] and t['status'] in ('queued', 'working', 'needs_you', 'paused'))
                                      for t in turns)
             if result_status != 'failed' and pending:
