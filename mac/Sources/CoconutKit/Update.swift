@@ -31,6 +31,13 @@ extension Install {
         return marker["package_id"] as? String
     }
 
+    /// True for a Git checkout that scripts/setup_coconut.py set up: it has `.git` and no install of deploy.py. Its owner
+    /// updates the source with git pull, so the app does not install its own source over it.
+    public func isCheckout(fileManager: FileManager = .default) -> Bool {
+        fileManager.fileExists(atPath: root.appendingPathComponent(".git").path)
+            && !fileManager.fileExists(atPath: root.appendingPathComponent(".coconut-install.json").path)
+    }
+
     /// The install folder relative to the home folder, as `deploy.py --directory` needs it. Nil outside the home folder.
     public func relativePath(home: URL = Install.homeFolder()) -> String? {
         let base = home.standardizedFileURL.path

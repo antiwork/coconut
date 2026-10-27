@@ -138,14 +138,24 @@ final class CoconutKitTests: XCTestCase {
         }
     }
 
+    func testTheSavedHermesSettingsReachTheService() {
+        XCTAssertEqual(LoginEnvironment.savedSettings(["COCONUT_HERMES_PYTHON": "/h/python", "HERMES_HOME": "/h",
+                                                       "PATH": "/evil", "COCONUT_HERMES_ROOT": ""]),
+                       ["COCONUT_HERMES_PYTHON": "/h/python", "HERMES_HOME": "/h"])
+        XCTAssertEqual(LoginEnvironment.savedSettings(nil), [:])
+        let environment = LoginEnvironment.make(base: ["HOME": "/Users/a"], loginPath: "/bin",
+                                                saved: ["COCONUT_HERMES_PYTHON": "/h/python"])
+        XCTAssertEqual(environment, ["HOME": "/Users/a", "PATH": "/bin", "COCONUT_HERMES_PYTHON": "/h/python"])
+    }
+
     func testTheLoginItemUsesThePathOfTheLoginShell() {
         XCTAssertEqual(LoginEnvironment.parse("motd\n\(LoginEnvironment.mark)/opt/homebrew/bin:/bin\(LoginEnvironment.mark)\n"),
                        "/opt/homebrew/bin:/bin")
         XCTAssertNil(LoginEnvironment.parse("no marks"))
-        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"], loginPath: "/a:/b")["PATH"], "/a:/b")
-        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"], loginPath: nil)["PATH"],
+        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"], loginPath: "/a:/b", saved: [:])["PATH"], "/a:/b")
+        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"], loginPath: nil, saved: [:])["PATH"],
                        LoginEnvironment.fallbackPath)
-        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/mine"], loginPath: nil)["PATH"], "/mine")
+        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/mine"], loginPath: nil, saved: [:])["PATH"], "/mine")
     }
 
     // MARK: Login items
@@ -231,6 +241,15 @@ final class CoconutKitTests: XCTestCase {
         try write(#"{"package_id": "old", "state": "installed"}"#, to: "Coconut/.coconut-install.json")
         XCTAssertTrue(source.isNewer(than: install))
         XCTAssertNil(BundledSource(resources: home.appendingPathComponent("Missing")))
+    }
+
+    func testAGitCheckoutIsNotAnInstallOfTheApp() throws {
+        let install = Install(root: home.appendingPathComponent("Coconut"))
+        XCTAssertFalse(install.isCheckout())
+        try write("", to: "Coconut/.git/HEAD")
+        XCTAssertTrue(install.isCheckout())
+        try write(#"{"state": "installed"}"#, to: "Coconut/.coconut-install.json")
+        XCTAssertFalse(install.isCheckout(), "deploy.py owns a folder with its install record.")
     }
 
     func testDeployNeedsAFolderInsideTheHomeFolder() {
