@@ -135,10 +135,11 @@ func latestConversationMessage(in messages: [Message]) -> Message? {
 enum BotRowSubtitle: Equatable {
     case needsYou
     case phase(BotPhase)
+    case health(BotHealth)
     case preview
 
-    init(needsYou: Bool, phase: BotPhase?) {
-        if needsYou { self = .needsYou } else if let phase { self = .phase(phase) } else { self = .preview }
+    init(needsYou: Bool, phase: BotPhase?, health: BotHealth? = nil) {
+        if needsYou { self = .needsYou } else if let phase { self = .phase(phase) } else if let health { self = .health(health) } else { self = .preview }
     }
 
     /// VoiceOver reads what the row shows. It reads the unread count only when there is one.
@@ -147,6 +148,7 @@ enum BotRowSubtitle: Equatable {
         switch self {
         case .needsYou: parts.append(StatusLabel.label(for: "needs_you"))
         case .phase(let phase): parts.append(phase.label)
+        case .health(let health): parts.append(health.label)
         case .preview: parts += [bot.status.replacingOccurrences(of: "_", with: " "), preview]
         }
         if bot.unreadCount > 0 { parts.append("\(bot.unreadCount) unread") }
@@ -176,7 +178,7 @@ struct BotContactRow: View {
     private var phase: BotPhase? { store.botPhase(bot) }
 
     var body: some View {
-        let subtitle = BotRowSubtitle(needsYou: store.botNeedsYou(bot), phase: phase)
+        let subtitle = BotRowSubtitle(needsYou: store.botNeedsYou(bot), phase: phase, health: bot.health)
         HStack(spacing: 14) {
             LiveBotAvatar(bot: bot, size: 46)
             VStack(alignment: .leading, spacing: 5) {
@@ -201,6 +203,12 @@ struct BotContactRow: View {
                 case .phase(let phase):
                     ShimmerText(text: phase.label).font(.subheadline)
                         .transition(.opacity)
+                case .health(let health):
+                    Text(health.label)
+                        .font(.subheadline).foregroundStyle(BoardStyle.attention)
+                        .lineLimit(1)
+                        .transition(.opacity)
+                        .accessibilityIdentifier("bot-health-\(bot.id)")
                 case .preview:
                     Text(preview)
                         .font(.subheadline).foregroundStyle(.secondary)

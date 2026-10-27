@@ -23,7 +23,7 @@ import subprocess
 import threading
 
 from . import profile_registry
-from .profiles import ProfileError
+from .profiles import SKILLS, ProfileError
 
 LOG = logging.getLogger(__name__)
 SCAN_SECONDS = 5
@@ -54,6 +54,14 @@ try:
             if request.get("display_name"):
                 profiles.write_profile_meta(home, display_name=request["display_name"])
             result = {"home": str(home)}
+            if request.get("skills"):
+                # The folder of Coconut's own skills, as setup adds it to the person's profiles (skill_dirs).
+                try:
+                    sys.path.append(request["coconut"])
+                    from skill_dirs import update
+                    result["skills"] = update(home, request["skills"], True, create=True)
+                except Exception as error:
+                    result["skills_error"] = type(error).__name__ + ": " + str(error)[:300]
         elif request["operation"] == "delete":
             try:
                 result = {"home": str(profiles.delete_profile(request["name"], yes=True))}
@@ -173,7 +181,11 @@ class BotProfiles:
         taken = profile_registry.taken_names(self.hermes_home) | {row['name'] for row in self.profiles.rows.values()}
         name = profile_registry.slug(bot['name'], taken)
         result = self._hermes_profile_command('create', name=name, display_name=bot['name'], description=bot.get('role') or '',
-                                              soul=bot.get('instructions', ''))
+                                              soul=bot.get('instructions', ''), skills=str(SKILLS),
+                                              coconut=str(Path(__file__).resolve().parent))
+        if result.get('skills_error'):
+            LOG.warning('The new profile %s did not get the Coconut skills folder: %s. Setup adds it again.',
+                        name, result['skills_error'])
         home = Path(result['home']).absolute()
         if home != self.hermes_home / 'profiles' / name or not home.is_dir():
             raise ProfileError('Hermes created the profile in an unexpected folder.')

@@ -398,11 +398,37 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
             raise
         ledger['completed_at'] = datetime.now(timezone.utc).isoformat()
         write_ledger(data_dir, ledger)
+        # A moved profile keeps the folder of Coconut's own skills in skills.external_dirs, or gets it now.
+        add_skills_folder([Path(move['destination']) for move in moves])
     say(f'Done. {len(moves)} bots are Hermes profiles now:')
     for move in moves:
         say(f'  {move["bot_name"]!r}: hermes -p {move["name"]}')
     say(f'To undo: python3 {Path(__file__).name} --rollback')
     return ledger
+
+
+def add_skills_folder(homes: list[Path]) -> bool:
+    """Add <install>/skills to skills.external_dirs of these profiles, with the config writer of Hermes (skill_dirs).
+
+    A failure does not undo the migration. The command that setup runs adds the folder later.
+    """
+    runtime_module = host.hermes_runtime()
+    environment = host.service_environment()
+    try:
+        runtime = runtime_module.find(environment)
+        with runtime_module.isolated(environment) as (isolated, folder):
+            result = subprocess.run([str(runtime.python), '-I', '-B', str(host.ROOT / 'backend/coconut/skill_dirs.py'), 'add',
+                                     str(runtime.root or ''), str(host.ROOT / 'skills'), *map(str, homes)],
+                                    cwd=folder, env=isolated, stdin=subprocess.DEVNULL, text=True, capture_output=True,
+                                    timeout=120)
+    except (runtime_module.HermesUnavailable, OSError, subprocess.TimeoutExpired) as error:
+        say(f'The moved profiles did not get the Coconut skills folder ({error}). Run: python3 scripts/hermes_skills.py add')
+        return False
+    if result.returncode:
+        say(result.stdout + result.stderr)
+        say('Some moved profiles did not get the Coconut skills folder. Run: python3 scripts/hermes_skills.py add')
+        return False
+    return True
 
 
 def undo_moves(data_dir: Path, ledger: dict, rename=os.rename) -> None:

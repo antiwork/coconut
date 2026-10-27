@@ -360,10 +360,13 @@ def verify_profile_api_contract():
         environment = dict(PATH=os.environ.get('PATH', '/usr/bin:/bin'), HOME=str(root), TMPDIR=str(root))
         created = run_profile_command(sys.executable, source, hermes_home, 'create', environment=environment,
                                       name='coconut-check', display_name='Coconut check', description='A check.',
-                                      soul='Contract soul.\n')
+                                      soul='Contract soul.\n', skills=str(root / 'skills'),
+                                      coconut=str(Path(__file__).resolve().parent))
         home = hermes_home / 'profiles' / 'coconut-check'
         if Path(created['home']).resolve() != home.resolve() or (home / 'SOUL.md').read_text() != 'Contract soul.\n':
             raise ValueError('Hermes did not create the profile with its SOUL.')
+        if created.get('skills') != 'added' or str(root / 'skills') not in (home / 'config.yaml').read_text():
+            raise ValueError('Coconut could not add its skills folder to a new profile: ' + str(created.get('skills_error')))
         run_profile_command(sys.executable, source, hermes_home, 'delete', environment=environment, name='coconut-check')
         if home.exists():
             raise ValueError('Hermes did not delete the profile.')

@@ -30,6 +30,9 @@ def tree(folder):
             if path.is_file() and not path.name.startswith('coconut.sqlite3-')}
 
 
+ADD_SKILLS_FOLDER = migration.add_skills_folder
+
+
 class MigrationTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -61,6 +64,11 @@ class MigrationTests(unittest.TestCase):
             (self.root / 'bots' / bot['id'] / 'workspace' / 'repo').mkdir(parents=True)
         self.before = {bot['id']: tree(self.home(bot)) for bot in self.bots}
         patcher = patch.object(migration, 'coconut_workers', return_value=[])
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # The Hermes config writer is not on this test Python. Record which profiles get the skills folder.
+        self.skill_homes = []
+        patcher = patch.object(migration, 'add_skills_folder', side_effect=self.skill_homes.extend)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -106,6 +114,8 @@ class MigrationTests(unittest.TestCase):
         self.assertFalse((backup / 'bots' / self.bots[0]['id'] / 'workspace').exists())
         self.assertTrue((self.root / migration.LEDGER).is_file())
         self.assertIn('hermes -p research-lead', output)
+        # Each moved profile keeps or gets the folder of Coconut's skills.
+        self.assertEqual(sorted(self.skill_homes), sorted(Path(move['destination']) for move in ledger['moves']))
         # The service then runs each bot in its profile, and the default profile and the person's ada become bots.
         service = Service(self.root, ControlledProvider(), start_workers=False, hermes_home=self.hermes)
         try:
@@ -258,6 +268,25 @@ class MigrationTests(unittest.TestCase):
         # A folder of Coconut is never the Hermes home of the bots.
         coconut_home = migration.host.ROOT / '.runtime' / 'hermes' / 'terminal' / 'hermes'
         self.assertIn('is a folder of Coconut', migration.home_problem(self.root, coconut_home))
+
+    def test_the_skills_folder_goes_through_the_hermes_config_writer(self):
+        from types import SimpleNamespace
+        runtime = SimpleNamespace(python='/hermes/python', root='/hermes/source')
+        calls = []
+
+        @contextlib.contextmanager
+        def isolated(environment):
+            yield {'PATH': '/usr/bin'}, '/tmp'
+
+        module = SimpleNamespace(find=lambda environment: runtime, isolated=isolated, HermesUnavailable=RuntimeError)
+        homes = [self.hermes / 'profiles' / 'ada-2']
+        with patch.object(migration.host, 'hermes_runtime', return_value=module), \
+                patch.object(migration.subprocess, 'run', side_effect=lambda command, **kwargs: calls.append(command)
+                             or SimpleNamespace(returncode=0, stdout='', stderr='')):
+            # setUp replaces add_skills_folder. This calls the real function.
+            self.assertTrue(ADD_SKILLS_FOLDER(homes))
+        self.assertEqual(calls[0][1:5], ['-I', '-B', str(migration.host.ROOT / 'backend/coconut/skill_dirs.py'), 'add'])
+        self.assertEqual(calls[0][5:], ['/hermes/source', str(migration.host.ROOT / 'skills'), str(homes[0])])
 
     def test_running_workers_stop_the_migration_before_any_change(self):
         with patch.object(migration, 'coconut_workers', return_value=[123]), patch.object(migration.time, 'sleep'):

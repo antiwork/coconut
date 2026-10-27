@@ -21,7 +21,7 @@ let usage = """
       version   Print the version of Coconut.app.
       install-source
                 Install the Coconut source that this app carries. --if-needed skips an install that is current.
-                The app runs this after each update.
+                The app runs this after each update. --set-up also adds the coconut skill to Hermes.
       migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       service   Run the Coconut service. The login item uses this command.
       sidecar   Run the relay sidecar. The login item uses this command.
@@ -256,7 +256,8 @@ case "install-source":
         fail("Coconut found no Python 3.11 or later. Install Hermes, or Python 3.11 or later from Homebrew.")
     }
     let launch = Launch.update(install: install, source: source, directory: directory, python: python,
-                               sidecar: helpers.appendingPathComponent("tunnel-sidecar"), environment: environment)
+                               sidecar: helpers.appendingPathComponent("tunnel-sidecar"), environment: environment,
+                               setUp: CommandLine.arguments.contains("--set-up"))
     let process = Process()
     process.executableURL = launch.executable
     process.arguments = Array(launch.arguments.dropFirst())

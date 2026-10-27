@@ -173,6 +173,9 @@ class ServiceProfileRescanTests(unittest.TestCase):
         self.assertEqual(calls[0][0], 'create')
         self.assertEqual(calls[0][1]['name'], 'lin')
         self.assertEqual(calls[0][1]['display_name'], 'Lin')
+        # The new profile loads Coconut's own skills, as setup gives them to the person's profiles.
+        from coconut.profiles import SKILLS
+        self.assertEqual(calls[0][1]['skills'], str(SKILLS))
         self.assertEqual(bot['profile'], 'lin')
         self.assertEqual(bot['profile_id'], bot['id'])
         self.assertEqual(profile_registry.lookup(self.root, bot['id'])['home'], str(self.hermes / 'profiles' / 'lin'))
@@ -417,12 +420,26 @@ class ProfileCommandTests(unittest.TestCase):
                 '    assert yes\n'
                 '    shutil.rmtree(_root() / name)\n'
                 '    return _root() / name\n')
+            # Stand-ins for the config reader and writer of Hermes, which skill_dirs uses through native_settings.
+            (source / 'native_settings.py').write_text(
+                'import json\n'
+                'from pathlib import Path\n'
+                'def raw_config(home):\n'
+                '    path = Path(home) / "config.yaml"\n'
+                '    return json.loads(path.read_text()) if path.exists() else {}\n'
+                'def save_config(home, config):\n'
+                '    (Path(home) / "config.yaml").write_text(json.dumps(config))\n')
             hermes.mkdir()
+            import json
             import sys
+            from coconut.profiles import SKILLS
+            coconut = Path(__file__).resolve().parents[1] / 'coconut'
             created = run_profile_command(sys.executable, source, hermes, 'create', name='lin', display_name='Lin',
-                                          description='Writer', soul='Write.\n')
+                                          description='Writer', soul='Write.\n', skills=str(SKILLS), coconut=str(coconut))
             home = hermes / 'profiles' / 'lin'
             self.assertEqual(Path(created['home']), home)
+            self.assertEqual(created['skills'], 'added')
+            self.assertEqual(json.loads((home / 'config.yaml').read_text()), {'skills': {'external_dirs': [str(SKILLS)]}})
             self.assertEqual((home / 'SOUL.md').read_text(), 'Write.\n')
             self.assertTrue((home / 'skills').is_dir())
             self.assertEqual(profile_registry.display_name(home), 'Lin')

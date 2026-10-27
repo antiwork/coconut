@@ -3261,7 +3261,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         if task.get('scheduled_at') and datetime.fromisoformat(task['scheduled_at'].replace('Z', '+00:00')).timestamp() > timestamp:
             return False
         return (not self._task_paused(task) and not self._store_held(task) and not self._continuation_blocked(task)
-                and not self._automatic_work_is_paused(task))
+                and not self._automatic_work_is_paused(task) and not self.automatic_work_held(task))
 
     def _store_held(self, task):
         return task['bot_id'] in self._store_hold
@@ -3869,6 +3869,9 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 known_errors.update({'bot_creation_invalid_request', 'bot_creation_rejected', 'bot_creation_receipt_unconfirmed'})
                 if kind == 'failed' and isinstance(error_code, str) and error_code in known_errors:
                     task['error_code'] = error_code
+                    self.record_provider_failure(task['bot_id'], error_code, payload.get('retry_after'))
+                elif kind == 'completed':
+                    self.clear_provider_failure(task)
                 # The class and the place of a worker failure, without its message. It stays on the Mac. A failure that has
                 # none must not keep the place of an earlier one.
                 if kind == 'failed' and isinstance(payload.get('error_detail'), str):
