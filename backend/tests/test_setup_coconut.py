@@ -111,49 +111,42 @@ class SetupCoconutTests(unittest.TestCase):
         app = self.app(personal)
         self.assertEqual(setup_coconut.find_app(), app)
 
-    def feed(self, *items):
+    def feed(self, *builds):
         return setup_coconut.mac_feed.render([setup_coconut.mac_feed.Item(
-            version="0.1.0", build=build, channel=channel, file=f"Coconut-0.1.0-{build}-{channel}-0123456789abcdef.zip",
-            length=3, signature="sig", published="Mon, 26 Oct 2026 12:00:00 +0000") for build, channel in items])
+            version="0.1.0", build=build, file=f"Coconut-0.1.0-{build}-0123456789abcdef.zip",
+            length=3, signature="sig", published="Mon, 26 Oct 2026 12:00:00 +0000") for build in builds])
 
-    def test_the_stable_channel_takes_the_nightly_build_before_the_first_stable_release(self):
-        choose = lambda feed, channel: setup_coconut.choose_item(feed, channel, "26.6")
-        item, channel = choose(self.feed((5, "stable"), (7, "nightly"), (6, "nightly")), "stable")
-        self.assertEqual((item.build, channel), (5, "stable"))
-        item, channel = choose(self.feed((7, "nightly"), (6, "nightly")), "stable")
-        self.assertEqual((item.build, channel), (7, "nightly"))
-        item, channel = choose(self.feed((5, "stable"), (7, "nightly")), "nightly")
-        self.assertEqual((item.build, channel), (7, "nightly"))
+    def test_the_newest_build_is_chosen(self):
+        self.assertEqual(setup_coconut.choose_item(self.feed(5, 7, 6), "26.6").build, 7)
         with self.assertRaisesRegex(SystemExit, "has no Coconut.app yet"):
-            choose(None, "stable")
+            setup_coconut.choose_item(None, "26.6")
 
     def test_an_older_macos_gets_no_app_that_cannot_open(self):
         with self.assertRaisesRegex(SystemExit, "needs macOS 14.0 or later. This Mac has macOS 13.6"):
-            setup_coconut.choose_item(self.feed((7, "nightly")), "stable", "13.6")
-        self.assertEqual(setup_coconut.choose_item(self.feed((7, "nightly")), "stable", "14.0")[0].build, 7)
+            setup_coconut.choose_item(self.feed(7), "13.6")
+        self.assertEqual(setup_coconut.choose_item(self.feed(7), "14.0").build, 7)
 
     def test_a_downloaded_app_must_match_its_name_and_pass_gatekeeper(self):
         _, system, _ = self.folders()
         # CI runs on Linux, where mac_ver gives no version.
         self.use(patch.object(setup_coconut.platform, "mac_ver", return_value=("15.0", ("", "", ""), "arm64")))
         data = b"zip"
-        name = f"Coconut-0.1.0-7-nightly-{hashlib.sha256(data).hexdigest()[:16]}.zip"
-        item = setup_coconut.mac_feed.Item(version="0.1.0", build=7, channel="nightly", file=name, length=3,
+        name = f"Coconut-0.1.0-7-{hashlib.sha256(data).hexdigest()[:16]}.zip"
+        item = setup_coconut.mac_feed.Item(version="0.1.0", build=7, file=name, length=3,
                                            signature="sig", published="")
         downloads = {setup_coconut.mac_feed.FEED_URL: setup_coconut.mac_feed.render([item]),
                      f"{setup_coconut.mac_feed.BASE_URL}/{name}": data}
         with patch.object(setup_coconut.mac_feed, "fetch", lambda url: downloads[url]):
-            app = setup_coconut.install_app("stable")
+            app = setup_coconut.install_app()
         self.assertEqual(app, system / "Coconut.app")
         names = [command[0] for command in self.commands]
-        self.assertEqual(names, ["ditto", "codesign", "spctl", "ditto", "defaults"])
+        self.assertEqual(names, ["ditto", "codesign", "spctl", "ditto"])
         self.assertEqual(self.commands[2][:4], ["spctl", "--assess", "--type", "execute"])
-        self.assertEqual(self.commands[4], ["defaults", "write", "com.gumroad.coconut.mac", "updateChannel", "nightly"])
         downloads[f"{setup_coconut.mac_feed.BASE_URL}/{name}"] = b"zap"
         self.commands.clear()
         with patch.object(setup_coconut.mac_feed, "fetch", lambda url: downloads[url]), \
                 self.assertRaisesRegex(SystemExit, "incomplete"):
-            setup_coconut.install_app("stable")
+            setup_coconut.install_app()
         self.assertEqual(self.commands, [])
 
     def test_the_app_runs_this_checkout_and_names_its_earlier_folder(self):
@@ -302,10 +295,10 @@ class SetupCoconutTests(unittest.TestCase):
             stack.enter_context(patch.object(setup_coconut, "load_hermes_settings",
                                              lambda reset: calls.append(f"load_hermes_settings {reset}") or False))
             stack.enter_context(patch.object(setup_coconut, "install_app",
-                                             lambda channel: calls.append("install_app " + channel) or Path("/A/Coconut.app")))
+                                             lambda: calls.append("install_app") or Path("/A/Coconut.app")))
             stack.enter_context(patch.object(setup_coconut.sys, "argv", ["setup_coconut.py"]))
             setup_coconut.main()
-        self.assertEqual(calls, names[:1] + ["load_hermes_settings False"] + names[1:3] + ["install_app stable"] + names[3:])
+        self.assertEqual(calls, names[:1] + ["load_hermes_settings False"] + names[1:3] + ["install_app"] + names[3:])
 
 
 class SettingsRestartTests(unittest.TestCase):

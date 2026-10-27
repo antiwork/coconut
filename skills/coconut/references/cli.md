@@ -10,7 +10,6 @@ The tool is in the app bundle: `/Applications/Coconut.app/Contents/Helpers/cocon
 | `coconut update --wait` | Also waits up to 30 minutes for the end. Do not use it inside a bot turn. |
 | `coconut settings` | Prints the update settings. |
 | `coconut settings automatic-updates on` or `off` | Turns automatic updates on or off. |
-| `coconut settings channel stable` or `nightly` | Chooses the update channel. |
 | `coconut pair` | Prints a one-time iPhone setup link. |
 | `coconut pair <code>` | Pairs the iPhone that shows this code. See `references/pairing.md`. |
 | `coconut version` | Prints the version of Coconut.app. |

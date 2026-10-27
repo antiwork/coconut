@@ -29,7 +29,7 @@ public final class AppPreferences: PreferenceStore {
 /// The result of the last update check, for `coconut status` and `coconut update`.
 public struct UpdateResult: Equatable {
     public enum Outcome: String {
-        /// The feed has no newer build for the channel.
+        /// The feed has no newer build.
         case upToDate = "up_to_date"
         /// Sparkle downloaded a newer build and installs it now. The app restarts.
         case installing
@@ -74,6 +74,8 @@ public struct UpdatePreferences {
     static let requestKey = "updateRequestedAt"
     static let resultKey = "lastUpdateResult"
     static let pendingInstallKey = "pendingInstall"
+    /// The update channel of earlier versions, "stable" or "nightly". The feed has one channel now.
+    static let legacyChannelKey = "updateChannel"
 
     /// Distributed notifications from the tool to the running app.
     public static let settingsChanged = "com.gumroad.coconut.mac.settingsChanged"
@@ -96,12 +98,11 @@ public struct UpdatePreferences {
         store.set(value, forKey: Self.automaticInstallKey)
     }
 
-    public var channel: UpdateChannel {
-        (store.value(forKey: UpdateChannel.preferenceKey) as? String).flatMap(UpdateChannel.init(rawValue:)) ?? .stable
-    }
-
-    public func setChannel(_ value: UpdateChannel) {
-        store.set(value.rawValue, forKey: UpdateChannel.preferenceKey)
+    /// Remove the channel setting of an earlier version. The app does this at its start, so no earlier setting stays.
+    public func removeLegacyChannel() {
+        if store.value(forKey: Self.legacyChannelKey) != nil {
+            store.set(nil, forKey: Self.legacyChannelKey)
+        }
     }
 
     public var lastCheck: Date? {
@@ -165,7 +166,6 @@ public enum StatusText {
         formatter.formatOptions = [.withInternetDateTime]
         var lines = [
             "Coconut.app: \(version)",
-            "Update channel: \(preferences.channel.rawValue)",
             "Automatic updates: \(preferences.automaticUpdates ? "on" : "off")",
             "Last update check: \(preferences.lastCheck.map(formatter.string(from:)) ?? "never")",
         ]

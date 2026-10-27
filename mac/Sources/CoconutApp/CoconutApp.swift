@@ -69,9 +69,6 @@ struct MenuContent: View {
         Button("Check for Updates…") { updater.checkForUpdates() }
             .disabled(!updater.canCheckForUpdates)
         Toggle("Automatic Updates", isOn: Binding(get: { updater.automaticUpdates }, set: { updater.setAutomaticUpdates($0) }))
-        Picker("Update Channel", selection: Binding(get: { updater.channel }, set: { updater.setChannel($0) })) {
-            ForEach(UpdateChannel.allCases, id: \.self) { Text($0.title).tag($0) }
-        }
         Button("Quit Coconut") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
     }

@@ -3,45 +3,45 @@
 
 The Worker keeps no files between deployments, so each release builds the complete assets folder:
 
-  mac/appcast.xml                     the feed, with the newest KEEP items of each channel
-  mac/Coconut-<version>-<build>[-nightly]-<digest>.zip
+  mac/appcast.xml                     the feed, with the newest KEEP items
+  mac/Coconut-<version>-<build>-<digest>.zip
                                       the archives of those items: the new one, and the others from the live feed.
                                       <digest> is the start of the SHA-256 of the file, so each file has its own URL.
   _headers                            the content types and cache times (updates/_headers)
-  _redirects                          /mac/download to the newest archive for everyone (stable, else nightly)
+  _redirects                          /mac/download to the newest archive
   install                             the install script that the iPhone's message for Hermes runs (updates/install.sh)
 
-  mac_feed.py latest-build --channel nightly
+  mac_feed.py latest-build
   printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | mac_feed.py check-key
-  mac_feed.py promote-candidate --min-age-hours 24
-  mac_feed.py commit-for-build --build 512
-  mac_feed.py publish --archive Coconut-0.1.0-512-nightly.zip --channel nightly --signature <EdDSA> --output updates/public
+  mac_feed.py publish --archive Coconut-0.1.0-512.zip --signature <EdDSA> --output updates/public
+
+The feed has one channel: every Mac gets every build. An item has no <sparkle:channel>, and Sparkle shows an item without
+a channel to every app, also to an earlier app that allows the channel "nightly". Earlier feeds had a stable channel and
+a nightly channel. This script reads their items and writes them again without a channel.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from email.utils import format_datetime, parsedate_to_datetime
-from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import argparse
 import base64
 import hashlib
-import json
 import plistlib
 import re
 import shutil
-import subprocess
 import sys
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ElementTree
 import zipfile
 
-from mac_app import CHANNELS, ED_PUBLIC_KEY, FEED_URL, MINIMUM_SYSTEM, ROOT
+from mac_app import ED_PUBLIC_KEY, FEED_URL, MINIMUM_SYSTEM, ROOT
 
 SPARKLE = 'http://www.andymatuschak.org/xml-namespaces/sparkle'
 ElementTree.register_namespace('sparkle', SPARKLE)
-# Each channel keeps this many items. An app that is older than all of them still updates to the newest one.
+# The feed keeps this many items. An app that is older than all of them still updates to the newest one.
 KEEP = 5
 BASE_URL = FEED_URL.rsplit('/', 1)[0]
 # The hex digits of the SHA-256 that end each published archive name.
@@ -56,7 +56,6 @@ def tag(name: str) -> str:
 class Item:
     version: str
     build: int
-    channel: str
     file: str
     length: int
     signature: str
@@ -70,8 +69,6 @@ class Item:
         ElementTree.SubElement(item, tag('version')).text = str(self.build)
         ElementTree.SubElement(item, tag('shortVersionString')).text = self.version
         ElementTree.SubElement(item, tag('minimumSystemVersion')).text = self.minimum_system
-        if self.channel != 'stable':
-            ElementTree.SubElement(item, tag('channel')).text = self.channel
         ElementTree.SubElement(item, 'enclosure', {
             'url': f'{BASE_URL}/{self.file}', 'length': str(self.length), 'type': 'application/octet-stream',
             tag('edSignature'): self.signature})
@@ -90,7 +87,6 @@ def parse(data: bytes) -> list[Item]:
             raise SystemExit(f'The feed names an archive outside {BASE_URL}: {url}')
         items.append(Item(version=element.findtext(tag('shortVersionString'), ''),
                           build=int(element.findtext(tag('version'), '0')),
-                          channel=element.findtext(tag('channel')) or 'stable',
                           file=url.removeprefix(BASE_URL + '/'), length=int(enclosure.get('length', '0')),
                           signature=enclosure.get(tag('edSignature'), ''), published=element.findtext('pubDate', ''),
                           minimum_system=element.findtext(tag('minimumSystemVersion')) or MINIMUM_SYSTEM))
@@ -98,12 +94,14 @@ def parse(data: bytes) -> list[Item]:
 
 
 def merge(items: list[Item], new: Item, keep: int = KEEP) -> list[Item]:
-    """Add the new item, replace an item of the same channel and build, and keep the newest `keep` of each channel."""
-    items = [item for item in items if (item.channel, item.build) != (new.channel, new.build)] + [new]
-    kept = []
-    for channel in CHANNELS:
-        kept += sorted((item for item in items if item.channel == channel), key=lambda item: item.build, reverse=True)[:keep]
-    return sorted(kept, key=lambda item: (item.build, item.channel == 'stable'), reverse=True)
+    """Add the new item, replace an item of the same build, and keep the newest `keep` items.
+
+    An earlier feed can have a stable item and a nightly item of one build. The first of them stays.
+    """
+    builds = {new.build: new}
+    for item in items:
+        builds.setdefault(item.build, item)
+    return sorted(builds.values(), key=lambda item: item.build, reverse=True)[:keep]
 
 
 def render(items: list[Item]) -> bytes:
@@ -149,20 +147,19 @@ def matches_name(name: str, data: bytes) -> bool:
     return match is not None and hashlib.sha256(data).hexdigest().startswith(match[1])
 
 
-def new_item(archive: Path, channel: str, signature: str, now: datetime | None = None) -> Item:
+def new_item(archive: Path, signature: str, now: datetime | None = None) -> Item:
     info = app_info(archive)
-    return Item(version=info['CFBundleShortVersionString'], build=int(info['CFBundleVersion']), channel=channel,
+    return Item(version=info['CFBundleShortVersionString'], build=int(info['CFBundleVersion']),
                 file=published_name(archive), length=archive.stat().st_size, signature=signature,
                 published=format_datetime(now or datetime.now(timezone.utc)),
                 minimum_system=info.get('LSMinimumSystemVersion', MINIMUM_SYSTEM))
 
 
-def publish(archive: Path, channel: str, signature: str, output: Path, *, feed: bytes | None = None,
-            download=fetch) -> list[Item]:
+def publish(archive: Path, signature: str, output: Path, *, feed: bytes | None = None, download=fetch) -> list[Item]:
     """Write the complete assets folder for a release. Return the items of the new feed."""
     if not signature:
         raise SystemExit('The archive needs its EdDSA signature from sign_update.')
-    new = new_item(archive, channel, signature)
+    new = new_item(archive, signature)
     previous = parse(feed or b'')
     items = merge(previous, new)
     if output.exists():
@@ -190,10 +187,9 @@ def publish(archive: Path, channel: str, signature: str, output: Path, *, feed: 
 
 
 def redirects(items: list[Item]) -> str:
-    """Point /mac/download at the newest stable archive, or at the newest nightly archive before the first stable
-    release. A person who downloads the app by hand uses this link. The redirect is temporary: it changes with each
-    release."""
-    newest = next((item for channel in CHANNELS for item in items if item.channel == channel), None)
+    """Point /mac/download at the newest archive. A person who downloads the app by hand uses this link. The redirect
+    is temporary: it changes with each release."""
+    newest = max(items, key=lambda item: item.build, default=None)
     return f'/mac/download /mac/{newest.file} 302\n' if newest else ''
 
 
@@ -218,53 +214,13 @@ def check_key(private_key: str) -> None:
         raise SystemExit('SPARKLE_ED_PRIVATE_KEY does not belong to SUPublicEDKey in scripts/mac_app.py.')
 
 
-def promote_candidate(feed: bytes | None, min_age_hours: float, now: datetime | None = None) -> dict | None:
-    """The newest nightly item that is newer than every stable item and at least `min_age_hours` old, else None.
-
-    A push to main publishes a nightly build, so a newer nightly that is younger than a day does not block an older
-    one that is old enough. The release workflow then checks the commit and the later releases before it publishes the
-    build as stable.
-    """
-    items = parse(feed or b'')
-    stable = latest_build(feed, 'stable')
-    cutoff = (now or datetime.now(timezone.utc)) - timedelta(hours=min_age_hours)
-    aged = [item for item in items if item.channel == 'nightly' and item.build > stable
-            and parsedate_to_datetime(item.published) <= cutoff]
-    nightly = max(aged, key=lambda item: item.build, default=None)
-    if nightly is None:
-        return None
-    published = parsedate_to_datetime(nightly.published)
-    return {'build': nightly.build, 'version': nightly.version,
-            'published': published.astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}
-
-
-def commit_for_build(build: int) -> str:
-    """The commit of main whose commit count is the build number (mac_app.build_number).
-
-    The count falls along the first-parent line of main, so the walk stops at the first commit at or below the build.
-    """
-    commits = subprocess.run(['git', '-C', str(ROOT), 'rev-list', '--first-parent', 'HEAD'],
-                             check=True, capture_output=True, text=True).stdout.split()
-    for commit in commits:
-        count = int(subprocess.run(['git', '-C', str(ROOT), 'rev-list', '--count', commit], check=True,
-                                   capture_output=True, text=True).stdout)
-        if count == build:
-            return commit
-        if count < build:
-            break
-    raise SystemExit(f'main has no commit for build {build}.')
-
-
-def latest_build(feed: bytes | None, channel: str) -> int:
-    return max((item.build for item in parse(feed or b'') if item.channel == channel), default=0)
+def latest_build(feed: bytes | None) -> int:
+    return max((item.build for item in parse(feed or b'')), default=0)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('command', choices=['latest-build', 'publish', 'check-key', 'promote-candidate', 'commit-for-build'])
-    parser.add_argument('--min-age-hours', type=float, default=24, help='promote-candidate: the minimum age.')
-    parser.add_argument('--build', type=int, help='commit-for-build: the build number.')
-    parser.add_argument('--channel', choices=CHANNELS, default='stable')
+    parser.add_argument('command', choices=['latest-build', 'publish', 'check-key'])
     parser.add_argument('--archive', type=Path, help='publish: the new archive.')
     parser.add_argument('--signature', help='publish: the EdDSA signature of the archive (sign_update -p).')
     parser.add_argument('--output', type=Path, default=ROOT / 'updates/public', help='publish: the assets folder.')
@@ -273,24 +229,17 @@ def main() -> None:
         check_key(sys.stdin.read())
         print('The Sparkle key matches SUPublicEDKey.')
         return
-    if args.command == 'commit-for-build':
-        print(commit_for_build(args.build))
-        return
     feed = fetch(FEED_URL)
     if args.command == 'latest-build':
-        print(latest_build(feed, args.channel))
-        return
-    if args.command == 'promote-candidate':
-        candidate = promote_candidate(feed, args.min_age_hours)
-        print(json.dumps(candidate) if candidate else '')
+        print(latest_build(feed))
         return
     if args.archive is None:
         parser.error('publish needs --archive.')
-    items = publish(args.archive, args.channel, (args.signature or '').strip(), args.output, feed=feed)
+    items = publish(args.archive, (args.signature or '').strip(), args.output, feed=feed)
     for item in items:
-        print(f'{item.channel:8} {item.version} ({item.build})  {item.file}  {item.length} bytes')
+        print(f'{item.version} ({item.build})  {item.file}  {item.length} bytes')
     digest = hashlib.sha256(args.archive.read_bytes()).hexdigest()
-    print(f'Published {args.archive.name} (sha256 {digest}) in the {args.channel} channel.', file=sys.stderr)
+    print(f'Published {args.archive.name} (sha256 {digest}).', file=sys.stderr)
 
 
 if __name__ == '__main__':
