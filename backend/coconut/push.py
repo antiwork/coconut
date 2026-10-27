@@ -9,6 +9,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+from datetime import datetime, timezone
 import subprocess
 import threading
 import time
@@ -23,6 +24,13 @@ LEGACY_PREFERENCES = {'level': 'grouped', 'messages': False}
 ITEM_LIFETIME = 7 * 86400
 # Sent items and finished rows are kept this long, so a repeated event does not notify again.
 HISTORY = 30 * 86400
+# The app refreshes its registration while it runs. A registration this old belongs to an install nobody uses.
+STALE_REGISTRATION = 30 * 86400
+PUSH_TABLES = ('push_devices', 'push_routes', 'push_preferences', 'push_schedules')
+
+
+def iso(stamp):
+    return datetime.fromtimestamp(stamp, timezone.utc).isoformat().replace('+00:00', 'Z') if stamp else None
 
 
 def preferences(data):
@@ -96,6 +104,8 @@ class PushDelivery:
             device_id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS push_routes (
             device_id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS push_status (
+            device_id TEXT PRIMARY KEY, last_delivered_at REAL, last_error TEXT, last_error_at REAL);
         ''')
         columns = {row[1] for row in db.execute('PRAGMA table_info(push_outbox)')}
         if 'kind' in columns:
@@ -153,7 +163,7 @@ class PushDelivery:
         # A reinstall can pair again while retaining the same APNs address.
         self.service.db.execute('DELETE FROM push_devices WHERE token=? AND environment=? AND device_id<>?',
                                 (token, environment, device_id))
-        self.service.db.execute('''INSERT INTO push_devices VALUES (?,?,?,?,?) ON CONFLICT(device_id)
+        self.service.db.execute('''INSERT INTO push_devices (device_id,token,environment,enabled,updated) VALUES (?,?,?,?,?) ON CONFLICT(device_id)
             DO UPDATE SET token=excluded.token,environment=excluded.environment,enabled=excluded.enabled,updated=excluded.updated''',
             (device_id, token, environment, int(enabled), time.time()))
         if chosen is not None:
@@ -187,12 +197,38 @@ class PushDelivery:
         self.service.db.execute("UPDATE push_outbox SET status='discarded',reason='Disabled' WHERE device_id=? AND status='queued'", (device_id,))
 
     def unregister(self, device_id):
-        self.service.db.execute('DELETE FROM push_devices WHERE device_id=?', (device_id,))
-        self.service.db.execute('DELETE FROM push_routes WHERE device_id=?', (device_id,))
-        self.service.db.execute('DELETE FROM push_preferences WHERE device_id=?', (device_id,))
-        self.service.db.execute('DELETE FROM push_schedules WHERE device_id=?', (device_id,))
+        for table in PUSH_TABLES:
+            self.service.db.execute(f'DELETE FROM {table} WHERE device_id=?', (device_id,))
         self.unregister_jobs(device_id)
         return {'registered': False, 'configured': self.configured}
+
+    def note(self, device_id, error=None):
+        """Record the phone's last delivered notification, or its last error."""
+        column = 'last_error_at' if error else 'last_delivered_at'
+        self.service.db.execute(f'''INSERT INTO push_status (device_id,{column},last_error) VALUES (?,?,?)
+            ON CONFLICT(device_id) DO UPDATE SET {column}=excluded.{column},
+            last_error=CASE WHEN excluded.last_error IS NULL THEN last_error ELSE excluded.last_error END''',
+            (device_id, time.time(), error))
+
+    def status(self, device_id):
+        """What the phone's notification settings show: its registration, choices, and the last delivery and error."""
+        device = self.service.db.execute('SELECT enabled FROM push_devices WHERE device_id=?', (device_id,)).fetchone()
+        row = self.service.db.execute('SELECT last_delivered_at,last_error,last_error_at FROM push_status WHERE device_id=?',
+                                      (device_id,)).fetchone() or (None, None, None)
+        return {'registered': bool(device and device[0]), 'configured': self.configured,
+                'preferences': self.preferences(device_id), 'schedule': self.schedule(device_id),
+                'last_delivered_at': iso(row[0]), 'last_error': row[1], 'last_error_at': iso(row[2])}
+
+    def remove_stale(self, current):
+        """Remove registrations of devices that are no longer paired, or that did not refresh for a long time."""
+        db = self.service.db
+        for table in PUSH_TABLES + ('push_status',):
+            for (device_id,) in db.execute(f'SELECT device_id FROM {table} WHERE device_id NOT IN (SELECT id FROM devices)').fetchall():
+                self.unregister(device_id)
+                db.execute('DELETE FROM push_status WHERE device_id=?', (device_id,))
+        for (device_id,) in db.execute('SELECT device_id FROM push_devices WHERE updated<?', (current - STALE_REGISTRATION,)).fetchall():
+            self.unregister(device_id)
+            self.note(device_id, 'NotRefreshed')
 
     def allows(self, device_id, kind, urgent=False):
         """Whether the phone's preferences let this item notify. A card that needs attention now always may."""
@@ -320,6 +356,7 @@ class PushDelivery:
             db.execute("UPDATE push_items SET status='dropped',reason='Expired' WHERE status='waiting' AND created<?", (current - ITEM_LIFETIME,))
             db.execute("DELETE FROM push_items WHERE status<>'waiting' AND created<?", (current - HISTORY,))
             db.execute("DELETE FROM push_outbox WHERE status<>'queued' AND created<?", (current - HISTORY,))
+            self.remove_stale(current)
         for (device_id,) in db.execute("SELECT DISTINCT device_id FROM push_items WHERE status='waiting'").fetchall():
             device = db.execute('SELECT enabled FROM push_devices WHERE device_id=?', (device_id,)).fetchone()
             items = self._items("device_id=? AND status='waiting'", (device_id,))
@@ -412,6 +449,7 @@ class PushDelivery:
                         delay = min(3600, 30 * 2 ** min(job['attempts'], 7))
                         service.db.execute("UPDATE push_outbox SET attempts=attempts+1,not_before=?,reason='EncryptionUnavailable' WHERE id=?",
                                            (time.time() + delay, job['id']))
+                        self.note(job['device_id'], 'EncryptionUnavailable')
                         return True
                     service.db.execute('UPDATE push_outbox SET envelope=? WHERE id=?', (json.dumps(envelope), job['id']))
             service.db.execute('UPDATE push_outbox SET attempts=attempts+1,not_before=? WHERE id=?', (time.time() + 30, job['id']))
@@ -420,12 +458,16 @@ class PushDelivery:
         else:
             status, reason = self.transport.send(device[0], device[1], payload, job['id'], collapse, job['expires'])
         with service.transaction():
+            self.note(job['device_id'], None if status == 200 else reason)
             if status == 200:
                 state = 'accepted'
-            elif status == 410 or (status == 400 and reason in ('BadDeviceToken', 'DeviceTokenNotForTopic')):
+            # APNs or the relay no longer knows the phone: an invalid token, or a relay route that refuses the send token.
+            elif status == 410 or (status == 400 and reason in ('BadDeviceToken', 'DeviceTokenNotForTopic')) or (route and status == 401):
                 state = 'failed'
-                service.db.execute('UPDATE push_devices SET enabled=0 WHERE device_id=? AND token=? AND environment=? AND updated=?',
-                                   (job['device_id'], device[0], device[1], device[3]))
+                # A registration that changed during the send is new, so the answer does not apply to it.
+                if service.db.execute('SELECT 1 FROM push_devices WHERE device_id=? AND token=? AND environment=? AND updated=?',
+                                      (job['device_id'], device[0], device[1], device[3])).fetchone():
+                    self.unregister(job['device_id'])
             elif status in (0, 429, 500, 503) or status == 403:
                 state = 'queued'
             else:

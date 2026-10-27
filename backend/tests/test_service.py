@@ -728,6 +728,9 @@ class ServiceTests(unittest.TestCase):
                 first = json.load(response)
             with urllib.request.urlopen(request) as response:
                 self.assertEqual(first, json.load(response))
+            status = urllib.request.Request(root + '/v1/device/push', headers={'Authorization': f'Bearer {token}'})
+            with urllib.request.urlopen(status) as response:
+                self.assertEqual(json.load(response)['registered'], False)
         finally:
             server.shutdown()
             server.server_close()

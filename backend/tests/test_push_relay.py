@@ -154,6 +154,13 @@ class RelayPushTests(unittest.TestCase):
         self.assertEqual(self.service.db.execute('SELECT task_id,status FROM push_items ORDER BY created').fetchall(),
                          [(first['id'], 'sent'), (second['id'], 'sent')])
 
+    def test_a_relay_route_that_refuses_the_send_token_is_removed(self):
+        self.run_task()
+        self.relay.result = (401, 'RelayRejected')
+        self.assertTrue(self.flush())
+        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_routes').fetchone()[0], 0)
+        self.assertEqual(self.service.push_status(self.device)['last_error'], 'RelayRejected')
+
     def test_plaintext_registration_cannot_downgrade_encryption(self):
         from coconut.service import ServiceError
         with self.assertRaises(ServiceError):
