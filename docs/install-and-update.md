@@ -95,20 +95,6 @@ HERMES_HOME="$HOME/Coconut/.runtime/hermes/terminal/hermes" hermes model
 
 Native Hermes owns login and credential refresh. Coconut does not copy OAuth tokens into bot profiles.
 
-## An existing Hermes setup
-
-Coconut reads the account's own Hermes home, `~/.hermes`, and its `profiles` folder. It never changes them.
-After pairing, the iPhone shows what it found. Settings → Hermes setup shows the same step later.
-Each chosen profile becomes a bot with a copy of its `SOUL.md`, memory files, and skills. Sessions, settings, and secrets stay behind.
-The person can also copy the model API keys from `.env`. Coconut adds them to its default Hermes home and keeps the keys that it already has.
-Coconut does not copy OAuth sign-ins from `auth.json`. Many providers rotate refresh tokens, so two homes that share one sign-in log each other out. Sign in again with `hermes` and Coconut's Hermes home, as in [The Hermes that Coconut uses](#the-hermes-that-coconut-uses).
-If Coconut has no default model, the iPhone offers the model of the setup. It offers the model only when Coconut's model list has the same provider route. Otherwise the person chooses a model from the list.
-The person can also add the MCP servers of the setup. Coconut adds a server only when its default Hermes home has no server with the same name. It never changes an existing server.
-Coconut copies the variables that a new server refers to, when the setup's `.env` defines them. It keeps the values that it already has.
-A server that refers to a missing variable, or signs in with OAuth, is added with `enabled: false` and needs setup.
-To finish such a server, add the variable to Coconut's Hermes `.env`, or run `hermes mcp login <name>` with Coconut's Hermes home. Then remove `enabled: false` from the server in Coconut's Hermes `config.yaml`, and run `hermes mcp test <name>`.
-Set `COCONUT_HERMES_SOURCE` to read another Hermes home. Coconut ignores a linked folder and its own Hermes homes.
-
 ## GitHub access for a bot
 
 Bots use the GitHub CLI login of the Mac account, as your normal Mac Terminal does.

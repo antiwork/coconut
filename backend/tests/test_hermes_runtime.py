@@ -289,7 +289,7 @@ class RefuseModeTests(unittest.TestCase):
         status, setup = self.request('GET', '/v1/setup', token=token)
         self.assertEqual(status, 200)
         self.assertEqual(setup['hermes'], dict(self.status, tested=None))
-        self.assertIn('profiles', setup)
+        self.assertEqual(set(setup), {'hermes'})
 
     def test_agent_routes_answer_hermes_unavailable(self):
         self.addCleanup(self.stop)
@@ -414,9 +414,8 @@ class SupportedVersionTests(unittest.TestCase):
             service = Service(directory, FixtureProvider(directory), start_workers=False)
             self.addCleanup(service.close)
             service.hermes_status = hermes_runtime.public({'status': 'ok', 'version': '0.23.0'})
-            with patch('coconut.hermes_setup.probe', return_value={'profiles': []}):
-                self.assertEqual(service.hermes_setup()['hermes'],
-                                 {'status': 'ok', 'version': '0.23.0', 'reason': None, 'tested': False})
+            self.assertEqual(service.hermes_setup(),
+                             {'hermes': {'status': 'ok', 'version': '0.23.0', 'reason': None, 'tested': False}})
 
 
 if __name__ == '__main__':
