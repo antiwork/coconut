@@ -18,6 +18,8 @@ class ProfileError(ValueError):
 
 
 MAX_PROMPT_FILE_BYTES = 1024 * 1024
+# The skills that Coconut ships with its source, such as `coconut`. Hermes skips the folder when it is missing.
+SKILLS = Path(__file__).resolve().parents[2] / 'skills'
 
 
 def profile_id(bot: dict) -> str:
@@ -161,8 +163,11 @@ class HermesProfiles:
         _write(staging / '.no-bundled-skills',
                'Use essential Hermes skills only. Run hermes skills opt-in to enable the bundled catalog.\n', self.root)
         _write(staging / 'SOUL.md', bot.get('instructions', ''), self.root)
+        # A bot loads the `coconut` skill from the install folder, as the person's profiles do after setup. See
+        # scripts/hermes_skills.py, which adds the folder to the bot profiles of an earlier version during setup.
         _write(staging / 'config.yaml', _json({'toolsets': ['kanban'], 'terminal': {'cwd': str(home.parent / 'workspace')},
-                                               'delegation': {'max_concurrent_children': None, 'worktree_isolation': True}}),
+                                               'delegation': {'max_concurrent_children': None, 'worktree_isolation': True},
+                                               'skills': {'external_dirs': [str(SKILLS)]}}),
                self.root)
         _write(staging / 'profile.yaml', _json(dict(display_name=bot.get('name', profile_id(bot)),
                                                     description=bot.get('role', ''))), self.root)

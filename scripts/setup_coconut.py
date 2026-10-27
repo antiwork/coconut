@@ -72,6 +72,18 @@ def use_hermes() -> None:
         print(warning)
 
 
+def add_skill() -> None:
+    """Let the person's Hermes load the `coconut` skill of this checkout. See hermes_skills.py. Coconut changes the
+    Hermes config only during setup. A failure does not stop the setup: Coconut works without the skill."""
+    result = subprocess.run(script("hermes_skills.py", "add"), cwd=ROOT, text=True, capture_output=True)
+    sys.stdout.write(result.stdout)
+    if result.returncode:
+        sys.stderr.write(result.stderr)
+        print("Hermes does not know the coconut skill yet. Run this command again to retry.")
+    else:
+        print(f"Hermes loads the coconut skill from {ROOT / 'skills'}.")
+
+
 def prepare_notifications() -> None:
     # The service sends notifications only when the encryption helper and its sender key exist.
     run(script("push.py", "--rebuild"), "The notification setup")
@@ -304,6 +316,8 @@ def main() -> None:
     settings_changed = load_hermes_settings(args.reset_hermes_settings)
     step("Finding Hermes")
     use_hermes()
+    step("Adding the coconut skill to Hermes")
+    add_skill()
     step("Preparing notifications")
     prepare_notifications()
     step("Installing Coconut.app")

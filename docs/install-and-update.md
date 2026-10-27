@@ -98,6 +98,16 @@ HERMES_HOME="$HOME/Coconut/.runtime/hermes/terminal/hermes" hermes model
 
 Native Hermes owns login and credential refresh. Coconut does not copy OAuth tokens into bot profiles.
 
+## The coconut skill for Hermes
+
+Coconut ships a Hermes skill, `coconut`, in `skills/coconut` of the install folder. It tells Hermes how to update Coconut, pair an iPhone, and find the cause of a problem. Then the Hermes of the Telegram gateway or of the CLI can answer "update Coconut" or "why is Coconut offline".
+
+Setup adds `<install folder>/skills` to `skills.external_dirs` in the `config.yaml` of the default Hermes profile (`HERMES_HOME`, else `~/.hermes`), of each profile in `<Hermes home>/profiles`, and of each bot profile. `scripts/hermes_skills.py add` does this. It runs in `deploy.py` on a first install and on each setup that the person asks for (`Coconut.app --set-up`, **Set Up Coconut**, which run `coconut install-source --set-up`), and in `scripts/setup_coconut.py`. An automatic update does not run it.
+The edit uses the config reader and writer of Hermes, so comments and the other settings stay. A second run changes nothing. Coconut changes the Hermes config only during setup. An install from before this version gets the entry when setup runs again. While the service runs, the menu has no **Set Up Coconut**, so run `/Applications/Coconut.app/Contents/Helpers/coconut install-source --set-up`. It reinstalls the source like an update: the running turns finish first. A setup that failed to add the entry retries it the same way.
+A new bot profile gets the entry when Coconut creates it.
+
+An update replaces the skill files with the other source files. In an install, the skill files and folders are read-only, so `skill_manage` of Hermes cannot change them. The update makes the folders writable for its own changes, then read-only again.
+
 ## GitHub access for a bot
 
 Bots use the GitHub CLI login of the Mac account, as your normal Mac Terminal does.
@@ -179,13 +189,14 @@ A developer with a checkout of this repository runs `python3 ~/Coconut/scripts/s
 
 1. It checks for macOS and Xcode Command Line Tools. Coconut.app needs macOS 14 or later.
 2. It finds and checks the Hermes that the person already uses, as the service does at each start. See [The Hermes that Coconut uses](#the-hermes-that-coconut-uses). It does not install its own copy. If Hermes is missing or does not pass the check, it stops and says why.
-3. It prepares notification encryption with `push.py --rebuild`.
-4. It installs Coconut.app when it is missing. It downloads the newest stable build from the update feed, or the newest nightly build before the first stable release. It accepts the app only when `codesign` and Gatekeeper accept it. The app goes in `/Applications`, or in `~/Applications` when `/Applications` is not writable.
-5. It makes the app run this checkout (the preference `InstallDirectory` of `com.gumroad.coconut.mac`). It keeps the Hermes settings `COCONUT_HERMES_PYTHON`, `COCONUT_HERMES_ROOT` and `HERMES_HOME` of the shell or of the earlier LaunchAgent in the preference `ServiceEnvironment`. If the app ran another folder, that service finishes its running turns, and the login items start again with this checkout.
-6. It moves a service of the earlier LaunchAgents to the app with `host.py migrate-to-app`. The running bot turns finish first. The data stays in place.
-7. It opens the app. The app registers its login items, and Coconut starts again after a restart. The command waits for the local health check.
-8. It registers the relay route with the sidecar of the app, and restarts the relay login item.
-9. It runs `python3 scripts/pairing.py --share`. It prints the setup link and the path of a QR image that holds the same link last.
+3. It adds the `coconut` skill to the Hermes profiles. See [The coconut skill for Hermes](#the-coconut-skill-for-hermes). A failure here does not stop the setup.
+4. It prepares notification encryption with `push.py --rebuild`.
+5. It installs Coconut.app when it is missing. It downloads the newest stable build from the update feed, or the newest nightly build before the first stable release. It accepts the app only when `codesign` and Gatekeeper accept it. The app goes in `/Applications`, or in `~/Applications` when `/Applications` is not writable.
+6. It makes the app run this checkout (the preference `InstallDirectory` of `com.gumroad.coconut.mac`). It keeps the Hermes settings `COCONUT_HERMES_PYTHON`, `COCONUT_HERMES_ROOT` and `HERMES_HOME` of the shell or of the earlier LaunchAgent in the preference `ServiceEnvironment`. If the app ran another folder, that service finishes its running turns, and the login items start again with this checkout.
+7. It moves a service of the earlier LaunchAgents to the app with `host.py migrate-to-app`. The running bot turns finish first. The data stays in place.
+8. It opens the app. The app registers its login items, and Coconut starts again after a restart. The command waits for the local health check.
+9. It registers the relay route with the sidecar of the app, and restarts the relay login item.
+10. It runs `python3 scripts/pairing.py --share`. It prints the setup link and the path of a QR image that holds the same link last.
 
 Each failed check prints what to do. You can run the command again at any time. It skips the steps that are complete, and it prints a new setup link.
 `--channel nightly` installs the nightly build of a new app.
@@ -256,6 +267,7 @@ The mini sends encrypted notifications through Coconut's shared relay and APNs.
 
 On the mini, open `~/Coconut/Uninstall Coconut.command`.
 The uninstaller stops the owned service and removes the runtime, keys, bots, and stored work. Your Hermes installation stays.
+It removes the `skills.external_dirs` entry of the `coconut` skill from the Hermes profiles, and makes the skill folders writable again.
 It also removes this installation's exact `hermes` launcher. Close active Hermes Terminal sessions before removal.
 Delete `~/Coconut` to remove its source files afterward.
 
