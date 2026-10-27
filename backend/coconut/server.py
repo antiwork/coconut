@@ -221,6 +221,8 @@ class Handler(BaseHTTPRequestHandler):
                         compact_history=self.headers.get('X-Coconut-Updates') == '4', recent_work=self.recent_work))
                 elif url.path == '/v1/settings/google':
                     self._json(200, service.google_connection('status', {}, device))
+                elif url.path == '/v1/device/push':
+                    self._json(200, service.push_status(device))
                 elif url.path == '/v1/push/config':
                     self._json(200, service.push.relay.configuration())
                 elif url.path == '/v1/events':

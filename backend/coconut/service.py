@@ -2779,6 +2779,10 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 raise ServiceError(409, 'This artifact changed on the Mac.')
             return content, artifact['title']
 
+    def push_status(self, device: str) -> dict:
+        with self.lock:
+            return self.push.status(device)
+
     def learning(self) -> dict:
         groups: dict[tuple, dict] = {}
         with self.lock:
