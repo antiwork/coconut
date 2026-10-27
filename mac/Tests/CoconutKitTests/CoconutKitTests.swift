@@ -353,6 +353,10 @@ final class CoconutKitTests: XCTestCase {
         ])
         let fresh = StatusText.lines(version: "0.1.0 (502)", preferences: UpdatePreferences(store: MemoryPreferences()), status: status)
         XCTAssertTrue(fresh.contains("Last update check: never"))
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 1_793_000_200), outcome: .installed, version: "0.1.0 (510)"))
+        let done = StatusText.lines(version: "0.1.0 (510)", preferences: preferences, status: status)
+        XCTAssertTrue(done.contains("Last update result: installed 0.1.0 (510) (2026-10-26T07:36:40Z)"))
+        XCTAssertTrue(done.contains("Last update error: none"))
         XCTAssertTrue(fresh.contains("Last update error: none"))
     }
 

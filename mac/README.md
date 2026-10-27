@@ -57,12 +57,13 @@ A Hermes agent manages the updates with the `coconut` tool (`/Applications/Cocon
 
 ```sh
 coconut status                              # version, channel, automatic updates, last check, last error, service
-coconut update                              # check now, install a newer build, wait until the service runs it
+coconut update                              # check now, start the install of a newer build (--wait: wait for the end)
 coconut settings automatic-updates on|off
 coconut settings channel stable|nightly
 ```
 
 `coconut update` installs a newer build also when automatic updates are off. It asks the menu bar app, and opens the app when it does not run.
+It returns when the install starts, because the service update waits for all running bot turns, also the one that ran the command. `coconut status` then shows "installing", and "installed" when the service runs the new version. `--wait` waits for the end; use it only outside a bot turn.
 The menu shows the same settings, the version and the last update error.
 
 The Worker `coconut-updates` (`updates/`) serves the feed. See `updates/README.md`.

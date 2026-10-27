@@ -33,6 +33,8 @@ public struct UpdateResult: Equatable {
         case upToDate = "up_to_date"
         /// Sparkle downloaded a newer build and installs it now. The app restarts.
         case installing
+        /// The new app runs, and the service has its source.
+        case installed
         case failed
     }
 
@@ -159,6 +161,7 @@ public enum StatusText {
             switch result.outcome {
             case .upToDate: detail = "up to date"
             case .installing: detail = "installing \(result.version ?? "a new version")"
+            case .installed: detail = "installed \(result.version ?? "a new version")"
             case .failed: detail = "failed"
             }
             lines.append("Last update result: \(detail) (\(formatter.string(from: result.time)))")

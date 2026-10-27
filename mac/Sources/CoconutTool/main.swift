@@ -8,8 +8,9 @@ let usage = """
 
       status    Print the version, the update settings, the last update check and error, and the state of the
                 service, the relay and Hermes. --json prints the service state as JSON.
-      update    Check for a newer Coconut.app now, and install it. The service updates after its running bot
-                work finishes. Prints the result.
+      update    Check for a newer Coconut.app now, and install it. Prints the result and returns when the install
+                starts: the service updates after its running bot work finishes, also the turn that ran this
+                command. Run coconut status later to see the end. --wait waits for the end (not inside a bot turn).
       settings automatic-updates on|off
                 Turn automatic updates on or off. When on, Coconut.app checks every six hours and installs.
       settings channel stable|nightly
@@ -100,25 +101,31 @@ func checkForUpdates() -> Int32 {
     case .failed:
         print("The update check failed: \(result.message ?? "unknown error")")
         return 1
+    case .installed:
+        print("Coconut.app \(result.version ?? before) is installed.")
+        return 0
     case .installing:
-        print("Installing Coconut \(result.version ?? "") now. The app restarts. Running bot work finishes before the service updates.")
+        print("Installing Coconut \(result.version ?? "") now. The app restarts. The service updates after its running bot work finishes.")
     }
-    // The new app updates the service with `install-source` when it starts. That can wait up to ten minutes for bot work.
+    // A bot turn that waits here would wait for itself: the service update waits for all running turns. So the command
+    // returns now, unless a person asks to wait.
+    guard CommandLine.arguments.contains("--wait") else {
+        print("Run coconut status later. \"Last update result\" says \"installed\" when the service runs the new version.")
+        return 0
+    }
     let deadline = Date().addingTimeInterval(1800)
     while Date() < deadline {
         sleep(5)
-        if let failure = preferences.lastResult, failure.outcome == .failed, failure.time > result.time {
-            print("The update failed: \(failure.message ?? "unknown error")")
-            return 1
-        }
-        let resources = helpers.deletingLastPathComponent().appendingPathComponent("Resources")
-        let current = appVersion()
-        guard current != before, let source = BundledSource(resources: resources) else { continue }
-        // A folder without the record of deploy.py (a Git checkout) gets no bundled source.
-        let managed = FileManager.default.fileExists(atPath: install.root.appendingPathComponent(".coconut-install.json").path)
-        if !install.isInstalled() || !managed || !source.isNewer(than: install) {
-            print("Coconut.app \(current) runs, and the service has its source.")
+        guard let latest = preferences.lastResult, latest.time > result.time else { continue }
+        switch latest.outcome {
+        case .installed:
+            print("Coconut.app \(latest.version ?? appVersion()) runs, and the service has its source.")
             return 0
+        case .failed:
+            print("The update failed: \(latest.message ?? "unknown error")")
+            return 1
+        case .upToDate, .installing:
+            continue
         }
     }
     print("The update did not finish within 30 minutes. Run coconut status to see the last error.")
