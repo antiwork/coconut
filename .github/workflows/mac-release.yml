@@ -2,8 +2,9 @@ name: Mac release
 
 # Builds Coconut.app, signs it with the Developer ID Application certificate, notarizes it, staples the ticket, and
 # publishes it in the Sparkle feed of the Worker coconut-updates (updates/). Two channels:
-#   nightly   each night when main has new commits, and when a person starts the workflow with channel "nightly"
-#   stable    each day, the newest nightly build when it has been nightly for 24 hours, every check of its commit
+#   nightly   on each push to main, each night when main has new commits, and when a person starts the workflow with
+#             channel "nightly"
+#   stable    each day, the newest nightly build that has been nightly for 24 hours, when every check of its commit
 #             passed, and no release failed after it (the automatic promote); and when a person starts the workflow
 #             with channel "stable", which releases the head of main (the manual promote)
 # The version is in mac/VERSION. The build number is the commit count of main.
@@ -15,6 +16,8 @@ name: Mac release
 #   CLOUDFLARE_API_TOKEN                                   deploys the Worker coconut-updates
 # A missing secret stops the job: an archive that is not notarized and signed must never reach a Mac.
 on:
+  push:
+    branches: [main]
   schedule:
     - cron: '17 6 * * *' # nightly
     - cron: '47 7 * * *' # automatic promote
@@ -33,6 +36,8 @@ permissions:
   actions: read
 
 # Two releases must not deploy the feed at the same time: the later one would drop the archive of the earlier one.
+# A push, a schedule and a person share this group, so each release waits for the release before it. GitHub keeps one
+# waiting run in the group: a newer run cancels it. The next push or night publishes the newer commits.
 concurrency:
   group: mac-release
   cancel-in-progress: false
@@ -95,7 +100,8 @@ jobs:
             fi
           else
             live="$(python3 scripts/mac_feed.py latest-build --channel "$CHANNEL")"
-            # A night without new commits on main publishes nothing.
+            # A night without new commits on main publishes nothing. A push of a commit that is not newer than the
+            # live nightly build also publishes nothing.
             if [ "$CHANNEL" = nightly ] && [ "$live" -ge "$build" ]; then
               skip=true
               echo "The nightly channel already has build $live. Nothing to publish." >> "$GITHUB_STEP_SUMMARY"
