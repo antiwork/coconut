@@ -216,11 +216,11 @@ class TeamServiceTests(unittest.TestCase):
         self.finish(root, 'I am waiting for Lin.')
         self.finish(child)
         self.service._drain_returns()
-        self.assertEqual(self.service.db.execute('SELECT COUNT(*) FROM push_outbox').fetchone()[0], 0)
+        self.assertEqual(self.service.db.execute('SELECT COUNT(*) FROM push_items').fetchone()[0], 0)
         reply = next(t for t in self.service._all('tasks') if t.get('_assignment_task_id') == root['id'])
         self.working(reply)
         self.finish(reply, 'The complete result is ready.')
-        jobs = self.service.db.execute('SELECT task_id,kind,turn_id FROM push_outbox').fetchall()
+        jobs = self.service.db.execute('SELECT task_id,kind,turn_id FROM push_items').fetchall()
         stored = self.service._get('tasks', root['id'])
         self.assertEqual(jobs, [(root['id'], 'completed', stored.get('_native_turn_id') or stored['updated_at'])])
         alert = notification_alert(self.service, {'kind': 'completed'}, self.a, stored, None)
@@ -388,7 +388,7 @@ class TeamServiceTests(unittest.TestCase):
         self.assertEqual((failed['status'], failed['summary']), ('failed', 'The tool failed.'))
         self.assertTrue(any(m['task_id'] == failed['id'] and m['text'] == 'The tool failed.'
                             for m in self.service._all('messages')))
-        jobs = self.service.db.execute('SELECT task_id,kind FROM push_outbox').fetchall()
+        jobs = self.service.db.execute('SELECT task_id,kind FROM push_items').fetchall()
         self.assertEqual(jobs, [(root['id'], 'completed')])
 
     def test_rejecting_a_continuation_proposal_resolves_the_original_assignment(self):
