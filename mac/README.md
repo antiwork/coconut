@@ -17,10 +17,10 @@ The app does not register its login items while the LaunchAgent of `host.py inst
 ## Install and update
 
 The app carries the Coconut source: `Contents/Resources/coconut-source.tar.gz`, its package ID, and `scripts/deploy.py`.
-`coconut update` installs that source with `deploy.py receive`, the same installer that `remote.py` and the Mac mini updater use.
+`coconut install-source` installs that source with `deploy.py receive`, the same installer that `remote.py` and the Mac mini updater use.
 
 - **Set Up Coconut** in the menu registers the login items, then installs the source. The service tool waits until the source exists, and the install starts it.
-- At each start, the app runs `coconut update --if-needed`. After an update of the app, the new source goes in at once.
+- At each start, the app runs `coconut install-source --if-needed`. After an update of the app, the new source goes in at once.
 - An update lets the running turns finish first, for up to ten minutes (`host.drain_for_update`). Then `host.py` writes `.runtime/host/update-hold` and stops the service. launchd starts the tool again, and the tool waits while the hold lasts. After the source changes, the hold goes away, the service starts, and `deploy.py` checks Hermes and health. A failed check restores the earlier source.
 - The hold ends after 30 minutes, also when an update stops halfway.
 - `scripts/tunnel.py` uses the sidecar of the app (`COCONUT_SIDECAR`). It registers a relay route once, then restarts the relay login item. It compiles nothing.
@@ -55,9 +55,22 @@ The build writes `build/mac/Coconut.app` with an ad-hoc signature.
 Coconut.app updates itself with Sparkle 2.10.0. The feed is `https://coconut-updates.gumroad.workers.dev/mac/appcast.xml`.
 `FEED_URL` in `scripts/mac_app.py` is the only place that names it. `SUPublicEDKey` names the key that signs each archive.
 
-- The app checks the feed every six hours and installs an update without a question. **Check for Updates…** checks at once.
-- **Update Channel** in the menu chooses **Stable** or **Nightly**. A stable item has no channel, so every app sees it. A nightly item has the channel `nightly`. Sparkle takes the newest build that the app may see.
-- Sparkle replaces only the app. The service runs from `~/Coconut`, so it keeps running. After the relaunch, the new app runs `coconut update --if-needed`, which lets the running turns finish before it changes the service.
+- **Automatic updates** is on by default. Then the app checks the feed every six hours and installs an update without a question. The setting is Sparkle's `SUEnableAutomaticChecks` and `SUAutomaticallyUpdate`. Info.plist sets both, so Sparkle never asks at the first start, and a Mac that nobody watches never waits on a dialog.
+- **Update Channel** chooses **Stable** or **Nightly**. A stable item has no channel, so every app sees it. A nightly item has the channel `nightly`. Sparkle takes the newest build that the app may see.
+- Sparkle replaces only the app. The service runs from `~/Coconut`, so it keeps running. After the relaunch, the new app runs `coconut install-source --if-needed`, which lets the running turns finish before it changes the service.
+
+A Hermes agent manages the updates with the `coconut` tool (`/Applications/Coconut.app/Contents/Helpers/coconut`). The output is plain text:
+
+```sh
+coconut status                              # version, channel, automatic updates, last check, last error, service
+coconut update                              # check now, start the install of a newer build (--wait: wait for the end)
+coconut settings automatic-updates on|off
+coconut settings channel stable|nightly
+```
+
+`coconut update` installs a newer build also when automatic updates are off. It asks the menu bar app, and opens the app when it does not run.
+It returns when the install starts, because the service update waits for all running bot turns, also the one that ran the command. `coconut status` then shows "installing", and "installed" when the service runs the new version. `--wait` waits for the end; use it only outside a bot turn.
+The menu shows the same settings, the version and the last update error.
 
 The Worker `coconut-updates` (`updates/`) serves the feed. See `updates/README.md`.
 
@@ -66,7 +79,7 @@ The Worker `coconut-updates` (`updates/`) serves the feed. See `updates/README.m
 The **Mac release** workflow runs in the GitHub environment `mac-release`, which accepts only `main`.
 
 - **Nightly:** each night, when `main` has a build that the nightly channel does not have, and when a person starts the workflow with the channel `nightly`.
-- **Stable:** only when a person starts the workflow with the channel `stable`.
+- **Stable:** each day at 07:47 UTC, the newest nightly build, when it has been nightly for 24 hours, every check of its commit passed, and no release run failed after it. A person can also start the workflow with the channel `stable`, which releases the head of `main`.
 
 The version is in `mac/VERSION`. The build number is the commit count of `main`. The release job does these steps:
 

@@ -1,4 +1,4 @@
-"""Work-hours schedule for push timing. Code enforces it; bots only supply importance."""
+"""Work-hours schedule for push timing. Code enforces it; a bot only marks a card that needs attention now."""
 from __future__ import annotations
 
 from datetime import datetime, time as clock, timedelta
@@ -6,39 +6,13 @@ import re
 from zoneinfo import ZoneInfo
 
 # The window is [start, end) in the zone's local time, on the chosen ISO weekdays (1 Monday ... 7 Sunday).
-# honor_routine lets a bot's explicit routine lower a decision or failure to routine. It is off unless the person turns it on.
 DEFAULT_SCHEDULE = {'enabled': True, 'start': '09:00', 'end': '18:00', 'timezone': 'America/New_York',
-                    'weekdays': [1, 2, 3, 4, 5, 6, 7], 'honor_routine': False}
+                    'weekdays': [1, 2, 3, 4, 5, 6, 7]}
+# Older apps still send this field. It no longer has an effect.
+RETIRED_FIELDS = ('honor_routine',)
 # A device with no stored schedule has not registered with an app that knows work hours.
 # It keeps the old behavior, every alert at once, until the updated app registers its window.
 LEGACY_SCHEDULE = dict(DEFAULT_SCHEDULE, enabled=False)
-IMPORTANCE = ('urgent', 'important', 'routine')
-# Without an explicit value, decisions and failures should not wait for morning. Completions and messages can.
-KIND_FLOOR = {'decision': 'important', 'failed': 'important', 'completed': 'routine', 'message': 'routine'}
-
-
-def explicit_importance(value):
-    """The bot's explicit urgent, important, or routine, or None when it is missing or invalid."""
-    value = value.strip().lower() if isinstance(value, str) else None
-    return value if value in IMPORTANCE else None
-
-
-def effective_importance(kind, explicit, honor_routine=False):
-    """The importance used for timing and why, as (level, reason).
-
-    Urgent and important always elevate. Explicit routine lowers a decision or failure only when the
-    person's schedule honors it. A missing or invalid value is the kind's floor."""
-    floor = KIND_FLOOR.get(kind, 'routine')
-    explicit = explicit_importance(explicit)
-    if explicit in ('urgent', 'important'):
-        return explicit, 'Explicit'
-    if explicit == 'routine':
-        if floor == 'routine':
-            return 'routine', 'Explicit'
-        return ('routine', 'HonoredRoutine') if honor_routine is True else (floor, 'KindFloor')
-    return floor, 'KindDefault'
-
-
 def _minutes(value):
     match = re.fullmatch(r'([01]\d|2[0-3]):([0-5]\d)', value) if isinstance(value, str) else None
     return int(match[1]) * 60 + int(match[2]) if match else None
@@ -63,12 +37,14 @@ def _weekdays(value):
 def validate(data):
     """Return a complete normalized schedule, or None when the values are unusable.
 
-    Older clients omit the fields they do not know; those take the defaults."""
-    if not isinstance(data, dict) or set(data) - set(DEFAULT_SCHEDULE):
+    Older clients omit the fields they do not know; those take the defaults. Retired fields are dropped."""
+    if not isinstance(data, dict):
+        return None
+    data = {key: value for key, value in data.items() if key not in RETIRED_FIELDS}
+    if set(data) - set(DEFAULT_SCHEDULE):
         return None
     schedule = dict(DEFAULT_SCHEDULE, **data)
-    if (type(schedule['enabled']) is not bool or type(schedule['honor_routine']) is not bool
-            or _zone(schedule['timezone']) is None):
+    if type(schedule['enabled']) is not bool or _zone(schedule['timezone']) is None:
         return None
     schedule['weekdays'] = _weekdays(schedule['weekdays'])
     start, end = _minutes(schedule['start']), _minutes(schedule['end'])

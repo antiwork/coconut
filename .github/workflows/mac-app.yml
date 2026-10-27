@@ -76,5 +76,5 @@ jobs:
           echo "$(basename "$archive"): $(du -h "$archive" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
           "$app/Contents/Helpers/coconut" version
           # Without an install, the tool reports that, and it reads the files of an install.
-          COCONUT_INSTALL_DIR="$RUNNER_TEMP/none" "$app/Contents/Helpers/coconut" status | grep -q '"service" : "not_installed"'
-          COCONUT_INSTALL_DIR="$PWD" "$app/Contents/Helpers/coconut" status | grep -q '"service" : "stopped"'
+          COCONUT_INSTALL_DIR="$RUNNER_TEMP/none" "$app/Contents/Helpers/coconut" status --json | grep -q '"service" : "not_installed"'
+          COCONUT_INSTALL_DIR="$PWD" "$app/Contents/Helpers/coconut" status --json | grep -q '"service" : "stopped"'

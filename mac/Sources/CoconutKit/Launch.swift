@@ -84,8 +84,25 @@ public enum LoginEnvironment {
     public static let fallbackPath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     static let mark = "COCONUT-PATH-7f3c"
 
-    public static func make(base: [String: String], loginPath: String?) -> [String: String] {
-        var environment = base
+    /// The Hermes settings that scripts/setup_coconut.py saved in the app's preferences (`ServiceEnvironment`). They
+    /// choose another Hermes, as in a shell. See hermes_runtime.candidates.
+    public static let hermesSettings = ["COCONUT_HERMES_PYTHON", "COCONUT_HERMES_ROOT", "HERMES_HOME"]
+
+    public static func savedSettings(
+        _ value: Any? = CFPreferencesCopyAppValue("ServiceEnvironment" as CFString, Install.preferencesDomain as CFString)
+    ) -> [String: String] {
+        guard let saved = value as? [String: Any] else { return [:] }
+        return saved.reduce(into: [:]) { result, entry in
+            if hermesSettings.contains(entry.key), let text = entry.value as? String, !text.isEmpty {
+                result[entry.key] = text
+            }
+        }
+    }
+
+    /// The environment of a command: the base, the PATH of the login shell, and the saved Hermes settings.
+    public static func make(base: [String: String], loginPath: String?,
+                            saved: [String: String] = savedSettings()) -> [String: String] {
+        var environment = base.merging(saved) { _, saved in saved }
         if let loginPath, !loginPath.isEmpty {
             environment["PATH"] = loginPath
         } else if (environment["PATH"] ?? "").isEmpty || environment["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin" {

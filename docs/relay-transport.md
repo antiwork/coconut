@@ -143,6 +143,43 @@ On a ticket session, the sidecar forwards only `POST /v1/pair` and `GET /health`
 
 The backend accepts a tunnel secret only with an `X-Coconut-Peer` key, and a TLS code only without one. A device that paired through the tunnel must send the same key with each request.
 
+## Pairing code from the iPhone
+
+The iPhone can start pairing without a link from the Mac. It makes a one-time pairing code, and the person sends the code to their Hermes. On the Mac, `coconut pair <code>` sends a version 2 setup to the iPhone through a rendezvous box on the relay. Then the iPhone pairs with the steps of pairing v2.
+
+The code is 16 random bytes (128 bits), written as 26 characters of unpadded lowercase base32. No redaction rule of Hermes matches lowercase base32. The iPhone and the Mac derive these values from the 16 code bytes with HKDF-SHA256, an empty salt, and a 32-byte output:
+
+| Value | Label |
+| --- | --- |
+| Box ID | `coconut rendezvous id`, as lowercase hex |
+| Box key | `coconut rendezvous key` |
+
+Test vector: the code `aaaqeayeaudaocajbifqydiob4` is the bytes 0 to 15. Its box ID is `1d228ab884d178483a0e0e42db07204474f127216879f5b13ccca51c1a965173`, and its box key in hex is `f68c3bdb1899514c12a0964dd1ea608b89d66740c96cfa5f355beba30cc103d2`.
+
+The iPhone also makes a 32-byte phone token, as lowercase hex. The phone token never leaves the iPhone.
+
+The sealed message is `nonce (12 bytes) | ciphertext | tag (16 bytes)`: ChaChaPoly with the box key, a random nonce, and the 32 bytes of the box ID as the additional data. The plaintext is the JSON of a version 2 setup, with the fields of the earlier link.
+
+The relay routes (`relay/src/rendezvous.js`):
+
+| Request | Who | Answer |
+| --- | --- | --- |
+| `PUT /v1/rendezvous/<id>`, `Authorization: Bearer <phone token>` | iPhone | 201 makes the box for 600 seconds. 200 for a repeat with the same token. 409 for another token. |
+| `POST /v1/rendezvous/<id>/message`, body: the sealed message | Mac | 204. 404 for a missing or expired box. 409 for a second message. 400 under 29 bytes, 413 over 4096 bytes. |
+| `GET /v1/rendezvous/<id>?wait=<0 to 25>`, same token | iPhone | 200 with the message, 204 when no message comes within the wait, 404 for a missing or expired box, 401 for another token. |
+| `DELETE /v1/rendezvous/<id>`, same token | iPhone | 204 removes the box. |
+
+The relay keeps the message until the iPhone deletes the box or the box expires. iOS can suspend Coconut while the person is in Telegram, so a reply that the iPhone does not receive must not lose the setup. The relay limits each IP to 10 box creations and 60 other rendezvous requests each minute.
+
+The pairing steps:
+
+1. The iPhone makes the code and the phone token, makes the box, and shows the message for Hermes.
+2. Hermes runs `coconut pair <code>` on the Mac. The command makes a version 2 setup, seals it, and sends it to the box.
+3. The iPhone reads the message, opens it with the box key, and deletes the box.
+4. The iPhone pairs with the setup, as in steps 3 to 7 of pairing v2.
+
+The relay sees only the box ID and the ciphertext, so it cannot read the setup or seal another one. The code passes through the chat service that carries the message to Hermes, for example Telegram, which does not encrypt bot chats end to end. Someone who reads the code there within 10 minutes could seal a setup for another Mac. The code works for one box only, the box expires after 10 minutes, and the iPhone deletes it after it receives a setup. After that, the code is useless.
+
 ## iPhone
 
 `ios/Coconut/TunnelConnection.swift` is the iPhone end. `APIClient` keeps its API and sends each request through it.

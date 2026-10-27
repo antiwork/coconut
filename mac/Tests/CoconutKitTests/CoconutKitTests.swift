@@ -138,14 +138,24 @@ final class CoconutKitTests: XCTestCase {
         }
     }
 
+    func testTheSavedHermesSettingsReachTheService() {
+        XCTAssertEqual(LoginEnvironment.savedSettings(["COCONUT_HERMES_PYTHON": "/h/python", "HERMES_HOME": "/h",
+                                                       "PATH": "/evil", "COCONUT_HERMES_ROOT": ""]),
+                       ["COCONUT_HERMES_PYTHON": "/h/python", "HERMES_HOME": "/h"])
+        XCTAssertEqual(LoginEnvironment.savedSettings(nil), [:])
+        let environment = LoginEnvironment.make(base: ["HOME": "/Users/a"], loginPath: "/bin",
+                                                saved: ["COCONUT_HERMES_PYTHON": "/h/python"])
+        XCTAssertEqual(environment, ["HOME": "/Users/a", "PATH": "/bin", "COCONUT_HERMES_PYTHON": "/h/python"])
+    }
+
     func testTheLoginItemUsesThePathOfTheLoginShell() {
         XCTAssertEqual(LoginEnvironment.parse("motd\n\(LoginEnvironment.mark)/opt/homebrew/bin:/bin\(LoginEnvironment.mark)\n"),
                        "/opt/homebrew/bin:/bin")
         XCTAssertNil(LoginEnvironment.parse("no marks"))
-        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"], loginPath: "/a:/b")["PATH"], "/a:/b")
-        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"], loginPath: nil)["PATH"],
+        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"], loginPath: "/a:/b", saved: [:])["PATH"], "/a:/b")
+        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"], loginPath: nil, saved: [:])["PATH"],
                        LoginEnvironment.fallbackPath)
-        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/mine"], loginPath: nil)["PATH"], "/mine")
+        XCTAssertEqual(LoginEnvironment.make(base: ["PATH": "/mine"], loginPath: nil, saved: [:])["PATH"], "/mine")
     }
 
     // MARK: Login items
@@ -233,6 +243,15 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertNil(BundledSource(resources: home.appendingPathComponent("Missing")))
     }
 
+    func testAGitCheckoutIsNotAnInstallOfTheApp() throws {
+        let install = Install(root: home.appendingPathComponent("Coconut"))
+        XCTAssertFalse(install.isCheckout())
+        try write("", to: "Coconut/.git/HEAD")
+        XCTAssertTrue(install.isCheckout())
+        try write(#"{"state": "installed"}"#, to: "Coconut/.coconut-install.json")
+        XCTAssertFalse(install.isCheckout(), "deploy.py owns a folder with its install record.")
+    }
+
     func testDeployNeedsAFolderInsideTheHomeFolder() {
         let home = URL(fileURLWithPath: "/Users/a")
         XCTAssertEqual(Install(root: URL(fileURLWithPath: "/Users/a/Coconut")).relativePath(home: home), "Coconut")
@@ -297,6 +316,83 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertEqual(UpdateChannel.nightly.allowedChannels, ["nightly"])
         defaults.set("beta", forKey: UpdateChannel.preferenceKey)
         XCTAssertEqual(UpdateChannel.current(defaults), .stable)
+    }
+
+    // MARK: Update preferences
+
+    func testAutomaticUpdatesAreOnUntilTurnedOff() {
+        let store = MemoryPreferences()
+        let preferences = UpdatePreferences(store: store)
+        XCTAssertTrue(preferences.automaticUpdates)
+        XCTAssertEqual(preferences.channel, .stable)
+        preferences.setAutomaticUpdates(false)
+        // Sparkle reads the same two keys.
+        XCTAssertEqual(store.values["SUEnableAutomaticChecks"] as? Bool, false)
+        XCTAssertEqual(store.values["SUAutomaticallyUpdate"] as? Bool, false)
+        XCTAssertFalse(preferences.automaticUpdates)
+        preferences.setAutomaticUpdates(true)
+        XCTAssertTrue(preferences.automaticUpdates)
+        preferences.setChannel(.nightly)
+        XCTAssertEqual(store.values["updateChannel"] as? String, "nightly")
+        XCTAssertEqual(preferences.channel, .nightly)
+    }
+
+    func testARequestWaitsUntilAResultAnswersIt() {
+        let preferences = UpdatePreferences(store: MemoryPreferences())
+        XCTAssertNil(preferences.pendingRequest)
+        preferences.requestCheck(at: Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(preferences.pendingRequest, Date(timeIntervalSince1970: 100))
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 99), outcome: .upToDate))
+        XCTAssertNotNil(preferences.pendingRequest, "An older result does not answer a newer request.")
+        let result = UpdateResult(time: Date(timeIntervalSince1970: 101), outcome: .installing, version: "0.2.0 (510)")
+        preferences.record(result)
+        XCTAssertNil(preferences.pendingRequest)
+        XCTAssertEqual(preferences.lastResult, result)
+    }
+
+    func testALaterCheckDoesNotEndAPendingInstall() {
+        let preferences = UpdatePreferences(store: MemoryPreferences())
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 1), outcome: .installing, version: "0.2.0 (510)"))
+        XCTAssertEqual(preferences.pendingInstall, "0.2.0 (510)")
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 2), outcome: .upToDate))
+        XCTAssertEqual(preferences.pendingInstall, "0.2.0 (510)")
+        let status = Status(install: "/c", service: .running, hermes: "ok", hermesVersion: nil, hermesReason: nil, relay: "connected")
+        XCTAssertTrue(StatusText.lines(version: "0.2.0 (510)", preferences: preferences, status: status)
+            .contains("Pending install: 0.2.0 (510) (the service updates after its running bot work)"))
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 3), outcome: .installed, version: "0.2.0 (510)"))
+        XCTAssertNil(preferences.pendingInstall)
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 4), outcome: .installing))
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 5), outcome: .failed, message: "x"))
+        XCTAssertNil(preferences.pendingInstall)
+    }
+
+    func testTheStatusTextNamesTheSettingsAndTheLastError() {
+        let store = MemoryPreferences(["SULastCheckTime": Date(timeIntervalSince1970: 1_793_000_000), "updateChannel": "nightly",
+                                       "SUAutomaticallyUpdate": false])
+        let preferences = UpdatePreferences(store: store)
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 1_793_000_100), outcome: .failed,
+                                        message: "The feed is unavailable."))
+        let status = Status(install: "/Users/a/Coconut", service: .running, hermes: "ok", hermesVersion: "0.22.5",
+                            hermesReason: nil, relay: "connected")
+        let lines = StatusText.lines(version: "0.1.0 (502)", preferences: preferences, status: status)
+        XCTAssertEqual(lines, [
+            "Coconut.app: 0.1.0 (502)",
+            "Update channel: nightly",
+            "Automatic updates: off",
+            "Last update check: 2026-10-26T07:33:20Z",
+            "Last update result: failed (2026-10-26T07:35:00Z)",
+            "Last update error: The feed is unavailable.",
+            "Service: running (/Users/a/Coconut)",
+            "Relay: connected",
+            "Hermes: 0.22.5",
+        ])
+        let fresh = StatusText.lines(version: "0.1.0 (502)", preferences: UpdatePreferences(store: MemoryPreferences()), status: status)
+        XCTAssertTrue(fresh.contains("Last update check: never"))
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 1_793_000_200), outcome: .installed, version: "0.1.0 (510)"))
+        let done = StatusText.lines(version: "0.1.0 (510)", preferences: preferences, status: status)
+        XCTAssertTrue(done.contains("Last update result: installed 0.1.0 (510) (2026-10-26T07:36:40Z)"))
+        XCTAssertTrue(done.contains("Last update error: none"))
+        XCTAssertTrue(fresh.contains("Last update error: none"))
     }
 
     // MARK: Pairing
