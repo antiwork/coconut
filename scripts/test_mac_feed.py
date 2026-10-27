@@ -148,6 +148,30 @@ class FeedTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, 'does not belong'):
                 mac_feed.check_key(base64.b64encode(bytes(32)).decode())
 
+    def test_the_newest_nightly_becomes_a_promote_candidate_after_a_day(self):
+        now = datetime(2026, 10, 28, 7, 47, tzinfo=timezone.utc)
+        day_old = 'Mon, 26 Oct 2026 23:00:00 +0000'
+        fresh = 'Tue, 27 Oct 2026 23:00:00 +0000'
+        feed = mac_feed.render([item(510, 'nightly', published=day_old), item(505)])
+        self.assertEqual(mac_feed.promote_candidate(feed, 24, now),
+                         {'build': 510, 'version': '0.1.0', 'published': '2026-10-26T23:00:00Z'})
+        # The newest nightly decides. A newer one that is younger than a day waits.
+        feed = mac_feed.render([item(512, 'nightly', published=fresh), item(510, 'nightly', published=day_old)])
+        self.assertIsNone(mac_feed.promote_candidate(feed, 24, now))
+        # Stable has it already.
+        feed = mac_feed.render([item(510, 'nightly', published=day_old), item(510)])
+        self.assertIsNone(mac_feed.promote_candidate(feed, 24, now))
+        self.assertIsNone(mac_feed.promote_candidate(None, 24, now))
+
+    def test_the_commit_of_a_build_has_that_commit_count(self):
+        build = int(mac_feed.subprocess.run(['git', '-C', str(mac_feed.ROOT), 'rev-list', '--count', 'HEAD'],
+                                            capture_output=True, text=True, check=True).stdout)
+        head = mac_feed.subprocess.run(['git', '-C', str(mac_feed.ROOT), 'rev-parse', 'HEAD'],
+                                       capture_output=True, text=True, check=True).stdout.strip()
+        self.assertEqual(mac_feed.commit_for_build(build), head)
+        with self.assertRaisesRegex(SystemExit, 'no commit'):
+            mac_feed.commit_for_build(build + 1000)
+
     def test_publish_needs_a_signature(self):
         with self.assertRaisesRegex(SystemExit, 'signature'):
             mac_feed.publish(self.archive(512), 'stable', '', self.folder / 'public', feed=None, download=lambda url: None)

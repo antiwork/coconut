@@ -26,6 +26,14 @@ class_name = "Tunnel"
 tag = "v2"
 new_sqlite_classes = ["Tunnel"]
 
+[[durable_objects.bindings]]
+name = "RENDEZVOUS"
+class_name = "Rendezvous"
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["Rendezvous"]
+
 [[ratelimits]]
 name = "REGISTRATION_LIMIT"
 namespace_id = "1"
@@ -45,6 +53,17 @@ simple = { limit = 10, period = 60 }
 [[ratelimits]]
 name = "TUNNEL_CONNECT"
 namespace_id = "4"
+simple = { limit = 60, period = 60 }
+
+# The iPhone makes a rendezvous box for each pairing code. The other rendezvous requests share the second limit.
+[[ratelimits]]
+name = "RENDEZVOUS_CREATE"
+namespace_id = "5"
+simple = { limit = 10, period = 60 }
+
+[[ratelimits]]
+name = "RENDEZVOUS_LIMIT"
+namespace_id = "6"
 simple = { limit = 60, period = 60 }
 
 [observability]
