@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from coconut.service import Service, ServiceError, YieldForDecision, digest
 from coconut.hermes_worker import conversation_input
+from test_push import pair_phone
 from test_service import ControlledProvider
 
 
@@ -209,7 +210,7 @@ class TeamServiceTests(unittest.TestCase):
 
     def test_completion_notification_uses_final_continuation_and_waits_for_it(self):
         from coconut.push_relay import notification_alert
-        device = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        device = pair_phone(self.service)
         self.service.push.registration(device, dict(token='a' * 64, environment='development', enabled=True))
         root = self.working(self.send(self.a))
         child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
@@ -365,7 +366,7 @@ class TeamServiceTests(unittest.TestCase):
                 self.assertEqual(self.service._get('tasks', dev['id'])['_waiting_on'], [dependency['id']])
 
     def test_failed_continuation_preserves_an_independent_result(self):
-        device = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        device = pair_phone(self.service)
         self.service.push.registration(device, dict(token='a' * 64, environment='development', enabled=True))
         third = self.write('POST', '/v1/bots', {'name': 'Third'})
         root = self.working(self.send(self.a))

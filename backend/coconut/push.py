@@ -27,6 +27,9 @@ HISTORY = 30 * 86400
 # The app refreshes its registration while it runs. A registration this old belongs to an install nobody uses.
 STALE_REGISTRATION = 30 * 86400
 PUSH_TABLES = ('push_devices', 'push_routes', 'push_preferences', 'push_schedules')
+# A phone reaches the Mac only through the relay tunnel, which needs the phone's static key. A device without one is an
+# old version 1 pairing or a tool on this Mac, so it is not paired for notifications.
+PHONES = 'SELECT id FROM devices WHERE peer_key IS NOT NULL'
 
 
 def iso(stamp):
@@ -128,6 +131,8 @@ class PushDelivery:
                 db.execute('DELETE FROM push_preferences WHERE device_id=?', (device_id,))
             elif value != json.loads(data):
                 db.execute('UPDATE push_preferences SET data=? WHERE device_id=?', (json.dumps(value), device_id))
+        if db.execute("SELECT 1 FROM pragma_table_info('devices') WHERE name='peer_key'").fetchone():
+            self.remove_stale(time.time())
 
     @property
     def configured(self):
@@ -135,7 +140,7 @@ class PushDelivery:
 
     def registration(self, device_id, data):
         from .service import ServiceError
-        if not self.service.db.execute('SELECT 1 FROM devices WHERE id=?', (device_id,)).fetchone():
+        if not self.service.db.execute('SELECT 1 FROM devices WHERE id=? AND peer_key IS NOT NULL', (device_id,)).fetchone():
             raise ServiceError(401, 'Pair this iPhone before enabling notifications.')
         token, environment, enabled = data.get('token'), data.get('environment'), data.get('enabled')
         if (not isinstance(token, str) or not re.fullmatch(r'[0-9a-fA-F]{32,512}', token)
@@ -220,10 +225,10 @@ class PushDelivery:
                 'last_delivered_at': iso(row[0]), 'last_error': row[1], 'last_error_at': iso(row[2])}
 
     def remove_stale(self, current):
-        """Remove registrations of devices that are no longer paired, or that did not refresh for a long time."""
+        """Remove registrations of devices that are not paired phones, or that did not refresh for a long time."""
         db = self.service.db
         for table in PUSH_TABLES + ('push_status',):
-            for (device_id,) in db.execute(f'SELECT device_id FROM {table} WHERE device_id NOT IN (SELECT id FROM devices)').fetchall():
+            for (device_id,) in db.execute(f'SELECT device_id FROM {table} WHERE device_id NOT IN ({PHONES})').fetchall():
                 self.unregister(device_id)
                 db.execute('DELETE FROM push_status WHERE device_id=?', (device_id,))
         for (device_id,) in db.execute('SELECT device_id FROM push_devices WHERE updated<?', (current - STALE_REGISTRATION,)).fetchall():
@@ -280,7 +285,7 @@ class PushDelivery:
         event_key = ':'.join((task_id, kind, decision_id or message_id or turn))
         urgent = int(kind == 'decision' and data.get('needs_attention_now') is True)
         stamp = time.time()
-        for (device_id,) in self.service.db.execute('SELECT device_id FROM push_devices WHERE enabled=1').fetchall():
+        for (device_id,) in self.service.db.execute(f'SELECT device_id FROM push_devices WHERE enabled=1 AND device_id IN ({PHONES})').fetchall():
             if self.allows(device_id, kind, urgent):
                 self.service.db.execute('''INSERT OR IGNORE INTO push_items
                     (device_id,event_key,kind,bot_id,task_id,decision_id,message_id,turn_id,urgent,created,status)

@@ -50,7 +50,10 @@ try:
         service = Service(data, provider())
         assert not service.push.configured, 'The scratch check must not send push notifications.'
         with service.transaction():
-            service.db.execute('INSERT INTO push_devices VALUES (?,?,?,?,?)',
+            # Only a phone paired through the relay tunnel, with its static key, gets notifications.
+            service.db.execute('INSERT INTO devices(id,name,token_hash,created_at,peer_key) VALUES (?,?,?,?,?)',
+                               ('interim-check-device', 'iPhone', 'interim-check-token', '2026-01-01T00:00:00Z', 'interim-check-key'))
+            service.db.execute('INSERT INTO push_devices (device_id,token,environment,enabled,updated) VALUES (?,?,?,?,?)',
                                ('interim-check-device', '0' * 64, 'development', 1, time.time()))
             service.db.execute('INSERT INTO push_preferences VALUES (?,?)',
                                ('interim-check-device', json.dumps(dict(messages=True, decisions=True))))

@@ -4,6 +4,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.service import Service, YieldForDecision, now
+from test_push import pair_phone
 from test_service import ControlledProvider
 
 
@@ -11,7 +12,7 @@ class InterimMessageTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.service = Service(self.directory.name, ControlledProvider(), start_workers=False)
-        self.device = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        self.device = pair_phone(self.service)
         self.write('PUT', '/v1/device/push', dict(token='a' * 64, environment='development', enabled=True,
                                                preferences=dict(decisions=True, messages=True)))
         self.bot = self.write('POST', '/v1/bots', {'name': 'Ada'})

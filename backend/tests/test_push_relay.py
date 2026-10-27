@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from coconut.service import Service
 from coconut.push_relay import RelayTransport
+from test_push import pair_phone
 from test_service import ControlledProvider
 
 
@@ -32,7 +33,7 @@ class RelayPushTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.service = Service(self.directory.name, ControlledProvider(), start_workers=False)
-        self.device = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        self.device = pair_phone(self.service)
         self.bot = self.write('POST', '/v1/bots', {'name': 'Private bot name', 'role': 'Research'})
         self.relay = EncryptedTransport()
         self.service.push.relay = self.relay
