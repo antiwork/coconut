@@ -3843,7 +3843,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                     task['error_code'] = error_code
                     self.record_provider_failure(task['bot_id'], error_code, payload.get('retry_after'))
                 elif kind == 'completed':
-                    self.clear_provider_failure(task['bot_id'])
+                    self.clear_provider_failure(task)
                 # The class and the place of a worker failure, without its message. It stays on the Mac. A failure that has
                 # none must not keep the place of an earlier one.
                 if kind == 'failed' and isinstance(payload.get('error_detail'), str):

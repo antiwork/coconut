@@ -518,13 +518,22 @@ class WorkSources:
             value = dict(error_code=error_code)
         else:
             return
+        value['recorded_at'] = time.time()
         self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('provider-limit:' + bot_id, json.dumps(value)))
         self.update_bot_health(bot_id)
 
-    def clear_provider_failure(self, bot_id):
-        """A completed turn shows that the provider works again."""
-        if self.db.execute('DELETE FROM settings WHERE key=?', ('provider-limit:' + bot_id,)).rowcount:
-            self.update_bot_health(bot_id)
+    def clear_provider_failure(self, task):
+        """A completed model turn that started after the failure shows that the provider works again.
+
+        A script routine calls no model, and a turn that started before the failure proves nothing about it.
+        """
+        if (task.get('_native_job') or {}).get('no_agent') is True:
+            return
+        failure = self._setting('provider-limit:' + task['bot_id'])
+        started = _instant(task.get('_turn_started_at') or task.get('created_at'))
+        if failure and started and started.timestamp() >= failure.get('recorded_at', 0):
+            self.db.execute('DELETE FROM settings WHERE key=?', ('provider-limit:' + task['bot_id'],))
+            self.update_bot_health(task['bot_id'])
 
     def expire_provider_limits(self):
         query = ("SELECT key FROM settings WHERE key LIKE 'provider-limit:%' "
@@ -890,6 +899,8 @@ class WorkSources:
                 detail = failure_detail(error)
                 # Retain prior coverage on failed reads. Never turn a partial fetch into an empty Plate.
                 with self.transaction():
+                    # A bot can record a no-card result while the source command runs. Keep the latest state.
+                    state = self._setting(key, {})
                     state.update(error=type(error).__name__, error_detail=detail, next_check=time.time() + 60,
                                  failing_since=failing_since or datetime.now(timezone.utc).isoformat(),
                                  trusted_repositories_source_attempt=source_fingerprint(source))

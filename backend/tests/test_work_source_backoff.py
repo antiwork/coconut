@@ -48,6 +48,23 @@ class NoCardTests(unittest.TestCase):
         self.assertNotEqual(state['task_id'], first)
         self.assertEqual(state['no_card'], {})
 
+    def test_failed_source_read_keeps_a_no_card_record_saved_during_the_read(self):
+        task_id = self.audit()['task_id']
+        self.set_status(task_id, 'working')
+        def run(*args, **kwargs):
+            # The bot records its result while the source command runs, and then the command fails.
+            self.service.wait_for_task(task_id, dict(no_card=True, reason='No new question.'))
+            raise OSError('source failed')
+        with self.service.transaction():
+            state = self.service._setting('work-source:assigned')
+            state['next_check'] = 0
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('work-source:assigned', json.dumps(state)))
+        with patch('coconut.work_sources.subprocess.run', side_effect=run):
+            self.service.audit_work_sources()
+        state = self.service._setting('work-source:assigned')
+        self.assertEqual(state['error'], 'OSError')
+        self.assertIn(self.item['id'], state['no_card'])
+
     def test_no_card_ends_at_next_check_at_and_is_bounded(self):
         _, result = self.no_card(next_check_at=(datetime.now(timezone.utc) + timedelta(days=30)).isoformat())
         recorded = datetime.fromisoformat(result['next_check_at'])
@@ -187,7 +204,8 @@ class ProviderLimitTests(unittest.TestCase):
         first = self.audit()['task_id']
         self.fail(first, dict(summary='Limited.', error_code='native_rate_limit'))
         self.assertAlmostEqual(self.service.provider_limit(self.bot['id'])['resets_at'], time.time() + 900, delta=60)
-        self.service.clear_provider_failure(self.bot['id'])
+        with self.service.transaction():
+            self.service.db.execute("DELETE FROM settings WHERE key LIKE 'provider-limit:%'")
         other = self.service._send(self.bot, {'text': 'Try again', 'mode': 'queue'}, record_message=False)
         self.fail(other['id'], dict(summary='Limited.', error_code='native_rate_limit', retry_after=10 ** 9))
         self.assertLessEqual(self.service.provider_limit(self.bot['id'])['resets_at'], time.time() + 7 * 24 * 3600 + 60)
@@ -201,6 +219,24 @@ class ProviderLimitTests(unittest.TestCase):
         self.provider.start_task = lambda task, bot, history, emit: emit('completed', {'summary': 'Done.'})
         self.service._run_task(other['id'])
         self.assertIsNone(self.service._get('bots', self.bot['id'])['health'])
+
+
+    def test_only_a_model_turn_that_started_after_the_limit_clears_it(self):
+        first = self.audit()['task_id']
+        self.fail(first, dict(summary='Limited.', error_code='native_rate_limit'))
+        bot_id = self.bot['id']
+        started = (datetime.now(timezone.utc) + timedelta(seconds=5)).isoformat()
+        with self.service.transaction():
+            # A script routine calls no model.
+            self.service.clear_provider_failure(dict(bot_id=bot_id, _turn_started_at=started,
+                                                     _native_job=dict(no_agent=True)))
+            # A turn that started before the limit says nothing about the provider now.
+            self.service.clear_provider_failure(dict(bot_id=bot_id, _turn_started_at='2026-01-01T00:00:00Z'))
+        self.assertIsNotNone(self.service.provider_limit(bot_id))
+        with self.service.transaction():
+            self.service.clear_provider_failure(dict(bot_id=bot_id, _turn_started_at=started))
+        self.assertIsNone(self.service.provider_limit(bot_id))
+        self.assertIsNone(self.service._get('bots', bot_id)['health'])
 
 
 class RetryDelayTests(unittest.TestCase):
