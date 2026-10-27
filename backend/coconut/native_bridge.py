@@ -366,7 +366,8 @@ class NativeBridge:
         lane = self.request['task'].get('_technical_lane')
         if self.request['operation'] == 'context' or lane:
             # Independent technical work cannot ask for a new permission while its decision is pending or declined.
-            reason = ('The declined decision and its pause stay.' if (lane or {}).get('declined_merge_pr_url')
+            reason = ('The held decision and its pause stay.' if (lane or {}).get('held_merge_pr_url')
+                      else 'The declined decision and its pause stay.' if (lane or {}).get('declined_merge_pr_url')
                       else 'The original decision remains pending.')
             resolve_gateway_approval(self.session_key, 'deny', request_id=data.get('request_id'), reason=reason)
             return

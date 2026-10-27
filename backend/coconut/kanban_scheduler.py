@@ -484,6 +484,11 @@ class NativeKanban(NativeOutcomes):
                             continue
                     if item.get('_native_outcome_id'):
                         if item['_native_outcome_id'] != native['id']:
+                            lane = item.get('_technical_lane')
+                            if lane and lane.get('native_task_id') == item['_native_outcome_id']:
+                                # New input on a done card owns its linked successor. The lane's own task follows it
+                                # before the lane turn starts, so its notes land on the card that the turn runs.
+                                lane['native_task_id'] = native['id']
                             item['_native_outcome_id'] = native['id']
                             self._put(table, item)
                             for artifact in self._all('artifacts'):

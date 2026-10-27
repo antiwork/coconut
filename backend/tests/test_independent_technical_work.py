@@ -1797,6 +1797,412 @@ class DeclinedMergeLaneTests(unittest.TestCase):
         self.assertEqual(self.service._technical_native_state(dict(finished, _technical_lane=None)), None)
 
 
+HELD_PR = 'https://github.com/antiwork/gumroad/pull/8669'
+HELD_LANE = dict(decision_id='held', decision_revision=1, scope=['diagnosis'], held_merge_pr_url=HELD_PR,
+                 held_merge_option_id='leave_open')
+
+
+class HeldMergeLaneTests(unittest.TestCase):
+    """A person held a merge card open, and that answer pauses a completed outcome. Only read-only diagnosis continues."""
+    setUp = continuation.NativeWorkContinuationTests.setUp
+    tearDown = continuation.NativeWorkContinuationTests.tearDown
+    write = continuation.NativeWorkContinuationTests.write
+    prepare = continuation.NativeWorkContinuationTests.prepare
+    snapshot_result = continuation.NativeWorkContinuationTests.snapshot_result
+    scheduled_native = continuation.NativeWorkContinuationTests.scheduled_native
+    drive = DeclinedMergeLaneTests.drive
+    person_says = DeclinedMergeLaneTests.person_says
+    put_owner = DeclinedMergeLaneTests.put_owner
+
+    def held_native(self):
+        """The saved state of the live outcome: a completed owner on a done card, its PR held open by the requester."""
+        from coconut.service import now
+        owner, source = self.scheduled_native()
+        self.service.kanban.tasks[owner['id']].update(status='done', title=owner['title'], outcome_summary='Verified draft.')
+        self.service.kanban.observed_at = None
+        owner.update(summary='Verified the draft locally.', _pr_review=dict(url=HELD_PR, pr_state='open', draft=True))
+        self.service._put('tasks', owner)
+        # The requester's return callback of this owner asked the person, in its own execution, and finished.
+        self.asker = dict(copy.deepcopy(source), id='asker', status='completed', source_task_id=owner['id'],
+                          parent_task_id=owner['id'], _execution_session_id='asker-execution', _is_return=True,
+                          _waiting_on=[])
+        self.asker.pop('_return_pending', None)
+        self.held = dict(id='held', task_id='asker', bot_id=source['bot_id'], status='executed', action_type='question',
+            inbox_kind='decision', revision=1, title='Mark Gumroad #8669 ready and merge it?',
+            context='Approval marks the draft ready and merges it into main.', explanation='', merge_pr_url=HELD_PR,
+            options=[dict(id='merge', label='Mark #8669 ready and merge', answer='approve', explanation='', risk='high'),
+                     dict(id='leave_open', label='Leave #8669 open', answer='approve',
+                          explanation='Keep the verified draft available for further review.', risk='low')],
+            selected_option_id='leave_open', selected_option_label='Leave #8669 open', correction='',
+            decided_by='person-device', decided_at='2026-10-27T00:19:28Z', created_at='2026-10-27T00:10:00Z',
+            _native=True, _receipt_id=None, _source_recheck=None, _action={}, outcome='Hermes continued with your answer.',
+            _answers=[dict(choice='approve', option_id='leave_open', correction='', predicted_option_id=None,
+                           decided_by='person-device')])
+        self.paused_at = now()
+        self.pr = dict(id='held-pr', task_id=owner['id'], bot_id=owner['bot_id'], kind='pr', url=HELD_PR, title='#8669',
+                       status='failed', pr_state='open', _review_task_id=owner['id'], _activity_state='ready',
+                       paused_by_decision_id='held', _work_pause_at=self.paused_at, created_at='2026-10-27T00:00:00Z')
+        unrelated = dict(copy.deepcopy(source), id='unrelated', status='failed', _execution_session_id='unrelated')
+        self.unrelated_held = dict(self.held, id='unrelated-held', task_id='unrelated')
+        for table, record in (('tasks', self.asker), ('decisions', self.held), ('artifacts', self.pr),
+                              ('tasks', unrelated), ('decisions', self.unrelated_held)):
+            self.service._put(table, record)
+        owner = self.service._get('tasks', owner['id'])
+        self.assertTrue(self.service._task_work_is_paused(owner))
+        self.assertTrue(self.service._automatic_work_is_paused(owner))
+        return owner, source
+
+    def lane(self, source, work=None, **changes):
+        lane = dict(HELD_LANE, **(work or {}))
+        payload = dict(task_id='t_existing', message='Diagnose the new author delta read-only. #8669 stays open.',
+                       independent_technical_work={k: v for k, v in lane.items() if v is not None})
+        return self.service.emit(source['id'], 'work_continue', dict(payload, **changes))
+
+    def refused(self, owner, source, pattern, work=None, **changes):
+        with self.assertRaisesRegex(ServiceError, pattern):
+            self.lane(source, work, **changes)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def assert_hold_kept(self):
+        self.assertEqual(self.service._get('decisions', 'held'), self.held)
+        self.assertEqual(self.service._get('decisions', 'unrelated-held'), self.unrelated_held)
+        pr = self.service._get('artifacts', 'held-pr')
+        self.assertEqual({k: v for k, v in pr.items() if k != '_native_outcome_id'}, self.pr)
+
+    def test_plain_continuation_and_the_other_lanes_still_refuse_the_held_outcome(self):
+        owner, source = self.held_native()
+        with self.assertRaisesRegex(ServiceError, 'This work is paused'):
+            self.service.emit(source['id'], 'work_continue', dict(task_id='t_existing', message='Continue.'))
+        # The pending lane does not read past a pause, and the declined lane admits only a plain decline.
+        plain = dict(held_merge_pr_url=None, held_merge_option_id=None)
+        self.refused(owner, source, 'This work is paused', plain)
+        self.refused(owner, source, 'declined merge changed|finished owner',
+                     dict(plain, declined_merge_pr_url=HELD_PR, scope=['diagnosis', 'tests']))
+        self.assert_hold_kept()
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'done')
+
+    def test_the_exact_hold_admits_read_only_diagnosis_and_keeps_the_completed_card_hold_and_route(self):
+        owner, source = self.held_native()
+        snapshot = copy.deepcopy(self.service.kanban.tasks)
+        receipt = self.lane(source)
+        queued = self.service._get('tasks', owner['id'])
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        self.assertEqual(self.lane(source), receipt, 'The same request is idempotent')
+        self.assertEqual(self.service._get('tasks', owner['id']), queued)
+        for key in ('id', 'bot_id', 'session_id', '_execution_session_id', 'source_bot_id', 'source_task_id',
+                    '_reply_to_task_id', 'thread_id', 'conversation_bot_id', 'exchange_id', '_kanban_claim'):
+            self.assertEqual(queued.get(key), owner.get(key), key)
+        # The completed card stays as it is. New input on it owns the linked successor that the board creates.
+        self.assertEqual(self.service.kanban.tasks, snapshot)
+        self.assertEqual((queued['_native_outcome_id'], queued['_work_context_id']), ('t_existing', 'held-pr'))
+        lane = queued['_technical_lane']
+        self.assertEqual({k: lane[k] for k in ('decision_id', 'decision_revision', 'scope', 'held_merge_pr_url',
+                                               'held_merge_option_id', 'native_task_id', 'hold')},
+                         dict(HELD_LANE, native_task_id='t_existing', hold=dict(status='completed',
+                                                                               summary='Verified the draft locally.')))
+        self.assertEqual(lane['held'], dict(decision_id='held', revision=1, title=self.held['title'],
+            context=self.held['context'], merge_pr_url=HELD_PR, decided_at=self.held['decided_at'],
+            selected_option=dict(id='leave_open', label='Leave #8669 open', answer='approve',
+                                 explanation='Keep the verified draft available for further review.'),
+            options=[dict(id='merge', label='Mark #8669 ready and merge', answer='approve'),
+                     dict(id='leave_open', label='Leave #8669 open', answer='approve')]))
+        self.assertNotIn('authorization', lane, 'A hold authorizes nothing')
+        self.assertNotIn('declined_merge_pr_url', lane)
+        for key in ('_resume_decision', '_return_pending'):
+            self.assertNotIn(key, queued)
+        self.assert_hold_kept()
+        self.assertEqual(self.service._get('artifacts', 'held-pr')['_native_outcome_id'], 't_existing')
+        self.assertTrue(self.service._task_work_is_paused(queued))
+        self.assertFalse(self.service._automatic_work_is_paused(queued))
+        rows = [row for row in self.service._kanban_rows() if row['execution_id'] == owner['_execution_session_id']]
+        self.assertEqual([(row['id'], row['state'], row['native_id']) for row in rows], [(owner['id'], 'ready', 't_existing')])
+        text = instructions(lane)
+        for phrase in ('answered this recorded merge decision', 'Leave #8669 open', 'Keep the verified draft available',
+                       'Mark #8669 ready and merge', 'approves no merge, no ready, and no fix', 'read-only diagnosis',
+                       'Do not edit, create, or delete any file', 'do not run tests, builds, migrations, or services',
+                       'Do not push, publish', 'until the person gives new direction', 'returns this outcome to its hold'):
+            self.assertIn(phrase, text)
+        for phrase in ('stays pending', 'Fix only', 'Run the local tests'):
+            self.assertNotIn(phrase, text)
+
+    def test_the_lane_refuses_malformed_or_broader_requests(self):
+        owner, source = self.held_native()
+        for work in (dict(scope=['tests']), dict(scope=['diagnosis', 'tests']), dict(scope=['local_fixes']),
+                     dict(scope=['diagnosis', 'local_fixes'], authorization_decision_id='held'),
+                     dict(authorization_decision_id='held'), dict(held_merge_option_id=None), dict(held_merge_pr_url=None),
+                     dict(declined_merge_pr_url=HELD_PR), dict(held_merge_pr_url=''), dict(held_merge_option_id=''),
+                     dict(held_merge_pr_url=8669), dict(held_merge_pr_url='https://x/' + 'a' * 500),
+                     dict(held_merge_option_id='x' * 101), dict(permissions=['merge'])):
+            with self.subTest(work=work):
+                self.refused(owner, source, 'exact pending decision ID', work)
+        for work in (dict(decision_id='unrelated-held'), dict(decision_id='missing'), dict(decision_revision=0),
+                     dict(decision_revision=2), dict(held_merge_pr_url='https://github.com/antiwork/gumroad/pull/8670'),
+                     dict(held_merge_pr_url=HELD_PR + '/files'), dict(held_merge_option_id='merge'),
+                     dict(held_merge_option_id='Leave #8669 open')):
+            with self.subTest(work=work):
+                self.refused(owner, source, 'held merge changed', work)
+        self.assert_hold_kept()
+        self.assertEqual(self.lane(source)['status'], 'queued', 'The unchanged request is admitted')
+
+    def test_only_the_canonical_human_leave_open_answer_qualifies(self):
+        owner, source = self.held_native()
+        answer, options = self.held['_answers'][0], self.held['options']
+        merge = dict(selected_option_id='merge', selected_option_label='Mark #8669 ready and merge',
+                     _answers=[dict(answer, option_id='merge')])
+        variants = {
+            'merge chosen': merge, 'merge chosen and requested': dict(merge, _lane=dict(held_merge_option_id='merge')),
+            'stop labelled leave_open': dict(options=[options[0], dict(options[1], label='Stop all work on #8669')],
+                                             selected_option_label='Stop all work on #8669'),
+            'other pr label': dict(options=[options[0], dict(options[1], label='Leave #8670 open')],
+                                   selected_option_label='Leave #8670 open'),
+            'saved label differs': dict(selected_option_label='Leave it open'),
+            'product choice id': dict(options=[options[0], dict(options[1], id='keep_library_filter')],
+                                      selected_option_id='keep_library_filter',
+                                      _answers=[dict(answer, option_id='keep_library_filter')]),
+            'duplicate option ids': dict(options=[options[1], options[1]]),
+            'missing option': dict(options=[options[0]]),
+            'rejecting option': dict(options=[options[0], dict(options[1], answer='reject')]),
+            'option action': dict(options=[options[0], dict(options[1], action={'type': 'create_file'})]),
+            'card action': dict(_action={'type': 'merge'}), 'proposal action': dict(_proposal_action={'type': 'x'}),
+            'approved not executed': dict(status='approved'), 'pending': dict(status='pending', decided_by=None, _answers=[]),
+            'rejected': dict(status='rejected', selected_option_id=None, selected_option_label=None,
+                             _answers=[dict(answer, choice='reject', option_id=None)]),
+            'replied': dict(status='replied', correction='Keep it open, and also stop.'),
+            'modified': dict(status='modified', correction='Split it.'),
+            'correction': dict(correction='Leave it open but stop engineering.'),
+            'answer text': dict(_answers=[dict(answer, correction='Stop.')]),
+            'reply answer': dict(_answers=[dict(answer, choice='reply')]),
+            'draft': dict(draft={'body': 'Merge it'}), 'tool': dict(action_type='native_approval'),
+            'proposal': dict(inbox_kind='proposal'), 'tool question': dict(_receipt_id='call'),
+            'source recheck': dict(_source_recheck=True), 'legacy': dict(_native=False),
+            'hidden': dict(_hidden=True), 'deleted': dict(_deleted=True),
+            'explicit stop': dict(decided_by='cancellation'), 'archived': dict(decided_by='archive'),
+            'unsigned': dict(decided_by=None), 'agent answer': dict(_answers=[dict(answer, decided_by=None)]),
+            'two answers': dict(_answers=[answer, answer]),
+            'agent revision too': dict(_answers=[dict(choice='revise', correction='Changed.', decided_by=None), answer]),
+            'other person': dict(_answers=[dict(answer, decided_by='someone-else')]),
+            'no merge url': dict(merge_pr_url=None), 'not a pr url': dict(merge_pr_url='https://github.com/antiwork/gumroad/issues/8669'),
+            'another execution': dict(task_id='unrelated'),
+        }
+        for name, change in variants.items():
+            with self.subTest(record=name):
+                change = dict(change)
+                work = change.pop('_lane', None)
+                self.service._put('decisions', dict(self.held, **change))
+                self.refused(owner, source, 'held merge changed|This work is paused', work)
+        self.service._put('decisions', self.held)
+        self.assert_hold_kept()
+        self.assertEqual(self.lane(source)['status'], 'queued', 'The unchanged record is admitted')
+
+    def test_the_lane_refuses_other_decisions_pauses_active_work_and_unknown_effects(self):
+        owner, source = self.held_native()
+        cases = [
+            ('pending peer', 'pending', 'decisions', dict(id='peer', task_id=owner['id'], status='pending',
+                action_type='question', inbox_kind='decision', revision=1)),
+            ('pending asker question', 'pending', 'decisions', dict(id='peer', task_id='asker', status='pending',
+                action_type='question', inbox_kind='decision', revision=1)),
+            ('pending card on the same pr', 'pending', 'decisions', dict(id='peer', task_id='unrelated', status='pending',
+                action_type='question', inbox_kind='decision', revision=1, merge_pr_url=HELD_PR.upper())),
+            ('rejected fix', 'declined part', 'decisions', dict(id='peer', task_id=owner['id'], status='rejected',
+                action_type='question', revision=1, decided_by='person-device', _native=True)),
+            ('unknown owner tool', 'no confirmed result', 'native_receipts', dict(id='unknown', task_id=owner['id'],
+                turn_id=owner['_native_turn_id'], state='executing', action_hash='x', created_at='2026-10-27',
+                action={'name': 'terminal', 'arguments': {'command': 'gh pr ready 8669'}})),
+            ('unknown asker tool', 'no confirmed result', 'native_receipts', dict(id='unknown', task_id='asker',
+                turn_id='asker-turn', state='awaiting_answer', action_hash='x', created_at='2026-10-27',
+                action={'name': 'clarify', 'arguments': {}})),
+            ('active request', 'active request', 'contexts', dict(id='reply', task_id='asker', decision_id='held',
+                status='working')),
+        ]
+        for name, pattern, table, record in cases:
+            with self.subTest(case=name):
+                self.service._put(table, dict(record, bot_id=owner['bot_id']))
+                self.refused(owner, source, pattern)
+                self.service.db.execute('DELETE FROM ' + table + ' WHERE id=?', (record['id'],))
+        for change in (dict(status='working'), dict(status='queued'), dict(_waiting_on=['x']), dict(_return_pending={'text': 'x'})):
+            with self.subTest(asker=change):
+                self.service._put('tasks', dict(self.asker, **change))
+                self.refused(owner, source, 'still active')
+        self.service._put('tasks', self.asker)
+        # The asker must be this owner's own return. A card of a stranger's callback does not pause this work by name.
+        self.service._put('tasks', dict(self.asker, source_task_id='unrelated', parent_task_id='unrelated'))
+        self.refused(owner, source, 'held merge changed')
+        self.service._put('tasks', self.asker)
+        recovering = self.put_owner(owner, _self_recovery=dict(unknown_tools=[dict(id='old-call')]))
+        self.refused(recovering, source, 'no confirmed result')
+        self.service._put('tasks', owner)
+        other = dict(id='other-pause', task_id=owner['id'], bot_id=owner['bot_id'], status='approved',
+                     action_type='question', revision=1, decided_by='person-device', decided_at='2026-10-27T00:00:00Z',
+                     _native=True)
+        self.service._put('decisions', other)
+        self.service._put('artifacts', dict(self.pr, id='peer-pr', task_id='unrelated', paused_by_decision_id='other-pause'))
+        self.refused(owner, source, 'paused by another decision')
+        self.service.db.execute("DELETE FROM artifacts WHERE id='peer-pr'")
+        self.service.db.execute("DELETE FROM decisions WHERE id='other-pause'")
+        self.service._put('artifacts', dict(self.pr, paused_by_decision_id=None))
+        self.refused(owner, source, 'paused by another decision')
+        self.service._put('artifacts', dict(self.pr, url='https://github.com/antiwork/gumroad/pull/8670'))
+        self.refused(owner, source, 'held merge changed')
+        self.service._put('artifacts', self.pr)
+        self.person_says(owner, 'Mark it ready after all.')
+        self.refused(owner, source, 'has new direction')
+        self.assert_hold_kept()
+
+    def test_a_stop_or_refusal_in_the_asking_thread_ends_the_hold_for_the_lane(self):
+        owner, source = self.held_native()
+        asker = dict(owner, id='asker')
+        # The person's own message in the thread that asked the card, after the hold, is new direction there.
+        stop = self.person_says(asker, 'Stop all work on #8669.')
+        self.refused(owner, source, 'has new direction')
+        self.service.db.execute('DELETE FROM messages WHERE id=?', (stop['id'],))
+        for status in ('rejected', 'approved'):
+            later = dict(id='later', task_id='asker', bot_id=source['bot_id'], status=status, action_type='question',
+                         inbox_kind='decision', revision=1, decided_by='person-device', decided_at='2999-01-01T00:00:00Z',
+                         _native=True)
+            with self.subTest(later=status):
+                self.service._put('decisions', later)
+                self.refused(owner, source, 'declined part of this work|has new direction')
+                self.service.db.execute("DELETE FROM decisions WHERE id='later'")
+        self.assertEqual(self.lane(source)['status'], 'queued', 'The unchanged records are admitted')
+        lane_turn = self.service._get('tasks', owner['id'])['_native_turn_id']
+        # The same stop during the lane turn ends the hold: the turn keeps its holds and leaves through a normal turn.
+        seen = self.drive(owner, during=lambda: self.person_says(asker, 'Stop all work on #8669.'))
+        self.assertEqual(seen['held']['kanban_complete'], 403)
+        held = self.service._get('tasks', owner['id'])
+        self.assertEqual((held['status'], held['_native_turn_id'], held['summary']),
+                         ('queued', lane_turn, 'Continuing after the held decision or its pause changed.'))
+        self.assertNotIn('_resume_decision', held)
+        self.service._kanban_rows()
+        moved = self.service._get('tasks', owner['id'])
+        self.assertNotIn('_technical_lane', moved)
+        self.assertNotIn('_resume_decision', moved, 'Nothing replays the hold')
+        self.assertTrue(self.service._task_work_is_paused(moved))
+        self.assert_hold_kept()
+
+    def test_the_lane_refuses_a_stopped_foreign_active_or_open_owner(self):
+        owner, source = self.held_native()
+        for change in (dict(status='failed'), dict(status='queued'), dict(status='needs_you'), dict(status='cancelled'),
+                       dict(status='waiting'), dict(_return_pending=dict(text='x'))):
+            with self.subTest(owner=change):
+                self.refused(self.put_owner(owner, **change), source, 'paused|Wait|completed owner|previous result')
+        for change in (dict(_conversation_epoch='earlier'), dict(session_id='earlier-session')):
+            with self.subTest(owner=change):
+                self.refused(self.put_owner(owner, **change), source, 'earlier conversation')
+        self.service._put('tasks', owner)
+        native = self.service.kanban.tasks[owner['id']]
+        for change in (dict(status='running', current_run_id=7), dict(status='done', worker_pid=123), dict(status='ready'),
+                       dict(status='review'), dict(status='triage'), dict(status='blocked'), dict(status='archived')):
+            saved = dict(native)
+            native.update(change)
+            with self.subTest(native=change), self.assertRaises(ServiceError):
+                self.lane(source)
+            self.assertEqual(self.service._get('tasks', owner['id']), owner)
+            native.clear()
+            native.update(saved)
+        self.service.running[owner['id']] = Mock(is_alive=lambda: True)
+        self.refused(owner, source, 'completed owner')
+        self.service.running.clear()
+        exchange = self.service._get('exchanges', owner['exchange_id'])
+        self.service._put('exchanges', dict(exchange, cancelled=True))
+        self.refused(owner, source, 'cancelled')
+        self.service._put('exchanges', exchange)
+        ops = self.write('/v1/bots', {'name': 'Ops'})
+        self.service._put('tasks', dict(source, bot_id=ops['id']))
+        self.refused(owner, source, 'Only the owner or its requesting bot')
+        self.service._put('tasks', source)
+        self.service.mutate('POST', '/v1/work/items/held-pr/cancel', {}, str(uuid4()), 'test-phone')
+        with self.assertRaises(ServiceError):
+            self.lane(source)
+        self.assertEqual(self.service._get('decisions', 'held'), self.held)
+
+    def test_a_read_only_turn_runs_with_its_holds_follows_the_successor_and_returns_to_the_hold_once(self):
+        owner, source = self.held_native()
+        requester = self.service._get('tasks', source['id'])
+        self.lane(source)
+        lane_turn = self.service._get('tasks', owner['id'])['_native_turn_id']
+        # Hermes gives the new input of the done card its linked successor. The lane follows it before its turn starts.
+        self.service.kanban.tasks[owner['id']].update(id='t_successor', status='ready', parent_ids=['t_existing'])
+        self.service._reconcile_kanban()
+        bound = self.service._get('tasks', owner['id'])
+        self.assertEqual((bound['_native_outcome_id'], bound['_technical_lane']['native_task_id']), ('t_successor', 't_successor'))
+        self.assertEqual(self.service._get('artifacts', 'held-pr')['_native_outcome_id'], 't_successor')
+        self.assertEqual(bound['_native_turn_id'], lane_turn)
+        self.assertIsNone(held_action(dict(name='kanban_comment', arguments={'task_id': 't_successor'}), 't_successor'))
+        self.assertIsNotNone(held_action(dict(name='kanban_comment', arguments={'task_id': 't_existing'}), 't_successor'))
+        seen = self.drive(owner)
+        self.assertEqual(seen['task']['_technical_lane']['held_merge_option_id'], 'leave_open')
+        self.assertEqual(seen['task']['_native_turn_id'], lane_turn)
+        self.assertEqual(seen['comment'], 'recorded')
+        self.assertEqual(seen['held'], dict(kanban_complete=403, kanban_block=403, message_agent=403))
+        self.assertEqual(seen['events'], dict(decision_response=403, native_question=400, artifact=403, work_continue=403))
+        finished = self.service._get('tasks', owner['id'])
+        self.assertEqual((finished['status'], finished['summary'], finished['_native_turn_id']),
+                         ('completed', 'Verified the draft locally.', lane_turn))
+        for key in ('_resume_decision', '_return_pending', '_blocked_followup'):
+            self.assertNotIn(key, finished)
+        self.assertIn('The hold and its pause stay.', self.service._task_messages(owner['id'])[-1]['text'])
+        self.assertEqual(self.service._get('tasks', source['id']), requester)
+        self.assertEqual([d for d in self.service._all('deliveries') if d['source_task_id'] == owner['id']], [])
+        self.assert_hold_kept()
+        self.assertEqual(len(self.service._all('decisions')), 2, 'No decision was created or answered')
+        self.assertEqual(self.service._technical_native_state(finished), 'scheduled')
+        self.assertTrue(self.service._automatic_work_is_paused(finished))
+        for native_status in ('scheduled', 'ready'):
+            self.service.kanban.tasks[owner['id']].update(status=native_status, current_run_id=None, worker_pid=None)
+            for _ in range(2):
+                rows = [r for r in self.service._kanban_rows() if r['id'] == owner['id']]
+                self.service._native_retry(self.service._get('tasks', owner['id']), self.service.kanban.tasks[owner['id']])
+            self.assertEqual([r['state'] for r in rows], ['done'])
+            self.assertEqual(self.service._get('tasks', owner['id']), finished, native_status)
+        # The plain call still refuses. A parked card admits another read-only turn only by the same exact request.
+        self.service._put('tasks', dict(requester, status='working'))
+        with self.assertRaisesRegex(ServiceError, 'This work is paused'):
+            self.service.emit(source['id'], 'work_continue', dict(task_id='t_successor', message='Continue.'))
+        self.service.kanban.tasks[owner['id']]['status'] = 'scheduled'
+        self.lane(source, message='Read the new CI log too.', task_id='t_successor')
+        again = self.service._get('tasks', owner['id'])
+        self.assertEqual((again['status'], again['_technical_lane']['native_task_id']), ('queued', 't_successor'))
+
+    def test_new_direction_during_the_turn_leaves_the_lane_without_replaying_the_hold(self):
+        owner, source = self.held_native()
+        self.lane(source)
+        lane_turn = self.service._get('tasks', owner['id'])['_native_turn_id']
+        seen = self.drive(owner, during=lambda: self.person_says(owner, 'Mark it ready after all.'))
+        self.assertEqual(seen['held']['kanban_complete'], 403, 'The lane turn keeps its holds')
+        held = self.service._get('tasks', owner['id'])
+        self.assertEqual((held['status'], held['_native_turn_id']), ('queued', lane_turn))
+        self.assertNotIn('_resume_decision', held)
+        self.service._kanban_rows()
+        moved = self.service._get('tasks', owner['id'])
+        self.assertNotEqual(moved['_native_turn_id'], lane_turn)
+        self.assertNotIn('_technical_lane', moved)
+        self.assertNotIn('_resume_decision', moved, 'Nothing replays the hold')
+        self.assert_hold_kept()
+
+    def test_a_restart_during_a_read_only_tool_returns_to_the_hold_and_keeps_the_unknown_tool(self):
+        from coconut.service import Service
+        owner, source = self.held_native()
+        self.lane(source)
+        lane_turn = self.service._get('tasks', owner['id'])['_native_turn_id']
+        self.service._put('tasks', dict(self.service._get('tasks', owner['id']), status='working'))
+        call = self.service.emit(owner['id'], 'native_call', dict(name='terminal', arguments={'command': 'git log -5'}))
+        unknown = self.service._get('native_receipts', call['id'])
+        native = copy.deepcopy(self.service.kanban.tasks)
+        self.service.close()
+        self.service = Service(self.temp.name, self.provider, start_workers=False)
+        self.service.kanban = Mock(tasks=native)
+        self.service.kanban.call.side_effect = lambda request: self.snapshot_result()
+        recovered = self.service._get('tasks', owner['id'])
+        self.assertEqual((recovered['status'], recovered['_native_turn_id']), ('completed', lane_turn))
+        self.assertNotIn('_resume_decision', recovered)
+        self.assertEqual(self.service._get('native_receipts', call['id']), unknown)
+        self.service._put('tasks', dict(self.service._get('tasks', source['id']), status='working'))
+        self.service.kanban.tasks[owner['id']]['status'] = 'scheduled'
+        with self.assertRaisesRegex(ServiceError, 'no confirmed result'):
+            self.lane(source, message='Retry after the restart.')
+        self.assert_hold_kept()
+
+
 class TechnicalLanePolicyTests(unittest.TestCase):
     def test_held_actions_name_native_actions_and_never_read_commands(self):
         for name, arguments in (('terminal', {'command': 'anything'}), ('execute_code', {}), ('delegate_task', {}),
@@ -1828,7 +2234,9 @@ class TechnicalLaneProviderTests(unittest.TestCase):
         registry.handlers['terminal'] = terminal
         registry.handlers['kanban_complete'] = lambda args: ran.append('kanban_complete') or json.dumps({'ok': True})
         assert ('Independent technical work' in prompt) == LANE
-        assert ('Do not change product code.' in prompt) == LANE
+        assert ('Do not change product code.' in prompt) == (LANE and not HELD)
+        assert ('read-only diagnosis' in prompt) == HELD
+        assert ('Leave #8669 open' in prompt) == HELD
         if LANE:
             held = json.loads(registry.dispatch('kanban_complete', {'summary': 'Fixed.'}))
             assert held['error'].startswith('Independent technical work holds this native action.'), held
@@ -1841,11 +2249,12 @@ class TechnicalLaneProviderTests(unittest.TestCase):
         return {'completed': True, 'final_response': 'Tests pass locally.'}
     """
 
-    def run_worker(self, lane, declined=False):
+    def run_worker(self, lane, declined=False, held=False):
         from coconut.providers import HermesProvider
-        reason = 'The declined decision and its pause stay.' if declined else 'The original decision remains pending.'
+        reason = ('The held decision and its pause stay.' if held else 'The declined decision and its pause stay.'
+                  if declined else 'The original decision remains pending.')
         provider = self.fake_hermes(self.BEHAVIOR.replace('LANE', repr(bool(lane))).replace('DECLINED', repr(declined))
-                                    .replace('REASON', repr(reason)))
+                                    .replace('HELD', repr(held)).replace('REASON', repr(reason)))
         (self.root / 'source' / 'tools' / 'approval.py').write_text(
             'callbacks = {}\nresolutions = []\n'
             'def register_gateway_notify(key, callback): callbacks[key] = callback\n'
@@ -1860,6 +2269,11 @@ class TechnicalLaneProviderTests(unittest.TestCase):
             self.task['_technical_lane'].update(decision_id='declined', decision_revision=1,
                 declined_merge_pr_url=DECLINED_PR, hold=dict(status='completed', summary='Complete.'),
                 declined=dict(decision_id='declined', title='Approve the migration and merge #8661?', merge_pr_url=DECLINED_PR))
+        if held:
+            self.task['_technical_lane'].update(HELD_LANE, native_task_id='t_own',
+                hold=dict(status='completed', summary='Verified.'), held=dict(decision_id='held', revision=1,
+                    title='Mark Gumroad #8669 ready and merge it?', merge_pr_url=HELD_PR,
+                    selected_option=dict(id='leave_open', label='Leave #8669 open', answer='approve', explanation='')))
         events = []
         def emit(kind, data):
             events.append((kind, data))
@@ -1884,6 +2298,13 @@ class TechnicalLaneProviderTests(unittest.TestCase):
 
     def test_a_declined_merge_lane_holds_the_same_actions_and_names_the_kept_refusal(self):
         events = self.run_worker(lane=True, declined=True)
+        kinds = [kind for kind, _ in events]
+        self.assertEqual(kinds[-1], 'completed', events)
+        self.assertNotIn('native_approval', kinds)
+        self.assertNotIn('failed', kinds)
+
+    def test_a_held_merge_lane_holds_the_same_actions_and_names_the_kept_hold(self):
+        events = self.run_worker(lane=True, held=True)
         kinds = [kind for kind, _ in events]
         self.assertEqual(kinds[-1], 'completed', events)
         self.assertNotIn('native_approval', kinds)
@@ -2115,6 +2536,88 @@ for _ in range(2):
         self.assertEqual([d for d in self.service._all('deliveries') if d['source_task_id'] == owner['id']], [])
         self.assertEqual(self.service._get('decisions', 'declined'), declined)
         self.assertEqual((self.service._get('artifacts', work['id']), self.service._get('artifacts', pr['id'])), (work, pr))
+        self.assertEqual((workspace / 'pending.txt').read_text(), 'Uncommitted correction')
+        self.assertEqual(len(self.service._all('decisions')), 1)
+
+    def test_a_held_merge_lane_diagnoses_on_the_linked_successor_of_a_done_card_and_parks_it(self):
+        from coconut.service import now
+        owner, source, identity, workspace = self.prepare('done')
+        self.assertEqual(self.native_status(identity), 'done')
+        # The requester's return callback of this owner asked the person about the owner's PR, and finished.
+        asker = dict(copy.deepcopy(source), id=str(uuid4()), status='completed', source_task_id=owner['id'],
+                     parent_task_id=owner['id'], _execution_session_id=str(uuid4()), _is_return=True, _waiting_on=[])
+        asker.pop('_return_pending', None)
+        held = dict(id='held', task_id=asker['id'], bot_id=source['bot_id'], status='executed', action_type='question',
+            inbox_kind='decision', revision=1, title='Mark Gumroad #8669 ready and merge it?', context='', merge_pr_url=HELD_PR,
+            options=[dict(id='merge', label='Mark #8669 ready and merge', answer='approve', explanation=''),
+                     dict(id='leave_open', label='Leave #8669 open', answer='approve', explanation='Keep the draft.')],
+            selected_option_id='leave_open', selected_option_label='Leave #8669 open', correction='', decided_by='test-phone',
+            decided_at=owner['created_at'], created_at=owner['created_at'], _native=True, _action={},
+            _answers=[dict(choice='approve', option_id='leave_open', correction='', decided_by='test-phone')])
+        pr = dict(id=str(uuid4()), task_id=owner['id'], bot_id=owner['bot_id'], kind='pr', url=HELD_PR, title='#8669',
+                  status='failed', pr_state='open', _review_task_id=owner['id'], paused_by_decision_id='held',
+                  _work_pause_at=now(), created_at=owner['created_at'])
+        for table, record in (('tasks', asker), ('decisions', held), ('artifacts', pr)):
+            self.service._put(table, record)
+        with self.assertRaisesRegex(ServiceError, 'This work is paused'):
+            self.service.emit(source['id'], 'work_continue', dict(task_id=identity, message='Continue.'))
+        count = 'print(board.conn.execute("SELECT count(*) FROM task_runs WHERE task_id=?", (sys.argv[2],)).fetchone()[0])'
+        runs = self.native_program(count, identity)
+        receipt = self.service.emit(source['id'], 'work_continue', dict(task_id=identity,
+            message='Diagnose the new author delta read-only. #8669 stays open.',
+            independent_technical_work=dict(HELD_LANE)))
+        self.assertEqual(receipt['task_id'], owner['id'])
+        seen = {}
+        def run(task, bot, history, emit):
+            seen.update(lane=copy.deepcopy(task.get('_technical_lane')), outcome=task['_native_outcome_id'],
+                        native=self.native_status(task['_native_outcome_id']), old=self.native_status(identity),
+                        parents=self.native_program('print(",".join(board.kb.parent_ids(board.conn, sys.argv[2])))',
+                                                    task['_native_outcome_id']))
+            record = emit('native_call', {'name': 'terminal', 'arguments': {'command': 'git log --oneline -3'}})
+            emit('native_result', {'id': record['id'], 'result': json.dumps({'exit_code': 0})})
+            note = emit('native_call', {'name': 'kanban_comment', 'arguments': {'body': 'Read-only findings saved.'}})
+            emit('native_result', {'id': note['id'], 'result': '{"ok": true}'})
+            for name, arguments in (('kanban_complete', {'summary': 'Done.'}), ('kanban_comment', {'task_id': identity, 'body': 'x'})):
+                try:
+                    emit('native_call', {'name': name, 'arguments': arguments})
+                except ServiceError as error:
+                    seen[name + (':old' if arguments.get('task_id') else '')] = error.status
+            emit('completed', {'summary': 'Diagnosed the author delta read-only.'})
+        def resume(*args):
+            raise AssertionError('A held merge never resumes its decision.')
+        self.provider.start_task, self.provider.resume_task = run, resume
+        self.service._dispatch_pending()
+        worker = self.service.running.get(owner['id'])
+        self.assertIsNotNone(worker, 'The lane must dispatch the real native claim of the successor past the pause')
+        worker.join(15)
+        self.assertFalse(worker.is_alive())
+        successor = seen['outcome']
+        self.assertNotEqual(successor, identity, 'New input on a done card owns a successor')
+        self.assertEqual((seen['native'], seen['old'], seen['parents']), ('running', 'done', identity),
+                         'The successor is the linked follow-up of the completed card')
+        self.assertEqual(seen['lane']['native_task_id'], successor, 'The lane follows the successor before its turn')
+        self.assertEqual((seen['kanban_complete'], seen['kanban_comment:old']), (403, 403))
+        for _ in range(3):
+            # Repeated passes: the successor parks once, the old card keeps its result, and nothing claims either again.
+            self.service.kanban.call({'op': 'snapshot'})
+            self.service._reconcile_kanban()
+            self.service._drain_returns()
+            self.service._dispatch_pending()
+            again = self.service.running.get(owner['id'])
+            self.assertTrue(again is worker or again is None, 'No second worker claims the parked card')
+        self.assertEqual((self.native_status(identity), self.native_status(successor)), ('done', 'scheduled'))
+        self.assertEqual(self.native_program(count, identity), runs, 'The completed card keeps its runs')
+        self.assertEqual(self.native_program(count, successor), '1')
+        card = self.service.kanban.tasks[owner['id']]
+        self.assertEqual((card['id'], card['workspace_path'], card.get('consecutive_failures', 0)), (successor, str(workspace), 0))
+        finished = self.service._get('tasks', owner['id'])
+        self.assertEqual((finished['status'], finished['summary']), ('completed', 'Original input complete'))
+        self.assertNotIn('_resume_decision', finished)
+        self.assertEqual([d for d in self.service._all('deliveries') if d['source_task_id'] == owner['id']], [])
+        self.assertEqual(self.service._get('decisions', 'held'), held)
+        stored = self.service._get('artifacts', pr['id'])
+        self.assertEqual(({k: v for k, v in stored.items() if k != '_native_outcome_id'}, stored['_native_outcome_id']),
+                         (pr, successor))
         self.assertEqual((workspace / 'pending.txt').read_text(), 'Uncommitted correction')
         self.assertEqual(len(self.service._all('decisions')), 1)
 
