@@ -2,7 +2,7 @@
 
 In this refuse mode the service keeps /health, pairing and GET /v1/setup, so the phone can say why Coconut cannot work.
 Every other route answers 503 with the code hermes_unavailable. Nothing here imports Hermes or runs a bot, and no task
-changes state, so the bots continue when the person installs or updates Hermes and restarts Coconut.
+changes state, so the bots continue when the person installs or updates Hermes. The service then restarts by itself.
 """
 from __future__ import annotations
 
@@ -80,7 +80,8 @@ class UnavailableService(HermesSetup):
             return device_for_token(self.db, token, peer)
 
     def take_service_restart(self) -> bool:
-        return False
+        # Nothing runs, so a new Hermes takes effect at once: the next start checks it.
+        return self.hermes_changed()
 
     clear_service_drain = ServiceRestart.clear_service_drain
 
