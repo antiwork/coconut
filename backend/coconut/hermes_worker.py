@@ -1431,9 +1431,13 @@ def run_turn(request, emit, request_receipt):
                 'Otherwise use native process(action="wait") until the process exits. '
                 'especially if its owner task already depends on your reply. Finish your turn after registration; '
                 'Coconut resumes it once the task finishes or fails. A completed task or process returns its saved result immediately; '
-                'use that result without waiting again. This does not send a message or create new work.',
+                'use that result without waiting again. This does not send a message or create new work. '
+                'In an audit of a work source, set no_card with a reason to record that the source needs no card now.',
                 'parameters': {'type': 'object', 'properties': {
-                    'task_id': {'type': 'string'}, 'process_id': {'type': 'string'}, 'decision_id': {'type': 'string'}, 'reason': {'type': 'string', 'maxLength': 80}}}}
+                    'task_id': {'type': 'string'}, 'process_id': {'type': 'string'}, 'decision_id': {'type': 'string'}, 'reason': {'type': 'string', 'maxLength': 80},
+                    'no_card': {'type': 'boolean', 'description': 'Only in an audit of a work source: the source needs no card now. '
+                        'Coconut audits it again at next_check_at or when the source changes. With task_id, only while that live task owns the work.'},
+                    'next_check_at': {'type': 'string', 'description': 'With no_card: an ISO 8601 UTC time to audit again. Defaults to 24 hours, at most 7 days.'}}}}
             registry.register(name='coconut_wait', toolset='coconut', schema=wait_schema,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('work_wait', arguments)))
             allowed.add('coconut_wait')

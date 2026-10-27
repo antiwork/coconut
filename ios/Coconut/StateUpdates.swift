@@ -86,6 +86,7 @@ struct StateUpdates: Decodable, Sendable {
         update(\.effectiveApproval)
         update(\.workerLimit)
         update(\.modelError)
+        update(\.health)
         return result
     }
 
