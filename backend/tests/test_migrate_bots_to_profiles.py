@@ -198,13 +198,18 @@ class MigrationTests(unittest.TestCase):
         home = self.home(self.bots[2])
         (home / '.env').write_text(f'GH_CONFIG_DIR={home}/.config/gh\nexport CODEX_HOME="{home}/codex"  # login\n'
                                    f"HOME_COPY='{home}'\nXDG_CONFIG_HOME=/elsewhere/config\nOTHER={home}-sibling\n"
-                                   f'MIDDLE=/mirror{home}/gh\nLIST=/a:{home}/bin\n')
+                                   f'MIDDLE=/mirror{home}/gh\nLIST=/a:{home}/bin\n'
+                                   f"'GH_TOKEN_DIR'=\"{home}/.config/token\"\n\"XDG_DATA_HOME\"='{home}/data'\n")
         ledger, _ = self.run_quietly(migration.migrate, self.root, self.hermes)
         destination = next(Path(move['destination']) for move in ledger['moves'] if move['bot_id'] == self.bots[2]['id'])
         self.assertEqual((destination / '.env').read_text(),
                          f'GH_CONFIG_DIR={destination}/.config/gh\nexport CODEX_HOME="{destination}/codex"  # login\n'
                          f"HOME_COPY='{destination}'\nXDG_CONFIG_HOME=/elsewhere/config\nOTHER={home}-sibling\n"
-                         f'MIDDLE=/mirror{home}/gh\nLIST=/a:{home}/bin\n')
+                         f'MIDDLE=/mirror{home}/gh\nLIST=/a:{home}/bin\n'
+                         f"'GH_TOKEN_DIR'=\"{destination}/.config/token\"\n\"XDG_DATA_HOME\"='{destination}/data'\n")
+        # The keys that login_folders reads, quoted or not, now name folders in the new home.
+        runtime = migration.host.backend_module('runtime_environment')
+        self.assertEqual(runtime.login_folders(destination)['XDG_DATA_HOME'], f'{destination}/data')
 
     def test_a_copy_that_fails_after_its_destination_exists_keeps_coconut_stopped(self):
         def rename(source, destination):

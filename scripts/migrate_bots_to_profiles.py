@@ -208,27 +208,25 @@ def recovery_steps(data_dir: Path, ledger: dict) -> str:
     return '\n'.join(lines)
 
 
-# One `KEY=value` line of a .env file, with an optional `export`, quotes and comment.
-ENV_LINE = re.compile(r'^(?P<key>[ \t]*(?:export[ \t]+)?[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*)(?P<quote>["\']?)(?P<value>.*?)'
-                      r'(?P=quote)(?P<rest>[ \t]*(?:#.*)?)$', re.M)
-
-
 def follow_env_paths(source: Path, destination: Path) -> None:
-    """A bot's .env can name a login folder inside its old home (GH_CONFIG_DIR, CODEX_HOME, XDG_*). Point it at the new home."""
+    """A bot's .env can name a login folder inside its old home (GH_CONFIG_DIR, CODEX_HOME, XDG_*). Point it at the new home.
+
+    The values come from the .env reader that login_folders uses (runtime_environment._env_values), so both read the
+    same keys, quoted or not. Only a whole value that is the old home, or a path below it, changes. A match inside
+    another value stays.
+    """
     path = destination / '.env'
     if not path.is_file() or path.is_symlink():
         return
     old, new = str(source), str(destination)
-
-    def follow(match):
-        # Only a value that is the old home, or a path below it. A match inside another value stays.
-        value = match['value']
-        if value == old or value.startswith(old + '/'):
-            value = new + value[len(old):]
-        return match['key'] + match['quote'] + value + match['quote'] + match['rest']
-
-    text = path.read_text(encoding='utf-8')
-    moved = ENV_LINE.sub(follow, text)
+    values = host.backend_module('runtime_environment')._env_values(path)
+    stale = sorted({value for value in values.values() if isinstance(value, str)
+                    and (value == old or value.startswith(old + '/'))}, key=len, reverse=True)
+    text = moved = path.read_text(encoding='utf-8')
+    for value in stale:
+        # The value as a whole: after `=` and an optional quote, before an optional quote, a comment, or the line end.
+        pattern = r'(=[ \t]*["\']?)' + re.escape(value) + r'(?=["\']?[ \t]*(?:#.*)?$)'
+        moved = re.sub(pattern, lambda match, value=value: match[1] + new + value[len(old):], moved, flags=re.M)
     if moved != text:
         path.write_text(moved, encoding='utf-8')
 
