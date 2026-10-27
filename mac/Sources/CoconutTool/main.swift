@@ -193,14 +193,15 @@ func pairPhone(code: PairingCode, launch: Launch) -> Never {
     if let failure { fail("\(failure)") }
     print("Waiting for the iPhone to pair.")
     fflush(stdout)
+    let expired = "The iPhone did not pair before the code expired. Make a new code on the iPhone, then try again."
     // The sidecar removes this setup's ticket when the iPhone connects with it. Another iPhone that pairs at the same
     // time uses another ticket, so it cannot end this wait.
     while FileManager.default.fileExists(atPath: ticket.path) {
-        guard Date().timeIntervalSince1970 < expires else {
-            fail("The iPhone did not pair before the code expired. Make a new code on the iPhone, then try again.")
-        }
+        guard Date().timeIntervalSince1970 < expires else { fail(expired) }
         sleep(1)
     }
+    // The sidecar also removes an expired ticket. Then no iPhone connected.
+    if Date().timeIntervalSince1970 >= expires && pairedPhoneKeys(install: install).subtracting(known).isEmpty { fail(expired) }
     // Then the iPhone sends its pairing request, and the sidecar records its key before it answers. That often happens
     // within a second of the connection, so the keys from before the send are the reference.
     for _ in 0..<60 {
