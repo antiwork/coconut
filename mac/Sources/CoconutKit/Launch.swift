@@ -48,6 +48,24 @@ public struct Launch: Equatable {
                       environment: environment, directory: install.root, standardOutput: nil, standardError: nil)
     }
 
+    /// Print a new one-time version 2 setup as JSON, for `coconut pair <code>`. The tool seals it for the rendezvous box
+    /// of the code, on the relay of the setup.
+    public static func pairingSetup(install: Install, python: URL, environment: [String: String]) -> Launch {
+        let script = """
+            import json, subprocess, sys
+            sys.path.insert(0, sys.argv[1])
+            import pairing
+            try:
+                payload = pairing.local_payload()
+            except (ValueError, KeyError, OSError, subprocess.CalledProcessError):
+                sys.exit('Coconut could not create a setup. Check that the service runs, then try again.')
+            print(json.dumps(payload))
+            """
+        return Launch(executable: python,
+                      arguments: [python.path, "-c", script, install.root.appendingPathComponent("scripts").path],
+                      environment: environment, directory: install.root, standardOutput: nil, standardError: nil)
+    }
+
     /// The relay sidecar of the bundle. It forwards the iPhone's requests from the relay to the service's tunnel
     /// listener, as the LaunchAgent of scripts/tunnel.py does.
     public static func sidecar(install: Install, binary: URL, environment: [String: String]) -> Launch {

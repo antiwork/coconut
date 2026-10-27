@@ -314,4 +314,84 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertNil(PairingLink(output: "Coconut could not create the setup QR."))
         XCTAssertNil(PairingLink(output: "Setup link: https://example.com"))
     }
+
+    // MARK: Pairing code
+
+    // The same vector is in docs/relay-transport.md, from the HKDF of scripts/pairing.py.
+    func testThePairingCodeGivesTheBoxIDOfTheProtocol() throws {
+        let code = try XCTUnwrap(PairingCode("aaaqeayeaudaocajbifqydiob4"))
+        XCTAssertEqual(code.bytes, Data(0..<16))
+        XCTAssertEqual(code.boxIDHex, "1d228ab884d178483a0e0e42db07204474f127216879f5b13ccca51c1a965173")
+        XCTAssertEqual(PairingCode("AAAQEAYEAUDAOCAJBIFQYDIOB4"), code)
+    }
+
+    func testOnlyAWellFormedCodeIsAccepted() {
+        XCTAssertNil(PairingCode(""))
+        XCTAssertNil(PairingCode("aaaqeayeaudaocajbifqydiob"))
+        XCTAssertNil(PairingCode("aaaqeayeaudaocajbifqydiob44"))
+        XCTAssertNil(PairingCode("aaaqeayeaudaocajbifqydiob1"))
+        XCTAssertNil(PairingCode("aaaqeayeaudaocajbifqydiob-"))
+        // The last character holds 2 bits that must be zero.
+        XCTAssertNil(PairingCode("aaaqeayeaudaocajbifqydiob5"))
+    }
+
+    func testTheSealedSetupOpensOnlyWithTheSameCode() throws {
+        let code = try XCTUnwrap(PairingCode("aaaqeayeaudaocajbifqydiob4"))
+        let other = try XCTUnwrap(PairingCode("aaaqeayeaudaocajbifqydioba"))
+        let setup = Data(#"{"version":2}"#.utf8)
+        let sealed = try code.seal(setup)
+        XCTAssertEqual(sealed.count, 12 + setup.count + 16)
+        XCTAssertNotEqual(try code.seal(setup), sealed)
+        XCTAssertEqual(try code.open(sealed), setup)
+        XCTAssertThrowsError(try other.open(sealed))
+        // The box ID is the additional data: the same key with another box ID fails.
+        let key = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: code.bytes), salt: Data(),
+                                         info: Data("coconut rendezvous key".utf8), outputByteCount: 32)
+        XCTAssertEqual(try ChaChaPoly.open(ChaChaPoly.SealedBox(combined: sealed), using: key, authenticating: code.boxID), setup)
+        XCTAssertThrowsError(try ChaChaPoly.open(ChaChaPoly.SealedBox(combined: sealed), using: key, authenticating: Data()))
+    }
+
+    func testTheRendezvousRequestGoesToTheBoxOfTheCode() throws {
+        let code = try XCTUnwrap(PairingCode("aaaqeayeaudaocajbifqydiob4"))
+        let request = Rendezvous.request(relay: URL(string: "https://relay.example.com")!, code: code, sealed: Data([1, 2]))
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.absoluteString,
+                       "https://relay.example.com/v1/rendezvous/1d228ab884d178483a0e0e42db07204474f127216879f5b13ccca51c1a965173/message")
+        XCTAssertEqual(request.httpBody, Data([1, 2]))
+        XCTAssertNil(Rendezvous.failure(status: 204))
+        XCTAssertEqual(Rendezvous.failure(status: 404), .expired)
+        XCTAssertEqual(Rendezvous.failure(status: 409), .used)
+        XCTAssertEqual(Rendezvous.failure(status: 429), .busy)
+        XCTAssertEqual(Rendezvous.failure(status: 500), .relay(500))
+    }
+
+    func testThePairedPhonesAreTheKeysOfThePeersFile() throws {
+        let install = Install(root: home)
+        XCTAssertEqual(pairedPhoneKeys(install: install), [])
+        try write(#"[{"key":"a","token_hash":"x","created":"2026-10-26T00:00:00Z"},{"key":"b","token_hash":"y"}]"#,
+                  to: ".runtime/host/tunnel/peers.json")
+        XCTAssertEqual(pairedPhoneKeys(install: install), ["a", "b"])
+    }
+
+    func testThePairingSetupPrintsTheSetupAsJSON() throws {
+        let python = URL(fileURLWithPath: "/usr/bin/env")
+        try write("""
+            def local_payload():
+                return {'version': 2, 'relay': 'https://relay.example.com', 'expires': 5}
+            """, to: "CoconutSetup/scripts/pairing.py")
+        let launch = Launch.pairingSetup(install: Install(root: home.appendingPathComponent("CoconutSetup")), python: python,
+                                         environment: [:])
+        let process = Process()
+        process.executableURL = python
+        process.arguments = ["python3"] + launch.arguments.dropFirst()
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(fields["relay"] as? String, "https://relay.example.com")
+        XCTAssertEqual(fields["expires"] as? Int, 5)
+    }
 }

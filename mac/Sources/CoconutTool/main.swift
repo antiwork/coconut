@@ -6,7 +6,7 @@ import Foundation
 let usage = """
     Usage: coconut <command>
 
-      pair      Print a one-time iPhone setup link.
+      pair      Print a one-time iPhone setup link. With the code from the iPhone, pair that iPhone.
       update    Install or update the Coconut source of this app. --if-needed skips an install that is current.
       migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       status    Print the state of the service, Hermes and the relay as JSON.
@@ -68,6 +68,51 @@ func readStatus() -> Status {
     return StatusReader(install: install).read(healthy: healthy)
 }
 
+/// Send a new setup to the rendezvous box of the iPhone's code, then wait until that iPhone pairs. The lines are plain
+/// progress for a Hermes agent that runs the command.
+func pairPhone(code: PairingCode, launch: Launch) -> Never {
+    let process = Process()
+    process.executableURL = launch.executable
+    process.arguments = Array(launch.arguments.dropFirst())
+    process.environment = launch.environment
+    process.currentDirectoryURL = launch.directory
+    let output = Pipe()
+    process.standardOutput = output
+    do {
+        try process.run()
+    } catch {
+        fail("Coconut could not start Python: \(error.localizedDescription)")
+    }
+    let setup = output.fileHandleForReading.readDataToEndOfFile()
+    process.waitUntilExit()
+    guard process.terminationStatus == 0,
+          let fields = try? JSONSerialization.jsonObject(with: setup) as? [String: Any],
+          let relay = (fields["relay"] as? String).flatMap(URL.init(string:)),
+          let expires = fields["expires"] as? Double else { exit(1) }
+    let known = pairedPhoneKeys(install: install)
+    print("Sending the setup to the iPhone.")
+    fflush(stdout)
+    let semaphore = DispatchSemaphore(value: 0)
+    var failure: Error?
+    // Detached: this top-level code runs on the main thread, which waits below.
+    Task.detached {
+        do { try await Rendezvous.send(relay: relay, code: code, setup: setup) } catch { failure = error }
+        semaphore.signal()
+    }
+    semaphore.wait()
+    if let failure { fail("\(failure)") }
+    print("Waiting for the iPhone to pair.")
+    fflush(stdout)
+    while Date().timeIntervalSince1970 < expires {
+        if !pairedPhoneKeys(install: install).subtracting(known).isEmpty {
+            print("The iPhone is paired with this Mac.")
+            exit(0)
+        }
+        sleep(1)
+    }
+    fail("The iPhone did not pair before the code expired. Make a new code on the iPhone, then try again.")
+}
+
 let command = CommandLine.arguments.dropFirst().first ?? ""
 switch command {
 case "service":
@@ -92,7 +137,11 @@ case "pair":
     guard let python = PythonLocator(environment: environment).locate() else {
         fail("Coconut found no Python 3.11 or later.")
     }
-    run(.pairingLink(install: install, python: python, environment: environment))
+    guard CommandLine.arguments.count > 2 else { run(.pairingLink(install: install, python: python, environment: environment)) }
+    guard let code = PairingCode(CommandLine.arguments[2]) else {
+        fail("This is not a Coconut pairing code. Copy the message from the iPhone again.")
+    }
+    pairPhone(code: code, launch: .pairingSetup(install: install, python: python, environment: environment))
 case "update":
     let resources = helpers.deletingLastPathComponent().appendingPathComponent("Resources")
     guard let source = BundledSource(resources: resources) else { fail("This app has no Coconut source.") }
