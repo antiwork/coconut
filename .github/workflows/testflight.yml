@@ -1,0 +1,110 @@
+name: TestFlight
+
+# Archives the iPhone app and uploads it to TestFlight for internal testers only. It runs on each push to main that
+# changes an input of the app, and when a person starts it.
+#
+# Signing needs no certificate secret. The job archives without a signature, and scripts/testflight.py signs the
+# archive ad hoc with the entitlements of the project. Then xcodebuild exports it with automatic signing: through the
+# App Store Connect API key, Xcode makes the App Store profiles and signs with a cloud-managed distribution
+# certificate. The key must have the Admin role, or the App Manager role with access to cloud-managed distribution
+# certificates.
+#
+# The version is the UTC date, such as 2026.10.27. The build number is the highest build number in App Store Connect,
+# plus one. The job waits until App Store Connect lists the new build, so the next run gets a higher number.
+#
+# The job uses the environment `mac-release` (main branch only) for these secrets:
+#   ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8   the App Store Connect API key
+# The upload does not change TestFlight groups. A group with automatic distribution gets the build from Apple.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/project.yml'
+      - 'ios/Coconut/**'
+      - 'ios/CoconutNotificationService/**'
+      - 'ios/PushShared/**'
+      - 'ios/Tunnel/**'
+      - 'ios/Coconut.xcodeproj/project.pbxproj'
+      - 'ios/Coconut.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved'
+      - 'scripts/iphone.py'
+      - 'scripts/push-envelope.swift'
+      - 'scripts/testflight.py'
+      - '.github/workflows/testflight.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Two uploads must not run at the same time: both would read the same highest build number.
+concurrency:
+  group: testflight
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    environment: mac-release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Write the App Store Connect API key
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$ASC_KEY_ID" ] || [ -z "$ASC_ISSUER_ID" ] || [ -z "$ASC_KEY_P8" ]; then
+            echo "::error::The environment mac-release needs ASC_KEY_ID, ASC_ISSUER_ID and ASC_KEY_P8."
+            exit 1
+          fi
+          key="$RUNNER_TEMP/AuthKey.p8"
+          (umask 077; printf '%s\n' "$ASC_KEY_P8" > "$key")
+          # The cleanup step deletes the key, also when a later step fails.
+          { echo "ASC_KEY=$key"; echo "ASC_KEY_ID=$ASC_KEY_ID"; echo "ASC_ISSUER_ID=$ASC_ISSUER_ID"; } >> "$GITHUB_ENV"
+      - name: Choose the version and the build number
+        run: |
+          set -euo pipefail
+          build="$(python3 scripts/testflight.py next-build --key "$ASC_KEY" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")"
+          version="$(date -u '+%Y.%-m.%-d')"
+          { echo "BUILD=$build"; echo "VERSION=$version"; } >> "$GITHUB_ENV"
+          echo "Coconut $version ($build) from $GITHUB_SHA." >> "$GITHUB_STEP_SUMMARY"
+      - name: Archive without a signature
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcodebuild archive \
+            -project ios/Coconut.xcodeproj \
+            -scheme Coconut \
+            -configuration Release \
+            -destination generic/platform=iOS \
+            -archivePath "$RUNNER_TEMP/Coconut.xcarchive" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            DEVELOPMENT_TEAM=66LJACJ2U7 \
+            CODE_SIGNING_ALLOWED=NO \
+            MARKETING_VERSION="$VERSION" \
+            CURRENT_PROJECT_VERSION="$BUILD"
+      - name: Sign the archive ad hoc with its entitlements
+        run: python3 scripts/testflight.py sign --archive "$RUNNER_TEMP/Coconut.xcarchive" --build "$BUILD"
+      - name: Sign for distribution and upload
+        run: |
+          set -euo pipefail
+          python3 scripts/testflight.py export-options --output "$RUNNER_TEMP/ExportOptions.plist"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Coconut.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+      - name: Wait for App Store Connect to list the build
+        run: |
+          set -euo pipefail
+          python3 scripts/testflight.py wait --key "$ASC_KEY" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" --build "$BUILD"
+          echo "Uploaded Coconut $VERSION ($BUILD) for internal TestFlight testing." >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove the API key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/AuthKey.p8"

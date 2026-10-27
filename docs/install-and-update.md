@@ -196,6 +196,14 @@ If the iPhone already has a pairing, Coconut asks before a link replaces it.
 
 An iPhone that paired before the relay used Tailscale. It shows "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link." Pair it again with a new link.
 
+## Releases from CI
+
+GitHub Actions makes every release. No Mac deploys or uploads builds by itself.
+
+- `.github/workflows/mac-release.yml` publishes a nightly Coconut.app on each push to `main` and each night. Each day it promotes a tested nightly build to stable.
+- Sparkle in Coconut.app installs the new build on each Mac of its channel.
+- `.github/workflows/testflight.yml` uploads the iPhone app to TestFlight on each push to `main` that changes the app. See [the iPhone setup](iphone-install.md#testflight-releases-from-ci).
+
 ## Update the backend
 
 After code changes, open **Update Mac mini.command**. The terminal command is:

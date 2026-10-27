@@ -1,0 +1,142 @@
+"""Unit tests of scripts/testflight.py. They use no network."""
+from pathlib import Path
+from unittest import mock
+import base64
+import json
+import plistlib
+import subprocess
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import testflight  # noqa: E402
+
+
+def decode(part):
+    return base64.urlsafe_b64decode(part + '=' * (-len(part) % 4))
+
+
+def raw_to_der(raw):
+    def integer(value):
+        value = value.lstrip(b'\0') or b'\0'
+        if value[0] & 0x80:
+            value = b'\0' + value
+        return bytes([0x02, len(value)]) + value
+    body = integer(raw[:32]) + integer(raw[32:])
+    return bytes([0x30, len(body)]) + body
+
+
+class TokenTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp())
+        self.key = self.folder / 'AuthKey.p8'
+        subprocess.run(['openssl', 'genpkey', '-algorithm', 'EC', '-pkeyopt', 'ec_paramgen_curve:P-256',
+                        '-out', str(self.key)], check=True, capture_output=True)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.folder)
+
+    def test_the_token_has_the_claims_of_app_store_connect_and_a_valid_es256_signature(self):
+        value = testflight.token(self.key, 'KEY123', 'issuer-1', now=1_000)
+        header, claims, signature = value.split('.')
+        self.assertEqual(json.loads(decode(header)), {'alg': 'ES256', 'kid': 'KEY123', 'typ': 'JWT'})
+        self.assertEqual(json.loads(decode(claims)),
+                         {'iss': 'issuer-1', 'iat': 1_000, 'exp': 2_200, 'aud': 'appstoreconnect-v1'})
+        raw = decode(signature)
+        self.assertEqual(len(raw), 64)
+        public = self.folder / 'public.pem'
+        subprocess.run(['openssl', 'pkey', '-in', str(self.key), '-pubout', '-out', str(public)], check=True)
+        der = self.folder / 'signature.der'
+        der.write_bytes(raw_to_der(raw))
+        result = subprocess.run(['openssl', 'dgst', '-sha256', '-verify', str(public), '-signature', str(der)],
+                                input=f'{header}.{claims}'.encode(), capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_a_short_integer_keeps_its_place_in_the_raw_signature(self):
+        raw = bytes(31) + b'\x01' + b'\x80' + bytes(31)
+        self.assertEqual(testflight.der_to_raw(raw_to_der(raw)), raw)
+
+    def test_a_signature_that_is_not_der_fails(self):
+        with self.assertRaises(ValueError):
+            testflight.der_to_raw(b'\x01\x02')
+
+
+class BuildNumberTests(unittest.TestCase):
+    def test_the_next_build_follows_the_highest_build_of_every_page(self):
+        pages = {
+            '/builds?filter%5Bapp%5D=6810507745&fields%5Bbuilds%5D=version&limit=200': {
+                'data': [{'attributes': {'version': '41'}}, {'attributes': {'version': '7'}}],
+                'links': {'next': testflight.API + '/builds?cursor=2'}},
+            '/builds?cursor=2': {'data': [{'attributes': {'version': '120'}}, {'attributes': {'version': '1.2'}}],
+                                 'links': {}},
+        }
+        with mock.patch.object(testflight, 'get', side_effect=lambda path, bearer: pages[path]):
+            self.assertEqual(testflight.next_build('token'), 121)
+
+    def test_the_first_build_is_one(self):
+        with mock.patch.object(testflight, 'get', return_value={'data': []}):
+            self.assertEqual(testflight.next_build('token'), 1)
+
+
+class ArchiveTests(unittest.TestCase):
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp())
+        self.archive = self.folder / 'Coconut.xcarchive'
+        self.app = self.archive / 'Products/Applications/Coconut.app'
+        self.extension = self.app / 'PlugIns/CoconutNotificationService.appex'
+        self.extension.mkdir(parents=True)
+        self.write(self.app, CFBundleIdentifier='com.gumroad.coconut', CoconutPushEnvironment='production',
+                   ITSAppUsesNonExemptEncryption=False, CFBundleVersion='42', CFBundleShortVersionString='2026.10.27')
+        self.write(self.extension, CFBundleVersion='42')
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.folder)
+
+    def write(self, bundle, **values):
+        (bundle / 'Info.plist').write_bytes(plistlib.dumps(values))
+
+    def test_the_entitlements_get_the_values_of_a_release_build_of_the_gumroad_team(self):
+        app = plistlib.loads(testflight.expand(testflight.ENTITLEMENTS['.']))
+        self.assertEqual(app['aps-environment'], 'production')
+        self.assertEqual(app['keychain-access-groups'],
+                         ['66LJACJ2U7.com.gumroad.coconut', '66LJACJ2U7.com.gumroad.coconut.push'])
+        extension = plistlib.loads(testflight.expand(
+            testflight.ENTITLEMENTS['PlugIns/CoconutNotificationService.appex']))
+        self.assertEqual(extension['keychain-access-groups'], ['66LJACJ2U7.com.gumroad.coconut.push'])
+
+    def test_the_extension_is_signed_before_the_app(self):
+        with mock.patch.object(testflight.subprocess, 'run') as run:
+            testflight.sign(self.archive, 42)
+        signed = [call.args[0][-1] for call in run.call_args_list if '--sign' in call.args[0]]
+        self.assertEqual(signed, [str(self.extension), str(self.app)])
+
+    def test_a_development_archive_is_refused(self):
+        self.write(self.app, CFBundleIdentifier='com.gumroad.coconut', CoconutPushEnvironment='development',
+                   ITSAppUsesNonExemptEncryption=False, CFBundleVersion='42')
+        with mock.patch.object(testflight.subprocess, 'run') as run, self.assertRaises(SystemExit):
+            testflight.sign(self.archive, 42)
+        run.assert_not_called()
+
+    def test_an_extension_with_another_build_number_is_refused(self):
+        self.write(self.extension, CFBundleVersion='41')
+        with mock.patch.object(testflight.subprocess, 'run'), self.assertRaises(SystemExit):
+            testflight.sign(self.archive, 42)
+
+    def test_an_unknown_extension_is_refused(self):
+        (self.app / 'PlugIns/Widget.appex').mkdir()
+        with mock.patch.object(testflight.subprocess, 'run') as run, self.assertRaises(SystemExit):
+            testflight.sign(self.archive, 42)
+        run.assert_not_called()
+
+    def test_the_upload_is_for_internal_testers_only(self):
+        options = plistlib.loads(testflight.export_options())
+        self.assertEqual(options['destination'], 'upload')
+        self.assertEqual(options['signingStyle'], 'automatic')
+        self.assertTrue(options['testFlightInternalTestingOnly'])
+
+
+if __name__ == '__main__':
+    unittest.main()
