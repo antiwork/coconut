@@ -331,6 +331,22 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertEqual(preferences.lastResult, result)
     }
 
+    func testALaterCheckDoesNotEndAPendingInstall() {
+        let preferences = UpdatePreferences(store: MemoryPreferences())
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 1), outcome: .installing, version: "0.2.0 (510)"))
+        XCTAssertEqual(preferences.pendingInstall, "0.2.0 (510)")
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 2), outcome: .upToDate))
+        XCTAssertEqual(preferences.pendingInstall, "0.2.0 (510)")
+        let status = Status(install: "/c", service: .running, hermes: "ok", hermesVersion: nil, hermesReason: nil, relay: "connected")
+        XCTAssertTrue(StatusText.lines(version: "0.2.0 (510)", preferences: preferences, status: status)
+            .contains("Pending install: 0.2.0 (510) (the service updates after its running bot work)"))
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 3), outcome: .installed, version: "0.2.0 (510)"))
+        XCTAssertNil(preferences.pendingInstall)
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 4), outcome: .installing))
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 5), outcome: .failed, message: "x"))
+        XCTAssertNil(preferences.pendingInstall)
+    }
+
     func testTheStatusTextNamesTheSettingsAndTheLastError() {
         let store = MemoryPreferences(["SULastCheckTime": Date(timeIntervalSince1970: 1_793_000_000), "updateChannel": "nightly",
                                        "SUAutomaticallyUpdate": false])

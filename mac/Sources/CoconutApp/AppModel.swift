@@ -51,8 +51,9 @@ final class AppModel: ObservableObject {
             // After Sparkle installs a new app, the new app updates the source that it carries.
             if legacyAgents.isEmpty && install.isInstalled() {
                 await update(ifNeeded: true)
-            } else if UpdatePreferences().lastResult?.outcome == .installing {
-                // No service to update: the new app is the whole update.
+            } else if !install.isInstalled() && UpdatePreferences().pendingInstall != nil {
+                // No service to update: the new app is the whole update. While an earlier LaunchAgent runs the old
+                // source, the install stays pending.
                 UpdatePreferences().record(UpdateResult(time: Date(), outcome: .installed, version: version))
             }
         }
@@ -151,12 +152,15 @@ final class AppModel: ObservableObject {
             // `coconut update --wait` and `coconut status` report this step after an app update.
             preferences.record(UpdateResult(time: Date(), outcome: .failed,
                                             message: "The service update failed: \(updateError ?? "")"))
-        } else if preferences.lastResult?.outcome == .installing {
-            // The new app runs, and the service has its source. The app update is complete.
-            preferences.record(UpdateResult(time: Date(), outcome: .installed, version: version))
-        } else if let relayError = DeployResult(output: result.1)?.relayError {
-            // The service runs, but without the relay the iPhone cannot reach it.
-            updateError = "The relay did not start: \(relayError)"
+        } else {
+            if let relayError = DeployResult(output: result.1)?.relayError {
+                // The service runs, but without the relay the iPhone cannot reach it.
+                updateError = "The relay did not start: \(relayError)"
+            }
+            if preferences.pendingInstall != nil {
+                // The new app runs, and the service has its source. The app update is complete.
+                preferences.record(UpdateResult(time: Date(), outcome: .installed, version: version))
+            }
         }
         await refresh()
         return result.0 == 0

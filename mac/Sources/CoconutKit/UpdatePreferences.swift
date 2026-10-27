@@ -73,6 +73,7 @@ public struct UpdatePreferences {
     public static let lastCheckKey = "SULastCheckTime"
     static let requestKey = "updateRequestedAt"
     static let resultKey = "lastUpdateResult"
+    static let pendingInstallKey = "pendingInstall"
 
     /// Distributed notifications from the tool to the running app.
     public static let settingsChanged = "com.gumroad.coconut.mac.settingsChanged"
@@ -111,8 +112,20 @@ public struct UpdatePreferences {
         UpdateResult(store.value(forKey: Self.resultKey))
     }
 
+    /// Save a result. An "installing" result also starts a pending install, which only "installed" or a failure ends:
+    /// a later check that finds no newer build must not hide that the service still waits for its new source.
     public func record(_ result: UpdateResult) {
         store.set(result.dictionary, forKey: Self.resultKey)
+        switch result.outcome {
+        case .installing: store.set(result.version ?? "", forKey: Self.pendingInstallKey)
+        case .installed, .failed: store.set(nil, forKey: Self.pendingInstallKey)
+        case .upToDate: break
+        }
+    }
+
+    /// The version of an app update whose service update did not finish yet.
+    public var pendingInstall: String? {
+        store.value(forKey: Self.pendingInstallKey) as? String
     }
 
     /// Ask the app for a check. The app reads the request at its start too, so a request also works before it runs.
@@ -165,6 +178,9 @@ public enum StatusText {
             case .failed: detail = "failed"
             }
             lines.append("Last update result: \(detail) (\(formatter.string(from: result.time)))")
+        }
+        if let pending = preferences.pendingInstall {
+            lines.append("Pending install: \(pending.isEmpty ? "a new version" : pending) (the service updates after its running bot work)")
         }
         let error = preferences.lastResult.flatMap { $0.outcome == .failed ? $0.message ?? "unknown" : nil }
         lines.append("Last update error: \(error ?? "none")")
