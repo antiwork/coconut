@@ -744,9 +744,8 @@ class WorkspaceRecoveryTests(unittest.TestCase):
 
         self.restart(MigrationProvider(self.data))
         self.assertEqual(self.receipt()['state'], 'applied')
-        self.assertEqual([entry[0] for entry in calls], ['model', 'native'])
-        self.assertEqual(calls[1][1], 'migrate')
-        self.assertTrue(calls[1][2])
+        # Bots are Hermes profiles with their own settings, so no settings step runs after the model default.
+        self.assertEqual([entry[0] for entry in calls], ['model'])
         self.assertFalse(self.service._workspace_recovery_hold)
 
     def test_checkout_recovery_disables_post_checkout_hook(self):
@@ -1835,7 +1834,7 @@ print(parent)
         old.parent.mkdir()
         old.write_text('import time\ntime.sleep(90)\n')
         process = subprocess.Popen([sys.executable, str(old)], env=dict(os.environ,
-            HERMES_HOME=str(self.service.profiles.home(self.bot))))
+            HERMES_HOME=str(self.data / 'bots' / self.bot['id'] / 'home')))  # A worker of an earlier version.
         self.addCleanup(lambda: (process.terminate(), process.wait(timeout=5)))
         self.assertEqual(self.request()[0], 200)
         self.restart()
