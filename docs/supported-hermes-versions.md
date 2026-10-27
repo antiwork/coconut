@@ -32,7 +32,7 @@ Before 0.21.6, Hermes used calendar versions, such as 2026.9.24. Coconut treats 
 
 Each Hermes leg installs Hermes with the official installer, as a person does, into a temporary `HERMES_HOME`. Then Coconut finds that Hermes with `hermes_runtime.find()` and runs the contract check. Then the leg runs the native tests under the Python of that Hermes.
 
-The Mac mini updater deploys a merge commit only after the `contracts` and `native-kanban` check runs pass. It also refuses a commit with a failed check run. For this reason, a failure of the nightly `main` leg is a warning in the run summary, not a failed check run.
+A failure of the nightly `main` leg is a warning in the run summary, not a failed check run. A change of Hermes `main` is not a fault of the Coconut commit.
 
 When the latest release is not in `tested`, its leg prints a warning. Add that release to `tested` when its leg passes.
 

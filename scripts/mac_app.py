@@ -18,7 +18,7 @@ Store Connect API key, staples the ticket, and makes the zip archive that Sparkl
 
   mac_app.py build --identity <SHA-1 of the Developer ID identity>
   mac_app.py notarize --key AuthKey.p8 --key-id <id> --issuer <issuer>
-  mac_app.py archive --channel nightly
+  mac_app.py archive
 
 The version is in mac/VERSION. The build number is the commit count of HEAD.
 """
@@ -47,8 +47,6 @@ ARCHIVE_LIMIT = 25 * 1024 * 1024
 FEED_URL = 'https://coconut-updates.gumroad.workers.dev/mac/appcast.xml'
 # The public half of the EdDSA key in the secret SPARKLE_ED_PRIVATE_KEY. Sparkle installs only archives that it signed.
 ED_PUBLIC_KEY = 'bsZLk/GXxQHmjyBDgQ/RY31DmKYvGBLPmJhzOFCkAWE='
-# Items for everyone have no channel. Items for the nightly channel name it.
-CHANNELS = ('stable', 'nightly')
 
 
 def run(arguments: list, **options) -> subprocess.CompletedProcess:
@@ -181,12 +179,11 @@ def archive(app: Path, destination: Path, limit: int | None = None) -> Path:
     return destination
 
 
-def archive_name(app: Path, channel: str = 'stable') -> str:
-    """Coconut-<version>-<build>.zip, with -nightly for the nightly channel: both channels can build one commit."""
+def archive_name(app: Path) -> str:
+    """Coconut-<version>-<build>.zip."""
     with (app / 'Contents/Info.plist').open('rb') as handle:
         info = plistlib.load(handle)
-    suffix = '' if channel == 'stable' else '-' + channel
-    return f"Coconut-{info['CFBundleShortVersionString']}-{info['CFBundleVersion']}{suffix}.zip"
+    return f"Coconut-{info['CFBundleShortVersionString']}-{info['CFBundleVersion']}.zip"
 
 
 def notarize(app: Path, key: Path, key_id: str, issuer: str) -> None:
@@ -219,7 +216,6 @@ def main() -> None:
     parser.add_argument('command', choices=['build', 'notarize', 'archive'])
     parser.add_argument('--output', type=Path, default=ROOT / 'build/mac', help='The folder of Coconut.app.')
     parser.add_argument('--version', help='build: CFBundleShortVersionString. Defaults to mac/VERSION.')
-    parser.add_argument('--channel', choices=CHANNELS, default='stable', help='archive: the update channel.')
     parser.add_argument('--build', help='build: CFBundleVersion. Defaults to the commit count of HEAD.')
     parser.add_argument('--identity', default='-', help='build: a codesign identity. Defaults to an ad-hoc signature.')
     parser.add_argument('--key', type=Path, help='notarize: the App Store Connect API key file (.p8).')
@@ -239,7 +235,7 @@ def main() -> None:
         print('Notarized and stapled ' + str(output / 'Coconut.app'))
     else:
         app = output / 'Coconut.app'
-        print(archive(app, output / archive_name(app, args.channel), ARCHIVE_LIMIT))
+        print(archive(app, output / archive_name(app), ARCHIVE_LIMIT))
 
 
 if __name__ == '__main__':

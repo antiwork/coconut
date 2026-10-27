@@ -2,11 +2,9 @@
 # Install Coconut.app on this Mac, start Coconut, and pair the iPhone that shows the code.
 #
 #   curl -fsSL https://coconut-updates.gumroad.workers.dev/install | bash -s <code>
-#   curl -fsSL https://coconut-updates.gumroad.workers.dev/install | bash -s -- --channel nightly <code>
 #
 # The iPhone shows this command in a message for Hermes. The script:
-#   1. downloads the newest notarized Coconut.app from the update feed (the stable channel, or the nightly channel
-#      before the first stable release, or the channel of --channel),
+#   1. downloads the newest notarized Coconut.app from the update feed,
 #   2. checks the length and the SHA-256 that the feed names, the code signature, the team ID and Gatekeeper,
 #   3. installs the app in /Applications, or in ~/Applications without write access to /Applications,
 #   4. opens the app, which sets up Coconut and its login items, and waits for the service and the relay,
@@ -34,15 +32,8 @@ fi
 say() { printf 'Coconut: %s\n' "$1"; }
 fail() { printf 'Coconut: %s\n' "$1" >&2; exit 1; }
 
-# The XPath of the newest item of a channel. The feed lists the items from the newest build down. A stable item has no
-# <sparkle:channel>.
-item_path() {
-  if [ "$1" = stable ]; then
-    printf '%s' "//item[not(*[local-name()='channel'])][1]"
-  else
-    printf '%s' "//item[*[local-name()='channel']='$1'][1]"
-  fi
-}
+# The XPath of the newest item. The feed lists the items from the newest build down.
+ITEM_PATH="//item[1]"
 
 # Print the installed Coconut.app, if any. An app that can do this run comes first: an earlier app can stay in a folder
 # that this account cannot change.
@@ -103,27 +94,19 @@ quit_app() {
   fi
 }
 
-# Download, check and install the newest app of the channel, in the folder or the first writable Applications folder.
-# Print the path of the installed app, then the channel of the build.
+# Download, check and install the newest app, in the folder or the first writable Applications folder.
+# Print the path of the installed app.
 install_app() {
-  local channel="$1" folder="$2" work feed path url length name digest
+  local folder="$1" work feed url length name digest
   # Global, so the trap can still read it when the script exits.
   WORK="$(mktemp -d)"
   trap 'rm -rf "$WORK"' EXIT
   work="$WORK"
   curl -fsSL --retry 3 -o "$work/appcast.xml" "$FEED_URL" || fail "Could not download the update feed $FEED_URL."
   feed="$work/appcast.xml"
-  path="$(item_path "$channel")"
-  url="$(xmllint --xpath "string($path/enclosure/@url)" "$feed" 2>/dev/null || true)"
-  if [ -z "$url" ] && [ "$channel" = stable ] && [ -z "$CHANNEL_OPTION" ]; then
-    # Before the first stable release, the nightly build is the only build.
-    channel=nightly
-    path="$(item_path nightly)"
-    url="$(xmllint --xpath "string($path/enclosure/@url)" "$feed" 2>/dev/null || true)"
-    say "There is no stable release yet, so Coconut uses the nightly channel." >&2
-  fi
-  [ -n "$url" ] || fail "The update feed has no build in the $channel channel."
-  length="$(xmllint --xpath "string($path/enclosure/@length)" "$feed")"
+  url="$(xmllint --xpath "string($ITEM_PATH/enclosure/@url)" "$feed" 2>/dev/null || true)"
+  [ -n "$url" ] || fail "The update feed has no build."
+  length="$(xmllint --xpath "string($ITEM_PATH/enclosure/@length)" "$feed")"
   name="${url##*/}"
   # Each archive name ends with the first 16 hex digits of its SHA-256.
   [[ "$name" =~ -([0-9a-f]{16})\.zip$ ]] || fail "The update feed names an unexpected archive: $name."
@@ -143,7 +126,7 @@ install_app() {
   fi
   ditto "$work/unpacked/Coconut.app" "$folder/Coconut.app" || fail "Could not copy Coconut.app to $folder."
   say "Installed Coconut.app in $folder." >&2
-  printf '%s\n%s\n' "$folder/Coconut.app" "$channel"
+  printf '%s\n' "$folder/Coconut.app"
 }
 
 # /Applications needs admin rights. Without them, ~/Applications works the same for one account.
@@ -159,14 +142,6 @@ first_writable_folder() {
   fail "No Applications folder is writable."
 }
 
-# Set the update channel with the tool, or in the preferences of an earlier app that has no such command.
-set_channel() {
-  if ! "$TOOL" settings channel "$1" </dev/null >/dev/null 2>&1; then
-    defaults write "$BUNDLE_ID" updateChannel "$1" >/dev/null
-  fi
-  say "The update channel is $1."
-}
-
 # Wait until the service state shows the value for the field. Return 1 after the seconds.
 wait_for() {
   local field="$1" value="$2" seconds="$3" start=$SECONDS
@@ -178,17 +153,13 @@ wait_for() {
 }
 
 main() {
-  CHANNEL_OPTION=""
-  local code="" app="" installed="" channel="" automatic=no tool
+  local code="" app="" installed="" automatic=no tool
   while [ $# -gt 0 ]; do
     case "$1" in
-      --channel) CHANNEL_OPTION="${2:-}"; shift 2 || fail "--channel needs stable or nightly." ;;
-      --channel=*) CHANNEL_OPTION="${1#--channel=}"; shift ;;
       -*) fail "Unknown option $1." ;;
       *) code="$1"; shift ;;
     esac
   done
-  case "${CHANNEL_OPTION:-stable}" in stable|nightly) ;; *) fail "--channel needs stable or nightly." ;; esac
   if [ -n "$code" ] && ! [[ "$code" =~ ^[a-zA-Z2-7]{26}$ ]]; then
     fail "This is not a Coconut pairing code. Copy the message from the iPhone again."
   fi
@@ -204,19 +175,16 @@ main() {
     # A folder that this account cannot change, for example /Applications without admin rights, keeps the earlier app.
     # The new app then goes in the first writable folder.
     if [ -w "${app%/Coconut.app}" ]; then
-      installed="$(install_app "${CHANNEL_OPTION:-stable}" "${app%/Coconut.app}")"
+      installed="$(install_app "${app%/Coconut.app}")"
     else
-      installed="$(install_app "${CHANNEL_OPTION:-stable}" "")"
+      installed="$(install_app "")"
     fi
   elif [ -n "$app" ]; then
     say "Coconut.app is already in ${app%/Coconut.app}. It updates itself."
   else
-    installed="$(install_app "${CHANNEL_OPTION:-stable}" "")"
+    installed="$(install_app "")"
   fi
-  if [ -n "$installed" ]; then
-    app="${installed%%$'\n'*}"
-    channel="${installed##*$'\n'}"
-  fi
+  [ -z "$installed" ] || app="$installed"
   TOOL="$(tool_of "$app")"
   [ -x "$TOOL" ] || fail "$app has no coconut tool. Delete it, then run this command again."
   if ! can_run "$app" "$code"; then
@@ -239,12 +207,6 @@ main() {
   fi
   say "The relay is connected."
 
-  # An explicit channel applies also to an installed app. The nightly fallback before the first stable release too.
-  if [ -n "$CHANNEL_OPTION" ]; then
-    set_channel "$CHANNEL_OPTION"
-  elif [ "$channel" = nightly ]; then
-    set_channel nightly
-  fi
   # A Mac that runs Coconut for Hermes often has nobody who watches it, so it updates by itself.
   if "$TOOL" settings automatic-updates on </dev/null >/dev/null 2>&1; then
     automatic=yes

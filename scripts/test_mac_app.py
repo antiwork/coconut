@@ -50,9 +50,8 @@ class MacAppTests(unittest.TestCase):
         self.assertEqual(package.package_id, package_id)
         self.assertIn('scripts/host.py', package.files)
 
-    def test_the_archive_name_has_the_version_the_build_and_a_nightly_suffix(self):
+    def test_the_archive_name_has_the_version_and_the_build(self):
         self.assertEqual(mac_app.archive_name(self.app), 'Coconut-1.2.0-512.zip')
-        self.assertEqual(mac_app.archive_name(self.app, 'nightly'), 'Coconut-1.2.0-512-nightly.zip')
 
     def test_the_bundle_names_the_feed_and_its_key_and_updates_by_itself(self):
         info = mac_app.info_plist('1.2.0', '512')

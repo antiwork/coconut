@@ -107,19 +107,16 @@ def version_key(value: str) -> tuple:
     return tuple(int(part) for part in value.split(".") if part.isdigit())
 
 
-def choose_item(feed: bytes | None, channel: str, system: str | None = None) -> tuple[mac_feed.Item, str]:
-    """The newest archive of the channel that runs on this macOS. Before the first stable release, the stable channel
-    takes the nightly one."""
+def choose_item(feed: bytes | None, system: str | None = None) -> mac_feed.Item:
+    """The newest archive that runs on this macOS."""
     system = system or platform.mac_ver()[0]
     items = mac_feed.parse(feed or b"")
     if items and not any(version_key(item.minimum_system) <= version_key(system) for item in items):
         lowest = min((item.minimum_system for item in items), key=version_key)
         raise SystemExit(f"Coconut.app needs macOS {lowest} or later. This Mac has macOS {system}.")
     items = [item for item in items if version_key(item.minimum_system) <= version_key(system)]
-    for name in [channel, *(["nightly"] if channel == "stable" else [])]:
-        found = [item for item in items if item.channel == name]
-        if found:
-            return max(found, key=lambda item: item.build), name
+    if items:
+        return max(items, key=lambda item: item.build)
     raise SystemExit(f"The update feed {mac_feed.FEED_URL} has no Coconut.app yet. Try again later.")
 
 
@@ -130,10 +127,10 @@ def verify_app(app: Path) -> None:
         run(command, label)
 
 
-def install_app(channel: str) -> Path:
+def install_app() -> Path:
     """Download Coconut.app from the update feed, check it, and put it in Applications."""
-    item, used = choose_item(mac_feed.fetch(mac_feed.FEED_URL), channel)
-    print(f"Downloading Coconut {item.version} ({item.build}) from the {used} channel.", flush=True)
+    item = choose_item(mac_feed.fetch(mac_feed.FEED_URL))
+    print(f"Downloading Coconut {item.version} ({item.build}).", flush=True)
     data = mac_feed.fetch(f"{mac_feed.BASE_URL}/{item.file}")
     if data is None or len(data) != item.length or not mac_feed.matches_name(item.file, data):
         raise SystemExit(f"The download of {item.file} is incomplete. Run this command again.")
@@ -147,9 +144,6 @@ def install_app(channel: str) -> Path:
         folder = system if os.access(system, os.W_OK) else personal
         folder.mkdir(exist_ok=True)
         run(["ditto", str(unpacked / APP_NAME), str(folder / APP_NAME)], "Copying Coconut.app")
-    if used == "nightly":
-        # The app then keeps the channel of this build.
-        run(["defaults", "write", BUNDLE_ID, "updateChannel", "nightly"], "Choosing the nightly channel")
     return folder / APP_NAME
 
 
@@ -293,8 +287,6 @@ def share() -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--channel", choices=["stable", "nightly"], default="stable",
-                        help="The update channel of a new Coconut.app.")
     parser.add_argument("--reset-hermes-settings", action="store_true",
                         help="Forget the saved COCONUT_HERMES_PYTHON, COCONUT_HERMES_ROOT and HERMES_HOME of Coconut.app.")
     args = parser.parse_args()
@@ -309,7 +301,7 @@ def main() -> None:
     step("Installing Coconut.app")
     app = find_app()
     if app is None:
-        app = install_app(args.channel)
+        app = install_app()
     print(f"Coconut.app is in {app.parent}. It updates itself.")
     settings_changed = save_hermes_settings() or settings_changed
     previous = use_this_folder()

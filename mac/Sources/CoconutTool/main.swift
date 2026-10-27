@@ -13,8 +13,6 @@ let usage = """
                 command. Run coconut status later to see the end. --wait waits for the end (not inside a bot turn).
       settings automatic-updates on|off
                 Turn automatic updates on or off. When on, Coconut.app checks every six hours and installs.
-      settings channel stable|nightly
-                Choose the update channel.
       pair      Print a one-time iPhone setup link.
       pair <code>
                 Pair the iPhone that shows this code. Hermes runs this from the iPhone's message.
@@ -94,7 +92,7 @@ func checkForUpdates() -> Int32 {
     open.standardError = FileHandle.nullDevice
     try? open.run()
     open.waitUntilExit()
-    print("Checking for updates on the \(preferences.channel.rawValue) channel.")
+    print("Checking for updates.")
     guard let result = waitForResult(preferences, after: start, seconds: 300) else {
         print("Coconut.app did not answer within five minutes. Open the Coconut menu, then run coconut update again.")
         return 1
@@ -293,9 +291,6 @@ case "settings":
     switch (arguments.first, arguments.dropFirst().first) {
     case ("automatic-updates", "on"?), ("automatic-updates", "off"?):
         preferences.setAutomaticUpdates(arguments[1] == "on")
-    case ("channel", let value?):
-        guard let channel = UpdateChannel(rawValue: value) else { fail(usage, code: 64) }
-        preferences.setChannel(channel)
     case (nil, nil):
         break
     default:
@@ -304,7 +299,6 @@ case "settings":
     DistributedNotificationCenter.default().postNotificationName(.init(UpdatePreferences.settingsChanged), object: nil,
                                                                  userInfo: nil, deliverImmediately: true)
     print("Automatic updates: \(preferences.automaticUpdates ? "on" : "off")")
-    print("Update channel: \(preferences.channel.rawValue)")
 case "version":
     print(appVersion())
 case "", "-h", "--help", "help":

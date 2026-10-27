@@ -180,7 +180,7 @@ A developer with a checkout of this repository runs `python3 ~/Coconut/scripts/s
 1. It checks for macOS and Xcode Command Line Tools. Coconut.app needs macOS 14 or later.
 2. It finds and checks the Hermes that the person already uses, as the service does at each start. See [The Hermes that Coconut uses](#the-hermes-that-coconut-uses). It does not install its own copy. If Hermes is missing or does not pass the check, it stops and says why.
 3. It prepares notification encryption with `push.py --rebuild`.
-4. It installs Coconut.app when it is missing. It downloads the newest stable build from the update feed, or the newest nightly build before the first stable release. It accepts the app only when `codesign` and Gatekeeper accept it. The app goes in `/Applications`, or in `~/Applications` when `/Applications` is not writable.
+4. It installs Coconut.app when it is missing. It downloads the newest build from the update feed. It accepts the app only when `codesign` and Gatekeeper accept it. The app goes in `/Applications`, or in `~/Applications` when `/Applications` is not writable.
 5. It makes the app run this checkout (the preference `InstallDirectory` of `com.gumroad.coconut.mac`). It keeps the Hermes settings `COCONUT_HERMES_PYTHON`, `COCONUT_HERMES_ROOT` and `HERMES_HOME` of the shell or of the earlier LaunchAgent in the preference `ServiceEnvironment`. If the app ran another folder, that service finishes its running turns, and the login items start again with this checkout.
 6. It moves a service of the earlier LaunchAgents to the app with `host.py migrate-to-app`. The running bot turns finish first. The data stays in place.
 7. It opens the app. The app registers its login items, and Coconut starts again after a restart. The command waits for the local health check.
@@ -188,7 +188,6 @@ A developer with a checkout of this repository runs `python3 ~/Coconut/scripts/s
 9. It runs `python3 scripts/pairing.py --share`. It prints the setup link and the path of a QR image that holds the same link last.
 
 Each failed check prints what to do. You can run the command again at any time. It skips the steps that are complete, and it prints a new setup link.
-`--channel nightly` installs the nightly build of a new app.
 A later run uses the saved Hermes settings where the shell has none. `--reset-hermes-settings` forgets them. When the saved settings change, the service finishes its running turns and starts again with them.
 
 Sparkle updates Coconut.app by itself. The source in this checkout stays yours: update it with `git pull`, then run `python3 scripts/host.py restart` while no bot works. The restart stops running bot turns at once.
@@ -203,8 +202,8 @@ An iPhone that paired before the relay used Tailscale. It shows "Coconut no long
 
 GitHub Actions makes every release. No Mac deploys or uploads builds by itself.
 
-- `.github/workflows/mac-release.yml` publishes a nightly Coconut.app on each push to `main` and each night. Each day it promotes a tested nightly build to stable.
-- Sparkle in Coconut.app installs the new build on each Mac of its channel.
+- `.github/workflows/mac-release.yml` publishes one Coconut.app build on each push to `main`. The feed has one channel, so every Mac gets each build.
+- Sparkle in Coconut.app installs the new build on each Mac.
 - `.github/workflows/testflight.yml` uploads the iPhone app to TestFlight on each push to `main` that changes the app. See [the iPhone setup](iphone-install.md#testflight-releases-from-ci).
 
 ## Update the backend

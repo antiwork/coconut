@@ -3,7 +3,10 @@ import CoconutKit
 import Foundation
 import Sparkle
 
-/// Sparkle with the feed of Info.plist (SUFeedURL), the channel and the automatic updates of the preferences.
+/// Sparkle with the feed of Info.plist (SUFeedURL) and the automatic updates of the preferences.
+///
+/// The feed has one channel: its items have no `sparkle:channel`, so Sparkle offers each item to every Mac. The updater
+/// allows no channel.
 ///
 /// Sparkle replaces only the app. The service runs from the install folder, so it keeps running. After the relaunch,
 /// AppModel.start runs `coconut install-source --if-needed`, which lets the running turns finish before it changes the
@@ -12,7 +15,6 @@ import Sparkle
 @MainActor
 final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
     @Published private(set) var canCheckForUpdates = false
-    @Published private(set) var channel: UpdateChannel
     @Published private(set) var automaticUpdates: Bool
     @Published private(set) var lastResult: UpdateResult?
 
@@ -23,7 +25,8 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
     private var installsForRequest = false
 
     override init() {
-        channel = preferences.channel
+        // An earlier version kept an update channel. Sparkle does not need it any more.
+        preferences.removeLegacyChannel()
         automaticUpdates = preferences.automaticUpdates
         lastResult = preferences.lastResult
         super.init()
@@ -48,11 +51,6 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
         controller.checkForUpdates(nil)
     }
 
-    func setChannel(_ value: UpdateChannel) {
-        preferences.setChannel(value)
-        applySettings()
-    }
-
     func setAutomaticUpdates(_ value: Bool) {
         preferences.setAutomaticUpdates(value)
         applySettings()
@@ -64,16 +62,8 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
         let automatic = preferences.automaticUpdates
         updater.automaticallyChecksForUpdates = automatic
         updater.automaticallyDownloadsUpdates = automatic
-        let newChannel = preferences.channel
-        let channelChanged = newChannel != channel
-        channel = newChannel
         automaticUpdates = automatic
-        if channelChanged {
-            // A new channel can offer another build at once.
-            updater.checkForUpdatesInBackground()
-        } else {
-            updater.resetUpdateCycle()
-        }
+        updater.resetUpdateCycle()
     }
 
     /// Answer a request of `coconut update`: check now, and install a newer build without a question.
@@ -98,10 +88,6 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
             installsForRequest = false
             controller.updater.automaticallyDownloadsUpdates = preferences.automaticUpdates
         }
-    }
-
-    nonisolated func allowedChannels(for updater: SPUUpdater) -> Set<String> {
-        UpdatePreferences().channel.allowedChannels
     }
 
     nonisolated func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: any Error) {
