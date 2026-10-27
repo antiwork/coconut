@@ -120,40 +120,56 @@ class DecisionInboxTests(unittest.TestCase):
             self.assertEqual(properties['options']['items']['properties']['risk_level'], common['risk_level'])
         self.assertNotIn('risk_level', QUESTION_SCHEMA['parameters']['required'])
 
-    def test_card_tools_expose_notification_importance_apart_from_risk(self):
+    def test_card_tools_expose_needs_attention_now_apart_from_risk(self):
         from coconut.native_bridge import QUESTION_SCHEMA, SUGGEST_SCHEMA, REPLY_SCHEMA
         for schema in (QUESTION_SCHEMA, SUGGEST_SCHEMA):
             properties = schema['parameters']['properties']
-            self.assertEqual(properties['notification_importance']['enum'], ['urgent', 'important', 'routine'])
-            self.assertNotIn('notification_importance', schema['parameters']['required'])
-            self.assertNotIn('notification_importance', properties['options']['items']['properties'])
-        self.assertNotIn('notification_importance', REPLY_SCHEMA['parameters']['properties']['revision']['properties'])
+            self.assertEqual(properties['needs_attention_now']['type'], 'boolean')
+            self.assertIn('next work hours', properties['needs_attention_now']['description'])
+            self.assertNotIn('notification_importance', properties)
+            self.assertNotIn('needs_attention_now', schema['parameters']['required'])
+            self.assertNotIn('needs_attention_now', properties['options']['items']['properties'])
+        self.assertNotIn('needs_attention_now', REPLY_SCHEMA['parameters']['properties']['revision']['properties'])
 
-    def test_native_cards_store_a_valid_notification_importance_and_default_to_none(self):
-        self.assertIsNone(self.question(optional=True).get('notification_importance'))
-        for level in ('urgent', 'important', 'routine'):
-            self.event('native_proposal', dict(key=f'k-{level}', title=f'{level}?', notification_importance=level,
+    def test_native_cards_store_needs_attention_now_and_default_to_false(self):
+        self.assertIs(self.question(optional=True)['needs_attention_now'], False)
+        for value in (True, False):
+            self.event('native_proposal', dict(key=f'k-{value}', title=f'{value}?', needs_attention_now=value,
                                                options=[dict(id='a', label='Do it')]))
-            self.assertEqual(self.service.snapshot()['decisions'][-1]['notification_importance'], level)
+            self.assertIs(self.service.snapshot()['decisions'][-1]['needs_attention_now'], value)
         with self.assertRaises(YieldForDecision):
-            self.event('native_question', dict(title='Restart now?', notification_importance='urgent',
+            self.event('native_question', dict(title='Restart now?', needs_attention_now=True,
                                                options=[dict(id='a', label='Restart')]))
-        self.assertEqual(self.service.snapshot()['decisions'][-1]['notification_importance'], 'urgent')
+        self.assertIs(self.service.snapshot()['decisions'][-1]['needs_attention_now'], True)
 
-    def test_native_cards_reject_other_notification_importance(self):
+    def test_native_cards_reject_a_needs_attention_now_that_is_not_a_boolean(self):
         before = len(self.service.snapshot()['decisions'])
-        for value in ('critical', 'URGENT', 3, True, ['urgent'], {}):
-            with self.subTest(value=value), self.assertRaisesRegex(ServiceError, 'notification_importance'):
-                self.event('native_question', dict(title='Publish?', notification_importance=value, options=[dict(id='a', label='Do it')]))
+        for value in ('true', 'urgent', 1, 0, None, ['true'], {}):
+            with self.subTest(value=value), self.assertRaisesRegex(ServiceError, 'needs_attention_now'):
+                self.event('native_question', dict(title='Publish?', needs_attention_now=value, options=[dict(id='a', label='Do it')]))
         self.assertEqual(len(self.service.snapshot()['decisions']), before)
 
-    def test_notification_importance_reaches_the_push_queue(self):
+    def test_needs_attention_now_reaches_the_push_queue(self):
         self.service.push.record = Mock()
         with self.assertRaises(YieldForDecision):
-            self.event('native_question', dict(title='Server is down. Restart it?', notification_importance='urgent',
+            self.event('native_question', dict(title='Server is down. Restart it?', needs_attention_now=True,
                                                options=[dict(id='a', label='Restart')]))
         created = [c.args[1] for c in self.service.push.record.call_args_list if c.args[0] == 'decision.created']
-        self.assertEqual([d['notification_importance'] for d in created], ['urgent'])
+        self.assertEqual([d['needs_attention_now'] for d in created], [True])
+
+    def test_stored_urgent_importance_becomes_needs_attention_now_and_the_rest_is_dropped(self):
+        from coconut.decision_inbox import migrate_notification_importance
+        decision_id = self.question(optional=True)['id']
+        for level in ('urgent', 'important', 'routine', None):
+            stored = self.service._get('decisions', decision_id)
+            stored.pop('needs_attention_now', None)
+            stored['notification_importance'] = level
+            self.service._put('decisions', stored)
+            migrate_notification_importance(self.service.db)
+            migrate_notification_importance(self.service.db)
+            stored = self.service._get('decisions', decision_id)
+            self.assertNotIn('notification_importance', stored, level)
+            self.assertEqual(stored.get('needs_attention_now'), True if level == 'urgent' else None, level)
 
     def test_recommendation_is_optional_and_survives_revision(self):
         decision = self.question()

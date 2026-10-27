@@ -40,7 +40,7 @@ const FRAMES_PER_MINUTE = 3000;
 const REGISTRATIONS_PER_HOUR = 10;
 const HEX64 = /^[a-f0-9]{64}$/;
 
-const hash = value => createHash('sha256').update(value).digest('hex');
+export const hash = value => createHash('sha256').update(value).digest('hex');
 const control = value => {
   const json = new TextEncoder().encode(JSON.stringify(value));
   const frame = new Uint8Array(4 + json.length);
@@ -51,9 +51,9 @@ const close = (ws, code, reason) => { try { ws.close(code, reason); } catch {} }
 const send = (ws, data) => { try { ws.send(data); } catch {} };
 
 // Reads the body as a stream and stops at the cap. It returns null for a larger body.
-async function readCapped(request, limit) {
+export async function readBytes(request, limit) {
   if (Number(request.headers.get('content-length') || 0) > limit) return null;
-  if (!request.body) return '';
+  if (!request.body) return Buffer.alloc(0);
   const reader = request.body.getReader(), chunks = [];
   let size = 0;
   while (true) {
@@ -63,8 +63,10 @@ async function readCapped(request, limit) {
     if (size > limit) { await reader.cancel(); return null; }
     chunks.push(value);
   }
-  return Buffer.concat(chunks).toString('utf8');
+  return Buffer.concat(chunks);
 }
+
+const readCapped = async (request, limit) => (await readBytes(request, limit))?.toString('utf8') ?? null;
 
 // Handles the tunnel routes of the Worker. It returns null for any other path.
 export async function handleTunnel(request, env) {

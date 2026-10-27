@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 from uuid import uuid4
 from zoneinfo import ZoneInfo
-from coconut.push_schedule import DEFAULT_SCHEDULE, LEGACY_SCHEDULE, effective_importance, explicit_importance, in_window, merge, next_opening, validate
+from coconut.push_schedule import DEFAULT_SCHEDULE, LEGACY_SCHEDULE, in_window, merge, next_opening, validate
 from coconut.service import Service, ServiceError
 from test_push import RecordingTransport
 from test_push_relay import EncryptedTransport
@@ -88,7 +88,7 @@ class ScheduleTests(unittest.TestCase):
 
     def test_default_is_every_day_nine_to_six_new_york(self):
         self.assertEqual(DEFAULT_SCHEDULE, dict(enabled=True, start='09:00', end='18:00', timezone='America/New_York',
-                                                weekdays=[1, 2, 3, 4, 5, 6, 7], honor_routine=False))
+                                                weekdays=[1, 2, 3, 4, 5, 6, 7]))
 
     def test_fall_back_repeated_hour_counts_both_times_inside_the_window(self):
         schedule = dict(DEFAULT_SCHEDULE, start='01:00', end='02:00')
@@ -102,14 +102,13 @@ class ScheduleTests(unittest.TestCase):
         for change in ({'timezone': 'Mars/Base'}, {'timezone': 'EST5EDT/../x'}, {'timezone': ''}, {'start': '18:00'},
                        {'start': '9:00'}, {'end': '24:00'}, {'enabled': 1}, {'extra': 1}, {'weekdays': []},
                        {'weekdays': [0]}, {'weekdays': [8]}, {'weekdays': [True]}, {'weekdays': [1.0]}, {'weekdays': ['1']},
-                       {'weekdays': 1}, {'weekdays': None}, {'honor_routine': 1}, {'honor_routine': 'true'},
-                       {'honor_routine': None}):
+                       {'weekdays': 1}, {'weekdays': None}):
             self.assertIsNone(validate(dict(DEFAULT_SCHEDULE, **change)), change)
 
-    def test_weekdays_normalize_and_honor_routine_is_a_strict_boolean(self):
+    def test_weekdays_normalize_and_the_retired_honor_routine_is_dropped(self):
         self.assertEqual(validate(dict(DEFAULT_SCHEDULE, weekdays=[5, 1, 1, 3]))['weekdays'], [1, 3, 5])
-        self.assertTrue(validate(dict(DEFAULT_SCHEDULE, honor_routine=True))['honor_routine'])
-        self.assertFalse(validate(dict(enabled=True, start='09:00', end='18:00', timezone='UTC'))['honor_routine'])
+        for value in (True, False, 'x', None):
+            self.assertEqual(validate(dict(DEFAULT_SCHEDULE, honor_routine=value)), DEFAULT_SCHEDULE, value)
 
     def test_window_and_opening_honor_weekdays(self):
         weekdays = dict(DEFAULT_SCHEDULE, weekdays=[1, 2, 3, 4, 5])
@@ -165,35 +164,13 @@ class ScheduleTests(unittest.TestCase):
         self.assertIsNone(merge(DEFAULT_SCHEDULE, dict(enabled=True, start='18:00', end='09:00')))
         self.assertIsNone(merge(DEFAULT_SCHEDULE, 'off'))
 
-    def test_importance_is_explicit_or_missing(self):
-        self.assertEqual([explicit_importance(v) for v in ('urgent', ' Important ', 'routine', 'ROUTINE')],
-                         ['urgent', 'important', 'routine', 'routine'])
-        for missing in (None, 'ASAP', 5, '', [], True):
-            self.assertIsNone(explicit_importance(missing), missing)
-
-    def test_effective_importance_floors_by_kind_and_explicit_values(self):
-        for kind, floor in (('decision', 'important'), ('failed', 'important'), ('completed', 'routine'), ('message', 'routine')):
-            for missing in (None, 'ASAP', 5, ''):
-                self.assertEqual(effective_importance(kind, missing, True), (floor, 'KindDefault'), (kind, missing))
-            for level in ('urgent', 'important'):
-                for honor in (False, True):
-                    self.assertEqual(effective_importance(kind, level, honor), (level, 'Explicit'))
-        self.assertEqual(effective_importance('decision', 'routine', False), ('important', 'KindFloor'))
-        self.assertEqual(effective_importance('failed', 'routine', False), ('important', 'KindFloor'))
-        self.assertEqual(effective_importance('decision', 'routine', True), ('routine', 'HonoredRoutine'))
-        self.assertEqual(effective_importance('failed', 'routine', True), ('routine', 'HonoredRoutine'))
-        self.assertEqual(effective_importance('completed', 'routine', False), ('routine', 'Explicit'))
-        # Only a real True honors; truthy values do not.
-        self.assertEqual(effective_importance('decision', 'routine', 'yes'), ('important', 'KindFloor'))
-
     def test_merge_applies_partial_updates_over_the_stored_schedule(self):
-        current = dict(DEFAULT_SCHEDULE, weekdays=[1, 2], honor_routine=True, start='08:00')
+        current = dict(DEFAULT_SCHEDULE, weekdays=[1, 2], start='08:00')
         self.assertEqual(merge(current, dict(end='17:00')), dict(current, end='17:00'))
         self.assertEqual(merge(current, dict(weekdays=[6, 7])), dict(current, weekdays=[6, 7]))
-        self.assertEqual(merge(current, dict(honor_routine=False)), dict(current, honor_routine=False))
+        self.assertEqual(merge(current, dict(honor_routine=True)), current)
         self.assertIsNone(merge(current, dict(weekdays=[])))
-        self.assertIsNone(merge(current, dict(honor_routine='no')))
-        draft = dict(enabled=False, weekdays=[], honor_routine='x', start='nope')
+        draft = dict(enabled=False, weekdays=[], start='nope')
         self.assertEqual(merge(current, draft), dict(current, enabled=False))
 
 
@@ -230,21 +207,18 @@ class OffHoursDeliveryTests(unittest.TestCase):
     def at(self, ts):
         return mock.patch('coconut.push.time', SimpleNamespace(time=lambda: ts))
 
-    def decision(self, level=None, ts=None):
-        """Queue the decision's alert at `ts` with the bot's importance."""
+    def decision(self, urgent=False, ts=None):
+        """Queue the decision's alert at `ts`. `urgent` is the bot's needs_attention_now."""
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', dict(text='Write report', mode='queue'))
         with self.at(self.queued(ts)):
             self.service._run_task(task['id'])
             decision = self.service._get('decisions', next(d['id'] for d in self.service.snapshot()['decisions']
                                                           if d['task_id'] == task['id']))
             self.service.db.execute('DELETE FROM push_outbox')
-            decision['notification_importance'] = level
+            decision['needs_attention_now'] = urgent
             self.service._put('decisions', decision)
             self.service.push.record('decision.created', self.service._public(decision), self.bot['id'], task['id'])
         return decision
-
-    def honor(self, **values):
-        self.register(schedule=dict(honor_routine=True, **values))
 
     def queued(self, ts):
         """Alerts are queued ten seconds before the time they are meant to be delivered, past the two second settling delay."""
@@ -265,10 +239,7 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.assertEqual(self.service.db.execute('SELECT not_before,deferred_reason,deferred_until FROM push_outbox').fetchone(), (ts, None, None))
 
     def row(self):
-        return self.service.db.execute('SELECT status,reason,importance,deferred_reason,deferred_until,attempts FROM push_outbox').fetchone()
-
-    def audit(self):
-        return self.service.db.execute('SELECT explicit_importance,importance,importance_reason FROM push_outbox').fetchone()
+        return self.service.db.execute('SELECT status,reason,urgent,deferred_reason,deferred_until,attempts FROM push_outbox').fetchone()
 
     def task_alert(self, kind, ts=None):
         """Queue the completion or failure alert of a finished task at `ts`. Task alerts exist for phones without category preferences."""
@@ -284,13 +255,11 @@ class OffHoursDeliveryTests(unittest.TestCase):
             self.service.push.record('task.updated', dict(status=kind), self.bot['id'], task['id'])
         return task
 
-    def test_honored_routine_decision_waits_for_opening_with_audit_and_stays_in_inbox(self):
-        self.honor()
-        decision = self.decision('routine')
+    def test_decision_waits_for_opening_and_stays_in_inbox(self):
+        decision = self.decision()
         self.deliver(self.NIGHT)
         self.assertEqual(self.transport.calls, [])
-        self.assertEqual(self.row(), ('queued', None, 'routine', 'OffHours', self.MORNING, 0))
-        self.assertEqual(self.audit(), ('routine', 'routine', 'HonoredRoutine'))
+        self.assertEqual(self.row(), ('queued', None, 0, 'OffHours', self.MORNING, 0))
         self.assertEqual([d['id'] for d in self.service.snapshot()['decisions'] if d['status'] == 'pending'], [decision['id']])
         self.deliver(self.MORNING - 1)
         self.assertEqual(self.transport.calls, [])
@@ -298,82 +267,44 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.assertEqual(len(self.transport.calls), 1)
         self.assertEqual(self.row()[:2], ('accepted', 'Accepted'))
 
-    def test_missing_or_invalid_importance_keeps_decisions_and_failures_important(self):
-        for level in (None, 'ASAP', 5):
+    def test_only_a_true_needs_attention_now_skips_work_hours(self):
+        for value in (False, None, 'true', 1, 'urgent'):
             self.service.db.execute('DELETE FROM push_outbox')
-            self.decision(level)
+            self.decision(value)
             self.deliver(self.NIGHT)
-            self.assertEqual(self.row()[:4], ('accepted', 'Accepted', 'important', None), level)
-            self.assertEqual(self.audit(), (None, 'important', 'KindDefault'))
-        self.assertEqual(len(self.transport.calls), 3)
+            self.assertEqual(self.row()[:4], ('queued', None, 0, 'OffHours'), value)
         self.service.db.execute('DELETE FROM push_outbox')
-        self.task_alert('failed')
+        self.decision(True)
         self.deliver(self.NIGHT)
-        self.assertEqual(self.row()[:4], ('accepted', 'Accepted', 'important', None))
-        self.assertEqual(self.audit(), (None, 'important', 'KindDefault'))
-        self.assertEqual(len(self.transport.calls), 4)
+        self.assertEqual(self.row()[:4], ('accepted', 'Accepted', 1, None))
+        self.assertEqual(len(self.transport.calls), 1)
 
-    def test_completions_and_messages_are_routine_by_default_and_wait(self):
-        self.honor()
-        self.task_alert('completed')
-        self.deliver(self.NIGHT)
-        self.assertEqual(self.row(), ('queued', None, 'routine', 'OffHours', self.MORNING, 0))
-        self.assertEqual(self.audit(), (None, 'routine', 'KindDefault'))
+    def test_failures_completions_and_messages_wait_even_when_marked(self):
+        for kind in ('failed', 'completed'):
+            self.service.db.execute('DELETE FROM push_outbox')
+            task = self.task_alert(kind)
+            self.service.db.execute('DELETE FROM push_outbox')
+            with self.at(self.queued(None)):
+                self.service.push.record('task.updated', dict(status=kind, needs_attention_now=True), self.bot['id'], task['id'])
+            self.deliver(self.NIGHT)
+            self.assertEqual(self.row(), ('queued', None, 0, 'OffHours', self.MORNING, 0), kind)
         self.service.db.execute('DELETE FROM push_outbox')
         task = self.service._get('tasks', self.service.db.execute('SELECT id FROM tasks').fetchone()[0])
         message = dict(id=str(uuid4()), bot_id=self.bot['id'], task_id=task['id'], role='assistant', kind='text', text='Hello')
         self.service._put('messages', message)
         self.legacy = False
-        self.honor()
-        self.service.db.execute('DELETE FROM push_outbox')
+        self.register(schedule=DEFAULT_SCHEDULE)
         with self.at(self.queued(None)):
-            self.service.push.record('message.created', self.service._get('messages', message['id']), self.bot['id'], task['id'])
+            self.service.push.record('message.created', dict(self.service._get('messages', message['id']), needs_attention_now=True),
+                                     self.bot['id'], task['id'])
         self.deliver(self.NIGHT)
-        self.assertEqual(self.row(), ('queued', None, 'routine', 'OffHours', self.MORNING, 0))
+        self.assertEqual(self.row(), ('queued', None, 0, 'OffHours', self.MORNING, 0))
         self.assertEqual(self.transport.calls, [])
 
-    def test_explicit_routine_waits_only_when_the_schedule_honors_it(self):
-        self.decision('routine')
-        self.deliver(self.NIGHT)
-        self.assertEqual(self.row()[:4], ('accepted', 'Accepted', 'important', None))
-        self.assertEqual(self.audit(), ('routine', 'important', 'KindFloor'))
-        self.service.db.execute('DELETE FROM push_outbox')
-        self.honor()
-        self.decision('routine')
-        self.deliver(self.NIGHT)
-        self.assertEqual(self.row()[:4], ('queued', None, 'routine', 'OffHours'))
-        # Turning honor off releases the waiting alert at the next delivery check.
-        self.release(self.NIGHT + 10, schedule=dict(honor_routine=False))
-        self.deliver(self.NIGHT + 60)
-        self.assertEqual(self.row()[:3], ('accepted', 'Accepted', 'important'))
-        self.assertEqual(len(self.transport.calls), 2)
-
-    def test_honored_routine_failure_task_alert_waits(self):
-        self.honor()
-        self.task_alert('failed')
-        self.service.db.execute('UPDATE push_outbox SET explicit_importance=?', ('routine',))
-        self.deliver(self.NIGHT)
-        self.assertEqual(self.row()[:4], ('queued', None, 'routine', 'OffHours'))
-        self.assertEqual(self.audit(), ('routine', 'routine', 'HonoredRoutine'))
-
-    def test_explicit_urgent_and_important_elevate_even_a_routine_kind(self):
-        for level in ('urgent', 'important'):
-            self.service.db.execute('DELETE FROM push_outbox')
-            self.task_alert('completed')
-            self.service.db.execute('UPDATE push_outbox SET explicit_importance=?', (level,))
-            self.deliver(self.NIGHT)
-            self.assertEqual(self.row()[:4], ('accepted', 'Accepted', level, None))
-
-    def test_importance_audit_never_overwrites_the_delivery_reason(self):
-        self.decision('urgent')
-        self.deliver(self.NIGHT)
-        self.assertEqual(self.row()[:2], ('accepted', 'Accepted'))
-        self.assertEqual(self.audit(), ('urgent', 'urgent', 'Explicit'))
-
     def test_weekend_alert_waits_for_the_next_chosen_weekday(self):
-        self.honor(weekdays=[1, 2, 3, 4, 5])
+        self.register(schedule=dict(weekdays=[1, 2, 3, 4, 5]))
         saturday_noon = instant(2026, 7, 18, 12)
-        self.decision('routine', saturday_noon)
+        self.decision(ts=saturday_noon)
         self.deliver(saturday_noon + 2)
         self.assertEqual(self.transport.calls, [])
         monday = instant(2026, 7, 20, 9)
@@ -381,10 +312,10 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.deliver(monday)
         self.assertEqual(len(self.transport.calls), 1)
 
-    def test_schedule_weekdays_and_honor_persist_through_partial_updates_and_restart(self):
+    def test_schedule_weekdays_persist_through_partial_updates_and_restart(self):
         self.register(schedule=dict(weekdays=[1, 3], honor_routine=True))
         self.register(schedule=dict(start='08:00'))
-        expected = dict(DEFAULT_SCHEDULE, weekdays=[1, 3], honor_routine=True, start='08:00')
+        expected = dict(DEFAULT_SCHEDULE, weekdays=[1, 3], start='08:00')
         self.assertEqual(self.service.push.schedule(self.device), expected)
         # A client that predates the new fields leaves them alone.
         self.register(schedule=dict(enabled=True, start='08:00', end='17:00', timezone='America/New_York'))
@@ -395,8 +326,8 @@ class OffHoursDeliveryTests(unittest.TestCase):
 
     def test_invalid_schedule_updates_are_rejected_and_change_nothing(self):
         before = self.service.push.schedule(self.device)
-        for bad in (dict(weekdays=[]), dict(weekdays=[0]), dict(weekdays=[True]), dict(weekdays='1'), dict(honor_routine='yes'),
-                    dict(honor_routine=1), dict(start='19:00')):
+        for bad in (dict(weekdays=[]), dict(weekdays=[0]), dict(weekdays=[True]), dict(weekdays='1'), dict(start='19:00'),
+                    dict(extra=True)):
             with self.subTest(bad=bad), self.assertRaises(ServiceError) as raised:
                 self.register(schedule=bad)
             self.assertEqual(raised.exception.status, 400)
@@ -411,17 +342,9 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.service.db.execute('UPDATE push_schedules SET data=? WHERE device_id=?', ('{"weekdays": []}', self.device))
         self.assertEqual(self.service.push.schedule(self.device), LEGACY_SCHEDULE)
 
-    def test_urgent_and_important_send_off_hours(self):
-        for level in ('urgent', 'important'):
-            self.service.db.execute('DELETE FROM push_outbox')
-            self.decision(level)
-            self.deliver(self.NIGHT)
-            self.assertEqual(self.row()[:4], ('accepted', 'Accepted', level, None))
-        self.assertEqual(len(self.transport.calls), 2)
-
     def test_routine_sends_during_work_hours(self):
         noon = instant(2026, 7, 15, 12)
-        self.decision('routine', noon)
+        self.decision(ts=noon)
         self.deliver(noon + 2)
         self.assertEqual(len(self.transport.calls), 1)
 
@@ -481,7 +404,7 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.task_alert('completed')
         self.deliver(self.NIGHT)
         self.deliver(self.MORNING)
-        self.assertEqual(self.row()[:5], ('accepted', 'Accepted', 'routine', None, None))
+        self.assertEqual(self.row()[:5], ('accepted', 'Accepted', 0, None, None))
 
     def test_a_row_with_a_sealed_envelope_is_never_deferred_on_retry(self):
         route = {'route_id': 'a' * 64, 'send_token': 'b' * 64, 'public_key': base64.b64encode(b'x' * 32).decode()}
@@ -570,14 +493,13 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.assertEqual(len(self.transport.calls), 1)
 
     def test_answered_decision_and_muted_category_still_discard_deferred_alerts(self):
-        self.honor()
-        decision = self.decision('routine')
+        decision = self.decision()
         self.deliver(self.NIGHT)
         decision['status'] = 'approved'
         self.service._put('decisions', decision)
         self.deliver(self.MORNING)
         self.assertEqual(self.row()[:2], ('discarded', 'NoLongerRelevant'))
-        self.decision('routine')
+        self.decision()
         self.deliver(self.NIGHT)
         self.write('PUT', '/v1/device/push', dict(token='a' * 64, environment='development', enabled=True,
                                                   preferences=dict(decisions=False, messages=True)))
@@ -585,8 +507,7 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.assertEqual(self.transport.calls, [])
 
     def test_a_deferred_alert_leaves_the_task_and_decision_untouched(self):
-        self.honor()
-        decision = self.decision('routine')
+        decision = self.decision()
         before = self.service._get('decisions', decision['id'])
         self.deliver(self.NIGHT)
         self.assertEqual(self.service._get('decisions', decision['id']), before)
@@ -595,7 +516,7 @@ class OffHoursDeliveryTests(unittest.TestCase):
         self.service.db.execute('DELETE FROM push_schedules')
         self.assertEqual(self.service.push.schedule(self.device), LEGACY_SCHEDULE)
         self.assertFalse(LEGACY_SCHEDULE['enabled'])
-        self.decision('routine')
+        self.decision()
         self.deliver(self.NIGHT)
         self.assertEqual(self.row()[:2] + self.row()[3:4], ('accepted', 'Accepted', None))
         # Registering without a schedule, as an old app does, leaves it off. The updated app turns it on.
@@ -609,17 +530,17 @@ class OffHoursDeliveryTests(unittest.TestCase):
         relay = EncryptedTransport()
         self.service.push.relay = relay
         self.write('PUT', '/v1/device/push', dict(token='a' * 64, environment='development', enabled=True, relay=route,
-                                                  schedule=dict(DEFAULT_SCHEDULE, honor_routine=True)))
-        self.decision('routine')
+                                                  schedule=DEFAULT_SCHEDULE))
+        self.decision()
         self.deliver(self.NIGHT)
         self.assertEqual((relay.sealed, relay.sent), ([], []))
-        self.assertEqual(self.row()[:4], ('queued', None, 'routine', 'OffHours'))
+        self.assertEqual(self.row()[:4], ('queued', None, 0, 'OffHours'))
         self.deliver(self.MORNING)
         self.deliver(self.MORNING + 60)
         self.assertEqual((len(relay.sealed), len(relay.sent)), (1, 1))
         self.assertEqual(self.row()[:2], ('accepted', 'Accepted'))
 
-    def test_old_database_gains_schedule_columns_and_old_rows_use_the_kind_floor(self):
+    def test_old_database_drops_importance_columns_and_keeps_only_urgent(self):
         path = tempfile.mkdtemp()
         db = sqlite3.connect(f'{path}/old.db')
         db.executescript('''
@@ -627,25 +548,27 @@ class OffHoursDeliveryTests(unittest.TestCase):
             id TEXT PRIMARY KEY, device_id TEXT NOT NULL, event_key TEXT NOT NULL,
             bot_id TEXT NOT NULL, task_id TEXT NOT NULL, decision_id TEXT, kind TEXT NOT NULL,
             turn_id TEXT NOT NULL, status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
-            not_before REAL NOT NULL, expires REAL NOT NULL, reason TEXT, UNIQUE(device_id, event_key));
-        INSERT INTO push_outbox VALUES ('old','d','e','b','t',NULL,'completed','u','queued',0,0,9e9,NULL);''')
+            not_before REAL NOT NULL, expires REAL NOT NULL, reason TEXT,
+            importance TEXT, explicit_importance TEXT, importance_reason TEXT, UNIQUE(device_id, event_key));
+        INSERT INTO push_outbox VALUES ('a','d','a','b','t','x','decision','u','queued',0,0,9e9,NULL,'urgent','urgent','Explicit');
+        INSERT INTO push_outbox VALUES ('b','d','b','b','t','y','decision','u','queued',0,0,9e9,NULL,'important','routine','KindFloor');
+        INSERT INTO push_outbox VALUES ('c','d','c','b','t',NULL,'completed','u','queued',0,0,9e9,NULL,NULL,NULL,NULL);''')
         from coconut.push import PushDelivery
         PushDelivery(SimpleNamespace(db=db, root=path))
         columns = {row[1] for row in db.execute('PRAGMA table_info(push_outbox)')}
-        self.assertTrue({'importance', 'explicit_importance', 'importance_reason', 'deferred_reason', 'deferred_until'} <= columns)
-        old = db.execute('SELECT explicit_importance,importance,importance_reason,deferred_until FROM push_outbox').fetchone()
-        self.assertEqual(old, (None, None, None, None))
-        self.assertEqual(effective_importance('completed', old[0]), ('routine', 'KindDefault'))
-        self.assertEqual(effective_importance('decision', old[0]), ('important', 'KindDefault'))
+        self.assertTrue({'urgent', 'deferred_reason', 'deferred_until'} <= columns)
+        self.assertFalse({'importance', 'explicit_importance', 'importance_reason'} & columns)
+        self.assertEqual(db.execute('SELECT id,urgent,deferred_until FROM push_outbox ORDER BY id').fetchall(),
+                         [('a', 1, None), ('b', 0, None), ('c', 0, None)])
         PushDelivery(SimpleNamespace(db=db, root=path))
         db.close()
 
-    def test_legacy_decision_path_drops_invalid_importance(self):
-        for given, expected in (('urgent', 'urgent'), ('ASAP', None), (5, None), (None, None)):
-            payload = dict(title=f'Go {given}?', action_type='create_file', notification_importance=given,
+    def test_legacy_decision_path_keeps_only_a_true_needs_attention_now(self):
+        for given, expected in ((True, True), ('true', False), (1, False), (None, False)):
+            payload = dict(title=f'Go {given}?', action_type='create_file', needs_attention_now=given,
                            action=dict(type='create_file', filename='a.txt', content='A'))
             self.service.provider.start_task = lambda task, bot, history, emit, payload=payload: emit('decision', payload)
             task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', dict(text='Go', mode='queue'))
             self.service._run_task(task['id'])
             decision = next(d for d in self.service.snapshot()['decisions'] if d['task_id'] == task['id'])
-            self.assertEqual(decision['notification_importance'], expected, given)
+            self.assertIs(decision['needs_attention_now'], expected, given)

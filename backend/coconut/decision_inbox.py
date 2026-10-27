@@ -45,13 +45,21 @@ def require_merge_risk(decision):
                                 'that names what the merge could break.')
 
 
-def notification_importance(payload):
-    """How urgently the bot says this card needs a push. Missing is routine. It is not the risk of the action."""
+def needs_attention_now(payload):
+    """Whether the bot says this card must reach the person before their next work hours. Missing is false."""
     from .service import ServiceError
-    value = payload.get('notification_importance')
-    if value not in (None, 'urgent', 'important', 'routine'):
-        raise ServiceError(400, 'Use urgent, important, or routine for notification_importance.')
-    return dict(notification_importance=value)
+    value = payload.get('needs_attention_now', False)
+    if type(value) is not bool:
+        raise ServiceError(400, 'Use true or false for needs_attention_now.')
+    return dict(needs_attention_now=value)
+
+
+def migrate_notification_importance(db):
+    """Replace the retired notification_importance of stored cards. Only urgent becomes needs_attention_now."""
+    db.execute("""UPDATE decisions SET data=json_set(data, '$.needs_attention_now', json('true'))
+                  WHERE json_extract(data, '$.notification_importance')='urgent'""")
+    db.execute("""UPDATE decisions SET data=json_remove(data, '$.notification_importance')
+                  WHERE json_type(data, '$.notification_importance') IS NOT NULL""")
 
 
 def card_text(payload):

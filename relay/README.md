@@ -1,6 +1,6 @@
 # Coconut relay
 
-A Cloudflare Worker that delivers encrypted notifications through APNs and forwards the encrypted phone-to-Mac tunnel. Users need no Apple key, Developer account or relay account. The relay sees routing IDs, timing and sizes, never content.
+A Cloudflare Worker that delivers encrypted notifications through APNs and forwards the encrypted phone-to-Mac tunnel. It also holds the sealed one-time setup that a Mac sends to an iPhone for a pairing code (`docs/relay-transport.md`, "Pairing code from the iPhone"). Users need no Apple key, Developer account or relay account. The relay sees routing IDs, timing and sizes, never content.
 
 ## Secrets
 
