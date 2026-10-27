@@ -335,40 +335,8 @@ def service_supervised():
         return False
 
 
-def update(config, state_path):
-    state = json.loads(state_path.read_text()) if state_path.exists() else {}
-    processed_build = state.get('pending_ios', {}).get('build')
-    if processed_build:
-        try:
-            release_ios(config, state, state_path)
-        except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as error:
-            print(str(error), file=sys.stderr)
-    source = Path(config['source']).resolve()
-    live = Path(config['live']).resolve()
-    if source == live or live in source.parents or source in live.parents:
-        raise ValueError('Use a separate checkout outside the running installation.')
-    origin = run(['git', 'remote', 'get-url', 'origin'], cwd=source)
-    repository = config['repository']
-    if origin not in (f'https://github.com/{repository}.git', f'https://github.com/{repository}', f'git@github.com:{repository}.git'):
-        raise ValueError('The checkout remote differs from the configured repository.')
-    if run(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=source):
-        raise ValueError('The automatic checkout has local changes.')
-    run(['git', 'fetch', 'origin', 'main'], cwd=source)
-    sha = run(['git', 'rev-parse', 'origin/main'], cwd=source)
-    failed = state.get('failed_deploy') or {}
-    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0) and service_supervised():
-        # Each failed attempt stops and restarts the service. Wait before the next install of the same commit.
-        # launchd keeps the restored service running meanwhile. When a failed rollback left the launch agent
-        # unloaded, nothing restarts the service, so the install runs now: it recovers from the journal first.
-        # A TestFlight archive uses its own checkout, so it does not wait for the backoff.
-        if state.get('pending_ios') and not processed_build and config.get('release_helper'):
-            try:
-                release_ios(config, state, state_path)
-            except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as error:
-                print(str(error), file=sys.stderr)
-        return
-    reviewed_merge(repository, sha)
-    run(['git', 'checkout', '--detach', sha], cwd=source)
+def install(state, state_path, source, live, sha, failed):
+    """Install the merged commit in the running installation with its deploy.py, and record it in the state."""
     packaging = module(source, 'remote')
     package = state_path.parent / 'automatic-package.tar.gz'
     tracked = set(run(['git', 'ls-files'], cwd=source).splitlines())
@@ -423,6 +391,48 @@ def update(config, state_path):
     # Save the install now, so a later iOS step that fails cannot leave an old backoff in place.
     save(state_path, state)
     retry_tunnel(live, state, state_path)
+
+
+def update(config, state_path):
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    processed_build = state.get('pending_ios', {}).get('build')
+    if processed_build:
+        try:
+            release_ios(config, state, state_path)
+        except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as error:
+            print(str(error), file=sys.stderr)
+    source = Path(config['source']).resolve()
+    live = Path(config['live']).resolve()
+    if source == live or live in source.parents or source in live.parents:
+        raise ValueError('Use a separate checkout outside the running installation.')
+    origin = run(['git', 'remote', 'get-url', 'origin'], cwd=source)
+    repository = config['repository']
+    if origin not in (f'https://github.com/{repository}.git', f'https://github.com/{repository}', f'git@github.com:{repository}.git'):
+        raise ValueError('The checkout remote differs from the configured repository.')
+    if run(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=source):
+        raise ValueError('The automatic checkout has local changes.')
+    run(['git', 'fetch', 'origin', 'main'], cwd=source)
+    sha = run(['git', 'rev-parse', 'origin/main'], cwd=source)
+    failed = state.get('failed_deploy') or {}
+    if failed.get('source_sha') == sha and time.time() < failed.get('retry_at', 0) and service_supervised():
+        # Each failed attempt stops and restarts the service. Wait before the next install of the same commit.
+        # launchd keeps the restored service running meanwhile. When a failed rollback left the launch agent
+        # unloaded, nothing restarts the service, so the install runs now: it recovers from the journal first.
+        # A TestFlight archive uses its own checkout, so it does not wait for the backoff.
+        if state.get('pending_ios') and not processed_build and config.get('release_helper'):
+            try:
+                release_ios(config, state, state_path)
+            except (RuntimeError, subprocess.TimeoutExpired, OSError, ValueError) as error:
+                print(str(error), file=sys.stderr)
+        return
+    reviewed_merge(repository, sha)
+    run(['git', 'checkout', '--detach', sha], cwd=source)
+    if config.get('deploy', True):
+        install(state, state_path, source, live, sha, failed)
+    else:
+        # Coconut.app updates the running installation with Sparkle. This Mac only uploads TestFlight builds.
+        state['source_sha'] = sha
+        save(state_path, state)
     fingerprint = ios_hash(source)
     if config.get('release_helper') and not state.get('pending_ios', {}).get('build'):
         if fingerprint in (state.get('ios_hash'), state.get('rejected_ios_hash')):

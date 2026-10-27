@@ -170,6 +170,33 @@ class AutomaticUpdateTests(unittest.TestCase):
             self.assertEqual(len(received), 1)
             self.assertNotIn('--update-runtime', received[0])
 
+    def test_without_deploy_only_testflight_follows_main(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            source, live = root / 'source', root / 'live'
+            source.mkdir(); live.mkdir()
+            state_path = root / 'state.json'
+            update.save(state_path, dict(ios_hash='old'))
+
+            def command(args, **kwargs):
+                if args[:3] == ['git', 'remote', 'get-url']: return 'https://github.com/owner/repo.git'
+                if args[:2] == ['git', 'rev-parse']: return 'next'
+                # Coconut.app owns the running installation, so nothing packages or receives the source.
+                self.assertNotIn('receive', args)
+                self.assertNotEqual(args[:2], ['git', 'ls-files'])
+                return ''
+            config = dict(repository='owner/repo', source=str(source), live=str(live), release_helper='helper', deploy=False)
+            with patch.object(update, 'run', side_effect=command), patch.object(update, 'module') as loaded, \
+                    patch.object(update, 'reviewed_merge') as reviewed, patch.object(update, 'ios_hash', return_value='ios'), \
+                    patch.object(update, 'release_ios') as release:
+                update.update(config, state_path)
+            loaded.assert_not_called()
+            reviewed.assert_called_once_with('owner/repo', 'next')
+            saved = json.loads(state_path.read_text())
+            self.assertEqual(saved['source_sha'], 'next')
+            self.assertEqual(saved['pending_ios'], dict(hash='ios', source_sha='next'))
+            release.assert_called_once()
+
     def test_a_failed_sidecar_build_is_retried_after_the_files_match(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
