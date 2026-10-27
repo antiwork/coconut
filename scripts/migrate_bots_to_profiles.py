@@ -211,24 +211,43 @@ def recovery_steps(data_dir: Path, ledger: dict) -> str:
 def follow_env_paths(source: Path, destination: Path) -> None:
     """A bot's .env can name a login folder inside its old home (GH_CONFIG_DIR, CODEX_HOME, XDG_*). Point it at the new home.
 
-    The values come from the .env reader that login_folders uses (runtime_environment._env_values), so both read the
-    same keys, quoted or not. Only a whole value that is the old home, or a path below it, changes. A match inside
-    another value stays.
+    Each assignment line is read as written: an optional `export`, the key with the key rule of the .env reader that
+    login_folders uses (runtime_environment.env_key, so quoted keys count), `=`, and the raw value without its quotes.
+    When the raw value is the old home or a path below it, only that prefix changes. The rest of the value, such as a
+    ${VAR:-default} part or an escaped character, the quotes, `export` and a comment stay as written.
     """
     path = destination / '.env'
     if not path.is_file() or path.is_symlink():
         return
+    runtime = host.backend_module('runtime_environment')
     old, new = str(source), str(destination)
-    values = host.backend_module('runtime_environment')._env_values(path)
-    stale = sorted({value for value in values.values() if isinstance(value, str)
-                    and (value == old or value.startswith(old + '/'))}, key=len, reverse=True)
-    text = moved = path.read_text(encoding='utf-8')
-    for value in stale:
-        # The value as a whole: after `=` and an optional quote, before an optional quote, a comment, or the line end.
-        pattern = r'(=[ \t]*["\']?)' + re.escape(value) + r'(?=["\']?[ \t]*(?:#.*)?$)'
-        moved = re.sub(pattern, lambda match, value=value: match[1] + new + value[len(old):], moved, flags=re.M)
-    if moved != text:
-        path.write_text(moved, encoding='utf-8')
+    lines = path.read_text(encoding='utf-8').split('\n')
+    changed = False
+    for number, line in enumerate(lines):
+        start = len(line) - len(line.lstrip(' \t'))
+        export = re.match(r'export\s+', line[start:])
+        start += export.end() if export else 0
+        key, start = runtime.env_key(line, start)
+        if key is None:
+            continue
+        equals = re.match(r'[ \t]*=[ \t]*', line[start:])
+        if not equals or '=' not in equals.group(0):
+            continue
+        start += equals.end()
+        if start < len(line) and line[start] in '"\'':
+            # The raw value ends at the closing quote, which the reader finds. A value over several lines stays.
+            closing = runtime._quoted(line, start + 1, line[start])[1]
+            if closing > len(line) or line[closing - 1] != line[start]:
+                continue
+            first, last = start + 1, closing - 1
+        else:
+            first, last = start, start + len(re.split(r'\s+#', line[start:], maxsplit=1)[0].rstrip())
+        raw = line[first:last]
+        if raw == old or raw.startswith(old + '/'):
+            lines[number] = line[:first] + new + line[first + len(old):]
+            changed = True
+    if changed:
+        path.write_text('\n'.join(lines), encoding='utf-8')
 
 
 def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, rename=os.rename) -> dict | None:

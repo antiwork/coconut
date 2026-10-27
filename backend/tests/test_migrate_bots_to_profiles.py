@@ -199,14 +199,18 @@ class MigrationTests(unittest.TestCase):
         (home / '.env').write_text(f'GH_CONFIG_DIR={home}/.config/gh\nexport CODEX_HOME="{home}/codex"  # login\n'
                                    f"HOME_COPY='{home}'\nXDG_CONFIG_HOME=/elsewhere/config\nOTHER={home}-sibling\n"
                                    f'MIDDLE=/mirror{home}/gh\nLIST=/a:{home}/bin\n'
-                                   f"'GH_TOKEN_DIR'=\"{home}/.config/token\"\n\"XDG_DATA_HOME\"='{home}/data'\n")
+                                   f"'GH_TOKEN_DIR'=\"{home}/.config/token\"\n\"XDG_DATA_HOME\"='{home}/data'\n"
+                                   f'GH_CONFIG_DIR_2="{home}/${{GH_SUBDIR:-.config/gh}}"\nESCAPED="{home}/a\\"b"\n'
+                                   f'NOT_A_HOME="${{BASE}}{home}/x"\n')
         ledger, _ = self.run_quietly(migration.migrate, self.root, self.hermes)
         destination = next(Path(move['destination']) for move in ledger['moves'] if move['bot_id'] == self.bots[2]['id'])
         self.assertEqual((destination / '.env').read_text(),
                          f'GH_CONFIG_DIR={destination}/.config/gh\nexport CODEX_HOME="{destination}/codex"  # login\n'
                          f"HOME_COPY='{destination}'\nXDG_CONFIG_HOME=/elsewhere/config\nOTHER={home}-sibling\n"
                          f'MIDDLE=/mirror{home}/gh\nLIST=/a:{home}/bin\n'
-                         f"'GH_TOKEN_DIR'=\"{destination}/.config/token\"\n\"XDG_DATA_HOME\"='{destination}/data'\n")
+                         f"'GH_TOKEN_DIR'=\"{destination}/.config/token\"\n\"XDG_DATA_HOME\"='{destination}/data'\n"
+                         f'GH_CONFIG_DIR_2="{destination}/${{GH_SUBDIR:-.config/gh}}"\nESCAPED="{destination}/a\\"b"\n'
+                         f'NOT_A_HOME="${{BASE}}{home}/x"\n')
         # The keys that login_folders reads, quoted or not, now name folders in the new home.
         runtime = migration.host.backend_module('runtime_environment')
         self.assertEqual(runtime.login_folders(destination)['XDG_DATA_HOME'], f'{destination}/data')
