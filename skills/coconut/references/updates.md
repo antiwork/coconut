@@ -41,7 +41,7 @@ When automatic updates are on, Coconut.app checks every six hours and installs a
 
 Ask the person before you change this setting.
 
-The update channel is `stable` or `nightly` (`coconut settings channel <name>`). Keep the channel that the person chose.
+Every Mac gets the same builds. Coconut.app has no update channel.
 
 ## Read the update state
 
@@ -50,7 +50,6 @@ The update channel is `stable` or `nightly` (`coconut settings channel <name>`).
 | Line | Meaning |
 |---|---|
 | `Coconut.app` | The version and the build of the app. |
-| `Update channel` | The channel of the update checks. |
 | `Automatic updates` | `on` or `off`. |
 | `Last update check` | The time of the last check, or `never`. |
 | `Last update result` | `up to date`, `installing <version>`, `installed <version>`, or `failed`, with a time. |

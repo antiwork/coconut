@@ -16,12 +16,32 @@ import mac_feed  # noqa: E402
 BASE = mac_feed.BASE_URL
 
 
-def item(build, channel='stable', **changes):
-    suffix = '' if channel == 'stable' else '-' + channel
-    values = dict(version='0.1.0', build=build, channel=channel, file=f'Coconut-0.1.0-{build}{suffix}.zip', length=build,
+def item(build, **changes):
+    values = dict(version='0.1.0', build=build, file=f'Coconut-0.1.0-{build}.zip', length=build,
                   signature=f'sig{build}', published='Mon, 26 Oct 2026 12:00:00 +0000')
     values.update(changes)
     return mac_feed.Item(**values)
+
+
+# An item of an earlier feed with two channels. Sparkle in the earlier app showed it only on the nightly channel.
+LEGACY_NIGHTLY = """    <item>
+      <title>Coconut 0.1.0 (518)</title>
+      <pubDate>Mon, 26 Oct 2026 12:00:00 +0000</pubDate>
+      <sparkle:version>518</sparkle:version>
+      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:channel>nightly</sparkle:channel>
+      <enclosure url="{base}/Coconut-0.1.0-518-nightly-0123456789abcdef.zip" length="518" type="application/octet-stream" sparkle:edSignature="sig518" />
+    </item>
+"""
+
+
+def legacy_feed(*items):
+    """A feed of the earlier format: a nightly item for build 518, and stable items without a channel."""
+    data = mac_feed.render(list(items)).decode()
+    if 'xmlns:sparkle' not in data:
+        data = data.replace('<rss ', f'<rss xmlns:sparkle="{mac_feed.SPARKLE}" ', 1)
+    return data.replace('  </channel>', LEGACY_NIGHTLY.format(base=BASE) + '  </channel>').encode()
 
 
 class FeedTests(unittest.TestCase):
@@ -32,30 +52,29 @@ class FeedTests(unittest.TestCase):
         import shutil
         shutil.rmtree(self.folder)
 
-    def archive(self, build, channel='stable', size=2048):
-        suffix = '' if channel == 'stable' else '-' + channel
-        path = self.folder / f'Coconut-0.1.0-{build}{suffix}.zip'
+    def archive(self, build, size=2048):
+        path = self.folder / f'Coconut-0.1.0-{build}.zip'
         with zipfile.ZipFile(path, 'w') as bundle:
             bundle.writestr('Coconut.app/Contents/Info.plist', plistlib.dumps(
                 {'CFBundleShortVersionString': '0.1.0', 'CFBundleVersion': str(build), 'LSMinimumSystemVersion': '14.0'}))
             bundle.writestr('Coconut.app/Contents/padding', b'x' * size)
         return path
 
-    def test_the_feed_has_the_sparkle_fields_and_marks_only_nightly_items(self):
-        feed = ElementTree.fromstring(mac_feed.render([item(12, 'nightly'), item(11)]))
-        nightly, stable = feed.findall('channel/item')
-        self.assertEqual(nightly.findtext(mac_feed.tag('channel')), 'nightly')
-        self.assertIsNone(stable.find(mac_feed.tag('channel')), 'A stable item reaches every app, so it has no channel.')
-        self.assertEqual(stable.findtext(mac_feed.tag('version')), '11')
-        self.assertEqual(stable.findtext(mac_feed.tag('shortVersionString')), '0.1.0')
-        self.assertEqual(stable.findtext(mac_feed.tag('minimumSystemVersion')), '14.0')
-        enclosure = stable.find('enclosure')
+    def test_the_feed_has_the_sparkle_fields_and_no_channel(self):
+        feed = ElementTree.fromstring(mac_feed.render([item(12), item(11)]))
+        newest, older = feed.findall('channel/item')
+        for entry in (newest, older):
+            self.assertIsNone(entry.find(mac_feed.tag('channel')), 'An item without a channel reaches every app.')
+        self.assertEqual(older.findtext(mac_feed.tag('version')), '11')
+        self.assertEqual(older.findtext(mac_feed.tag('shortVersionString')), '0.1.0')
+        self.assertEqual(older.findtext(mac_feed.tag('minimumSystemVersion')), '14.0')
+        enclosure = older.find('enclosure')
         self.assertEqual(enclosure.get('url'), f'{BASE}/Coconut-0.1.0-11.zip')
         self.assertEqual(enclosure.get(mac_feed.tag('edSignature')), 'sig11')
         self.assertEqual(enclosure.get('length'), '11')
 
     def test_a_feed_reads_back_the_items_that_it_holds(self):
-        items = [item(12, 'nightly'), item(11)]
+        items = [item(12), item(11)]
         self.assertEqual(mac_feed.parse(mac_feed.render(items)), items)
         self.assertEqual(mac_feed.parse(b''), [])
 
@@ -64,38 +83,39 @@ class FeedTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, 'outside'):
             mac_feed.parse(data)
 
-    def test_each_channel_keeps_its_newest_items(self):
-        items = [item(build, 'nightly') for build in range(1, 7)] + [item(build) for build in (3, 5)]
-        merged = mac_feed.merge(items, item(8, 'nightly'), keep=5)
-        self.assertEqual([entry.build for entry in merged if entry.channel == 'nightly'], [8, 6, 5, 4, 3])
-        self.assertEqual([entry.build for entry in merged if entry.channel == 'stable'], [5, 3])
+    def test_the_feed_keeps_its_newest_items(self):
+        merged = mac_feed.merge([item(build) for build in range(1, 7)], item(8), keep=5)
+        self.assertEqual([entry.build for entry in merged], [8, 6, 5, 4, 3])
 
-    def test_a_rebuild_replaces_the_item_of_the_same_channel_and_build(self):
-        merged = mac_feed.merge([item(8, 'nightly', signature='old'), item(8)], item(8, 'nightly', signature='new'))
-        self.assertEqual([(entry.channel, entry.signature) for entry in merged], [('stable', 'sig8'), ('nightly', 'new')])
+    def test_a_rebuild_replaces_the_item_of_the_same_build(self):
+        merged = mac_feed.merge([item(8, signature='old'), item(7)], item(8, signature='new'))
+        self.assertEqual([(entry.build, entry.signature) for entry in merged], [(8, 'new'), (7, 'sig7')])
 
-    def test_the_latest_build_of_a_channel(self):
-        feed = mac_feed.render([item(9), item(8, 'nightly')])
-        self.assertEqual(mac_feed.latest_build(feed, 'nightly'), 8)
-        self.assertEqual(mac_feed.latest_build(feed, 'stable'), 9)
-        self.assertEqual(mac_feed.latest_build(None, 'nightly'), 0)
+    def test_an_earlier_feed_with_two_items_of_one_build_keeps_the_first(self):
+        merged = mac_feed.merge([item(8, file='first.zip'), item(8, file='second.zip')], item(9))
+        self.assertEqual([(entry.build, entry.file) for entry in merged], [(9, 'Coconut-0.1.0-9.zip'), (8, 'first.zip')])
+
+    def test_the_latest_build(self):
+        self.assertEqual(mac_feed.latest_build(mac_feed.render([item(9), item(8)])), 9)
+        self.assertEqual(mac_feed.latest_build(legacy_feed(item(505))), 518)
+        self.assertEqual(mac_feed.latest_build(None), 0)
 
     def test_the_new_item_reads_the_version_and_the_build_from_the_archive(self):
-        archive = self.archive(512, 'nightly')
-        new = mac_feed.new_item(archive, 'nightly', 'sig', datetime(2026, 10, 26, 12, tzinfo=timezone.utc))
+        archive = self.archive(512)
+        new = mac_feed.new_item(archive, 'sig', datetime(2026, 10, 26, 12, tzinfo=timezone.utc))
         self.assertEqual((new.version, new.build, new.file, new.length), ('0.1.0', 512, mac_feed.published_name(archive), archive.stat().st_size))
         self.assertEqual(new.published, 'Mon, 26 Oct 2026 12:00:00 +0000')
 
     def test_publish_writes_the_complete_assets_folder(self):
-        old = self.archive(510, 'nightly')
-        feed = mac_feed.render([mac_feed.new_item(old, 'nightly', 'old-signature')])
-        new = self.archive(512, 'nightly', size=4096)
+        old = self.archive(510)
+        feed = mac_feed.render([mac_feed.new_item(old, 'old-signature')])
+        new = self.archive(512, size=4096)
         requested = []
         def download(url):
             requested.append(url)
             return old.read_bytes()
         output = self.folder / 'public'
-        items = mac_feed.publish(new, 'nightly', 'new-signature', output, feed=feed, download=download)
+        items = mac_feed.publish(new, 'new-signature', output, feed=feed, download=download)
         self.assertEqual([entry.build for entry in items], [512, 510])
         old_name, new_name = mac_feed.published_name(old), mac_feed.published_name(new)
         self.assertEqual(requested, [f'{BASE}/{old_name}'])
@@ -104,31 +124,47 @@ class FeedTests(unittest.TestCase):
         self.assertEqual((output / '_headers').read_text(), (mac_feed.ROOT / 'updates/_headers').read_text())
         self.assertEqual(mac_feed.parse((output / 'mac/appcast.xml').read_bytes()), items)
 
+    def test_the_first_publish_after_the_channels_keeps_the_nightly_archives_without_a_channel(self):
+        """A Mac on the nightly channel of an earlier app keeps its updates: no new item has a channel, and the archives
+        of the earlier items stay, so the cached earlier appcast still works."""
+        nightly = self.archive(518)
+        name = mac_feed.published_name(nightly)
+        feed = legacy_feed().replace(b'Coconut-0.1.0-518-nightly-0123456789abcdef.zip', name.encode()) \
+            .replace(b'length="518"', f'length="{nightly.stat().st_size}"'.encode())
+        new = self.archive(519, size=4096)
+        output = self.folder / 'public'
+        items = mac_feed.publish(new, 'sig', output, feed=feed, download=lambda url: nightly.read_bytes())
+        self.assertEqual([entry.build for entry in items], [519, 518])
+        appcast = (output / 'mac/appcast.xml').read_bytes()
+        self.assertNotIn(b'sparkle:channel', appcast)
+        self.assertEqual((output / 'mac' / name).read_bytes(), nightly.read_bytes())
+        self.assertEqual((output / '_redirects').read_text(), f'/mac/download /mac/{mac_feed.published_name(new)} 302\n')
+
     def test_publish_writes_the_install_script_and_the_download_link(self):
         new = self.archive(512)
         output = self.folder / 'public'
-        mac_feed.publish(new, 'stable', 'sig', output, feed=None, download=lambda url: None)
+        mac_feed.publish(new, 'sig', output, feed=None, download=lambda url: None)
         self.assertEqual((output / 'install').read_text(), (mac_feed.ROOT / 'updates/install.sh').read_text())
         self.assertEqual((output / '_redirects').read_text(), f'/mac/download /mac/{mac_feed.published_name(new)} 302\n')
         self.assertIn('/install\n  Content-Type: text/plain', (output / '_headers').read_text())
 
     def test_each_published_archive_name_ends_with_its_digest(self):
-        archive = self.archive(512, 'nightly')
+        archive = self.archive(512)
         name = mac_feed.published_name(archive)
-        self.assertRegex(name, r'^Coconut-0\.1\.0-512-nightly-[0-9a-f]{16}\.zip$')
+        self.assertRegex(name, r'^Coconut-0\.1\.0-512-[0-9a-f]{16}\.zip$')
         self.assertTrue(mac_feed.matches_name(name, archive.read_bytes()))
         # A rebuild of the same build has other bytes, so it gets another URL.
-        rebuilt = self.archive(512, 'nightly', size=2049)
+        rebuilt = self.archive(512, size=2049)
         self.assertNotEqual(mac_feed.published_name(rebuilt), name)
         self.assertFalse(mac_feed.matches_name('Coconut-0.1.0-512.zip', archive.read_bytes()))
 
     def test_the_archives_of_the_earlier_feed_stay_for_one_more_release(self):
         old = self.archive(512, size=2048)
-        feed = mac_feed.render([mac_feed.new_item(old, 'stable', 'old-signature')])
+        feed = mac_feed.render([mac_feed.new_item(old, 'old-signature')])
         old_bytes, old_name = old.read_bytes(), mac_feed.published_name(old)
         rebuilt = self.archive(512, size=2049)
         output = self.folder / 'public'
-        items = mac_feed.publish(rebuilt, 'stable', 'new-signature', output, feed=feed, download=lambda url: old_bytes)
+        items = mac_feed.publish(rebuilt, 'new-signature', output, feed=feed, download=lambda url: old_bytes)
         # The rebuild replaces the item, but a client with the cached earlier appcast still finds its archive.
         self.assertEqual([entry.file for entry in items], [mac_feed.published_name(rebuilt)])
         self.assertEqual((output / 'mac' / old_name).read_bytes(), old_bytes)
@@ -136,13 +172,13 @@ class FeedTests(unittest.TestCase):
 
     def test_publish_stops_when_a_kept_archive_is_missing_or_changed(self):
         old = self.archive(510)
-        feed = mac_feed.render([mac_feed.new_item(old, 'stable', 'old-signature')])
+        feed = mac_feed.render([mac_feed.new_item(old, 'old-signature')])
         new = self.archive(512)
         same_length = bytearray(old.read_bytes())
         same_length[-1] ^= 1
         for data in (None, b'changed', bytes(same_length)):
             with self.subTest(data=data), self.assertRaisesRegex(SystemExit, 'no complete'):
-                mac_feed.publish(new, 'stable', 'sig', self.folder / 'public', feed=feed, download=lambda url: data)
+                mac_feed.publish(new, 'sig', self.folder / 'public', feed=feed, download=lambda url: data)
 
     @unittest.skipUnless(importlib.util.find_spec('cryptography'), 'The release job installs cryptography.')
     def test_the_key_check_accepts_only_the_key_of_the_bundle(self):
@@ -156,48 +192,14 @@ class FeedTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, 'does not belong'):
                 mac_feed.check_key(base64.b64encode(bytes(32)).decode())
 
-    def test_the_newest_day_old_nightly_becomes_the_promote_candidate(self):
-        now = datetime(2026, 10, 28, 7, 47, tzinfo=timezone.utc)
-        day_old = 'Mon, 26 Oct 2026 23:00:00 +0000'
-        fresh = 'Tue, 27 Oct 2026 23:00:00 +0000'
-        feed = mac_feed.render([item(510, 'nightly', published=day_old), item(505)])
-        self.assertEqual(mac_feed.promote_candidate(feed, 24, now),
-                         {'build': 510, 'version': '0.1.0', 'published': '2026-10-26T23:00:00Z'})
-        # A newer nightly that is younger than a day does not block the older one that is a day old.
-        feed = mac_feed.render([item(512, 'nightly', published=fresh), item(510, 'nightly', published=day_old),
-                                item(508, 'nightly', published='Sun, 25 Oct 2026 23:00:00 +0000'), item(505)])
-        self.assertEqual(mac_feed.promote_candidate(feed, 24, now)['build'], 510)
-        # Every nightly is younger than a day.
-        feed = mac_feed.render([item(512, 'nightly', published=fresh), item(505)])
-        self.assertIsNone(mac_feed.promote_candidate(feed, 24, now))
-        # Stable has it already.
-        feed = mac_feed.render([item(510, 'nightly', published=day_old), item(510)])
-        self.assertIsNone(mac_feed.promote_candidate(feed, 24, now))
-        self.assertIsNone(mac_feed.promote_candidate(None, 24, now))
-
-    def test_the_commit_of_a_build_has_that_commit_count(self):
-        build = int(mac_feed.subprocess.run(['git', '-C', str(mac_feed.ROOT), 'rev-list', '--count', 'HEAD'],
-                                            capture_output=True, text=True, check=True).stdout)
-        head = mac_feed.subprocess.run(['git', '-C', str(mac_feed.ROOT), 'rev-parse', 'HEAD'],
-                                       capture_output=True, text=True, check=True).stdout.strip()
-        self.assertEqual(mac_feed.commit_for_build(build), head)
-        with self.assertRaisesRegex(SystemExit, 'no commit'):
-            mac_feed.commit_for_build(build + 1000)
-
     def test_publish_needs_a_signature(self):
         with self.assertRaisesRegex(SystemExit, 'signature'):
-            mac_feed.publish(self.archive(512), 'stable', '', self.folder / 'public', feed=None, download=lambda url: None)
-
+            mac_feed.publish(self.archive(512), '', self.folder / 'public', feed=None, download=lambda url: None)
 
 
 class RedirectTests(unittest.TestCase):
-    def test_the_download_link_names_the_newest_stable_archive(self):
-        items = [item(514, 'nightly'), item(512), item(510)]
-        self.assertEqual(mac_feed.redirects(items), '/mac/download /mac/Coconut-0.1.0-512.zip 302\n')
-
-    def test_the_download_link_names_the_newest_nightly_archive_before_the_first_stable_release(self):
-        self.assertEqual(mac_feed.redirects([item(514, 'nightly'), item(513, 'nightly')]),
-                         '/mac/download /mac/Coconut-0.1.0-514-nightly.zip 302\n')
+    def test_the_download_link_names_the_newest_archive(self):
+        self.assertEqual(mac_feed.redirects([item(514), item(512)]), '/mac/download /mac/Coconut-0.1.0-514.zip 302\n')
         self.assertEqual(mac_feed.redirects([]), '')
 
 
@@ -279,12 +281,12 @@ class InstallScriptTests(unittest.TestCase):
         path.rename(named)
         return named
 
-    def feed(self, *entries: tuple[int, str], tool: str = FAKE_TOOL) -> str:
-        """Write a feed of (build, channel) items with file URLs. Return its URL."""
+    def feed(self, *builds: int, tool: str = FAKE_TOOL) -> str:
+        """Write a feed of items with file URLs, from the newest build down. Return its URL."""
         items = []
-        for build, channel in entries:
+        for build in builds:
             path = self.archive(build, tool)
-            items.append(mac_feed.Item(version='0.1.0', build=build, channel=channel, file=path.name,
+            items.append(mac_feed.Item(version='0.1.0', build=build, file=path.name,
                                        length=path.stat().st_size, signature='sig', published='Mon, 26 Oct 2026'))
         text = mac_feed.render(items).decode().replace(mac_feed.BASE_URL, self.folder.as_uri())
         (self.folder / 'appcast.xml').write_text(text)
@@ -303,23 +305,23 @@ class InstallScriptTests(unittest.TestCase):
         lines = result.stdout.splitlines()
         return lines[lines.index('Coconut: Note for Hermes:') + 1]
 
-    def test_a_fresh_install_takes_the_stable_build_opens_the_app_and_pairs(self):
-        feed = self.feed((514, 'nightly'), (512, 'stable'))
+    def test_a_fresh_install_takes_the_newest_build_opens_the_app_and_pairs(self):
+        feed = self.feed(514, 512)
         result = self.run_script(CODE, feed=feed)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Downloading Coconut-0.1.0-512-', result.stderr)
+        self.assertIn('Downloading Coconut-0.1.0-514-', result.stderr)
         self.assertIn(f'Installed Coconut.app in {self.applications[0]}.', result.stderr)
         self.assertTrue((self.applications[0] / 'Coconut.app/Contents/Helpers/coconut').is_file())
         log = self.log.read_text()
         self.assertIn(f'open -g {self.applications[0]}/Coconut.app --args --set-up', log)
         self.assertIn('settings automatic-updates on', log)
-        self.assertNotIn('settings channel', log)
+        self.assertNotIn('channel', log)
         self.assertIn(f'paired {CODE}\n', result.stdout)
         for line in result.stdout.splitlines():
             self.assertTrue(line.startswith('Coconut: ') or line == f'paired {CODE}', line)
 
     def test_the_note_tells_hermes_how_to_turn_automatic_updates_off_and_how_to_update(self):
-        result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+        result = self.run_script(CODE, feed=self.feed(512))
         tool = f'{self.applications[0]}/Coconut.app/Contents/Helpers/coconut'
         self.assertEqual(self.note(result),
                          'Coconut: Coconut is installed and paired. Automatic updates are on. Ask the person whether to keep '
@@ -328,32 +330,29 @@ class InstallScriptTests(unittest.TestCase):
         self.assertTrue(result.stdout.endswith(self.note(result) + '\n'))
 
     def test_an_app_without_the_settings_commands_still_pairs(self):
-        result = self.run_script(CODE, feed=self.feed((514, 'nightly')), TEST_NO_SETTINGS='1')
+        result = self.run_script(CODE, feed=self.feed(514), TEST_NO_SETTINGS='1')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('defaults write com.gumroad.coconut.mac updateChannel nightly', self.log.read_text())
+        self.assertNotIn('defaults write', self.log.read_text())
         self.assertIn(f'paired {CODE}', result.stdout)
         self.assertIn('cannot change its update settings yet', self.note(result))
 
-    def test_before_the_first_stable_release_the_nightly_channel_is_set(self):
-        result = self.run_script(CODE, feed=self.feed((514, 'nightly')))
+    def test_an_item_of_an_earlier_feed_with_a_channel_installs_too(self):
+        feed = self.feed(518)
+        path = Path(feed.removeprefix('file://'))
+        path.write_text(path.read_text().replace('<sparkle:version>', '<sparkle:channel>nightly</sparkle:channel><sparkle:version>'))
+        result = self.run_script(CODE, feed=feed)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('There is no stable release yet', result.stderr)
-        self.assertIn('settings channel nightly', self.log.read_text())
+        self.assertIn('Downloading Coconut-0.1.0-518-', result.stderr)
 
-    def test_an_explicit_stable_channel_does_not_fall_back(self):
-        result = self.run_script('--channel', 'stable', CODE, feed=self.feed((514, 'nightly')))
+    def test_an_empty_feed_installs_nothing(self):
+        (self.folder / 'appcast.xml').write_text(mac_feed.render([]).decode())
+        result = self.run_script(CODE, feed=(self.folder / 'appcast.xml').as_uri())
         self.assertEqual(result.returncode, 1)
-        self.assertIn('no build in the stable channel', result.stderr)
-
-    def test_an_explicit_channel_applies_to_an_installed_app(self):
-        self.make_app(self.applications[0] / 'Coconut.app')
-        result = self.run_script('--channel', 'stable', CODE)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('settings channel stable', self.log.read_text())
+        self.assertIn('The update feed has no build.', result.stderr)
 
     def test_an_app_that_cannot_pair_with_a_code_is_replaced(self):
         self.make_app(self.applications[1] / 'Coconut.app', OLD_TOOL)
-        result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+        result = self.run_script(CODE, feed=self.feed(512))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('is too old for this setup, so Coconut installs the newest version', result.stdout)
         self.assertIn('pair <code>', (self.applications[1] / 'Coconut.app/Contents/Helpers/coconut').read_text())
@@ -364,7 +363,7 @@ class InstallScriptTests(unittest.TestCase):
         self.make_app(self.applications[0] / 'Coconut.app', OLD_TOOL)
         self.applications[0].chmod(0o555)
         try:
-            result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+            result = self.run_script(CODE, feed=self.feed(512))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('pair <code>', (self.applications[1] / 'Coconut.app/Contents/Helpers/coconut').read_text())
             self.assertIn(f'paired {CODE}', result.stdout)
@@ -377,20 +376,20 @@ class InstallScriptTests(unittest.TestCase):
 
     def test_an_app_that_cannot_set_up_by_itself_is_replaced_when_the_service_does_not_run(self):
         self.make_app(self.applications[0] / 'Coconut.app', NO_SETUP_TOOL)
-        result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+        result = self.run_script(CODE, feed=self.feed(512))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('is too old for this setup', result.stdout)
         self.assertIn('--set-up', (self.applications[0] / 'Coconut.app/Contents/Helpers/coconut').read_text())
         self.assertIn(f'paired {CODE}', result.stdout)
 
     def test_a_feed_without_code_pairing_stops_before_a_false_pairing(self):
-        result = self.run_script(CODE, feed=self.feed((512, 'stable'), tool=OLD_TOOL))
+        result = self.run_script(CODE, feed=self.feed(512, tool=OLD_TOOL))
         self.assertEqual(result.returncode, 1)
         self.assertIn('is too old for this setup. A newer build adds what it needs.', result.stderr)
         self.assertNotIn('Setup link', result.stdout)
 
     def test_a_changed_download_installs_nothing(self):
-        feed = self.feed((512, 'stable'))
+        feed = self.feed(512)
         archive = next(self.folder.glob('Coconut-0.1.0-512-*.zip'))
         archive.write_bytes(archive.read_bytes()[:-1] + b'x')
         result = self.run_script(CODE, feed=feed)
@@ -399,7 +398,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertFalse(any((folder / 'Coconut.app').exists() for folder in self.applications))
 
     def test_an_app_that_fails_a_signature_check_installs_nothing(self):
-        feed = self.feed((512, 'stable'))
+        feed = self.feed(512)
         for environment, message in [({'TEST_CODESIGN_VERIFY': '1'}, 'invalid code signature'),
                                      ({'TEST_TEAM': 'AAAAAAAAAA'}, 'not signed by Gumroad'),
                                      ({'TEST_SPCTL': '3'}, 'Gatekeeper refused')]:
@@ -413,7 +412,7 @@ class InstallScriptTests(unittest.TestCase):
         self.applications[0].mkdir()
         self.applications[0].chmod(0o555)
         try:
-            result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+            result = self.run_script(CODE, feed=self.feed(512))
         finally:
             self.applications[0].chmod(0o755)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -421,7 +420,7 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn('home\\ dir/Applications/Coconut.app/Contents/Helpers/coconut settings', self.note(result))
 
     def test_a_second_run_keeps_the_installed_app_and_pairs(self):
-        self.assertEqual(self.run_script(CODE, feed=self.feed((512, 'stable'))).returncode, 0)
+        self.assertEqual(self.run_script(CODE, feed=self.feed(512)).returncode, 0)
         self.log.write_text('')
         # The feed URL does not exist, so a second download would fail.
         result = self.run_script(CODE)
@@ -432,14 +431,14 @@ class InstallScriptTests(unittest.TestCase):
         self.assertIn(f'paired {CODE}', result.stdout)
 
     def test_without_a_code_the_script_only_installs(self):
-        result = self.run_script(feed=self.feed((512, 'stable')))
+        result = self.run_script(feed=self.feed(512))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(self.note(result).startswith('Coconut: Coconut is installed. Automatic updates are on.'))
         self.assertIn('To pair an iPhone', result.stdout)
         self.assertNotIn('paired', result.stdout)
 
     def test_an_invalid_code_or_option_stops_before_the_download(self):
-        for arguments, message in [(['not-a-code'], 'not a Coconut pairing code'), (['--channel', 'beta', CODE], 'stable or nightly'),
+        for arguments, message in [(['not-a-code'], 'not a Coconut pairing code'), (['--channel', 'nightly', CODE], 'Unknown option'),
                                    (['--force', CODE], 'Unknown option')]:
             with self.subTest(arguments):
                 result = self.run_script(*arguments)

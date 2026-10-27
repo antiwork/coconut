@@ -314,15 +314,14 @@ final class CoconutKitTests: XCTestCase {
 
     // MARK: Update channel
 
-    func testTheChannelIsStableUntilThePersonChoosesNightly() throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "CoconutKitTests-\(UUID().uuidString)"))
-        XCTAssertEqual(UpdateChannel.current(defaults), .stable)
-        XCTAssertEqual(UpdateChannel.stable.allowedChannels, [], "Stable items have no channel, so every app sees them.")
-        defaults.set("nightly", forKey: UpdateChannel.preferenceKey)
-        XCTAssertEqual(UpdateChannel.current(defaults), .nightly)
-        XCTAssertEqual(UpdateChannel.nightly.allowedChannels, ["nightly"])
-        defaults.set("beta", forKey: UpdateChannel.preferenceKey)
-        XCTAssertEqual(UpdateChannel.current(defaults), .stable)
+    func testTheChannelOfAnEarlierVersionIsRemoved() {
+        let store = MemoryPreferences(["updateChannel": "nightly", "SUAutomaticallyUpdate": false])
+        let preferences = UpdatePreferences(store: store)
+        preferences.removeLegacyChannel()
+        XCTAssertNil(store.values["updateChannel"])
+        XCTAssertEqual(store.values["SUAutomaticallyUpdate"] as? Bool, false, "The other settings stay.")
+        preferences.removeLegacyChannel()
+        XCTAssertNil(store.values["updateChannel"])
     }
 
     // MARK: Update preferences
@@ -331,7 +330,6 @@ final class CoconutKitTests: XCTestCase {
         let store = MemoryPreferences()
         let preferences = UpdatePreferences(store: store)
         XCTAssertTrue(preferences.automaticUpdates)
-        XCTAssertEqual(preferences.channel, .stable)
         preferences.setAutomaticUpdates(false)
         // Sparkle reads the same two keys.
         XCTAssertEqual(store.values["SUEnableAutomaticChecks"] as? Bool, false)
@@ -339,9 +337,6 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertFalse(preferences.automaticUpdates)
         preferences.setAutomaticUpdates(true)
         XCTAssertTrue(preferences.automaticUpdates)
-        preferences.setChannel(.nightly)
-        XCTAssertEqual(store.values["updateChannel"] as? String, "nightly")
-        XCTAssertEqual(preferences.channel, .nightly)
     }
 
     func testARequestWaitsUntilAResultAnswersIt() {
@@ -384,7 +379,6 @@ final class CoconutKitTests: XCTestCase {
         let lines = StatusText.lines(version: "0.1.0 (502)", preferences: preferences, status: status)
         XCTAssertEqual(lines, [
             "Coconut.app: 0.1.0 (502)",
-            "Update channel: nightly",
             "Automatic updates: off",
             "Last update check: 2026-10-26T07:33:20Z",
             "Last update result: failed (2026-10-26T07:35:00Z)",

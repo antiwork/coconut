@@ -3,8 +3,7 @@ name: Hermes compatibility
 # Coconut runs on the Hermes that the person installed. backend/coconut/hermes_versions.json names the oldest supported
 # Hermes release and the releases that CI tested. Each pull request and each push to main checks the minimum release
 # and the latest release. Both are required. Each night, CI also checks Hermes main. That check can fail without a
-# failed check run, because the automatic promote of Coconut.app (mac-release.yml) releases only a commit whose check
-# runs all passed.
+# failed check run: a change of Hermes main is not a fault of the Coconut commit.
 on:
   pull_request:
   push:

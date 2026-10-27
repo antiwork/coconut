@@ -56,16 +56,15 @@ Coconut.app updates itself with Sparkle 2.10.0. The feed is `https://coconut-upd
 `FEED_URL` in `scripts/mac_app.py` is the only place that names it. `SUPublicEDKey` names the key that signs each archive.
 
 - **Automatic updates** is on by default. Then the app checks the feed every six hours and installs an update without a question. The setting is Sparkle's `SUEnableAutomaticChecks` and `SUAutomaticallyUpdate`. Info.plist sets both, so Sparkle never asks at the first start, and a Mac that nobody watches never waits on a dialog.
-- **Update Channel** chooses **Stable** or **Nightly**. A stable item has no channel, so every app sees it. A nightly item has the channel `nightly`. Sparkle takes the newest build that the app may see.
+- The feed has one channel. Its items have no `sparkle:channel`, so every app sees every build, and Sparkle takes the newest one. An earlier app on the nightly channel sees these items too. The new app removes the earlier `updateChannel` setting at its start.
 - Sparkle replaces only the app. The service runs from `~/Coconut`, so it keeps running. After the relaunch, the new app runs `coconut install-source --if-needed`, which lets the running turns finish before it changes the service.
 
 A Hermes agent manages the updates with the `coconut` tool (`/Applications/Coconut.app/Contents/Helpers/coconut`). The output is plain text:
 
 ```sh
-coconut status                              # version, channel, automatic updates, last check, last error, service
+coconut status                              # version, automatic updates, last check, last error, service
 coconut update                              # check now, start the install of a newer build (--wait: wait for the end)
 coconut settings automatic-updates on|off
-coconut settings channel stable|nightly
 ```
 
 `coconut update` installs a newer build also when automatic updates are off. It asks the menu bar app, and opens the app when it does not run.
@@ -78,8 +77,8 @@ The Worker `coconut-updates` (`updates/`) serves the feed. See `updates/README.m
 
 The **Mac release** workflow runs in the GitHub environment `mac-release`, which accepts only `main`.
 
-- **Nightly:** each night, when `main` has a build that the nightly channel does not have, and when a person starts the workflow with the channel `nightly`.
-- **Stable:** each day at 07:47 UTC, the newest nightly build, when it has been nightly for 24 hours, every check of its commit passed, and no release run failed after it. A person can also start the workflow with the channel `stable`, which releases the head of `main`.
+It runs on each push to `main` and publishes one build that every Mac gets. A person can start it to publish the head of `main` again, for example after a failed run.
+A run publishes nothing when the feed already has its build or a newer one.
 
 The version is in `mac/VERSION`. The build number is the commit count of `main`. The release job does these steps:
 
@@ -87,8 +86,8 @@ The version is in `mac/VERSION`. The build number is the commit count of `main`.
 2. It imports the Developer ID Application identity into a temporary keychain.
 3. It builds the app and signs each part with the hardened runtime and a timestamp.
 4. It sends the app to the notary service with `notarytool` and an App Store Connect API key, and staples the ticket.
-5. It makes `Coconut-<version>-<build>.zip`, or `Coconut-<version>-<build>-nightly.zip`, and signs it with Sparkle's `sign_update`. An archive over 25 MiB stops the release. The feed publishes it with the start of its SHA-256 in the name, so each file has its own URL.
-6. `scripts/mac_feed.py publish` builds the feed: the new archive, plus the newest five archives of each channel from the live feed. The archives that the earlier feed named stay for one more release, for clients with a cached appcast.
+5. It makes `Coconut-<version>-<build>.zip` and signs it with Sparkle's `sign_update`. An archive over 25 MiB stops the release. The feed publishes it with the start of its SHA-256 in the name, so each file has its own URL.
+6. `scripts/mac_feed.py publish` builds the feed: the new archive, plus the newest five archives from the live feed. It writes the items of an earlier feed again without a channel. The archives that the earlier feed named stay for one more release, for clients with a cached appcast.
 7. It deploys the Worker `coconut-updates` with Wrangler and checks that the live feed has the new build.
 
 A missing secret stops the workflow. The secrets are `MAC_DEVELOPER_ID_P12`, `MAC_DEVELOPER_ID_P12_PASSWORD`,
