@@ -178,21 +178,27 @@ class DueTests(unittest.TestCase):
     NOON = instant(2026, 7, 15, 12)
 
     def test_grouped_settles_a_burst_and_waits_ten_minutes_after_the_last_notification(self):
-        self.assertEqual(due(DEFAULT_SCHEDULE, 'grouped', self.NOON, 0), self.NOON + 30)
-        self.assertEqual(due(DEFAULT_SCHEDULE, 'grouped', self.NOON, self.NOON - 60), self.NOON + 540)
-        self.assertEqual(due(DEFAULT_SCHEDULE, 'every', self.NOON, self.NOON - 1), self.NOON + 2)
+        self.assertEqual(due(DEFAULT_SCHEDULE, 'grouped', self.NOON, 0, self.NOON), self.NOON + 30)
+        self.assertEqual(due(DEFAULT_SCHEDULE, 'grouped', self.NOON, self.NOON - 60, self.NOON), self.NOON + 540)
+        self.assertEqual(due(DEFAULT_SCHEDULE, 'every', self.NOON, self.NOON - 1, self.NOON), self.NOON + 2)
 
     def test_outside_work_hours_everything_waits_for_the_opening(self):
         night = instant(2026, 7, 15, 23)
         for level in ('every', 'grouped'):
-            self.assertEqual(due(DEFAULT_SCHEDULE, level, night, night - 5), instant(2026, 7, 16, 9))
+            self.assertEqual(due(DEFAULT_SCHEDULE, level, night, night - 5, night), instant(2026, 7, 16, 9))
         # A wait that ends after the window closes moves to the next opening.
-        self.assertEqual(due(DEFAULT_SCHEDULE, 'grouped', instant(2026, 7, 15, 17, 55), instant(2026, 7, 15, 17, 55)),
+        self.assertEqual(due(DEFAULT_SCHEDULE, 'grouped', instant(2026, 7, 15, 17, 55), instant(2026, 7, 15, 17, 55), instant(2026, 7, 15, 17, 55)),
                          instant(2026, 7, 16, 9))
-        self.assertEqual(due(LEGACY_SCHEDULE, 'grouped', night, 0), night + 30)
+        self.assertEqual(due(LEGACY_SCHEDULE, 'grouped', night, 0, night), night + 30)
+
+    def test_a_wait_that_ended_while_coconut_was_stopped_still_respects_the_window(self):
+        # The item was due at 17:55, inside work hours. Coconut restarts at 23:00, so it waits for the morning.
+        night = instant(2026, 7, 15, 23)
+        self.assertEqual(due(DEFAULT_SCHEDULE, 'grouped', instant(2026, 7, 15, 17, 54), 0, night), instant(2026, 7, 16, 9))
+        self.assertEqual(due(LEGACY_SCHEDULE, 'grouped', night - 3600, 0, night), night)
 
     def test_only_urgent_never_groups(self):
-        self.assertIsNone(due(DEFAULT_SCHEDULE, 'urgent_only', self.NOON, 0))
+        self.assertIsNone(due(DEFAULT_SCHEDULE, 'urgent_only', self.NOON, 0, self.NOON))
 
 
 class DeliveryTimingTests(unittest.TestCase):
@@ -288,7 +294,8 @@ class DeliveryTimingTests(unittest.TestCase):
             self.deliver(self.MORNING + 3600)
             self.assertEqual(len(self.sent()), 1, level)
             payload = self.sent()[0]
-            self.assertEqual(payload['coconut'], dict(version=1, device_id=self.device, kind='group', count=4))
+            self.assertEqual({key: payload['coconut'][key] for key in ('version', 'device_id', 'kind', 'count')},
+                             dict(version=1, device_id=self.device, kind='group', count=4))
             self.assertEqual(payload['aps']['alert'], dict(title='Coconut', body='3 decisions and 1 failed task are waiting'))
             self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_outbox').fetchone()[0], 1)
 
@@ -318,6 +325,57 @@ class DeliveryTimingTests(unittest.TestCase):
         self.assertEqual(len(self.sent()), 1)
         self.deliver(self.NOON + 630)
         self.assertEqual(self.sent()[1]['coconut']['decision_id'], later['id'])
+
+    def test_every_card_notifies_a_burst_one_card_at_a_time(self):
+        self.register(level='every')
+        first = self.decision(ts=self.NOON)
+        second = self.decision(ts=self.NOON + 1)
+        self.deliver(self.NOON + 3)
+        self.assertEqual([payload['coconut']['decision_id'] for payload in self.sent()], [first['id'], second['id']])
+        self.assertTrue(all('count' not in payload['coconut'] for payload in self.sent()))
+
+    def test_the_ten_minute_gap_counts_from_the_delivery_and_waits_for_a_retry(self):
+        self.decision(ts=self.NOON)
+        self.transport.result = (503, 'Unavailable')
+        self.deliver(self.NOON + 30)
+        self.assertEqual(len(self.sent()), 1)
+        self.decision(ts=self.NOON + 60)
+        # The first notification still retries, so the new card does not form a second group.
+        with self.at(self.NOON + 700):
+            with self.service.transaction():
+                self.service.push.plan(self.NOON + 700)
+        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_outbox').fetchone()[0], 1)
+        self.transport.result = (200, 'Accepted')
+        self.service.db.execute('UPDATE push_outbox SET not_before=0')
+        self.deliver(self.NOON + 700)
+        self.assertEqual(len(self.sent()), 2)
+        self.deliver(self.NOON + 1299)
+        self.assertEqual(len(self.sent()), 2)
+        self.deliver(self.NOON + 1300)
+        self.assertEqual(len(self.sent()), 3)
+
+    def test_a_retry_stops_when_the_bot_is_muted(self):
+        route = {'route_id': 'a' * 64, 'send_token': 'b' * 64, 'public_key': base64.b64encode(b'x' * 32).decode()}
+        relay = EncryptedTransport()
+        self.service.push.relay = relay
+        self.register(relay=route, schedule=DEFAULT_SCHEDULE)
+        self.decision(ts=self.NOON)
+        relay.result = (503, 'Unavailable')
+        self.deliver(self.NOON + 30)
+        self.assertEqual(len(relay.sent), 1)
+        self.write('PATCH', f'/v1/bots/{self.bot["id"]}', {'notifications': False})
+        relay.result = (200, 'Accepted')
+        self.service.db.execute('UPDATE push_outbox SET not_before=0')
+        self.deliver(self.NOON + 3600)
+        self.assertEqual(len(relay.sent), 1)
+        self.assertEqual(self.service.db.execute('SELECT status,reason FROM push_outbox').fetchone(), ('discarded', 'NoLongerRelevant'))
+
+    def test_a_group_still_opens_the_first_card_in_an_older_app(self):
+        first, _ = self.decision(), self.decision()
+        self.deliver(self.MORNING)
+        target = self.sent()[0]['coconut']
+        self.assertEqual((target['kind'], target['decision_id'], target['bot_id']), ('group', first['id'], self.bot['id']))
+        self.assertEqual(target['task_id'], first['task_id'])
 
     def test_every_card_notifies_each_card_inside_work_hours(self):
         self.register(level='every')

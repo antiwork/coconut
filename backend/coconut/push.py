@@ -15,7 +15,7 @@ import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
 from .push_relay import RelayTransport, validate_route, notification_alert, group_text
-from .push_schedule import LEGACY_SCHEDULE, due, merge as merge_schedule, stored as stored_schedule
+from .push_schedule import LEGACY_SCHEDULE, due, in_window, merge as merge_schedule, stored as stored_schedule
 
 LEVELS = ('every', 'grouped', 'urgent_only')
 # A phone that never sent its preferences keeps the old categories: cards, failed and finished tasks, no messages.
@@ -120,6 +120,8 @@ class PushDelivery:
             id TEXT PRIMARY KEY, device_id TEXT NOT NULL, event_key TEXT NOT NULL, status TEXT NOT NULL,
             attempts INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL, not_before REAL NOT NULL, expires REAL NOT NULL,
             envelope TEXT, reason TEXT, UNIQUE(device_id, event_key))''')
+        if 'sent' not in {row[1] for row in db.execute('PRAGMA table_info(push_outbox)')}:
+            db.execute('ALTER TABLE push_outbox ADD COLUMN sent REAL')
         for device_id, data in db.execute('SELECT device_id,data FROM push_preferences').fetchall():
             value = preferences(json.loads(data))
             if value is None:
@@ -359,8 +361,12 @@ class PushDelivery:
             device = db.execute('SELECT enabled FROM push_devices WHERE device_id=?', (device_id,)).fetchone()
             items = self._items("device_id=? AND status='waiting'", (device_id,))
             waiting = [item for item in items if not item['urgent']]
-            last = db.execute("SELECT MAX(created) FROM push_outbox WHERE device_id=? AND status<>'discarded'", (device_id,)).fetchone()[0]
-            opens = due(self.schedule(device_id), self.preferences(device_id)['level'], waiting[0]['created'], last or 0) if waiting else None
+            schedule, level = self.schedule(device_id), self.preferences(device_id)['level']
+            # The gap counts from the last delivered notification. While a notification still retries, new items wait for it.
+            last = db.execute("SELECT MAX(sent) FROM push_outbox WHERE device_id=? AND status='accepted'", (device_id,)).fetchone()[0]
+            pending = db.execute("SELECT 1 FROM push_outbox WHERE device_id=? AND status='queued' AND event_key LIKE 'group:%'",
+                                 (device_id,)).fetchone()
+            opens = due(schedule, level, waiting[0]['created'], last or 0, current) if waiting and not pending else None
             # Items are checked only when they would notify, so a long wait outside work hours costs no reads.
             ready = [item for item in items if item['urgent'] or (opens is not None and opens <= current)]
             for item in ready:
@@ -372,6 +378,11 @@ class PushDelivery:
                 if item['urgent'] and not item.get('dropped'):
                     self._queue(device_id, 'item:' + item['event_key'], [item], current)
             group = [item for item in ready if not item['urgent'] and not item.get('dropped')]
+            if level == 'every':
+                # Every card: an item that arrived inside work hours notifies alone. Items held from outside them notify as one group.
+                for item in [item for item in group if in_window(schedule, item['created']) or not schedule['enabled']]:
+                    self._queue(device_id, 'item:' + item['event_key'], [item], current)
+                    group.remove(item)
             if group:
                 self._queue(device_id, 'group:' + group[0]['event_key'], group, current)
 
@@ -379,8 +390,13 @@ class PushDelivery:
         """The notification for one item, or the count of several. Items are rechecked when the text is written."""
         service = self.service
         if len(items) > 1:
+            # Apps before groups need a bot, task, and card to open a notification. They open the first card in Inbox.
+            first = next((item for item in items if item['decision_id']), items[0])
+            task = service._get('tasks', first['task_id'])
             return {'aps': {'alert': {'title': 'Coconut', 'body': group_text(items)}, 'sound': 'default', 'thread-id': 'coconut-inbox'},
-                    'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items)}}, None
+                    'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items),
+                                'bot_id': task.get('conversation_bot_id', task['bot_id']), 'task_id': task['id'],
+                                'decision_id': first['decision_id'], 'message_id': None}}, None
         item = items[0]
         task = service._get('tasks', item['task_id'])
         bot = service._get('bots', item['bot_id'])
@@ -410,10 +426,14 @@ class PushDelivery:
             device = service.db.execute('SELECT token,environment,enabled,updated FROM push_devices WHERE device_id=?', (job['device_id'],)).fetchone()
             route_row = service.db.execute('SELECT data FROM push_routes WHERE device_id=?', (job['device_id'],)).fetchone()
             route = json.loads(route_row[0]) if route_row else None
-            items = [item for item in self._items('delivery_id=?', (job['id'],)) if job['envelope'] or self.relevant(item)]
-            if job['expires'] <= time.time() or not device or not device[2] or not items:
+            items = self._items('delivery_id=?', (job['id'],))
+            live = [item for item in items if self.relevant(item)]
+            # Every send checks again, so a muted bot or category stops a retry too. A sealed retry keeps its bytes.
+            if job['expires'] <= time.time() or not device or not device[2] or not live:
                 service.db.execute("UPDATE push_outbox SET status='discarded',reason='NoLongerRelevant' WHERE id=?", (job['id'],))
                 return True
+            if not job['envelope']:
+                items = live
             payload, subject = self._payload(job['device_id'], items, sealed=bool(route))
             if route:
                 payload['aps']['badge'] = self.inbox_badge_count()
@@ -452,8 +472,8 @@ class PushDelivery:
             else:
                 state = 'failed'
             delay = min(3600, 30 * 2 ** min(job['attempts'], 7))
-            service.db.execute("UPDATE push_outbox SET status=?,reason=?,not_before=? WHERE id=? AND status='queued'",
-                               (state, reason, time.time() + delay, job['id']))
+            service.db.execute("UPDATE push_outbox SET status=?,reason=?,not_before=?,sent=? WHERE id=? AND status='queued'",
+                               (state, reason, time.time() + delay, time.time() if state == 'accepted' else None, job['id']))
             if state != 'queued':
                 service.db.execute("UPDATE push_items SET status=? WHERE delivery_id=?", ('sent' if state == 'accepted' else 'failed', job['id']))
         return True
