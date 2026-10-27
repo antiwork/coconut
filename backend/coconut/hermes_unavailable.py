@@ -13,7 +13,7 @@ from pathlib import Path
 import sqlite3
 import threading
 
-from .hermes_runtime import DEFAULT_HOME, public
+from .hermes_runtime import public
 from .hermes_setup import HermesSetup
 from .service import ServiceError, device_for_token, migrate_device_peers, now, pair_device
 from .service_restart import ServiceRestart
@@ -78,16 +78,6 @@ class UnavailableService(HermesSetup):
     def authenticate(self, token: str, peer: str | None = None) -> str:
         with self.lock:
             return device_for_token(self.db, token, peer)
-
-    def _setup_source(self) -> Path | None:
-        # HermesSetup reads the shared home from the provider. Refuse mode has no provider.
-        root = super()._setup_source()
-        return None if root is not None and (root == DEFAULT_HOME.resolve() or DEFAULT_HOME.resolve() in root.parents) else root
-
-    def _source_profiles(self) -> dict:
-        with self.lock:
-            bots = [json.loads(row[0]) for row in self.db.execute('SELECT data FROM bots')]
-        return {bot['source_profile']: bot['id'] for bot in bots if bot.get('source_profile') and not bot.get('_deleted')}
 
     def take_service_restart(self) -> bool:
         return False

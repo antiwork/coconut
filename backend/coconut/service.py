@@ -1129,8 +1129,6 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             return self.mutate_parallel_work(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/approvals' and hasattr(self.provider, 'native_settings'):
             return self.mutate_approval_default(data, key, fingerprint)
-        if method == 'POST' and path == '/v1/setup/import':
-            return self.import_hermes_setup(data, key, fingerprint)
         if method == 'POST' and path == '/v1/settings/mcp':
             return self.mutate_mcp(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/model' and hasattr(self.provider, 'set_model_default'):
@@ -1339,7 +1337,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 raise ServiceError(503, 'The Mac could not confirm the model change. Retry with the same request key.') from None
             return self._finish_model_update(key, catalog)
 
-    def _create_bot(self, data: dict, *, audit: dict | None = None, source_profile: str | None = None) -> dict:
+    def _create_bot(self, data: dict, *, audit: dict | None = None) -> dict:
         if data.get('model_override') is not None:
             raise ServiceError(400, 'Create the bot, then choose its model in bot settings.')
         if not isinstance(data.get('pinned', False), bool):
@@ -1352,9 +1350,6 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         bot = dict(id=uid(), session_id=uid(), name=require_text(data, 'name', 80), role=str(data.get('role', ''))[:160], avatar=str(data.get('avatar', f'coconut.{avatar}'))[:80], color=str(data.get('color', color))[:20], instructions=data.get('instructions', ''), notifications=True, status='idle', last_message='', unread_count=0, archived=False, pinned=data.get('pinned', False), created_at=now())
         bot['profile_id'] = profile_id(bot)
         bot['model_override'] = None
-        if source_profile:
-            # The Hermes profile that onboarding copied. A second import returns this bot.
-            bot['source_profile'] = source_profile
         self._sync_profile(bot)
         self._put('bots', bot)
         self._event('bot.created', bot | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
