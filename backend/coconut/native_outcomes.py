@@ -6,10 +6,12 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid5
 
 if __package__:
-    from .technical_lane import SCHEMA as TECHNICAL_LANE_SCHEMA, requested as technical_lane_request
+    from .technical_lane import (SCHEMA as TECHNICAL_LANE_SCHEMA, parked as technical_lane_parked,
+                                 requested as technical_lane_request)
 else:
     # Hermes workers import this module from the package directory for its tool schemas.
-    from technical_lane import SCHEMA as TECHNICAL_LANE_SCHEMA, requested as technical_lane_request
+    from technical_lane import (SCHEMA as TECHNICAL_LANE_SCHEMA, parked as technical_lane_parked,
+                                requested as technical_lane_request)
 
 
 # A block check offers a delegate's answer with only these public fields, including the person's typed reply.
@@ -597,7 +599,8 @@ class NativeOutcomes:
                 return False
         return True
 
-    def _retain_native_work(self, owner, native, snapshot_missing=None, snapshots=None, caller=None, selected_pr=None):
+    def _retain_native_work(self, owner, native, snapshot_missing=None, snapshots=None, caller=None, selected_pr=None,
+                            held_pause=None):
         from .service import ServiceError, now
         from .work_capacity import execution_key
         snapshots = self.kanban.tasks if snapshots is None else snapshots
@@ -783,7 +786,9 @@ class NativeOutcomes:
                     or item.get('_native_outcome_id') not in (None, native['id'])):
                 raise ServiceError(409, 'The retained Work item belongs to another native outcome.')
             peers = self._work_pause_peers(item)
-            if self._setting('work.cancelled.' + self._work_identity(item)) or self._work_pause(item, peers=peers):
+            pause = self._work_pause(item, peers=peers)
+            # Only a held-merge lane passes, and only under the exact hold that its own gate checked as the sole pause.
+            if self._setting('work.cancelled.' + self._work_identity(item)) or (pause and pause['id'] != held_pause):
                 raise ServiceError(409, 'This work is paused or cancelled.')
             tasks = {t['id']: t for t in self._all('tasks')}
             records = self._pending_completion_receipts()
@@ -1245,7 +1250,8 @@ class NativeOutcomes:
             identity = require_text(payload, 'task_id', 100)
             text = require_text(payload, 'message', 16000)
             lane = technical_lane_request(payload)
-            declined = bool(lane and lane.get('declined_merge_pr_url'))
+            parked = technical_lane_parked(lane)
+            held_merge = bool(lane and lane.get('held_merge_pr_url'))
             selected_pr = require_text(payload, 'retained_pr_url', RETAINED_PR_URL_LIMIT) if 'retained_pr_url' in payload else None
             reopen = payload.get('continue_closed_source', False)
             if type(reopen) is not bool:
@@ -1267,8 +1273,8 @@ class NativeOutcomes:
                     or owner.get('_conversation_epoch') != self._setting('conversation_epoch')
                     or self._continuation_blocked(owner)
                     or self._get('exchanges', owner['exchange_id']).get('cancelled')
-                    or (self._task_work_is_paused(owner) and not declined)):
-                # Only an explicit declined-merge lane reads past a pause, and its own gate below checks that pause.
+                    or (self._task_work_is_paused(owner) and not parked)):
+                # Only an explicit declined- or held-merge lane reads past a pause, and its own gate below checks it.
                 raise ServiceError(409, 'This work is paused, cancelled, or belongs to an earlier conversation.')
             scheduled = native.get('status') == 'scheduled'
             review = native.get('status') == 'review'
@@ -1306,10 +1312,11 @@ class NativeOutcomes:
             if queued and native.get('dispatch_blocker') not in (None, 'active_pr'):
                 raise ServiceError(409, 'This native outcome is guarded. Wait for its current activity.')
             related = [t for t in self._all('tasks') if execution_key(t) == execution_key(owner)]
-            # Only an explicit lane may leave one exact question pending, or work under one declined merge.
+            # Only an explicit lane may leave one exact question pending, or work under one declined or held merge.
             # See technical_lane.py.
-            gate = self._technical_lane_gate(owner, native, lane, related) if lane and not declined else None
-            held = self._declined_merge_gate(owner, native, lane, related) if declined else None
+            gate = self._technical_lane_gate(owner, native, lane, related) if lane and not parked else None
+            held = ((self._held_merge_gate if held_merge else self._declined_merge_gate)(owner, native, lane, related)
+                    if parked else None)
             if (owner['status'] not in ('completed', 'failed', 'waiting') and not
                     (scheduled and owner['status'] == 'scheduled') and not queued and not gate and not closed) or owner.get('_waiting_on'):
                 raise ServiceError(409, 'Wait for this task and its existing dependencies.')
@@ -1327,7 +1334,8 @@ class NativeOutcomes:
                     or self._background_pending(t['id']) for t in related):
                 raise ServiceError(409, 'This execution has active work. Wait for its result.')
             if not owner.get('_native_outcome_id'):
-                self._retain_native_work(owner, native, snapshot_missing, snapshots, caller=source, selected_pr=selected_pr)
+                self._retain_native_work(owner, native, snapshot_missing, snapshots, caller=source, selected_pr=selected_pr,
+                                         held_pause=held['id'] if held_merge else None)
             elif selected_pr is not None:
                 # The owner already retains its Work item. A selection cannot replace it.
                 raise ServiceError(409, SELECTION_REFUSED)
