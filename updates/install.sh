@@ -44,15 +44,19 @@ item_path() {
   fi
 }
 
-# Print the installed Coconut.app, if any.
+# Print the installed Coconut.app, if any. With a code, an app that can pair with it comes first: an earlier app can
+# stay in a folder that this account cannot change.
 installed_app() {
-  local folder
+  local folder first=""
   for folder in "${APP_FOLDERS[@]}"; do
-    if [ -d "$folder/Coconut.app" ]; then
+    [ -d "$folder/Coconut.app" ] || continue
+    [ -n "$first" ] || first="$folder/Coconut.app"
+    if [ -z "$1" ] || pairs_with_code "$folder/Coconut.app"; then
       printf '%s\n' "$folder/Coconut.app"
       return
     fi
   done
+  [ -z "$first" ] || printf '%s\n' "$first"
 }
 
 # The `coconut` tool in an app.
@@ -184,10 +188,16 @@ main() {
   major="$(sw_vers -productVersion | cut -d. -f1)"
   [ "$major" -ge "$MINIMUM_MACOS" ] || fail "Coconut needs macOS $MINIMUM_MACOS or later."
 
-  app="$(installed_app)"
+  app="$(installed_app "$code")"
   if [ -n "$app" ] && [ -n "$code" ] && ! pairs_with_code "$app"; then
     say "The Coconut.app in ${app%/Coconut.app} cannot pair with a code yet, so Coconut installs the newest version."
-    installed="$(install_app "${CHANNEL_OPTION:-stable}" "${app%/Coconut.app}")"
+    # A folder that this account cannot change, for example /Applications without admin rights, keeps the earlier app.
+    # The new app then goes in the first writable folder.
+    if [ -w "${app%/Coconut.app}" ]; then
+      installed="$(install_app "${CHANNEL_OPTION:-stable}" "${app%/Coconut.app}")"
+    else
+      installed="$(install_app "${CHANNEL_OPTION:-stable}" "")"
+    fi
   elif [ -n "$app" ]; then
     say "Coconut.app is already in ${app%/Coconut.app}. It updates itself."
   else
@@ -208,6 +218,9 @@ main() {
     quit_app
     open -g "$app" --args --set-up
     wait_for service running 900 || fail "The Coconut service did not start. Open Coconut in the menu bar to see why."
+  elif ! pgrep -qx Coconut; then
+    # The service runs apart from the app, but the automatic updates run in the app.
+    open -g "$app"
   fi
   say "The Coconut service runs."
   if [ "$(status_field relay)" != connected ]; then

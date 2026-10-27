@@ -348,6 +348,21 @@ class InstallScriptTests(unittest.TestCase):
         self.assertFalse((self.applications[0] / 'Coconut.app').exists())
         self.assertIn(f'paired {CODE}', result.stdout)
 
+    def test_an_earlier_app_in_a_protected_folder_stays_and_the_new_app_goes_in_a_writable_one(self):
+        self.make_app(self.applications[0] / 'Coconut.app', OLD_TOOL)
+        self.applications[0].chmod(0o555)
+        try:
+            result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('pair <code>', (self.applications[1] / 'Coconut.app/Contents/Helpers/coconut').read_text())
+            self.assertIn(f'paired {CODE}', result.stdout)
+            # A second run takes the app that can pair, and downloads nothing.
+            again = self.run_script(CODE)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertIn(f'Coconut.app is already in {self.applications[1]}.', again.stdout)
+        finally:
+            self.applications[0].chmod(0o755)
+
     def test_a_feed_without_code_pairing_stops_before_a_false_pairing(self):
         result = self.run_script(CODE, feed=self.feed((512, 'stable'), tool=OLD_TOOL))
         self.assertEqual(result.returncode, 1)
@@ -392,7 +407,8 @@ class InstallScriptTests(unittest.TestCase):
         result = self.run_script(CODE)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('Coconut.app is already in', result.stdout)
-        self.assertNotIn('open', self.log.read_text())
+        # The service runs, so the app opens only for its automatic updates, without the setup.
+        self.assertEqual(self.log.read_text().splitlines()[0], f'open -g {self.applications[0]}/Coconut.app')
         self.assertIn(f'paired {CODE}', result.stdout)
 
     def test_without_a_code_the_script_only_installs(self):
