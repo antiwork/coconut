@@ -25,6 +25,9 @@ let usage = """
       migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       service   Run the Coconut service. The login item uses this command.
       sidecar   Run the relay sidecar. The login item uses this command.
+
+    Coconut.app --set-up sets up Coconut without a click, as Set Up Coconut in the menu does. The install script
+    opens the app with it.
     """
 
 func fail(_ message: String, code: Int32 = 1) -> Never {

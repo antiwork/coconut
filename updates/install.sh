@@ -44,14 +44,14 @@ item_path() {
   fi
 }
 
-# Print the installed Coconut.app, if any. With a code, an app that can pair with it comes first: an earlier app can
-# stay in a folder that this account cannot change.
+# Print the installed Coconut.app, if any. An app that can do this run comes first: an earlier app can stay in a folder
+# that this account cannot change.
 installed_app() {
   local folder first=""
   for folder in "${APP_FOLDERS[@]}"; do
     [ -d "$folder/Coconut.app" ] || continue
     [ -n "$first" ] || first="$folder/Coconut.app"
-    if [ -z "$1" ] || pairs_with_code "$folder/Coconut.app"; then
+    if can_run "$folder/Coconut.app" "$1"; then
       printf '%s\n' "$folder/Coconut.app"
       return
     fi
@@ -66,6 +66,16 @@ tool_of() { printf '%s\n' "$1/Contents/Helpers/coconut"; }
 # `coconut pair` and ignores the code.
 pairs_with_code() {
   "$(tool_of "$1")" help </dev/null 2>/dev/null | grep -q 'pair <code>'
+}
+
+# True when the app sets up Coconut by itself when it opens with --set-up. An earlier app ignores the argument.
+sets_up() {
+  "$(tool_of "$1")" help </dev/null 2>/dev/null | grep -q -- '--set-up'
+}
+
+# True when the app can do this run: pair with the code, if there is one, and start a service that does not run.
+can_run() {
+  { [ -z "$2" ] || pairs_with_code "$1"; } && { sets_up "$1" || [ "$(TOOL="$(tool_of "$1")" status_field service)" = running ]; }
 }
 
 # Print one field of the service state, or nothing when the tool fails. An earlier tool prints JSON for `status` and
@@ -189,8 +199,8 @@ main() {
   [ "$major" -ge "$MINIMUM_MACOS" ] || fail "Coconut needs macOS $MINIMUM_MACOS or later."
 
   app="$(installed_app "$code")"
-  if [ -n "$app" ] && [ -n "$code" ] && ! pairs_with_code "$app"; then
-    say "The Coconut.app in ${app%/Coconut.app} cannot pair with a code yet, so Coconut installs the newest version."
+  if [ -n "$app" ] && ! can_run "$app" "$code"; then
+    say "The Coconut.app in ${app%/Coconut.app} is too old for this setup, so Coconut installs the newest version."
     # A folder that this account cannot change, for example /Applications without admin rights, keeps the earlier app.
     # The new app then goes in the first writable folder.
     if [ -w "${app%/Coconut.app}" ]; then
@@ -209,8 +219,8 @@ main() {
   fi
   TOOL="$(tool_of "$app")"
   [ -x "$TOOL" ] || fail "$app has no coconut tool. Delete it, then run this command again."
-  if [ -n "$code" ] && ! pairs_with_code "$app"; then
-    fail "This Coconut.app cannot pair with a code yet. A newer build adds it. Try again after the next Coconut release."
+  if ! can_run "$app" "$code"; then
+    fail "This Coconut.app is too old for this setup. A newer build adds what it needs. Try again after the next Coconut release."
   fi
 
   if [ "$(status_field service)" != running ]; then

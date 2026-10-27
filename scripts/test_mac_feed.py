@@ -201,10 +201,18 @@ class RedirectTests(unittest.TestCase):
 # TEST_NO_SETTINGS stands for an app without the settings commands.
 FAKE_TOOL = """#!/bin/bash
 case "$1" in
-  help) printf 'pair <code>\\n' ;;
+  help) printf 'pair <code>\\nCoconut.app --set-up sets up Coconut\\n' ;;
   status) printf '{"service": "%s", "relay": "connected"}\\n' "$(cat "$COCONUT_TEST_STATE" 2>/dev/null || echo stopped)" ;;
   settings) [ -n "$TEST_NO_SETTINGS" ] && exit 64; echo "settings $2 $3" >> "$TEST_LOG" ;;
   pair) echo "paired $2" ;;
+esac
+"""
+# A tool that pairs with a code, in an app that ignores --set-up. Its service does not run.
+NO_SETUP_TOOL = """#!/bin/bash
+case "$1" in
+  help) printf 'pair <code>\\n' ;;
+  status) printf '{"service": "not_installed", "relay": "not_installed"}\\n' ;;
+  *) exit 64 ;;
 esac
 """
 # An earlier tool: no code pairing and no settings commands.
@@ -343,7 +351,7 @@ class InstallScriptTests(unittest.TestCase):
         self.make_app(self.applications[1] / 'Coconut.app', OLD_TOOL)
         result = self.run_script(CODE, feed=self.feed((512, 'stable')))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('cannot pair with a code yet, so Coconut installs the newest version', result.stdout)
+        self.assertIn('is too old for this setup, so Coconut installs the newest version', result.stdout)
         self.assertIn('pair <code>', (self.applications[1] / 'Coconut.app/Contents/Helpers/coconut').read_text())
         self.assertFalse((self.applications[0] / 'Coconut.app').exists())
         self.assertIn(f'paired {CODE}', result.stdout)
@@ -363,10 +371,18 @@ class InstallScriptTests(unittest.TestCase):
         finally:
             self.applications[0].chmod(0o755)
 
+    def test_an_app_that_cannot_set_up_by_itself_is_replaced_when_the_service_does_not_run(self):
+        self.make_app(self.applications[0] / 'Coconut.app', NO_SETUP_TOOL)
+        result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('is too old for this setup', result.stdout)
+        self.assertIn('--set-up', (self.applications[0] / 'Coconut.app/Contents/Helpers/coconut').read_text())
+        self.assertIn(f'paired {CODE}', result.stdout)
+
     def test_a_feed_without_code_pairing_stops_before_a_false_pairing(self):
         result = self.run_script(CODE, feed=self.feed((512, 'stable'), tool=OLD_TOOL))
         self.assertEqual(result.returncode, 1)
-        self.assertIn('cannot pair with a code yet. A newer build adds it.', result.stderr)
+        self.assertIn('is too old for this setup. A newer build adds what it needs.', result.stderr)
         self.assertNotIn('Setup link', result.stdout)
 
     def test_a_changed_download_installs_nothing(self):
