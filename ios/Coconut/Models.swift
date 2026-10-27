@@ -23,6 +23,27 @@ struct Bot: Codable, Identifiable, Equatable, Sendable {
     var effectiveApproval: String? = nil
     var workerLimit: Int? = nil
     var modelError: String? = nil
+    var health: BotHealth? = nil
+}
+
+/// A bot that cannot run: its provider limit or error, and the source items that wait for it.
+struct BotHealth: Codable, Equatable, Sendable {
+    var state: String
+    var errorCode: String?
+    var until: String?
+    var uncovered: Int
+
+    var label: String {
+        var text = "Provider error"
+        if state == "rate_limited" {
+            text = "Rate limited"
+            if let date = until?.apiDate {
+                let time = date.formatted(date: Calendar.current.isDateInToday(date) ? .omitted : .abbreviated, time: .shortened)
+                text += " until \(time)"
+            }
+        }
+        return uncovered > 0 ? "\(text) · \(uncovered) waiting" : text
+    }
 }
 
 struct BotPreference: Codable, Identifiable, Equatable, Sendable {
@@ -68,7 +89,7 @@ struct BotPatch: Encodable {
 extension Bot {
     enum CodingKeys: String, CodingKey {
         case id, sessionId, name, role, avatar, color, instructions, status
-        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit
+        case lastMessage, unreadCount, archived, createdAt, memory, pinned, preferences, modelOverride, effectiveModel, modelError, notifications, approvalOverride, effectiveApproval, workerLimit, health
     }
 
     init(from decoder: Decoder) throws {
@@ -95,6 +116,7 @@ extension Bot {
         effectiveApproval = try values.decodeIfPresent(String.self, forKey: .effectiveApproval)
         workerLimit = try values.decodeIfPresent(Int.self, forKey: .workerLimit)
         modelError = try values.decodeIfPresent(String.self, forKey: .modelError)
+        health = try values.decodeIfPresent(BotHealth.self, forKey: .health)
     }
 }
 

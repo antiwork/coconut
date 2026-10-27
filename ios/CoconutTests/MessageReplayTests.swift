@@ -112,6 +112,21 @@ final class MessageReplayTests: XCTestCase {
                        "\(bot.name), idle, You: Ship it, 2 unread")
     }
 
+    func testHomeRowShowsABotThatCannotRun() throws {
+        let data = Data(#"{"state":"rate_limited","error_code":"native_rate_limit","until":null,"uncovered":3}"#.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let health = try decoder.decode(BotHealth.self, from: data)
+        XCTAssertEqual(health.label, "Rate limited · 3 waiting")
+        XCTAssertEqual(BotHealth(state: "provider_error", errorCode: "native_auth_permanent", until: nil, uncovered: 0).label,
+                       "Provider error")
+        XCTAssertEqual(BotRowSubtitle(needsYou: false, phase: nil, health: health), .health(health))
+        XCTAssertEqual(BotRowSubtitle(needsYou: false, phase: .thinking, health: health), .phase(.thinking))
+        let bot = try PreviewStateFixture.load().bots[0]
+        XCTAssertEqual(BotRowSubtitle.health(health).accessibilityLabel(bot: bot, preview: ""),
+                       "\(bot.name), Rate limited · 3 waiting" + (bot.unreadCount > 0 ? ", \(bot.unreadCount) unread" : ""))
+    }
+
     @MainActor
     func testDotRequiresWorkingBotAndConfirmedConnection() throws {
         let store = AppStore(demo: false)

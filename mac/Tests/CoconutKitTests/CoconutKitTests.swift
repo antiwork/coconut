@@ -284,6 +284,13 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertEqual(launch.environment["COCONUT_APP_MANAGED"], "1")
         XCTAssertEqual(launch.environment["COCONUT_SIDECAR"], "/App/Contents/Helpers/tunnel-sidecar")
         XCTAssertEqual(launch.environment["PATH"], "/bin")
+        // Only a setup that the person asked for lets deploy.py change the Hermes config.
+        XCTAssertNil(launch.environment["COCONUT_SET_UP"])
+        let setUp = Launch.update(install: install, source: source, directory: "Coconut",
+                                  python: URL(fileURLWithPath: "/opt/homebrew/bin/python3"),
+                                  sidecar: URL(fileURLWithPath: "/App/Contents/Helpers/tunnel-sidecar"), environment: [:],
+                                  home: URL(fileURLWithPath: "/Users/a"), setUp: true)
+        XCTAssertEqual(setUp.environment["COCONUT_SET_UP"], "1")
         // The install folder and its parents may not exist yet. deploy.py creates them.
         XCTAssertEqual(launch.directory.path, "/Users/a")
         XCTAssertNil(launch.standardOutput)

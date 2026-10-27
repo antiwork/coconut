@@ -207,6 +207,8 @@ class WorkProgress:
             task = self._get('tasks', task_id)
             if task['status'] != 'working' or self._task_paused(task) or self.stopping.is_set():
                 raise ServiceError(409, 'This task cannot register a wait now.')
+            if payload.get('no_card'):
+                return self.record_no_card(task, payload)
             peers = self._exchange_peers(task)
             process_owners = peers | {task_id: task}
             decisions = {d['id']: d for d in self._all('decisions') if d['task_id'] in process_owners}

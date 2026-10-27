@@ -68,6 +68,10 @@ class ProfileTests(unittest.TestCase):
         config = json.loads((home / 'config.yaml').read_text())
         self.assertEqual(config['toolsets'], ['kanban'])
         self.assertEqual(config['terminal']['cwd'], str(home.parent / 'workspace'))
+        # The bot loads the skills that ship with Coconut, such as `coconut`.
+        skills = Path(config['skills']['external_dirs'][0])
+        self.assertEqual(config['skills']['external_dirs'], [str(skills)])
+        self.assertTrue((skills / 'coconut/SKILL.md').is_file())
         (home / '.no-bundled-skills').unlink()  # Native Hermes opt-in removes this marker.
         self.assertFalse(self.profiles.sync(self.bot)['created'])
         self.assertFalse((home / '.no-bundled-skills').exists())
