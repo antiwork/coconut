@@ -137,17 +137,18 @@ final class AppModel: ObservableObject {
                 : loginError ?? "Coconut could not add its login items."
             return
         }
-        await update(ifNeeded: false)
+        await update(ifNeeded: false, setUp: true)
     }
 
     /// Install the source of this app when it is newer. deploy.py lets the running turns finish first.
     /// Return whether the install or the update succeeded.
     @discardableResult
-    func update(ifNeeded: Bool) async -> Bool {
+    func update(ifNeeded: Bool, setUp: Bool = false) async -> Bool {
         guard activity == nil else { return false }
         activity = install.isInstalled() ? "Updating Coconut. Running work finishes first." : "Installing Coconut…"
         updateError = nil
-        let result = await runTool(ifNeeded ? ["install-source", "--if-needed"] : ["install-source"])
+        // Only a setup that the person asked for changes the Hermes config (scripts/hermes_skills.py).
+        let result = await runTool(ifNeeded ? ["install-source", "--if-needed"] : ["install-source"] + (setUp ? ["--set-up"] : []))
         activity = nil
         let preferences = UpdatePreferences()
         if result.0 != 0 {

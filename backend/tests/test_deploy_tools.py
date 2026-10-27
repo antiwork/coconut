@@ -319,6 +319,15 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.assertNotIn('skills', [call[0] for call in operations.calls])
         self.assertNotIn('skills', result)
 
+    def test_a_setup_that_the_person_asked_for_adds_the_skill_folder_on_an_existing_install(self):
+        # Coconut.app sets COCONUT_SET_UP for --set-up and Set Up Coconut. A repeated setup retries a failed step.
+        self.receive()
+        operations = FakeOperations(mode='managed')
+        with patch.dict('os.environ', {deploy.SET_UP: '1'}):
+            result = self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
+        self.assertEqual(operations.calls[-1][0], 'skills')
+        self.assertEqual(result['skills'], {'ok': True})
+
     def test_the_skill_setup_command_runs_the_installed_script_and_keeps_a_failed_setup(self):
         commands = []
 

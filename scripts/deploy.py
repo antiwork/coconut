@@ -38,6 +38,9 @@ SERVICE_MODES = ('managed', 'manual', 'stopped', 'app')
 # LaunchAgent.
 APP_MANAGED = 'COCONUT_APP_MANAGED'
 APP_SERVICE_LABEL = 'com.gumroad.coconut.service'
+# Coconut.app sets this variable when the person chose the setup (Coconut.app --set-up, Set Up Coconut). An automatic
+# update does not change the Hermes config.
+SET_UP = 'COCONUT_SET_UP'
 # The service answers its health check after startup finishes.
 HEALTH_WAIT_SECONDS = 300
 # A probe whose failure is expected, such as the check for an already restored service, waits only this long.
@@ -403,8 +406,8 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
     def skills(self, root):
         """Let the person's Hermes load the skills of the new install. See scripts/hermes_skills.py.
 
-        Only a first install does this: it is the setup that the person asked for. A failure keeps the install and goes
-        into the result, as for the tunnel.
+        Only a first install or a setup that the person asked for (SET_UP) does this. A failure keeps the install and
+        goes into the result, as for the tunnel.
         """
         try:
             self.command([sys.executable, str(root / 'scripts/hermes_skills.py'), 'add'], root, 'Hermes skill setup',
@@ -843,7 +846,8 @@ def receive(directory, stream, *, home=None, operations=None):
             detail = str(error) if isinstance(error, DeployError) else type(error).__name__
             raise DeployError('The update failed. Previous source and mode were restored; runtime data was not rewound. ' + detail) from error
         result['tunnel'] = operations.tunnel(root)
-        if initial_install:
+        # A setup that the person asked for adds the skill also on an existing install, so a repeated setup retries it.
+        if initial_install or os.environ.get(SET_UP) == '1':
             result['skills'] = operations.skills(root)
         return result
 

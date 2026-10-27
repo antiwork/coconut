@@ -38,4 +38,5 @@ The app and its login items use these commands. Do not run them yourself:
 
 - `Coconut.app --set-up` sets up Coconut without a click, as **Set Up Coconut** in the menu does. The install script opens the app with it.
 - Setup adds `<install folder>/skills` to `skills.external_dirs` in each Hermes profile's `config.yaml`, so Hermes loads this skill. Coconut changes the Hermes config only during setup.
+- If a Hermes profile does not list this skill, and the person asks you to add it, run `coconut install-source --set-up`. It reinstalls the source like an update, so the running turns finish first. Do not run it inside a bot turn.
 - `Uninstall Coconut.command` in the install folder removes Coconut's data and that `skills.external_dirs` entry. Hermes stays. Run it only when the person asks.
