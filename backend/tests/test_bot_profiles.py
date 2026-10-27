@@ -335,9 +335,11 @@ class ReviewFindingTests(ServiceProfileRescanTests):
         with patch.object(self.service, '_hermes_profile_command', side_effect=fails):
             with self.assertRaises(ServiceError):
                 self.service.mutate('POST', f'/v1/bots/{bot["id"]}/profile/delete', {'confirm': 'work'}, key, 'phone')
-        # The person deletes the folder by hand and creates another profile with the same name.
-        shutil.rmtree(self.work)
+        # The person deletes the folder by hand and creates another profile with the same name. The old folder goes
+        # away last, so the new one cannot reuse its inode.
+        self.work.rename(self.base / 'old-work')
         self.work.mkdir()
+        shutil.rmtree(self.base / 'old-work')
         (self.work / 'SOUL.md').write_text('A new profile.\n')
         with patch.object(self.service, '_hermes_profile_command', side_effect=fails):
             self.service.mutate('POST', f'/v1/bots/{bot["id"]}/profile/delete', {'confirm': 'work'}, key, 'phone')

@@ -213,8 +213,7 @@ class BotProfiles:
             raise ServiceError(409, 'The Hermes profile folder is missing. Remove the bot from Coconut instead.') from None
         self._delete_bot(bot, callbacks, audit={'deleted_by': device, 'hermes_profile_deleted': row['name']})
         bot = self._get('bots', bot['id'])
-        bot['_hermes_profile_deletion'] = dict(name=row['name'], home=row['home'], dev=state.st_dev, ino=state.st_ino,
-                                               done=False)
+        bot['_hermes_profile_deletion'] = dict(name=row['name'], home=row['home'], identity=folder_identity(state), done=False)
         self._put('bots', bot)
         callbacks.append(lambda: self._finish_profile_deletion(bot['id']))
         return {'ok': True, 'profile': row['name']}
@@ -231,7 +230,7 @@ class BotProfiles:
         except FileNotFoundError:
             state = None
         # Delete only the folder that the person confirmed. Hermes deletes by name, so the name must still name it.
-        if state is not None and (state.st_dev, state.st_ino) == (deletion['dev'], deletion['ino']):
+        if state is not None and folder_identity(state) == deletion['identity']:
             if home.name != deletion['name']:
                 raise ServiceError(409, 'The Hermes profile has a new name. Delete it with hermes profile delete.')
             try:
@@ -242,6 +241,12 @@ class BotProfiles:
             bot = self._get('bots', bot_id)
             bot['_hermes_profile_deletion'] = dict(deletion, done=True)
             self._put('bots', bot)
+
+
+def folder_identity(state) -> list:
+    """Identify one folder. A file system can give a new folder the inode of a deleted one, so the creation time
+    (st_birthtime, on macOS) also counts where the system reports it."""
+    return [state.st_dev, state.st_ino, getattr(state, 'st_birthtime', None)]
 
 
 def run_profile_command(python, source, hermes_home, operation: str, *, environment: dict | None = None, **payload) -> dict:
