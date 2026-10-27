@@ -117,14 +117,20 @@ class SetupCoconutTests(unittest.TestCase):
             length=3, signature="sig", published="Mon, 26 Oct 2026 12:00:00 +0000") for build, channel in items])
 
     def test_the_stable_channel_takes_the_nightly_build_before_the_first_stable_release(self):
-        item, channel = setup_coconut.choose_item(self.feed((5, "stable"), (7, "nightly"), (6, "nightly")), "stable")
+        choose = lambda feed, channel: setup_coconut.choose_item(feed, channel, "26.6")
+        item, channel = choose(self.feed((5, "stable"), (7, "nightly"), (6, "nightly")), "stable")
         self.assertEqual((item.build, channel), (5, "stable"))
-        item, channel = setup_coconut.choose_item(self.feed((7, "nightly"), (6, "nightly")), "stable")
+        item, channel = choose(self.feed((7, "nightly"), (6, "nightly")), "stable")
         self.assertEqual((item.build, channel), (7, "nightly"))
-        item, channel = setup_coconut.choose_item(self.feed((5, "stable"), (7, "nightly")), "nightly")
+        item, channel = choose(self.feed((5, "stable"), (7, "nightly")), "nightly")
         self.assertEqual((item.build, channel), (7, "nightly"))
         with self.assertRaisesRegex(SystemExit, "has no Coconut.app yet"):
-            setup_coconut.choose_item(None, "stable")
+            choose(None, "stable")
+
+    def test_an_older_macos_gets_no_app_that_cannot_open(self):
+        with self.assertRaisesRegex(SystemExit, "needs macOS 14.0 or later. This Mac has macOS 13.6"):
+            setup_coconut.choose_item(self.feed((7, "nightly")), "stable", "13.6")
+        self.assertEqual(setup_coconut.choose_item(self.feed((7, "nightly")), "stable", "14.0")[0].build, 7)
 
     def test_a_downloaded_app_must_match_its_name_and_pass_gatekeeper(self):
         _, system, _ = self.folders()
@@ -148,10 +154,41 @@ class SetupCoconutTests(unittest.TestCase):
             setup_coconut.install_app("stable")
         self.assertEqual(self.commands, [])
 
-    def test_the_app_runs_this_checkout(self):
-        setup_coconut.use_this_folder()
+    def test_the_app_runs_this_checkout_and_names_its_earlier_folder(self):
+        with patch.object(setup_coconut, "app_folder", return_value=Path("/Users/a/Other")):
+            self.assertEqual(setup_coconut.use_this_folder(), Path("/Users/a/Other"))
         self.assertEqual(self.commands, [["defaults", "write", "com.gumroad.coconut.mac", "InstallDirectory",
                                           str(setup_coconut.ROOT)]])
+        with patch.object(setup_coconut, "app_folder", return_value=setup_coconut.ROOT):
+            self.assertIsNone(setup_coconut.use_this_folder())
+
+    def test_the_hermes_settings_of_the_shell_or_the_earlier_launch_agent_stay(self):
+        service = {"COCONUT_HERMES_ROOT": "/agent/root", "PATH": "/bin"}
+        with patch.object(setup_coconut.host, "service_environment", return_value=service), \
+                patch.dict(setup_coconut.os.environ, {"COCONUT_HERMES_PYTHON": "/shell/python"}, clear=True):
+            setup_coconut.save_hermes_settings()
+        self.assertEqual(self.commands, [["defaults", "write", "com.gumroad.coconut.mac", "ServiceEnvironment", "-dict",
+                                          "COCONUT_HERMES_PYTHON", "/shell/python", "COCONUT_HERMES_ROOT", "/agent/root"]])
+
+    def test_without_hermes_settings_the_saved_ones_go(self):
+        with patch.object(setup_coconut.host, "service_environment", return_value={}), \
+                patch.dict(setup_coconut.os.environ, {}, clear=True), \
+                patch.object(setup_coconut.subprocess, "run", return_value=completed([])) as ran:
+            setup_coconut.save_hermes_settings()
+        self.assertEqual(ran.call_args.args[0], ["defaults", "delete", "com.gumroad.coconut.mac", "ServiceEnvironment"])
+
+    def test_another_folder_of_the_app_drains_and_its_login_items_start_again(self):
+        previous = Path(self.directory.name) / "Other"
+        (previous / "scripts").mkdir(parents=True)
+        (previous / "scripts/host.py").write_text("")
+        with patch.object(setup_coconut.subprocess, "run", return_value=completed([])) as ran, \
+                patch.object(setup_coconut, "login_item_loaded", return_value=True):
+            setup_coconut.leave_other_folder(previous)
+        self.assertEqual(ran.call_args_list[0].args[0][0], "osascript")
+        self.assertEqual(self.commands[0][0], "-c")
+        self.assertIn("drain_for_update", self.commands[0][1])
+        self.assertEqual(self.commands[0][2], str(previous / "scripts"))
+        self.assertEqual([command[:3] for command in self.commands[1:]], [["launchctl", "kickstart", "-k"]] * 2)
 
     def leave(self, *, agents=(), process=None, app_runs=False):
         home = Path(self.directory.name) / "home"
@@ -176,10 +213,17 @@ class SetupCoconutTests(unittest.TestCase):
 
     def test_the_app_starts_the_service_and_setup_waits_for_its_health(self):
         checks = []
-        with patch.object(setup_coconut.deploy.Operations, "health", lambda operations, root: checks.append(root)):
+        with patch.object(setup_coconut.deploy.Operations, "health", lambda operations, root: checks.append(root)), \
+                patch.object(setup_coconut.host, "owned_process", return_value=(42, {})):
             setup_coconut.start_app(Path("/Applications/Coconut.app"))
         self.assertEqual(self.commands, [["open", "-g", "/Applications/Coconut.app"]])
         self.assertEqual(checks, [setup_coconut.ROOT])
+
+    def test_a_healthy_coconut_of_another_folder_does_not_count(self):
+        with patch.object(setup_coconut.deploy.Operations, "health", lambda operations, root: None), \
+                patch.object(setup_coconut.host, "owned_process", return_value=None), \
+                self.assertRaisesRegex(SystemExit, "Another Coconut answers"):
+            setup_coconut.start_app(Path("/Applications/Coconut.app"))
 
     def test_a_failed_health_check_says_where_to_allow_the_login_item(self):
         def fail(operations, root):
@@ -215,11 +259,12 @@ class SetupCoconutTests(unittest.TestCase):
 
     def test_main_runs_the_steps_in_order(self):
         calls = []
-        names = ["prerequisites", "use_hermes", "prepare_notifications", "use_this_folder", "leave_launch_agents",
-                 "start_app", "start_tunnel", "share"]
+        names = ["prerequisites", "use_hermes", "prepare_notifications", "save_hermes_settings", "use_this_folder",
+                 "leave_launch_agents", "leave_other_folder", "start_app", "start_tunnel", "share"]
         with contextlib.ExitStack() as stack:
             for name in names:
-                stack.enter_context(patch.object(setup_coconut, name, lambda *args, name=name: calls.append(name)))
+                stack.enter_context(patch.object(setup_coconut, name, lambda *args, name=name: calls.append(name)
+                                                 or (Path("/Users/a/Other") if name == "use_this_folder" else None)))
             stack.enter_context(patch.object(setup_coconut, "find_app", return_value=None))
             stack.enter_context(patch.object(setup_coconut, "install_app",
                                              lambda channel: calls.append("install_app " + channel) or Path("/A/Coconut.app")))
