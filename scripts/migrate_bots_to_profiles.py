@@ -273,22 +273,44 @@ def record_rows(data_dir: Path, moves: list[dict]) -> None:
             raise
 
 
-def add_skills_folder(homes: list[Path]) -> None:
-    """Add <install>/skills to skills.external_dirs of the moved profiles, as setup does (skill_dirs). A failure only warns."""
+def edit_profile_configs(moves: list[dict]) -> None:
+    """Change the config.yaml of each moved profile under the Python of Hermes, with its config reader and round-trip
+    writer, so comments and key order stay. A failure only warns.
+
+    1. config_paths: each value in the old home names the new home instead, for example terminal.shell_init_files.
+    2. skill_dirs: skills.external_dirs gets <install>/skills, as setup does.
+    """
+    pairs = [str(value) for move in moves for value in (move['source'], move['destination'])]
+    homes = [move['destination'] for move in moves]
+    steps = [
+        (['config_paths.py', None, *pairs],
+         'The config.yaml of a moved profile can still name its old home, for example in terminal.shell_init_files. '
+         'Check: ' + ', '.join(str(Path(home) / 'config.yaml') for home in homes)),
+        (['skill_dirs.py', 'add', None, str(host.ROOT / 'skills'), *homes],
+         'The moved profiles did not get the Coconut skills folder. Run: python3 scripts/hermes_skills.py add'),
+    ]
     runtime_module = host.hermes_runtime()
     environment = host.service_environment()
     try:
         runtime = runtime_module.find(environment)
-        with runtime_module.isolated(environment) as (isolated, folder):
-            result = subprocess.run([str(runtime.python), '-I', '-B', str(host.ROOT / 'backend/coconut/skill_dirs.py'), 'add',
-                                     str(runtime.root or ''), str(host.ROOT / 'skills'), *map(str, homes)],
-                                    cwd=folder, env=isolated, stdin=subprocess.DEVNULL, text=True, capture_output=True,
-                                    timeout=120)
-        failed = result.returncode != 0
-    except (runtime_module.HermesUnavailable, OSError, subprocess.TimeoutExpired):
-        failed = True
-    if failed:
-        say('The moved profiles did not get the Coconut skills folder. Run: python3 scripts/hermes_skills.py add')
+    except (runtime_module.HermesUnavailable, OSError):
+        runtime = None
+    for arguments, warning in steps:
+        failed = runtime is None
+        if not failed:
+            script, *rest = arguments
+            # None stands for the Hermes source folder.
+            rest = [str(runtime.root or '') if value is None else value for value in rest]
+            try:
+                with runtime_module.isolated(environment) as (isolated, folder):
+                    result = subprocess.run([str(runtime.python), '-I', '-B', str(host.ROOT / 'backend/coconut' / script),
+                                             *rest], cwd=folder, env=isolated, stdin=subprocess.DEVNULL, text=True,
+                                            capture_output=True, timeout=120)
+                failed = result.returncode != 0
+            except (OSError, subprocess.TimeoutExpired):
+                failed = True
+        if failed:
+            say(warning)
 
 
 def recovery_steps(data_dir: Path, ledger: dict) -> str:
@@ -345,46 +367,6 @@ def follow_env_paths(source: Path, destination: Path) -> None:
         path.write_text('\n'.join(lines), encoding='utf-8')
 
 
-# One line of a block-style YAML file, as Hermes writes config.yaml: indentation, list dashes, an optional key, and the
-# value. A key is plain or quoted, and ends with a colon and a space.
-YAML_LINE = re.compile(r"""^(?P<lead>[ \t]*(?:-[ \t]+)*(?:(?:'[^']*'|"(?:[^"\\]|\\.)*"|[^\s#'"\-?:,\[\]{}][^#]*?)[ \t]*:[ \t]+)?)(?P<rest>.*)$""")
-
-
-def follow_config_paths(source: Path, destination: Path) -> None:
-    """A profile's config.yaml can name files inside its old home, for example terminal.shell_init_files. Point them
-    at the new home.
-
-    Each scalar value on one line is read as written: plain, or in single or double quotes. When the whole value is
-    the old home or a path below it, only that prefix changes. A comment, the quotes and the rest of the line stay.
-    """
-    path = destination / 'config.yaml'
-    if not path.is_file() or path.is_symlink():
-        return
-    old, new = str(source), str(destination)
-    lines = path.read_text(encoding='utf-8').split('\n')
-    changed = False
-    for number, line in enumerate(lines):
-        match = YAML_LINE.match(line)
-        if not match or line.lstrip().startswith('#'):
-            continue
-        start = match.start('rest')
-        rest = match['rest']
-        if rest[:1] in ('"', "'"):
-            # The value ends at its closing quote. A value over several lines stays.
-            quoted = re.match(r"'[^']*'" if rest[0] == "'" else r'"(?:[^"\\]|\\.)*"', rest)
-            if not quoted:
-                continue
-            first, last = start + 1, start + quoted.end() - 1
-        else:
-            first, last = start, start + len(re.split(r'\s+#', rest, maxsplit=1)[0].rstrip())
-        raw = line[first:last]
-        if raw == old or raw.startswith(old + '/'):
-            lines[number] = line[:first] + new + line[first + len(old):]
-            changed = True
-    if changed:
-        path.write_text('\n'.join(lines), encoding='utf-8')
-
-
 def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, rename=os.rename) -> dict | None:
     if (data_dir / LEDGER).exists():
         raise SystemExit(f'{data_dir / LEDGER} exists: the migration ran before. Read it before you run it again.')
@@ -428,7 +410,6 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
                         # Hermes lists a folder as a profile only with a profile file.
                         (destination / 'SOUL.md').write_text(souls[move['bot_id']])
                     follow_env_paths(source, destination)
-                    follow_config_paths(source, destination)
                     write_ledger(data_dir, ledger)
                 record_rows(data_dir, moves)
                 restart = True
@@ -446,7 +427,7 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
                 write_ledger(data_dir, ledger)
             except OSError as error:
                 say(f'The migration finished, but the ledger could not record it: {error}')
-            add_skills_folder([Path(move['destination']) for move in moves])
+            edit_profile_configs(moves)
     finally:
         if state is not None and restart:
             host.restore_after_update(state)

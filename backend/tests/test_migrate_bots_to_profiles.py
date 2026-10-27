@@ -8,7 +8,9 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+import subprocess
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
@@ -22,6 +24,8 @@ sys.path.insert(0, str(SCRIPTS))
 spec = importlib.util.spec_from_file_location('migrate_bots_to_profiles', SCRIPTS / 'migrate_bots_to_profiles.py')
 migration = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(migration)
+# setUp replaces it, and one test runs it.
+EDIT_PROFILE_CONFIGS = migration.edit_profile_configs
 
 
 def tree(folder):
@@ -63,7 +67,7 @@ class MigrationTests(unittest.TestCase):
         self.deleted = deleted
         self.before = {bot['id']: tree(self.home(bot)) for bot in self.bots}
         self.calls = []
-        for name, value in (('coconut_workers', []), ('add_skills_folder', None)):
+        for name, value in (('coconut_workers', []), ('edit_profile_configs', None)):
             patcher = patch.object(migration, name, side_effect=lambda *args, value=value, name=name: self.calls.append((name, args)) or value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -98,7 +102,7 @@ class MigrationTests(unittest.TestCase):
 
     def test_the_migration_moves_each_home_and_the_service_runs_the_bots_as_profiles(self):
         ledger, output = self.run_quietly(migration.migrate, self.root, self.hermes)
-        self.assertEqual(self.steps(), ['drain_for_update', 'stop_for_update', 'add_skills_folder', 'restore_after_update'])
+        self.assertEqual(self.steps(), ['drain_for_update', 'stop_for_update', 'edit_profile_configs', 'restore_after_update'])
         names = {move['bot_id']: move['name'] for move in ledger['moves']}
         self.assertEqual(sorted(names.values()), ['ada-2', 'ada-3', 'research-lead'])
         for bot in self.bots:
@@ -108,8 +112,9 @@ class MigrationTests(unittest.TestCase):
             self.assertFalse(self.home(bot).exists())
             self.assertTrue((self.root / 'bots' / bot['id'] / 'workspace').is_dir())
         self.assertTrue(self.home(self.deleted).is_dir())
-        skill_homes = next(args[0] for name, args in self.calls if name == 'add_skills_folder')
-        self.assertEqual(sorted(skill_homes), sorted(self.hermes / 'profiles' / name for name in names.values()))
+        edited = next(args[0] for name, args in self.calls if name == 'edit_profile_configs')
+        self.assertEqual(sorted(Path(move['destination']) for move in edited),
+                         sorted(self.hermes / 'profiles' / name for name in names.values()))
         self.assertTrue((Path(ledger['backup']) / 'coconut.sqlite3').is_file())
         self.assertTrue((Path(ledger['backup']) / 'bots' / self.bots[0]['id'] / 'home/SOUL.md').is_file())
         self.assertFalse((Path(ledger['backup']) / 'bots' / self.bots[0]['id'] / 'workspace').exists())
@@ -215,18 +220,30 @@ class MigrationTests(unittest.TestCase):
         runtime = migration.host.backend_module('runtime_environment')
         self.assertEqual(runtime.login_folders(destination)['XDG_DATA_HOME'], f'{destination}/data')
 
-    def test_shell_init_files_inside_the_old_home_follow_the_move(self):
-        home = self.home(self.bots[2])
-        (home / 'config.yaml').write_text(
-            f'model:\n  default: gpt\nterminal:\n  shell_init_files:\n  - {home}/.profile\n  - \'{home}/.zshrc\'\n'
-            f'  - "{home}/.bashrc"  # login\n  cwd: {home}\n  other: {home}-sibling\n  middle: /mirror{home}/x\n'
-            f'  list: /a:{home}/bin\n# {home}/comment\nhooks:\n- path: {home}/hooks/a.sh\n')
-        ledger, _ = self.run_quietly(migration.migrate, self.root, self.hermes)
-        destination = next(Path(move['destination']) for move in ledger['moves'] if move['bot_id'] == self.bots[2]['id'])
-        self.assertEqual((destination / 'config.yaml').read_text(),
-            f'model:\n  default: gpt\nterminal:\n  shell_init_files:\n  - {destination}/.profile\n  - \'{destination}/.zshrc\'\n'
-            f'  - "{destination}/.bashrc"  # login\n  cwd: {destination}\n  other: {home}-sibling\n  middle: /mirror{home}/x\n'
-            f'  list: /a:{home}/bin\n# {home}/comment\nhooks:\n- path: {destination}/hooks/a.sh\n')
+    def test_the_config_edits_run_under_the_python_of_hermes(self):
+        moves = [dict(source='/old/a', destination='/new/a'), dict(source='/old/b', destination='/new/b')]
+        runtime = SimpleNamespace(python=Path('/hermes/venv/bin/python'), root=Path('/hermes/source'))
+        commands = []
+        def run(command, **kwargs):
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 1 if 'config_paths.py' in command[3] else 0, '', '')
+        with patch.object(migration, 'edit_profile_configs', EDIT_PROFILE_CONFIGS), \
+                patch.object(migration.host, 'hermes_runtime',
+                             return_value=SimpleNamespace(find=lambda environ: runtime, isolated=hermes_runtime.isolated,
+                                                          HermesUnavailable=hermes_runtime.HermesUnavailable)), \
+                patch.object(migration.host, 'service_environment', return_value=dict(os.environ)), \
+                patch.object(migration.subprocess, 'run', side_effect=run):
+            _, output = self.run_quietly(migration.edit_profile_configs, moves)
+        backend = migration.host.ROOT / 'backend/coconut'
+        self.assertEqual(commands, [
+            ['/hermes/venv/bin/python', '-I', '-B', str(backend / 'config_paths.py'), '/hermes/source',
+             '/old/a', '/new/a', '/old/b', '/new/b'],
+            ['/hermes/venv/bin/python', '-I', '-B', str(backend / 'skill_dirs.py'), 'add', '/hermes/source',
+             str(migration.host.ROOT / 'skills'), '/new/a', '/new/b'],
+        ])
+        # A failed step only warns, and the next step still runs.
+        self.assertIn('can still name its old home', output)
+        self.assertNotIn('skills folder', output)
 
     def test_the_backup_leaves_out_folders_that_hermes_makes_again(self):
         home = self.home(self.bots[0])

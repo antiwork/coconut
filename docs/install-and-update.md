@@ -114,9 +114,9 @@ The migration:
 1. Checks that the disk has space for the backup. If it does not, it stops before it changes anything.
 2. Lets the running turns finish, stops Coconut, and checks that no Coconut worker runs.
 3. Backs up `.runtime/host` into `.runtime/host-backup-before-profiles-<time>`. The backup leaves out workspaces and the folders that Hermes makes again: `installs`, `tools` and `cache` of each bot home, and `__pycache__` and `node_modules`. On APFS, each file of the backup is a clone, which uses almost no space. A failed backup removes its partial copy.
-4. Moves each bot home to `<Hermes home>/profiles/<name>`. On another disk, it copies the folder and then removes the original. Paths into the old home in `.env` and `config.yaml` (for example `terminal.shell_init_files`) change to the new home.
+4. Moves each bot home to `<Hermes home>/profiles/<name>`. On another disk, it copies the folder and then removes the original. Paths into the old home in `.env` change to the new home.
 5. Writes the `profiles` rows, and the ledger `.runtime/host/profile-migration.json`.
-6. Adds `<install folder>/skills` to `skills.external_dirs` of each moved profile.
+6. Changes the `config.yaml` of each moved profile with the config writer of Hermes, so comments stay. Each value in the old home names the new home, for example in `terminal.shell_init_files`. `skills.external_dirs` gets `<install folder>/skills`.
 7. Starts Coconut. Coconut then adds your default profile and your other profiles as bots.
 
 The script refuses a Hermes home inside the Coconut folder, and a Hermes home that is not the service's. A failure before the first move changes nothing. A failure after it leaves Coconut stopped and prints the commands that move each folder back, from the ledger. Bot IDs stay the same, so the iPhone keeps every chat.
