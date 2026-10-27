@@ -63,8 +63,12 @@ struct MenuContent: View {
         Button("Open Logs") { model.openLogs() }
         Divider()
         Text("Coconut \(model.version)")
+        if let result = updater.lastResult, result.outcome == .failed {
+            Text("Last update error: \(result.message ?? "unknown")")
+        }
         Button("Check for Updates…") { updater.checkForUpdates() }
             .disabled(!updater.canCheckForUpdates)
+        Toggle("Automatic Updates", isOn: Binding(get: { updater.automaticUpdates }, set: { updater.setAutomaticUpdates($0) }))
         Picker("Update Channel", selection: Binding(get: { updater.channel }, set: { updater.setChannel($0) })) {
             ForEach(UpdateChannel.allCases, id: \.self) { Text($0.title).tag($0) }
         }

@@ -51,9 +51,13 @@ final class AppModel: ObservableObject {
             // The install script (updates/install.sh) opens the app with --set-up, so the person needs no click.
             if CommandLine.arguments.contains("--set-up") && legacyAgents.isEmpty && status.service != .running {
                 await setUp()
-            } else if legacyAgents.isEmpty && install.isInstalled() {
+            } else if legacyAgents.isEmpty && install.isInstalled() && !install.isCheckout() {
                 // After Sparkle installs a new app, the new app updates the source that it carries.
                 await update(ifNeeded: true)
+            } else if !install.isInstalled() && UpdatePreferences().pendingInstall != nil {
+                // No service to update: the new app is the whole update. While an earlier LaunchAgent runs the old
+                // source, the install stays pending.
+                UpdatePreferences().record(UpdateResult(time: Date(), outcome: .installed, version: version))
             }
         }
         timer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
@@ -143,13 +147,23 @@ final class AppModel: ObservableObject {
         guard activity == nil else { return false }
         activity = install.isInstalled() ? "Updating Coconut. Running work finishes first." : "Installing Coconut…"
         updateError = nil
-        let result = await runTool(ifNeeded ? ["update", "--if-needed"] : ["update"])
+        let result = await runTool(ifNeeded ? ["install-source", "--if-needed"] : ["install-source"])
         activity = nil
+        let preferences = UpdatePreferences()
         if result.0 != 0 {
             updateError = DeployResult(output: result.1)?.error ?? Self.lastLine(result.1) ?? "The update failed."
-        } else if let relayError = DeployResult(output: result.1)?.relayError {
-            // The service runs, but without the relay the iPhone cannot reach it.
-            updateError = "The relay did not start: \(relayError)"
+            // `coconut update --wait` and `coconut status` report this step after an app update.
+            preferences.record(UpdateResult(time: Date(), outcome: .failed,
+                                            message: "The service update failed: \(updateError ?? "")"))
+        } else {
+            if let relayError = DeployResult(output: result.1)?.relayError {
+                // The service runs, but without the relay the iPhone cannot reach it.
+                updateError = "The relay did not start: \(relayError)"
+            }
+            if preferences.pendingInstall != nil {
+                // The new app runs, and the service has its source. The app update is complete.
+                preferences.record(UpdateResult(time: Date(), outcome: .installed, version: version))
+            }
         }
         await refresh()
         return result.0 == 0
