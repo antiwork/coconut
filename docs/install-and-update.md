@@ -159,8 +159,8 @@ The Mac account's Keychain must permit access. See [native credential storage](h
 Install the signed iPhone app before pairing. See [the iPhone setup](iphone-install.md).
 
 1. Open **Pair iPhone.command** on this Mac.
-2. Open Coconut on the iPhone. A new installation opens onboarding. Otherwise, open Settings.
-3. Tap **Scan the code**, or **Scan setup code** in Settings.
+2. Open Coconut on the iPhone. A new installation opens onboarding. Otherwise, open Settings and tap **Pair a new Mac**.
+3. Tap **Need help?**, then **Scan the QR code**.
 4. Scan the QR displayed on this Mac.
 5. Check the Mac name, then tap **Pair**.
 
@@ -170,27 +170,23 @@ If no mini configuration exists, the launcher pairs with this development Mac in
 
 ### Pair through Hermes
 
-A person who already uses Hermes can pair without this repository. Onboarding shows a message to send to the Hermes agent.
-The message tells the agent to clone this repository to `~/Coconut` if it is missing, then to run one command on its Mac:
+A person who already uses Hermes can pair without this repository and without touching the Mac. Onboarding on the iPhone is one screen. It shows one message to send to the Hermes agent, for example in a Telegram chat with the Hermes bot:
 
-```sh
-python3 ~/Coconut/scripts/setup_coconut.py
+```
+curl -fsSL https://coconut-updates.gumroad.workers.dev/install | bash -s <code>
 ```
 
-The command does these steps:
+1. The iPhone makes a one-time pairing code and a rendezvous box on the relay. The message holds the code.
+2. The script (`updates/install.sh`) installs the newest notarized Coconut.app, after it checks the code signature, the team ID and Gatekeeper.
+3. The script opens the app, which sets up Coconut, and waits for the service and the relay.
+4. The script runs `coconut pair <code>`. The Mac seals a new setup for the iPhone in the rendezvous box.
+5. The iPhone opens the setup and pairs by itself.
 
-1. It checks for macOS and Xcode Command Line Tools.
-2. It finds and checks the Hermes that the person already uses, as the service does at each start. See [The Hermes that Coconut uses](#the-hermes-that-coconut-uses). It does not install its own copy. If Hermes is missing or does not pass the check, it stops and says why.
-3. It prepares notification encryption with `push.py --rebuild`.
-4. It installs or starts the login service, so Coconut starts again after a restart. Then it waits for the local health check.
-5. It installs the relay sidecar with `tunnel.py install`.
-6. It runs `python3 scripts/pairing.py --share`. It prints the setup link and the path of a QR image that holds the same link last.
+The code works once, for 10 minutes, and only for the iPhone that made it. Telegram does not encrypt bot chats end to end, so the code passes through Telegram's servers. After the iPhone pairs, the code is useless. `docs/relay-transport.md`, "Pairing code from the iPhone", describes the protocol.
 
-Each failed check prints what to do. You can run the command again at any time. It skips the steps that are complete, and it prints a new setup link.
+**Need help?** on the screen shows the download link of Coconut.app, for a Hermes that cannot run commands. The person installs the app by hand, chooses **Pair iPhone** in its menu, and scans the QR code. Settings has **Pair a new Mac**, which opens the same screen.
 
-The agent sends the link and the QR image to the person. On the same iPhone, the person taps the link. On another screen, the person scans the QR image in Coconut.
-The link and the image contain the one-time secret. Send them only to the person who pairs.
-If the iPhone already has a pairing, Coconut asks before it replaces it.
+A developer with a checkout of this repository can still run `python3 ~/Coconut/scripts/setup_coconut.py`. It prints a setup link and a QR image. If the iPhone already has a pairing, Coconut asks before a link replaces it.
 
 An iPhone that paired before the relay used Tailscale. It shows "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link." Pair it again with a new link.
 

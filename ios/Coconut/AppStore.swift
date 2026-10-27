@@ -643,8 +643,18 @@ final class AppStore {
             return false
         }
         scheduleDelivery()
+        askForNotificationsIfNeeded()
         // The draft is saved locally even when the Mac has not confirmed it yet.
         return true
+    }
+
+    // A bot answers later, so notifications start to matter with the first message. iOS asks only once.
+    private func askForNotificationsIfNeeded() {
+        guard PushNotifications.shared.authorization == .notDetermined else { return }
+        Task {
+            await PushNotifications.shared.refresh(requestPermission: true)
+            await syncPushRegistration()
+        }
     }
 
     func retryOutgoing(_ id: String) async {
@@ -1494,26 +1504,16 @@ final class AppStore {
         catch { report(error) }
     }
 
-    // The Mac reads an existing Hermes setup without changing it. Demo mode shows a sample.
+    // The state of the Mac's Hermes, for example an untested version. Demo mode has none.
     // A quiet check passes reportsErrors: false, so a failure shows no error.
     func loadHermesSetup(reportsErrors: Bool = true) async -> HermesSetup? {
-        if isDemo { return HermesSetup.sample }
+        if isDemo { return nil }
         guard let client else { return nil }
         do { return try await client.request("setup") }
         catch {
             if reportsErrors { report(error) }
             return nil
         }
-    }
-
-    func importHermesSetup(profileIds: [String], logins: Bool, mcpServers: Bool = false) async -> HermesImportResult? {
-        if isDemo {
-            let servers = mcpServers ? HermesSetup.sample.mcpServers ?? [] : []
-            return HermesImportResult(bots: [], logins: logins ? HermesSetup.sample.logins.map(\.id) : [],
-                                      mcpServers: servers.map(\.id), mcpNeedsSetup: servers.filter(\.needsSetup).map(\.id))
-        }
-        return await write("setup/import", payload: HermesImportRequest(profileIds: profileIds, logins: logins, mcpServers: mcpServers),
-                           as: HermesImportResult.self)
     }
 
     func restartBots() async -> Bool {

@@ -152,7 +152,7 @@ struct PastePairingSetupView: View {
                         .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
                         .accessibilityLabel("Pairing link").accessibilityIdentifier("pairing-setup-payload")
                 } footer: {
-                    Text("Paste the pairing link that Hermes sent. Coconut shows the name of the Mac before you pair.")
+                    Text("Paste the pairing link from Coconut on your Mac. Coconut shows the name of the Mac before you pair.")
                 }
                 if let error { Section { InlineError(error) } }
                 Section {

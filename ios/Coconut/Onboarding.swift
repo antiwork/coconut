@@ -1,59 +1,42 @@
 import SwiftUI
-import UserNotifications
 
-enum OnboardingStep: Int, Hashable, Comparable {
-    case pair, setup, bots, logins, mcp, model, notifications, done
-
-    static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
-}
-
-// First run and Settings → Hermes setup share these pages. Each page has one title, one live
-// illustration, and one primary action. The Mac copies only what the person chooses.
+// The one onboarding screen, also "Pair a new Mac" in Settings. The person copies one message to their Hermes, for
+// example in Telegram. Hermes installs Coconut on its Mac and runs `coconut pair <code>`, and this iPhone pairs by
+// itself through the rendezvous box on the relay. Nobody touches the Mac.
 struct OnboardingView: View {
     static let completedKey = "coconut.onboarding.completed"
-    // The number of pairing pages on screen. A page that shows takes a tapped pairing link itself.
+    // The download link of Coconut.app for a manual install (updates/README.md).
+    static let downloadURL = URL(string: "https://coconut-updates.gumroad.workers.dev/mac/download")!
+    // The number of pairing screens on screen. A screen that shows takes a tapped pairing link itself.
     private(set) static var openCount = 0
     static var isOpen: Bool { openCount > 0 }
 
-    private enum SetupLoad: Equatable {
-        case loading
-        case loaded(HermesSetup)
-        // The Mac did not answer. This is not the same as a Mac without Hermes.
-        case failed
-
-        var setup: HermesSetup? { if case .loaded(let setup) = self { setup } else { nil } }
-        var finished: Bool { if case .loaded = self { true } else { false } }
+    private enum Phase: Equatable {
+        // The iPhone makes the code and its box on the relay.
+        case preparing
+        // The message is ready. The iPhone waits for the Mac.
+        case waiting
+        case pairing(String)
+        case failed(String)
     }
-    // The Mac accepts at most this many profiles in one import request.
-    private static let importBatch = 20
 
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let start: OnboardingStep
     // The first run has no Close button, because Coconut shows nothing until it has a pairing.
     let firstRun: Bool
-    @State private var step: OnboardingStep
-    @State private var history: [OnboardingStep] = []
-    @State private var load = SetupLoad.loading
-    @State private var selected: Set<String> = []
-    @State private var action: Task<Void, Never>?
-    @State private var modelOpen = false
-    @State private var askNotifications = false
-    @State private var notificationsOn = false
-    @State private var importError: String?
-    @State private var skippedSkills: [String] = []
-    @State private var pairingSetup: PairingSetup?
-    @State private var pairingError: String?
-    @State private var replaceConfirmation = false
-    @State private var scannerOpen = false
-    @State private var pasteOpen = false
-    @State private var serversNeedingSetup: [String] = []
+    @State private var phase = Phase.preparing
+    @State private var pending: PendingPairing?
+    // A new value starts the rendezvous again.
+    @State private var attempt = 0
+    @State private var copied = false
+    @State private var helpOpen = false
+    // A setup from a QR code or a tapped link. The person confirms the Mac name before Coconut pairs.
+    @State private var linkSetup: PairingSetup?
+    @State private var confirmOpen = false
 
-    init(start: OnboardingStep = .pair, firstRun: Bool = false) {
-        self.start = start
+    init(firstRun: Bool = false) {
         self.firstRun = firstRun
-        _step = State(initialValue: start)
     }
 
     static func showsOnLaunch(_ store: AppStore) -> Bool {
@@ -64,892 +47,299 @@ struct OnboardingView: View {
         return !store.isDemo && !store.hasPairing && !UserDefaults.standard.bool(forKey: completedKey)
     }
 
-    private var setup: HermesSetup? { load.setup }
-    private var newServers: [HermesMCPServer] { setup?.newMCPServers(existing: store.mcpServers) ?? [] }
-    // The setup's default model, when Coconut can use the same route.
-    private var setupModel: ModelOverride? { setup?.modelChoice(in: store.modelCatalog) }
-    private var working: Bool { action != nil }
-
-    private var steps: [OnboardingStep] {
-        Self.steps(start: start, setup: setup, existingServers: store.mcpServers,
-                   modelConfigured: store.modelConfigured, askNotifications: askNotifications)
-    }
-
-    // The pages in order. `setup` is nil until the Mac answers the setup check.
-    static func steps(start: OnboardingStep, setup: HermesSetup?, existingServers: [MCPServer],
-                      modelConfigured: Bool, askNotifications: Bool) -> [OnboardingStep] {
-        var steps: [OnboardingStep] = start == .pair ? [.pair] : []
-        // After pairing, a setup with nothing to choose skips its page. Settings → Hermes setup always shows it.
-        if start == .setup || setup?.offersChoices(existingServers: existingServers) != false { steps.append(.setup) }
-        if setup?.importable.isEmpty == false { steps.append(.bots) }
-        if setup.map({ !$0.logins.isEmpty || !$0.signIns.isEmpty }) == true { steps.append(.logins) }
-        if setup?.newMCPServers(existing: existingServers).isEmpty == false { steps.append(.mcp) }
-        if !modelConfigured { steps.append(.model) }
-        if askNotifications { steps.append(.notifications) }
-        steps.append(.done)
-        return steps
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            header
-            page
-                .id(step)
-                .transition(.opacity)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            footer
+            HStack {
+                Spacer()
+                Button { close() } label: {
+                    Image(systemName: "xmark").font(.subheadline.weight(.medium)).frame(minWidth: 44, minHeight: 44)
+                }
+                .foregroundStyle(.primary)
+                .opacity(firstRun ? 0 : 1)
+                .disabled(firstRun)
+                .accessibilityLabel("Close")
+            }
+            .padding(.top, 4)
+            ScrollView {
+                VStack(spacing: 14) {
+                    Text("Connect your Mac")
+                        .font(.system(.title, design: .serif).weight(.medium))
+                        .multilineTextAlignment(.center)
+                        .accessibilityAddTraits(.isHeader)
+                    Text("Send this message to your Hermes, for example in Telegram.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    if store.hasPairing && !firstRun {
+                        Text("This replaces the pairing with \(store.pairedMacDescription).")
+                            .font(.footnote).foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+                    message.padding(.top, 14)
+                    actions
+                    status.padding(.top, 10)
+                }
+                .padding(.top, 20)
+                .frame(maxWidth: .infinity)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            Button("Need help?") { helpOpen = true }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("onboarding-help")
         }
         .padding(.horizontal, 24)
-        .padding(.bottom, 12)
+        .padding(.bottom, 8)
         .background(BoardStyle.paper.ignoresSafeArea())
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: step)
-        .sheet(isPresented: $modelOpen) {
-            NavigationStack {
-                ModelSettingsView()
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { modelOpen = false } } }
-            }
-        }
-        .task {
-            await PushNotifications.shared.refresh()
-            askNotifications = PushNotifications.shared.authorization == .notDetermined
-        }
-        .onChange(of: store.hasPairing) { _, paired in
-            // The pair action advances by itself.
-            if paired && step == .pair && !working { perform { await checkSetupThenAdvance() } }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.25), value: phase)
+        .task(id: attempt) { await rendezvous() }
+        .onChange(of: store.hasPairing) { old, paired in
+            // A first run ends with any pairing, for example from a test server.
+            if paired && !old && firstRun { finish() }
         }
         .onChange(of: store.setupLink, initial: true) { _, _ in takeSetupLink() }
-        // A link that arrives during an action waits until the action ends.
-        .onChange(of: working) { _, _ in takeSetupLink() }
-        .confirmationDialog("Replace the current pairing?", isPresented: $replaceConfirmation, titleVisibility: .visible) {
-            Button("Pair with \(pairingSetup?.name ?? "this Mac")", role: .destructive) {
-                if let pairingSetup { perform { await pair(pairingSetup) } }
+        .sheet(isPresented: $helpOpen) {
+            PairingHelpView { payload in
+                helpOpen = false
+                useLink(payload)
             }
-            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog("Pair with \(linkSetup?.name ?? "this Mac")?", isPresented: $confirmOpen, titleVisibility: .visible) {
+            Button("Pair") { if let linkSetup { Task { await pair(linkSetup) } } }
+            Button("Cancel", role: .cancel) { linkSetup = nil }
         } message: {
-            Text("This iPhone uses \(store.pairedMacDescription). Pairing again replaces it.")
-        }
-        .sheet(isPresented: $scannerOpen) {
-            PairingScannerView { payload in
-                useSetup(payload)
-                scannerOpen = false
-            }
-        }
-        .sheet(isPresented: $pasteOpen) {
-            PastePairingSetupView { payload in try parseSetup(payload) }
+            Text(store.hasPairing ? "This replaces the pairing with \(store.pairedMacDescription)." : "Check that this is your Mac.")
         }
         .onAppear { Self.openCount += 1 }
-        .onDisappear {
-            Self.openCount -= 1
-            action?.cancel()
-        }
+        .onDisappear { Self.openCount -= 1 }
         .accessibilityIdentifier("onboarding")
     }
 
-    private var header: some View {
-        let steps = steps
-        // A step can leave the list while it shows. The bar then stays on the step before it.
-        let index = steps.firstIndex(of: step) ?? max(0, (steps.lastIndex { $0 < step } ?? 0))
-        return HStack(spacing: 12) {
-            Button { back() } label: {
-                Image(systemName: "chevron.left").font(.body.weight(.medium)).frame(minWidth: 44, minHeight: 44)
-            }
-            .opacity(history.isEmpty || step == .done ? 0 : 1)
-            .disabled(history.isEmpty || step == .done || working)
-            .accessibilityLabel("Back")
-            ProgressSegments(count: steps.count, index: index)
-            Button { finish() } label: {
-                Image(systemName: "xmark").font(.subheadline.weight(.medium)).frame(minWidth: 44, minHeight: 44)
-            }
-            .opacity(firstRun || step == .done ? 0 : 1)
-            .disabled(firstRun || step == .done)
-            .accessibilityLabel("Close")
-        }
-        .foregroundStyle(.primary)
-        .padding(.top, 4)
+    private var messageText: String { pending?.pairingCode.hermesMessage ?? PairingCode(bytes: Data(count: 16)).hermesMessage }
+
+    private var message: some View {
+        Text(messageText)
+            .font(.callout)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .redacted(reason: pending == nil ? .placeholder : [])
+            .privacySensitive()
+            .accessibilityIdentifier("hermes-message")
     }
 
-    @ViewBuilder private var page: some View {
-        switch step {
-        case .pair:
-            OnboardingPage(title: firstRun ? "Bots that keep work moving" : "Connect your Hermes",
-                           subtitle: firstRun
-                               ? "Coconut runs your Hermes bots on your Mac. Your Hermes agent sets up Coconut, then sends you a pairing link."
-                               : "Your Hermes agent sets up Coconut on its Mac, then sends you a pairing link.") {
-                HermesPairingSteps(setup: pairingSetup, error: pairingError)
+    private var actions: some View {
+        HStack(spacing: 12) {
+            Button {
+                UIPasteboard.general.string = messageText
+                withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) { copied = true }
+            } label: {
+                Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    .font(.body.weight(.semibold))
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(maxWidth: .infinity, minHeight: 50)
+                    .foregroundStyle(BoardStyle.controlLabel)
+                    .background(BoardStyle.control, in: Capsule())
             }
-        case .setup:
-            OnboardingPage(title: setupTitle, subtitle: setupSubtitle) {
-                SetupIllustration(setup: setup, loaded: load.finished)
+            .buttonStyle(HomePressStyle())
+            .accessibilityIdentifier("copy-hermes-message")
+            ShareLink(item: messageText) {
+                Label("Share", systemImage: "square.and.arrow.up")
+                    .font(.body.weight(.semibold))
+                    .frame(maxWidth: .infinity, minHeight: 50)
+                    .foregroundStyle(.primary)
+                    .background(Color.primary.opacity(0.08), in: Capsule())
             }
-            .id(load == .failed ? "setup-failed" : "setup")
-            .task(id: load == .loading) { await loadSetup() }
-        case .bots:
-            OnboardingPage(title: "Choose your bots",
-                           subtitle: "Each profile becomes a bot with its personality, memory, and skills.") {
-                VStack(spacing: 0) {
-                    ForEach(setup?.profiles ?? []) { profile in
-                        ProfileRow(profile: profile, selected: binding(for: profile))
-                        Divider().opacity(0.6)
-                    }
-                }
+            .accessibilityIdentifier("share-hermes-message")
+        }
+        .disabled(pending == nil)
+        .opacity(pending == nil ? 0.4 : 1)
+    }
+
+    @ViewBuilder private var status: some View {
+        switch phase {
+        case .preparing, .waiting:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text(phase == .preparing ? "Making a pairing code…" : "Waiting for your Mac…")
             }
-        case .logins:
-            OnboardingPage(title: setup?.logins.isEmpty == false ? "Use your model keys?" : "Sign in again",
-                           subtitle: loginsSubtitle) {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(Array((setup?.logins ?? []).enumerated()), id: \.element.id) { index, login in
-                        StaggeredRow(index: index) { Label(login.label, systemImage: "key").font(.body) }
-                    }
-                    if let signIns = setup?.signIns, !signIns.isEmpty {
-                        Text("Sign in again in Coconut's Hermes Terminal on your Mac for \(signIns.map(\.label).formatted()). A sign-in cannot be shared with your own Hermes.")
-                            .font(.footnote).foregroundStyle(.secondary).padding(.top, 6)
-                    }
-                    if setup?.logins.isEmpty == false {
-                        Text("The keys stay on your Mac.").font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            .font(.subheadline).foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("onboarding-status")
+        case .pairing(let name):
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Pairing with \(name)…")
             }
-        case .mcp:
-            OnboardingPage(title: "Add your MCP servers?",
-                           subtitle: "Your Hermes setup uses these MCP servers. Coconut can add them for your bots. It keeps any server that it already has.") {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(Array(newServers.enumerated()), id: \.element.id) { index, server in
-                        StaggeredRow(index: index) { MCPServerRow(server: server) }
-                    }
-                    Text("Coconut copies the keys that these servers use. A server that needs setup stays off until you finish it in Hermes on your Mac.")
-                        .font(.footnote).foregroundStyle(.secondary).padding(.top, 6)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+            .font(.subheadline.weight(.medium))
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("onboarding-status")
+        case .failed(let text):
+            VStack(spacing: 6) {
+                InlineError(text).multilineTextAlignment(.center)
+                Button("Try again") { attempt += 1 }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("onboarding-retry")
             }
-        case .model:
-            OnboardingPage(title: setupModel.map { "Use \(modelName($0))?" } ?? "Choose a model", subtitle: modelSubtitle) {
-                WelcomeIllustration(phases: [.thinking, .writing, .reading])
-            }
-            // Copied keys can add providers, so the page reads the Mac's catalog again.
-            .task { await store.refreshSettings() }
-        case .notifications:
-            OnboardingPage(title: "Get notified",
-                           subtitle: "Coconut tells you when a bot finishes or needs your answer.") {
-                NotificationIllustration()
-            }
-        case .done:
-            OnboardingPage(title: "You are all set", subtitle: doneSubtitle) {
-                CompletionBurst()
-            }
+            .accessibilityIdentifier("onboarding-error")
         }
     }
 
-    @ViewBuilder private var footer: some View {
-        VStack(spacing: 4) {
-            if let importError, [.bots, .logins, .mcp, .model].contains(step) {
-                InlineError(importError)
-                    .multilineTextAlignment(.center).padding(.bottom, 6)
-                    .accessibilityIdentifier("onboarding-error")
+    // Make or resume the code, wait for the Mac's setup, then pair. An expired code gives way to a new one.
+    private func rendezvous() async {
+        guard let relay = Rendezvous.appRelay else {
+            phase = .failed("This Coconut build has no relay address.")
+            return
+        }
+        let box = Rendezvous(relay: relay)
+        while !Task.isCancelled {
+            let current = ProtectedCache.read(PendingPairing.cacheName).flatMap { (saved: PendingPairing) in saved.isLive() ? saved : nil }
+                ?? PendingPairing.make()
+            try? ProtectedCache.write(current, name: PendingPairing.cacheName)
+            // The message shows only when its box exists, so a copied message always works.
+            pending = nil
+            phase = .preparing
+            do {
+                try await box.open(current)
+            } catch RendezvousError.expired {
+                ProtectedCache.remove(PendingPairing.cacheName)
+                continue
+            } catch RendezvousError.relay(let status) {
+                phase = .failed("The relay refused the pairing code with status \(status). Try again, or tap Need help?.")
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                phase = .failed("Coconut could not reach the relay. Check the internet connection, then try again.")
+                return
             }
-            switch step {
-            case .pair:
-                if let pairingSetup {
-                    PrimaryButton(title: working ? "Connecting…" : "Pair with this Mac", enabled: !working,
-                                  identifier: "onboarding-pair") {
-                        if store.hasPairing { replaceConfirmation = true } else { perform { await pair(pairingSetup) } }
-                    }
-                    SecondaryButton(title: "Use another link", enabled: !working) { self.pairingSetup = nil }
-                } else if store.hasPairing && firstRun {
-                    PrimaryButton(title: "Continue", enabled: !working) { perform { await checkSetupThenAdvance() } }
-                } else {
-                    PrimaryButton(title: "Scan the pairing QR code", identifier: "onboarding-scan") { scannerOpen = true }
-                    SecondaryButton(title: "Paste the pairing link", identifier: "onboarding-paste") { pasteOpen = true }
-                }
-            case .setup:
-                if load == .failed {
-                    PrimaryButton(title: "Try again") { load = .loading }
-                    SecondaryButton(title: "Skip for now") { advance() }
-                } else {
-                    PrimaryButton(title: "Continue", enabled: load.finished) { advance() }
-                }
-            case .bots:
-                PrimaryButton(title: selected.isEmpty ? "Skip" : selected.count == 1 ? "Add 1 bot" : "Add \(selected.count) bots",
-                              enabled: !working) {
-                    if setup?.logins.isEmpty == false { advance() } else { perform { await runImport(logins: false) } }
-                }
-            case .logins:
-                if setup?.logins.isEmpty == false {
-                    PrimaryButton(title: "Use them", enabled: !working) { perform { await runImport(logins: true) } }
-                    SecondaryButton(title: "Not now", enabled: !working) { perform { await runImport(logins: false) } }
-                } else {
-                    PrimaryButton(title: "Continue", enabled: !working) { perform { await runImport(logins: false) } }
-                }
-            case .mcp:
-                PrimaryButton(title: "Add them", enabled: !working) { perform { await importServers() } }
-                SecondaryButton(title: "Not now", enabled: !working) { advance() }
-            case .model:
-                if let setupModel, !store.modelConfigured {
-                    PrimaryButton(title: "Use \(modelName(setupModel))", enabled: !working) { perform { await useSetupModel(setupModel) } }
-                    SecondaryButton(title: "Choose another model", enabled: !working) { modelOpen = true }
-                } else {
-                    PrimaryButton(title: "Choose a model") { modelOpen = true }
-                }
-                SecondaryButton(title: store.modelConfigured ? "Continue" : "Later", enabled: !working) { advance() }
-            case .notifications:
-                if notificationsOn {
-                    Label {
-                        Text("Notifications on").foregroundStyle(.primary)
-                    } icon: {
-                        Image(systemName: "checkmark").foregroundStyle(BoardStyle.green)
-                    }
-                    .font(.body.weight(.medium))
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
-                    PrimaryButton(title: "Continue") { advance() }
-                } else {
-                    PrimaryButton(title: "Turn on notifications", enabled: !working) { perform { await enableNotifications() } }
-                    SecondaryButton(title: "Not now", enabled: !working) { advance() }
-                }
-            case .done:
-                PrimaryButton(title: "Start") { finish() }
+            pending = current
+            phase = .waiting
+            guard let sealed = await waitForSetup(box, current) else {
+                // The code expired. The next pass makes a new one, so the message on screen always works.
+                ProtectedCache.remove(PendingPairing.cacheName)
+                copied = false
+                continue
+            }
+            await box.close(current)
+            ProtectedCache.remove(PendingPairing.cacheName)
+            guard let plaintext = try? current.pairingCode.open(sealed),
+                  let setup = try? PairingSetup.parse(String(decoding: plaintext, as: UTF8.self)) else {
+                phase = .failed("The setup from the Mac is damaged. Send a new message to Hermes.")
+                return
+            }
+            await pair(setup)
+            return
+        }
+    }
+
+    // Read the box until the setup comes or the code expires. A lost connection, for example while iOS suspends
+    // Coconut, retries.
+    private func waitForSetup(_ box: Rendezvous, _ current: PendingPairing) async -> Data? {
+        while !Task.isCancelled && current.isLive() {
+            let wait = max(1, min(25, Int(current.expires.timeIntervalSinceNow)))
+            do {
+                if let sealed = try await box.read(current, wait: wait) { return sealed }
+            } catch RendezvousError.expired {
+                return nil
+            } catch {
+                try? await Task.sleep(for: .seconds(2))
             }
         }
-        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.8), value: notificationsOn)
+        return nil
     }
 
-    private var setupTitle: String {
-        if load == .failed { return "Coconut could not check your Mac" }
-        guard load.finished else { return "Looking for Hermes" }
-        return setup?.found == true ? "Already knows your setup" : "Coconut set up Hermes"
-    }
-
-    private var setupSubtitle: String {
-        if load == .failed { return store.error ?? "Check that your Mac is on and connected, then try again." }
-        guard load.finished else { return "Coconut checks your Mac for an existing Hermes setup." }
-        if setup?.found == true {
-            return "Coconut found Hermes on your Mac. It copies only what you choose and leaves the original unchanged."
+    private func pair(_ setup: PairingSetup) async {
+        phase = .pairing(setup.name)
+        linkSetup = nil
+        if await store.pair(setup: setup) {
+            finish()
+        } else {
+            phase = .failed(store.error ?? "Coconut could not pair with \(setup.name). Send a new message to Hermes.")
         }
-        return "This Mac has no other Hermes setup. Coconut runs its own Hermes for your bots."
-    }
-
-    private var loginsSubtitle: String {
-        setup?.logins.isEmpty == false
-            ? "Your Hermes setup has these model keys. Coconut can copy them for your bots. It keeps any key that it already has."
-            : "Your Hermes setup uses sign-ins that Coconut cannot copy."
-    }
-
-    private var doneSubtitle: String {
-        var notes: [String] = []
-        if !skippedSkills.isEmpty {
-            notes.append("Coconut left out \(skippedSkills.formatted()), because a skill was too large or had too many files.")
-        }
-        if !serversNeedingSetup.isEmpty {
-            notes.append("Finish \(serversNeedingSetup.formatted()) in Hermes on your Mac. Until then, Coconut keeps these MCP servers off.")
-        }
-        return notes.isEmpty ? "Your bots are ready on your Mac." : (["Your bots are ready."] + notes).joined(separator: " ")
-    }
-
-    private var modelSubtitle: String {
-        if setupModel != nil {
-            return "Your Hermes setup uses this model. Coconut can use it as the default for your bots. You can change it later in Settings."
-        }
-        if let model = setup?.model {
-            return "Your Hermes setup uses \(model.model), but Coconut cannot use it yet. Choose the default model for your Coconut bots."
-        }
-        return "Your bots need a default model. You can change it later in Settings."
-    }
-
-    private func modelName(_ selection: ModelOverride) -> String {
-        store.modelCatalog?.name(for: selection) ?? selection.model
-    }
-
-    private func binding(for profile: HermesSetupProfile) -> Binding<Bool> {
-        Binding(get: { selected.contains(profile.id) },
-                set: { if $0 { selected.insert(profile.id) } else { selected.remove(profile.id) } })
-    }
-
-    // After pairing, the setup check runs before the next page, so a setup with nothing to choose skips its page.
-    private func checkSetupThenAdvance() async {
-        await checkSetup()
-        guard !Task.isCancelled else { return }
-        advance()
-    }
-
-    private func checkSetup() async {
-        guard load == .loading else { return }
-        let result = await store.loadHermesSetup()
-        guard !Task.isCancelled else { return }
-        selected = Set(result?.importable.map(\.id) ?? [])
-        load = result.map(SetupLoad.loaded) ?? .failed
     }
 
     private func takeSetupLink() {
-        guard let link = store.setupLink, !working else { return }
+        guard let link = store.setupLink else { return }
         store.setupLink = nil
-        useSetup(link)
-        // A link always opens the pairing page, also from a later step.
-        if step != .pair {
-            history.append(step)
-            step = .pair
+        useLink(link)
+    }
+
+    private func useLink(_ payload: String) {
+        do {
+            linkSetup = try PairingSetup.parse(payload)
+            confirmOpen = true
+        } catch {
+            phase = .failed(error.localizedDescription)
         }
     }
 
-    private func parseSetup(_ payload: String) throws {
-        pairingSetup = try PairingSetup.parse(payload)
-        pairingError = nil
-    }
-
-    private func useSetup(_ payload: String) {
-        do { try parseSetup(payload) } catch { pairingError = error.localizedDescription }
-    }
-
-    // The person checks the Mac address, then one tap pairs.
-    private func pair(_ setup: PairingSetup) async {
-        pairingError = nil
-        let saved = await store.pair(setup: setup)
-        guard !Task.isCancelled else { return }
-        if saved {
-            // The setup page must describe the Mac that this iPhone now uses, not an earlier one.
-            load = .loading
-            selected = []
-            importError = nil
-            skippedSkills = []
-            await checkSetup()
-            guard !Task.isCancelled else { return }
-            pairingSetup = nil
-            advance()
-        } else {
-            pairingError = store.error ?? "Coconut could not pair with this Mac. Ask your Hermes for a new pairing link."
+    // The code stops working when the screen closes without a pairing.
+    private func close() {
+        if let pending, let relay = Rendezvous.appRelay {
+            Task { await Rendezvous(relay: relay).close(pending) }
         }
-    }
-
-    // One action at a time. Closing the flow cancels it, so it cannot move a page that is gone.
-    private func perform(_ work: @escaping @MainActor () async -> Void) {
-        guard action == nil else { return }
-        action = Task { @MainActor in
-            await work()
-            action = nil
-        }
-    }
-
-    private func loadSetup() async {
-        guard load == .loading else { return }
-        let started = Date()
-        let result = await store.loadHermesSetup()
-        // Give the search a moment on screen, so the result does not flash in.
-        let wait = 0.8 - Date().timeIntervalSince(started)
-        if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
-        guard !Task.isCancelled else { return }
-        selected = Set(result?.importable.map(\.id) ?? [])
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.3)) { load = result.map(SetupLoad.loaded) ?? .failed }
-        // A setup with nothing to choose leaves the list. The flow moves on, and Back skips the empty page.
-        if step == .setup && !steps.contains(.setup), let next = steps.first(where: { $0 > .setup }) { step = next }
-    }
-
-    private func runImport(logins: Bool) async {
-        importError = nil
-        let profiles = Array(selected).sorted()
-        if !profiles.isEmpty || logins {
-            // The first batch also copies the keys. Later batches add only profiles.
-            let batches = stride(from: 0, to: max(profiles.count, 1), by: Self.importBatch)
-                .map { Array(profiles[$0..<min($0 + Self.importBatch, profiles.count)]) }
-            for (index, batch) in batches.enumerated() {
-                guard let result = await store.importHermesSetup(profileIds: batch, logins: logins && index == 0) else {
-                    importError = store.error ?? "Coconut could not copy the setup. Try again."
-                    return
-                }
-                guard !Task.isCancelled else { return }
-                skippedSkills += result.skippedSkills ?? []
-                selected.subtract(batch)
-            }
-            // Imported profiles now have bots. Back and Add again must not offer them twice.
-            if let fresh = await store.loadHermesSetup() { load = .loaded(fresh) }
-        }
-        guard !Task.isCancelled else { return }
-        advance()
-    }
-
-    private func importServers() async {
-        importError = nil
-        guard let result = await store.importHermesSetup(profileIds: [], logins: false, mcpServers: true) else {
-            importError = store.error ?? "Coconut could not add the MCP servers. Try again."
-            return
-        }
-        guard !Task.isCancelled else { return }
-        serversNeedingSetup = result.mcpNeedsSetup ?? []
-        advance()
-    }
-
-    private func useSetupModel(_ selection: ModelOverride) async {
-        importError = nil
-        guard await store.setModel(selection) else {
-            importError = store.error ?? "Coconut could not set the model. Choose another model."
-            return
-        }
-        guard !Task.isCancelled else { return }
-        advance()
-    }
-
-    private func enableNotifications() async {
-        await PushNotifications.shared.refresh(requestPermission: true)
-        guard !Task.isCancelled else { return }
-        guard PushNotifications.shared.allowed else { return advance() }
-        notificationsOn = true
-    }
-
-    // A step can leave the list while it shows, for example when the person chooses a model.
-    // The next step therefore follows the fixed order, not the position in the list.
-    private func advance() {
-        guard let next = steps.first(where: { $0 > step }) else { return finish() }
-        // An error belongs to the page that showed it.
-        importError = nil
-        history.append(step)
-        step = next
-    }
-
-    private func back() {
-        guard let previous = history.popLast() else { return }
-        step = previous
+        ProtectedCache.remove(PendingPairing.cacheName)
+        dismiss()
     }
 
     private func finish() {
-        action?.cancel()
         UserDefaults.standard.set(true, forKey: Self.completedKey)
         dismiss()
     }
 }
 
-// Title, then subtitle, then illustration, as each page enters.
-private struct OnboardingPage<Illustration: View>: View {
-    let title: String
-    let subtitle: String
-    var scrolls = true
-    @ViewBuilder let illustration: Illustration
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var shown = 0
-
-    init(title: String, subtitle: String, scrolls: Bool = true, @ViewBuilder illustration: () -> Illustration) {
-        self.title = title
-        self.subtitle = subtitle
-        self.scrolls = scrolls
-        self.illustration = illustration()
-    }
+// For a Hermes that cannot run commands: install Coconut.app by hand, then scan its QR code.
+private struct PairingHelpView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var scannerOpen = false
+    @State private var pasteOpen = false
+    let onPayload: (String) -> Void
 
     var body: some View {
-        Group {
-            if scrolls {
-                ScrollView { content }.scrollBounceBehavior(.basedOnSize)
-            } else {
-                content
-            }
-        }
-        .task {
-            for value in 1...3 {
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.35)) { shown = value }
-                try? await Task.sleep(for: .milliseconds(reduceMotion ? 0 : 90))
-            }
-        }
-    }
-
-    private var content: some View {
-        VStack(spacing: 14) {
-            Text(title)
-                .font(.system(.title, design: .serif).weight(.medium))
-                .multilineTextAlignment(.center)
-                .opacity(shown > 0 ? 1 : 0)
-                .contentTransition(.opacity)
-                .accessibilityAddTraits(.isHeader)
-            Text(subtitle)
-                .font(.subheadline).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .opacity(shown > 1 ? 1 : 0)
-                .contentTransition(.opacity)
-            illustration
-                .padding(.top, 28)
-                .opacity(shown > 2 ? 1 : 0)
-                .offset(y: shown > 2 || reduceMotion ? 0 : 10)
-        }
-        .padding(.top, 28)
-        .frame(maxWidth: .infinity)
-    }
-}
-
-private struct ProgressSegments: View {
-    let count: Int
-    let index: Int
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<count, id: \.self) { item in
-                Capsule()
-                    .fill(item == index ? Color.primary : Color.primary.opacity(0.15))
-                    .frame(width: item == index ? 22 : 12, height: 4)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: index)
-        .accessibilityElement()
-        .accessibilityLabel("Step \(index + 1) of \(count)")
-    }
-}
-
-private struct PrimaryButton: View {
-    let title: String
-    var enabled = true
-    var identifier: String? = nil
-    let action: () -> Void
-    @ScaledMetric(relativeTo: .body) private var height = 52.0
-
-    var body: some View {
-        Button(action: action) {
-            Text(title).font(.body.weight(.semibold))
-                .frame(maxWidth: .infinity, minHeight: height)
-                .foregroundStyle(BoardStyle.controlLabel)
-                .background(BoardStyle.control.opacity(enabled ? 1 : 0.35), in: Capsule())
-                .contentTransition(.opacity)
-        }
-        .buttonStyle(HomePressStyle())
-        .disabled(!enabled)
-        .accessibilityIdentifier(identifier ?? title)
-    }
-}
-
-private struct SecondaryButton: View {
-    let title: String
-    var identifier: String? = nil
-    var enabled = true
-    let action: () -> Void
-
-    var body: some View {
-        Button(title, action: action)
-            .font(.body.weight(.medium))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .disabled(!enabled)
-            .accessibilityIdentifier(identifier ?? title)
-    }
-}
-
-// Two numbered steps: the message for Hermes, then the code it sends back.
-private struct HermesPairingSteps: View {
-    // One command does the setup, so the agent has fewer steps that can fail.
-    static let prompt = """
-    Set up Coconut on this Mac for my iPhone. If ~/Coconut is missing, clone https://github.com/antiwork/coconut to ~/Coconut.
-    Then run python3 ~/Coconut/scripts/setup_coconut.py and send me the pairing link and the pairing QR code image that it prints.
-    """
-
-    let setup: PairingSetup?
-    let error: String?
-    @State private var copied = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ScaledMetric(relativeTo: .subheadline) private var numberSize = 28.0
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            step(1, "Send this message to your Hermes agent") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(Self.prompt)
-                        .font(.callout)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
-                        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    Button {
-                        UIPasteboard.general.string = Self.prompt
-                        withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) { copied = true }
-                    } label: {
-                        Label(copied ? "Copied" : "Copy message", systemImage: copied ? "checkmark" : "doc.on.doc")
-                            .font(.subheadline.weight(.semibold))
-                            .contentTransition(.symbolEffect(.replace))
-                            .frame(minHeight: 44)
-                            .contentShape(Rectangle())
+        NavigationStack {
+            Form {
+                Section {
+                    Link(destination: OnboardingView.downloadURL) {
+                        Label("Download Coconut for Mac", systemImage: "arrow.down.circle")
                     }
-                    .accessibilityIdentifier("copy-hermes-prompt")
-                }
-            }
-            step(2, setup == nil ? "Open the link that Hermes sends" : "Check the Mac") {
-                if let setup {
-                    Label(setup.name, systemImage: "desktopcomputer")
-                        .font(.body.weight(.medium))
-                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
-                } else {
-                    Text("Tap the pairing link on this iPhone, or scan the pairing QR code that Hermes sends.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                }
-            }
-            if let error {
-                InlineError(error)
-                    .accessibilityIdentifier("pairing-error")
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.85), value: setup)
-    }
-
-    private func step<Content: View>(_ number: Int, _ title: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            Text("\(number)")
-                .font(.subheadline.weight(.semibold).monospacedDigit())
-                .frame(width: numberSize, height: numberSize)
-                .background(Color.primary.opacity(0.08), in: Circle())
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 10) {
-                Text(title).font(.body.weight(.semibold))
-                content()
-            }
-        }
-    }
-}
-
-private struct StaggeredRow<Content: View>: View {
-    let index: Int
-    @ViewBuilder let content: Content
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var shown = false
-
-    var body: some View {
-        content
-            .opacity(shown ? 1 : 0)
-            .offset(y: shown || reduceMotion ? 0 : 8)
-            .task {
-                try? await Task.sleep(for: .milliseconds(reduceMotion ? 0 : 300 + 110 * index))
-                withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.8)) { shown = true }
-            }
-    }
-}
-
-private struct ProfileRow: View {
-    let profile: HermesSetupProfile
-    @Binding var selected: Bool
-
-    var body: some View {
-        HStack(spacing: 14) {
-            BotAvatar(symbol: "coconut", color: "A85F32", size: 36, identity: profile.id)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(profile.name).font(.body.weight(.medium))
-                Text(profile.botId == nil ? profile.contents : "Already added").font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 8)
-            if profile.botId == nil {
-                Toggle(isOn: $selected) { Text(profile.name) }
-                    .labelsHidden()
-                    .accessibilityLabel("\(profile.name), \(profile.contents)")
-            } else {
-                Image(systemName: "checkmark").foregroundStyle(.secondary)
-                    .accessibilityLabel("\(profile.name), already added")
-            }
-        }
-        .padding(.vertical, 12)
-    }
-}
-
-private struct MCPServerRow: View {
-    let server: HermesMCPServer
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Label(server.id, systemImage: server.transport == "http" ? "globe" : "terminal").font(.body)
-            Spacer(minLength: 8)
-            if server.needsSetup {
-                Text("Needs setup").font(.caption).foregroundStyle(.secondary)
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
-}
-
-// Three bots at work. Every few seconds each one moves on to another phase.
-private struct WelcomeIllustration: View {
-    var phases: [BotPhase] = [.github, .reading, .testing, .memory, .browsing, .editing]
-    private let fruits = ["fruit.coconut", "fruit.apple", "fruit.blueberry"]
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 2.6)) { timeline in
-            // Reduce Motion keeps one set of phases. The characters stay still.
-            let turn = reduceMotion ? 0 : Int(timeline.date.timeIntervalSinceReferenceDate / 2.6)
-            HStack(alignment: .top, spacing: 18) {
-                ForEach(0..<3, id: \.self) { index in
-                    let phase = phases[(turn + index * 2) % phases.count]
-                    VStack(spacing: 10) {
-                        BotAvatar(symbol: fruits[index], color: "", size: 64, identity: fruits[index], phase: phase)
-                        ShimmerText(text: phase.label)
-                            .font(.caption)
-                            .id(phase)
-                            .transition(.opacity)
+                    ShareLink(item: OnboardingView.downloadURL) {
+                        Label("Send the link to your Mac", systemImage: "square.and.arrow.up")
                     }
-                    .frame(width: 96)
-                    .offset(y: index == 1 ? -14 : 0)
+                } header: {
+                    Text("Install Coconut by hand")
+                } footer: {
+                    Text("On your Mac, open the download, move Coconut to Applications, open it, and choose Set Up Coconut in its menu.")
+                }
+                Section {
+                    Button { scannerOpen = true } label: { Label("Scan the QR code", systemImage: "qrcode.viewfinder") }
+                        .accessibilityIdentifier("onboarding-scan")
+                    Button { pasteOpen = true } label: { Label("Paste a pairing link", systemImage: "doc.on.clipboard") }
+                        .accessibilityIdentifier("onboarding-paste")
+                } header: {
+                    Text("Pair with a QR code")
+                } footer: {
+                    Text("On your Mac, choose Pair iPhone in the Coconut menu. Then scan the QR code that it shows.")
                 }
             }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.3), value: turn)
-        }
-        .accessibilityHidden(true)
-    }
-}
-
-// Items travel from Hermes to the coconut, then land in a list below, as in an import.
-private struct SetupIllustration: View {
-    let setup: HermesSetup?
-    let loaded: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var landed = 0
-    @State private var flying: Int?
-    @State private var travel = 0.0
-
-    private static func items(_ setup: HermesSetup?) -> [(icon: String, text: String)] {
-        guard let setup, setup.found else { return [("checkmark.seal", "Coconut's own Hermes")] }
-        var items: [(String, String)] = setup.profiles.map { ("person.crop.circle", $0.name) }
-        let skills = setup.profiles.reduce(0) { $0 + $1.skills }
-        let memories = setup.profiles.reduce(0) { $0 + $1.memories }
-        if memories > 0 { items.append(("brain", memories == 1 ? "1 memory file" : "\(memories) memory files")) }
-        if skills > 0 { items.append(("wand.and.stars", skills == 1 ? "1 skill" : "\(skills) skills")) }
-        if !setup.logins.isEmpty { items.append(("key", setup.logins.count == 1 ? "1 model key" : "\(setup.logins.count) model keys")) }
-        return items
-    }
-
-    var body: some View {
-        let items = Self.items(setup)
-        VStack(spacing: 28) {
-            GeometryReader { geometry in
-                let width = geometry.size.width
-                ZStack {
-                    Path { path in
-                        path.move(to: CGPoint(x: 56, y: 28))
-                        path.addLine(to: CGPoint(x: width - 56, y: 28))
-                    }
-                    .stroke(Color.primary.opacity(0.18), style: StrokeStyle(lineWidth: 1.5, dash: [3, 5]))
-                    HStack {
-                        Text("H").font(.system(.title2, design: .serif, weight: .semibold))
-                            .frame(width: 52, height: 52)
-                            .background(Color.primary.opacity(0.06), in: Circle())
-                        Spacer()
-                        BotAvatar(symbol: "fruit.coconut", color: "", size: 52, identity: "setup",
-                                  phase: loaded ? nil : .searching)
-                            .overlay(alignment: .topTrailing) {
-                                if loaded && landed >= items.count {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.green)
-                                        .background(Circle().fill(BoardStyle.paper))
-                                        .transition(.scale(scale: 0.2).combined(with: .opacity))
-                                }
-                            }
-                    }
-                    if let flying, flying < items.count {
-                        Image(systemName: items[flying].icon)
-                            .font(.caption.weight(.semibold))
-                            .frame(width: 28, height: 28)
-                            .background(BoardStyle.paper, in: Circle())
-                            .overlay(Circle().stroke(Color.primary.opacity(0.15)))
-                            .position(x: 56 + (width - 112) * travel, y: 28)
-                    }
+            .settingsBackground()
+            .navigationTitle("Need help?").navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
+            .sheet(isPresented: $scannerOpen) {
+                PairingScannerView { payload in
+                    scannerOpen = false
+                    onPayload(payload)
                 }
             }
-            .frame(height: 56)
-            VStack(alignment: .leading, spacing: 12) {
-                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    Label(item.text, systemImage: item.icon)
-                        .font(.subheadline)
-                        .opacity(index < landed ? 1 : 0)
-                        .offset(y: index < landed || reduceMotion ? 0 : 6)
+            .sheet(isPresented: $pasteOpen) {
+                PastePairingSetupView { payload in
+                    _ = try PairingSetup.parse(payload)
+                    onPayload(payload)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 8)
         }
-        .task(id: loaded) {
-            guard loaded else { return }
-            let items = Self.items(setup)
-            for index in items.indices {
-                if reduceMotion {
-                    landed = index + 1
-                    continue
-                }
-                flying = index
-                travel = 0
-                withAnimation(.easeInOut(duration: 0.45)) { travel = 1 }
-                try? await Task.sleep(for: .milliseconds(450))
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { landed = index + 1 }
-                try? await Task.sleep(for: .milliseconds(120))
-            }
-            flying = nil
-            withAnimation(reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.6)) { landed = items.count }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(loaded ? items.map(\.text).joined(separator: ", ") : "Looking for Hermes")
-    }
-}
-
-// A notification drops onto a phone, with a small overshoot.
-private struct NotificationIllustration: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var shown = false
-
-    var body: some View {
-        ZStack(alignment: .top) {
-            RoundedRectangle(cornerRadius: 34, style: .continuous)
-                .fill(Color.primary.opacity(0.05))
-                .frame(width: 210, height: 250)
-                .overlay(alignment: .bottom) {
-                    HStack(spacing: 12) {
-                        ForEach(0..<4, id: \.self) { _ in
-                            RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.07)).frame(width: 34, height: 34)
-                        }
-                    }
-                    .padding(.bottom, 26)
-                }
-            HStack(spacing: 10) {
-                BotAvatar(symbol: "fruit.coconut", color: "", size: 30, identity: "notification")
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Coconut").font(.caption.weight(.semibold))
-                    Text("Your release notes are ready.").font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(10)
-            .frame(width: 236)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .shadow(color: .black.opacity(0.08), radius: 10, y: 4)
-            .offset(y: shown ? 30 : -24)
-            .opacity(shown ? 1 : 0)
-        }
-        .task {
-            try? await Task.sleep(for: .milliseconds(reduceMotion ? 0 : 450))
-            withAnimation(reduceMotion ? nil : .spring(response: 0.45, dampingFraction: 0.62)) { shown = true }
-        }
-        .accessibilityHidden(true)
-    }
-}
-
-// The coconut gets a check mark, and short ticks burst outward once.
-private struct CompletionBurst: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var checked = false
-    @State private var burst = false
-
-    var body: some View {
-        ZStack {
-            ForEach(0..<8, id: \.self) { index in
-                Capsule()
-                    .fill(Color.primary)
-                    .frame(width: 3, height: 9)
-                    .offset(y: burst ? -62 : -44)
-                    .rotationEffect(.degrees(Double(index) * 45 + 22.5))
-                    .opacity(burst ? 0 : checked && !reduceMotion ? 1 : 0)
-            }
-            BotAvatar(symbol: "fruit.coconut", color: "", size: 72, identity: "complete")
-                .overlay(alignment: .bottomTrailing) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title2)
-                        .foregroundStyle(Color.green)
-                        .background(Circle().fill(BoardStyle.paper))
-                        .scaleEffect(checked ? 1 : 0.2)
-                        .opacity(checked ? 1 : 0)
-                }
-        }
-        .frame(height: 160)
-        .task {
-            try? await Task.sleep(for: .milliseconds(250))
-            withAnimation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.55)) { checked = true }
-            try? await Task.sleep(for: .milliseconds(120))
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.45)) { burst = true }
-        }
-        .accessibilityHidden(true)
     }
 }

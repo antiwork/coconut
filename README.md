@@ -15,13 +15,13 @@ Model requests can use remote providers. The same relay delivers notifications w
 ## Setup
 
 Follow the [Mac setup and pairing guide](docs/install-and-update.md), then [install the iPhone app](docs/iphone-install.md).
-If you use Hermes, Coconut onboarding gives you a message for your Hermes agent. The agent runs one command on its Mac:
+If you use Hermes, Coconut onboarding is one screen on the iPhone. It shows one message for your Hermes agent, for example in Telegram:
 
-```sh
-python3 ~/Coconut/scripts/setup_coconut.py
+```
+curl -fsSL https://coconut-updates.gumroad.workers.dev/install | bash -s <code>
 ```
 
-The command finds the Hermes that you already use, starts the login service and the relay sidecar, and prints the iPhone setup link.
+The command installs the notarized Coconut.app on the agent's Mac, starts Coconut, and pairs the iPhone by itself. You do not touch the Mac.
 See [Pair through Hermes](docs/install-and-update.md#pair-through-hermes).
 Coconut runs on that Hermes. It does not install its own copy. Without a usable Hermes, the service starts but runs no bots, and the phone shows why.
 
