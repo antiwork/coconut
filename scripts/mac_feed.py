@@ -8,6 +8,8 @@ The Worker keeps no files between deployments, so each release builds the comple
                                       the archives of those items: the new one, and the others from the live feed.
                                       <digest> is the start of the SHA-256 of the file, so each file has its own URL.
   _headers                            the content types and cache times (updates/_headers)
+  _redirects                          /mac/download to the newest archive for everyone (stable, else nightly)
+  install                             the install script that the iPhone's message for Hermes runs (updates/install.sh)
 
   mac_feed.py latest-build --channel nightly
   printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | mac_feed.py check-key
@@ -168,6 +170,8 @@ def publish(archive: Path, channel: str, signature: str, output: Path, *, feed: 
     folder = output / 'mac'
     folder.mkdir(parents=True)
     shutil.copy2(ROOT / 'updates/_headers', output / '_headers')
+    shutil.copy2(ROOT / 'updates/install.sh', output / 'install')
+    (output / '_redirects').write_text(redirects(items))
     # Clients can keep the earlier appcast for its cache time. The archives that it names stay until the next release,
     # also the ones that the new appcast drops.
     files = {item.file: item for item in [*items, *previous]}
@@ -183,6 +187,14 @@ def publish(archive: Path, channel: str, signature: str, output: Path, *, feed: 
         target.write_bytes(data)
     (folder / 'appcast.xml').write_bytes(render(items))
     return items
+
+
+def redirects(items: list[Item]) -> str:
+    """Point /mac/download at the newest stable archive, or at the newest nightly archive before the first stable
+    release. A person who downloads the app by hand uses this link. The redirect is temporary: it changes with each
+    release."""
+    newest = next((item for channel in CHANNELS for item in items if item.channel == channel), None)
+    return f'/mac/download /mac/{newest.file} 302\n' if newest else ''
 
 
 def public_key(private_key: str) -> str:

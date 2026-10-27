@@ -104,6 +104,14 @@ class FeedTests(unittest.TestCase):
         self.assertEqual((output / '_headers').read_text(), (mac_feed.ROOT / 'updates/_headers').read_text())
         self.assertEqual(mac_feed.parse((output / 'mac/appcast.xml').read_bytes()), items)
 
+    def test_publish_writes_the_install_script_and_the_download_link(self):
+        new = self.archive(512)
+        output = self.folder / 'public'
+        mac_feed.publish(new, 'stable', 'sig', output, feed=None, download=lambda url: None)
+        self.assertEqual((output / 'install').read_text(), (mac_feed.ROOT / 'updates/install.sh').read_text())
+        self.assertEqual((output / '_redirects').read_text(), f'/mac/download /mac/{mac_feed.published_name(new)} 302\n')
+        self.assertIn('/install\n  Content-Type: text/plain', (output / '_headers').read_text())
+
     def test_each_published_archive_name_ends_with_its_digest(self):
         archive = self.archive(512, 'nightly')
         name = mac_feed.published_name(archive)
@@ -175,6 +183,271 @@ class FeedTests(unittest.TestCase):
     def test_publish_needs_a_signature(self):
         with self.assertRaisesRegex(SystemExit, 'signature'):
             mac_feed.publish(self.archive(512), 'stable', '', self.folder / 'public', feed=None, download=lambda url: None)
+
+
+
+class RedirectTests(unittest.TestCase):
+    def test_the_download_link_names_the_newest_stable_archive(self):
+        items = [item(514, 'nightly'), item(512), item(510)]
+        self.assertEqual(mac_feed.redirects(items), '/mac/download /mac/Coconut-0.1.0-512.zip 302\n')
+
+    def test_the_download_link_names_the_newest_nightly_archive_before_the_first_stable_release(self):
+        self.assertEqual(mac_feed.redirects([item(514, 'nightly'), item(513, 'nightly')]),
+                         '/mac/download /mac/Coconut-0.1.0-514-nightly.zip 302\n')
+        self.assertEqual(mac_feed.redirects([]), '')
+
+
+# A fake `coconut` tool for the app in the test archives. `status` reads the state that the fake `open` writes.
+# TEST_NO_SETTINGS stands for an app without the settings commands.
+FAKE_TOOL = """#!/bin/bash
+case "$1" in
+  help) printf 'pair <code>\\nCoconut.app --set-up sets up Coconut\\n' ;;
+  status) printf '{"service": "%s", "relay": "connected"}\\n' "$(cat "$COCONUT_TEST_STATE" 2>/dev/null || echo stopped)" ;;
+  settings) [ -n "$TEST_NO_SETTINGS" ] && exit 64; echo "settings $2 $3" >> "$TEST_LOG" ;;
+  pair) echo "paired $2" ;;
+esac
+"""
+# A tool that pairs with a code, in an app that ignores --set-up. Its service does not run.
+NO_SETUP_TOOL = """#!/bin/bash
+case "$1" in
+  help) printf 'pair <code>\\n' ;;
+  status) printf '{"service": "not_installed", "relay": "not_installed"}\\n' ;;
+  *) exit 64 ;;
+esac
+"""
+# An earlier tool: no code pairing and no settings commands.
+OLD_TOOL = """#!/bin/bash
+case "$1" in
+  help) printf 'pair      Print a one-time iPhone setup link.\\n' ;;
+  status) printf '{"service": "running", "relay": "connected"}\\n' ;;
+  pair) echo "Setup link: coconut://pair/abc" ;;
+  *) exit 64 ;;
+esac
+"""
+STUBS = {
+    'codesign': """#!/bin/bash
+case "$1" in
+  --verify) exit "${TEST_CODESIGN_VERIFY:-0}" ;;
+  --display) printf 'Identifier=com.gumroad.coconut.mac\\nTeamIdentifier=%s\\n' "${TEST_TEAM:-66LJACJ2U7}" >&2 ;;
+esac
+""",
+    'spctl': '#!/bin/bash\nexit "${TEST_SPCTL:-0}"\n',
+    'open': '#!/bin/bash\necho "open $*" >> "$TEST_LOG"\necho running > "$COCONUT_TEST_STATE"\n',
+    'pgrep': '#!/bin/bash\nexit 1\n',
+    'defaults': '#!/bin/bash\necho "defaults $*" >> "$TEST_LOG"\n',
+}
+CODE = 'aaaqeayeaudaocajbifqydiob4'
+
+
+@unittest.skipUnless(sys.platform == 'darwin', 'The install script runs on macOS.')
+class InstallScriptTests(unittest.TestCase):
+    """Run updates/install.sh with a feed of file URLs and stubs for the signature checks and for `open`."""
+
+    def setUp(self):
+        self.folder = Path(tempfile.mkdtemp())
+        self.bin = self.folder / 'bin'
+        self.bin.mkdir()
+        for name, text in STUBS.items():
+            (self.bin / name).write_text(text)
+            (self.bin / name).chmod(0o755)
+        # A space in a folder name must not split it.
+        self.applications = [self.folder / 'Applications', self.folder / 'home dir/Applications']
+        self.log = self.folder / 'log'
+        self.log.touch()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.folder)
+
+    def make_app(self, path: Path, tool: str = FAKE_TOOL) -> Path:
+        (path / 'Contents/Helpers').mkdir(parents=True)
+        (path / 'Contents/Helpers/coconut').write_text(tool)
+        (path / 'Contents/Helpers/coconut').chmod(0o755)
+        return path
+
+    def archive(self, build: int, tool: str = FAKE_TOOL) -> Path:
+        """A zipped Coconut.app with a fake tool, named like a published archive."""
+        import subprocess
+        app = self.make_app(self.folder / f'build{build}/Coconut.app', tool)
+        path = self.folder / f'Coconut-0.1.0-{build}.zip'
+        subprocess.run(['ditto', '-c', '-k', '--keepParent', str(app), str(path)], check=True)
+        named = self.folder / mac_feed.published_name(path)
+        path.rename(named)
+        return named
+
+    def feed(self, *entries: tuple[int, str], tool: str = FAKE_TOOL) -> str:
+        """Write a feed of (build, channel) items with file URLs. Return its URL."""
+        items = []
+        for build, channel in entries:
+            path = self.archive(build, tool)
+            items.append(mac_feed.Item(version='0.1.0', build=build, channel=channel, file=path.name,
+                                       length=path.stat().st_size, signature='sig', published='Mon, 26 Oct 2026'))
+        text = mac_feed.render(items).decode().replace(mac_feed.BASE_URL, self.folder.as_uri())
+        (self.folder / 'appcast.xml').write_text(text)
+        return (self.folder / 'appcast.xml').as_uri()
+
+    def run_script(self, *arguments: str, feed: str = 'file:///missing/appcast.xml', **environment: str):
+        import os
+        import subprocess
+        values = dict(os.environ, PATH=f'{self.bin}:/usr/bin:/bin:/usr/sbin:/sbin', HOME=str(self.folder / 'home dir'),
+                      COCONUT_FEED_URL=feed, COCONUT_APP_FOLDERS=':'.join(map(str, self.applications)),
+                      COCONUT_TEST_STATE=str(self.folder / 'state'), TEST_LOG=str(self.log), **environment)
+        return subprocess.run(['bash', '-s', '--', *arguments], input=(mac_feed.ROOT / 'updates/install.sh').read_text(),
+                              env=values, capture_output=True, text=True, timeout=60)
+
+    def note(self, result) -> str:
+        lines = result.stdout.splitlines()
+        return lines[lines.index('Coconut: Note for Hermes:') + 1]
+
+    def test_a_fresh_install_takes_the_stable_build_opens_the_app_and_pairs(self):
+        feed = self.feed((514, 'nightly'), (512, 'stable'))
+        result = self.run_script(CODE, feed=feed)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Downloading Coconut-0.1.0-512-', result.stderr)
+        self.assertIn(f'Installed Coconut.app in {self.applications[0]}.', result.stderr)
+        self.assertTrue((self.applications[0] / 'Coconut.app/Contents/Helpers/coconut').is_file())
+        log = self.log.read_text()
+        self.assertIn(f'open -g {self.applications[0]}/Coconut.app --args --set-up', log)
+        self.assertIn('settings automatic-updates on', log)
+        self.assertNotIn('settings channel', log)
+        self.assertIn(f'paired {CODE}\n', result.stdout)
+        for line in result.stdout.splitlines():
+            self.assertTrue(line.startswith('Coconut: ') or line == f'paired {CODE}', line)
+
+    def test_the_note_tells_hermes_how_to_turn_automatic_updates_off_and_how_to_update(self):
+        result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+        tool = f'{self.applications[0]}/Coconut.app/Contents/Helpers/coconut'
+        self.assertEqual(self.note(result),
+                         'Coconut: Coconut is installed and paired. Automatic updates are on. Ask the person whether to keep '
+                         f'them on. To turn them off, run: {tool} settings automatic-updates off. To update Coconut at any '
+                         f'time, run: {tool} update.')
+        self.assertTrue(result.stdout.endswith(self.note(result) + '\n'))
+
+    def test_an_app_without_the_settings_commands_still_pairs(self):
+        result = self.run_script(CODE, feed=self.feed((514, 'nightly')), TEST_NO_SETTINGS='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('defaults write com.gumroad.coconut.mac updateChannel nightly', self.log.read_text())
+        self.assertIn(f'paired {CODE}', result.stdout)
+        self.assertIn('cannot change its update settings yet', self.note(result))
+
+    def test_before_the_first_stable_release_the_nightly_channel_is_set(self):
+        result = self.run_script(CODE, feed=self.feed((514, 'nightly')))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('There is no stable release yet', result.stderr)
+        self.assertIn('settings channel nightly', self.log.read_text())
+
+    def test_an_explicit_stable_channel_does_not_fall_back(self):
+        result = self.run_script('--channel', 'stable', CODE, feed=self.feed((514, 'nightly')))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('no build in the stable channel', result.stderr)
+
+    def test_an_explicit_channel_applies_to_an_installed_app(self):
+        self.make_app(self.applications[0] / 'Coconut.app')
+        result = self.run_script('--channel', 'stable', CODE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('settings channel stable', self.log.read_text())
+
+    def test_an_app_that_cannot_pair_with_a_code_is_replaced(self):
+        self.make_app(self.applications[1] / 'Coconut.app', OLD_TOOL)
+        result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('is too old for this setup, so Coconut installs the newest version', result.stdout)
+        self.assertIn('pair <code>', (self.applications[1] / 'Coconut.app/Contents/Helpers/coconut').read_text())
+        self.assertFalse((self.applications[0] / 'Coconut.app').exists())
+        self.assertIn(f'paired {CODE}', result.stdout)
+
+    def test_an_earlier_app_in_a_protected_folder_stays_and_the_new_app_goes_in_a_writable_one(self):
+        self.make_app(self.applications[0] / 'Coconut.app', OLD_TOOL)
+        self.applications[0].chmod(0o555)
+        try:
+            result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('pair <code>', (self.applications[1] / 'Coconut.app/Contents/Helpers/coconut').read_text())
+            self.assertIn(f'paired {CODE}', result.stdout)
+            # A second run takes the app that can pair, and downloads nothing.
+            again = self.run_script(CODE)
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertIn(f'Coconut.app is already in {self.applications[1]}.', again.stdout)
+        finally:
+            self.applications[0].chmod(0o755)
+
+    def test_an_app_that_cannot_set_up_by_itself_is_replaced_when_the_service_does_not_run(self):
+        self.make_app(self.applications[0] / 'Coconut.app', NO_SETUP_TOOL)
+        result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('is too old for this setup', result.stdout)
+        self.assertIn('--set-up', (self.applications[0] / 'Coconut.app/Contents/Helpers/coconut').read_text())
+        self.assertIn(f'paired {CODE}', result.stdout)
+
+    def test_a_feed_without_code_pairing_stops_before_a_false_pairing(self):
+        result = self.run_script(CODE, feed=self.feed((512, 'stable'), tool=OLD_TOOL))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('is too old for this setup. A newer build adds what it needs.', result.stderr)
+        self.assertNotIn('Setup link', result.stdout)
+
+    def test_a_changed_download_installs_nothing(self):
+        feed = self.feed((512, 'stable'))
+        archive = next(self.folder.glob('Coconut-0.1.0-512-*.zip'))
+        archive.write_bytes(archive.read_bytes()[:-1] + b'x')
+        result = self.run_script(CODE, feed=feed)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('wrong SHA-256', result.stderr)
+        self.assertFalse(any((folder / 'Coconut.app').exists() for folder in self.applications))
+
+    def test_an_app_that_fails_a_signature_check_installs_nothing(self):
+        feed = self.feed((512, 'stable'))
+        for environment, message in [({'TEST_CODESIGN_VERIFY': '1'}, 'invalid code signature'),
+                                     ({'TEST_TEAM': 'AAAAAAAAAA'}, 'not signed by Gumroad'),
+                                     ({'TEST_SPCTL': '3'}, 'Gatekeeper refused')]:
+            with self.subTest(message):
+                result = self.run_script(CODE, feed=feed, **environment)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(any((folder / 'Coconut.app').exists() for folder in self.applications))
+
+    def test_without_write_access_to_the_first_folder_the_app_goes_in_the_second(self):
+        self.applications[0].mkdir()
+        self.applications[0].chmod(0o555)
+        try:
+            result = self.run_script(CODE, feed=self.feed((512, 'stable')))
+        finally:
+            self.applications[0].chmod(0o755)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.applications[1] / 'Coconut.app').is_dir())
+        self.assertIn('home\\ dir/Applications/Coconut.app/Contents/Helpers/coconut settings', self.note(result))
+
+    def test_a_second_run_keeps_the_installed_app_and_pairs(self):
+        self.assertEqual(self.run_script(CODE, feed=self.feed((512, 'stable'))).returncode, 0)
+        self.log.write_text('')
+        # The feed URL does not exist, so a second download would fail.
+        result = self.run_script(CODE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Coconut.app is already in', result.stdout)
+        # The service runs, so the app opens only for its automatic updates, without the setup.
+        self.assertEqual(self.log.read_text().splitlines()[0], f'open -g {self.applications[0]}/Coconut.app')
+        self.assertIn(f'paired {CODE}', result.stdout)
+
+    def test_without_a_code_the_script_only_installs(self):
+        result = self.run_script(feed=self.feed((512, 'stable')))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.note(result).startswith('Coconut: Coconut is installed. Automatic updates are on.'))
+        self.assertIn('To pair an iPhone', result.stdout)
+        self.assertNotIn('paired', result.stdout)
+
+    def test_an_invalid_code_or_option_stops_before_the_download(self):
+        for arguments, message in [(['not-a-code'], 'not a Coconut pairing code'), (['--channel', 'beta', CODE], 'stable or nightly'),
+                                   (['--force', CODE], 'Unknown option')]:
+            with self.subTest(arguments):
+                result = self.run_script(*arguments)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+
+    def test_the_script_passes_shellcheck(self):
+        import shutil
+        import subprocess
+        if not shutil.which('shellcheck'):
+            self.skipTest('shellcheck is not installed.')
+        subprocess.run(['shellcheck', str(mac_feed.ROOT / 'updates/install.sh')], check=True)
 
 
 if __name__ == '__main__':
