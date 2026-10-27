@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 
+import deploy
 import host
 
 
@@ -107,7 +108,11 @@ def uninstall() -> None:
     if input("Type DELETE to continue: ").strip() != "DELETE":
         print("The local runtime remains installed.")
         return
+    # Hermes skips a missing skill folder, but the entry would stay in its config. A missing Hermes does not stop this.
+    subprocess.run([sys.executable, "scripts/hermes_skills.py", "remove"], cwd=ROOT)
     run([sys.executable, "scripts/cleanup.py", "--yes"])
+    # An install keeps its skill folders read-only (deploy.SKILL_FOLDER_MODE). Make them writable, so they can go.
+    deploy.lock_skills(ROOT, locked=False)
     print("Delete the Coconut folder to remove its source and build files.")
 
 

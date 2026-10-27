@@ -118,6 +118,10 @@ class FakeOperations:
         self.record('tunnel', root)
         return {'ok': True}
 
+    def skills(self, root):
+        self.record('skills', root)
+        return {'ok': True}
+
     def probe(self, root):
         # A probe is a short health check. An injected health failure fails it too.
         self.record('probe', root)
@@ -303,6 +307,69 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.receive(files=package_files(), operations=FakeOperations(mode='manual'))
         self.assertFalse((self.target / 'docs/old.md').exists())
         self.assertEqual(personal.read_bytes(), b'Keep this local note.\n')
+
+    def test_only_a_first_install_adds_the_skill_folder_to_hermes(self):
+        # A first install is the setup that the person asked for. An update does not change the Hermes config.
+        operations = FakeOperations()
+        result = self.receive(operations=operations)
+        self.assertEqual(operations.calls[-1][0], 'skills')
+        self.assertEqual(result['skills'], {'ok': True})
+        operations = FakeOperations(mode='managed')
+        result = self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
+        self.assertNotIn('skills', [call[0] for call in operations.calls])
+        self.assertNotIn('skills', result)
+
+    def test_the_skill_setup_command_runs_the_installed_script_and_keeps_a_failed_setup(self):
+        commands = []
+
+        def command(self, arguments, root, phase, **options):
+            commands.append(arguments[1:])
+            raise deploy.DeployError(phase + ' failed (exit 1). No command output was exposed.')
+
+        with patch.object(deploy.Operations, 'command', command):
+            result = deploy.Operations.skills(object.__new__(deploy.Operations), Path('/Coconut'))
+        self.assertEqual(commands, [['/Coconut/scripts/hermes_skills.py', 'add']])
+        self.assertEqual(result, {'ok': False, 'error': 'Hermes skill setup failed (exit 1). No command output was exposed.'})
+
+    def skill_files(self, text=b'# Coconut\n'):
+        return package_files(**{'skills/coconut/SKILL.md': text, 'skills/coconut/references/cli.md': b'# CLI\n'})
+
+    def assert_locked(self, locked=True):
+        for folder in (self.target / 'skills', self.target / 'skills/coconut', self.target / 'skills/coconut/references'):
+            with self.subTest(folder=folder):
+                self.assertEqual(folder.stat().st_mode & 0o777, 0o500 if locked else 0o700)
+        for path in (self.target / 'skills').rglob('*.md'):
+            with self.subTest(path=path):
+                self.assertEqual(path.stat().st_mode & 0o777, 0o400)
+
+    def test_the_installed_skill_files_and_folders_are_read_only(self):
+        self.receive(files=self.skill_files())
+        self.assert_locked()
+        self.assertEqual((self.target / 'README.md').stat().st_mode & 0o777, 0o600)
+        # Hermes writes a skill file as a new file in the same folder. The folder refuses it.
+        with self.assertRaises(PermissionError):
+            (self.target / 'skills/coconut/.SKILL.md.tmp').write_text('Changed by an agent.')
+
+    def test_an_update_replaces_and_removes_skill_files_and_locks_them_again(self):
+        self.receive(files=self.skill_files())
+        files = package_files(**{'skills/coconut/SKILL.md': b'# Coconut 2\n', 'skills/coconut/references/pairing.md': b'# Pair\n'})
+        self.receive(files=files, operations=FakeOperations(mode='managed'))
+        self.assertEqual((self.target / 'skills/coconut/SKILL.md').read_bytes(), b'# Coconut 2\n')
+        self.assertFalse((self.target / 'skills/coconut/references/cli.md').exists())
+        self.assert_locked()
+
+    def test_a_failed_update_restores_the_skill_files_and_locks_them_again(self):
+        self.receive(files=self.skill_files())
+        with self.assertRaises(deploy.DeployError):
+            self.receive(files=self.skill_files(b'# Did not start\n'), operations=FakeOperations(mode='managed', fail='health'))
+        self.assertEqual((self.target / 'skills/coconut/SKILL.md').read_bytes(), b'# Coconut\n')
+        self.assert_locked()
+
+    def test_the_uninstaller_can_open_the_skill_folders_again(self):
+        self.receive(files=self.skill_files())
+        deploy.lock_skills(self.target, locked=False)
+        self.assert_locked(False)
+        shutil.rmtree(self.target / 'skills')
 
     def test_the_tunnel_sidecar_gets_new_code_only_after_a_complete_update(self):
         # A rollback restores the old sources. A sidecar built from the new sources would keep running.

@@ -68,6 +68,8 @@ def source_files() -> dict[str, bytes]:
     # The tunnel sidecar compiles the shared Noise and frame code with scripts/tunnel-sidecar.swift.
     candidates += list((ROOT / "ios/Tunnel").glob("*.swift"))
     candidates += list((ROOT / "docs").rglob("*.md"))
+    # The skills that the person's Hermes loads from the install folder. See scripts/hermes_skills.py.
+    candidates += list((ROOT / "skills").rglob("*.md"))
     files = {}
     for path in sorted(candidates):
         relative = path.relative_to(ROOT)

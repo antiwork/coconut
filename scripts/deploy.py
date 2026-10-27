@@ -45,6 +45,11 @@ HEALTH_WAIT_SECONDS = 300
 PROBE_WAIT_SECONDS = 60
 # The update waits this long for running turns to finish (host.DRAIN_SECONDS) and a little more for the helper.
 DRAIN_WAIT_SECONDS = 600 + 90
+# The person's Hermes loads the skills in skills/ (see scripts/hermes_skills.py). Hermes writes a skill file as a new file
+# in the same folder, which it then renames, so only read-only folders keep `skill_manage` from changing them. An update
+# opens the folders for its own changes, then closes them again.
+SKILL_FILE_MODE = 0o400
+SKILL_FOLDER_MODE = 0o500
 
 
 
@@ -80,7 +85,25 @@ def allowed_path(name):
         or re.fullmatch(r'scripts/[A-Za-z0-9_-]+\.(?:py|swift)', name)
         or re.fullmatch(r'ios/Tunnel/[A-Za-z0-9_-]+\.swift', name)
         or re.fullmatch(r'docs/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.md', name)
+        or re.fullmatch(r'skills/(?:[A-Za-z0-9_-]+/)+[A-Za-z0-9_.-]+\.md', name)
     )
+
+
+def file_mode(name):
+    if name.endswith('.command'):
+        return 0o700
+    return SKILL_FILE_MODE if name.startswith('skills/') else 0o600
+
+
+def lock_skills(root, locked=True):
+    """Make the folders in skills/ read-only (locked) or writable again. See SKILL_FOLDER_MODE."""
+    top = root / 'skills'
+    if top.is_symlink() or not top.is_dir():
+        return
+    # os.walk does not follow symbolic links. A read-only folder can still be listed.
+    for folder, _, _ in os.walk(top):
+        if not Path(folder).is_symlink():
+            os.chmod(folder, SKILL_FOLDER_MODE if locked else 0o700)
 
 
 def unique_object(pairs):
@@ -377,6 +400,19 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
         self.command([sys.executable, str(root / 'scripts/host.py'), 'install-service'], root, 'Login service installation', timeout=60)
         return 'managed'
 
+    def skills(self, root):
+        """Let the person's Hermes load the skills of the new install. See scripts/hermes_skills.py.
+
+        Only a first install does this: it is the setup that the person asked for. A failure keeps the install and goes
+        into the result, as for the tunnel.
+        """
+        try:
+            self.command([sys.executable, str(root / 'scripts/hermes_skills.py'), 'add'], root, 'Hermes skill setup',
+                         timeout=300)
+        except DeployError as error:
+            return {'ok': False, 'error': str(error)}
+        return {'ok': True}
+
     def health(self, root, address=None):
         """Wait until the service answers its health check. `address` is unused: older updaters pass the HTTPS address."""
         return self._health(root, HEALTH_WAIT_SECONDS)
@@ -593,6 +629,7 @@ def reconcile(root, operations):
     record['phase'] = 'rollback_stopped'
     write_json(journal, record)
     restore_runtime(root, record)
+    lock_skills(root, locked=False)
     for name in set(record['new_files']) - set(old['files']):
         path = safe_path(root / name, root)
         if path.exists():
@@ -600,6 +637,8 @@ def reconcile(root, operations):
             sync_directory(path.parent)
     for name in old['files']:
         copy_source(backup / name, safe_path(root / name, root))
+    with contextlib.suppress(OSError):
+        lock_skills(root)
     write_json(root / MARKER_PATH, old)
     record['phase'] = 'code_restored'
     write_json(journal, record)
@@ -733,7 +772,7 @@ def receive(directory, stream, *, home=None, operations=None):
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-            target.chmod(0o700 if name.endswith('.command') else 0o600)
+            target.chmod(file_mode(name))
         for name in old_names:
             copy_source(safe_path(root / name, root), backup / name)
         if not old_names:
@@ -763,6 +802,7 @@ def receive(directory, stream, *, home=None, operations=None):
             record['phase'] = 'applying'
             write_json(journal, record)
             applied = True
+            lock_skills(root, locked=False)
             for name in package.files:
                 target = safe_path(root / name, root)
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -788,6 +828,9 @@ def receive(directory, stream, *, home=None, operations=None):
             write_json(root / MARKER_PATH, updated)
             remove_journal(root, record)
             prune_runtime_copies(root)
+            # A folder that stays writable only loses its protection.
+            with contextlib.suppress(OSError):
+                lock_skills(root)
             result = {'version': 1, 'installation_id': marker['installation_id'], 'package_id': package.package_id, 'mode': mode, 'health': health, 'updated': original is not None}
         except BaseException as error:
             if not applied:
@@ -800,6 +843,8 @@ def receive(directory, stream, *, home=None, operations=None):
             detail = str(error) if isinstance(error, DeployError) else type(error).__name__
             raise DeployError('The update failed. Previous source and mode were restored; runtime data was not rewound. ' + detail) from error
         result['tunnel'] = operations.tunnel(root)
+        if initial_install:
+            result['skills'] = operations.skills(root)
         return result
 
 

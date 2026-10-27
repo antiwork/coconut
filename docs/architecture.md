@@ -29,6 +29,7 @@ Each bot stores its MCP servers, approval settings and API fallback in its own n
 ## Native integration
 
 Coconut installs no files into the Hermes source checkout.
+Coconut ships its `coconut` skill in `skills/` of the install folder. Hermes loads it through `skills.external_dirs`: setup adds that folder to the person's Hermes profiles, and each bot profile gets it at creation. The person's other Hermes surfaces, such as the Telegram gateway, then know how to update, pair, and repair Coconut. See [the coconut skill](install-and-update.md#the-coconut-skill-for-hermes).
 The worker loads `AIAgent`, native CLI tool configuration, profile context, memory, and skill discovery.
 The worker records a revision of native identity and memory files in the session metadata.
 Each file must contain valid UTF-8 in a regular file of at most 1 MiB.
