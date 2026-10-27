@@ -80,9 +80,12 @@ def check(source, python):
         catalog.resolve_runtime = lambda *args, **kwargs: dict(provider='custom', api_mode='chat_completions',
                                                                base_url=address, api_key='local-test')
         provider = Provider(data, python=python, hermes_root=source, catalog=catalog)
-        service = Service(root / 'service', FixtureProvider(root / 'service'), start_workers=False)
+        # One data folder: the routine receipts of a bot stay in <data>/bots/<uuid>/runs.
+        service = Service(data, FixtureProvider(data), start_workers=False)
         bot = service.mutate('POST', '/v1/bots', {'name': 'Probe'}, str(uuid4()))
         bot.update(instructions='Read the requested file.')
+        # The worker and its settings run in the Hermes profile that the service created for the bot.
+        provider.profile_rows = catalog.profile_rows = service.profiles.rows
         provider.environment(bot['id'])
         def native(operation, **kwargs):
             return provider.native_settings(operation, [bot], bot_id=bot['id'], **kwargs)
@@ -134,7 +137,7 @@ def check(source, python):
             from coconut.native_routine_receipts import completion_id
             receipt = data / 'bots' / bot['id'] / 'runs' / (completion_id(identity, owner) + '.json')
             receipt.unlink()
-            jobs_path = data / 'bots' / bot['id'] / 'home/cron/jobs.json'
+            jobs_path = service.profiles.home(bot) / 'cron/jobs.json'
             jobs_data = json.loads(jobs_path.read_text())
             for row in jobs_data['jobs']:
                 if row['id'] == identity:
