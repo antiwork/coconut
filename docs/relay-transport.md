@@ -154,6 +154,8 @@ The code is 16 random bytes (128 bits), written as 26 characters of unpadded low
 | Box ID | `coconut rendezvous id`, as lowercase hex |
 | Box key | `coconut rendezvous key` |
 
+Test vector: the code `aaaqeayeaudaocajbifqydiob4` is the bytes 0 to 15. Its box ID is `1d228ab884d178483a0e0e42db07204474f127216879f5b13ccca51c1a965173`, and its box key in hex is `f68c3bdb1899514c12a0964dd1ea608b89d66740c96cfa5f355beba30cc103d2`.
+
 The iPhone also makes a 32-byte phone token, as lowercase hex. The phone token never leaves the iPhone.
 
 The sealed message is `nonce (12 bytes) | ciphertext | tag (16 bytes)`: ChaChaPoly with the box key, a random nonce, and the 32 bytes of the box ID as the additional data. The plaintext is the JSON of a version 2 setup, with the fields of the earlier link.
