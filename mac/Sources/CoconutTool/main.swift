@@ -200,18 +200,19 @@ func pairPhone(code: PairingCode, launch: Launch) -> Never {
         guard Date().timeIntervalSince1970 < expires else { fail(expired) }
         sleep(1)
     }
-    // The sidecar also removes an expired ticket. Then no iPhone connected.
-    if Date().timeIntervalSince1970 >= expires && pairedPhoneKeys(install: install).subtracting(known).isEmpty { fail(expired) }
+    // The sidecar also removes an expired ticket. A ticket that is gone after the expiry can also be an iPhone that
+    // connected just before it, so a short wait for its key tells the two apart.
+    let goneAfterExpiry = Date().timeIntervalSince1970 >= expires
     // Then the iPhone sends its pairing request, and the sidecar records its key before it answers. That often happens
     // within a second of the connection, so the keys from before the send are the reference.
-    for _ in 0..<60 {
+    for _ in 0..<(goneAfterExpiry ? 15 : 60) {
         if !pairedPhoneKeys(install: install).subtracting(known).isEmpty {
             print("The iPhone is paired with this Mac.")
             exit(0)
         }
         sleep(1)
     }
-    fail("The iPhone connected but did not finish pairing. Make a new code on the iPhone, then try again.")
+    fail(goneAfterExpiry ? expired : "The iPhone connected but did not finish pairing. Make a new code on the iPhone, then try again.")
 }
 
 let command = CommandLine.arguments.dropFirst().first ?? ""
