@@ -9,7 +9,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 from coconut.push_schedule import DEFAULT_SCHEDULE, LEGACY_SCHEDULE, due, in_window, merge, next_opening, validate
 from coconut.service import Service, ServiceError
-from test_push import RecordingTransport
+from test_push import RecordingTransport, pair_phone
 from test_push_relay import EncryptedTransport
 from test_service import ControlledProvider
 
@@ -216,7 +216,7 @@ class DeliveryTimingTests(unittest.TestCase):
         self.transport = RecordingTransport()
         self.service.push.transport = self.transport
         if not hasattr(self, 'device'):
-            self.device = self.service.pair({'code': self.service.pairing_code()})['device_id']
+            self.device = pair_phone(self.service)
             self.register(schedule=DEFAULT_SCHEDULE)
 
     def tearDown(self):

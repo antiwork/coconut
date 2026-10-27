@@ -40,7 +40,8 @@ with patch('socket.socket.connect', side_effect=AssertionError('Unexpected netwo
     from cron.scheduler import _is_cron_silence_response
 
     service = Service(Path.cwd() / 'service', FixtureProvider(Path.cwd() / 'files'), start_workers=False)
-    device = service.pair({'code': service.pairing_code()})['device_id']
+    # A phone pairs through the relay tunnel with its static key. Only such a device gets notifications.
+    device = service.pair({'code': service.pairing_code(tunnel=True)}, peer='phone-key')['device_id']
     def mutate(method, path, data):
         return service.mutate(method, path, data, str(uuid4()), device)
     mutate('PUT', '/v1/device/push', dict(token='a' * 64, environment='development', enabled=True,

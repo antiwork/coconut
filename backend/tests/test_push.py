@@ -8,6 +8,11 @@ from coconut.service import Service, ServiceError
 from test_service import ControlledProvider
 
 
+def pair_phone(service):
+    """Pair a phone as the app does: through the relay tunnel, with its static key."""
+    return service.pair({'code': service.pairing_code(tunnel=True)}, peer=str(uuid4()))['device_id']
+
+
 class RecordingTransport:
     configured = True
 
@@ -24,7 +29,7 @@ class PushTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.service = Service(self.directory.name, ControlledProvider(), start_workers=False)
-        self.device = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        self.device = pair_phone(self.service)
         self.transport = RecordingTransport()
         self.service.push.transport = self.transport
         self.register()
@@ -202,11 +207,57 @@ class PushTests(unittest.TestCase):
         self.assertTrue(status['last_delivered_at'].endswith('Z'))
         self.assertGreaterEqual(status['last_delivered_at'], status['last_error_at'])
 
+    def seed_items(self, device_id):
+        """Give a device one waiting item and one sent item, as an old registration left them."""
+        task = self.run_task()
+        for key, status in (('old-waiting', 'waiting'), ('old-sent', 'sent')):
+            self.service.db.execute('''INSERT INTO push_items
+                (device_id,event_key,kind,bot_id,task_id,decision_id,message_id,turn_id,urgent,created,status)
+                VALUES (?,?,'completed',?,?,NULL,NULL,'turn',0,?,?)''', (device_id, key, self.bot['id'], task['id'], __import__('time').time(), status))
+
+    def old_items(self, device_id):
+        return self.service.db.execute('SELECT event_key,status FROM push_items WHERE device_id=? ORDER BY event_key', (device_id,)).fetchall()
+
+    def test_a_device_without_a_peer_key_gets_no_notifications(self):
+        # An old version 1 pairing or a tool on this Mac has no static key, so it cannot connect as a phone.
+        old = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        with self.assertRaises(ServiceError) as raised:
+            self.service.push.registration(old, dict(token='b' * 64, environment='development', enabled=True))
+        self.assertEqual(raised.exception.status, 401)
+        # A registration from before the rule is removed at the next cleanup, and its device row stays.
+        stamp = __import__('time').time()
+        with self.service.transaction():
+            self.service.db.execute('INSERT INTO push_devices (device_id,token,environment,enabled,updated) VALUES (?,?,?,?,?)',
+                                    (old, 'b' * 64, 'development', 1, stamp))
+            for table in ('push_routes', 'push_preferences', 'push_schedules'):
+                self.service.db.execute(f'INSERT INTO {table} VALUES (?,?)', (old, '{}'))
+        self.seed_items(old)
+        self.run_task('Write report')
+        self.assertEqual(len(self.service.db.execute("SELECT 1 FROM push_items WHERE device_id=?", (old,)).fetchall()), 2)
+        with self.service.transaction():
+            self.service.push.plan(stamp)
+        self.assertEqual(self.old_items(old), [('old-sent', 'sent'), ('old-waiting', 'dropped')])
+        for table in ('push_devices', 'push_routes', 'push_preferences', 'push_schedules'):
+            self.assertEqual(self.service.db.execute(f'SELECT count(*) FROM {table} WHERE device_id=?', (old,)).fetchone()[0], 0, table)
+        self.assertIsNotNone(self.service.db.execute('SELECT 1 FROM devices WHERE id=?', (old,)).fetchone())
+        self.assertTrue(self.service.push_status(self.device)['registered'])
+
+    def test_service_start_removes_registrations_of_devices_without_a_peer_key(self):
+        old = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        with self.service.transaction():
+            self.service.db.execute('INSERT INTO push_devices (device_id,token,environment,enabled,updated) VALUES (?,?,?,?,?)',
+                                    (old, 'b' * 64, 'development', 1, __import__('time').time()))
+        self.seed_items(old)
+        self.service.close()
+        self.service = Service(self.directory.name, ControlledProvider(), start_workers=False)
+        self.assertEqual(self.service.db.execute('SELECT device_id FROM push_devices').fetchall(), [(self.device,)])
+        self.assertEqual(self.old_items(old), [('old-sent', 'sent'), ('old-waiting', 'dropped')])
+
     def test_registrations_without_a_pairing_or_a_recent_refresh_are_removed(self):
-        other = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        other = pair_phone(self.service)
         self.service.push.registration(other, dict(token='b' * 64, environment='development', enabled=True))
         self.service.db.execute('DELETE FROM devices WHERE id=?', (other,))
-        old = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        old = pair_phone(self.service)
         self.service.push.registration(old, dict(token='c' * 64, environment='development', enabled=True,
                                                  preferences=dict(level='every', messages=True)))
         self.service.db.execute('UPDATE push_devices SET updated=updated-31*86400 WHERE device_id=?', (old,))
@@ -228,7 +279,7 @@ class PushTests(unittest.TestCase):
 
     def test_repair_same_token_does_not_send_twice(self):
         self.run_task()
-        self.device = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        self.device = pair_phone(self.service)
         self.register()
         self.flush()
         self.assertEqual(self.transport.calls, [])

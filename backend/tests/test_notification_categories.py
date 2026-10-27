@@ -5,7 +5,7 @@ import unittest
 from uuid import uuid4
 from coconut.service import Service, ServiceError
 from coconut.push_relay import notification_alert
-from test_push import RecordingTransport
+from test_push import RecordingTransport, pair_phone
 from test_push_relay import EncryptedTransport
 from test_service import ControlledProvider
 
@@ -14,7 +14,7 @@ class NotificationCategoryTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.service = Service(self.directory.name, ControlledProvider(), start_workers=False)
-        self.device = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        self.device = pair_phone(self.service)
         self.transport = RecordingTransport()
         self.service.push.transport = self.transport
         self.preferences()
@@ -145,7 +145,7 @@ class NotificationCategoryTests(unittest.TestCase):
 
     def test_preferences_survive_restart_and_do_not_change_another_phone(self):
         self.preferences(messages=False)
-        other = self.service.pair({'code': self.service.pairing_code()})['device_id']
+        other = pair_phone(self.service)
         self.service.push.registration(other, dict(token='b' * 64, environment='development', enabled=True,
             preferences=dict(level='every', messages=True)))
         self.service.close()
