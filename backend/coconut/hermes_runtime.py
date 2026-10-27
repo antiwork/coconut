@@ -131,12 +131,16 @@ def hermes_home(environ=None, home=None) -> Path:
     return Path(value or Path(home or Path.home()) / '.hermes').expanduser()
 
 
+def install_key(root: Path) -> str:
+    return hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
+
+
 def committed_python(root: Path, homes) -> Path | None:
     """Return the Python of the dependency environment that the official installer committed for a source folder.
 
     The installer keeps it in <Hermes home>/installs/<first 16 hex digits of sha256(source folder)>/facts.json.
     """
-    key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:16]
+    key = install_key(root)
     for folder in dict.fromkeys(homes):
         try:
             facts = json.loads((folder / 'installs' / key / 'facts.json').read_text(encoding='utf-8-sig'))
@@ -400,6 +404,33 @@ def fingerprint(runtime: HermesRuntime) -> str:
         packages = None
     parts = [str(runtime.python), str(runtime.root), runtime.version, git_commit(runtime.root), packages, code_digest()]
     return hashlib.sha256(json.dumps(parts).encode()).hexdigest()
+
+
+def modified(path) -> list | None:
+    try:
+        stat = Path(path).stat()
+    except (OSError, TypeError):
+        return None
+    return [stat.st_mtime_ns, stat.st_size]
+
+
+def identity(status: dict, environ=None, home=None) -> str:
+    """Describe the Hermes that the next start finds first. It runs no program, so the service can compare it often.
+
+    It changes with the Python or the source folder that the search finds, the checked-out commit, the dependency
+    environment that the installer committed (facts.json), and the installed packages: the parts that `hermes update`
+    changes. The status is the one that this process started with.
+    """
+    found = locate(environ, home)
+    if found is None:
+        return 'none'
+    python, root = found
+    root = root or python.parent.parent.parent
+    key = install_key(root)
+    homes = dict.fromkeys((hermes_home(environ, home), root.parent, Path(home or Path.home()) / '.hermes'))
+    return json.dumps([str(python), str(root), git_commit(root),
+                       [modified(folder / 'installs' / key / 'facts.json') for folder in homes],
+                       modified(status.get('packages'))])
 
 
 def read_status(data_dir) -> dict | None:

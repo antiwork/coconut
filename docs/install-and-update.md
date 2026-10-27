@@ -68,7 +68,9 @@ The Hermes home is `HERMES_HOME`. A LaunchAgent does not get the variables of yo
 Coconut starts each Hermes process with `HERMES_DISABLE_LAZY_INSTALLS=1`. Each bot has its own Hermes home, and without this setting, Hermes would install a dependency environment for each of them.
 A bot's worker also gets `HERMES_RUNTIME_DIR=<bot's Hermes home>/tools`. That is where the bot's terminal `hermes` installs tools such as the browser. Without this setting, the worker would read the tools of the Hermes home that owns the source folder. Bots do not share tools.
 A bot's worker also gives the browser-harness daemons of `browser_exec` a private folder for their sockets: `BH_RUNTIME_DIR=/tmp/cbh-<random id>`, one for each worker process, removed when the worker stops. An AF_UNIX socket path has at most 103 bytes on macOS, which a folder in the bot's Hermes home exceeds. The daemon logs and the browser profiles stay where they were.
-After `hermes update`, restart Coconut, so that it uses the new dependency environment.
+The login service notices a new Hermes by itself, for example after `hermes update`. Once a minute, it compares the Hermes that its next start would find with the Hermes that it runs on: the Python, the source folder, the checked-out commit, the installer's `facts.json`, and the installed packages. This comparison reads files only.
+After a change, the service starts no new turn. It lets the running turns finish, for at most 10 minutes as during an update, then exits, and launchd starts it again. The new process runs the contract check against the new Hermes.
+While the service waits, `GET /v1/setup` gives the reason "Coconut restarts for the new Hermes when the running turns finish." and `restarting: true`.
 
 The service imports the Hermes modules that it uses, then runs its contract check against them.
 It refuses a Hermes source folder that has a `.env` file, because every bot would get those keys. Hermes reads its keys from `~/.hermes/.env`. The check sends no model request and uses a temporary Hermes home.
@@ -77,7 +79,8 @@ A restart reuses a passed check while Hermes and the Coconut code stay the same.
 
 Without a usable Hermes, the service still starts, but it runs no bots.
 The phone can pair and read `GET /v1/setup`, which says why. Every other route answers `503` with the code `hermes_unavailable`.
-Install or update Hermes, then restart Coconut with `python3 scripts/host.py restart`.
+When you install or update Hermes, the service restarts by itself within a minute. After another repair, restart Coconut with `python3 scripts/host.py restart`.
+A new Hermes that fails the check causes no second restart: each process compares against the Hermes that it started with.
 
 An update changes Coconut only. It runs the contract check of the new code against the installed Hermes. It searches with the environment of the login service, so it checks the same Hermes as the service.
 If that Hermes worked with the earlier version and fails with the new one, the update restores the earlier version.
