@@ -53,7 +53,8 @@ class RelayPushTests(unittest.TestCase):
 
     def flush(self):
         with self.service.transaction():
-            self.service.db.execute('UPDATE push_outbox SET not_before=0')
+            self.service.db.execute('UPDATE push_items SET created=created-900')
+            self.service.db.execute('UPDATE push_outbox SET not_before=0,created=created-900,sent=sent-900')
         return self.service.push.deliver_one()
 
     def test_preview_uses_bot_and_actual_reply(self):
@@ -124,7 +125,7 @@ class RelayPushTests(unittest.TestCase):
         self.assertEqual(payload['coconut']['device_id'], self.device)
         self.assertEqual(self.service.db.execute('SELECT status FROM push_outbox').fetchone()[0], 'accepted')
 
-    def test_encryption_failure_keeps_a_retry_and_allows_the_next_notification(self):
+    def test_encryption_failure_keeps_a_retry_and_sends_the_group_once(self):
         first, second = self.run_task('First result'), self.run_task('Second result')
         original_seal = self.relay.seal
         calls = []
@@ -142,11 +143,23 @@ class RelayPushTests(unittest.TestCase):
         self.assertGreater(row[2], 0)
         self.assertEqual(row[3], 'EncryptionUnavailable')
         self.assertIsNone(row[4])
-        self.assertTrue(self.service.push.deliver_one())
-        self.assertEqual(self.relay.sealed[0]['coconut']['task_id'], second['id'])
+        self.assertFalse(self.service.push.deliver_one())
         self.assertTrue(self.flush())
-        self.assertEqual(self.relay.sealed[1]['coconut']['task_id'], first['id'])
-        self.assertEqual(self.service.db.execute('SELECT status FROM push_outbox').fetchall(), [('accepted',), ('accepted',)])
+        self.assertEqual({key: self.relay.sealed[0]['coconut'][key] for key in ('version', 'device_id', 'kind', 'count')},
+                         dict(version=1, device_id=self.device, kind='group', count=2))
+        self.assertEqual(self.relay.sealed[0]['aps']['alert'], dict(title='Coconut', body='2 finished tasks are waiting'))
+        self.assertFalse(self.flush())
+        self.assertEqual(len(self.relay.sent), 1)
+        self.assertEqual(self.service.db.execute('SELECT status FROM push_outbox').fetchall(), [('accepted',)])
+        self.assertEqual(self.service.db.execute('SELECT task_id,status FROM push_items ORDER BY created').fetchall(),
+                         [(first['id'], 'sent'), (second['id'], 'sent')])
+
+    def test_a_relay_route_that_refuses_the_send_token_is_removed(self):
+        self.run_task()
+        self.relay.result = (401, 'RelayRejected')
+        self.assertTrue(self.flush())
+        self.assertEqual(self.service.db.execute('SELECT count(*) FROM push_routes').fetchone()[0], 0)
+        self.assertEqual(self.service.push_status(self.device)['last_error'], 'RelayRejected')
 
     def test_plaintext_registration_cannot_downgrade_encryption(self):
         from coconut.service import ServiceError

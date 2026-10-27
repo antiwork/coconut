@@ -53,7 +53,8 @@ class WorkStatus:
         for peer in peers:
             self._put('artifacts', peer)
 
-    def _work_has_new_direction(self, task, pause, item):
+    def _direction_roots(self, task):
+        """The task and its recorded parents, sources, and assignments, by ID. A person's direction there counts."""
         tasks = {}
         roots, pending = set(), [task['id']]
         while pending:
@@ -66,6 +67,10 @@ class WorkStatus:
             tasks[identity] = json.loads(row[0])
             roots.add(identity)
             pending.extend(tasks[identity].get(key) for key in ('parent_task_id', 'source_task_id', '_assignment_task_id'))
+        return roots, tasks
+
+    def _work_has_new_direction(self, task, pause, item):
+        roots, tasks = self._direction_roots(task)
         if any(tasks[identity].get('_work_status_only') for identity in roots):
             return False
         after = max((p.get('_work_pause_at', '') for p in self._work_pause_peers(item, shared=True)), default='')
@@ -101,7 +106,7 @@ class WorkStatus:
         if not any(task.get(key) for key in ('_self_recovery', '_pr_review', '_work_resume')):
             return False
         if task.get('_technical_lane') and self._technical_declined_turn(task):
-            # The requested lane turn of a declined merge runs with its holds. The pause itself stays. See technical_lane.py.
+            # The requested lane turn of a declined or held merge runs with its holds. The pause stays. See technical_lane.py.
             return False
         items = self._task_work_items(task)
         return bool(items) and all((pause := self._work_pause(item))

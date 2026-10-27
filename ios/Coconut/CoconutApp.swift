@@ -226,10 +226,10 @@ struct CoconutHome: View {
             PushNotifications.shared.target = nil
             return
         }
-        if target.decisionId == nil {
+        if target.group || target.decisionId == nil {
             PushNotifications.shared.target = nil
             previewedNotification = nil
-            showNotification(.conversation(target.conversationRoute))
+            showNotification(target.group ? .inboxList : .conversation(target.conversationRoute))
             return
         }
         if previewedNotification != target {
@@ -256,6 +256,10 @@ struct CoconutHome: View {
         case .inbox(let decisionId):
             inboxPath = NavigationPath()
             notificationDecisionId = decisionId
+            selectedTab = .inbox
+        case .inboxList:
+            inboxPath = NavigationPath()
+            notificationDecisionId = nil
             selectedTab = .inbox
         case .conversation(let route):
             notificationDecisionId = nil

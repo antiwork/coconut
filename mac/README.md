@@ -35,6 +35,12 @@ A Hermes agent can print the same link. This command does not need the Command L
 /Applications/Coconut.app/Contents/Helpers/coconut pair
 ```
 
+The iPhone can also start pairing: it shows a one-time code in a message for Hermes. With that code, the command seals a new setup for the iPhone, sends it through the relay, and waits until the iPhone pairs. It prints one plain line for each step. `docs/relay-transport.md`, "Pairing code from the iPhone", describes the protocol.
+
+```sh
+/Applications/Coconut.app/Contents/Helpers/coconut pair <code>
+```
+
 ## Build and test
 
 ```sh
