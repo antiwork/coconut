@@ -84,12 +84,16 @@ def scan(hermes_home: str | Path) -> list[Found]:
 
 
 def signature(hermes_home: str | Path) -> tuple:
-    """A cheap value that changes when a profile folder appears, disappears, or changes its name."""
+    """A cheap value that changes when a profile folder appears, disappears, changes its name, or becomes a profile.
+
+    A folder becomes a profile when it gets a profile file. That does not change the profiles folder itself, so each
+    entry also carries whether it is a profile now.
+    """
     hermes_home = Path(hermes_home).expanduser().absolute()
     folder = hermes_home / 'profiles'
     try:
         state = folder.stat()
-        entries = tuple(sorted(entry.name for entry in folder.iterdir()))
+        entries = tuple(sorted((entry.name, is_profile(entry)) for entry in folder.iterdir()))
         tombstones = folder / TOMBSTONES
         deleted = tuple(sorted(entry.name for entry in tombstones.iterdir())) if tombstones.is_dir() else ()
         return (hermes_home.exists(), state.st_ino, state.st_mtime_ns, entries, deleted)
@@ -138,7 +142,9 @@ def plan(known: dict[str, dict], found: list[Found]) -> list[tuple[str, dict]]:
             unmatched.remove(item)
             changes.append(_moved(row, item))
     for item in list(unmatched):
+        # A removed row matches only its own folder (by inode). A new folder with its name becomes a new bot.
         row = next((r for r in known.values() if r['bot_id'] not in matched and r['name'] == item.name
+                    and r['state'] != 'removed'
                     and (r['state'] != 'active' or not Path(r['home']).exists() or Path(r['home']) == item.home)), None)
         if row is not None:
             matched.add(row['bot_id'])

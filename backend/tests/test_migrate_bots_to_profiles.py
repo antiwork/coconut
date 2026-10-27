@@ -184,6 +184,81 @@ class MigrationTests(unittest.TestCase):
             self.assertTrue(self.home(bot).is_dir())
         self.assertFalse((self.root / migration.LEDGER).exists())
 
+    def service_calls(self):
+        """Stand-ins for the host.py steps that stop and start the service."""
+        calls = []
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch.object(migration.host, 'drain_for_update', side_effect=lambda: calls.append('drain')))
+        stack.enter_context(patch.object(migration.host, 'stop_for_update', side_effect=lambda: calls.append('stop') or {'mode': 'app'}))
+        stack.enter_context(patch.object(migration.host, 'restore_after_update', side_effect=lambda state: calls.append('start')))
+        self.addCleanup(stack.close)
+        return calls
+
+    def test_a_failed_move_puts_every_bot_back_before_the_service_starts(self):
+        calls = self.service_calls()
+        moved = []
+
+        def rename(source, destination):
+            if len(moved) == 2:
+                moved.append('failed')
+                raise OSError(errno.ENOSPC, 'No space left on device')
+            moved.append(source)
+            os.rename(source, destination)
+
+        with self.assertRaises(OSError):
+            self.run_quietly(migration.migrate, self.root, self.hermes, manage_service=True, rename=rename)
+        self.assertEqual(calls, ['drain', 'stop', 'start'])
+        for bot in self.bots:
+            self.assertEqual(tree(self.home(bot)), self.before[bot['id']])
+            self.assertIsNone(profile_registry.lookup(self.root, bot['id']))
+        self.assertEqual(sorted(path.name for path in (self.hermes / 'profiles').iterdir()), ['ada'])
+        self.assertFalse((self.root / migration.LEDGER).exists())
+        self.assertTrue(any(self.root.glob('profile-migration.failed-*.json')))
+
+    def test_a_failed_database_write_also_puts_every_bot_back(self):
+        self.service_calls()
+        with patch.object(migration, 'record_rows', side_effect=sqlite3.OperationalError('database is locked')):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.run_quietly(migration.migrate, self.root, self.hermes, manage_service=True)
+        for bot in self.bots:
+            self.assertEqual(tree(self.home(bot)), self.before[bot['id']])
+
+    def test_coconut_stays_stopped_when_the_folders_cannot_move_back(self):
+        calls = self.service_calls()
+        with patch.object(migration, 'record_rows', side_effect=sqlite3.OperationalError('database is locked')), \
+                patch.object(migration, 'undo_moves', side_effect=OSError('Disk error')):
+            with self.assertRaises(OSError):
+                self.run_quietly(migration.migrate, self.root, self.hermes, manage_service=True)
+        self.assertEqual(calls, ['drain', 'stop'])
+        ledger = json.loads((self.root / migration.LEDGER).read_text())
+        self.assertEqual({move['state'] for move in ledger['moves']}, {'moved'})
+        # The ledger still lets --rollback finish the job.
+        self.run_quietly(migration.rollback, self.root, manage_service=False)
+        for bot in self.bots:
+            self.assertEqual(tree(self.home(bot)), self.before[bot['id']])
+
+    def test_the_hermes_home_must_be_the_one_of_the_service(self):
+        from coconut import hermes_runtime
+        hermes_runtime.write_status(self.root, {'status': 'ok', 'home': str(self.root.parent / 'hermes' / 'terminal' / 'hermes')})
+        problem = migration.home_problem(self.root, self.hermes)
+        self.assertIn('ServiceEnvironment -dict-add HERMES_HOME', problem)
+        self.assertIn(str(self.hermes), problem)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as raised:
+            migration.main(['--data-dir', str(self.root), '--hermes-home', str(self.hermes), '--no-service'])
+        self.assertIn('Nothing changed', str(raised.exception.code))
+        for bot in self.bots:
+            self.assertTrue(self.home(bot).is_dir())
+        # The dry run reports the same problem.
+        _, output = self.run_quietly(migration.main, ['--data-dir', str(self.root), '--hermes-home', str(self.hermes),
+                                                      '--dry-run', '--no-service'])
+        self.assertIn('Before the migration', output)
+        hermes_runtime.write_status(self.root, {'status': 'ok', 'home': str(self.hermes)})
+        self.assertIsNone(migration.home_problem(self.root, self.hermes))
+        # A folder of Coconut is never the Hermes home of the bots.
+        coconut_home = migration.host.ROOT / '.runtime' / 'hermes' / 'terminal' / 'hermes'
+        self.assertIn('is a folder of Coconut', migration.home_problem(self.root, coconut_home))
+
     def test_running_workers_stop_the_migration_before_any_change(self):
         with patch.object(migration, 'coconut_workers', return_value=[123]), patch.object(migration.time, 'sleep'):
             with self.assertRaises(SystemExit):

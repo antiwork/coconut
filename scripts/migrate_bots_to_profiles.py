@@ -169,8 +169,13 @@ def service_lock(data_dir: Path):
 
 @contextmanager
 def stopped_service(data_dir: Path, manage: bool):
-    """Stop the service of this installation, and start it again afterwards, also after a failure."""
+    """Stop the service of this installation, and start it again afterwards.
+
+    The body sets control['restart'] to False when the folders and the database do not agree. Coconut then stays
+    stopped, because a service start in that state could add the moved profiles as new bots.
+    """
     state = None
+    control = {'restart': True}
     if manage:
         say('Asking Coconut to finish its turns...')
         host.drain_for_update()
@@ -179,11 +184,14 @@ def stopped_service(data_dir: Path, manage: bool):
     try:
         with service_lock(data_dir):
             wait_for_workers(data_dir)
-            yield
+            yield control
     finally:
-        if state is not None:
+        if state is not None and control['restart']:
             say('Starting Coconut again...')
             host.restore_after_update(state)
+        elif state is not None:
+            say('Coconut stays stopped. Fix the problem above, then run --rollback, or start Coconut with '
+                'python3 scripts/host.py restart.')
 
 
 # Copy, check and move folders
@@ -354,7 +362,7 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
     show_plan(moves, data_dir, hermes_home)
     if not moves:
         return None
-    with stopped_service(data_dir, manage_service):
+    with stopped_service(data_dir, manage_service) as control:
         # The plan can change while the service stops, for example when a bot was created.
         moves = plan(data_dir, hermes_home)
         instructions = {bot['id']: bot.get('instructions', '') for bot in legacy_bots(data_dir)}
@@ -364,16 +372,30 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
         ledger = dict(version=1, created_at=datetime.now(timezone.utc).isoformat(), data_dir=str(data_dir),
                       hermes_home=str(hermes_home), backup=str(saved), moves=moves)
         write_ledger(data_dir, ledger)
-        for move in moves:
-            source, destination = Path(move['source']), Path(move['destination'])
-            say(f'Moving {move["bot_name"]!r} to {destination}...')
-            move['state'] = 'moving'
-            write_ledger(data_dir, ledger)
-            move['method'] = move_tree(source, destination, rename=rename)
-            ensure_identity(destination, instructions.get(move['bot_id'], ''))
-            move['state'] = 'moved'
-            write_ledger(data_dir, ledger)
-        record_rows(data_dir, moves)
+        try:
+            for move in moves:
+                source, destination = Path(move['source']), Path(move['destination'])
+                say(f'Moving {move["bot_name"]!r} to {destination}...')
+                move['state'] = 'moving'
+                write_ledger(data_dir, ledger)
+                move['method'] = move_tree(source, destination, rename=rename)
+                ensure_identity(destination, instructions.get(move['bot_id'], ''))
+                move['state'] = 'moved'
+                write_ledger(data_dir, ledger)
+            record_rows(data_dir, moves)
+        except BaseException as error:
+            # Before Coconut starts again, every bot must be back in its earlier home. Else it stays stopped.
+            say(f'The migration failed: {error}')
+            try:
+                undo_moves(data_dir, ledger, rename=rename)
+            except BaseException:
+                control['restart'] = False
+                say(f'Coconut could not move every folder back. The ledger {data_dir / LEDGER} and the backup '
+                    f'{saved} show where each bot is.')
+                raise
+            os.replace(data_dir / LEDGER, data_dir / f'profile-migration.failed-{stamp()}.json')
+            say('Every bot is back in its earlier home.')
+            raise
         ledger['completed_at'] = datetime.now(timezone.utc).isoformat()
         write_ledger(data_dir, ledger)
     say(f'Done. {len(moves)} bots are Hermes profiles now:')
@@ -383,10 +405,30 @@ def migrate(data_dir: Path, hermes_home: Path, *, manage_service: bool = True, r
     return ledger
 
 
+def undo_moves(data_dir: Path, ledger: dict, rename=os.rename) -> None:
+    """Move back each folder that a failed migration moved. The database has no profiles rows for them yet."""
+    for move in reversed(ledger['moves']):
+        if move['state'] == 'planned':
+            continue
+        source, destination = Path(move['source']), Path(move['destination'])
+        staging = destination.with_name('.' + destination.name + '.coconut-copy')
+        if staging.exists():
+            shutil.rmtree(staging)
+        if destination.exists() and not source.exists():
+            say(f'Moving {move["bot_name"]!r} back to {source}...')
+            move_tree(destination, source, rename=rename)
+        elif destination.exists():
+            raise MigrationError(f'Both {source} and {destination} exist. Check them by hand.')
+        move['state'] = 'planned'
+        write_ledger(data_dir, ledger)
+
+
 def rollback(data_dir: Path, *, manage_service: bool = True, rename=os.rename) -> dict:
     ledger = read_ledger(data_dir)
     say(f'Rolling back the migration of {ledger["created_at"]} ({len(ledger["moves"])} bots).')
-    with stopped_service(data_dir, manage_service):
+    with stopped_service(data_dir, manage_service) as control:
+        # A rollback that stops halfway leaves Coconut stopped, so the service never sees half of the bots moved.
+        control['restart'] = False
         for move in reversed(ledger['moves']):
             source = Path(move['source'])
             moved = Path(current_home(data_dir, move['bot_id']) or move['destination'])
@@ -403,13 +445,48 @@ def rollback(data_dir: Path, *, manage_service: bool = True, rename=os.rename) -
         forget_rows(data_dir, [move['bot_id'] for move in ledger['moves']])
         done = data_dir / f'profile-migration.rolled-back-{stamp()}.json'
         os.replace(data_dir / LEDGER, done)
+        control['restart'] = True
     say(f'Done. The bots use their earlier homes again. The ledger is now {done.name}. The backup stays in {ledger["backup"]}.')
     return ledger
 
 
-def default_hermes_home() -> Path:
+APP_ID = 'com.gumroad.coconut.mac'
+
+
+def service_hermes_home(data_dir: Path) -> Path | None:
+    """The Hermes home of the running service, from the status that it saved at its last start (hermes.json)."""
+    status = host.hermes_runtime().read_status(data_dir)
+    home = (status or {}).get('home')
+    return Path(home).expanduser() if isinstance(home, str) and home else None
+
+
+def default_hermes_home(data_dir: Path) -> Path:
+    found = service_hermes_home(data_dir)
+    if found is not None:
+        return found
     runtime = host.hermes_runtime()
     return Path(runtime.hermes_home(environ=host.service_environment())).expanduser()
+
+
+def home_problem(data_dir: Path, hermes_home: Path) -> str | None:
+    """Explain why the service would not find the bots in hermes_home, or return None.
+
+    The service rescans the profiles of its own Hermes home. When its HERMES_HOME is another folder, for example the
+    shared model home in .runtime/hermes/terminal/hermes of an earlier install, it would not see the moved bots.
+    """
+    service = service_hermes_home(data_dir)
+    target = hermes_home.expanduser().resolve()
+    inside = host.ROOT.resolve() / '.runtime'
+    if target == inside or inside in target.parents:
+        return (f'{hermes_home} is a folder of Coconut, not your Hermes home. Give your Hermes home with '
+                '--hermes-home, for example --hermes-home ~/.hermes.')
+    if service is None or service.resolve() == target:
+        return None
+    return (f'The Coconut service uses HERMES_HOME={service}, but the bots would move into {hermes_home}.\n'
+            'First make the service use that Hermes home:\n'
+            f'  defaults write {APP_ID} ServiceEnvironment -dict-add HERMES_HOME "{target}"\n'
+            '  launchctl kickstart -k "gui/$(id -u)/com.gumroad.coconut.service"\n'
+            f'Then check that {data_dir / "hermes.json"} names {target} as "home", and run this command again.')
 
 
 def main(argv=None) -> None:
@@ -430,13 +507,18 @@ def main(argv=None) -> None:
     if args.rollback:
         rollback(data_dir, manage_service=manage)
         return
-    hermes_home = (args.hermes_home or default_hermes_home()).expanduser().absolute()
+    hermes_home = (args.hermes_home or default_hermes_home(data_dir)).expanduser().absolute()
     if not hermes_home.is_dir():
         raise SystemExit(f'{hermes_home} does not exist. Install Hermes, or give its home with --hermes-home.')
+    problem = home_problem(data_dir, hermes_home)
     if args.dry_run:
         show_plan(plan(data_dir, hermes_home), data_dir, hermes_home)
+        if problem:
+            say('Before the migration: ' + problem)
         say('This was a dry run. Nothing changed.')
         return
+    if problem:
+        raise SystemExit(problem + '\nNothing changed.')
     migrate(data_dir, hermes_home, manage_service=manage)
 
 

@@ -441,12 +441,16 @@ class HermesProvider(FixtureProvider):
     def prepare_kanban_worker(self, identity, bot, workspace, execution_id, worker_id=None):
         """Start a dedicated process before Hermes records its claim PID."""
         cache_key = worker_id or execution_id
+        # A cached worker with another HERMES_HOME belongs to the profile folder before a rename. Replace it.
+        from .profiles import HermesProfiles
+        home = str(HermesProfiles(self.data_dir, getattr(self, 'profile_rows', None)).home({'id': bot['id']}))
         with self._lock:
             if self._closed or bot['id'] in self._stopped_bots:
                 raise RuntimeError('This bot stopped before worker preparation.')
             previous = self._kanban_runtimes.get(cache_key)
             if (previous is not None and previous.poll() is None
-                    and not getattr(self._transports.get(previous), 'closed', False)):
+                    and not getattr(self._transports.get(previous), 'closed', False)
+                    and self._runtime_envs.get(previous, ({},))[0].get('HERMES_HOME') == home):
                 self._prepared[identity] = previous
                 return previous.pid
         if previous is not None:
@@ -614,7 +618,9 @@ class HermesProvider(FixtureProvider):
             if prepared:
                 isolated = False
             # Work sessions apply their own conversation epoch without stopping peer turns.
-            epoch = (bot['session_id'], None if task.get('_execution_session_id') else task.get('_conversation_epoch'))
+            # The profile folder is part of the epoch: after a rename, a cached worker still has the old HERMES_HOME.
+            epoch = (bot['session_id'], None if task.get('_execution_session_id') else task.get('_conversation_epoch'),
+                     env['HERMES_HOME'])
             if not prepared and (process is None or process.poll() is not None or self._runtime_epochs.get(bot['id']) != epoch
                     or (self._transports.get(process) is not None and self._transports[process].closed)):
                 if process is not None:

@@ -180,24 +180,12 @@ class BotProfiles:
         state = home.stat()
         return dict(name=name, home=str(home), dev=state.st_dev, ino=state.st_ino, state='active')
 
+
     def _hermes_profile_command(self, operation: str, **payload) -> dict:
         python, source = getattr(self.provider, 'python', None), getattr(self.provider, 'hermes_root', None)
         if not python or not source or self.hermes_home is None:
             raise ProfileError('Hermes is not available on this Mac.')
-        environment = {key: os.environ[key] for key in ('PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR')
-                       if key in os.environ}
-        from .hermes_runtime import NO_LAZY_INSTALLS
-        environment.update(NO_LAZY_INSTALLS, HERMES_HOME=str(self.hermes_home), HERMES_DISABLE_TELEMETRY='1')
-        try:
-            completed = subprocess.run([str(python), '-I', '-c', PROFILE_COMMAND, str(source)],
-                                       input=json.dumps(dict(payload, operation=operation)), env=environment,
-                                       capture_output=True, text=True, timeout=COMMAND_SECONDS)
-            result = json.loads(completed.stdout.strip().splitlines()[-1])
-        except (OSError, subprocess.TimeoutExpired, ValueError, IndexError) as error:
-            raise ProfileError('Hermes did not answer the profile request.') from error
-        if not isinstance(result, dict) or 'error' in result or not isinstance(result.get('home'), str):
-            raise ProfileError('Hermes refused the profile request: ' + str(result.get('error') if isinstance(result, dict) else result))
-        return result
+        return run_profile_command(python, source, self.hermes_home, operation, **payload)
 
     def _remove_profile_row(self, bot_id: str) -> None:
         """Remove from Coconut: the row stays as `removed`, so a rescan does not add the folder again."""
@@ -206,7 +194,11 @@ class BotProfiles:
             self._write_profile_row(dict(row, state='removed', seen_at=profile_registry.now()))
 
     def _delete_profile_request(self, bot: dict, data, callbacks: list, device: str) -> dict:
-        """Delete the Hermes profile of a bot. The person types the profile name to confirm."""
+        """Delete the Hermes profile of a bot. The person types the profile name to confirm.
+
+        The bot keeps the device and inode of the confirmed folder. A retry deletes only that folder, never a new
+        folder with the same name, and a finished deletion never runs again.
+        """
         from .service import ServiceError
         row = self.profiles.rows.get(bot['id'])
         if row is None:
@@ -215,19 +207,57 @@ class BotProfiles:
             raise ServiceError(409, 'Coconut never deletes the default Hermes profile. Remove the bot from Coconut instead.')
         if not isinstance(data, dict) or set(data) != {'confirm'} or data['confirm'] != row['name']:
             raise ServiceError(400, f'Type the profile name, {row["name"]}, in confirm to delete this Hermes profile.')
+        try:
+            state = Path(row['home']).stat()
+        except OSError:
+            raise ServiceError(409, 'The Hermes profile folder is missing. Remove the bot from Coconut instead.') from None
         self._delete_bot(bot, callbacks, audit={'deleted_by': device, 'hermes_profile_deleted': row['name']})
+        bot = self._get('bots', bot['id'])
+        bot['_hermes_profile_deletion'] = dict(name=row['name'], home=row['home'], dev=state.st_dev, ino=state.st_ino,
+                                               done=False)
+        self._put('bots', bot)
         callbacks.append(lambda: self._finish_profile_deletion(bot['id']))
         return {'ok': True, 'profile': row['name']}
 
     def _finish_profile_deletion(self, bot_id: str) -> None:
         from .service import ServiceError
         with self.lock:
-            row = self.profiles.rows.get(bot_id)
-        if row is None or row['name'] == profile_registry.DEFAULT:
+            deletion = self._get('bots', bot_id).get('_hermes_profile_deletion')
+        if not deletion or deletion['done']:
             return
-        if not Path(row['home']).exists():
-            return
+        home = Path(deletion['home'])
         try:
-            self._hermes_profile_command('delete', name=row['name'])
-        except ProfileError as error:
-            raise ServiceError(503, 'The bot was removed, but Hermes did not delete its profile. Retry the exact request.') from error
+            state = home.stat()
+        except FileNotFoundError:
+            state = None
+        # Delete only the folder that the person confirmed. Hermes deletes by name, so the name must still name it.
+        if state is not None and (state.st_dev, state.st_ino) == (deletion['dev'], deletion['ino']):
+            if home.name != deletion['name']:
+                raise ServiceError(409, 'The Hermes profile has a new name. Delete it with hermes profile delete.')
+            try:
+                self._hermes_profile_command('delete', name=deletion['name'])
+            except ProfileError as error:
+                raise ServiceError(503, 'The bot was removed, but Hermes did not delete its profile. Retry the exact request.') from error
+        with self.transaction():
+            bot = self._get('bots', bot_id)
+            bot['_hermes_profile_deletion'] = dict(deletion, done=True)
+            self._put('bots', bot)
+
+
+def run_profile_command(python, source, hermes_home, operation: str, *, environment: dict | None = None, **payload) -> dict:
+    """Run PROFILE_COMMAND in the Python of the person's Hermes. The Hermes contract check runs it too."""
+    if environment is None:
+        environment = {key: os.environ[key] for key in ('PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR')
+                       if key in os.environ}
+    from .hermes_runtime import NO_LAZY_INSTALLS
+    environment = dict(environment, **NO_LAZY_INSTALLS, HERMES_HOME=str(hermes_home), HERMES_DISABLE_TELEMETRY='1')
+    try:
+        completed = subprocess.run([str(python), '-I', '-c', PROFILE_COMMAND, str(source)],
+                                   input=json.dumps(dict(payload, operation=operation)), env=environment,
+                                   capture_output=True, text=True, timeout=COMMAND_SECONDS)
+        result = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (OSError, subprocess.TimeoutExpired, ValueError, IndexError) as error:
+        raise ProfileError('Hermes did not answer the profile request.') from error
+    if not isinstance(result, dict) or 'error' in result or not isinstance(result.get('home'), str):
+        raise ProfileError('Hermes refused the profile request: ' + str(result.get('error') if isinstance(result, dict) else result))
+    return result

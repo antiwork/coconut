@@ -105,14 +105,22 @@ Installs from before this change keep each bot home in `.runtime/host/bots/<uuid
 
 To move the bots, run these commands on the Mac that runs Coconut, in the Coconut folder (`~/Coconut`):
 
-1. Show the plan. This step changes nothing.
+1. Make sure that the service uses your Hermes home. Open `.runtime/host/hermes.json` and read `home`. An earlier install can have `HERMES_HOME` set to `~/Coconut/.runtime/hermes/terminal/hermes`. In that case, change it, restart the service login item, and check `home` again:
+
+   ```sh
+   defaults write com.gumroad.coconut.mac ServiceEnvironment -dict-add HERMES_HOME "$HOME/.hermes"
+   launchctl kickstart -k "gui/$(id -u)/com.gumroad.coconut.service"
+   ```
+
+   The migration refuses to run when `--hermes-home` and the service's Hermes home are different. The dry run shows the same problem.
+2. Show the plan. This step changes nothing.
 
    ```sh
    python3 scripts/migrate_bots_to_profiles.py --dry-run
    ```
 
-2. Check the profile names in the plan. Each name comes from the bot name, and no name replaces a profile that you have.
-3. Run the migration:
+3. Check the profile names in the plan. Each name comes from the bot name, and no name replaces a profile that you have.
+4. Run the migration:
 
    ```sh
    python3 scripts/migrate_bots_to_profiles.py

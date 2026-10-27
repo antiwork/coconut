@@ -55,6 +55,13 @@ def lifecycle_homes(root):
             raise ValueError('A native profile lifecycle directory is unsafe.')
         if home.exists():
             yield home
+    # A bot in a Hermes profile of the person keeps its state.db and processes.json in that profile folder.
+    from .profile_registry import homes
+    for home in map(Path, homes(root)):
+        if home.is_symlink():
+            raise ValueError('A native profile lifecycle directory is unsafe.')
+        if home.is_dir():
+            yield home
 
 
 def check_writers(root, allowed=()):

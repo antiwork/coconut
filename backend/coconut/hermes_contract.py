@@ -309,6 +309,7 @@ def verify_contract():
     verify_delegation_contract()
     verify_terminal_contract()
     verify_skills_contract()
+    verify_profile_api_contract()
 
     return {'native_terminal_path': True, 'provider_contract': 'compatible', 'tool_registration': True, 'tool_dispatch': True,
             'native_model_effort_roundtrip': True,
@@ -341,6 +342,31 @@ def verify_skills_contract():
                 raise ValueError('Hermes changed a user-created skill during sync.')
         finally:
             reset_hermes_home_override(token)
+
+
+def verify_profile_api_contract():
+    """Create and delete a profile with the Hermes profile API, as bot_profiles does, in a temporary Hermes home."""
+    import os
+    import sys
+    import hermes_cli
+    from .bot_profiles import run_profile_command
+    source = Path(hermes_cli.__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory(prefix='coconut-profile-contract-') as temporary:
+        root = Path(temporary)
+        hermes_home = root / '.hermes'
+        hermes_home.mkdir()
+        (hermes_home / 'config.yaml').write_text('{}\n')
+        # HOME is the temporary folder too, so the `<name>` command goes into its .local/bin.
+        environment = dict(PATH=os.environ.get('PATH', '/usr/bin:/bin'), HOME=str(root), TMPDIR=str(root))
+        created = run_profile_command(sys.executable, source, hermes_home, 'create', environment=environment,
+                                      name='coconut-check', display_name='Coconut check', description='A check.',
+                                      soul='Contract soul.\n')
+        home = hermes_home / 'profiles' / 'coconut-check'
+        if Path(created['home']).resolve() != home.resolve() or (home / 'SOUL.md').read_text() != 'Contract soul.\n':
+            raise ValueError('Hermes did not create the profile with its SOUL.')
+        run_profile_command(sys.executable, source, hermes_home, 'delete', environment=environment, name='coconut-check')
+        if home.exists():
+            raise ValueError('Hermes did not delete the profile.')
 
 
 def verify_terminal_contract():

@@ -291,5 +291,144 @@ class WorkerEnvironmentTests(unittest.TestCase):
             self.assertEqual(HermesProfiles(root).home({'id': bot_id}), Path(temporary) / 'work')
 
 
+class ReviewFindingTests(ServiceProfileRescanTests):
+    """Checks for the review of the first version (PR #274)."""
+
+    def test_a_renamed_profile_replaces_a_cached_kanban_worker(self):
+        from coconut.providers import HermesProvider
+        provider = HermesProvider(self.root, catalog=Mock())
+        provider.profile_rows = self.service.profiles.rows
+        bot = self.bots()['work']
+        started, stopped = [], []
+
+        class Process:
+            def __init__(self, *args, env=None, **kwargs):
+                self.pid, self.env = 1000 + len(started), env
+                started.append(self)
+
+            def poll(self):
+                return None
+
+        with patch('coconut.providers.subprocess.Popen', Process), \
+                patch.object(provider, '_terminate', side_effect=stopped.append):
+            provider.prepare_kanban_worker('claim-1', bot, str(self.base), 'execution', worker_id='worker')
+            provider.release_kanban_preparation('claim-1')
+            provider.prepare_kanban_worker('claim-2', bot, str(self.base), 'execution', worker_id='worker')
+            self.assertEqual(len(started), 1)
+            provider.release_kanban_preparation('claim-2')
+            self.work.rename(self.hermes / 'profiles' / 'office')
+            self.service.rescan_profiles()
+            provider.prepare_kanban_worker('claim-3', bot, str(self.base), 'execution', worker_id='worker')
+        self.assertEqual(len(started), 2)
+        self.assertEqual(started[1].env['HERMES_HOME'], str(self.hermes / 'profiles' / 'office'))
+        self.assertEqual(stopped, [started[0]])
+
+    def test_a_retry_never_deletes_a_replacement_profile(self):
+        bot = self.bots()['work']
+        key = str(uuid4())
+        calls = []
+
+        def fails(operation, **payload):
+            calls.append(payload['name'])
+            raise ProfileError('Hermes is busy.')
+
+        with patch.object(self.service, '_hermes_profile_command', side_effect=fails):
+            with self.assertRaises(ServiceError):
+                self.service.mutate('POST', f'/v1/bots/{bot["id"]}/profile/delete', {'confirm': 'work'}, key, 'phone')
+        # The person deletes the folder by hand and creates another profile with the same name.
+        shutil.rmtree(self.work)
+        self.work.mkdir()
+        (self.work / 'SOUL.md').write_text('A new profile.\n')
+        with patch.object(self.service, '_hermes_profile_command', side_effect=fails):
+            self.service.mutate('POST', f'/v1/bots/{bot["id"]}/profile/delete', {'confirm': 'work'}, key, 'phone')
+        self.assertEqual(calls, ['work'])
+        self.assertEqual((self.work / 'SOUL.md').read_text(), 'A new profile.\n')
+        # The new folder is a new bot, not the removed one.
+        self.service.rescan_profiles()
+        replacement = self.bots()['work']
+        self.assertNotEqual(replacement['id'], bot['id'])
+
+    def test_a_finished_deletion_never_runs_again(self):
+        bot = self.bots()['work']
+        key = str(uuid4())
+        calls = []
+
+        def deletes(operation, **payload):
+            calls.append(payload['name'])
+            shutil.rmtree(self.hermes / 'profiles' / payload['name'])
+            return {'home': str(self.work)}
+
+        with patch.object(self.service, '_hermes_profile_command', side_effect=deletes):
+            self.service.mutate('POST', f'/v1/bots/{bot["id"]}/profile/delete', {'confirm': 'work'}, key, 'phone')
+            self.work.mkdir()
+            (self.work / 'SOUL.md').write_text('A new profile.\n')
+            self.service.mutate('POST', f'/v1/bots/{bot["id"]}/profile/delete', {'confirm': 'work'}, key, 'phone')
+        self.assertEqual(calls, ['work'])
+        self.assertTrue(self.work.is_dir())
+
+    def test_workspace_recovery_reads_the_profile_homes(self):
+        from coconut.workspace_recovery import lifecycle_homes
+        homes = set(lifecycle_homes(self.service.root))
+        self.assertIn(self.work, homes)
+        self.assertIn(self.hermes, homes)
+
+    def test_a_folder_that_gets_a_profile_file_changes_the_signature(self):
+        folder = self.hermes / 'profiles' / 'later'
+        folder.mkdir()
+        before = profile_registry.signature(self.hermes)
+        (folder / 'SOUL.md').write_text('Now a profile.\n')
+        self.assertNotEqual(profile_registry.signature(self.hermes), before)
+
+
+class ProfileCommandTests(unittest.TestCase):
+    """PROFILE_COMMAND runs against a small stand-in for hermes_cli.profiles, so the command itself is checked here.
+
+    The Hermes contract check (verify_profile_api_contract) runs the same command against the installed Hermes.
+    """
+
+    def test_create_and_delete_go_through_the_hermes_profile_api(self):
+        from coconut.bot_profiles import run_profile_command
+        with tempfile.TemporaryDirectory() as temporary:
+            source, hermes = Path(temporary) / 'source', Path(temporary) / '.hermes'
+            (source / 'hermes_cli').mkdir(parents=True)
+            (source / 'hermes_cli' / '__init__.py').write_text('')
+            (source / 'hermes_cli' / 'profiles.py').write_text(
+                'import os\n'
+                'from pathlib import Path\n'
+                'def _root():\n'
+                '    return Path(os.environ["HERMES_HOME"]) / "profiles"\n'
+                'def create_profile(name, description=None, soul=None):\n'
+                '    print("Hermes prints to stdout.")\n'
+                '    home = _root() / name\n'
+                '    home.mkdir(parents=True)\n'
+                '    (home / "SOUL.md").write_text(soul)\n'
+                '    (home / "description").write_text(description or "")\n'
+                '    return home\n'
+                'def seed_profile_skills(home, quiet=False):\n'
+                '    (home / "skills").mkdir()\n'
+                'def check_alias_collision(name):\n'
+                '    return "taken"\n'
+                'def write_profile_meta(home, display_name=None):\n'
+                '    (home / "profile.yaml").write_text("display_name: " + display_name + "\\n")\n'
+                'def delete_profile(name, yes=False):\n'
+                '    import shutil\n'
+                '    assert yes\n'
+                '    shutil.rmtree(_root() / name)\n'
+                '    return _root() / name\n')
+            hermes.mkdir()
+            import sys
+            created = run_profile_command(sys.executable, source, hermes, 'create', name='lin', display_name='Lin',
+                                          description='Writer', soul='Write.\n')
+            home = hermes / 'profiles' / 'lin'
+            self.assertEqual(Path(created['home']), home)
+            self.assertEqual((home / 'SOUL.md').read_text(), 'Write.\n')
+            self.assertTrue((home / 'skills').is_dir())
+            self.assertEqual(profile_registry.display_name(home), 'Lin')
+            run_profile_command(sys.executable, source, hermes, 'delete', name='lin')
+            self.assertFalse(home.exists())
+            with self.assertRaisesRegex(ProfileError, 'refused'):
+                run_profile_command(sys.executable, source, hermes, 'delete', name='lin')
+
+
 if __name__ == '__main__':
     unittest.main()
