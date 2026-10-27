@@ -31,6 +31,8 @@ struct OnboardingView: View {
     @State private var attempt = 0
     @State private var copied = false
     @State private var helpOpen = false
+    // A link from the help sheet waits until the sheet closes.
+    @State private var helpPayload: String?
     // A setup from a QR code or a tapped link. The person confirms the Mac name before Coconut pairs.
     @State private var linkSetup: PairingSetup?
     @State private var confirmOpen = false
@@ -102,10 +104,16 @@ struct OnboardingView: View {
             if paired && !old && firstRun { finish() }
         }
         .onChange(of: store.setupLink, initial: true) { _, _ in takeSetupLink() }
-        .sheet(isPresented: $helpOpen) {
-            PairingHelpView { payload in
-                helpOpen = false
+        // The confirmation belongs to this screen, so it opens only after the help sheet is gone.
+        .sheet(isPresented: $helpOpen, onDismiss: {
+            if let payload = helpPayload {
+                helpPayload = nil
                 useLink(payload)
+            }
+        }) {
+            PairingHelpView { payload in
+                helpPayload = payload
+                helpOpen = false
             }
         }
         .confirmationDialog("Pair with \(linkSetup?.name ?? "this Mac")?", isPresented: $confirmOpen, titleVisibility: .visible) {
