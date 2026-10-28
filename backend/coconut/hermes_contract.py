@@ -337,7 +337,7 @@ def verify_gateway_contract():
         raise ValueError('Hermes removed plugin hooks of the coconut platform: ' + ', '.join(sorted(missing)))
     require_keywords(BasePlatformAdapter.send_clarify, ['chat_id', 'question', 'choices', 'clarify_id', 'session_key'])
     require_keywords(BasePlatformAdapter.on_processing_complete, ['event', 'outcome'])
-    require_keywords(SessionStore.get_or_create_session, ['source'])
+    require_keywords(SessionStore.get_or_create_session, ['source', 'force_new'])
     require_keywords(SessionStore.switch_session, ['session_key', 'target_session_id'])
     require_keywords(resolve_gateway_approval, ['session_key', 'choice', 'reason'])
     require_keywords(resolve_gateway_clarify, ['clarify_id', 'response'])

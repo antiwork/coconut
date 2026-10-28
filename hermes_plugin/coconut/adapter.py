@@ -149,6 +149,7 @@ class CoconutAdapter(BasePlatformAdapter):
             poller.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await poller
+        self._wake_questions()
         self._mark_disconnected()
 
     async def _request(self, route: str, payload: dict, timeout: float = REQUEST_SECONDS) -> dict:
@@ -225,6 +226,7 @@ class CoconutAdapter(BasePlatformAdapter):
         turn = self._turns.get(chat_id)
         if turn is None:
             return
+        self._wake_questions(turn)
         source = self.build_source(chat_id=chat_id, chat_type='dm', user_id='coconut', user_name='Coconut')
         await self.handle_message(MessageEvent(text='/stop', message_type=MessageType.COMMAND, source=source,
                                                message_id=turn + ':stop'))
@@ -244,6 +246,7 @@ class CoconutAdapter(BasePlatformAdapter):
         if self._turns.get(event.source.chat_id) == event.message_id:
             del self._turns[event.source.chat_id]
         self._typing.discard(event.message_id)
+        self._wake_questions(event.message_id)
         with self._streams_lock:
             self._streams.pop(event.message_id, None)
         self._stream_numbers.pop(event.message_id, None)
@@ -351,7 +354,7 @@ class CoconutAdapter(BasePlatformAdapter):
 
     def ask(self, turn: str, question: str, choices: list, detail: str = ''):
         """coconut_ask: show a question card and wait for the answer. Runs in the thread of the tool."""
-        holder = {'event': threading.Event(), 'answer': None}
+        holder = {'event': threading.Event(), 'answer': None, 'turn': turn}
         question_id = str(uuid.uuid4())
         self._questions[question_id] = ('ask', holder)
         try:
@@ -364,6 +367,12 @@ class CoconutAdapter(BasePlatformAdapter):
             return holder['answer']
         finally:
             self._questions.pop(question_id, None)
+
+    def _wake_questions(self, turn=None) -> None:
+        """Wake each coconut_ask of a turn that stopped or ended, or of every turn. It returns no answer."""
+        for route in list(self._questions.values()):
+            if route[0] == 'ask' and (turn is None or route[1]['turn'] == turn):
+                route[1]['event'].set()
 
     def _answer(self, item: dict) -> None:
         route = self._questions.pop(str(item.get('question_id')), None)

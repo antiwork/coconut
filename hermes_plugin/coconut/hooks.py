@@ -4,7 +4,8 @@ One conversation. A Coconut bot has one native conversation in its profile's sta
 from a root session ID and records the newest session as the tip in the `state_meta` table of Hermes
 (backend/coconut/native_conversation.py, TIP_KEY). Before the gateway runs a Coconut turn, `join_conversation` points
 the gateway session of the chat at that same tip with the session store that the `pre_gateway_dispatch` hook receives.
-When the bot has no conversation yet, the gateway session becomes the tip. Both runtimes then write to the same
+When the bot has no conversation for this root yet, the gateway session becomes the tip: a new session when the chat's
+session holds an earlier conversation, for example after a restart of the bots. Both runtimes then write to the same
 session, and each follows the compression lineage of Hermes from it, so a worker turn and a gateway turn see the same
 history.
 
@@ -50,6 +51,10 @@ def join_conversation(event=None, session_store=None, **_):
                 tip = root if db.get_session(root) else None
             entry = session_store.get_or_create_session(source)
             if tip is None:
+                if db.get_session(entry.session_id) and db.get_resume_conversations(entry.session_id)[0]:
+                    # The chat has a session of an earlier conversation, for example before a restart of the bots
+                    # gave the chat a new root. The new conversation starts in a new session, as /new does.
+                    entry = session_store.get_or_create_session(source, force_new=True)
                 db.set_meta(TIP_KEY + root, entry.session_id)
             else:
                 target = db.resolve_resume_session_id(tip)

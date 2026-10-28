@@ -1576,8 +1576,6 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 question = require_text(data, 'question', 4000)
                 return self._request_context(decision, task, question, [])
             if parts[3] == 'answer':
-                if decision.get('_gateway_question'):
-                    return self.answer_gateway_question(decision, task, data, device)
                 if decision.get('_native'):
                     return self.answer_native(decision, task, data, device, callbacks)
                 return self._answer(decision, task, data, device)
@@ -2652,6 +2650,9 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         return message['id']
 
     def _answer(self, decision: dict, task: dict, data: dict, device: str) -> dict:
+        if decision.get('_gateway_question'):
+            # The answer, a reply or a dismissal from the Inbox, goes to the waiting gateway turn.
+            return self.answer_gateway_question(decision, task, data, device)
         if decision.get('_source_recheck'):
             raise ServiceError(409, 'The source changed. Coconut is updating this decision.')
         if not isinstance(data.get('revision'), int) or isinstance(data['revision'], bool) or data['revision'] != decision['revision']:

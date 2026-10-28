@@ -146,7 +146,7 @@ def resolve_gateway_approval(session_key, choice, resolve_all=False, reason=None
 ''',
     'hermes_state.py': '''
 class SessionDB:
-    meta, sessions, lineage = {}, set(), {}
+    meta, sessions, lineage, messages = {}, set(), {}, {}
     def __init__(self, db_path=None):
         self.db_path = db_path
     def get_meta(self, key):
@@ -155,6 +155,8 @@ class SessionDB:
         self.meta[key] = value
     def get_session(self, session_id):
         return {"id": session_id} if session_id in self.sessions else None
+    def get_resume_conversations(self, session_id):
+        return self.messages.get(session_id, []), []
     def resolve_resume_session_id(self, session_id):
         while session_id in self.lineage:
             session_id = self.lineage[session_id]
@@ -455,7 +457,10 @@ class GatewayAdapterTests(unittest.TestCase):
         class Store:
             def __init__(self, session_id):
                 self.entry, self.switched = Entry('agent:main:coconut:dm:bot', session_id), []
-            def get_or_create_session(self, source):
+            def get_or_create_session(self, source, force_new=False):
+                if force_new:
+                    self.entry = Entry(self.entry.session_key, 'gateway-new')
+                    SessionDB.sessions.add('gateway-new')
                 return self.entry
             def switch_session(self, session_key, target_session_id):
                 self.switched.append((session_key, target_session_id))
@@ -465,9 +470,8 @@ class GatewayAdapterTests(unittest.TestCase):
         def event(root):
             adapter._roots['bot'] = root
             return MessageEvent(text='Hi', source=SessionSource(Platform('coconut'), 'bot'))
-        SessionDB.meta.clear()
-        SessionDB.sessions.clear()
-        SessionDB.lineage.clear()
+        for table in (SessionDB.meta, SessionDB.sessions, SessionDB.lineage, SessionDB.messages):
+            table.clear()
         with patch.dict(os.environ, HERMES_HOME=str(self.home)):
             # A bot without a conversation: the gateway session becomes the tip, for the worker.
             store = Store('gateway-1')
@@ -489,6 +493,23 @@ class GatewayAdapterTests(unittest.TestCase):
             hooks.join_conversation(event=other, session_store=store)
             hooks.join_conversation(event=event(''), session_store=store)
             self.assertEqual(len(store.switched), 1)
+            # A new root, for example after a restart of the bots, starts a new session when the chat's session
+            # holds the earlier conversation.
+            SessionDB.messages['worker-child'] = [{'role': 'user', 'content': 'Old.'}]
+            hooks.join_conversation(event=event('root-c'), session_store=store)
+            self.assertEqual((store.entry.session_id, SessionDB.meta[hooks.TIP_KEY + 'root-c']), ('gateway-new', 'gateway-new'))
+
+    def test_a_stopped_or_finished_turn_wakes_its_waiting_question(self):
+        from gateway.config import PlatformConfig
+        adapter = self.adapter_module.CoconutAdapter(PlatformConfig())
+        holders = {}
+        for turn in ('turn-a', 'turn-b'):
+            holders[turn] = {'event': threading.Event(), 'answer': None, 'turn': turn}
+            adapter._questions[turn + '-q'] = ('ask', holders[turn])
+        adapter._wake_questions('turn-a')
+        self.assertEqual((holders['turn-a']['event'].is_set(), holders['turn-b']['event'].is_set()), (True, False))
+        adapter._wake_questions()
+        self.assertTrue(holders['turn-b']['event'].is_set())
 
     def test_registration_declares_a_trusted_service_platform_for_this_hermes(self):
         calls, tool_names, hook_names = [], [], []
