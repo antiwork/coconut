@@ -76,6 +76,10 @@ class CoconutAdapter(BasePlatformAdapter):
         super().__init__(config, Platform(NAME))
         extra = getattr(config, 'extra', None) or {}
         self._bridge = Bridge(extra.get('bridge') or DEFAULT_BRIDGE)
+        if isinstance(getattr(config, 'extra', None), dict):
+            # Setup and operational notices of the gateway, such as "No home channel is set", go to
+            # send_private_notice. They name gateway commands that Coconut does not offer.
+            config.extra.setdefault('notice_delivery', 'private')
         self._home = None
         self._poller = None
         # The running turn of each chat. The service gives a bot one turn at a time.
@@ -192,6 +196,11 @@ class CoconutAdapter(BasePlatformAdapter):
         if not await self._report(turn, 'send', message_id=message_id, text=str(content), interim=interim):
             return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)
         return SendResult(success=True, message_id=message_id)
+
+    async def send_private_notice(self, chat_id: str, user_id, content: str, reply_to=None, metadata=None) -> SendResult:
+        # The phone shows the replies of Hermes, not its gateway notices. The gateway log keeps them.
+        LOG.info('Coconut: a gateway notice for chat %s stays in the log: %s', chat_id, str(content)[:200])
+        return SendResult(success=True)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         if not await self._report(turn_of(message_id), 'edit', message_id=str(message_id), text=str(content)):

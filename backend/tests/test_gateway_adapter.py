@@ -230,6 +230,10 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(self.adapter._turns, {})
         # For example a cron delivery. Coconut takes no messages outside its own turns yet.
         self.assertFalse(self.complete(self.adapter.send(self.bot['id'], 'A cron result.')).success)
+        # Gateway notices name gateway commands, so they stay in the gateway log.
+        self.assertEqual(self.adapter.config.extra['notice_delivery'], 'private')
+        self.assertTrue(self.complete(self.adapter.send_private_notice(self.bot['id'], 'coconut', 'Type /sethome.')).success)
+        self.assertEqual(self.replies(task), [('The final answer.', False)])
 
     def test_the_adapter_takes_turns_only_after_the_gateway_restored_its_sessions(self):
         # While the gateway restores sessions after its start, it queues each inbound message and ends its
