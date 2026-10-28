@@ -52,7 +52,6 @@ The person can also do it without Hermes. On the iPhone, **Need help?** shows th
 - A new installation of the iPhone app opens onboarding, which shows a new message.
 - On an iPhone that is already paired, the person opens **Settings** in Coconut and taps **Pair a new Mac**. That opens the same screen.
 - If the iPhone already has a pairing, Coconut asks before a new link replaces it.
-- An iPhone that paired before the relay shows "Coconut no longer needs Tailscale." Pair it again with a new link.
 
 ## Pitfalls
 
