@@ -465,6 +465,35 @@ class OutsideTurnTests(unittest.TestCase):
         self.service.mutate('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Thanks.'}, str(uuid4()), self.device)
         self.assertNotEqual(self.message(message_id='outside:4', text='More news.')['task_id'], third['task_id'])
 
+    def bot_row(self):
+        with self.service.lock:
+            bot = self.service._get('bots', self.bot['id'])
+        return bot['last_message'], bot['unread_count']
+
+    def test_a_streamed_reply_pushes_when_it_ends_and_a_deleted_reply_leaves_the_preview(self):
+        first = self.message(text='Task t_1 is done.')
+        self.assertEqual(len(self.pushes()), 1)
+        self.message(message_id='outside:2', text='The', streaming=True)
+        self.message('edit', 'outside:2', 'The report')
+        # No push while Hermes still streams the reply.
+        self.assertEqual(len(self.pushes()), 1)
+        self.assertEqual(self.bot_row(), ('The report', 2))
+        self.message('edit', 'outside:2', 'The report is ready.', finalize=True)
+        message_id = self.service.db.execute('SELECT id FROM messages ORDER BY rowid DESC LIMIT 1').fetchone()[0]
+        self.assertEqual(self.pushes()[-1], ('message', first['task_id'], message_id))
+        self.assertEqual(self.bot_row(), ('The report is ready.', 2))
+        # A deleted reply no longer counts as unread, and the preview shows the reply before it.
+        self.message('delete', 'outside:2', '')
+        self.assertEqual(self.bot_row(), ('Task t_1 is done.', 1))
+        self.assertFalse(self.message('edit', 'outside:2', 'Back again.')['recorded'])
+        # A streamed reply whose last edit never came ends with the next message, and it pushes then.
+        self.message(message_id='outside:3', text='Half', streaming=True)
+        self.message(message_id='outside:4', text='Next.')
+        with self.service.lock:
+            streaming = [m['streaming'] for m in self.service._all('messages') if m.get('_gateway_message_id')]
+        self.assertEqual(streaming, [False] * 4)
+        self.assertEqual([kind for kind, _, _ in self.pushes()], ['message'] * 4)
+
     def test_a_cron_delivery_of_a_run_that_the_chat_shows_is_dropped(self):
         self.assertTrue(self.message(job_id='intake')['recorded'])
         started = self.service.gateway_cron({'event': 'start', 'home': self.home, 'job_id': 'intake',

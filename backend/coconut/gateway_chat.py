@@ -198,7 +198,7 @@ class GatewayChat:
             if kind != 'send':
                 if message is None:
                     return {'recorded': False, 'reason': 'The chat does not show this message.'}
-                return self._change_gateway_message(message, kind, text)
+                return self._change_gateway_message(bot, message, kind, text, bool(data.get('finalize')))
             if message is not None:
                 return {'recorded': True, 'task_id': message['task_id']}
             if not text.strip():
@@ -206,8 +206,15 @@ class GatewayChat:
             job_id = data.get('job_id')
             if isinstance(job_id, str) and job_id and self._gateway_cron_shown(chat_id, job_id):
                 return {'recorded': False, 'reason': 'A routine task in the chat shows this cron run.'}
+            # A streamed reply whose last edit never came ends with the next message.
+            for (raw,) in self.db.execute(
+                    "SELECT data FROM messages WHERE json_extract(data,'$.bot_id')=? "
+                    "AND json_extract(data,'$._gateway_message_id') IS NOT NULL "
+                    "AND json_extract(data,'$.streaming') IN (1, 'true')", (chat_id,)).fetchall():
+                self._change_gateway_message(bot, json.loads(raw), 'edit', json.loads(raw)['text'], True)
             task = self._gateway_outside_task(bot, text)
-            message = self._message(bot['id'], text, task_id=task['id'])
+            # A reply that Hermes streams arrives as a first piece and then edits. It pushes when the last edit ends it.
+            message = self._message(bot['id'], text, task_id=task['id'], streaming=data.get('streaming') is True)
             message['_gateway_message_id'] = message_id
             self._put('messages', message)
             self._refresh_bot(bot['id'])
@@ -219,16 +226,35 @@ class GatewayChat:
         return next((row for row in list((self.profiles.rows or {}).values())
                      if row.get('state') == 'active' and os.path.realpath(row['home']) == home), None)
 
-    def _change_gateway_message(self, message: dict, kind: str, text: str) -> dict:
-        """Edit or delete a message outside a turn. The caller holds the transaction."""
+    def _change_gateway_message(self, bot: dict, message: dict, kind: str, text: str, finalize: bool) -> dict:
+        """Edit or delete a message outside a turn, and keep the bot's preview and unread count true. The caller holds
+        the transaction."""
+        if message.get('_hidden'):
+            return {'recorded': False, 'reason': 'The chat no longer shows this message.'}
+        old = message['text']
+        finished = bool(message.get('streaming')) and finalize
         if kind == 'delete' or not text.strip():
-            message['_hidden'] = True
+            message.update(_hidden=True, streaming=False)
+            bot['unread_count'] = max(0, bot['unread_count'] - 1)
+            newest = self.db.execute(
+                "SELECT data FROM messages WHERE json_extract(data,'$.bot_id')=? AND id<>? "
+                "AND COALESCE(json_extract(data,'$._hidden'),0)=0 AND COALESCE(json_extract(data,'$._deleted'),0)=0 "
+                "AND json_extract(data,'$.reaction_event') IS NULL ORDER BY rowid DESC LIMIT 1",
+                (bot['id'], message['id'])).fetchone()
+            if bot.get('last_message') == old[:160]:
+                bot['last_message'] = json.loads(newest[0])['text'][:160] if newest else ''
         else:
             message['text'] = text
-            message.pop('_hidden', None)
+            if finished:
+                message['streaming'] = False
+            if bot.get('last_message') == old[:160]:
+                bot['last_message'] = text[:160]
+        self._put('bots', bot)
         self._put('messages', message)
         self._event('message.updated', dict(self._public(message), _hidden=bool(message.get('_hidden'))),
                     message['bot_id'], message['task_id'])
+        if finished:
+            self.push.record('message.completed', message, message['bot_id'], message['task_id'])
         self._refresh_bot(message['bot_id'])
         return {'recorded': True, 'task_id': message['task_id']}
 

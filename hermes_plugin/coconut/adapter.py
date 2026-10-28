@@ -340,7 +340,8 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             LOG.info('Coconut: a gateway status message for chat %s stays in the log: %s', chat_id, content[:200])
             return SendResult(success=True)
         message_id = OUTSIDE + str(uuid.uuid4())
-        fields = dict(kind='send', message_id=message_id, text=content)
+        # The stream consumer of Hermes marks the first piece of a streamed reply with `expect_edits`.
+        fields = dict(kind='send', message_id=message_id, text=content, streaming=bool(metadata.get('expect_edits')))
         if metadata.get('job_id'):
             # A cron delivery. The service shows no second copy of a run that is already a routine task in the chat.
             fields['job_id'] = str(metadata['job_id'])
@@ -384,7 +385,9 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         if str(message_id).startswith(OUTSIDE):
             # Hermes streams the reply of its own turn: a first send, then edits of the same message.
-            result = await self._outside(str(chat_id), dict(kind='edit', message_id=str(message_id), text=str(content)))
+            # The edit with `finalize` ends the reply, and the service pushes it then.
+            result = await self._outside(str(chat_id), dict(kind='edit', message_id=str(message_id), text=str(content),
+                                                            finalize=bool(finalize)))
             return SendResult(success=True, message_id=message_id) if result is True else result
         if not await self._report(turn_of(message_id), 'edit', message_id=str(message_id), text=str(content)):
             return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)
