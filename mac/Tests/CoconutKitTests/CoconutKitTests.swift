@@ -208,6 +208,17 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertEqual(reader.read(isAlive: { _ in true }, healthy: true).relay, "connected")
         // A sidecar that stopped leaves its last state behind.
         XCTAssertEqual(reader.read(isAlive: { $0 != 5151 }, healthy: true).relay, "stopped")
+        XCTAssertNil(reader.read(isAlive: { _ in true }, healthy: true).relayLastDisconnect)
+
+        try write(#"{"state": "connected", "pid": 5151, "reconnects": 3, "last_disconnect": {"at": "2026-10-28T17:36:05Z", "cause": "relay_closed", "code": 1011, "detail": "code 1011: internal error"}}"#,
+                  to: "Coconut/.runtime/host/tunnel/status.json")
+        status = reader.read(isAlive: { $0 != 5151 }, healthy: true)
+        XCTAssertEqual(status.relayLastDisconnect, .init(at: "2026-10-28T17:36:05Z", cause: "relay_closed",
+                                                         detail: "code 1011: internal error"))
+        XCTAssertEqual(status.relayReconnects, 3)
+        let lines = StatusText.lines(version: "1", preferences: UpdatePreferences(store: MemoryPreferences()), status: status)
+        XCTAssertTrue(lines.contains("Last relay disconnect: 2026-10-28T17:36:05Z, relay_closed (code 1011: internal error); "
+            + "3 reconnects since the sidecar started"))
     }
 
     func testTheStatusJSONUsesSnakeCaseKeys() throws {

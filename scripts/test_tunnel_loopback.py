@@ -173,6 +173,17 @@ class TunnelLoopbackTests(unittest.TestCase):
         wait(lambda: self.status()['state'] == 'connected' and self.status()['connected_since'] != before, 30,
              'The sidecar did not reconnect.')
         host.close()
+        # The sidecar records the cause from the relay's close frame, and its event log holds no secret.
+        last = self.status()['last_disconnect']
+        self.assertEqual((last['cause'], last['code'], last['reason']), ('relay_closed', 1000, 'replaced'))
+        self.assertEqual(self.status()['reconnects'], 1)
+        log = (self.data / 'tunnel/events.log').read_text()
+        self.assertEqual((self.data / 'tunnel/events.log').stat().st_mode & 0o777, 0o600)
+        events = [json.loads(line)['event'] for line in log.splitlines()]
+        for event in ('start', 'connect_start', 'connected', 'channel_open', 'disconnected', 'backoff'):
+            self.assertIn(event, events)
+        for secret in (host_token, route['route'], route['mac_key']):
+            self.assertNotIn(secret, log)
         self.assertEqual(self.run_client()['state']['status'], 200)
         self.assertEqual(len(self.peers()), 2)
 

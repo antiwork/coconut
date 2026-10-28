@@ -3,7 +3,8 @@ import Foundation
 import Network
 
 // The Mac end of the relay tunnel (docs/relay-transport.md). scripts/tunnel.py compiles this file with
-// ios/Tunnel/Noise.swift and ios/Tunnel/TunnelFrames.swift and runs it as the LaunchAgent com.gumroad.coconut.tunnel.
+// ios/Tunnel/Noise.swift, ios/Tunnel/TunnelFrames.swift, and scripts/tunnel-events.swift, and runs it as the LaunchAgent
+// com.gumroad.coconut.tunnel.
 //
 // The sidecar keeps one WebSocket to the relay. Each iPhone socket arrives as a channel with its own Noise session.
 // Each stream in a session is one HTTP request, which the sidecar sends to the backend's plain HTTP listener on
@@ -15,7 +16,9 @@ import Network
 // - peers.json: the iPhone keys that paired through the tunnel, each with the hash of its relay client token.
 // - tickets/<hash>.json: {psk, expires} for one pairing link. scripts/pairing.py writes it, and the sidecar
 //   removes it after use or expiry.
-// - status.json: the connection state for scripts and diagnostics.
+// - status.json: the connection state for scripts and diagnostics, with the last disconnect and its cause.
+// - events.log, events.log.1: the connection events as JSON lines, at most about 256 KB each (scripts/tunnel-events.swift).
+//   They hold no tokens, keys, routes, or payloads.
 
 let maxRequestBody = 7 * 1024 * 1024
 // All request bodies that the sidecar holds at one time, over every channel.
@@ -126,6 +129,7 @@ struct Store {
     var routeURL: URL { directory.appendingPathComponent("route.json") }
     var peersURL: URL { directory.appendingPathComponent("peers.json") }
     var statusURL: URL { directory.appendingPathComponent("status.json") }
+    var eventsURL: URL { directory.appendingPathComponent("events.log") }
     var ticketsURL: URL { directory.appendingPathComponent("tickets") }
 
     func identity() throws -> Curve25519.KeyAgreement.PrivateKey {
@@ -272,6 +276,18 @@ final class Sidecar {
     var retry: DispatchWorkItem?
     var state = "starting"
     var lastError: String?
+    let events: TunnelEventLog
+    var connectStarted = Date()
+    // Connection attempts since the last connected socket.
+    var attempts = 0
+    // Connected sockets since the sidecar started.
+    var connections = 0
+    var reconnects: Int { max(0, connections - 1) }
+    // The end of the last connected socket.
+    var lastDisconnect: (at: Date, cause: DisconnectCause)?
+    // Backend failures can come in bursts. The log gets at most one line a minute for them.
+    var lastBackendEvent = Date.distantPast
+    var backendFailures = 0
     var channels: [UInt32: Channel] = [:]
     var sentTickets: Set<String> = []
     // The sidecar is the only writer of peers.json, so it reads the file once.
@@ -289,6 +305,7 @@ final class Sidecar {
         self.route = route
         identity = try store.identity()
         peers = store.peers()
+        events = TunnelEventLog(url: store.eventsURL)
         let parts = backend.split(separator: ":")
         guard parts.count == 2, let port = NWEndpoint.Port(String(parts[1])) else { throw CocoaError(.fileReadInvalidFileName) }
         backendHost = NWEndpoint.Host(String(parts[0]))
@@ -297,6 +314,7 @@ final class Sidecar {
 
     func start() {
         queue.async { [self] in
+            events.record("start", ["pid": Int(getpid())])
             writeStatus()
             connect()
             let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -314,7 +332,7 @@ final class Sidecar {
             network = "\(path.status) \(path.availableInterfaces.first?.name ?? "")"
             if previous != nil, previous != network, path.status == .satisfied {
                 log("The network changed. Reconnecting.")
-                reconnect(reason: "network changed", immediately: true)
+                reconnect(cause: DisconnectCause(.networkChanged, reason: network), immediately: true)
             }
         }
         pathMonitor.start(queue: queue)
@@ -325,10 +343,13 @@ final class Sidecar {
     func connect() {
         reconnecting = false
         retry = nil
+        attempts += 1
+        connectStarted = Date()
+        events.record("connect_start", ["attempt": attempts])
         let scheme = route.relay.hasPrefix("http://") ? "ws://" : "wss://"
         let base = route.relay.replacingOccurrences(of: #"^https?://"#, with: "", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: "\(scheme)\(base)/v1/tunnels/\(route.route)/host") else { return fail("invalid relay URL") }
+        guard let url = URL(string: "\(scheme)\(base)/v1/tunnels/\(route.route)/host") else { return fail(DisconnectCause(.invalidURL)) }
         let options = NWProtocolWebSocket.Options()
         options.autoReplyPing = true
         options.maximumMessageSize = 128 * 1024
@@ -344,6 +365,10 @@ final class Sidecar {
             case .ready:
                 log("Connected to the relay.")
                 connectedAt = Date()
+                connections += 1
+                events.record("connected", ["attempt": attempts, "took_ms": milliseconds(since: connectStarted),
+                                            "reconnects": reconnects])
+                attempts = 0
                 lastReceived = Date()
                 lastError = nil
                 sentTickets = []
@@ -351,7 +376,7 @@ final class Sidecar {
                 sendTickets()
                 receive(on: connection)
             case .waiting(let error), .failed(let error):
-                fail(error.localizedDescription)
+                fail(.network(error))
             case .cancelled:
                 break
             default:
@@ -361,23 +386,36 @@ final class Sidecar {
         connection.start(queue: queue)
     }
 
-    func fail(_ reason: String) {
-        lastError = reason
-        reconnect(reason: reason, immediately: false)
+    func fail(_ cause: DisconnectCause) {
+        lastError = cause.summary
+        reconnect(cause: cause, immediately: false)
     }
 
+    func milliseconds(since start: Date) -> Int { Int((Date().timeIntervalSince(start) * 1000).rounded()) }
+
     // Ends the socket and every Noise session on it. The relay closes the iPhone sockets when a new host socket arrives.
-    func reconnect(reason: String, immediately: Bool) {
+    func reconnect(cause: DisconnectCause, immediately: Bool) {
         // A delayed retry waits. A network change or a wake must not wait for it.
         if reconnecting {
             guard immediately, let retry else { return }
             retry.cancel()
             backoff = 1
             schedule(after: 0.2)
-            log("Reconnecting at once (\(reason)).")
+            log("Reconnecting at once (\(cause.summary)).")
+            events.record("backoff", cause.fields.merging(["delay_ms": 200]) { $1 })
             return
         }
         reconnecting = true
+        var fields = cause.fields
+        fields["phase"] = connectedAt == nil ? "connecting" : "connected"
+        fields["channels"] = channels.count
+        if let connectedAt {
+            fields["uptime_s"] = Int(Date().timeIntervalSince(connectedAt))
+            lastDisconnect = (Date(), cause)
+        } else {
+            fields["after_ms"] = milliseconds(since: connectStarted)
+        }
+        events.record("disconnected", fields)
         relay?.cancel()
         relay = nil
         for channel in channels.values { drop(channel) }
@@ -387,8 +425,9 @@ final class Sidecar {
         connectedAt = nil
         let delay = immediately ? 0.2 : backoff * Double.random(in: 0.8...1.2)
         backoff = immediately ? 1 : min(backoff * 2, maxBackoff)
+        events.record("backoff", ["delay_ms": Int((delay * 1000).rounded())])
         setState("offline")
-        log("The relay socket ended (\(reason)). Retrying in \(String(format: "%.1f", delay)) seconds.")
+        log("The relay socket ended (\(cause.summary)). Retrying in \(String(format: "%.1f", delay)) seconds.")
         schedule(after: delay)
     }
 
@@ -401,12 +440,12 @@ final class Sidecar {
     func receive(on connection: NWConnection) {
         connection.receiveMessage { [weak self, weak connection] data, context, _, error in
             guard let self, let connection, connection === relay else { return }
-            if let error { return fail(error.localizedDescription) }
+            if let error { return fail(.network(error)) }
             let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata
             lastReceived = Date()
             switch metadata?.opcode {
             case .binary: if let data { handleRelay(data) }
-            case .close: return fail("closed by the relay")
+            case .close: return fail(.relayClosed(code: metadata?.closeCode, reason: data))
             default: break
             }
             receive(on: connection)
@@ -435,14 +474,16 @@ final class Sidecar {
     // Runs every 5 seconds. A long gap between ticks means that the Mac slept, and the socket is gone.
     func tick() {
         let now = Date()
-        let slept = now.timeIntervalSince(lastTick) > 30
+        let previousTick = lastTick
+        let slept = now.timeIntervalSince(previousTick) > 30
         lastTick = now
         if slept, relay != nil {
             log("The Mac woke from sleep. Reconnecting.")
-            return reconnect(reason: "wake", immediately: true)
+            let gap = Int(now.timeIntervalSince(previousTick))
+            return reconnect(cause: DisconnectCause(.wake, reason: "no tick for \(gap) seconds"), immediately: true)
         }
         if state == "connected" {
-            if now.timeIntervalSince(lastReceived) > silenceLimit { return fail("no answer to ping") }
+            if now.timeIntervalSince(lastReceived) > silenceLimit { return fail(DisconnectCause(.pingTimeout)) }
             // The relay answers `ping` with `pong` without waking its Durable Object.
             if now.timeIntervalSince(lastReceived) > pingInterval { sendText("ping") }
             // The folder watcher sends new tickets at once. This slow pass also removes expired ones.
@@ -496,7 +537,7 @@ final class Sidecar {
                 try handleFrame(tunnelFrame, on: channel)
             }
         } catch {
-            close(channel)
+            close(channel, reason: channel.session == nil ? "handshake_failed" : "session_error", error: error)
         }
     }
 
@@ -515,12 +556,18 @@ final class Sidecar {
                 sentTickets.remove(hash)
                 sendTickets()
             }
-            if channels.count >= maxChannels { return control(["type": "close_channel", "id": Int(id)]) }
+            if channels.count >= maxChannels {
+                events.record("channel_refused", ["channel": Int(id), "reason": "limit", "channels": channels.count])
+                return control(["type": "close_channel", "id": Int(id)])
+            }
             channels[id] = channel
+            events.record("channel_open", ["channel": Int(id), "auth": channel.ticket ? "ticket" : "token",
+                                           "channels": channels.count])
             writeStatus()
         case "closed":
             if let id = (value["id"] as? NSNumber)?.uint32Value, let channel = channels.removeValue(forKey: id) {
                 drop(channel)
+                events.record("channel_close", ["channel": Int(id), "by": "relay", "channels": channels.count])
                 writeStatus()
             }
         case "error":
@@ -554,13 +601,16 @@ final class Sidecar {
                 send(RelayFrame(channel: channel.id, ciphertext: ciphertext).encoded())
             }
         } catch {
-            close(channel)
+            close(channel, reason: "seal_failed", error: error)
         }
     }
 
-    func close(_ channel: Channel) {
+    // A failed rekey shows as the error invalidRekey or decryptionFailed of the session.
+    func close(_ channel: Channel, reason: String, error: Error) {
         guard channels.removeValue(forKey: channel.id) != nil else { return }
         drop(channel)
+        events.record("channel_close", ["channel": Int(channel.id), "by": "mac", "reason": reason,
+                                        "error": sessionErrorName(error), "channels": channels.count])
         control(["type": "close_channel", "id": Int(channel.id)])
         writeStatus()
     }
@@ -666,13 +716,25 @@ final class Sidecar {
                 connection.send(content: stream.body, completion: .contentProcessed { _ in })
                 stream.body = Data()
                 pump(stream, on: channel)
-            case .waiting, .failed:
+            case .waiting(let error), .failed(let error):
+                backendUnreachable(error)
                 fail(stream, on: channel)
             default:
                 break
             }
         }
         connection.start(queue: queue)
+    }
+
+    func backendUnreachable(_ error: NWError) {
+        backendFailures += 1
+        guard Date().timeIntervalSince(lastBackendEvent) >= 60 else { return }
+        lastBackendEvent = Date()
+        var fields = DisconnectCause.network(error).fields
+        fields["cause"] = nil
+        fields["failures"] = backendFailures
+        events.record("backend_unreachable", fields)
+        backendFailures = 0
     }
 
     func respond(_ stream: Stream, on channel: Channel, status: Int, json: [String: Any]) {
@@ -821,11 +883,23 @@ final class Sidecar {
         var status = ["state": state, "relay": route.relay, "route": route.route, "channels": String(channels.count)]
         if let connectedAt { status["connected_since"] = timestamps.string(from: connectedAt) }
         if let lastError { status["last_error"] = lastError }
+        status["reconnects"] = String(reconnects)
+        if let lastDisconnect {
+            status["last_disconnect"] = "\(timestamps.string(from: lastDisconnect.at)) \(lastDisconnect.cause.summary)"
+        }
         guard status != lastStatus || Date().timeIntervalSince(lastStatusWrite) >= heartbeatInterval else { return }
         lastStatus = status
         lastStatusWrite = Date()
         var output: [String: Any] = status
         output["channels"] = channels.count
+        output["reconnects"] = reconnects
+        output["last_disconnect"] = nil
+        if let lastDisconnect {
+            var value = lastDisconnect.cause.fields
+            value["at"] = timestamps.string(from: lastDisconnect.at)
+            if let detail = lastDisconnect.cause.detail { value["detail"] = detail }
+            output["last_disconnect"] = value
+        }
         output["updated"] = timestamps.string(from: lastStatusWrite)
         output["pid"] = Int(getpid())
         if let data = try? JSONSerialization.data(withJSONObject: output, options: [.sortedKeys]) {

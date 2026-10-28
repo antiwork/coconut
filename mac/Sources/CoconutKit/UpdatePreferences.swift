@@ -199,6 +199,12 @@ public enum StatusText {
         lines.append("Last update error: \(error ?? "none")")
         lines.append("Service: \(status.service.rawValue.replacingOccurrences(of: "_", with: " ")) (\(status.install))")
         lines.append("Relay: \(status.relay.replacingOccurrences(of: "_", with: " "))")
+        if let last = status.relayLastDisconnect {
+            var line = "Last relay disconnect: \(last.at), \(last.cause)"
+            if let detail = last.detail { line += " (\(detail))" }
+            if let reconnects = status.relayReconnects { line += "; \(reconnects) reconnects since the sidecar started" }
+            lines.append(line)
+        }
         lines.append("Hermes: \(status.hermes == "ok" ? status.hermesVersion ?? "ok" : status.hermesReason ?? status.hermes)")
         return lines
     }
