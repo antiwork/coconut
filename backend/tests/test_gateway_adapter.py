@@ -103,6 +103,9 @@ class BasePlatformAdapter:
     def build_source(self, chat_id, chat_name=None, chat_type="dm", user_id=None, user_name=None):
         return SessionSource(self.platform, chat_id, chat_name, chat_type, user_id, user_name)
     async def handle_message(self, event):
+        # Hermes keeps a closed contract for inbound metadata: only WhatsApp may set it (gateway/session_envelope.py).
+        if event.metadata:
+            raise ValueError("invalid_params (metadata)")
         self.events.append(event)
         asyncio.get_running_loop().create_task(self._process(event))
     async def _process(self, event):
@@ -457,9 +460,11 @@ class GatewayAdapterTests(unittest.TestCase):
             def switch_session(self, session_key, target_session_id):
                 self.switched.append((session_key, target_session_id))
                 self.entry.session_id = target_session_id
+        from gateway.config import PlatformConfig
+        adapter = self.adapter_module.CoconutAdapter(PlatformConfig())
         def event(root):
-            return MessageEvent(text='Hi', source=SessionSource(Platform('coconut'), 'bot'),
-                                metadata={'coconut_session_root': root})
+            adapter._roots['bot'] = root
+            return MessageEvent(text='Hi', source=SessionSource(Platform('coconut'), 'bot'))
         SessionDB.meta.clear()
         SessionDB.sessions.clear()
         SessionDB.lineage.clear()
@@ -479,8 +484,8 @@ class GatewayAdapterTests(unittest.TestCase):
             hooks.join_conversation(event=event('root-b'), session_store=store)
             self.assertEqual(len(store.switched), 1)
             # Another platform and a turn without a root stay as they are.
-            other = MessageEvent(text='Hi', source=SessionSource(Platform('telegram'), 'chat'),
-                                 metadata={'coconut_session_root': 'root-b'})
+            adapter._roots['chat'] = 'root-b'
+            other = MessageEvent(text='Hi', source=SessionSource(Platform('telegram'), 'chat'))
             hooks.join_conversation(event=other, session_store=store)
             hooks.join_conversation(event=event(''), session_store=store)
             self.assertEqual(len(store.switched), 1)

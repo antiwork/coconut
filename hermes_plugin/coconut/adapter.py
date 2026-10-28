@@ -52,6 +52,15 @@ ASK_SECONDS = 6 * 3600
 ADAPTERS = weakref.WeakSet()
 
 
+def session_root_for_chat(chat_id):
+    """The root of the native conversation that the service named for the newest turn of a chat, or None."""
+    for adapter in list(ADAPTERS):
+        root = adapter._roots.get(str(chat_id))
+        if root is not None:
+            return root
+    return None
+
+
 def turn_for_chat(chat_id):
     """The adapter and the running turn of a Coconut chat, or (None, None)."""
     for adapter in list(ADAPTERS):
@@ -118,6 +127,9 @@ class CoconutAdapter(BasePlatformAdapter):
         # Streamed text that waits for the service: turn -> [stream number, text, time of the last report].
         self._streams: dict[str, list] = {}
         self._streams_lock = threading.Lock()
+        # The root of the bot's native conversation for each chat, from the newest turn (hooks.join_conversation).
+        # The gateway refuses inbound metadata of other platforms, so the root stays here.
+        self._roots: dict[str, str] = {}
         # The number of the current model call of each turn (hooks.stream_start).
         self._stream_numbers: dict[str, int] = {}
         ADAPTERS.add(self)
@@ -202,12 +214,11 @@ class CoconutAdapter(BasePlatformAdapter):
         source = self.build_source(chat_id=str(turn['chat_id']), chat_name=str(turn.get('chat_name') or 'Coconut'),
                                    chat_type='dm', user_id='coconut', user_name=str(turn.get('user_name') or 'Coconut'))
         # Text that starts with "/" stays a chat message. Coconut does not offer gateway commands yet.
-        event = MessageEvent(text=str(turn['text']), message_type=MessageType.TEXT, source=source,
-                             message_id=str(turn['id']), allow_gateway_control=False)
         if turn.get('session_root'):
             # hooks.join_conversation reads it before the gateway runs the turn.
-            event.metadata['coconut_session_root'] = str(turn['session_root'])
-        return event
+            self._roots[str(turn['chat_id'])] = str(turn['session_root'])
+        return MessageEvent(text=str(turn['text']), message_type=MessageType.TEXT, source=source,
+                            message_id=str(turn['id']), allow_gateway_control=False)
 
     async def _stop(self, chat_id: str) -> None:
         """Stop the running turn of a chat, as `/stop` does. Coconut cancelled it."""

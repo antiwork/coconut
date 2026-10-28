@@ -36,7 +36,8 @@ def join_conversation(event=None, session_store=None, **_):
     source = getattr(event, 'source', None)
     if source is None or getattr(source.platform, 'value', source.platform) != NAME or session_store is None:
         return None
-    root = (getattr(event, 'metadata', None) or {}).get('coconut_session_root')
+    from .adapter import session_root_for_chat
+    root = session_root_for_chat(source.chat_id)
     if not root:
         return None
     try:
