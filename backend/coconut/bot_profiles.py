@@ -195,6 +195,39 @@ class BotProfiles:
             self.profile_watcher = threading.Thread(target=self._watch_profiles, name='coconut-profile-scan', daemon=True)
             self.profile_watcher.start()
 
+    def _start_hermes_entries(self) -> None:
+        """Set Coconut's own entries in the Hermes profiles again, in the background, at each start.
+
+        The entries are the skills folder in `skills.external_dirs` and the `coconut` gateway platform (skill_dirs.py,
+        gateway_plugin.py). Only these keys change. A failure is a warning: the service starts all the same.
+        """
+        python, source = getattr(self.provider, 'python', None), getattr(self.provider, 'hermes_root', None)
+        if self.scan_profiles and python and source:
+            self.hermes_entries = threading.Thread(target=self._set_hermes_entries, args=(python, source),
+                                                   name='coconut-hermes-entries', daemon=True)
+            self.hermes_entries.start()
+
+    def _set_hermes_entries(self, python, source) -> bool:
+        from .hermes_runtime import NO_LAZY_INSTALLS
+        environment = {key: os.environ[key] for key in ('PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR')
+                       if key in os.environ}
+        environment.update(NO_LAZY_INSTALLS, HERMES_HOME=str(self.hermes_home), HERMES_DISABLE_TELEMETRY='1')
+        try:
+            result = subprocess.run([str(python), '-I', '-B', str(Path(__file__).with_name('skill_dirs.py')), 'add',
+                                     str(source), str(SKILLS), str(self.hermes_home)], env=environment,
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=COMMAND_SECONDS)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            LOG.warning('Coconut could not set its entries in the Hermes profiles: %s', error)
+            return False
+        if result.returncode:
+            LOG.warning('Coconut could not set all its entries in the Hermes profiles: %s',
+                        (result.stdout + result.stderr)[-2000:])
+            return False
+        changed = [line for line in result.stdout.splitlines() if not line.endswith('unchanged')]
+        if changed:
+            LOG.info('Coconut set its entries in the Hermes profiles again: %s', '; '.join(changed))
+        return True
+
     def _attach_profile(self, bot: dict, profile: dict) -> None:
         self._write_profile_row(dict(bot_id=bot['id'], name=profile['name'], home=profile['home'], state='active'))
         bot.update(profile=profile['name'], profile_state='active')

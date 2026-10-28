@@ -166,6 +166,10 @@ class GatewayChat:
             self.gateway_state = {'state': 'stopped', 'pid': None, 'reason': STOPPED.format(
                 code=self._gateway_exit, log=self.gateway_bridge.folder / 'gateway.log')}
             return
+        entries = getattr(self, 'hermes_entries', None)
+        if entries is not None:
+            # The gateway loads the plugin and the platform settings at its start, so they come first.
+            entries.join(timeout=120)
         self._start_gateway(home)
 
     def _start_gateway(self, home):

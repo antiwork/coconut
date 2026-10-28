@@ -308,23 +308,14 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.assertFalse((self.target / 'docs/old.md').exists())
         self.assertEqual(personal.read_bytes(), b'Keep this local note.\n')
 
-    def test_only_a_first_install_adds_the_skill_folder_to_hermes(self):
-        # A first install is the setup that the person asked for. An update does not change the Hermes config.
+    def test_each_install_sets_coconuts_hermes_entries_again(self):
+        # A first install and each update set Coconut's own entries in the Hermes profiles again (hermes_skills.py).
         operations = FakeOperations()
         result = self.receive(operations=operations)
         self.assertEqual(operations.calls[-1][0], 'skills')
         self.assertEqual(result['skills'], {'ok': True})
         operations = FakeOperations(mode='managed')
         result = self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
-        self.assertNotIn('skills', [call[0] for call in operations.calls])
-        self.assertNotIn('skills', result)
-
-    def test_a_setup_that_the_person_asked_for_adds_the_skill_folder_on_an_existing_install(self):
-        # Coconut.app sets COCONUT_SET_UP for --set-up and Set Up Coconut. A repeated setup retries a failed step.
-        self.receive()
-        operations = FakeOperations(mode='managed')
-        with patch.dict('os.environ', {deploy.SET_UP: '1'}):
-            result = self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
         self.assertEqual(operations.calls[-1][0], 'skills')
         self.assertEqual(result['skills'], {'ok': True})
 
@@ -390,7 +381,7 @@ class DeploymentLifecycleTests(unittest.TestCase):
             self.assertNotIn('tunnel', [call[0] for call in operations.calls])
         operations = FakeOperations(mode='managed')
         result = self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
-        self.assertEqual(operations.calls[-1][0], 'tunnel')
+        self.assertEqual([call[0] for call in operations.calls[-2:]], ['tunnel', 'skills'])
         self.assertEqual(result['tunnel'], {'ok': True})
         self.assertFalse((self.target / '.runtime/deploy/update.json').exists())
 

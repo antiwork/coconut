@@ -118,6 +118,11 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 3. Phase 4: cron jobs and Kanban work run in the gateway.
 4. Phase 5: Coconut deletes its worker runtime.
 
+### Rules for the phases
+
+- Coconut's own entries in the Hermes profiles (the skills folder, the plugin link, `plugins.enabled` and `gateway.platforms.coconut`) are set again at each update and at each service start. A later phase that needs another Coconut entry adds it to that same edit (`skill_dirs.py`, `gateway_plugin.py`). Coconut never changes other settings of the person.
+- No manual migration scripts. A data change that the service needs runs inside the service at its start, after the running turns drain, with a backup.
+
 ### Phase 2: plain chat turns
 
 - The setting `chat_runtime` is `worker` (the default) or `gateway`. `PUT /v1/settings/chat-runtime {"chat_runtime": "gateway"}` sets it. The iPhone has no control for it yet.

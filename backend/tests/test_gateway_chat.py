@@ -314,9 +314,10 @@ class ProfileEditTests(unittest.TestCase):
         self.assertIsNone(gateway_plugin.with_platform(config, False))
         # A missing list becomes a list. A removal keeps the empty list, which Hermes reads as "nothing enabled".
         self.assertEqual(gateway_plugin.with_platform(gateway_plugin.with_platform({}, True), False), {'plugins': {'enabled': []}})
-        # The person's own block for the platform stays as it is.
-        own = {'plugins': {'enabled': ['coconut']}, 'gateway': {'platforms': {'coconut': {'enabled': False}}}}
-        self.assertIsNone(gateway_plugin.with_platform(own, True))
+        # Coconut sets its own keys of the platform block again. The other keys of the block stay.
+        own = {'plugins': {'enabled': ['coconut']}, 'gateway': {'platforms': {'coconut': {'enabled': False, 'extra': {'a': 1}}}}}
+        self.assertEqual(gateway_plugin.with_platform(own, True)['gateway'],
+                         {'platforms': {'coconut': {'enabled': True, 'extra': {'a': 1}}}})
         for shape in ({'plugins': 'all'}, {'plugins': {'enabled': 'coconut'}}, {'gateway': []}):
             with self.subTest(shape=shape):
                 self.assertIsNone(gateway_plugin.with_platform(shape, True))
