@@ -105,9 +105,17 @@ class CoconutAdapter(BasePlatformAdapter):
     async def _request(self, route: str, payload: dict, timeout: float = REQUEST_SECONDS) -> dict:
         return await asyncio.to_thread(self._bridge.request, route, payload, timeout)
 
+    def _starting(self) -> bool:
+        """Whether the gateway still restores sessions after its start. Until then it queues each inbound message
+        and ends the processing of that message without a reply, which Coconut would read as a finished turn."""
+        return bool(getattr(self.gateway_runner, '_startup_restore_in_progress', False))
+
     async def _poll(self) -> None:
         failures = 0
         while True:
+            if self._starting():
+                await asyncio.sleep(0.5)
+                continue
             try:
                 answer = await self._request('/v1/gateway/poll', {
                     'home': self._home, 'active': sorted(self._active), 'wait': POLL_SECONDS},

@@ -89,6 +89,7 @@ class SendResult:
     error: Optional[str] = None
     retryable: bool = False
 class BasePlatformAdapter:
+    gateway_runner = None
     def __init__(self, config, platform):
         self.config, self.platform = config, platform
         self._message_handler, self.connected, self.events = None, False, []
@@ -180,13 +181,18 @@ class GatewayAdapterTests(unittest.TestCase):
     def complete(self, coroutine):
         return asyncio.run_coroutine_threadsafe(coroutine, self.loop).result(10)
 
-    def connect(self, runner):
+    def connect(self, runner, gateway=None):
         from gateway.config import PlatformConfig
         self.adapter = self.adapter_module.CoconutAdapter(
             PlatformConfig({'bridge': str(self.service.gateway_bridge.address_file)}))
         self.adapter.set_message_handler(runner)
+        self.adapter.gateway_runner = gateway
         with patch.dict(os.environ, HERMES_HOME=str(self.home)):
             self.assertTrue(self.complete(self.adapter.connect()))
+        if gateway is None:
+            self.wait_connected()
+
+    def wait_connected(self):
         deadline = time.monotonic() + 5
         while not self.service.gateway_bridge.connected(self.home) and time.monotonic() < deadline:
             time.sleep(.02)
@@ -224,6 +230,18 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(self.adapter._turns, {})
         # For example a cron delivery. Coconut takes no messages outside its own turns yet.
         self.assertFalse(self.complete(self.adapter.send(self.bot['id'], 'A cron result.')).success)
+
+    def test_the_adapter_takes_turns_only_after_the_gateway_restored_its_sessions(self):
+        # While the gateway restores sessions after its start, it queues each inbound message and ends its
+        # processing without a reply.
+        gateway = types.SimpleNamespace(_startup_restore_in_progress=True)
+        async def runner(event):
+            return 'Ready.'
+        self.connect(runner, gateway)
+        time.sleep(1)
+        self.assertFalse(self.service.gateway_bridge.connected(self.home))
+        gateway._startup_restore_in_progress = False
+        self.wait_connected()
 
     def test_the_adapter_asks_again_after_the_service_starts_with_a_new_token(self):
         bridge = self.adapter_module.Bridge(self.service.gateway_bridge.address_file)
