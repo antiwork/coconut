@@ -32,7 +32,8 @@ DEFAULT_BOT_NAME = 'Hermes'
 
 # Runs in the Python of the person's Hermes. argv[1] is the Hermes source folder. It follows the dashboard flow of
 # hermes_cli/web_routers/profiles.py: create the profile, seed the bundled skills, and add the `<name>` command when
-# that name is free. Then it adds Coconut's skills folder with skill_dirs, the same edit as setup.
+# that name is free. Then it adds Coconut's skills folder with skill_dirs and the `coconut` gateway platform with
+# gateway_plugin, the same edits as setup.
 PROFILE_COMMAND = r'''
 import contextlib, inspect, json, sys
 sys.path.insert(0, sys.argv[1])
@@ -59,6 +60,8 @@ try:
                     sys.path.append(request["coconut"])
                     from skill_dirs import update
                     result["skills"] = update(home, request["skills"], True, create=True)
+                    import gateway_plugin
+                    result["gateway_platform"] = gateway_plugin.update(home, True)
                 except Exception as error:
                     result["skills_error"] = type(error).__name__ + ": " + str(error)[:300]
         elif request["operation"] == "delete":
@@ -207,7 +210,7 @@ class BotProfiles:
                                      description=bot.get('role') or '', soul=bot.get('instructions', ''),
                                      skills=str(SKILLS), coconut=str(Path(__file__).resolve().parent))
         if result.get('skills_error'):
-            LOG.warning('The profile %s did not get the Coconut skills folder: %s. Setup adds it.', name, result['skills_error'])
+            LOG.warning('The profile %s did not get the Coconut skills folder or gateway platform: %s. Setup adds them.', name, result['skills_error'])
         home = Path(result['home']).absolute()
         if home != self.hermes_home / 'profiles' / name or not home.is_dir():
             raise ProfileError('Hermes created the profile in an unexpected folder.')

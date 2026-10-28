@@ -131,6 +131,9 @@ A new bot profile gets the entry when Coconut creates it.
 
 An update replaces the skill files with the other source files. In an install, the skill files and folders are read-only, so `skill_manage` of Hermes cannot change them. The update makes the folders writable for its own changes, then read-only again.
 
+The same step installs the `coconut` platform of the Hermes gateway in each of these profiles. It links `<Hermes home>/plugins/coconut` to `<install folder>/hermes_plugin/coconut`, adds `coconut` to `plugins.enabled`, and sets `gateway.platforms.coconut.enabled: true`. A plugin of another source with the name `coconut` stays, and the step reports it. The platform runs chat turns only when the chat runtime is `gateway`. See [the Hermes gateway](architecture.md#the-hermes-gateway). A gateway that already runs loads the platform after its next restart (`hermes gateway restart`).
+The uninstaller removes the link and both settings.
+
 ## GitHub access for a bot
 
 Bots use the GitHub CLI login of the Mac account, as your normal Mac Terminal does.
@@ -290,6 +293,7 @@ The mini sends encrypted notifications through Coconut's shared relay and APNs.
 On the mini, open `~/Coconut/Uninstall Coconut.command`.
 The uninstaller stops the owned service and removes the runtime, keys, bots, and stored work. Your Hermes installation stays.
 It removes the `skills.external_dirs` entry of the `coconut` skill from the Hermes profiles, and makes the skill folders writable again.
+It removes the `coconut` gateway platform from the same profiles: the plugin link and its two settings.
 It also removes this installation's exact `hermes` launcher. Close active Hermes Terminal sessions before removal.
 Delete `~/Coconut` to remove its source files afterward.
 

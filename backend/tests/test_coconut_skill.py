@@ -85,6 +85,20 @@ class SkillAuthoringTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(deploy.allowed_path(name))
 
+    def test_the_gateway_platform_ships_in_the_source_package(self):
+        files = remote.source_files()
+        expected = {path.relative_to(ROOT).as_posix() for path in (ROOT / 'hermes_plugin/coconut').iterdir()
+                    if path.suffix in ('.py', '.yaml')}
+        self.assertEqual(expected, {'hermes_plugin/coconut/plugin.yaml', 'hermes_plugin/coconut/__init__.py',
+                                    'hermes_plugin/coconut/adapter.py'})
+        self.assertLessEqual(expected, set(files))
+        for name in expected:
+            with self.subTest(name=name):
+                self.assertTrue(deploy.allowed_path(name))
+        for name in ('hermes_plugin/other/adapter.py', 'hermes_plugin/coconut/run.sh', 'hermes_plugin/coconut/x/y.py'):
+            with self.subTest(name=name):
+                self.assertFalse(deploy.allowed_path(name))
+
 
 FOLDER = '/Users/person/Coconut/skills'
 

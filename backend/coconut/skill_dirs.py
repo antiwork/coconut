@@ -11,6 +11,7 @@ Run this file under the Python of the installed Hermes:
 
 Each Hermes home gets the change in its config.yaml. The first home is the default profile: its config.yaml is created
 when it is missing. Each other home, and each named profile in `<home>/profiles`, changes only when it has a config.yaml.
+Each home also gets Coconut's `coconut` gateway platform, or loses it (gateway_plugin).
 """
 from __future__ import annotations
 
@@ -103,16 +104,25 @@ def main(arguments: list[str]) -> int:
     action, source, folder, default, *others = arguments
     # -I leaves the folder of this file and PYTHONPATH out of sys.path. Hermes comes first, as its launcher puts it.
     sys.path[:0] = [path for path in (source, str(Path(__file__).resolve().parent)) if path]
+    import gateway_plugin
     failed = False
     for home, create in homes(Path(default), [Path(path) for path in others]):
         try:
             result = update(home, os.path.normpath(folder), action == 'add', create=create)
+            # The `coconut` gateway platform goes with the skill. See gateway_plugin.
+            platform = gateway_plugin.update(home, action == 'add')
         except Exception as error:  # Hermes refuses a config.yaml that it cannot read. The other homes still change.
             failed = True
             print(f'{home / "config.yaml"}: not changed: {error}')
             continue
         if result != 'skipped':
             print(f'{home / "config.yaml"}: {result}')
+        if platform == 'taken':
+            # Another plugin has the name. Coconut leaves it and its settings as they are.
+            failed = failed or action == 'add'
+            print(f'{home / "plugins" / gateway_plugin.NAME}: another plugin has this name. Coconut did not change it.')
+        elif platform != 'skipped':
+            print(f'{home / "config.yaml"}: coconut gateway platform {platform}')
     return 1 if failed else 0
 
 

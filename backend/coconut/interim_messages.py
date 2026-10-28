@@ -10,6 +10,20 @@ def store(service, task, text):
     TurnTrace(task, 'delivery').mark('reply_created', message_id=message['id'])
 
 
+def seal(service, task):
+    """Keep the streaming reply of this turn as a complete interim message.
+
+    The Hermes gateway sends a reply in segments (gateway_bridge.TurnEvents). When a new segment starts, the earlier one
+    is complete. Without a push: the phone notifies only for the final reply, as for the worker's interim messages.
+    """
+    message = next((m for m in reversed(service._task_messages(task['id'])) if m['streaming']), None)
+    if message is None:
+        return
+    message.update(streaming=False, _interim=True)
+    service._put('messages', message)
+    service._event('message.updated', service._public(message), message['bot_id'], task['id'])
+
+
 def confirm(service, task, text):
     """Confirm a final answer that Codex already sent through its interim callback."""
     last = next((m for m in reversed(service._task_messages(task['id']))

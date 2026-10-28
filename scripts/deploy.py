@@ -89,6 +89,8 @@ def allowed_path(name):
         or re.fullmatch(r'ios/Tunnel/[A-Za-z0-9_-]+\.swift', name)
         or re.fullmatch(r'docs/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+\.md', name)
         or re.fullmatch(r'skills/(?:[A-Za-z0-9_-]+/)+[A-Za-z0-9_.-]+\.md', name)
+        # The `coconut` gateway platform that the person's Hermes loads. See backend/coconut/gateway_plugin.py.
+        or re.fullmatch(r'hermes_plugin/coconut/(?:[A-Za-z_][A-Za-z0-9_]*\.py|plugin\.yaml)', name)
     )
 
 

@@ -178,6 +178,7 @@ from .silent_responses import SilentResponses, is_silent_message, is_silent_resp
 from .technical_lane import TechnicalLane
 from .hermes_setup import HermesSetup
 from .bot_profiles import BotProfiles
+from .gateway_chat import GatewayChat
 
 
 # The statements of Service._refresh_bot. Each needs an index and no sort. A test reads the plan of each one.
@@ -199,7 +200,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles):
+class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -300,6 +301,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self._request_key = None
         self._message_interaction = None
         self.stopping = threading.Event()
+        self._init_gateway_chat()
         self.generation = uid()
         self.restart_enabled = False
         self.restart_pending = False
@@ -1487,6 +1489,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                             ('work_capacity', encoded(data['limit'])))
             self._event('settings.updated', {'work_capacity': result})
             return result
+        if parts == ['v1', 'settings', 'chat-runtime'] and method == 'PUT':
+            return self.set_chat_runtime(data)
         if parts == ['v1', 'device', 'push']:
             if method == 'PUT':
                 return self.push.registration(device, data)
@@ -2565,6 +2569,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self._message(task['bot_id'], task['summary'], task_id=task['id'], role='system', kind='status')
         self._refresh_bot(task['bot_id'])
         callbacks.append(lambda: self.provider.cancel_task(task['id']))
+        callbacks.append(lambda: self.gateway_bridge.cancel(task['id']))
 
     def _validate_action(self, decision: dict):
         action = decision.get('_action', {})
@@ -2831,6 +2836,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self.source_poller = threading.Thread(target=self._poll_work_sources, name='coconut-source-poll', daemon=True)
         self.source_poller.start()
         self._start_profile_watcher()
+        self._start_gateway_supervisor()
         self.push.start()
 
     def _register_pr_artifact(self, task_id: str | None, payload: dict, *, bot_id=None):
@@ -3602,7 +3608,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 emit = lambda kind, payload: self.emit(task_id, kind, payload)
                 if decision:
                     self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
-                else:
+                elif not self.run_gateway_chat(provider_task, bot, history, emit):
                     self.provider.start_task(provider_task, self._public(bot), history, emit)
                 with self.lock:
                     current = self._get('tasks', task_id)
@@ -3769,6 +3775,9 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             elif kind == 'interim_message':
                 from .interim_messages import store
                 store(self, task, payload.get('text'))
+            elif kind == 'interim_seal':
+                from .interim_messages import seal
+                seal(self, task)
             elif kind == 'activity':
                 self._message(bot_id, str(payload.get('text', payload.get('summary', 'Working')))[:500], task_id=task_id, kind='activity')
             elif kind == 'decision':
@@ -4280,6 +4289,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         if getattr(self, 'profile_watcher', None):
             self.profile_watcher.join(timeout=10)
         self.push.close()
+        self._close_gateway_chat()
         with self.lock:
             context_task_ids = {c['task_id'] for c in self._all('contexts') if c['status'] in ('queued', 'working')}
         for task_id in set(self.running) | context_task_ids:
