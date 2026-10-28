@@ -308,6 +308,24 @@ class MigrationTests(unittest.TestCase):
                 patch.object(migration.shutil, 'disk_usage', return_value=migration.shutil.disk_usage(self.root)._replace(free=9 * 1024 ** 3)):
             migration.check_backup_space(self.root)
 
+    def test_a_failed_backup_in_the_same_second_keeps_an_earlier_backup(self):
+        moment = migration.datetime(2026, 10, 27, 12, 0, 0, tzinfo=migration.timezone.utc)
+        clock = SimpleNamespace(now=lambda zone=None: moment)
+        # A folder with the name of this second exists already, for example an earlier backup.
+        earlier = self.root.parent / 'host-backup-before-profiles-20261027T120000Z'
+        earlier.mkdir()
+        (earlier / 'coconut.sqlite3').write_text('earlier backup')
+        with patch.object(migration, 'datetime', clock):
+            first = migration.backup(self.root)
+            with patch.object(migration, 'clone_or_copy', side_effect=OSError(errno.ENOSPC, 'No space left on device')), \
+                    self.assertRaises(OSError):
+                migration.backup(self.root)
+        self.assertEqual((earlier / 'coconut.sqlite3').read_text(), 'earlier backup')
+        self.assertTrue(first.name.startswith('host-backup-before-profiles-20261027T120000Z-'))
+        self.assertTrue((first / 'coconut.sqlite3').is_file())
+        # Only the folder of the failed attempt is gone.
+        self.assertEqual(sorted(path.name for path in self.root.parent.iterdir()), sorted(['host', earlier.name, first.name]))
+
     def test_a_failed_backup_removes_its_partial_copy_and_starts_coconut(self):
         copies = []
         def copy(source, destination):

@@ -26,6 +26,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import tempfile
 
 SCRIPTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
@@ -215,9 +216,13 @@ def check_backup_space(data_dir: Path) -> None:
 
 def backup(data_dir: Path) -> Path:
     check_backup_space(data_dir)
-    target = data_dir.parent / f'{data_dir.name}-backup-before-profiles-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}'
+    # mkdtemp creates a new folder for this attempt alone, with a random suffix. Two attempts in the same second get two
+    # folders, so the cleanup below never removes an earlier backup.
+    target = Path(tempfile.mkdtemp(prefix=f'{data_dir.name}-backup-before-profiles-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-',
+                                   dir=data_dir.parent))
     try:
-        shutil.copytree(data_dir, target, symlinks=True, ignore=backup_ignore(data_dir), copy_function=clone_or_copy)
+        shutil.copytree(data_dir, target, symlinks=True, ignore=backup_ignore(data_dir), copy_function=clone_or_copy,
+                        dirs_exist_ok=True)
         with closing(sqlite3.connect(data_dir / 'coconut.sqlite3')) as source, \
                 closing(sqlite3.connect(target / 'coconut.sqlite3')) as copy:
             source.backup(copy)
