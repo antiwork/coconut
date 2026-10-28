@@ -28,6 +28,8 @@ from .hermes_unavailable import UnavailableService
 from .service import TUNNEL_PAIRING_LIFETIME, Service, ServiceError, issue_pairing_code, migrate_device_peers
 
 PEER_KEY = re.compile(r'[0-9a-f]{64}')
+# Only the main listener serves these. The tunnel listener carries the phone's requests.
+GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events')
 
 
 class APIServer(ThreadingHTTPServer):
@@ -150,6 +152,16 @@ class Handler(BaseHTTPRequestHandler):
         more than 7 days ago."""
         return self.headers.get('X-Coconut-Work') == 'recent'
 
+    def _gateway(self, bridge, path):
+        """The routes of the `coconut` adapter of the Hermes gateway on this Mac. See gateway_bridge."""
+        if not bridge.authorized(self.headers.get('Authorization', '')):
+            raise ServiceError(401, 'Use the token in <data>/gateway/bridge.json.')
+        data = self._body()
+        try:
+            self._json(200, bridge.poll(data) if path == '/v1/gateway/poll' else bridge.event(data))
+        except (TypeError, ValueError) as error:
+            raise ServiceError(400, str(error)) from None
+
     def _handle(self, method):
         self.connection.settimeout(35)
         try:
@@ -160,6 +172,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise ServiceError(400, 'Send GET requests without a body.')
             if method == 'GET' and url.path == '/health':
                 self._json(200, {'ok': True, 'api_version': 1})
+                return
+            if method == 'POST' and url.path in GATEWAY_ROUTES and not self.server.tunnel and hasattr(service, 'gateway_bridge'):
+                self._gateway(service.gateway_bridge, url.path)
                 return
             peer = None
             if self.server.tunnel:
@@ -382,6 +397,9 @@ def main(argv=None):
             server.server_close()
         service.close()
         parser.error(f'The service could not listen: {error}')
+    if hasattr(service, 'gateway_bridge'):
+        # The `coconut` adapter of the Hermes gateway reads the address and the token of this process here.
+        service.gateway_bridge.publish(f'http://127.0.0.1:{server.server_address[1]}')
     write_process_record(service)
     service.restart_enabled = os.environ.get("COCONUT_MANAGED_SERVICE") == "1"
     if service.restart_enabled and hermes is not None:

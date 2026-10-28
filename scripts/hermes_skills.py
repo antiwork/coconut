@@ -5,7 +5,8 @@
 profile and of each named profile in `<Hermes home>/profiles`, which are also the Coconut bots. `remove` takes it out
 again. Setup runs `add` (deploy.py on a first install, setup_coconut.py), and the uninstaller runs `remove`. Coconut
 changes the Hermes config only then. Each run is safe to repeat. backend/coconut/skill_dirs.py does the edit under the
-Python of the person's Hermes.
+Python of the person's Hermes. The same run installs or removes the `coconut` gateway platform
+(backend/coconut/gateway_plugin.py).
 """
 
 from __future__ import annotations

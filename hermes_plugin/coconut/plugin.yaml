@@ -1,0 +1,8 @@
+name: coconut
+label: Coconut
+kind: platform
+version: 1.0.0
+description: >
+  Chat turns from Coconut, the iPhone app of this Mac. The adapter takes the messages from the Coconut service on
+  this Mac and sends the replies back to it. Coconut setup installs and enables this plugin.
+author: Coconut

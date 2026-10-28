@@ -70,6 +70,9 @@ def source_files() -> dict[str, bytes]:
     candidates += list((ROOT / "docs").rglob("*.md"))
     # The skills that the person's Hermes loads from the install folder. See scripts/hermes_skills.py.
     candidates += list((ROOT / "skills").rglob("*.md"))
+    # The `coconut` gateway platform that the person's Hermes loads. See backend/coconut/gateway_plugin.py.
+    candidates += list((ROOT / "hermes_plugin/coconut").glob("*.py"))
+    candidates += list((ROOT / "hermes_plugin/coconut").glob("plugin.yaml"))
     files = {}
     for path in sorted(candidates):
         relative = path.relative_to(ROOT)

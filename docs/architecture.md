@@ -109,6 +109,38 @@ An assignment waits while its dependencies run. Each reply resumes the original 
 The final result returns to the original requester. Intermediate turns do not send completion notifications.
 Native profile data is not copied into peer messages automatically.
 
+## The Hermes gateway
+
+Coconut moves its bot turns from its own worker processes to the person's Hermes gateway, in phases. Phase 1 made each bot a Hermes profile.
+
+1. Phase 2: plain chat turns run in the gateway, behind a setting. This version.
+2. Phase 3: Coconut tools and cards become tools of the `coconut` plugin.
+3. Phase 4: cron jobs and Kanban work run in the gateway.
+4. Phase 5: Coconut deletes its worker runtime.
+
+### Phase 2: plain chat turns
+
+- The setting `chat_runtime` is `worker` (the default) or `gateway`. `PUT /v1/settings/chat-runtime {"chat_runtime": "gateway"}` sets it. The iPhone has no control for it yet.
+- Coconut ships the `coconut` gateway platform in `hermes_plugin/coconut`. Setup links it into `<home>/plugins/coconut` of each profile and enables the plugin and its platform there. See [the coconut skill](install-and-update.md#the-coconut-skill-for-hermes).
+- The adapter connects to the main listener on loopback. It long-polls `POST /v1/gateway/poll` for the turns of its profile and reports `typing`, `send`, `edit`, `delete` and `done` to `POST /v1/gateway/events`. It sends the token of `<data>/gateway/bridge.json` (mode 0600), which the service writes at each start. The tunnel listener does not serve these routes.
+- One chat is one bot: the chat ID is the bot ID. A multiplexing gateway has one adapter for each served profile, and Coconut matches the adapter to the bot by the Hermes home.
+- `gateway_bridge.plain_chat_turn` is the routing rule. A new turn goes to the gateway when it is a person's text message in a bot's own chat, without attachments, cards, reactions, work tracking, bot messages or other Coconut context, and the adapter of the bot's profile is connected. Every other turn runs in the worker.
+- A turn that no adapter takes in 30 seconds runs in the worker. A taken turn fails when the adapter stops listing it for 90 seconds.
+- `TurnEvents` maps the gateway events onto the worker's provider events, so the phone sees the same messages. Each `send` starts a segment, and `edit` replaces its text. A new segment keeps the earlier one as a complete interim message (`interim_seal`). A send that the gateway marks as interim, such as commentary, is an interim message. `done` completes or fails the task.
+- With `gateway`, the service supervises one `hermes gateway run` process for the person's Hermes home, which Hermes multiplexes across the profiles. The process starts and stops with the service and with the setting. Its output goes to `<data>/gateway/gateway.log`. After an exit, the service waits 30 seconds before it starts the process again.
+- When a gateway that the service did not start already runs for that home, the service starts no second one. It uses that gateway when the gateway loaded the platform. `GET /v1/setup` returns `gateway` with the state, the process, the reason and the connected profiles.
+- A cancelled task sends `/stop` to the gateway session of the chat. An action that already runs can finish.
+
+### Known gaps of phase 2
+
+- The gateway keeps its own session for each chat. A gateway turn does not continue the worker's conversation of the bot, and the worker does not see the gateway turns.
+- A gateway turn has the tools of the gateway only. Coconut tools, such as PR tracking, bot messages and bot creation, are not available. The routing rule sees only the inputs of the turn, not the tools that the answer needs.
+- Hermes approvals and clarify questions arrive as interim text. The phone cannot answer them as cards.
+- Live token streaming needs `streaming.enabled: true` in the Hermes config. Without it, the reply arrives at the end of the turn, as from the worker. Tool progress is off, so the phone shows only the phases "thinking" and "writing".
+- The adapter refuses messages outside a Coconut turn, for example cron deliveries.
+- A profile without a connected adapter uses the worker. This happens when the gateway does not multiplex, or when the person created the profile outside Coconut after the last setup. A gateway that already runs loads the platform after its next restart.
+- Steering during a turn waits for the next turn.
+
 ## Transport and future providers
 
 The local Mac provider uses the relay tunnel (Noise, see [relay transport](relay-transport.md)), one-time pairing links, and device tokens bound to the phone key.

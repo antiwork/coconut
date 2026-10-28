@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
-from coconut import profile_registry
+from coconut import gateway_plugin, profile_registry
 from coconut.bot_profiles import run_profile_command
 from coconut.profiles import SKILLS, ProfileError
 from coconut.service import Service, ServiceError
@@ -288,7 +288,12 @@ class ProfileCommandTests(unittest.TestCase):
             self.assertEqual((Path(created['home']), created['skills']), (home, 'added'))
             self.assertEqual((home / 'SOUL.md').read_text(), 'Write.\n')
             self.assertEqual(profile_registry.meta_value(home, 'display_name'), 'Lin')
-            self.assertEqual(json.loads((home / 'config.yaml').read_text()), {'skills': {'external_dirs': [str(SKILLS)]}})
+            # The new profile also gets the `coconut` gateway platform, as setup gives it to each profile.
+            self.assertEqual(created['gateway_platform'], 'added')
+            self.assertEqual(json.loads((home / 'config.yaml').read_text()), {
+                'skills': {'external_dirs': [str(SKILLS)]}, 'plugins': {'enabled': ['coconut']},
+                'gateway': {'platforms': {'coconut': {'enabled': True}}}})
+            self.assertEqual((home / 'plugins/coconut').resolve(), gateway_plugin.PLUGIN)
             run_profile_command(sys.executable, source, hermes, 'delete', name='lin')
             self.assertFalse(home.exists())
             with self.assertRaisesRegex(ProfileError, 'refused'):
