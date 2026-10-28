@@ -1181,8 +1181,9 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         default = catalog['default']
         return dict(model_catalog=catalog, model=default.get('model') or '', base_url=default.get('base_url') or '', model_configured=bool(catalog.get('default_configured', False)))
 
-    def _finish_model_update(self, key: str, catalog: dict | None, *, error: str | None = None, intent: dict | None = None) -> dict:
-        response = {'_model_error': error} if error else ({} if intent and intent.get('bot_id') else self._model_result(catalog))
+    def _finish_model_update(self, key: str, catalog: dict | None, *, error: str | None = None, intent: dict | None = None,
+                             extra: dict | None = None) -> dict:
+        response = {'_model_error': error} if error else ({} if intent and intent.get('bot_id') else dict(self._model_result(catalog), **(extra or {})))
         observed = None
         if not error and intent and intent.get('bot_id'):
             with self.lock:
@@ -1213,11 +1214,18 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 response = json.loads(value)
                 if isinstance(response, dict) and set(response) == {'_model_pending'}:
                     pending.append((key, response['_model_pending']))
+        default_changed = False
         for key, intent in pending:
             if intent.get('bot_id'):
                 try:
                     with self.lock:
                         bot = self._model_intent_bot(self._get('bots', intent['bot_id']), intent)
+                    if ('model_override' in intent['expected'] and intent['expected']['model_override'] is None
+                            and hasattr(self.provider, 'follow_default_model')):
+                        # The view of a following bot shows no own model, so the profile itself confirms the change.
+                        # The write is the same as the change, and a second one changes nothing.
+                        if 'error' in self.provider.follow_default_model([bot['id']]).get(bot['id'], {'error': ''}):
+                            raise ServiceError(503, 'The profile does not have the default model.')
                     observed = self.provider.observe_bot(bot) if hasattr(self.provider, 'observe_bot') else dict(bot, instructions=self.profiles.read_instructions(bot))
                     actual = {field: observed.get(field) for field in intent['expected']}
                     matches = not bot.get('_deleted') and actual == intent['expected']
@@ -1226,8 +1234,13 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             else:
                 actual = {field: catalog['default'].get(field) for field in ('model', 'provider', 'reasoning_effort')} if catalog else None
                 matches = actual == intent['expected']
+            # A confirmed change of the default, also through the bot of the default profile, reaches the following bots.
+            default_changed = default_changed or (matches and (not intent.get('bot_id') or (
+                intent['expected'].get('model_override') is not None and self._is_default_profile(intent['bot_id']))))
             message = None if matches else 'The Mac could not confirm that settings change. Check the current Hermes settings before trying again.'
             self._finish_model_update(key, catalog, error=message, intent=intent)
+        if default_changed:
+            self._follow_default_after_change()
 
     @staticmethod
     def _model_intent_bot(bot: dict, intent: dict) -> dict:
@@ -1364,11 +1377,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 # Keep the durable intent. A retry observes the native result first.
                 raise ServiceError(503, 'The Mac could not confirm the model change. Retry with the same request key.') from None
             failures = self._follow_default_after_change()
-            response = self._finish_model_update(key, catalog)
-            if failures:
-                # Each failed bot also keeps model_follow_error, and the next start tries again.
-                response = dict(response, model_follow_errors=failures)
-            return response
+            # Each failed bot also keeps model_follow_error, and the next start tries again. A retry gets the same list.
+            return self._finish_model_update(key, catalog, extra={'model_follow_errors': failures} if failures else None)
 
     def _create_bot(self, data: dict, *, audit: dict | None = None, profile: dict | None = None) -> dict:
         """Create a bot. `profile` is {name, home} of a profile that a scan found. Without it, Hermes creates one."""

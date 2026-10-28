@@ -287,10 +287,11 @@ class BotProfiles:
             bot['model_follows_default'] = result['follows']
         if bot.get('model_follows_default'):
             bot['model_override'] = None
-            if 'error' in result:
-                bot['model_follow_error'] = result['error']
-                return
-        bot.pop('model_follow_error', None)
+        if 'error' in result:
+            # Also a bot without a choice yet: its profile could not be read or written.
+            bot['model_follow_error'] = result['error']
+        else:
+            bot.pop('model_follow_error', None)
 
     def _set_hermes_entries(self, python, source) -> bool:
         from .hermes_runtime import NO_LAZY_INSTALLS

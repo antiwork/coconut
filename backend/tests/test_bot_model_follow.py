@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 from uuid import uuid4
 
 from coconut.providers import HermesProvider
-from coconut.service import Service
+from coconut.service import Service, ServiceError
 from test_bot_model_settings import NativeProvider
 
 
@@ -207,9 +207,67 @@ class BotModelFollowTests(unittest.TestCase):
         bot = self.bot('Ada')
         self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': self.selection()})
         self.provider.failing.add(bot['id'])
-        with self.assertRaises(Exception):
-            self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None})
+        key = str(uuid4())
+        with self.assertRaises(ServiceError):
+            self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)
+        # A retry checks the profile itself. The profile still has its own model, so the change is not confirmed.
+        with self.assertRaises(ServiceError) as raised:
+            self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)
+        self.assertEqual(raised.exception.status, 409)
         self.assertFalse(self.stored(bot['id'])['model_follows_default'])
+        self.assertEqual(self.provider.profiles[bot['id']], self.selection())
+
+    def test_a_retried_null_confirms_the_change_when_the_profile_gets_the_default(self):
+        bot = self.bot('Ada')
+        self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': self.selection()})
+        self.provider.failing.add(bot['id'])
+        key = str(uuid4())
+        with self.assertRaises(ServiceError):
+            self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)
+        self.provider.failing.clear()
+        self.assertIsNone(self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)['model_override'])
+        self.assertTrue(self.stored(bot['id'])['model_follows_default'])
+        self.assertEqual(self.provider.profiles[bot['id']], self.provider.route())
+
+    def test_a_recovered_default_change_reaches_the_following_bots(self):
+        bot = self.bot('Ada')
+        saved = self.provider.set_model_default
+
+        def lost_answer(selection):
+            saved(selection)
+            raise RuntimeError('The answer of Hermes was lost.')
+        self.provider.set_model_default = lost_answer
+        key = str(uuid4())
+        with self.assertRaises(ServiceError):
+            self.write('PUT', '/v1/settings/model', self.selection(), key)
+        self.provider.set_model_default = saved
+        self.assertEqual(self.write('PUT', '/v1/settings/model', self.selection(), key)['model'], 'model-b')
+        self.assertEqual(self.provider.profiles[bot['id']]['model'], 'model-b')
+
+    def test_a_retry_of_a_default_change_returns_the_same_failures(self):
+        bot = self.bot('Ada')
+        self.provider.failing.add(bot['id'])
+        key = str(uuid4())
+        with self.assertLogs('coconut.bot_profiles', logging.WARNING):
+            first = self.write('PUT', '/v1/settings/model', self.selection(), key)
+        self.assertEqual(self.write('PUT', '/v1/settings/model', self.selection(), key)['model_follow_errors'],
+                         first['model_follow_errors'])
+
+    def test_a_bot_without_a_choice_keeps_the_failure_and_gets_its_choice_later(self):
+        bot = self.bot('Ada')
+        with self.service.transaction():
+            stored = self.stored(bot['id'])
+            stored.pop('model_follows_default')
+            self.service._put('bots', stored)
+        self.provider.failing.add(bot['id'])
+        with self.assertLogs('coconut.bot_profiles', logging.WARNING):
+            self.assertEqual([failure['bot_id'] for failure in self.follow()], [bot['id']])
+        self.assertNotIn('model_follows_default', self.stored(bot['id']))
+        self.assertIn('OSError', self.stored(bot['id'])['model_follow_error'])
+        self.provider.failing.clear()
+        self.follow()
+        self.assertTrue(self.stored(bot['id'])['model_follows_default'])
+        self.assertNotIn('model_follow_error', self.stored(bot['id']))
 
     def test_a_model_for_the_default_profile_bot_reaches_the_following_bots(self):
         self.follow()
