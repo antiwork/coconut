@@ -126,6 +126,7 @@ class TickedProfileTests(unittest.TestCase):
         self.bots = {row['name']: row['bot_id'] for row in self.service.profiles.rows.values()}
 
     def gateway(self, home):
+        home.mkdir(parents=True, exist_ok=True)
         process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
@@ -141,6 +142,13 @@ class TickedProfileTests(unittest.TestCase):
             self.gateway(self.home)
             (self.home / 'profiles/desk/gateway.parked').write_text('')
             self.assertEqual(self.service.gateway_ticked_bots(), {self.bots['default'], self.bots['care']})
+        # The gateway that Coconut started ticks the profiles too, also before Hermes can prove its identity.
+        (self.home / 'gateway.pid').unlink()
+        with patch.object(gateway_chat, 'live_gateway_pid', return_value=None):
+            self.assertEqual(self.service.gateway_ticked_bots(), set())
+            self.service.gateway_process = self.gateway(self.home / 'unused')
+            self.assertEqual(self.service.gateway_ticked_bots(), {self.bots['default'], self.bots['care']})
+            self.service.gateway_process = None
 
 
 def _pid_file(home):

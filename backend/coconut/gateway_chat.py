@@ -242,7 +242,9 @@ class GatewayChat:
         """
         if not getattr(self, 'scan_profiles', False):
             return set()
-        host = live_gateway_pid(self.hermes_home) is not None
+        # The gateway that Coconut started is a host gateway. Hermes proves the identity of another one.
+        process = self.gateway_process
+        host = (process is not None and process.poll() is None) or live_gateway_pid(self.hermes_home) is not None
         ticked = set()
         for row in list((self.profiles.rows or {}).values()):
             if row.get('state') != 'active':

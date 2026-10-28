@@ -154,7 +154,9 @@ class NativeGatewayChatTests(unittest.TestCase):
                                  env=environment, capture_output=True, text=True, timeout=120)
             self.assertEqual(job.returncode, 0, job.stderr[-4000:])
             # The gateway ticks this profile, so Coconut claims none of its routines.
-            self.assertIn(bot['id'], service.gateway_ticked_bots())
+            from coconut.gateway_chat import live_gateway_pid
+            self.assertIn(bot['id'], service.gateway_ticked_bots(),
+                          f'Hermes gateway pid: {live_gateway_pid(home)}, rows: {list(service.profiles.rows.values())}')
             deadline = time.monotonic() + 240
             routine_task = None
             while time.monotonic() < deadline:
