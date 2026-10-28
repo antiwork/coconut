@@ -59,6 +59,16 @@ After Hermes changes, the service restarts by itself. If Hermes did not change, 
 launchctl kickstart -k gui/$(id -u)/com.gumroad.coconut.service
 ```
 
+## A gateway that the person started
+
+When `chat_runtime` is `gateway`, Coconut runs one Hermes gateway for the Hermes home. A `hermes chat` or `hermes gateway run` command can also start a gateway. When a gateway already runs for the Hermes home, Coconut uses it and does not start its own.
+
+A gateway loads the `coconut` plugin when it starts. After a Coconut update, a gateway that the person started keeps the earlier plugin until it restarts. Coconut restarts only the gateway that it started.
+
+To check, run `pgrep -fl "gateway run"`. In `~/.hermes/logs/gateway.log`, each served profile shows a `✓ coconut connected` line at the start of the gateway. For a profile other than `default`, the line ends with `(profile: <name>)`.
+
+After a Coconut update, ask the person before you stop a gateway that they started. When they agree, stop it. Coconut then starts its own gateway within a minute, with the new plugin.
+
 ## An update failed
 
 `coconut status` shows the error on the `Last update error` line. A failed update restores the earlier source, so Coconut keeps running.
