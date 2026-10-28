@@ -1278,7 +1278,8 @@ class NativeOutcomes:
                 raise ServiceError(409, 'This work is paused, cancelled, or belongs to an earlier conversation.')
             scheduled = native.get('status') == 'scheduled'
             review = native.get('status') == 'review'
-            queued = native.get('status') == 'ready' and owner['status'] == 'queued'
+            # A queued owner keeps a scheduled card while Coconut holds its dispatch (see _kanban_rows).
+            queued = native.get('status') in ('ready', 'scheduled') and owner['status'] == 'queued'
             # Coconut archives the task of a failed request itself. Its routine occurrence still continues, and so does
             # a failed ordinary request. So does the scheduled card of a continuation of a successful occurrence or a
             # completed ordinary request, and the original card of a completed relayed request that its worker
@@ -1312,6 +1313,7 @@ class NativeOutcomes:
             if queued and native.get('dispatch_blocker') not in (None, 'active_pr'):
                 raise ServiceError(409, 'This native outcome is guarded. Wait for its current activity.')
             related = [t for t in self._all('tasks') if execution_key(t) == execution_key(owner)]
+            related_ids = {t['id'] for t in related}
             # Only an explicit lane may leave one exact question pending, or work under one declined or held merge.
             # See technical_lane.py.
             gate = self._technical_lane_gate(owner, native, lane, related) if lane and not parked else None
@@ -1333,6 +1335,16 @@ class NativeOutcomes:
                     (t['id'] != owner['id'] and t['status'] in self.ACTIVE)
                     or self._background_pending(t['id']) for t in related):
                 raise ServiceError(409, 'This execution has active work. Wait for its result.')
+            if queued and scheduled:
+                # Coconut also holds it while a callback runs or still owes it a result (see _owed_helper_return).
+                if any(c['task_id'] in related_ids and c['status'] in ('queued', 'working') for c in self._all('contexts')) or any(
+                        t.get('_reply_to_task_id') in related_ids and (t['status'] in self.ACTIVE or t.get('_return_pending')
+                                                                       or t.get('_native_reply_pending')) for t in self._all('tasks')):
+                    raise ServiceError(409, 'This execution has active work. Wait for its result.')
+                # Advancing the input would drop an answer or review that the held turn has not read yet. A process
+                # result is held by _background_pending above. Fresh input replaces an automatic resume.
+                if owner.get('_resume_decision') or owner.get('_pr_review'):
+                    raise ServiceError(409, 'Wait for this task to start its queued decision or review before continuing this work.')
             if not owner.get('_native_outcome_id'):
                 self._retain_native_work(owner, native, snapshot_missing, snapshots, caller=source, selected_pr=selected_pr,
                                          held_pause=held['id'] if held_merge else None)
@@ -1346,7 +1358,6 @@ class NativeOutcomes:
                 owner['_technical_lane'] = dict(lane, native_task_id=identity, requester_task_id=source_id,
                                                 requester_bot_id=source['bot_id'], admitted_at=now(),
                                                 **self._technical_checkpoint(owner, previous_lane))
-            related_ids = {t['id'] for t in related}
             recovery = owner.setdefault('_self_recovery', {})
             recovery.pop('from_block_check', None)
             recovery['previous_task_id'] = owner['id']

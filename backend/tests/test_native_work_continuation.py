@@ -429,6 +429,122 @@ class NativeWorkContinuationTests(unittest.TestCase):
     def test_ready_dispatch_failure_retains_uncertain_response_fence(self):
         self.check_ready_dispatch_race(fail_tick=True)
 
+    def held_native(self):
+        # Coconut keeps the card of a queued owner scheduled until the owner can dispatch (see _kanban_rows).
+        owner, source = self.scheduled_native()
+        owner['status'] = 'queued'
+        self.service._put('tasks', owner)
+        return owner, source
+
+    def test_held_queued_accepts_requester_input_once(self):
+        owner, source = self.held_native()
+        receipt = self.resume(source)
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        queued = self.service._get('tasks', owner['id'])
+        self.assertEqual(self.resume(source), receipt)
+        self.assertEqual(self.service._get('tasks', owner['id']), queued)
+        self.assertEqual(queued['_native_outcome_id'], 't_existing')
+        self.assertEqual(queued['_bot_messages'][-1]['text'],
+                         'The corrected commit passed review. Finish its acceptance check.')
+        row = next(r for r in self.service._kanban_rows() if r['id'] == owner['id'])
+        self.assertEqual((row['state'], row['native_id'], row['previous_input']), ('ready', 't_existing', 'completed-input'))
+        self.assertNotEqual(row['input'], row['previous_input'])
+        for key in ('id', '_execution_session_id', 'source_bot_id', 'source_task_id', 'thread_id', '_kanban_claim'):
+            self.assertEqual(queued[key], owner[key])
+
+    def test_held_queued_accepts_owner_input(self):
+        owner, source = self.held_native()
+        self.service._put('tasks', dict(source, bot_id=owner['bot_id']))
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
+    def test_held_queued_carries_unknown_effects(self):
+        owner, source = self.held_native()
+        self.service._put('tasks', dict(owner, status='working', _native_turn_id='previous-turn'))
+        unknown = self.service.emit(owner['id'], 'native_call', dict(name='terminal', arguments={'command': 'git push'}))
+        self.service._put('tasks', owner)
+        self.resume(source)
+        continued = self.service._get('tasks', owner['id'])
+        self.assertEqual([r['id'] for r in continued['_self_recovery']['unknown_tools']], [unknown['id']])
+        self.assertEqual(self.service._get('native_receipts', unknown['id'])['state'], 'executing')
+
+    def test_held_queued_rejects_active_workers(self):
+        self.ready_native = self.held_native
+        self.test_ready_queued_rejects_active_workers()
+
+    def test_held_queued_preserves_other_respawn_guards(self):
+        self.ready_native = self.held_native
+        self.test_ready_queued_preserves_other_respawn_guards()
+
+    def test_held_queued_preserves_decision_dependency_and_authority(self):
+        self.ready_native = self.held_native
+        self.test_ready_queued_preserves_decision_dependency_and_authority()
+
+    def test_held_queued_continuation_cannot_race_captured_dispatch_input(self):
+        self.ready_native = self.held_native
+        self.check_ready_dispatch_race()
+
+    def test_held_queued_dispatch_failure_retains_uncertain_response_fence(self):
+        self.ready_native = self.held_native
+        self.check_ready_dispatch_race(fail_tick=True)
+
+    def test_held_queued_rejects_active_execution_and_callbacks(self):
+        from uuid import uuid4
+        owner, source = self.held_native()
+        helper = self.write('/v1/bots', {'name': 'Helper'})
+        cases = {
+            'same execution': ('tasks', dict(owner, id=str(uuid4()), status='working')),
+            'callback context': ('contexts', dict(id='callback', task_id=owner['id'], bot_id=owner['bot_id'], status='queued')),
+            'working helper': ('tasks', dict(source, id=str(uuid4()), bot_id=helper['id'], status='working',
+                                             _execution_session_id=str(uuid4()), _reply_to_task_id=owner['id'])),
+            'undelivered helper': ('tasks', dict(source, id=str(uuid4()), bot_id=helper['id'], status='completed',
+                                                 _execution_session_id=str(uuid4()), _reply_to_task_id=owner['id'],
+                                                 _return_pending={'text': 'Result'})),
+        }
+        # A held turn that carries a process result has not read it yet (see _background_pending).
+        with self.subTest('process result'):
+            self.service._put('tasks', dict(owner, _background_completion=['The build finished.']))
+            with self.assertRaisesRegex(ServiceError, 'active work'):
+                self.resume(source)
+            self.assertEqual(self.service._get('tasks', owner['id'])['_background_completion'], ['The build finished.'])
+        for name, (table, value) in cases.items():
+            with self.subTest(name):
+                self.service._put('tasks', owner)
+                self.service._put(table, value)
+                with self.assertRaisesRegex(ServiceError, 'active work'):
+                    self.resume(source)
+                self.assertEqual(self.service._get('tasks', owner['id']), owner)
+            self.service.db.execute('DELETE FROM ' + table + ' WHERE id=?', (value['id'],))
+        with patch.object(self.service, '_background_pending', return_value=True), \
+                self.assertRaisesRegex(ServiceError, 'active work'):
+            self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+
+    def test_held_queued_preserves_queued_decision_and_review_input(self):
+        owner, source = self.held_native()
+        for changes in (dict(_resume_decision='answered'), dict(_pr_review={'url': 'https://github.com/example/project/pull/1'})):
+            changed = dict(owner, **changes)
+            self.service._put('tasks', changed)
+            with self.subTest(changes=changes):
+                with self.assertRaisesRegex(ServiceError, 'queued decision or review'):
+                    self.resume(source)
+                self.assertEqual(self.service._get('tasks', owner['id']), changed)
+
+    def test_held_queued_preserves_human_pause_and_cancelled_exchange(self):
+        owner, source = self.held_native()
+        exchange = self.service._get('exchanges', owner['exchange_id'])
+        self.service._put('exchanges', dict(exchange, cancelled=True))
+        with self.assertRaisesRegex(ServiceError, 'paused, cancelled'):
+            self.resume(source)
+        self.service._put('exchanges', exchange)
+        item = dict(id='paused-work', task_id=owner['id'], bot_id=owner['bot_id'], kind='work',
+                    title=owner['title'], status='waiting', paused_by_decision_id='human-pause')
+        self.service._put('artifacts', item)
+        self.service._put('decisions', dict(id='human-pause', task_id=owner['id'], status='rejected', decided_by='human'))
+        with self.assertRaisesRegex(ServiceError, 'paused'):
+            self.resume(source)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service._get('artifacts', item['id']), item)
+
     def check_ready_dispatch_idle(self, failure=None, restart=False):
         from contextlib import ExitStack
         owner, source = self.ready_native()
