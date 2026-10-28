@@ -139,8 +139,11 @@ class NativeGatewayChatTests(unittest.TestCase):
             self.assertTrue(turn, diagnostics())
             # The gateway turn continues the bot's native conversation, and it has the coconut tools.
             self.assertIn('mango', json.dumps(turn[0]['messages']), diagnostics())
-            tools = {tool.get('function', tool).get('name') for tool in turn[0].get('tools') or []}
-            self.assertLessEqual({'coconut_ask', 'coconut_track_pr', 'coconut_message_bot'}, tools, sorted(tools))
+            # Hermes lists plugin tools behind its tool search bridge (tools/tool_search.py): the names are in the
+            # listing of tool_search, and tool_call runs them.
+            tools = json.dumps(turn[0].get('tools') or [])
+            for name in ('coconut_ask', 'coconut_track_pr', 'coconut_message_bot'):
+                self.assertIn(name, tools, diagnostics())
             process = service.gateway_process
         finally:
             service.close()
