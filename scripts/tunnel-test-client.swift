@@ -140,22 +140,21 @@ struct TunnelTestClient {
     }
 
     static func run(link: String) async throws {
-        let encoded = URLComponents(string: link)!.queryItems!.first { $0.name == "setup" }!.value!
-        let setup = try json(Data(base64URL: encoded)!)
-        try check(setup["version"] as? Int == 2, "not a version 2 link")
-        let secret = Data(base64URL: setup["secret"] as! String)!
-        let macKey = Data(base64URL: setup["mac_key"] as! String)!
-        let relay = (setup["relay"] as! String).replacingOccurrences(of: "http://", with: "ws://")
+        // The app's own parser reads the coconut://pair/<token> link. A DEBUG build accepts the loopback relay.
+        let setup = try PairingSetup.parse(link)
+        let secret = setup.secret
+        let macKey = setup.macKey
+        let relay = setup.relay.absoluteString.replacingOccurrences(of: "http://", with: "ws://")
             .replacingOccurrences(of: "https://", with: "wss://")
-        let url = URL(string: "\(relay)/v1/tunnels/\(setup["route"] as! String)/client")!
+        let url = URL(string: "\(relay)/v1/tunnels/\(setup.route)/client")!
         let phone = Curve25519.KeyAgreement.PrivateKey()
 
         // 1. Pair: the ticket opens the relay, and the pre-shared key proves the link to the Mac.
-        let endpoint = TunnelEndpoint(relay: URL(string: setup["relay"] as! String)!, route: setup["route"] as! String, macKey: macKey)
+        let endpoint = setup.endpoint
         let pairing = TunnelConnection(endpoint: endpoint, phoneKey: phone, credential: .ticket(secret: secret))
         let early = try await send(pairing, "GET", "/v1/state", headers: ["Authorization": "Bearer nothing"])
         try check(early.status == 401, "a ticket session served /v1/state before pairing: \(early.status)")
-        let body = try JSONSerialization.data(withJSONObject: ["code": setup["secret"]!, "device_name": "Loopback test"])
+        let body = try JSONSerialization.data(withJSONObject: ["code": setup.code, "device_name": "Loopback test"])
         let paired = try await send(pairing, "POST", "/v1/pair", headers: ["Content-Type": "application/json"], body: body)
         try check(paired.status == 200, "pairing answered \(paired.status): \(String(decoding: paired.body, as: UTF8.self))")
         let token = try json(paired.body)["token"] as! String
