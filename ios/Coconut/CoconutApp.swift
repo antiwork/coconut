@@ -160,7 +160,7 @@ struct CoconutHome: View {
                     }
                 }
                 .safeAreaInset(edge: .top, spacing: 0) {
-                    if !store.isDemo, let notice = store.connection.notice(legacyPairing: store.usesLegacyPairing) {
+                    if !store.isDemo, let notice = store.connection.notice {
                         ConnectionBanner(notice: notice) {
                             onboardingFirstRun = false
                             onboardingOpen = true

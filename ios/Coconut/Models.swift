@@ -602,7 +602,7 @@ struct EventPage: Decodable, Sendable {
 }
 
 enum ConnectionState: String, Sendable {
-    // `disconnected` is for a version 1 pairing over TLS. A version 2 pairing names the failure.
+    // `disconnected` names no cause. A failure of the relay tunnel names its cause.
     case unconfigured, connecting, connected, disconnected, macOffline, relayUnreachable, needsRepair, preview
 
     init(_ failure: TunnelError) {
@@ -638,9 +638,8 @@ enum ConnectionState: String, Sendable {
         }
     }
 
-    // A version 1 pairing used Tailscale and cannot connect. The banner asks for a new link and offers Pair.
-    func notice(legacyPairing: Bool) -> ConnectionNotice? {
-        if legacyPairing { return ConnectionNotice(message: PairingSetupError.legacyMessage, offersPairing: true) }
+    // The banner for a state that needs a new pairing link offers Pair.
+    var notice: ConnectionNotice? {
         if self == .needsRepair, let bannerMessage { return ConnectionNotice(message: bannerMessage, offersPairing: true) }
         return bannerMessage.map { ConnectionNotice(message: $0, offersPairing: false) }
     }

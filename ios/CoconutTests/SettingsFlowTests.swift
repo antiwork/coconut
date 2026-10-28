@@ -121,27 +121,18 @@ final class SettingsFlowTests: XCTestCase {
 
     // MARK: Connection banner
 
-    func testLegacyPairingSaysThatTailscaleIsNoLongerNeeded() {
-        // A version 1 pairing cannot connect, so it ends in needsRepair. The banner names the reason.
-        for state in [ConnectionState.needsRepair, .disconnected, .connecting] {
-            let notice = state.notice(legacyPairing: true)
-            XCTAssertEqual(notice?.offersPairing, true)
-            XCTAssertEqual(notice?.message, "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link.")
-        }
-    }
-
     func testDisconnectedHasABannerWithoutPair() {
-        let notice = ConnectionState.disconnected.notice(legacyPairing: false)
+        let notice = ConnectionState.disconnected.notice
         XCTAssertEqual(notice?.message, ConnectionState.disconnected.bannerMessage)
         XCTAssertEqual(notice?.offersPairing, false)
         XCTAssertNotNil(ConnectionState.disconnected.bannerMessage)
     }
 
     func testRepairOffersPairAndAConnectedRelayPairingShowsNoBanner() {
-        XCTAssertEqual(ConnectionState.needsRepair.notice(legacyPairing: false)?.offersPairing, true)
-        XCTAssertEqual(ConnectionState.relayUnreachable.notice(legacyPairing: false)?.offersPairing, false)
-        XCTAssertNil(ConnectionState.connected.notice(legacyPairing: false))
-        XCTAssertNil(ConnectionState.preview.notice(legacyPairing: false))
+        XCTAssertEqual(ConnectionState.needsRepair.notice?.offersPairing, true)
+        XCTAssertEqual(ConnectionState.relayUnreachable.notice?.offersPairing, false)
+        XCTAssertNil(ConnectionState.connected.notice)
+        XCTAssertNil(ConnectionState.preview.notice)
     }
 
     func testEveryStateHasATitle() {

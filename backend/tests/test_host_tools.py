@@ -119,23 +119,6 @@ class HostToolsTests(unittest.TestCase):
             self.assertEqual(server[server.index('--port') + 1], '9000')
             self.assertFalse((root / 'connection.json').exists())
 
-    def test_an_old_launchagent_keeps_the_port_of_its_connection_file(self):
-        with tempfile.TemporaryDirectory() as directory:
-            (Path(directory) / 'connection.json').write_text('{"address": "https://mini.example.ts.net:9443"}')
-            server = self.serve(['host.py', 'serve', '--data-dir', directory, '--host', '0.0.0.0', '--provider', 'fixture'])
-            self.assertEqual(server[server.index('--port') + 1], '9443')
-            server = self.serve(['host.py', 'serve', '--data-dir', directory, '--port', '9000', '--provider', 'fixture'])
-            self.assertEqual(server[server.index('--port') + 1], '9000')
-
-    def test_old_launchagent_flags_start_the_loopback_service(self):
-        # LaunchAgents from before the loopback-only service gave a network address.
-        with tempfile.TemporaryDirectory() as directory:
-            for extra in (['--host', '0.0.0.0'], ['--host', '127.0.0.1', '--insecure-loopback']):
-                with self.subTest(extra=extra):
-                    server = self.serve(['host.py', 'serve', '--data-dir', directory, *extra, '--provider', 'fixture'])
-                    self.assertEqual(server[1:], ['-m', 'coconut', '--data-dir', str(Path(directory).resolve()), '--port', '8960',
-                                                  '--provider', 'fixture', '--tunnel-port', '8961'])
-
     def test_cleanup_cannot_follow_runtime_symlink(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -236,16 +219,9 @@ class HostLifecycleTests(unittest.TestCase):
 
     def test_process_check_handles_paths_with_spaces_and_preserves_options(self):
         self.write_process()
-        command = f'Ss   /usr/bin/python3 -m coconut --data-dir {self.data}'
-        tls = f' --cert {self.data}/server.crt --key {self.data}/server.key'
-        # A process from before the loopback-only service has --host, and with TLS --cert and --key. A process from
-        # before the tunnel listener has no --tunnel-port.
-        for options in (' --port 9000 --provider fixture --tunnel-port 8961',
-                        ' --host 127.0.0.1 --port 9000 --provider fixture',
-                        ' --host 0.0.0.0 --port 9000 --provider fixture' + tls + ' --tunnel-port 8961'):
-            with self.subTest(options=options), \
-                    patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, command + options, '')):
-                self.assertEqual(host.owned_process(), (4242, self.options))
+        command = f'Ss   /usr/bin/python3 -m coconut --data-dir {self.data} --port 9000 --provider fixture --tunnel-port 8961'
+        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, command, '')):
+            self.assertEqual(host.owned_process(), (4242, self.options))
 
     def test_foreign_process_record_fails_before_process_control(self):
         self.write_process(project=str(self.root / 'another-project'))
@@ -257,7 +233,7 @@ class HostLifecycleTests(unittest.TestCase):
 
     def test_reused_pid_with_different_command_cannot_be_stopped(self):
         self.write_process()
-        command = f'S    /usr/bin/python3 -m coconut --data-dir {self.data}-other --host 127.0.0.1 --port 9000 --provider fixture'
+        command = f'S    /usr/bin/python3 -m coconut --data-dir {self.data}-other --port 9000 --provider fixture --tunnel-port 8961'
         with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, command, '')), \
              patch.object(host.os, 'kill') as kill:
             with self.assertRaisesRegex(SystemExit, 'does not match'):
@@ -521,32 +497,13 @@ class HostLifecycleTests(unittest.TestCase):
             start.assert_not_called()
 
     def test_restore_manual_preserves_fixture_and_port_options(self):
-        old = dict(self.options, host='0.0.0.0', insecure_loopback=False)
-        # A state from before the loopback-only service also has host and insecure_loopback.
-        for options in (self.options, old):
-            with self.subTest(options=options), patch.object(host, 'owned_agent', return_value=(self.path, False)), \
-                    patch.object(host, 'owned_process', return_value=None), patch.object(host, 'start') as start:
-                host.restore_after_update(dict(self.state('manual'), options=options))
-            self.assertEqual(vars(start.call_args.args[0]), dict(self.options, data_dir=self.data))
+        with patch.object(host, 'owned_agent', return_value=(self.path, False)), \
+                patch.object(host, 'owned_process', return_value=None), patch.object(host, 'start') as start:
+            host.restore_after_update(dict(self.state('manual'), options=self.options))
+        self.assertEqual(vars(start.call_args.args[0]), dict(self.options, data_dir=self.data))
         with patch.object(host, 'owned_agent', return_value=(self.path, False)), \
                 patch.object(host, 'owned_process', return_value=None), self.assertRaisesRegex(SystemExit, 'invalid'):
             host.restore_after_update(dict(self.state('manual'), options=dict(self.options, host='0.0.0.0')))
-
-    def test_restore_removes_the_network_flags_of_an_old_agent(self):
-        self.write_agent()
-        original = plistlib.loads(self.path.read_bytes())
-        command = original['ProgramArguments']
-        original['ProgramArguments'] = [*command, '--host', '0.0.0.0', '--insecure-loopback', '--provider', 'hermes']
-        self.path.write_bytes(plistlib.dumps(original))
-        with patch.object(host, 'owned_agent', side_effect=[(self.path, False), (self.path, True)]), \
-             patch.object(host, 'owned_process', return_value=None), \
-             patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')):
-            host.restore_after_update(self.state('managed'))
-        self.assertEqual(plistlib.loads(self.path.read_bytes())['ProgramArguments'], [*command, '--provider', 'hermes'])
-        # The service of such an agent read its port from connection.json. The repair keeps that port.
-        (self.data / 'connection.json').write_text('{"address": "https://mini.example.ts.net:9443"}')
-        repaired = host.repaired_agent(original)['ProgramArguments']
-        self.assertEqual(repaired, [*command[:3], '--port', '9443', *command[3:], '--provider', 'hermes'])
 
     def test_restore_managed_bootstraps_only_the_owned_agent(self):
         self.write_agent()
@@ -567,84 +524,6 @@ class HostLifecycleTests(unittest.TestCase):
                 host.restore_after_update(self.state('managed'))
         self.assertTrue(self.path.exists())
         self.assertEqual(sentinel.read_bytes(), b'Preserve host history.')
-
-    def test_restore_migrates_background_priority_without_changing_service_options(self):
-        self.write_agent()
-        original = plistlib.loads(self.path.read_bytes())
-        original.update(ProcessType='Background', KeepAlive=True, EnvironmentVariables={'PATH': '/usr/bin'})
-        self.path.write_bytes(plistlib.dumps(original))
-        with patch.object(host, 'owned_agent', side_effect=[(self.path, False), (self.path, True)]), \
-             patch.object(host, 'owned_process', return_value=None), \
-             patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')):
-            host.restore_after_update(self.state('managed'))
-        self.assertEqual(plistlib.loads(self.path.read_bytes()), dict(original, ProcessType='Interactive'))
-
-    def test_restore_moves_the_agent_off_the_removed_hermes_runtime(self):
-        self.write_agent()
-        original = plistlib.loads(self.path.read_bytes())
-        removed = str(self.root / '.runtime/hermes/venv/bin/python')
-        original.update(ProgramArguments=[removed, *original['ProgramArguments'][1:], '--provider', 'hermes'],
-                        ProcessType='Interactive', KeepAlive=True, EnvironmentVariables={'PATH': '/usr/bin', 'HERMES_HOME': '/h'})
-        self.path.write_bytes(plistlib.dumps(original))
-        loaded = []
-
-        def run(command, **options):
-            # launchctl loads the agent only after the repaired file is in place.
-            loaded.append(plistlib.loads(self.path.read_bytes()))
-            return subprocess.CompletedProcess(command, 0, '', '')
-        with patch.object(host, 'owned_agent', side_effect=[(self.path, False), (self.path, True)]), \
-             patch.object(host, 'owned_process', return_value=None), \
-             patch.object(host, 'service_python', return_value='/opt/homebrew/bin/python3'), \
-             patch.object(host.subprocess, 'run', side_effect=run):
-            host.restore_after_update(self.state('managed'))
-        expected = dict(original, ProgramArguments=['/opt/homebrew/bin/python3', *original['ProgramArguments'][1:]])
-        self.assertEqual(plistlib.loads(self.path.read_bytes()), expected)
-        self.assertEqual(loaded, [expected])
-
-    def test_restore_keeps_an_agent_that_has_no_usable_python(self):
-        self.write_agent()
-        payload = plistlib.loads(self.path.read_bytes())
-        payload['ProgramArguments'][0] = str(self.root / '.runtime/hermes/venv/bin/python')
-        self.path.write_bytes(plistlib.dumps(payload))
-        before = self.path.read_bytes()
-        with patch.object(host, 'owned_agent', return_value=(self.path, False)), \
-             patch.object(host, 'owned_process', return_value=None), \
-             patch.object(host, 'service_python', return_value=None), \
-             patch.object(host.subprocess, 'run') as run:
-            with self.assertRaisesRegex(SystemExit, 'removed private Hermes runtime'):
-                host.restore_after_update(self.state('managed'))
-        run.assert_not_called()
-        self.assertEqual(self.path.read_bytes(), before)
-
-    def test_the_service_python_does_not_move_with_hermes_and_can_run_coconut(self):
-        folder = self.root / 'bin'
-        folder.mkdir()
-        pythons = {}
-        for name in ('runtime', 'broken', 'stable', 'later'):
-            pythons[name] = (self.root / '.runtime/hermes/venv/bin/python') if name == 'runtime' else folder / name
-            pythons[name].parent.mkdir(parents=True, exist_ok=True)
-            pythons[name].write_text('#!/bin/sh\n')
-            pythons[name].chmod(0o700)
-        candidates = (str(folder / 'missing'), str(pythons['runtime']), str(pythons['broken']), str(pythons['stable']),
-                      str(pythons['later']))
-
-        def run(command, **options):
-            self.assertEqual(command[1:], ['-c', 'import coconut.server'])
-            self.assertEqual(options['cwd'], self.root / 'backend')
-            return subprocess.CompletedProcess(command, 1 if command[0] == str(pythons['broken']) else 0)
-        with patch.object(host, 'SERVICE_PYTHONS', candidates), patch.object(host.subprocess, 'run', side_effect=run) as checks:
-            # A Python in a virtual environment, such as the one of a Hermes install, can move.
-            with patch.object(host.sys, 'executable', str(pythons['later'])), patch.object(host.sys, 'prefix', '/venv'):
-                self.assertEqual(host.service_python(), str(pythons['stable']))
-            self.assertEqual([call.args[0][0] for call in checks.call_args_list],
-                             [str(pythons['broken']), str(pythons['stable'])])
-            # install-service uses the Python that runs it, so a repair prefers it too.
-            with patch.object(host.sys, 'executable', str(pythons['later'])), \
-                 patch.object(host.sys, 'prefix', host.sys.base_prefix):
-                self.assertEqual(host.service_python(), str(pythons['later']))
-            with patch.object(host.sys, 'executable', str(pythons['broken'])), \
-                 patch.object(host.sys, 'prefix', host.sys.base_prefix):
-                self.assertEqual(host.service_python(), str(pythons['stable']))
 
     def test_restore_rejects_state_from_another_project(self):
         state = self.state('managed')

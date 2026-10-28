@@ -46,7 +46,7 @@ def env_key(text, start):
     """Read the key of a .env line at `start`, after an optional `export`. It can be quoted.
 
     Return the key and the index after it. Return (None, len(text)) for a quoted key without its end, and (None, start)
-    for a line without a key. scripts/migrate_bots_to_profiles.py reads keys with this function too.
+    for a line without a key.
     """
     if start < len(text) and text[start] in '"\'':
         return _quoted(text, start + 1, text[start])

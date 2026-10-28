@@ -18,7 +18,6 @@ import subprocess
 import sys
 import tempfile
 import time
-from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,18 +45,6 @@ def normalize_host(value: str) -> str:
         if len(value) > 253 or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels):
             raise SystemExit("Use a DNS hostname or an IP address without a zone identifier.")
         return ".".join(labels)
-
-
-def saved_port(data: Path) -> int | None:
-    """Return the port that an installation from before the loopback-only service saved in connection.json.
-
-    Its LaunchAgent has no --port, because the service read the port from that file.
-    """
-    try:
-        port = urlsplit(json.loads((data / "connection.json").read_text())["address"]).port
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
-    return port if isinstance(port, int) and 1 <= port <= 65535 else None
 
 
 @contextmanager
@@ -230,14 +217,8 @@ def owned_process() -> tuple[int, dict] | None:
         # An exiting process serves nothing. stop_owned_process waits until it is gone.
         return None
     pattern = (
-        # A process from before the loopback-only service has --host, and with TLS also --cert and --key. An update
-        # stops such a process, and a failed update starts it again.
         r"(?P<python>.+?) -m coconut --data-dir " + re.escape(str(DEFAULT_DATA))
-        + r"(?: --host \S+)? --port (?P<port>\d+) --provider (?P<provider>hermes|fixture)"
-        + r"(?: --cert " + re.escape(str(DEFAULT_DATA / "server.crt"))
-        + r" --key " + re.escape(str(DEFAULT_DATA / "server.key")) + r")?"
-        # A process from before the tunnel listener has no --tunnel-port.
-        + r"(?: --tunnel-port " + str(TUNNEL_PORT) + r")?"
+        + r" --port (?P<port>\d+) --provider (?P<provider>hermes|fixture) --tunnel-port " + str(TUNNEL_PORT)
     )
     match = re.fullmatch(pattern, state[1])
     if not match or not re.fullmatch(r"python[0-9.]*", Path(match["python"]).name, re.IGNORECASE):
@@ -499,60 +480,6 @@ def write_agent(path: Path, payload: dict) -> None:
             name.unlink(missing_ok=True)
 
 
-# Pythons that stay in place when Hermes updates, in order of preference.
-SERVICE_PYTHONS = ("/opt/homebrew/bin/python3", "/usr/local/bin/python3", "/usr/bin/python3")
-
-
-def service_python() -> str | None:
-    """Return a Python for the LaunchAgent that can run host.py serve and does not move with a Hermes update.
-
-    install-service uses the Python that runs it. This prefers that Python too, unless it is in a virtual environment,
-    for example the one of a Hermes install.
-    """
-    candidates = [sys.executable] if sys.executable and sys.prefix == sys.base_prefix else []
-    for python in dict.fromkeys([*candidates, *SERVICE_PYTHONS]):
-        if not os.access(python, os.X_OK) or Path(python).resolve().is_relative_to((ROOT / ".runtime").resolve()):
-            continue
-        try:
-            check = subprocess.run([python, "-c", "import coconut.server"], cwd=ROOT / "backend", capture_output=True, timeout=60)
-        except (OSError, subprocess.TimeoutExpired):
-            continue
-        if check.returncode == 0:
-            return python
-    return None
-
-
-def repaired_agent(payload: dict) -> dict:
-    """Return the LaunchAgent settings for a restore. Every key that this does not repair stays the same.
-
-    The phone waits for the service through the tunnel, so the service runs as an interactive process. Earlier
-    installations started the service with the Python of the private Hermes runtime in .runtime/hermes. The update
-    removed that runtime, so launchd cannot start the service until it has another Python. Earlier installations also
-    gave the service a network address with --host, or --insecure-loopback. The service now listens on loopback only.
-    Their service read its port from connection.json, so the repair writes that port into the LaunchAgent.
-    """
-    repaired = dict(payload, ProcessType="Interactive")
-    command = list(payload["ProgramArguments"])
-    if "--host" in command[3:-1]:
-        index = command.index("--host", 3)
-        del command[index:index + 2]
-    command = [argument for argument in command if argument != "--insecure-loopback"]
-    if "--port" not in command and "--data-dir" in command[3:-1]:
-        # Keep the port that the service read from connection.json.
-        port = saved_port(Path(command[command.index("--data-dir", 3) + 1]))
-        if port is not None:
-            command[3:3] = ["--port", str(port)]
-    if command != payload["ProgramArguments"]:
-        repaired["ProgramArguments"] = command
-    if Path(command[0]).is_relative_to(ROOT / ".runtime/hermes"):
-        python = service_python()
-        if python is None:
-            raise SystemExit("Coconut's LaunchAgent starts the Python of the removed private Hermes runtime, and no "
-                             "other Python on this Mac can run Coconut. Install Python 3, then update again.")
-        repaired["ProgramArguments"] = [python, *command[1:]]
-    return repaired
-
-
 def restore_after_update(state: dict) -> None:
     if (not isinstance(state, dict) or state.get("project") != str(ROOT) or state.get("data_dir") != str(DEFAULT_DATA)
             or state.get("mode") not in {"manual", "managed", "stopped", "app"}):
@@ -570,10 +497,6 @@ def restore_after_update(state: dict) -> None:
             return
         if not path.exists() or current:
             raise SystemExit("Coconut cannot restore its LaunchAgent while its file is missing or a manual process is running.")
-        payload = plistlib.loads(path.read_bytes())
-        repaired = repaired_agent(payload)
-        if repaired != payload:
-            write_agent(path, repaired)
         result = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(path)], capture_output=True, text=True)
         if result.returncode:
             raise SystemExit("launchctl could not restore Coconut. Its LaunchAgent file and data remain available.")
@@ -581,11 +504,9 @@ def restore_after_update(state: dict) -> None:
             raise SystemExit("launchctl did not load Coconut. Its LaunchAgent file and data remain available.")
         return
     options = state.get("options")
-    # A state from before the loopback-only service also has host and insecure_loopback. The service ignores them now.
-    if (not isinstance(options, dict) or set(options) not in ({"port", "provider"}, {"host", "port", "provider", "insecure_loopback"})
+    if (not isinstance(options, dict) or set(options) != {"port", "provider"}
             or type(options["port"]) is not int or options["provider"] not in {"hermes", "fixture"}):
         raise SystemExit("The saved manual launch options are invalid.")
-    options = {"port": options["port"], "provider": options["provider"]}
     if loaded or (current and current[1] != options):
         raise SystemExit("A different Coconut service is running. Coconut did not start another process.")
     if current:
@@ -639,15 +560,10 @@ def main() -> None:
     parser.add_argument("command", choices=["serve", "start", "stop", "restart", "pair", "save-model-access",
                                             "install-service", "status", "hermes-status", "migrate-to-app"])
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA)
-    parser.add_argument("--port", type=int, help="The port of the main listener on 127.0.0.1. Defaults to 8960.")
+    parser.add_argument("--port", type=int, default=PORT, help="The port of the main listener on 127.0.0.1.")
     parser.add_argument("--provider", choices=["hermes", "fixture"], default="hermes")
-    # LaunchAgents from before the loopback-only service pass these. The service ignores them, and an update removes them.
-    parser.add_argument("--host", help=argparse.SUPPRESS)
-    parser.add_argument("--insecure-loopback", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     args.data_dir = args.data_dir.expanduser().resolve()
-    if args.port is None:
-        args.port = saved_port(args.data_dir) or PORT
     load_credentials(args.data_dir)
     if args.command == "pair":
         pair(args)
@@ -692,9 +608,6 @@ def main() -> None:
     else:
         command = service_args(args)
         sys.path.insert(0, str(ROOT / "backend"))
-        # Older versions installed their own hermes command. It started the private runtime, which is gone.
-        if hermes_runtime().remove_coconut_launcher():
-            print("Removed Coconut's old hermes command from ~/.local/bin.", flush=True)
         os.environ['PATH'] = service_path(os.environ.get('PATH', ''))
         managed = managed_current_process(args.data_dir)
         os.environ['COCONUT_MANAGED_SERVICE'] = '1' if managed else '0'

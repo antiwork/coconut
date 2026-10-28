@@ -9,9 +9,6 @@ The service keeps the `profiles` table (profile_registry) in step with the Herme
 Coconut creates a profile only through the Hermes profile API, once per request. When that fails, the request fails; a
 folder that Hermes left behind shows up as a bot at the next scan. "Remove from Coconut" keeps the folder. Only the
 person deletes the Hermes profile itself, by typing its name, and never `default`. A bot cannot request that.
-
-A bot from before this layout has no profiles row. It runs no turns until scripts/migrate_bots_to_profiles.py moves it,
-and /v1/setup says so.
 """
 from __future__ import annotations
 
@@ -23,7 +20,7 @@ import subprocess
 import threading
 
 from . import profile_registry
-from .profiles import MIGRATE, SKILLS, ProfileError, _write
+from .profiles import NO_PROFILE, SKILLS, ProfileError, _write
 
 LOG = logging.getLogger(__name__)
 SCAN_SECONDS = 5
@@ -117,11 +114,6 @@ class BotProfiles:
             # Settings are native: the default settings are those of the default profile, `<Hermes home>/config.yaml`.
             catalog.use_hermes_home(self.hermes_home)
         self.profile_watcher = None
-        if self.scan_profiles and self.unmigrated_bots():
-            LOG.warning('%d bots have no Hermes profile. %s', len(self.unmigrated_bots()), MIGRATE)
-
-    def unmigrated_bots(self) -> list[dict]:
-        return [bot for bot in self._all('bots') if not bot.get('_deleted') and bot['id'] not in self.profiles.rows]
 
     def _reload_profile_rows(self) -> None:
         """Follow the table after a rolled back transaction. Other threads read the dict, so it never becomes empty."""
@@ -267,7 +259,7 @@ class BotProfiles:
         from .service import ServiceError
         row = self.profiles.rows.get(bot['id'])
         if row is None:
-            raise ServiceError(409, MIGRATE)
+            raise ServiceError(409, NO_PROFILE)
         home = Path(row['home'])
         if row['name'] == profile_registry.DEFAULT or home.parent != self.hermes_home / 'profiles':
             raise ServiceError(409, 'Coconut deletes only a named profile in <Hermes home>/profiles, never default.')

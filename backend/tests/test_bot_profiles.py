@@ -207,15 +207,14 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(set(BOT_DELETION_SCHEMA['parameters']['properties']), {'source_message_id', 'target_bot_id', 'expected_name'})
         self.assertIn('Hermes profile folder stays', BOT_DELETION_SCHEMA['description'])
 
-    def test_a_bot_from_before_the_migration_runs_no_turns(self):
+    def test_a_bot_without_a_profile_row_runs_no_turns(self):
         bot_id = str(uuid4())
         with self.service.transaction():
             self.service._put('bots', dict(self.bots()['work'], id=bot_id, profile_id=bot_id, session_id=str(uuid4())))
-        # The service still starts, so GET /v1/setup can say what to do.
+        # The service still starts.
         self.open()
-        self.assertTrue(self.service.hermes_setup()['migration_required'])
-        self.assertEqual(self.service.profiles.sync(self.service._get('bots', bot_id))['status'], 'unmigrated')
-        with self.assertRaisesRegex(Exception, 'migrate_bots_to_profiles'):
+        self.assertEqual(self.service.profiles.sync(self.service._get('bots', bot_id))['status'], 'no_profile')
+        with self.assertRaisesRegex(Exception, 'has no Hermes profile'):
             self.provider_environment({'id': bot_id})
 
 

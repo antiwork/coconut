@@ -208,7 +208,6 @@ def read_marker(root):
             raise ValueError()
         if marker['files'] and marker.get('package_id') != sha256(canonical(marker['files'])):
             raise ValueError()
-        # A marker from before the loopback-only service also has the HTTPS address of the Mac. Nothing reads it now.
         return marker
     except (ValueError, TypeError, KeyError, OSError, AttributeError):
         raise DeployError('The Coconut deployment marker is invalid.') from None
@@ -304,18 +303,9 @@ if len(sys.argv)>3:
 else:
     spec.loader.exec_module(module)
 state=json.load(sys.stdin)
-if sys.argv[2]=='inspect' and hasattr(module,'inspect_for_update'):
-    result=module.inspect_for_update()
-elif sys.argv[2]=='inspect':
-    _,loaded=module.owned_agent()
-    process=module.owned_process()
-    result={'mode':'managed' if loaded else 'manual' if process else 'stopped','project':str(root),'data_dir':str(root/'.runtime/host')}
-    if result['mode']=='manual': result['options']=process[1]
+if sys.argv[2]=='inspect': result=module.inspect_for_update()
 elif sys.argv[2]=='stop': result=module.stop_for_update()
-elif sys.argv[2]=='drain':
-    # An installed host.py from before the drain has no such function. Then the service is stopped at once, as it was.
-    drain=getattr(module,'drain_for_update',None)
-    result={'drained': bool(drain()) if drain else False}
+elif sys.argv[2]=='drain': result={'drained': bool(module.drain_for_update())}
 else: result=module.restore_after_update(state)
 print('COCONUT_HOST_STATE='+json.dumps(result))
 '''
@@ -416,8 +406,8 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
             return {'ok': False, 'error': str(error)}
         return {'ok': True}
 
-    def health(self, root, address=None):
-        """Wait until the service answers its health check. `address` is unused: older updaters pass the HTTPS address."""
+    def health(self, root):
+        """Wait until the service answers its health check."""
         return self._health(root, HEALTH_WAIT_SECONDS)
 
     def probe(self, root):
@@ -427,8 +417,7 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
     def _health(self, root, seconds):
         """Check /health on the tunnel listener, which carries the phone's requests.
 
-        The service answers there with plain HTTP on loopback. A service from before the loopback-only release does too,
-        so the check also confirms a rollback to it.
+        The service answers there with plain HTTP on loopback.
         """
         try:
             port = load_host(root).TUNNEL_PORT
@@ -490,80 +479,6 @@ def copy_source(source, target):
             temporary.unlink(missing_ok=True)
 
 
-# Older installers updated a private Hermes runtime with the code. Their journal has a runtime_change. Such an update can
-# stop after it moved .runtime/hermes to hermes-rollback-<id> and before it moved the shared settings back
-# (.runtime/hermes/terminal). Recovery of such a journal restores that runtime with its settings, as those installers did.
-def runtime_paths(root, record):
-    change = record.get('runtime_change')
-    if change is None:
-        return None
-    if (not isinstance(change, dict) or set(change) != {'previous', 'candidate'}
-            or any(not isinstance(v, str) or not re.fullmatch(r'[0-9a-f]{40}', v) for v in change.values())
-            or change['previous'] == change['candidate']):
-        raise DeployError('The runtime update journal is invalid.')
-    identity = str(UUID(record['deployment_id']))
-    return tuple(safe_path(root / '.runtime' / name, root) for name in (
-        'hermes', 'hermes-rollback-' + identity, 'hermes-failed-' + identity))
-
-
-def move_terminal_state(source, target, root):
-    # Keep the authoritative native terminal registry and its lock together.
-    for name in ('terminal', 'terminal.lock'):
-        old, new = safe_path(source / name, root), safe_path(target / name, root)
-        if old.exists():
-            if new.exists():
-                raise DeployError('Two copies of native terminal state prevent the runtime update.')
-            old.rename(new)
-            sync_directory(source)
-            sync_directory(target)
-
-
-def restore_runtime(root, record):
-    paths = runtime_paths(root, record)
-    if paths is None:
-        return
-    runtime, backup, failed = paths
-    if backup.exists():
-        receipt = safe_path(backup / 'install.json', root)
-        if json.loads(receipt.read_text()).get('commit') != record['runtime_change']['previous']:
-            raise DeployError('The saved Hermes runtime does not match the rollback revision.')
-        if runtime.exists():
-            move_terminal_state(runtime, backup, root)
-            if failed.exists():
-                raise DeployError('A failed runtime already exists. Preserve it before retrying recovery.')
-            runtime.rename(failed)
-            sync_directory(runtime.parent)
-        backup.rename(runtime)
-        sync_directory(runtime.parent)
-    receipt = safe_path(runtime / 'install.json', root)
-    if not receipt.is_file() or json.loads(receipt.read_text()).get('commit') != record['runtime_change']['previous']:
-        raise DeployError('The previous Hermes runtime is unavailable. Recovery stopped.')
-
-
-def prune_runtime_copies(root):
-    """Remove the copies of the private Hermes runtime that older versions kept for a rollback.
-
-    Older versions kept the previous runtime as hermes-rollback-<id> and a failed one as hermes-failed-<id>, each about a
-    gigabyte. Coconut now runs on the person's Hermes, so no copy serves a rollback. A manual copy with another name stays.
-    """
-    # Cleanup only reclaims space. It must not turn an update into a failed one.
-    with contextlib.suppress(OSError, DeployError):
-        for old in (root / '.runtime').glob('hermes-*'):
-            # A copy that holds the shared settings of the bots is their only copy. It stays.
-            if (runtime_copy_name(old.name) and old.is_dir() and not old.is_symlink()
-                    and not any((old / name).exists() for name in ('terminal', 'terminal.lock'))):
-                shutil.rmtree(safe_path(old, root), ignore_errors=True)
-
-
-def runtime_copy_name(name):
-    """Return True for the name of a runtime copy that an older update made. Another name is a manual copy."""
-    for prefix in ('hermes-rollback-', 'hermes-failed-'):
-        if name.startswith(prefix):
-            with contextlib.suppress(ValueError):
-                return name == prefix + str(UUID(name.removeprefix(prefix)))
-    return False
-
-
 def reconcile(root, operations):
     journal = safe_path(root / '.runtime/deploy/update.json', root)
     if not journal.exists():
@@ -586,7 +501,6 @@ def reconcile(root, operations):
             if any(not allowed_path(name) or not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{64}', value) for name, value in names.items()):
                 raise ValueError()
         staging, backup = journal_paths(root, record)
-        runtime_paths(root, record)
     except (ValueError, KeyError, TypeError, OSError, AttributeError):
         raise DeployError('The incomplete deployment has an invalid recovery journal. No source or data was changed.') from None
     if (marker.get('state') == 'installed' and marker.get('deployment_id') == record.get('deployment_id') and record.get('deployment_id') and marker.get('files') == record['new_files']) or record['phase'] == 'rolled_back':
@@ -631,7 +545,6 @@ def reconcile(root, operations):
         raise DeployError('The incomplete update could not stop its service. Its journal, source, and runtime remain intact.') from error
     record['phase'] = 'rollback_stopped'
     write_json(journal, record)
-    restore_runtime(root, record)
     lock_skills(root, locked=False)
     for name in set(record['new_files']) - set(old['files']):
         path = safe_path(root / name, root)
@@ -672,8 +585,7 @@ def check_hermes(operations, root, previous, *, updating):
     """Stop an update that breaks Coconut on a Hermes that worked before it. receive() then restores the earlier code.
 
     The update changes Coconut only. When Hermes was already missing or incompatible, the new code starts in refuse
-    mode, and the phone shows the reason. An installation from before this check ran on its own private Hermes, which
-    worked, so it saved no status.
+    mode, and the phone shows the reason. A service that saved no status counts as one that worked.
     """
     current = operations.hermes(root)
     worked = previous is None or previous.get('status') == 'ok'
@@ -830,7 +742,6 @@ def receive(directory, stream, *, home=None, operations=None):
             write_json(runtime_receipt, {'version': 1, 'installation_id': marker['installation_id']})
             write_json(root / MARKER_PATH, updated)
             remove_journal(root, record)
-            prune_runtime_copies(root)
             # A folder that stays writable only loses its protection.
             with contextlib.suppress(OSError):
                 lock_skills(root)
@@ -860,8 +771,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command', choices=['receive', 'recover'], help='recover replays a pending update journal and installs no package.')
     parser.add_argument('--directory', default='Coconut')
-    # Older updaters pass the HTTPS address of the Mac. The service no longer has one.
-    parser.add_argument('--address', help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
         if args.command == 'recover':

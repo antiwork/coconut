@@ -5,7 +5,7 @@ import Foundation
 ///
 /// host.py needs only the standard library. It then finds the person's Hermes and starts the service again under the
 /// Python of that Hermes (backend/coconut/hermes_runtime.py). So this search does not decide which Hermes runs. It looks
-/// for a Python that does not move with a Hermes update first, as host.service_python does, and then for the Python of
+/// for a Python that does not move with a Hermes update first, and then for the Python of
 /// the Hermes from the official installer. It never uses /usr/bin/python3: without the Command Line Tools, that
 /// command opens an installation dialog, and their Python is older than 3.11.
 public struct PythonLocator {

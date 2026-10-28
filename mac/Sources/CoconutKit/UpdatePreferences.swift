@@ -74,8 +74,6 @@ public struct UpdatePreferences {
     static let requestKey = "updateRequestedAt"
     static let resultKey = "lastUpdateResult"
     static let pendingInstallKey = "pendingInstall"
-    /// The update channel of earlier versions, "stable" or "nightly". The feed has one channel now.
-    static let legacyChannelKey = "updateChannel"
 
     /// Distributed notifications from the tool to the running app.
     public static let settingsChanged = "com.gumroad.coconut.mac.settingsChanged"
@@ -96,13 +94,6 @@ public struct UpdatePreferences {
     public func setAutomaticUpdates(_ value: Bool) {
         store.set(value, forKey: Self.automaticChecksKey)
         store.set(value, forKey: Self.automaticInstallKey)
-    }
-
-    /// Remove the channel setting of an earlier version. The app does this at its start, so no earlier setting stays.
-    public func removeLegacyChannel() {
-        if store.value(forKey: Self.legacyChannelKey) != nil {
-            store.set(nil, forKey: Self.legacyChannelKey)
-        }
     }
 
     public var lastCheck: Date? {

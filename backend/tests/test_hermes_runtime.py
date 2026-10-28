@@ -111,33 +111,6 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(hermes_runtime.hermes_home(environ, self.home), home)
         self.assertEqual(hermes_runtime.find(environ, self.home).python, python)
 
-    def test_a_hermes_home_inside_coconuts_runtime_folder_is_the_persons(self):
-        # On the Mac mini, HERMES_HOME is .runtime/hermes/terminal/hermes, the old shared home of the bots.
-        home = hermes_runtime.PROJECT_ROOT / '.runtime/hermes/terminal/hermes'
-        python = home / 'installs/key/environments/1e6af2de/venv/bin/python'
-        with patch.object(hermes_runtime, 'source_pythons', return_value=[python]):
-            found = [candidate for candidate, _, _ in hermes_runtime.candidates(dict(self.environ, HERMES_HOME=str(home)), self.home)]
-        self.assertIn(python, found)
-        old = hermes_runtime.PROJECT_ROOT / '.runtime/hermes/venv/bin/python'
-        self.command(f'#!{old}\n')
-        self.assertNotIn(old, [candidate for candidate, _, _ in hermes_runtime.candidates(self.environ, self.home)])
-
-    def test_coconuts_own_launcher_is_not_the_persons_hermes(self):
-        self.command('#!/bin/sh\n# Coconut owns this Hermes launcher.\nexec /usr/bin/python3 terminal.py launch -- "$@"\n')
-        self.assertNotIn('/usr/bin/python3', [str(python) for python, _, _ in hermes_runtime.candidates(self.environ, self.home)])
-
-    def test_the_persons_hermes_after_coconuts_old_launcher_on_path_is_found(self):
-        # On the Mac mini, ~/.local/bin/hermes is Coconut's old launcher, and the real command comes later on PATH.
-        self.command('#!/bin/sh\n# Coconut owns this Hermes launcher.\nexec /usr/bin/python3 terminal.py launch -- "$@"\n')
-        later = self.home / 'tools/bin'
-        later.mkdir(parents=True)
-        (later / 'hermes').write_text('#!/opt/hermes/venv/bin/python\nfrom hermes_cli.main import main\n')
-        (later / 'hermes').chmod(0o755)
-        environ = dict(self.environ, PATH=f'{self.bin}:{later}')
-        found = [python for python, _, _ in hermes_runtime.candidates(environ, self.home)]
-        self.assertEqual(found[0], Path('/opt/hermes/venv/bin/python'))
-        self.assertNotIn(Path('/usr/bin/python3'), found)
-
     def test_a_wrapper_with_a_quoted_path_reaches_the_launcher(self):
         folder = self.home / 'Hermes Agent' / "it's here"
         folder.mkdir(parents=True)
@@ -152,11 +125,6 @@ class DiscoveryTests(unittest.TestCase):
     def test_a_long_interpreter_path_in_a_shell_wrapper_is_read(self):
         command = self.command("#!/bin/sh\n'''exec' \"/very/long/hermes/venv/bin/python\" \"$0\" \"$@\"\n' '''\nimport sys\n")
         self.assertEqual(hermes_runtime.launcher_target(command), (Path('/very/long/hermes/venv/bin/python'), None))
-
-    def test_the_private_runtime_of_older_versions_is_skipped(self):
-        private = hermes_runtime.PROJECT_ROOT / '.runtime/hermes/venv/bin/python'
-        self.command(f'#!{private}\n')
-        self.assertNotIn(private, [python for python, _, _ in hermes_runtime.candidates(self.environ, self.home)])
 
     def test_the_installed_hermes_is_found_through_its_command(self):
         root = self.home / '.hermes/hermes-agent'
@@ -235,13 +203,6 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(hermes_runtime.status(data, self.environ, self.home)['status'], 'incompatible')
             self.assertEqual(hermes_runtime.status(data, self.environ, self.home)['status'], 'ok')
 
-    def test_only_coconuts_own_launcher_is_removed(self):
-        launcher = self.command('#!/bin/sh\n# Coconut owns this Hermes launcher.\nexec true\n')
-        self.assertTrue(hermes_runtime.remove_coconut_launcher(self.home))
-        self.assertFalse(launcher.exists())
-        own = self.command('#!/opt/hermes/venv/bin/python\n')
-        self.assertFalse(hermes_runtime.remove_coconut_launcher(self.home))
-        self.assertTrue(own.exists())
 
 
 class RefuseModeTests(unittest.TestCase):

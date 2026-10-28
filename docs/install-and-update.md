@@ -60,7 +60,7 @@ Coconut runs on the Hermes that is installed in the Mac account. It does not ins
 Each time the service starts, it looks for Hermes in this order:
 
 1. `COCONUT_HERMES_PYTHON` and `COCONUT_HERMES_ROOT`, when you set them. An explicit setting is final.
-2. The first `hermes` command on the service's `PATH`, except Coconut's old launcher. Coconut follows its launcher scripts to the Hermes source folder.
+2. The first `hermes` command on the service's `PATH`. Coconut follows its launcher scripts to the Hermes source folder.
 3. `~/.hermes/hermes-agent`, where the official installer puts Hermes.
 
 The official installer keeps the Python packages of Hermes in a dependency environment in the Hermes home, under `installs/<id>`. Its `facts.json` names the active environment, and Coconut runs Hermes with that environment's Python.
@@ -85,41 +85,9 @@ A new Hermes that fails the check causes no second restart: each process compare
 An update changes Coconut only. It runs the contract check of the new code against the installed Hermes. It searches with the environment of the login service, so it checks the same Hermes as the service.
 If that Hermes worked with the earlier version and fails with the new one, the update restores the earlier version.
 
-Older versions installed their own Hermes in `.runtime/hermes` and their own `~/.local/bin/hermes` command.
-The service deletes that command at its next start, but only when the file has Coconut's marker line.
-Their LaunchAgent started the service with the Python of that runtime. When an update reloads the service, after the drain step, it changes only that Python in the LaunchAgent.
-It uses the Python that runs the update when that Python is not in a virtual environment, else `/opt/homebrew/bin/python3`, `/usr/local/bin/python3`, or `/usr/bin/python3`, the first that can load Coconut.
 The default model, approvals, and MCP servers in the phone's settings are those of your default Hermes profile. `hermes model` and `hermes config` change the same settings. Each other profile keeps its own settings.
 
 Native Hermes owns login and credential refresh. Coconut does not copy OAuth tokens into bot profiles.
-
-## Move the bots into Hermes profiles (once)
-
-Each bot is a Hermes profile (see [Architecture](architecture.md#bots-are-hermes-profiles)). An earlier install keeps each bot home in `.runtime/host/bots/<uuid>/home`. Those bots run no turns until you run the migration. The migration is one way.
-
-Run these commands on the Mac that runs Coconut, in `~/Coconut`:
-
-1. Make sure that the service uses your Hermes home. Read `home` in `.runtime/host/hermes.json`. An earlier install can have `HERMES_HOME` set to `~/Coconut/.runtime/hermes/terminal/hermes`. Then change it, restart the service, and read `home` again:
-
-   ```sh
-   defaults write com.gumroad.coconut.mac ServiceEnvironment -dict-add HERMES_HOME "$HOME/.hermes"
-   launchctl kickstart -k "gui/$(id -u)/com.gumroad.coconut.service"
-   ```
-
-2. Show the plan. This changes nothing: `python3 scripts/migrate_bots_to_profiles.py --dry-run`. Each profile name comes from the bot name, and no name replaces a profile that you have.
-3. Migrate: `python3 scripts/migrate_bots_to_profiles.py`.
-
-The migration:
-
-1. Checks that the disk has space for the backup. If it does not, it stops before it changes anything.
-2. Lets the running turns finish, stops Coconut, and checks that no Coconut worker runs.
-3. Backs up `.runtime/host` into `.runtime/host-backup-before-profiles-<time>-<random suffix>`. The backup leaves out workspaces and the folders that Hermes makes again: `installs`, `tools` and `cache` of each bot home, and `__pycache__` and `node_modules`. On APFS, each file of the backup is a clone, which uses almost no space. A failed backup removes its partial copy.
-4. Moves each bot home to `<Hermes home>/profiles/<name>`. On another disk, it copies the folder and then removes the original. Paths into the old home in `.env` change to the new home.
-5. Writes the `profiles` rows, and the ledger `.runtime/host/profile-migration.json`.
-6. Changes the `config.yaml` of each moved profile with the config writer of Hermes, so comments stay. Each value in the old home names the new home, for example in `terminal.shell_init_files`. `skills.external_dirs` gets `<install folder>/skills`.
-7. Starts Coconut. Coconut then adds your default profile and your other profiles as bots.
-
-The script refuses a Hermes home inside the Coconut folder, and a Hermes home that is not the service's. A failure before the first move changes nothing. A failure after it leaves Coconut stopped and prints the commands that move each folder back, from the ledger. Bot IDs stay the same, so the iPhone keeps every chat.
 
 ## The coconut skill for Hermes
 
@@ -233,8 +201,6 @@ A Hermes agent can print a link without the Command Line Tools: `/Applications/C
 
 If the iPhone already has a pairing, Coconut asks before a link replaces it.
 
-An iPhone that paired before the relay used Tailscale. It shows "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link." Pair it again with a new link.
-
 ## Releases from CI
 
 GitHub Actions makes every release. No Mac deploys or uploads builds by itself.
@@ -294,7 +260,6 @@ On the mini, open `~/Coconut/Uninstall Coconut.command`.
 The uninstaller stops the owned service and removes the runtime, keys, bots, and stored work. Your Hermes installation stays.
 It removes the `skills.external_dirs` entry of the `coconut` skill from the Hermes profiles, and makes the skill folders writable again.
 It removes the `coconut` gateway platform from the same profiles: the plugin link and its two settings.
-It also removes this installation's exact `hermes` launcher. Close active Hermes Terminal sessions before removal.
 Delete `~/Coconut` to remove its source files afterward.
 
 On this development Mac, the same launcher removes its separate runtime.

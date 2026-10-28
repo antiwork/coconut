@@ -33,9 +33,6 @@ class HermesSetup:
         if hasattr(self, 'chat_runtime') and self.chat_runtime() == 'gateway':
             # Which Hermes gateway runs the chat turns, or why none does. See gateway_chat.
             result['gateway'] = self.gateway_status()
-        if getattr(self, 'scan_profiles', False):
-            # Bots from before the profile layout run no turns until a person runs the migration.
-            result['migration_required'] = bool(self.unmigrated_bots())
         return result
 
     def watch_hermes(self, status: dict):
