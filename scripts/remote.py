@@ -302,24 +302,102 @@ def deploy(config: dict) -> None:
 
 def status(config: dict) -> None:
     code = HEALTH_CODE + """
+def model_keys_in_hermes():
+    # The service moves the saved model keys into the .env of the default Hermes profile.
+    # The Hermes home of the service: the HERMES_HOME of its launch agent, else ~/.hermes.
+    import plistlib
+    sys.path.insert(0, str(root / 'scripts'))
+    import host
+    home = pathlib.Path.home() / '.hermes'
+    try:
+        agent = pathlib.Path.home() / 'Library/LaunchAgents' / (host.LABEL + '.plist')
+        home = pathlib.Path(plistlib.loads(agent.read_bytes())['EnvironmentVariables']['HERMES_HOME'])
+    except (OSError, KeyError, TypeError, ValueError, plistlib.InvalidFileException):
+        pass
+    path = home / '.env'
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return False
+    return any(line.strip().removeprefix('export ').split('=', 1)[0].strip() in host_keys and
+               line.split('=', 1)[-1].strip().strip(chr(34) + chr(39)) for line in lines if '=' in line)
+host_keys = ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY')
 marker = root / '.coconut-install.json'
 if not marker.is_file():
     print(json.dumps({'installed': False, 'healthy': False}))
 else:
     print(json.dumps(dict(health(), installed=True,
-        model_access_saved=(root / '.runtime/host/credentials.json').is_file(),
+        model_access_saved=(root / '.runtime/host/credentials.json').is_file() or model_keys_in_hermes(),
         package_id=json.loads(marker.read_text()).get('package_id'))))
 """
     result = ssh(config, ["python3", "-c", code, config["directory"]])
     print(json.dumps(json.loads(result.stdout), indent=2))
 
 
-def model_access(config: dict) -> None:
+def hermes_env(home: Path) -> dict:
+    """The values in the `.env` of a Hermes home, read with the `.env` reader of the person's Hermes.
+
+    Hermes reads every `.env` through `agent.secret_scope.load_env_file`, so the keys that this command copies are the
+    keys that Hermes uses. That module uses the standard library only. Without a Hermes on this Mac, a plain reader
+    with the same rules for comments and quotes reads the file.
+    """
+    path = home / ".env"
+    if not path.is_file() or path.is_symlink():
+        return {}
+    try:
+        reader = hermes_env_reader()
+    except Exception:
+        reader = None
+    if reader is not None:
+        return dict(reader(path))
+    values = {}
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        value = value.strip()
+        if value[:1] in ("'", '"') and value.find(value[0], 1) > 0:
+            # A quoted value ends at its closing quote. A comment after it is not part of it.
+            value = value[1:value.find(value[0], 1)]
+        elif " #" in value:
+            # As python-dotenv reads an unquoted value: a comment after a space is not part of it.
+            value = value.split(" #", 1)[0].rstrip()
+        values[key.strip()] = value
+    return values
+
+
+def hermes_env_reader():
+    """`load_env_file` of the person's Hermes, or None."""
+    import importlib.util
+    source = host.hermes_runtime().find().root / "agent/secret_scope.py"
+    if not source.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("coconut_hermes_secret_scope", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.load_env_file
+
+
+def local_model_keys() -> dict:
+    """The model keys of this Mac: the keys that Coconut saved, else the keys of the default Hermes profile.
+
+    The service moves the saved keys into the `.env` of the default Hermes profile at its start (model_keys.py).
+    """
     path = ROOT / ".runtime/host/credentials.json"
-    if not path.is_file() or path.is_symlink() or path.stat().st_mode & 0o077:
-        raise SystemExit("Save private model access locally before copying it to the mini.")
-    values = json.loads(path.read_text())
-    values = {key: value for key, value in values.items() if key in host.MODEL_KEYS and isinstance(value, str) and value}
+    if path.is_file():
+        if path.is_symlink() or path.stat().st_mode & 0o077:
+            raise SystemExit("Save private model access locally before copying it to the mini.")
+        values = json.loads(path.read_text())
+    else:
+        values = hermes_env(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes"))
+    return {key: value for key, value in values.items() if key in host.MODEL_KEYS and isinstance(value, str) and value}
+
+
+def model_access(config: dict) -> None:
+    values = local_model_keys()
     if not values:
         raise SystemExit("No supported model keys are saved on this Mac.")
     code = ROOT_CODE + """

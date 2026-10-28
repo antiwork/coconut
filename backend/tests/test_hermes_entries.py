@@ -18,6 +18,22 @@ NATIVE_SETTINGS = ('import json\nfrom pathlib import Path\n'
                    'def raw_config(home):\n    path = Path(home) / "config.yaml"\n'
                    '    return json.loads(path.read_text()) if path.exists() else {}\n'
                    'def save_config(home, config):\n    (Path(home) / "config.yaml").write_text(json.dumps(config))\n')
+# Stand-ins for the env reader and writer of Hermes and its list of provider keys, which model_keys uses.
+HERMES_CONFIG = '''import os
+from pathlib import Path
+OPTIONAL_ENV_VARS = {"GEMINI_API_KEY": {"category": "provider", "password": True},
+                     "GEMINI_BASE_URL": {"category": "provider", "password": False},
+                     "TELEGRAM_BOT_TOKEN": {"category": "messaging", "password": True}}
+def save_env_value(key, value):
+    path = Path(os.environ["HERMES_HOME"]) / ".env"
+    lines = [line for line in (path.read_text().splitlines() if path.exists() else []) if not line.startswith(key + "=")]
+    path.write_text("\\n".join(lines + [key + "=" + value]) + "\\n")
+'''
+SECRET_SCOPE = '''from pathlib import Path
+def load_env_file(path):
+    pairs = (line.split("=", 1) for line in Path(path).read_text().splitlines() if "=" in line and not line.startswith("#"))
+    return {key: value for key, value in pairs}
+'''
 ENTRIES = {'skills': {'external_dirs': [str(SKILLS)]}, 'plugins': {'enabled': ['coconut']},
            'gateway': {'platforms': {'coconut': {'enabled': True}}}}
 
@@ -30,6 +46,10 @@ class HermesEntryTests(unittest.TestCase):
         self.source, self.home = root / 'source', root / 'hermes'
         self.source.mkdir()
         (self.source / 'native_settings.py').write_text(NATIVE_SETTINGS)
+        for name, text in (('hermes_cli/__init__.py', ''), ('hermes_cli/config.py', HERMES_CONFIG),
+                           ('agent/__init__.py', ''), ('agent/secret_scope.py', SECRET_SCOPE)):
+            (self.source / name).parent.mkdir(exist_ok=True)
+            (self.source / name).write_text(text)
         (self.home / 'profiles/work').mkdir(parents=True)
         (self.home / 'config.yaml').write_text(json.dumps({'model': 'gpt', 'plugins': {'enabled': ['memory']}}))
         (self.home / 'profiles/work/config.yaml').write_text(json.dumps({'toolsets': ['kanban']}))
@@ -54,6 +74,60 @@ class HermesEntryTests(unittest.TestCase):
             self.assertTrue(self.service._set_hermes_entries(sys.executable, self.source))
         self.assertEqual([(home / 'config.yaml').read_bytes() for home in (self.home, self.home / 'profiles/work')], before)
         self.assertEqual(len(logs.records), 1)
+
+    def env(self, home):
+        path = home / '.env'
+        lines = path.read_text().splitlines() if path.exists() else []
+        return dict(line.split('=', 1) for line in lines if '=' in line and not line.startswith('#'))
+
+    def test_each_profile_gets_the_default_provider_keys_and_coconut_moves_its_saved_keys_into_hermes(self):
+        (self.home / '.env').write_text('ANTHROPIC_API_KEY=default-anthropic\nGEMINI_API_KEY=default-gemini\n'
+                                        'GEMINI_BASE_URL=https://example.test\nTELEGRAM_BOT_TOKEN=default-bot\n')
+        (self.home / 'profiles/work/.env').write_text('# Hermes seeds this file.\nGEMINI_API_KEY=own-gemini\n')
+        saved = self.service.root / 'credentials.json'
+        saved.write_text(json.dumps({'ANTHROPIC_API_KEY': 'saved-anthropic', 'OPENAI_API_KEY': 'saved-openai'}))
+        with self.assertLogs('coconut.bot_profiles', logging.INFO) as logs:
+            self.assertTrue(self.service._set_hermes_entries(sys.executable, self.source))
+        # The person's own default key stays. The saved key that Hermes lacked moves into the default profile.
+        self.assertEqual(self.env(self.home)['ANTHROPIC_API_KEY'], 'default-anthropic')
+        self.assertEqual(self.env(self.home)['OPENAI_API_KEY'], 'saved-openai')
+        self.assertFalse(saved.exists())
+        # A named profile gets the provider keys that it lacks, keeps its own, and gets no other settings.
+        self.assertEqual(self.env(self.home / 'profiles/work'), {
+            'GEMINI_API_KEY': 'own-gemini', 'ANTHROPIC_API_KEY': 'default-anthropic', 'OPENAI_API_KEY': 'saved-openai'})
+        # The log names keys, never values.
+        text = '\n'.join(logs.output)
+        self.assertIn('ANTHROPIC_API_KEY', text)
+        for value in ('default-anthropic', 'saved-openai', 'default-gemini', 'own-gemini'):
+            self.assertNotIn(value, text)
+        before = (self.home / 'profiles/work/.env').read_bytes()
+        self.assertTrue(self.service._set_hermes_entries(sys.executable, self.source))
+        self.assertEqual((self.home / 'profiles/work/.env').read_bytes(), before)
+
+    def test_a_bad_saved_key_file_stops_no_copy_and_a_claimed_file_comes_first(self):
+        (self.home / '.env').write_text('ANTHROPIC_API_KEY=default-anthropic\n')
+        saved = self.service.root / 'credentials.json'
+        saved.write_text('{not json')
+        with self.assertLogs('coconut.bot_profiles', logging.INFO):
+            self.service._set_hermes_entries(sys.executable, self.source)
+        # The keys that Hermes has still reach the named profile. The bad file goes aside, so a new file can come.
+        self.assertEqual(self.env(self.home / 'profiles/work')['ANTHROPIC_API_KEY'], 'default-anthropic')
+        claimed = self.service.root / 'credentials.json.importing'
+        self.assertFalse(claimed.exists())
+        self.assertEqual((self.service.root / 'credentials.json.invalid').read_text(), '{not json')
+        # A claimed file comes first. A file that arrives later waits for the next run, and the run never removes it.
+        claimed.write_text(json.dumps({'OPENAI_API_KEY': 'claimed-openai'}))
+        saved.write_text(json.dumps({'OPENROUTER_API_KEY': 'new-openrouter'}))
+        with self.assertLogs('coconut.bot_profiles', logging.INFO):
+            self.assertTrue(self.service._set_hermes_entries(sys.executable, self.source))
+        self.assertEqual(self.env(self.home)['OPENAI_API_KEY'], 'claimed-openai')
+        self.assertNotIn('OPENROUTER_API_KEY', self.env(self.home))
+        self.assertFalse(claimed.exists())
+        self.assertTrue(saved.exists())
+        with self.assertLogs('coconut.bot_profiles', logging.INFO):
+            self.assertTrue(self.service._set_hermes_entries(sys.executable, self.source))
+        self.assertEqual(self.env(self.home)['OPENROUTER_API_KEY'], 'new-openrouter')
+        self.assertFalse(saved.exists())
 
     def test_another_plugin_named_coconut_stays_and_the_start_goes_on(self):
         (self.home / 'profiles/work/plugins/coconut').mkdir(parents=True)
