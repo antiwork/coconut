@@ -334,6 +334,8 @@ class GatewayAdapterTests(unittest.TestCase):
             time.sleep(.5)
         self.assertEqual(vars(gateway), before)
         self.assertEqual((self.adapter.events, self.adapter._active), ([], set()))
+        # With NousResearch/hermes-agent#146209, the enabled and connected platform also does not hold that gateway.
+        self.assertIs(self.adapter_module.CoconutAdapter.keeps_gateway_up, False)
 
     def test_the_end_of_a_turn_is_reported_again_after_a_failure(self):
         async def runner(event):

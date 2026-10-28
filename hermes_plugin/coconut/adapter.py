@@ -156,6 +156,8 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
     SUPPORTS_MESSAGE_EDITING = True
     # A longer reply would arrive in parts, and Coconut would show the earlier parts as interim messages.
     MAX_MESSAGE_LENGTH = 100_000
+    # The poll alone is not work: an auto-started gateway may idle out (NousResearch/hermes-agent#146209).
+    keeps_gateway_up = False
 
     def __init__(self, config):
         super().__init__(config, Platform(NAME))
