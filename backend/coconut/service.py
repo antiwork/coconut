@@ -1576,6 +1576,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 question = require_text(data, 'question', 4000)
                 return self._request_context(decision, task, question, [])
             if parts[3] == 'answer':
+                if decision.get('_gateway_question'):
+                    return self.answer_gateway_question(decision, task, data, device)
                 if decision.get('_native'):
                     return self.answer_native(decision, task, data, device, callbacks)
                 return self._answer(decision, task, data, device)
@@ -3778,6 +3780,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             elif kind == 'interim_seal':
                 from .interim_messages import seal
                 seal(self, task)
+            elif kind == 'gateway_question':
+                self.record_gateway_question(task, payload)
             elif kind == 'activity':
                 self._message(bot_id, str(payload.get('text', payload.get('summary', 'Working')))[:500], task_id=task_id, kind='activity')
             elif kind == 'decision':

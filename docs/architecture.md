@@ -113,8 +113,8 @@ Native profile data is not copied into peer messages automatically.
 
 Coconut moves its bot turns from its own worker processes to the person's Hermes gateway, in phases. Phase 1 made each bot a Hermes profile.
 
-1. Phase 2: plain chat turns run in the gateway, behind a setting. This version.
-2. Phase 3: Coconut tools and cards become tools of the `coconut` plugin.
+1. Phase 2: plain chat turns run in the gateway, behind a setting.
+2. Phase 3: Coconut tools and cards become tools of the `coconut` plugin, and both runtimes share one conversation. This version.
 3. Phase 4: cron jobs and Kanban work run in the gateway.
 4. Phase 5: Coconut deletes its worker runtime.
 
@@ -124,7 +124,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - Coconut ships the `coconut` gateway platform in `hermes_plugin/coconut`. Setup links it into `<home>/plugins/coconut` of each profile and enables the plugin and its platform there. See [the coconut skill](install-and-update.md#the-coconut-skill-for-hermes).
 - The adapter connects to the main listener on loopback. It long-polls `POST /v1/gateway/poll` for the turns of its profile and reports `typing`, `send`, `edit`, `delete` and `done` to `POST /v1/gateway/events`. It sends the token of `<data>/gateway/bridge.json` (mode 0600), which the service writes at each start. The tunnel listener does not serve these routes.
 - One chat is one bot: the chat ID is the bot ID. A multiplexing gateway has one adapter for each served profile, and Coconut matches the adapter to the bot by the Hermes home.
-- `gateway_bridge.plain_chat_turn` is the routing rule. A new turn goes to the gateway when it is a person's text message in a bot's own chat, without attachments, quoted messages, mentions, cards, reactions, work tracking, bot messages or other Coconut context, and the adapter of the bot's profile is connected. Every other turn runs in the worker.
+- `gateway_bridge.plain_chat_turn` is the routing rule. Phase 3 widens it (see below).
 - The adapter takes turns only after the gateway restored its sessions after a start. Before that, the gateway queues each message and ends its processing without a reply.
 - A turn that no adapter takes in 30 seconds runs in the worker. A taken turn fails when the adapter stops listing it for 90 seconds.
 - `TurnEvents` maps the gateway events onto the worker's provider events, so the phone sees the same messages. Each `send` starts a segment, and `edit` replaces its text. A new segment keeps the earlier one as a complete interim message (`interim_seal`). A send that the gateway marks as interim, such as commentary, is an interim message. `done` completes or fails the task.
@@ -132,12 +132,21 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - When a gateway that the service did not start already runs for that home, the service starts no second one. It uses that gateway when the gateway loaded the platform. `GET /v1/setup` returns `gateway` with the state, the process, the reason and the connected profiles.
 - A cancelled task sends `/stop` to the gateway session of the chat. An action that already runs can finish.
 
-### Known gaps of phase 2
+### Phase 3: one conversation, Coconut tools and cards
 
-- The gateway keeps its own session for each chat. A gateway turn does not continue the worker's conversation of the bot, and the worker does not see the gateway turns.
-- A gateway turn has the tools of the gateway only. Coconut tools, such as PR tracking, bot messages and bot creation, are not available. The routing rule sees only the inputs of the turn, not the tools that the answer needs.
-- Hermes approvals and clarify questions arrive as interim text. The phone cannot answer them as cards.
-- Live token streaming needs `streaming.enabled: true` in the Hermes config. Without it, the reply arrives at the end of the turn, as from the worker. Tool progress is off, so the phone shows only the phases "thinking" and "writing".
+- One conversation. The worker resumes a bot's chat from a root session and records the newest session as the tip in the `state_meta` table of the profile's state.db (`native_conversation`). Each gateway turn names the root. The plugin's `pre_gateway_dispatch` hook points the gateway session of the chat at the tip with the session store that the hook receives. When the bot has no conversation yet, the gateway session becomes the tip. Both runtimes then write into the same native session and follow its compression lineage. Coconut chose this direction, the gateway joins the native conversation, because the worker already keeps it and the session store has a public switch for it.
+- Coconut tools. The plugin registers the `coconut` toolset: `coconut_ask`, `coconut_track_pr` and `coconut_message_bot`. A tool finds its chat from the gateway session context (`gateway.session_context.get_session_env`), and the adapter of the process names the running turn. `coconut_ask` shows a card and waits for the answer. The other tools call `POST /v1/gateway/tools`, which acts for the task of that turn. A tool shows only in a Coconut chat (`check_fn`). A Coconut worker does not load these tools: it has its own.
+- Cards. A clarify question (`send_clarify`), a command approval (`_send_exec_approval_prompt`) and `coconut_ask` report a `question` event. The service shows it as a decision card, and the task stays working while the gateway turn waits. The answer goes to the adapter with its next poll. The adapter gives it to Hermes with `resolve_gateway_clarify` or `resolve_gateway_approval`, or returns it to the waiting tool. A typed reply to a command approval declines the command and gives Hermes the reason. A card that is still open when the turn ends closes as failed.
+- Streaming. The plugin's `on_stream_*` hooks receive the text of each model call, also when the gateway streams nothing to platforms. The adapter sends the text in pieces (`delta`), and the phone sees the reply while the model writes. The person's `streaming` setting stays as it is. The first reply send of the gateway takes over from the streamed text.
+- Routing. With `gateway`, each turn of a person's message in a bot's own chat goes to the gateway, also with a quote or a bot mention (they go into the message text). These turns stay in the worker: attachments, open cards that the bot answers, reactions, work items and claims, routines, bot exchanges and returns, GitHub source activity, PR reviews, bot creation and deletion confirmations, recovery and withdrawal turns, and each turn that continues an answered card.
+- The startup restore of the runner has no public signal. The adapter reads `GatewayRunner._startup_restore_in_progress`, and the Coconut contract check (`hermes_contract.verify_gateway_contract`) requires it, with the other gateway interfaces that the plugin uses. A Hermes that changes them fails the contract check.
+
+### Known gaps after phase 3
+
+- Upstream asks to Hermes: a public signal that the gateway takes inbound messages after its startup restore; a public way for a platform to join a chat with an existing native session (the hook uses the session store's `switch_session`); a per-platform streaming switch that works when the global `streaming.enabled` is off (Coconut uses the stream observer hooks instead).
+- A gateway turn does not see the recent Work updates of the bot. The worker gives them as context.
+- Only three Coconut tools exist in the gateway. Work tracking, waits, bot creation and deletion, and card replies stay with the worker turns that need them.
+- Tool progress is off, so the phone shows only the phases "thinking" and "writing".
 - The adapter refuses messages outside a Coconut turn, for example cron deliveries.
 - Gateway notices, such as "No home channel is set", stay in the gateway log. They name gateway commands, and Coconut sends chat text without gateway commands.
 - A profile without a connected adapter uses the worker. This happens when the gateway does not multiplex, or when the person created the profile outside Coconut after the last setup. A gateway that already runs loads the platform after its next restart.

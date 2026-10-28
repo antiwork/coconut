@@ -305,6 +305,7 @@ def verify_contract():
             raise ValueError('The profile update changed unrelated Hermes settings.')
 
     verify_session_lifecycle_contract()
+    verify_gateway_contract()
     verify_parallel_work_contract()
     verify_delegation_contract()
     verify_terminal_contract()
@@ -313,6 +314,37 @@ def verify_contract():
     return {'native_terminal_path': True, 'provider_contract': 'compatible', 'tool_registration': True, 'tool_dispatch': True,
             'native_model_effort_roundtrip': True,
             'native_profile_api': True, 'model_request_sent': False}
+
+
+def verify_gateway_contract():
+    """The interfaces of the gateway that the `coconut` plugin uses (hermes_plugin/coconut).
+
+    Most are public plugin interfaces. Two are not: the startup restore flag of the runner, which has no public signal
+    (the adapter takes no turn before it ends), and the session store methods that the pre_gateway_dispatch hook
+    receives. A Hermes that changes them fails here instead of in a chat.
+    """
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionEntry, SessionStore
+    from gateway.session_context import get_session_env
+    from hermes_cli.plugins import VALID_HOOKS
+    from tools.approval import resolve_gateway_approval
+    from tools.clarify_gateway import resolve_gateway_clarify
+    if not isinstance(getattr(GatewayRunner, '_startup_restore_in_progress', None), bool):
+        raise ValueError('Hermes changed the startup restore of the gateway. Review the coconut adapter.')
+    missing = {'pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end'} - set(VALID_HOOKS)
+    if missing:
+        raise ValueError('Hermes removed plugin hooks of the coconut platform: ' + ', '.join(sorted(missing)))
+    require_keywords(BasePlatformAdapter.send_clarify, ['chat_id', 'question', 'choices', 'clarify_id', 'session_key'])
+    require_keywords(BasePlatformAdapter.on_processing_complete, ['event', 'outcome'])
+    require_keywords(SessionStore.get_or_create_session, ['source'])
+    require_keywords(SessionStore.switch_session, ['session_key', 'target_session_id'])
+    require_keywords(resolve_gateway_approval, ['session_key', 'choice', 'reason'])
+    require_keywords(resolve_gateway_clarify, ['clarify_id', 'response'])
+    if not callable(get_session_env) or 'session_key' not in SessionEntry.__dataclass_fields__:
+        raise ValueError('Hermes changed the gateway session context.')
+    if not hasattr(BasePlatformAdapter, '_send_exec_approval_prompt'):
+        raise ValueError('Hermes changed the approval prompt of a gateway platform.')
 
 
 def verify_profile_api_contract():

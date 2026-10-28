@@ -1,15 +1,19 @@
 """The gateway adapter for Coconut chats.
 
-The Coconut service on this Mac owns the chat. When the person's chat runtime is `gateway`, the service gives a plain
-chat turn to this adapter instead of to its own worker (backend/coconut/gateway_bridge.py). The adapter asks the service
-for turns with a long poll on loopback, gives each turn to the gateway as an inbound message, and sends every reply,
-edit and end of turn back. One chat is one Coconut bot: the chat ID is the bot ID.
+The Coconut service on this Mac owns the chat. When the person's chat runtime is `gateway`, the service gives a chat
+turn to this adapter instead of to its own worker (backend/coconut/gateway_bridge.py). The adapter asks the service for
+turns with a long poll on loopback, gives each turn to the gateway as an inbound message, and sends every reply, edit
+and end of turn back. One chat is one Coconut bot: the chat ID is the bot ID.
 
 The service writes its address and a token to `<data>/gateway/bridge.json` (mode 0600) at each start. The adapter
 reads the file again after a failed request. `gateway.platforms.coconut.extra.bridge` can name another file.
 
 Under a multiplexing gateway, each served profile has its own adapter. It connects in the scope of its profile, so the
 Hermes home that it names to the service is the home of that profile.
+
+Clarify questions, command approvals and coconut_ask become decision cards on the phone, and the answer returns to
+Hermes through a later poll. The hooks (hooks.py) relay the streamed text of a turn and join the gateway session of a
+chat with the bot's native conversation. The tools (tools.py) reach the Coconut task of the chat.
 """
 from __future__ import annotations
 
@@ -19,7 +23,11 @@ import json
 import logging
 import os
 from pathlib import Path
+import threading
+import time
 import urllib.request
+import uuid
+import weakref
 
 from gateway.config import Platform
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -35,6 +43,22 @@ RETRY_SECONDS = (1, 2, 5, 10, 30)
 REQUEST_SECONDS = 10
 # Requests go to loopback only, never through a proxy from the environment.
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+# Streamed text goes to the service in pieces of at least this age or size.
+STREAM_SECONDS = 0.2
+STREAM_CHARACTERS = 400
+# coconut_ask waits this long for the person.
+ASK_SECONDS = 6 * 3600
+# The adapters of this process. The tools and the hooks find the adapter of a chat here.
+ADAPTERS = weakref.WeakSet()
+
+
+def turn_for_chat(chat_id):
+    """The adapter and the running turn of a Coconut chat, or (None, None)."""
+    for adapter in list(ADAPTERS):
+        turn = adapter._turns.get(str(chat_id))
+        if turn is not None:
+            return adapter, turn
+    return None, None
 
 
 class Bridge:
@@ -45,14 +69,15 @@ class Bridge:
         self.address = None
 
     def request(self, route: str, payload: dict, timeout: float) -> dict:
-        if self.address is None:
+        address = self.address
+        if address is None:
             address = json.loads(self.path.read_text())
             if not str(address.get('url', '')).startswith('http://127.0.0.1:') or not address.get('token'):
                 raise ValueError(f'{self.path} does not name a Coconut service on loopback.')
             self.address = address
         request = urllib.request.Request(
-            self.address['url'] + route, data=json.dumps(payload).encode(), method='POST',
-            headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + self.address['token']})
+            address['url'] + route, data=json.dumps(payload).encode(), method='POST',
+            headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + address['token']})
         try:
             with OPENER.open(request, timeout=timeout) as response:
                 return json.loads(response.read() or b'{}')
@@ -64,7 +89,7 @@ class Bridge:
 
 def turn_of(message_id) -> str:
     """The turn ID in a message ID that this adapter gave out (`<turn>:<number>`)."""
-    return str(message_id).rpartition(':')[0]
+    return str(message_id).partition(':')[0]
 
 
 class CoconutAdapter(BasePlatformAdapter):
@@ -88,6 +113,14 @@ class CoconutAdapter(BasePlatformAdapter):
         self._active: set[str] = set()
         self._typing: set[str] = set()
         self._count = 0
+        # Open questions on the phone: question ID -> how the answer returns to Hermes.
+        self._questions: dict[str, tuple] = {}
+        # Streamed text that waits for the service: turn -> [stream number, text, time of the last report].
+        self._streams: dict[str, list] = {}
+        self._streams_lock = threading.Lock()
+        # The number of the current model call of each turn (hooks.stream_start).
+        self._stream_numbers: dict[str, int] = {}
+        ADAPTERS.add(self)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         from hermes_constants import get_hermes_home
@@ -111,13 +144,27 @@ class CoconutAdapter(BasePlatformAdapter):
 
     def _starting(self) -> bool:
         """Whether the gateway still restores sessions after its start. Until then it queues each inbound message
-        and ends the processing of that message without a reply, which Coconut would read as a finished turn."""
-        return bool(getattr(self.gateway_runner, '_startup_restore_in_progress', False))
+        and ends the processing of that message without a reply, which Coconut would read as a finished turn.
+
+        Hermes has no public signal for this. The Coconut contract check (hermes_contract.verify_gateway_contract)
+        requires the attribute, and the adapter refuses to poll without it.
+        """
+        runner = self.gateway_runner
+        if runner is not None and not hasattr(runner, '_startup_restore_in_progress'):
+            raise RuntimeError('Hermes changed its startup restore. Update Coconut before it takes gateway turns.')
+        return bool(getattr(runner, '_startup_restore_in_progress', False))
 
     async def _poll(self) -> None:
         failures = 0
         while True:
-            if self._starting():
+            try:
+                starting = self._starting()
+            except RuntimeError as error:
+                # Coconut then shows no connected adapter, and chats use the worker.
+                LOG.error('Coconut: %s', error)
+                await asyncio.sleep(60)
+                continue
+            if starting:
                 await asyncio.sleep(0.5)
                 continue
             try:
@@ -135,6 +182,8 @@ class CoconutAdapter(BasePlatformAdapter):
                 continue
             for chat_id in answer.get('stop') or []:
                 await self._stop(str(chat_id))
+            for item in answer.get('answers') or []:
+                self._answer(item)
             for turn in answer.get('turns') or []:
                 try:
                     event = self._event(turn)
@@ -153,8 +202,12 @@ class CoconutAdapter(BasePlatformAdapter):
         source = self.build_source(chat_id=str(turn['chat_id']), chat_name=str(turn.get('chat_name') or 'Coconut'),
                                    chat_type='dm', user_id='coconut', user_name=str(turn.get('user_name') or 'Coconut'))
         # Text that starts with "/" stays a chat message. Coconut does not offer gateway commands yet.
-        return MessageEvent(text=str(turn['text']), message_type=MessageType.TEXT, source=source,
-                            message_id=str(turn['id']), allow_gateway_control=False)
+        event = MessageEvent(text=str(turn['text']), message_type=MessageType.TEXT, source=source,
+                             message_id=str(turn['id']), allow_gateway_control=False)
+        if turn.get('session_root'):
+            # hooks.join_conversation reads it before the gateway runs the turn.
+            event.metadata['coconut_session_root'] = str(turn['session_root'])
+        return event
 
     async def _stop(self, chat_id: str) -> None:
         """Stop the running turn of a chat, as `/stop` does. Coconut cancelled it."""
@@ -180,6 +233,9 @@ class CoconutAdapter(BasePlatformAdapter):
         if self._turns.get(event.source.chat_id) == event.message_id:
             del self._turns[event.source.chat_id]
         self._typing.discard(event.message_id)
+        with self._streams_lock:
+            self._streams.pop(event.message_id, None)
+        self._stream_numbers.pop(event.message_id, None)
         # The turn stays active in the polls until the service has its end. Otherwise the service would fail a
         # finished turn after a short outage.
         for delay in (*RETRY_SECONDS, None):
@@ -222,6 +278,99 @@ class CoconutAdapter(BasePlatformAdapter):
         if turn is not None and turn not in self._typing:
             self._typing.add(turn)
             await self._report(turn, 'typing')
+
+    # Streamed text. hooks.py calls these in a Hermes dispatcher thread, never on the event loop.
+
+    def stream(self, turn: str, number: int, text: str) -> None:
+        pending = None
+        with self._streams_lock:
+            entry = self._streams.get(turn)
+            if entry is None or entry[0] != number:
+                if entry is not None and entry[1]:
+                    pending = (entry[0], entry[1])
+                entry = self._streams[turn] = [number, '', 0.0]
+            entry[1] += text
+            due = time.monotonic() - entry[2] >= STREAM_SECONDS or len(entry[1]) >= STREAM_CHARACTERS
+        if pending is not None:
+            self._send_stream(turn, *pending)
+        if due:
+            self.flush_stream(turn)
+
+    def flush_stream(self, turn: str) -> None:
+        with self._streams_lock:
+            entry = self._streams.get(turn)
+            if entry is None or not entry[1]:
+                return
+            number, text = entry[0], entry[1]
+            entry[1], entry[2] = '', time.monotonic()
+        self._send_stream(turn, number, text)
+
+    def _send_stream(self, turn: str, number: int, text: str) -> None:
+        try:
+            self._bridge.request('/v1/gateway/events', {'turn_id': turn, 'kind': 'delta', 'stream': number,
+                                                        'text': text}, REQUEST_SECONDS)
+        except Exception as error:
+            # The final send of the turn carries the whole reply, so a lost piece only delays the preview.
+            LOG.debug('Coconut: a streamed piece did not reach the service (%s).', type(error).__name__)
+
+    # Questions. The service shows each as a decision card and returns the answer in a later poll.
+
+    async def _question(self, chat_id: str, route: tuple, **fields) -> SendResult:
+        turn = self._turns.get(str(chat_id))
+        if turn is None:
+            return SendResult(success=False, error='Coconut takes questions only during its own turns.')
+        question_id = str(uuid.uuid4())
+        self._questions[question_id] = route
+        if not await self._report(turn, 'question', question_id=question_id, **fields):
+            self._questions.pop(question_id, None)
+            return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)
+        return SendResult(success=True, message_id=f'{turn}:question')
+
+    async def send_clarify(self, chat_id: str, question: str, choices, clarify_id: str, session_key: str,
+                           metadata=None) -> SendResult:
+        options = [dict(id=f'choice-{index}', label=str(choice)) for index, choice in enumerate(choices or [])]
+        return await self._question(chat_id, ('clarify', clarify_id), question_kind='clarify', text=str(question),
+                                    choices=options)
+
+    async def _send_exec_approval_prompt(self, prompt) -> SendResult:
+        options = [dict(id=choice, label=str(label), deny=choice == 'deny') for label, choice, _ in prompt.actions]
+        return await self._question(prompt.chat_id, ('approval', prompt.session_key), question_kind='approval',
+                                    text=str(prompt.description or 'Allow this command?'), detail=str(prompt.command),
+                                    choices=options)
+
+    def ask(self, turn: str, question: str, choices: list, detail: str = ''):
+        """coconut_ask: show a question card and wait for the answer. Runs in the thread of the tool."""
+        holder = {'event': threading.Event(), 'answer': None}
+        question_id = str(uuid.uuid4())
+        self._questions[question_id] = ('ask', holder)
+        try:
+            self._bridge.request('/v1/gateway/events', {
+                'turn_id': turn, 'kind': 'question', 'question_id': question_id, 'question_kind': 'ask',
+                'text': question, 'detail': detail,
+                'choices': [dict(id=f'choice-{index}', label=str(choice)) for index, choice in enumerate(choices)]},
+                REQUEST_SECONDS)
+            holder['event'].wait(ASK_SECONDS)
+            return holder['answer']
+        finally:
+            self._questions.pop(question_id, None)
+
+    def _answer(self, item: dict) -> None:
+        route = self._questions.pop(str(item.get('question_id')), None)
+        if route is None:
+            return
+        text, choice = str(item.get('text') or ''), str(item.get('choice') or '')
+        try:
+            if route[0] == 'clarify':
+                from tools.clarify_gateway import resolve_gateway_clarify
+                resolve_gateway_clarify(route[1], text)
+            elif route[0] == 'approval':
+                from tools.approval import resolve_gateway_approval
+                resolve_gateway_approval(route[1], choice or 'deny', reason=text or None)
+            else:
+                route[1]['answer'] = text
+                route[1]['event'].set()
+        except Exception:
+            LOG.exception('Coconut: Hermes did not take the answer to a question.')
 
     async def get_chat_info(self, chat_id: str) -> dict:
         return {'name': 'Coconut', 'type': 'dm', 'chat_id': chat_id}
