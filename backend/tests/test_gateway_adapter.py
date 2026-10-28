@@ -320,6 +320,21 @@ class GatewayAdapterTests(unittest.TestCase):
         gateway._startup_restore_in_progress = False
         self.wait_connected()
 
+    def test_an_idle_poll_is_no_activity_of_the_gateway(self):
+        # Hermes stops a gateway that a client started when it is idle (gateway/run_idle_exit.py). Only the clients
+        # of its own API stamp activity or count as attached. The adapter adds neither, also after many empty polls.
+        gateway = types.SimpleNamespace(_startup_restore_in_progress=False, _idle_exit_last_activity=1.0,
+                                        _idle_exit_clients=0)
+        before = dict(vars(gateway))
+        async def runner(event):
+            return 'Unused.'
+        with patch.object(self.adapter_module, 'POLL_SECONDS', .05):
+            self.connect(runner, gateway)
+            self.wait_connected()
+            time.sleep(.5)
+        self.assertEqual(vars(gateway), before)
+        self.assertEqual((self.adapter.events, self.adapter._active), ([], set()))
+
     def test_the_end_of_a_turn_is_reported_again_after_a_failure(self):
         async def runner(event):
             return 'Done.'
