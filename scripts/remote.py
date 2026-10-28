@@ -348,8 +348,9 @@ def hermes_env(home: Path) -> dict:
             continue
         key, value = line.split("=", 1)
         value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
-            value = value[1:-1]
+        if value[:1] in ("'", '"') and value.find(value[0], 1) > 0:
+            # A quoted value ends at its closing quote. A comment after it is not part of it.
+            value = value[1:value.find(value[0], 1)]
         elif " #" in value:
             # As python-dotenv reads an unquoted value: a comment after a space is not part of it.
             value = value.split(" #", 1)[0].rstrip()

@@ -112,10 +112,12 @@ class RemoteToolsTests(unittest.TestCase):
             (home / "hermes").mkdir()
             (home / "hermes/.env").write_text('# Hermes\nexport ANTHROPIC_API_KEY="hermes-anthropic"\n'
                                               "TELEGRAM_BOT_TOKEN=other\nOPENAI_API_KEY=\n"
-                                              "OPENROUTER_API_KEY=hermes-openrouter # personal\n")
+                                              "OPENROUTER_API_KEY=hermes-openrouter # personal\n"
+                                              "OPENAI_API_KEY='hermes-openai' # work\n")
             with patch.object(remote, "ROOT", home / "Coconut"), patch.dict("os.environ", HERMES_HOME=str(home / "hermes")):
                 self.assertEqual(remote.local_model_keys(), {"ANTHROPIC_API_KEY": "hermes-anthropic",
-                                                             "OPENROUTER_API_KEY": "hermes-openrouter"})
+                                                             "OPENROUTER_API_KEY": "hermes-openrouter",
+                                                             "OPENAI_API_KEY": "hermes-openai"})
                 # Keys that Coconut saved and did not move yet come first.
                 (home / "Coconut/.runtime/host").mkdir(parents=True)
                 saved = home / "Coconut/.runtime/host/credentials.json"
