@@ -4,8 +4,9 @@ A tool finds its chat from the session context of the gateway (`gateway.session_
 gateway internals. The chat ID is the Coconut bot ID, and the adapter of this process knows the running turn of that
 chat. The service then acts for the Coconut task of that turn (backend/coconut/gateway_chat.py, gateway_tool).
 
-Each tool is available only in a Coconut chat of the gateway (check_fn). Hermes enables a plugin toolset on each
-platform by default.
+Hermes enables a plugin toolset on each platform by default and lists plugin tools behind its tool search. A check_fn
+that reads the session context hid the tools also in Coconut chats (the native check of a real gateway showed it), so
+the tools show on each platform. Each tool refuses to act outside a Coconut chat turn.
 """
 from __future__ import annotations
 
@@ -38,14 +39,6 @@ MESSAGE_BOT = {'name': 'coconut_message_bot', 'description': (
         'bot': {'type': 'string', 'description': 'The name or the ID of the other bot.'},
         'text': {'type': 'string', 'maxLength': 20000, 'description': 'The message.'}},
         'required': ['bot', 'text']}}
-
-
-def in_coconut_chat() -> bool:
-    try:
-        from gateway.session_context import get_session_env
-        return get_session_env('HERMES_SESSION_PLATFORM', '') == NAME
-    except Exception:
-        return False
 
 
 def _turn():
@@ -95,5 +88,4 @@ def _service_tool(name):
 def register(ctx):
     for schema, handler in ((ASK, ask), (TRACK_PR, _service_tool('track_pr')),
                             (MESSAGE_BOT, _service_tool('message_bot'))):
-        ctx.register_tool(name=schema['name'], toolset=TOOLSET, schema=schema, handler=handler,
-                          check_fn=in_coconut_chat, emoji='🥥')
+        ctx.register_tool(name=schema['name'], toolset=TOOLSET, schema=schema, handler=handler, emoji='🥥')

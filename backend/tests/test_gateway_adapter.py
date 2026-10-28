@@ -444,7 +444,7 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(results[2], {'answer': 'Yes'})
         # Outside a Coconut chat a tool refuses.
         self.assertIn('error', json.loads(tools.ask({'question': 'x'})))
-        self.assertFalse(tools.in_coconut_chat())
+        self.assertIn('error', json.loads(tools._service_tool('track_pr')({'url': 'x'})))
 
     def test_the_gateway_session_of_a_chat_joins_the_native_conversation_of_the_bot(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']
