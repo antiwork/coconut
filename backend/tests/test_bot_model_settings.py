@@ -46,7 +46,8 @@ class NativeProvider:
 
     def observe_bot(self, bot):
         self.outside_database_lock()
-        return dict(bot, model_override=deepcopy(self.native.get(bot['id'])),
+        # A bot that follows the default shows no own model, as HermesProvider.observe_bots does.
+        return dict(bot, model_override=None if bot.get('model_follows_default') else deepcopy(self.native.get(bot['id'])),
                     instructions=HermesProfiles(self.root).read_instructions(bot))
 
     def set_bot_model(self, bot, selection):
@@ -117,6 +118,8 @@ class BotModelSettingsTests(unittest.TestCase):
     def test_external_native_changes_and_queued_dispatch_use_current_selection(self):
         first, second = self.bot(), self.bot('Lin')
         task = self.write('POST', '/v1/bots/' + first['id'] + '/messages', {'text': 'Check the answer', 'mode': 'queue'})
+        # The first bot has its own model, which then changes outside the app. The second follows the default.
+        self.write('PATCH', '/v1/bots/' + first['id'], {'model_override': self.selection('model-a', 'low')})
         self.provider.native[first['id']] = self.selection(effort='medium')
         self.provider.default['reasoning_effort'] = 'high'
         state = self.service.snapshot()
@@ -125,7 +128,8 @@ class BotModelSettingsTests(unittest.TestCase):
         self.service._run_task(task['id'])
         self.assertEqual(self.provider.started[0]['model'], 'model-b')
         self.write('PATCH', '/v1/bots/' + first['id'], {'model_override': None})
-        self.assertIsNone(self.provider.native[first['id']])
+        # null records the choice. The reconcile, not the request, writes the default into the profile.
+        self.assertTrue(self.service._get('bots', first['id'])['model_follows_default'])
         self.assertEqual(self.service.snapshot()['bots'][0]['effective_model']['model'], 'model-a')
 
     def test_invalid_selection_cannot_change_native_profile(self):

@@ -1,19 +1,24 @@
 """A bot follows the default model unless the person gives it its own model.
 
-Hermes profiles do not inherit from the default profile, so Coconut writes the default model into the profile of each
-bot that follows it. test_model_follow_native.py checks that write with the real config writer of Hermes.
+A request only records the choice in `model_follows_default`. One reconcile step (BotProfiles.reconcile_model_follow)
+writes the default model into the profile of each active bot that follows it. test_model_follow_native.py checks that
+write with the real config writer of Hermes.
 """
 from copy import deepcopy
 import logging
 from pathlib import Path
-import tempfile
-import unittest
 import sys
+import tempfile
+import threading
+import time
+import unittest
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
+from coconut import bot_profiles
+from coconut.model_catalog import HermesModelCatalog
 from coconut.providers import HermesProvider
-from coconut.service import Service, ServiceError
+from coconut.service import Service
 from test_bot_model_settings import NativeProvider
 
 
@@ -50,13 +55,9 @@ class FollowingProvider(NativeProvider):
 
     def set_bot_model(self, bot, selection):
         self.outside_database_lock()
+        assert selection is not None, 'A request writes only the own model of a bot.'
         self.writes.append(('bot', bot['id'], deepcopy(selection)))
-        if selection is None:
-            result = self.follow_default_model([bot['id']])[bot['id']]
-            if 'error' in result:
-                raise ValueError(result['error'])
-        else:
-            self.profiles[bot['id']] = deepcopy(selection)
+        self.profiles[bot['id']] = deepcopy(selection)
 
     def observe_bot(self, bot):
         observed = super().observe_bot(bot)
@@ -76,11 +77,9 @@ class BotModelFollowTests(unittest.TestCase):
         patcher = patch('coconut.bot_profiles.run_profile_command', side_effect=self.create_profile)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.service = None
-        self.open()
-
-    def tearDown(self):
-        self.service.close()
+        self.service = Service(self.root, self.provider, start_workers=False, hermes_home=self.hermes)
+        self.provider.service = self.service
+        self.addCleanup(self.service.close)
 
     @staticmethod
     def create_profile(python, source, hermes_home, operation, **payload):
@@ -90,19 +89,11 @@ class BotModelFollowTests(unittest.TestCase):
         (home / 'SOUL.md').write_text('')
         return {'home': str(home)}
 
-    def open(self):
-        if self.service is not None:
-            self.service.close()
-        self.service = Service(self.root, self.provider, start_workers=False, hermes_home=self.hermes)
-        self.provider.service = self.service
-
     def write(self, method, path, data, key=None):
         return self.service.mutate(method, path, data, key or str(uuid4()), 'test-phone')
 
     def bot(self, name):
-        bot = self.write('POST', '/v1/bots', {'name': name})
-        self.service.model_follow_thread.join(5)
-        return bot
+        return self.write('POST', '/v1/bots', {'name': name})
 
     def stored(self, bot_id):
         return self.service._get('bots', bot_id)
@@ -110,42 +101,136 @@ class BotModelFollowTests(unittest.TestCase):
     def by_profile(self, name):
         return next(bot_id for bot_id, row in self.service.profiles.rows.items() if row['name'] == name)
 
-    def follow(self):
-        with self.service.model_settings_lock:
-            return self.service._follow_default_model()
+    def woke(self):
+        """Whether a request asked for a reconcile since the last check."""
+        woke = self.service.model_follow_wake.is_set()
+        self.service.model_follow_wake.clear()
+        return woke
+
+    def reconcile(self):
+        self.provider.calls.clear()
+        return self.service.reconcile_model_follow()
+
+    def targeted(self):
+        return {bot_id for bot_ids, _ in self.provider.calls for bot_id in bot_ids}
 
     def selection(self):
         return dict(model='model-b', provider='native-b', reasoning_effort=None)
 
-    def test_a_new_bot_follows_the_default_and_its_profile_gets_the_default_model(self):
+    def test_a_new_bot_records_that_it_follows_and_the_reconcile_writes_its_profile(self):
+        self.woke()
         bot = self.bot('Ada')
         self.assertTrue(self.stored(bot['id'])['model_follows_default'])
-        self.assertIn(([bot['id']], []), self.provider.calls)
+        self.assertTrue(self.woke())
+        # The request writes no profile.
+        self.assertNotIn(bot['id'], self.provider.profiles)
+        self.assertFalse(self.reconcile())
         self.assertEqual(self.provider.profiles[bot['id']], self.provider.route())
         self.assertIsNone(self.service.snapshot()['bots'][-1]['model_override'])
 
-    def test_a_default_change_reaches_the_following_bots_only(self):
+    def test_a_default_change_records_the_default_and_the_reconcile_reaches_only_following_bots(self):
         following, own = self.bot('Ada'), self.bot('Lin')
         self.write('PATCH', '/v1/bots/' + own['id'], {'model_override': self.selection()})
         self.assertFalse(self.stored(own['id'])['model_follows_default'])
+        self.reconcile()
+        self.woke()
         response = self.write('PUT', '/v1/settings/model', dict(model='model-a', provider='native-a', reasoning_effort='high'))
         self.assertNotIn('model_follow_errors', response)
-        self.assertEqual(self.provider.profiles[following['id']],
-                         dict(model='model-a', provider='native-a', reasoning_effort='high'))
+        self.assertTrue(self.woke())
+        self.reconcile()
+        self.assertEqual(self.provider.profiles[following['id']], dict(model='model-a', provider='native-a', reasoning_effort='high'))
         self.assertEqual(self.provider.profiles[own['id']], self.selection())
-        self.assertNotIn(own['id'], self.provider.calls[-1][0])
+        self.assertNotIn(own['id'], self.targeted())
 
-    def test_null_returns_a_bot_to_the_default_model(self):
+    def test_null_records_the_choice_and_a_retry_needs_no_recovery(self):
         bot = self.bot('Ada')
         self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': self.selection()})
-        self.assertEqual(self.provider.profiles[bot['id']], self.selection())
-        response = self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None})
+        writes = len(self.provider.writes)
+        key = str(uuid4())
+        response = self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)
         self.assertIsNone(response['model_override'])
-        self.assertEqual(response['effective_model']['model'], 'model-a')
         self.assertTrue(self.stored(bot['id'])['model_follows_default'])
+        self.assertEqual(self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key), response)
+        # null writes no profile. The reconcile does.
+        self.assertEqual(len(self.provider.writes), writes)
+        self.assertEqual(self.provider.profiles[bot['id']], self.selection())
+        self.reconcile()
         self.assertEqual(self.provider.profiles[bot['id']], self.provider.route())
 
-    def test_a_start_classifies_earlier_bots_and_found_profiles_by_their_model(self):
+    def test_a_failed_write_is_recorded_shown_and_retried_by_the_next_reconcile(self):
+        bot = self.bot('Ada')
+        self.provider.failing.add(bot['id'])
+        with self.assertLogs('coconut.bot_profiles', logging.WARNING) as logs:
+            self.assertTrue(self.reconcile())
+        self.assertIn('Ada', logs.output[0])
+        self.assertIn('OSError', self.service.snapshot()['bots'][-1]['model_follow_error'])
+        self.assertTrue(self.stored(bot['id'])['model_follows_default'])
+        self.provider.failing.clear()
+        self.assertFalse(self.reconcile())
+        self.assertNotIn('model_follow_error', self.stored(bot['id']))
+        self.assertEqual(self.provider.profiles[bot['id']], self.provider.route())
+
+    def test_the_worker_retries_a_failed_write_without_a_wake(self):
+        bot = self.bot('Ada')
+        self.provider.failing.add(bot['id'])
+        with self.assertLogs('coconut.bot_profiles', logging.WARNING):
+            self.reconcile()
+        self.woke()
+        self.provider.failing.clear()
+        with patch.object(bot_profiles, 'SCAN_SECONDS', 0.01), patch.object(bot_profiles, 'FOLLOW_RETRY_SECONDS', 0):
+            worker = threading.Thread(target=self.service._model_follow_loop, daemon=True)
+            worker.start()
+            deadline = time.monotonic() + 5
+            while 'model_follow_error' in self.stored(bot['id']) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.service.stopping.set()
+            worker.join(5)
+        self.assertNotIn('model_follow_error', self.stored(bot['id']))
+
+    def test_the_reconcile_skips_deleted_archived_removed_and_missing_profiles(self):
+        deleted, archived, removed, missing, active = (self.bot(name) for name in ('Ada', 'Lin', 'Kai', 'Mo', 'Sam'))
+        self.reconcile()
+        self.write('DELETE', '/v1/bots/' + deleted['id'], {})
+        self.assertEqual(self.service.profiles.rows[deleted['id']]['state'], 'removed')
+        self.write('PATCH', '/v1/bots/' + archived['id'], {'archived': True})
+        with self.service.transaction():
+            self.service._write_profile_row(dict(self.service.profiles.rows[removed['id']], state='removed'))
+        home = Path(self.service.profiles.rows[missing['id']]['home'])
+        (home / 'SOUL.md').unlink()
+        home.rmdir()
+        self.service.rescan_profiles()
+        self.assertEqual(self.service.profiles.rows[missing['id']]['state'], 'missing')
+        self.write('PUT', '/v1/settings/model', self.selection())
+        self.reconcile()
+        self.assertEqual(self.targeted() & {deleted['id'], archived['id'], removed['id'], missing['id']}, set())
+        self.assertEqual(self.provider.profiles[active['id']], self.provider.route())
+        for bot in (deleted, archived, removed, missing):
+            self.assertEqual(self.provider.profiles[bot['id']]['model'], 'model-a')
+
+    def test_a_restored_bot_gets_the_current_default(self):
+        bot = self.bot('Ada')
+        self.reconcile()
+        self.write('PATCH', '/v1/bots/' + bot['id'], {'archived': True})
+        self.write('PUT', '/v1/settings/model', self.selection())
+        self.reconcile()
+        self.assertEqual(self.provider.profiles[bot['id']]['model'], 'model-a')
+        self.woke()
+        self.write('PATCH', '/v1/bots/' + bot['id'], {'archived': False, 'model_override': None})
+        self.assertTrue(self.woke())
+        self.reconcile()
+        self.assertEqual(self.provider.profiles[bot['id']], self.selection())
+
+    def test_a_default_set_outside_the_app_reaches_the_bots_at_the_next_start(self):
+        bot = self.bot('Ada')
+        self.reconcile()
+        # `hermes config set model.default model-b` on the default profile.
+        self.provider.default = dict(self.provider.default, model='model-b', provider='native-b')
+        with patch.object(self.service, '_set_hermes_entries', return_value=True) as entries:
+            self.service._reconcile_hermes_profiles(sys.executable, '/hermes/source')
+        entries.assert_called_once_with(sys.executable, '/hermes/source')
+        self.assertEqual(self.provider.profiles[bot['id']]['model'], 'model-b')
+
+    def test_earlier_bots_and_found_profiles_get_their_choice_by_their_model(self):
         same, other = self.bot('Ada'), self.bot('Lin')
         # Bots of an earlier install have no choice yet.
         with self.service.transaction():
@@ -163,97 +248,20 @@ class BotModelFollowTests(unittest.TestCase):
         outside, empty, default = self.by_profile('outside'), self.by_profile('empty'), self.by_profile('default')
         self.provider.profiles[outside] = self.selection()
         self.assertNotIn('model_follows_default', self.stored(outside))
-        with patch.object(self.service, '_set_hermes_entries', return_value=True) as entries:
-            self.service._reconcile_hermes_profiles(sys.executable, '/hermes/source')
-        entries.assert_called_once_with(sys.executable, '/hermes/source')
-        self.assertEqual(sorted(self.provider.calls[-1][1]), sorted([same['id'], other['id'], outside, empty, default]))
+        self.reconcile()
+        self.assertEqual(self.provider.calls[-1][1], sorted([same['id'], other['id'], outside, empty, default]))
         for bot_id, follows in ((same['id'], True), (other['id'], False), (outside, False), (empty, True), (default, True)):
             with self.subTest(bot=bot_id):
                 self.assertEqual(self.stored(bot_id)['model_follows_default'], follows)
-        # The bot of its own model keeps it. A following bot gets the whole default, effort too.
         self.assertEqual(self.provider.profiles[other['id']], self.selection())
         self.assertEqual(self.provider.profiles[same['id']], self.provider.route())
-        # A later start changes only the following bots and asks for no choice again.
+        # A later reconcile changes only the following bots and asks for no choice again.
         self.provider.default = dict(self.provider.default, model='model-b', provider='native-b')
-        self.follow()
+        self.reconcile()
         self.assertEqual(self.provider.calls[-1], (sorted([same['id'], empty, default]), []))
         self.assertEqual(self.provider.profiles[outside], self.selection())
-        self.assertEqual(self.provider.profiles[empty]['model'], 'model-b')
 
-    def test_a_choice_of_the_person_stays_when_a_classification_ends_later(self):
-        bot = self.stored(self.bot('Ada')['id'])
-        bot.pop('model_follows_default')
-        self.service._apply_follow_result(bot, {'follows': False, 'changed': False})
-        self.assertFalse(bot['model_follows_default'])
-        self.service._apply_follow_result(bot, {'follows': True, 'changed': True})
-        self.assertFalse(bot['model_follows_default'])
-
-    def test_a_failed_write_is_logged_kept_on_the_bot_and_cleared_by_a_later_success(self):
-        bot = self.bot('Ada')
-        self.provider.failing.add(bot['id'])
-        with self.assertLogs('coconut.bot_profiles', logging.WARNING) as logs:
-            response = self.write('PUT', '/v1/settings/model', self.selection())
-        self.assertIn('Ada', logs.output[0])
-        self.assertEqual([failure['bot_id'] for failure in response['model_follow_errors']], [bot['id']])
-        self.assertIn('OSError', self.service.snapshot()['bots'][-1]['model_follow_error'])
-        # The bot still follows the default, and the next start tries again.
-        self.assertTrue(self.stored(bot['id'])['model_follows_default'])
-        self.provider.failing.clear()
-        self.assertEqual(self.follow(), [])
-        self.assertNotIn('model_follow_error', self.stored(bot['id']))
-        self.assertEqual(self.provider.profiles[bot['id']]['model'], 'model-b')
-
-    def test_a_null_that_hermes_cannot_write_fails_and_keeps_the_own_model(self):
-        bot = self.bot('Ada')
-        self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': self.selection()})
-        self.provider.failing.add(bot['id'])
-        key = str(uuid4())
-        with self.assertRaises(ServiceError):
-            self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)
-        # A retry checks the profile itself. The profile still has its own model, so the change is not confirmed.
-        with self.assertRaises(ServiceError) as raised:
-            self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)
-        self.assertEqual(raised.exception.status, 409)
-        self.assertFalse(self.stored(bot['id'])['model_follows_default'])
-        self.assertEqual(self.provider.profiles[bot['id']], self.selection())
-
-    def test_a_retried_null_confirms_the_change_when_the_profile_gets_the_default(self):
-        bot = self.bot('Ada')
-        self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': self.selection()})
-        self.provider.failing.add(bot['id'])
-        key = str(uuid4())
-        with self.assertRaises(ServiceError):
-            self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)
-        self.provider.failing.clear()
-        self.assertIsNone(self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)['model_override'])
-        self.assertTrue(self.stored(bot['id'])['model_follows_default'])
-        self.assertEqual(self.provider.profiles[bot['id']], self.provider.route())
-
-    def test_a_recovered_default_change_reaches_the_following_bots(self):
-        bot = self.bot('Ada')
-        saved = self.provider.set_model_default
-
-        def lost_answer(selection):
-            saved(selection)
-            raise RuntimeError('The answer of Hermes was lost.')
-        self.provider.set_model_default = lost_answer
-        key = str(uuid4())
-        with self.assertRaises(ServiceError):
-            self.write('PUT', '/v1/settings/model', self.selection(), key)
-        self.provider.set_model_default = saved
-        self.assertEqual(self.write('PUT', '/v1/settings/model', self.selection(), key)['model'], 'model-b')
-        self.assertEqual(self.provider.profiles[bot['id']]['model'], 'model-b')
-
-    def test_a_retry_of_a_default_change_returns_the_same_failures(self):
-        bot = self.bot('Ada')
-        self.provider.failing.add(bot['id'])
-        key = str(uuid4())
-        with self.assertLogs('coconut.bot_profiles', logging.WARNING):
-            first = self.write('PUT', '/v1/settings/model', self.selection(), key)
-        self.assertEqual(self.write('PUT', '/v1/settings/model', self.selection(), key)['model_follow_errors'],
-                         first['model_follow_errors'])
-
-    def test_a_bot_without_a_choice_keeps_the_failure_and_gets_its_choice_later(self):
+    def test_a_failed_classification_leaves_no_choice_and_records_the_error(self):
         bot = self.bot('Ada')
         with self.service.transaction():
             stored = self.stored(bot['id'])
@@ -261,94 +269,30 @@ class BotModelFollowTests(unittest.TestCase):
             self.service._put('bots', stored)
         self.provider.failing.add(bot['id'])
         with self.assertLogs('coconut.bot_profiles', logging.WARNING):
-            self.assertEqual([failure['bot_id'] for failure in self.follow()], [bot['id']])
+            self.assertTrue(self.reconcile())
         self.assertNotIn('model_follows_default', self.stored(bot['id']))
         self.assertIn('OSError', self.stored(bot['id'])['model_follow_error'])
         self.provider.failing.clear()
-        self.follow()
+        self.reconcile()
         self.assertTrue(self.stored(bot['id'])['model_follows_default'])
         self.assertNotIn('model_follow_error', self.stored(bot['id']))
 
-    def test_a_model_for_the_default_profile_bot_reaches_the_following_bots(self):
-        self.follow()
+    def test_an_own_model_for_the_default_profile_bot_reaches_the_following_bots(self):
+        self.reconcile()
         following, default = self.bot('Ada')['id'], self.by_profile('default')
 
         def write_default(bot, selection):
             # The profile of this bot is the Hermes home, so its model is the default model.
-            self.provider.writes.append(('bot', bot['id'], deepcopy(selection)))
             self.provider.default = dict(self.provider.default, **selection)
         self.provider.set_bot_model = write_default
+        self.woke()
         self.write('PATCH', '/v1/bots/' + default, {'model_override': self.selection()})
+        self.assertTrue(self.woke())
+        self.reconcile()
         self.assertEqual(self.provider.profiles[following], self.selection())
 
 
-    # Coconut never writes into the profile of a deleted or archived bot, or into a removed or missing profile.
-
-    def targeted(self):
-        return {bot_id for bot_ids, _ in self.provider.calls for bot_id in bot_ids}
-
-    def test_a_bot_removed_after_a_failed_reset_gets_no_write_on_the_retry_or_later(self):
-        bot = self.bot('Ada')
-        self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': self.selection()})
-        self.provider.failing.add(bot['id'])
-        key = str(uuid4())
-        with self.assertRaises(ServiceError):
-            self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)
-        self.write('DELETE', '/v1/bots/' + bot['id'], {})
-        self.assertEqual(self.service.profiles.rows[bot['id']]['state'], 'removed')
-        self.provider.failing.clear()
-        self.provider.calls.clear()
-        with self.assertRaises(ServiceError) as raised:
-            self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)
-        self.assertEqual(raised.exception.status, 409)
-        self.write('PUT', '/v1/settings/model', dict(model='model-a', provider='native-a', reasoning_effort='high'))
-        self.follow()
-        self.assertNotIn(bot['id'], self.targeted())
-        self.assertEqual(self.provider.profiles[bot['id']], self.selection())
-
-    def test_a_start_skips_a_removed_profile_and_a_missing_one(self):
-        removed, missing, kept = self.bot('Ada'), self.bot('Lin'), self.bot('Kai')
-        with self.service.transaction():
-            row = self.service.profiles.rows[removed['id']]
-            self.service._write_profile_row(dict(row, state='removed'))
-        missing_home = Path(self.service.profiles.rows[missing['id']]['home'])
-        for path in missing_home.iterdir():
-            path.unlink()
-        missing_home.rmdir()
-        self.service.rescan_profiles()
-        self.assertEqual(self.service.profiles.rows[missing['id']]['state'], 'missing')
-        self.provider.calls.clear()
-        self.provider.default = dict(self.provider.default, model='model-b', provider='native-b')
-        with patch.object(self.service, '_set_hermes_entries', return_value=True):
-            self.service._reconcile_hermes_profiles(sys.executable, '/hermes/source')
-        self.assertIn(kept['id'], self.targeted())
-        self.assertFalse({removed['id'], missing['id']} & self.targeted())
-        self.assertEqual(self.provider.profiles[kept['id']]['model'], 'model-b')
-        self.assertEqual(self.provider.profiles[removed['id']]['model'], 'model-a')
-
-    def test_an_archived_bot_gets_the_default_model_when_the_person_restores_it(self):
-        bot = self.bot('Ada')
-        self.write('PATCH', '/v1/bots/' + bot['id'], {'archived': True})
-        self.provider.calls.clear()
-        self.write('PUT', '/v1/settings/model', self.selection())
-        self.assertNotIn(bot['id'], self.targeted())
-        self.assertEqual(self.provider.profiles[bot['id']]['model'], 'model-a')
-        self.write('PATCH', '/v1/bots/' + bot['id'], {'archived': False})
-        self.assertEqual(self.provider.profiles[bot['id']], self.selection())
-
-    def test_the_settings_process_never_starts_for_a_profile_that_is_not_active(self):
-        from coconut.model_catalog import HermesModelCatalog
-        import threading
-        catalog = object.__new__(HermesModelCatalog)
-        catalog._lock, catalog._profile_cache = threading.RLock(), {}
-        catalog.profile_rows = {'a': {'state': 'removed'}, 'b': {'state': 'missing'}}
-        with patch.object(catalog, '_call', side_effect=AssertionError('No write may start.')):
-            result = catalog.follow_default(['a', 'b', 'c'])
-        self.assertEqual(set(result), {'a', 'b', 'c'})
-        self.assertTrue(all('skipped' in value for value in result.values()))
-
-
-class ObservedModelTests(unittest.TestCase):
+class GuardTests(unittest.TestCase):
     def test_a_following_bot_shows_no_own_model_and_a_bot_with_its_own_model_shows_it(self):
         provider = object.__new__(HermesProvider)
         own = dict(model='model-b', provider='native-b', reasoning_effort=None)
@@ -362,6 +306,15 @@ class ObservedModelTests(unittest.TestCase):
         self.assertNotIn('_native_effective_model', observed['a'])
         self.assertEqual(observed['b']['model_override'], own)
         self.assertEqual(observed['b']['_native_effective_model'], dict(own, base_url=None))
+
+    def test_the_settings_process_never_starts_for_a_profile_that_is_not_active(self):
+        catalog = object.__new__(HermesModelCatalog)
+        catalog._lock, catalog._profile_cache = threading.RLock(), {}
+        catalog.profile_rows = {'a': {'state': 'removed'}, 'b': {'state': 'missing'}}
+        with patch.object(catalog, '_call', side_effect=AssertionError('No write may start.')):
+            result = catalog.follow_default(['a', 'b', 'c'])
+        self.assertEqual(set(result), {'a', 'b', 'c'})
+        self.assertTrue(all('skipped' in value for value in result.values()))
 
 
 if __name__ == '__main__':

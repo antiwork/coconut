@@ -388,17 +388,6 @@ class HermesProvider(FixtureProvider):
                 'completions': {bot['id']: saved[bot['id']]['completions'] for bot in bots}}
 
     def set_bot_model(self, bot, selection):
-        """Give the bot its own model, or make it follow the default model (selection None)."""
-        if selection is None:
-            # Hermes profiles do not inherit from the default profile, so the profile gets the default model itself.
-            result = self.follow_default_model([bot['id']])[bot['id']]
-            if 'skipped' in result:
-                from .profiles import ProfileError
-                raise ProfileError(result['skipped'])
-            if 'error' in result:
-                from .model_catalog import ModelCatalogError
-                raise ModelCatalogError(result['error'])
-            return result
         return self.catalog.set_profile(bot['id'], selection)
 
     def follow_default_model(self, bot_ids, classify=()):
