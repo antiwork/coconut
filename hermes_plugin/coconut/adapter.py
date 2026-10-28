@@ -179,9 +179,15 @@ class CoconutAdapter(BasePlatformAdapter):
     async def on_processing_complete(self, event: MessageEvent, outcome) -> None:
         if self._turns.get(event.source.chat_id) == event.message_id:
             del self._turns[event.source.chat_id]
-        self._active.discard(event.message_id)
         self._typing.discard(event.message_id)
-        await self._report(event.message_id, 'done', outcome=getattr(outcome, 'value', str(outcome)))
+        # The turn stays active in the polls until the service has its end. Otherwise the service would fail a
+        # finished turn after a short outage.
+        for delay in (*RETRY_SECONDS, None):
+            if await self._report(event.message_id, 'done', outcome=getattr(outcome, 'value', str(outcome))):
+                break
+            if delay is not None:
+                await asyncio.sleep(delay)
+        self._active.discard(event.message_id)
 
     async def send(self, chat_id: str, content: str, reply_to=None, metadata=None) -> SendResult:
         turn = self._turns.get(str(chat_id))

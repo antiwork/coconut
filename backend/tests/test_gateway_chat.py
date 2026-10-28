@@ -204,10 +204,16 @@ class ServiceRoutingTests(unittest.TestCase):
             self.service._put('tasks', stored)
         self.service._run_task(task['id'])
         self.assertEqual(len(self.provider.starts), 1)
+        # A quoted reply needs its quote, which only the worker passes on.
+        answer = next(m for m in self.service._task_messages(task['id']) if m['role'] == 'assistant')
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages',
+                          {'text': 'Do that instead.', 'reply_to_message_id': answer['id']})
+        self.service._run_task(task['id'])
+        self.assertEqual(len(self.provider.starts), 2)
         task = self.send('Nobody takes this one.')
         with patch.object(gateway_bridge, 'TAKE_SECONDS', 0.2):
             self.service._run_task(task['id'])
-        self.assertEqual(len(self.provider.starts), 2)
+        self.assertEqual(len(self.provider.starts), 3)
         self.assertEqual(self.service._get('tasks', task['id'])['status'], 'completed')
 
     def test_a_cancelled_turn_stops_in_the_gateway(self):
@@ -324,8 +330,11 @@ class ProfileEditTests(unittest.TestCase):
             self.assertEqual(gateway_plugin.link(home, gateway_plugin.PLUGIN, False), 'removed')
             self.assertFalse((home / 'plugins/coconut').exists())
             (home / 'plugins/coconut').mkdir()
+            # Another plugin of this name, and its settings, stay as they are in both directions.
             self.assertEqual(gateway_plugin.link(home, gateway_plugin.PLUGIN, True), 'taken')
-            self.assertEqual(gateway_plugin.link(home, gateway_plugin.PLUGIN, False), 'unchanged')
+            self.assertEqual(gateway_plugin.link(home, gateway_plugin.PLUGIN, False), 'taken')
+            (home / 'config.yaml').write_text('{}')
+            self.assertEqual(gateway_plugin.update(home, False), 'taken')
             self.assertTrue((home / 'plugins/coconut').is_dir())
             # Without a config.yaml, a home stays as it is.
             self.assertEqual(gateway_plugin.update(home / 'empty', True), 'skipped')

@@ -23,7 +23,7 @@ import threading
 import time
 
 from . import hermes_runtime
-from .gateway_bridge import GatewayBridge, GatewayUnavailable, plain_chat_turn
+from .gateway_bridge import WORKER_MESSAGE_FIELDS, GatewayBridge, GatewayUnavailable, plain_chat_turn
 
 LOG = logging.getLogger(__name__)
 RUNTIMES = ('worker', 'gateway')
@@ -106,7 +106,10 @@ class GatewayChat:
         if not self.gateway_bridge.connected(home):
             return False
         turn = set(task.get('_turn_message_ids', []))
-        text = '\n\n'.join(message['text'] for message in history if message.get('id') in turn)
+        messages = [message for message in history if message.get('id') in turn]
+        if any(message.get(field) for message in messages for field in WORKER_MESSAGE_FIELDS):
+            return False
+        text = '\n\n'.join(message['text'] for message in messages)
         if not text.strip():
             return False
         try:

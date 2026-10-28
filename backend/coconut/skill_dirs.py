@@ -118,8 +118,9 @@ def main(arguments: list[str]) -> int:
         if result != 'skipped':
             print(f'{home / "config.yaml"}: {result}')
         if platform == 'taken':
-            failed = True
-            print(f'{home / "plugins" / gateway_plugin.NAME}: another plugin has this name. The coconut gateway platform is not installed.')
+            # Another plugin has the name. Coconut leaves it and its settings as they are.
+            failed = failed or action == 'add'
+            print(f'{home / "plugins" / gateway_plugin.NAME}: another plugin has this name. Coconut did not change it.')
         elif platform != 'skipped':
             print(f'{home / "config.yaml"}: coconut gateway platform {platform}')
     return 1 if failed else 0

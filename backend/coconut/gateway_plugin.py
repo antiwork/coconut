@@ -54,7 +54,7 @@ def with_platform(config: dict, present: bool) -> dict | None:
 
 def link(home: Path, folder: Path, present: bool) -> str:
     """Link `<home>/plugins/coconut` to the plugin folder, or remove that link. Return "added", "removed",
-    "unchanged", or "taken" for another file of that name, which stays."""
+    "unchanged", or "taken" for another file of that name, which stays in both directions."""
     path = Path(home) / 'plugins' / NAME
     ours = path.is_symlink() and os.path.normpath(os.path.join(path.parent, os.readlink(path))) == os.path.normpath(folder)
     if present:
@@ -66,7 +66,7 @@ def link(home: Path, folder: Path, present: bool) -> str:
         path.symlink_to(folder, target_is_directory=True)
         return 'added'
     if not ours:
-        return 'unchanged'
+        return 'taken' if path.exists() or path.is_symlink() else 'unchanged'
     path.unlink()
     return 'removed'
 
@@ -84,7 +84,7 @@ def update(home: Path, present: bool, folder: Path = PLUGIN) -> str:
     os.environ['HERMES_HOME'] = str(home)
     linked = link(home, Path(folder), present)
     if linked == 'taken':
-        # Another plugin has the name. Enabling the name would load that plugin.
+        # Another plugin has the name. Its settings are not Coconut's to add or to remove.
         return 'taken'
     changed = with_platform(raw_config(home), present)
     if changed is not None:

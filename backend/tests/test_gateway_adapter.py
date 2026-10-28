@@ -247,6 +247,26 @@ class GatewayAdapterTests(unittest.TestCase):
         gateway._startup_restore_in_progress = False
         self.wait_connected()
 
+    def test_the_end_of_a_turn_is_reported_again_after_a_failure(self):
+        async def runner(event):
+            return 'Done.'
+        self.connect(runner)
+        report = self.adapter._report
+        failures = []
+        async def flaky(turn, kind, **fields):
+            if kind == 'done' and not failures:
+                failures.append(kind)
+                # Until the service has the end, the polls still list the turn.
+                self.assertIn(turn, self.adapter._active)
+                return False
+            return await report(turn, kind, **fields)
+        self.adapter._report = flaky
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Finish.'})
+        self.service._run_task(task['id'])
+        self.assertEqual(failures, ['done'])
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.adapter._active, set())
+
     def test_the_adapter_asks_again_after_the_service_starts_with_a_new_token(self):
         bridge = self.adapter_module.Bridge(self.service.gateway_bridge.address_file)
         self.assertEqual(bridge.request('/v1/gateway/poll', {'home': str(self.home), 'wait': 0}, 5),

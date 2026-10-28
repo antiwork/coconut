@@ -41,6 +41,11 @@ WORKER_INPUTS = (
     '_bot_deletion_receipts', '_withdrawal_corrections', '_direct_reply_message_id', '_work_status_only')
 
 
+# A message with one of these fields carries Coconut context that a gateway message does not: a quoted message, a
+# mention of another bot, a work item, or a reaction.
+WORKER_MESSAGE_FIELDS = ('reply_to', 'bot_mentions', 'work_context', 'reaction_event')
+
+
 def plain_chat_turn(task: dict) -> bool:
     """Whether a new turn is a plain chat turn: a person's text message in a bot's own chat, and nothing else."""
     return bool(task.get('_chat_session')) and not any(task.get(key) for key in WORKER_INPUTS)
