@@ -152,6 +152,9 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_gateway_chat.py 2> .runtime/native-gateway-chat.log || { cat .runtime/native-gateway-chat.log; exit 1; }
           cat .runtime/native-gateway-chat.log
           grep -qx 'OK' .runtime/native-gateway-chat.log # A real gateway must carry the chat turn, so the check must not skip.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_gateway_idle_exit.py 2> .runtime/native-gateway-idle-exit.log || { cat .runtime/native-gateway-idle-exit.log; exit 1; }
+          cat .runtime/native-gateway-idle-exit.log
+          grep -qx 'OK' .runtime/native-gateway-idle-exit.log # Real client-started gateways must run, so the check must not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_initial_input.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_api_fallback.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_compression.py
