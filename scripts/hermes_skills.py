@@ -42,6 +42,8 @@ def main() -> int:
         return 1
     with runtime_module.isolated(environment) as (isolated, folder):
         # The edit runs in the real Hermes homes. The isolated environment only keeps the model keys out.
+        # Earlier versions saved model keys in the data folder. The edit moves them into Hermes (model_keys.py).
+        isolated = dict(isolated, COCONUT_SAVED_MODEL_KEYS=str(host.DEFAULT_DATA / "credentials.json"))
         result = subprocess.run(command(args.action, runtime), cwd=folder, env=isolated, stdin=subprocess.DEVNULL,
                                 text=True, capture_output=True, timeout=120)
     sys.stdout.write(result.stdout)

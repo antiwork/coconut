@@ -105,10 +105,12 @@ PLATFORM = {'plugins': {'enabled': ['coconut']}, 'gateway': {'platforms': {'coco
 class SkillFolderTests(unittest.TestCase):
     """Setup adds the skill folder to `skills.external_dirs` through the config writer of Hermes. See skill_dirs.py."""
 
-    def run_edit(self, action, home, *others):
+    def run_edit(self, action, home, *others, saved=None):
         # As scripts/hermes_skills.py runs it: isolated, with the Hermes source folder as an argument.
         env = {key: os.environ[key] for key in ('PATH', 'HOME') if key in os.environ}
         env.update(HERMES_HOME=str(home), HERMES_DISABLE_LAZY_INSTALLS='1', HERMES_DISABLE_TELEMETRY='1')
+        if saved is not None:
+            env['COCONUT_SAVED_MODEL_KEYS'] = str(saved)
         result = subprocess.run([PYTHON, '-I', '-B', str(BACKEND / 'coconut/skill_dirs.py'), action,
                                  str(Path(SOURCE).resolve()), str(self.folder), str(home), *map(str, others)],
                                 env=env, capture_output=True, text=True, timeout=120)
@@ -174,6 +176,36 @@ class SkillFolderTests(unittest.TestCase):
         (self.home / 'config.yaml').unlink()
         self.assertEqual(self.run_edit('remove', self.home), '')
         self.assertFalse((self.home / 'config.yaml').exists())
+
+    def hermes_key(self, home, name):
+        # The value that Hermes reads for the profile, through its own env reader.
+        env = {key: os.environ[key] for key in ('PATH', 'HOME') if key in os.environ}
+        env.update(HERMES_HOME=str(home), HERMES_DISABLE_LAZY_INSTALLS='1', HERMES_DISABLE_TELEMETRY='1',
+                   PYTHONPATH=str(Path(SOURCE).resolve()))
+        result = subprocess.run([PYTHON, '-c', 'import sys; from hermes_cli.config import get_env_value; '
+                                 'print(get_env_value(sys.argv[1]) or "")', name],
+                                env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr[-4000:])
+        return result.stdout.strip()
+
+    def test_each_profile_gets_the_provider_keys_of_the_default_profile_through_hermes(self):
+        (self.home / 'config.yaml').write_text('model: gpt\n')
+        (self.home / '.env').write_text('ANTHROPIC_API_KEY=sk-ant-default-check\n')
+        work = self.home / 'profiles/work'
+        work.mkdir(parents=True)
+        (work / 'config.yaml').write_text('model: gpt\n')
+        (work / '.env').write_text('# Hermes seeds this header in a new profile.\n')
+        saved = self.root / 'credentials.json'
+        saved.write_text(json.dumps({'OPENAI_API_KEY': 'sk-openai-saved-check'}))
+        output = self.run_edit('add', self.home, saved=saved)
+        self.assertNotIn('sk-', output)
+        self.assertFalse(saved.exists())
+        self.assertEqual(self.hermes_key(work, 'ANTHROPIC_API_KEY'), 'sk-ant-default-check')
+        self.assertEqual(self.hermes_key(work, 'OPENAI_API_KEY'), 'sk-openai-saved-check')
+        self.assertEqual(self.hermes_key(self.home, 'OPENAI_API_KEY'), 'sk-openai-saved-check')
+        before = (work / '.env').read_text()
+        self.assertNotIn('model keys', self.run_edit('add', self.home))
+        self.assertEqual((work / '.env').read_text(), before)
 
     def test_hermes_lists_the_skill_from_the_added_folder(self):
         skill = self.folder / 'coconut'

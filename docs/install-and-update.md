@@ -41,6 +41,8 @@ The installer refuses an unrelated folder. It does not install Hermes. See [The 
 
 `--copy-model-access` transfers this Mac's saved model keys through SSH. The receiver stores them with permissions `0600`.
 Omit this flag to configure separate model access on the mini.
+
+Model keys live in Hermes, as Hermes keeps them: each profile reads its provider keys from its own `.env`. At each start, update and setup, Coconut moves keys that it saved in `<data>/credentials.json` into the default profile's `.env`, then removes that file. It also gives each named profile the provider keys of the default profile that the profile lacks, as `hermes_cli.profiles.backfill_profile_envs` does for a profile without a `.env`. A key that a profile already has stays. Coconut never prints a key. See `backend/coconut/model_keys.py`.
 The source package never includes keys, bot data, logs, or builds.
 
 The first installation starts a user LaunchAgent. It restarts Coconut after a process failure and starts after macOS account login.

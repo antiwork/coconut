@@ -11,7 +11,9 @@ Run this file under the Python of the installed Hermes:
 
 Each Hermes home gets the change in its config.yaml. The first home is the default profile: its config.yaml is created
 when it is missing. Each other home, and each named profile in `<home>/profiles`, changes only when it has a config.yaml.
-Each home also gets Coconut's `coconut` gateway platform, or loses it (gateway_plugin).
+Each home also gets Coconut's `coconut` gateway platform, or loses it (gateway_plugin). An add also gives each named
+profile the default profile's provider keys that it lacks, and moves Coconut's saved keys into the default profile when
+COCONUT_SAVED_MODEL_KEYS names that file (model_keys).
 """
 from __future__ import annotations
 
@@ -105,7 +107,19 @@ def main(arguments: list[str]) -> int:
     # -I leaves the folder of this file and PYTHONPATH out of sys.path. Hermes comes first, as its launcher puts it.
     sys.path[:0] = [path for path in (source, str(Path(__file__).resolve().parent)) if path]
     import gateway_plugin
+    import model_keys
     failed = False
+    if action == 'add':
+        # Model access the Hermes way: each profile's own .env. See model_keys.
+        try:
+            names = model_keys.provider_keys()
+            saved = os.environ.get('COCONUT_SAVED_MODEL_KEYS')
+            moved = model_keys.import_saved(Path(default), Path(saved)) if saved else []
+            if moved:
+                print(f'{Path(default) / ".env"}: model keys moved from Coconut: {", ".join(moved)}')
+        except Exception as error:
+            failed, names = True, set()
+            print(f'{Path(default) / ".env"}: model keys not changed: {type(error).__name__}')
     for home, create in homes(Path(default), [Path(path) for path in others]):
         try:
             result = update(home, os.path.normpath(folder), action == 'add', create=create)
@@ -123,6 +137,15 @@ def main(arguments: list[str]) -> int:
             print(f'{home / "plugins" / gateway_plugin.NAME}: another plugin has this name. Coconut did not change it.')
         elif platform != 'skipped':
             print(f'{home / "config.yaml"}: coconut gateway platform {platform}')
+        if action == 'add':
+            try:
+                added = model_keys.fill(Path(default), home, names)
+            except Exception as error:
+                failed = True
+                print(f'{home / ".env"}: model keys not changed: {type(error).__name__}')
+                continue
+            if added:
+                print(f'{home / ".env"}: model keys from the default profile: {", ".join(added)}')
     return 1 if failed else 0
 
 

@@ -199,7 +199,8 @@ class BotProfiles:
         """Set Coconut's own entries in the Hermes profiles again, in the background, at each start.
 
         The entries are the skills folder in `skills.external_dirs` and the `coconut` gateway platform (skill_dirs.py,
-        gateway_plugin.py). Only these keys change. Then the bots that follow the default model get it again
+        gateway_plugin.py), and the provider keys that each profile's `.env` lacks (model_keys.py). Only these keys
+        change. Then the bots that follow the default model get it again
         (reconcile_model_follow). A failure is a warning: the service starts all the same.
         """
         python, source = getattr(self.provider, 'python', None), getattr(self.provider, 'hermes_root', None)
@@ -293,7 +294,9 @@ class BotProfiles:
         from .hermes_runtime import NO_LAZY_INSTALLS
         environment = {key: os.environ[key] for key in ('PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR')
                        if key in os.environ}
-        environment.update(NO_LAZY_INSTALLS, HERMES_HOME=str(self.hermes_home), HERMES_DISABLE_TELEMETRY='1')
+        environment.update(NO_LAZY_INSTALLS, HERMES_HOME=str(self.hermes_home), HERMES_DISABLE_TELEMETRY='1',
+                           # Earlier versions saved model keys here. The edit moves them into the Hermes profiles.
+                           COCONUT_SAVED_MODEL_KEYS=str(self.root / 'credentials.json'))
         try:
             result = subprocess.run([str(python), '-I', '-B', str(Path(__file__).with_name('skill_dirs.py')), 'add',
                                      str(source), str(SKILLS), str(self.hermes_home)], env=environment,
