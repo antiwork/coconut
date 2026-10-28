@@ -982,6 +982,9 @@ class NativeRoutines:
             probes = getattr(self, '_release_probes', {})
             for identity in set(probes) - awaiting:
                 del probes[identity]
+            # A Hermes gateway that ticks a bot's profile fires its routines (gateway_chat.gateway_ticked_bots), and its
+            # runs reach Coconut as turns (hermes_plugin/coconut/cron.py). Coconut claims only the other routines.
+            ticked = self.gateway_ticked_bots() if hasattr(self, 'gateway_ticked_bots') else set()
             with self.transaction():
                 # One grouping of the tasks serves every routine. A task that a claim adds belongs to its own routine,
                 # so it cannot change the result for another routine.
@@ -989,6 +992,8 @@ class NativeRoutines:
                 for routine in self._all('routines'):
                     bot = self._get('bots', routine['bot_id'])
                     due = routine.get('next_run_at')
+                    if routine['bot_id'] in ticked and not routine.get('_recover_claim'):
+                        continue
                     if routine['id'] in finished or routine.get('error') or not routine['enabled'] or bot['archived'] or self._active_routine_task(routine['id'], index := index or self._routine_index()):
                         continue
                     if routine.get('_recover_claim') or (due and datetime.fromisoformat(due.replace('Z', '+00:00')) <= datetime.now(timezone.utc)):

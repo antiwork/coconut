@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import json
 
-from . import NAME
-
 TOOLSET = 'coconut'
 
 ASK = {'name': 'coconut_ask', 'description': (
@@ -42,11 +40,9 @@ MESSAGE_BOT = {'name': 'coconut_message_bot', 'description': (
 
 
 def _turn():
-    from gateway.session_context import get_session_env
-    from .adapter import turn_for_chat
-    if get_session_env('HERMES_SESSION_PLATFORM', '') != NAME:
-        return None, None
-    return turn_for_chat(get_session_env('HERMES_SESSION_CHAT_ID', ''))
+    """The holder (an adapter or a cron run) and the Coconut turn of this tool call: a chat turn or a cron run."""
+    from .hooks import _turn as turn
+    return turn()
 
 
 def _result(value) -> str:

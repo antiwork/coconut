@@ -131,6 +131,25 @@ SESSION = ContextVar("session", default={})
 def get_session_env(name, default=""):
     return SESSION.get().get(name, default)
 ''',
+    'cron/__init__.py': '',
+    'cron/execution_identity.py': '''
+from contextvars import ContextVar
+from dataclasses import dataclass
+@dataclass
+class CronExecution:
+    job_id: str
+    job_name: str
+    execution_id: str
+CURRENT = ContextVar("cron_execution", default=None)
+def current_cron_execution():
+    return CURRENT.get()
+''',
+    'hermes_cli/__init__.py': '',
+    'hermes_cli/config.py': '''
+CONFIG = {}
+def load_config_readonly():
+    return CONFIG
+''',
     'tools/__init__.py': '',
     'tools/clarify_gateway.py': '''
 calls = []
@@ -446,6 +465,49 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertIn('error', json.loads(tools.ask({'question': 'x'})))
         self.assertIn('error', json.loads(tools._service_tool('track_pr')({'url': 'x'})))
 
+    def test_a_cron_run_in_a_bot_profile_reports_to_a_coconut_turn(self):
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        from cron.execution_identity import CURRENT, CronExecution
+        from hermes_cli.config import CONFIG
+        CONFIG['gateway'] = {'platforms': {'coconut': {'extra': {'bridge': str(self.service.gateway_bridge.address_file)}}}}
+        self.addCleanup(CONFIG.clear)
+        answers = []
+        def cron_run():
+            # As Hermes runs a cron job: in the job's profile, with the identity of the fire bound.
+            token = CURRENT.set(CronExecution('intake', 'Desk fast work intake', 'execution-1'))
+            try:
+                with patch.dict(os.environ, HERMES_HOME=str(self.home)):
+                    hooks.cron_start(session_id='cron-session', platform='cron')
+                    hooks.stream_start()
+                    hooks.stream_delta(delta='Checking the queue.', kind='text')
+                    hooks.cron_interim(text='Checking the queue.')
+                    answers.append(json.loads(tools.ask({'question': 'File two items?', 'choices': ['Yes', 'No']})))
+                    hooks.cron_answer(assistant_response='Filed two items.')
+                    hooks.cron_end(completed=True, failed=False, interrupted=False)
+            finally:
+                CURRENT.reset(token)
+        thread = threading.Thread(target=cron_run, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(d['title'] == 'File two items?' for d in self.decisions()):
+            time.sleep(.02)
+        card = next(d for d in self.decisions() if d['title'] == 'File two items?')
+        self.write('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'choice-0', 'revision': 1})
+        thread.join(15)
+        self.assertEqual(answers, [{'answer': 'Yes'}])
+        task = self.read('tasks', card['task_id'])
+        deadline = time.monotonic() + 5
+        while task['status'] == 'working' and time.monotonic() < deadline:
+            time.sleep(.02)
+            task = self.read('tasks', card['task_id'])
+        self.assertEqual((task['status'], task['title'], task['_gateway_cron']['job_id']),
+                         ('completed', 'Desk fast work intake', 'intake'))
+        self.assertEqual(self.replies(task), [('Checking the queue.', True), ('Filed two items.', False)])
+        # Outside a cron run and a Coconut chat, the hooks do nothing.
+        hooks.cron_answer(assistant_response='Ignored.')
+        hooks.cron_end(completed=True)
+
     def test_the_gateway_session_of_a_chat_joins_the_native_conversation_of_the_bot(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']
         from hermes_state import SessionDB
@@ -523,7 +585,8 @@ class GatewayAdapterTests(unittest.TestCase):
         self.plugin.register(Context())
         self.assertEqual(tool_names, [('coconut_ask', 'coconut'), ('coconut_track_pr', 'coconut'),
                                       ('coconut_message_bot', 'coconut')])
-        self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end'])
+        self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
+                                      'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end'])
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
