@@ -97,6 +97,10 @@ skills:
 '''
 
 
+# The `coconut` gateway platform that the same setup step adds. See gateway_plugin.py.
+PLATFORM = {'plugins': {'enabled': ['coconut']}, 'gateway': {'platforms': {'coconut': {'enabled': True}}}}
+
+
 @needs_hermes
 class SkillFolderTests(unittest.TestCase):
     """Setup adds the skill folder to `skills.external_dirs` through the config writer of Hermes. See skill_dirs.py."""
@@ -135,12 +139,15 @@ class SkillFolderTests(unittest.TestCase):
         self.assertIn('# The settings of the person.', text)
         self.assertIn('# The main model.', text)
         self.assertEqual(self.load(config), {'model': {'default': 'gpt-6.1-sol', 'provider': 'openai-codex'},
-                                             'skills': {'disabled': ['old-skill'], 'external_dirs': [str(self.folder)]}})
+                                             'skills': {'disabled': ['old-skill'], 'external_dirs': [str(self.folder)]},
+                                             **PLATFORM})
         self.assertIn('config.yaml: unchanged', self.run_edit('add', self.home))
         self.assertEqual(config.read_text(), text)
         self.assertIn('config.yaml: removed', self.run_edit('remove', self.home))
+        # The empty list stays: Hermes reads a missing list as "nothing chosen yet".
         self.assertEqual(self.load(config), {'model': {'default': 'gpt-6.1-sol', 'provider': 'openai-codex'},
-                                             'skills': {'disabled': ['old-skill']}})
+                                             'skills': {'disabled': ['old-skill']}, 'plugins': {'enabled': []}})
+        self.assertFalse((self.home / 'plugins/coconut').exists())
         self.assertIn('# The main model.', config.read_text())
 
     def test_add_reaches_named_profiles_and_bots_that_have_a_config(self):
@@ -162,7 +169,7 @@ class SkillFolderTests(unittest.TestCase):
 
     def test_add_creates_the_default_config_and_works_without_profiles(self):
         self.assertIn('config.yaml: added', self.run_edit('add', self.home))
-        self.assertEqual(self.load(self.home / 'config.yaml'), {'skills': {'external_dirs': [str(self.folder)]}})
+        self.assertEqual(self.load(self.home / 'config.yaml'), {'skills': {'external_dirs': [str(self.folder)]}, **PLATFORM})
         # A removal never creates a config.
         (self.home / 'config.yaml').unlink()
         self.assertEqual(self.run_edit('remove', self.home), '')

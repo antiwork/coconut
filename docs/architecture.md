@@ -125,6 +125,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - The adapter connects to the main listener on loopback. It long-polls `POST /v1/gateway/poll` for the turns of its profile and reports `typing`, `send`, `edit`, `delete` and `done` to `POST /v1/gateway/events`. It sends the token of `<data>/gateway/bridge.json` (mode 0600), which the service writes at each start. The tunnel listener does not serve these routes.
 - One chat is one bot: the chat ID is the bot ID. A multiplexing gateway has one adapter for each served profile, and Coconut matches the adapter to the bot by the Hermes home.
 - `gateway_bridge.plain_chat_turn` is the routing rule. A new turn goes to the gateway when it is a person's text message in a bot's own chat, without attachments, cards, reactions, work tracking, bot messages or other Coconut context, and the adapter of the bot's profile is connected. Every other turn runs in the worker.
+- The adapter takes turns only after the gateway restored its sessions after a start. Before that, the gateway queues each message and ends its processing without a reply.
 - A turn that no adapter takes in 30 seconds runs in the worker. A taken turn fails when the adapter stops listing it for 90 seconds.
 - `TurnEvents` maps the gateway events onto the worker's provider events, so the phone sees the same messages. Each `send` starts a segment, and `edit` replaces its text. A new segment keeps the earlier one as a complete interim message (`interim_seal`). A send that the gateway marks as interim, such as commentary, is an interim message. `done` completes or fails the task.
 - With `gateway`, the service supervises one `hermes gateway run` process for the person's Hermes home, which Hermes multiplexes across the profiles. The process starts and stops with the service and with the setting. Its output goes to `<data>/gateway/gateway.log`. After an exit, the service waits 30 seconds before it starts the process again.
@@ -139,7 +140,6 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - Live token streaming needs `streaming.enabled: true` in the Hermes config. Without it, the reply arrives at the end of the turn, as from the worker. Tool progress is off, so the phone shows only the phases "thinking" and "writing".
 - The adapter refuses messages outside a Coconut turn, for example cron deliveries.
 - Gateway notices, such as "No home channel is set", stay in the gateway log. They name gateway commands, and Coconut sends chat text without gateway commands.
-- The adapter takes turns only after the gateway restored its sessions after a start.
 - A profile without a connected adapter uses the worker. This happens when the gateway does not multiplex, or when the person created the profile outside Coconut after the last setup. A gateway that already runs loads the platform after its next restart.
 - Steering during a turn waits for the next turn.
 
