@@ -81,6 +81,8 @@ class _Turn:
         self.created = self.seen = time.monotonic()
         self.events: list[dict] = []
         self.silent_seconds = SILENT_SECONDS
+        # A cron run of the gateway (open_turn). The adapter cannot stop it: it runs in a cron session, not in the chat.
+        self.cron = False
         # Answers to the questions of this turn, for a waiting tool (wait_answer).
         self.answers: dict[str, dict] = {}
 
@@ -214,7 +216,7 @@ class GatewayBridge:
     def open_turn(self, task_id: str, home, chat_id: str) -> str:
         """Register a turn that the gateway already runs, for example a cron run. Return its ID for follow()."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, '', 'Coconut')
-        turn.state, turn.silent_seconds = 'active', CRON_SILENT_SECONDS
+        turn.state, turn.silent_seconds, turn.cron = 'active', CRON_SILENT_SECONDS, True
         with self.lock:
             self.turns[turn.id] = turn
         return turn.id
@@ -259,7 +261,7 @@ class GatewayBridge:
             with self.lock:
                 if turn.state == 'active':
                     # The gateway may still run the turn. The next poll tells the adapter to stop it.
-                    turn.state = 'stopping'
+                    turn.state = 'cancelled' if turn.cron else 'stopping'
                     self.lock.notify_all()
             raise
         finally:
@@ -271,7 +273,8 @@ class GatewayBridge:
         with self.lock:
             for turn in list(self.turns.values()):
                 if turn.task_id == task_id and turn.state in ('pending', 'active'):
-                    turn.state = 'stopping' if turn.state == 'active' else 'cancelled'
+                    # A stop goes to the chat of the turn, so it must not name the chat for a cron run.
+                    turn.state = 'stopping' if turn.state == 'active' and not turn.cron else 'cancelled'
             self.lock.notify_all()
 
     def close(self) -> None:

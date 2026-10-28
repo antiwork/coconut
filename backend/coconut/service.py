@@ -4320,12 +4320,12 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             self.provider.cancel_task(task_id)
         if hasattr(self.provider, 'close'):
             self.provider.close()
-        for thread in list(self.running.values()) + list(self.context_threads.values()):
+        for thread in [*self.running.values(), *self.context_threads.values(), *self.gateway_cron_threads.values()]:
             thread.join(timeout=3)
         if self.kanban is not None:
             self.kanban.close()
         # A provider must honor cancellation before its connection can close.
-        if not any(thread.is_alive() for thread in list(self.running.values()) + list(self.context_threads.values())):
+        if not any(thread.is_alive() for thread in [*self.running.values(), *self.context_threads.values(), *self.gateway_cron_threads.values()]):
             with self.lock:
                 self.db.close()
                 fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)

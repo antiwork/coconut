@@ -56,7 +56,7 @@ class ServiceRestart:
     def _service_busy(self):
         # Caller holds self.lock. The same work that keeps a bot's restart from taking effect: turns, claims, uncertain
         # dispatch and worker cleanup.
-        return (any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()])
+        return (any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values(), *self.gateway_cron_threads.values()])
                 or bool(self._kanban_claiming) or bool(self._kanban_dispatch_uncertain) or bool(self._kanban_trimming))
 
     def poll_hermes_change(self):
@@ -117,7 +117,7 @@ class ServiceRestart:
             if ((self.restart_deadline is None and not recovery and not hermes) or self.stopping.is_set()
                     or getattr(self, '_workspace_recovery_hold', False)):
                 return False
-            active_turns = any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values()])
+            active_turns = any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values(), *self.gateway_cron_threads.values()])
             if hermes:
                 # As an update does: wait for the running work, but not longer than HERMES_DRAIN_SECONDS.
                 if self._service_busy() and time.monotonic() < self.hermes_restart_deadline:

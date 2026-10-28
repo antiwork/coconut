@@ -67,6 +67,18 @@ class GatewayCronTests(unittest.TestCase):
         self.assertEqual(self.service.gateway_cron({'event': 'start', 'home': self.temp.name, 'job_id': 'x',
                                                     'execution_id': 'other'}), {'skip': True})
 
+    def test_an_update_waits_for_a_cron_run_and_its_cancel_stops_no_chat_turn(self):
+        started = self.start()
+        with self.service.lock:
+            self.assertTrue(self.service._service_busy())
+        bridge = self.service.gateway_bridge
+        self.service.gateway_bridge.cancel(started['task_id'])
+        # The adapter sends a stop to a chat. The cron run is not a turn of the bot's chat, so the poll names no chat.
+        self.assertEqual(bridge.poll({'home': str(self.home), 'wait': 0})['stop'], [])
+        self.service.gateway_cron_threads[started['task_id']].join(5)
+        with self.service.lock:
+            self.assertFalse(self.service._service_busy())
+
     def test_a_question_of_a_cron_run_is_a_card_and_its_tool_waits_for_the_answer(self):
         started = self.start()
         bridge = self.service.gateway_bridge

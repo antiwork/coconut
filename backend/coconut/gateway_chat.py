@@ -76,6 +76,7 @@ class GatewayChat:
         self.gateway_state = {'state': 'off', 'pid': None, 'reason': None}
         self._gateway_retry_at = 0.0
         self._gateway_exit = None
+        self.gateway_cron_threads: dict[str, threading.Thread] = {}
 
     def chat_runtime(self) -> str:
         value = self._setting('chat_runtime', 'worker')
@@ -299,8 +300,14 @@ class GatewayChat:
                 self._put('routines', routine)
             self._event('routine.triggered', {'routine_id': routine_id, 'task_id': task['id']}, bot['id'], task['id'])
             self._refresh_bot(bot['id'])
-        threading.Thread(target=self._run_gateway_cron, args=(task['id'], turn), name='coconut-gateway-cron',
-                         daemon=True).start()
+        thread = threading.Thread(target=self._run_gateway_cron, args=(task['id'], turn), name='coconut-gateway-cron',
+                                  daemon=True)
+        with self.lock:
+            # An update waits for these turns as it waits for worker turns (service_restart._service_busy).
+            self.gateway_cron_threads = {key: value for key, value in self.gateway_cron_threads.items()
+                                         if value.is_alive()}
+            self.gateway_cron_threads[task['id']] = thread
+        thread.start()
         return {'turn_id': turn, 'task_id': task['id'], 'chat_id': bot['id']}
 
     def _run_gateway_cron(self, task_id: str, turn: str) -> None:
