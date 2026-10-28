@@ -23,7 +23,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 
 import pairing  # noqa: E402
-from push import compile_swift  # noqa: E402
 import tunnel  # noqa: E402
 
 
@@ -88,9 +87,11 @@ class TunnelLoopbackTests(unittest.TestCase):
         cls.processes = []
         cls.client = Path(cls.temp.name) / 'tunnel-test-client'
         # The client runs the app's own transport, so this test also covers the iPhone end (R4).
-        compile_swift([ROOT / 'scripts/tunnel-test-client.swift', ROOT / 'ios/Coconut/TunnelConnection.swift', *tunnel.SOURCES[1:]],
-                      cls.client,
-                      Path(cls.temp.name) / 'client.sha256')
+        # It reads the link with the app's parser. DEBUG lets that parser accept the http relay on 127.0.0.1.
+        sources = [ROOT / 'scripts/tunnel-test-client.swift', ROOT / 'ios/Coconut/TunnelConnection.swift',
+                   ROOT / 'ios/Coconut/PairingSetup.swift', ROOT / 'ios/Tunnel/Noise.swift', ROOT / 'ios/Tunnel/TunnelFrames.swift']
+        subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-O', '-D', 'DEBUG', *map(str, sources), '-o', str(cls.client)],
+                       check=True)
         cls.sidecar = tunnel.build(cls.data)
 
     @classmethod
@@ -173,6 +174,22 @@ class TunnelLoopbackTests(unittest.TestCase):
         wait(lambda: self.status()['state'] == 'connected' and self.status()['connected_since'] != before, 30,
              'The sidecar did not reconnect.')
         host.close()
+        # The sidecar records the cause from the relay's close frame, and its event log holds no secret.
+        last = wait(lambda: self.status().get('last_disconnect'), 10, 'The status has no last disconnect.')
+        self.assertEqual((last['cause'], last['code'], last['reason']), ('relay_closed', 1000, 'replaced'))
+        self.assertEqual(self.status()['reconnects'], 1)
+        # A queue writes the log after the status, so wait for the second connected event.
+        expected = {'start', 'connect_start', 'channel_open', 'disconnected', 'backoff'}
+
+        def logged():
+            text = (self.data / 'tunnel/events.log').read_text()
+            events = [json.loads(line)['event'] for line in text.splitlines()]
+            return text if expected <= set(events) and events.count('connected') >= 2 else None
+
+        log = wait(logged, 10, 'The sidecar did not log the reconnect.')
+        self.assertEqual((self.data / 'tunnel/events.log').stat().st_mode & 0o777, 0o600)
+        for secret in (host_token, route['route'], route['mac_key']):
+            self.assertNotIn(secret, log)
         self.assertEqual(self.run_client()['state']['status'], 200)
         self.assertEqual(len(self.peers()), 2)
 

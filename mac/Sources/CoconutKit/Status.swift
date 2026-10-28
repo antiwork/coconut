@@ -20,11 +20,25 @@ public struct Status: Codable, Equatable {
     public var hermesReason: String?
     /// The state of the relay sidecar, for example "connected", or "not_installed" without a route.
     public var relay: String
+    /// The end of the last connected relay socket, from status.json. The sidecar forgets it when it restarts.
+    public var relayLastDisconnect: RelayDisconnect? = nil
+    /// The connected relay sockets after the first one, since the sidecar started.
+    public var relayReconnects: Int? = nil
+
+    /// `cause` is one of the causes in scripts/tunnel-events.swift, for example "ping_timeout". `detail` holds the close
+    /// code and reason of the relay, or the domain and code of a network error.
+    public struct RelayDisconnect: Codable, Equatable {
+        public var at: String
+        public var cause: String
+        public var detail: String?
+    }
 
     enum CodingKeys: String, CodingKey {
         case install, service, hermes, relay
         case hermesVersion = "hermes_version"
         case hermesReason = "hermes_reason"
+        case relayLastDisconnect = "relay_last_disconnect"
+        case relayReconnects = "relay_reconnects"
     }
 }
 
@@ -43,10 +57,19 @@ public struct StatusReader {
     /// Read the status files. `isAlive` checks a process ID, and `healthy` says whether `/health` answered.
     public func read(isAlive: (Int32) -> Bool = StatusReader.isAlive, healthy: Bool) -> Status {
         let hermes = object(at: install.data.appendingPathComponent("hermes.json"))
-        return Status(install: install.root.path, service: service(isAlive: isAlive, healthy: healthy),
-                      hermes: hermes?["status"] as? String ?? "missing",
-                      hermesVersion: hermes?["version"] as? String, hermesReason: hermes?["reason"] as? String,
-                      relay: relay(isAlive: isAlive))
+        var status = Status(install: install.root.path, service: service(isAlive: isAlive, healthy: healthy),
+                            hermes: hermes?["status"] as? String ?? "missing",
+                            hermesVersion: hermes?["version"] as? String, hermesReason: hermes?["reason"] as? String,
+                            relay: relay(isAlive: isAlive))
+        // A stopped sidecar leaves its last disconnect behind, and that can explain why it stopped.
+        if status.relay != "not_installed", let tunnel = object(at: install.tunnel.appendingPathComponent("status.json")) {
+            status.relayReconnects = (tunnel["reconnects"] as? NSNumber)?.intValue
+            if let last = tunnel["last_disconnect"] as? [String: Any], let at = last["at"] as? String,
+               let cause = last["cause"] as? String {
+                status.relayLastDisconnect = .init(at: at, cause: cause, detail: last["detail"] as? String)
+            }
+        }
+        return status
     }
 
     func service(isAlive: (Int32) -> Bool, healthy: Bool) -> Status.Service {

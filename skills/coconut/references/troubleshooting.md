@@ -34,7 +34,12 @@ The iPhone reaches the Mac only through the relay. The relay sidecar keeps an ou
 | `stopped` | The sidecar does not run. Make sure that Coconut.app runs and that **Start at Login** is on. |
 | `not installed` | This Mac has no relay route. The setup is not complete. Run the setup again. |
 
-Read `tunnel.log` and `tunnel-error.log` for the details.
+When the iPhone showed "Relay unreachable", find out why the connection ended:
+
+1. Run `coconut status`. The `Last relay disconnect` line shows the time and the cause of the last end of a connected relay socket, and the count of reconnects since the sidecar started.
+2. Read `.runtime/host/tunnel/events.log`, and `events.log.1` for older events. Each line is one JSON event with a UTC time. Find the `disconnected` lines near the time of the problem. `cause` is `relay_closed`, `network_error`, `ping_timeout`, `wake`, `network_changed`, or `invalid_url`. `channel_close` lines with `by: mac` show a failed phone session, and `backend_unreachable` lines show that the sidecar could not reach the service.
+
+Read `tunnel.log` and `tunnel-error.log` for more details.
 
 ## Hermes is unavailable
 
@@ -71,6 +76,8 @@ All Coconut data is in the install folder (default `~/Coconut`). Read the files 
 | `.runtime/host/logs/service.log` | The output of the service. |
 | `.runtime/host/logs/error.log` | The errors of the service. |
 | `.runtime/host/logs/tunnel.log`, `tunnel-error.log` | The relay sidecar. |
+| `.runtime/host/tunnel/events.log`, `events.log.1` | The connection events of the relay sidecar, as JSON lines. |
+| `.runtime/host/tunnel/status.json` | The state of the relay sidecar, with the last disconnect and its cause. |
 | `.runtime/host/hermes.json` | The result of the last Hermes check. |
 | `.runtime/host/coconut.sqlite3` | The Coconut database: bots, conversations, and tasks. |
 | `.runtime/host/bots/<bot id>/home` | The Hermes profile of one bot: `SOUL.md`, `config.yaml`, `.env`, and its memory. |

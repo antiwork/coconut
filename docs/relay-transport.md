@@ -49,7 +49,7 @@ The iPhone opens odd stream numbers. Each stream starts with a window of 1 MB, s
 
 ## Mac tunnel sidecar
 
-`scripts/tunnel-sidecar.swift` is the Mac end of the tunnel. `scripts/tunnel.py` compiles it with `ios/Tunnel/Noise.swift` and `ios/Tunnel/TunnelFrames.swift`, and installs it as the LaunchAgent `com.gumroad.coconut.tunnel`.
+`scripts/tunnel-sidecar.swift` is the Mac end of the tunnel. `scripts/tunnel.py` compiles it with `ios/Tunnel/Noise.swift`, `ios/Tunnel/TunnelFrames.swift`, and `scripts/tunnel-events.swift`, and installs it as the LaunchAgent `com.gumroad.coconut.tunnel`.
 
 ```bash
 python3 scripts/tunnel.py install
@@ -68,7 +68,35 @@ The sidecar sends each stream to the backend's plain HTTP listener on `127.0.0.1
 
 The sidecar ends the session when a REQ_HEAD has a control character in its method, path, or a header. Such a character could add a header or a second request. A request body over 7 MB, or more than 32 MB of bodies in the sidecar at one time, gets the ERROR `too_large`. A backend that fails before the end of a response gets the ERROR `backend_down`, never END.
 
-The sidecar writes `status.json` when its state changes, and once a minute.
+The sidecar writes `status.json` when its state changes, and once a minute. `status.json` also holds `reconnects`, the connected sockets after the first one since the sidecar started, and `last_disconnect`, the end of the last connected socket: `{at, cause, code, domain, reason, detail}`. `coconut status` prints `last_disconnect` on the line `Last relay disconnect`.
+
+### Connection events
+
+The sidecar writes its connection events to `tunnel/events.log` as JSON lines. Each line has `at`, a UTC ISO 8601 time, and `event`. A private queue writes the lines, so slow disk I/O never blocks the tunnel. At about 256 KB the file becomes `events.log.1`, and the sidecar starts a new file. Both files have mode 0600.
+
+| Event | Fields |
+|---|---|
+| `start` | `pid` |
+| `connect_start` | `attempt`: the attempt number since the last connected socket |
+| `connected` | `attempt`, `took_ms`, `reconnects` |
+| `disconnected` | `cause`, `code`, `domain`, `reason`, `phase` (`connecting` or `connected`), `uptime_s` or `after_ms`, `channels` |
+| `backoff` | `delay_ms` before the next attempt. A network change or a wake during a wait also adds its `cause`. |
+| `channel_open` | `channel`, `auth` (`token` or `ticket`), `channels` |
+| `channel_close` | `channel`, `by` (`relay` or `mac`), and for `mac` the `reason` (`handshake_failed`, `session_error`, or `seal_failed`) and the session `error`, for example `invalidRekey` or `decryptionFailed` |
+| `channel_refused` | `channel`, `reason`: `limit` |
+| `backend_unreachable` | `domain`, `code`, `reason`, `failures` since the last line. At most one line a minute. |
+| `rotate_failed` | `errno` of the failed rename to `events.log.1`. The sidecar empties `events.log` to keep it bounded, and tries the rotation again at the next limit. |
+
+The `cause` of a disconnect is one of these:
+
+- `relay_closed`: the Worker closed the socket. `code` and `reason` come from its close frame, for example `1000` and `replaced` when another host socket takes the route.
+- `network_error`: the network or TLS stack ended the socket. `domain` is `posix`, `dns`, `tls`, or a Foundation error domain, and `code` is the error code.
+- `ping_timeout`: the relay sent nothing for 45 seconds.
+- `wake`: the Mac woke from sleep.
+- `network_changed`: the network status or the primary interface changed. `reason` names the new path, for example `satisfied en0`.
+- `invalid_url`: the relay URL in `route.json` is not valid.
+
+The log holds no tokens, keys, routes, ticket hashes, or payloads. The sidecar removes bearer tokens and strings of 22 or more key characters from each reason, and keeps at most 160 characters.
 
 The relay holds at most 8 pairing tickets for a route. A ninth link waits on the Mac, and goes to the relay when a ticket is used or expires.
 

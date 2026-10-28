@@ -18,7 +18,8 @@ LABEL = 'com.gumroad.coconut.tunnel'
 # Coconut.app runs its own signed sidecar with this login item. Its `coconut` tool names that binary in COCONUT_SIDECAR.
 APP_LABEL = 'com.gumroad.coconut.relay'
 RELAY_URL = 'https://coconut-push.gumroad.workers.dev'
-SOURCES = [ROOT / 'scripts/tunnel-sidecar.swift', ROOT / 'ios/Tunnel/Noise.swift', ROOT / 'ios/Tunnel/TunnelFrames.swift']
+SOURCES = [ROOT / 'scripts/tunnel-sidecar.swift', ROOT / 'ios/Tunnel/Noise.swift', ROOT / 'ios/Tunnel/TunnelFrames.swift',
+           ROOT / 'scripts/tunnel-events.swift']
 
 
 def tunnel_directory(data_dir: Path) -> Path:
