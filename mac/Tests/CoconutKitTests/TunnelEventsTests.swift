@@ -53,6 +53,29 @@ final class TunnelEventsTests: XCTestCase {
         XCTAssertNoThrow(try lines(previous))
     }
 
+    func testAFailedRotationKeepsTheLogBounded() throws {
+        let url = directory.appendingPathComponent("events.log")
+        // A folder in place of events.log.1 makes each rename fail.
+        let blocker = directory.appendingPathComponent("events.log.1")
+        try FileManager.default.createDirectory(at: blocker.appendingPathComponent("inside"), withIntermediateDirectories: true)
+        let log = TunnelEventLog(url: url, maxBytes: 1000)
+        for index in 0..<100 { log.record("backoff", ["delay_ms": index]) }
+        log.flush()
+        let size = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)
+        XCTAssertLessThanOrEqual(size.intValue, 1000)
+        let events = try lines(url)
+        XCTAssertEqual(events.first?["event"] as? String, "rotate_failed")
+        XCTAssertNotNil(events.first?["errno"] as? Int)
+        XCTAssertEqual(events.last?["delay_ms"] as? Int, 99)
+
+        // When the rename works again, the rotation works again.
+        try FileManager.default.removeItem(at: blocker)
+        for index in 100..<200 { log.record("backoff", ["delay_ms": index]) }
+        log.flush()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: blocker.path))
+        XCTAssertEqual(try lines(url).last?["delay_ms"] as? Int, 199)
+    }
+
     func testAShortWriteStillWritesTheWholeLine() throws {
         let url = directory.appendingPathComponent("events.log")
         let log = TunnelEventLog(url: url)

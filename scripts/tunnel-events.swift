@@ -150,6 +150,10 @@ final class TunnelEventLog {
         if descriptor < 0 { open() }
         if descriptor >= 0, size > 0, size + line.count > maxBytes { rotate() }
         guard descriptor >= 0 else { return }
+        append(line)
+    }
+
+    private func append(_ line: Data) {
         // A write can take only part of the line. Write the rest, and remove a partial line when a write fails.
         let start = size
         let complete = line.withUnsafeBytes { bytes -> Bool in
@@ -186,8 +190,13 @@ final class TunnelEventLog {
         Darwin.close(descriptor)
         descriptor = -1
         let previous = url.deletingLastPathComponent().appendingPathComponent("\(url.lastPathComponent).1")
-        rename(url.path, previous.path)
+        let failure = rename(url.path, previous.path) == 0 ? nil : errno
         open()
+        // Without a rename, the file would grow without a limit. Empty it and say why. The next rotation tries again.
+        guard let failure, descriptor >= 0 else { return }
+        ftruncate(descriptor, 0)
+        size = 0
+        if let line = line("rotate_failed", ["errno": Int(failure)], at: Date()) { append(line) }
     }
 
     /// Text from outside the sidecar, for example the close reason of the relay or an error description. Keeps

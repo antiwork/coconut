@@ -85,6 +85,7 @@ The sidecar writes its connection events to `tunnel/events.log` as JSON lines. E
 | `channel_close` | `channel`, `by` (`relay` or `mac`), and for `mac` the `reason` (`handshake_failed`, `session_error`, or `seal_failed`) and the session `error`, for example `invalidRekey` or `decryptionFailed` |
 | `channel_refused` | `channel`, `reason`: `limit` |
 | `backend_unreachable` | `domain`, `code`, `reason`, `failures` since the last line. At most one line a minute. |
+| `rotate_failed` | `errno` of the failed rename to `events.log.1`. The sidecar empties `events.log` to keep it bounded, and tries the rotation again at the next limit. |
 
 The `cause` of a disconnect is one of these:
 
