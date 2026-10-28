@@ -1,7 +1,7 @@
 name: Mac app
 
-# Coconut.app runs the service and the relay sidecar on the person's Mac. This job runs the unit tests of mac/, builds
-# the bundle with an ad-hoc signature, and checks that the bundle and its tool work.
+# Coconut.app runs the service and the relay sidecar on the person's Mac. This job runs the unit tests of mac/ and the
+# relay loopback test, builds the bundle with an ad-hoc signature, and checks that the bundle and its tool work.
 on:
   pull_request:
     paths:
@@ -11,9 +11,12 @@ on:
       - 'scripts/mac_feed.py'
       - 'scripts/test_mac_feed.py'
       - 'updates/**'
-      - 'scripts/tunnel-sidecar.swift'
-      - 'scripts/tunnel-events.swift'
+      - 'scripts/tunnel-*.swift'
+      - 'scripts/test_tunnel_loopback.py'
       - 'ios/Tunnel/**'
+      - 'ios/Coconut/PairingSetup.swift'
+      - 'ios/Coconut/TunnelConnection.swift'
+      - 'relay/**'
       - '.github/workflows/mac-app.yml'
       - '.github/workflows/mac-release.yml'
   push:
@@ -25,9 +28,12 @@ on:
       - 'scripts/mac_feed.py'
       - 'scripts/test_mac_feed.py'
       - 'updates/**'
-      - 'scripts/tunnel-sidecar.swift'
-      - 'scripts/tunnel-events.swift'
+      - 'scripts/tunnel-*.swift'
+      - 'scripts/test_tunnel_loopback.py'
       - 'ios/Tunnel/**'
+      - 'ios/Coconut/PairingSetup.swift'
+      - 'ios/Coconut/TunnelConnection.swift'
+      - 'relay/**'
       - '.github/workflows/mac-app.yml'
       - '.github/workflows/mac-release.yml'
 
@@ -53,6 +59,16 @@ jobs:
           swift test --package-path mac
           python3 -m unittest discover -s scripts -p test_mac_app.py
           python3 -m unittest discover -s scripts -p test_mac_feed.py
+      - name: Run the relay loopback test
+        # The test client, the Miniflare relay, the sidecar, and the backend run on this runner. A skipped test fails the job.
+        run: |
+          set -euo pipefail
+          npm ci --prefix relay --no-audit --no-fund
+          python3 scripts/test_tunnel_loopback.py 2>&1 | tee "$RUNNER_TEMP/loopback.log"
+          if grep -q 'skipped' "$RUNNER_TEMP/loopback.log"; then
+            echo 'The loopback test skipped.' >&2
+            exit 1
+          fi
       - name: Build Coconut.app
         run: python3 scripts/mac_app.py build --output "$RUNNER_TEMP/mac"
       - name: Check the bundle
