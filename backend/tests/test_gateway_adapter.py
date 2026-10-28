@@ -76,6 +76,7 @@ class MessageEvent:
     source: Any = None
     message_id: Optional[str] = None
     allow_gateway_control: bool = True
+    metadata: dict = field(default_factory=dict)
 ''',
     'gateway/platforms/base.py': '''
 import asyncio
@@ -102,6 +103,9 @@ class BasePlatformAdapter:
     def build_source(self, chat_id, chat_name=None, chat_type="dm", user_id=None, user_name=None):
         return SessionSource(self.platform, chat_id, chat_name, chat_type, user_id, user_name)
     async def handle_message(self, event):
+        # Hermes keeps a closed contract for inbound metadata: only WhatsApp may set it (gateway/session_envelope.py).
+        if event.metadata:
+            raise ValueError("invalid_params (metadata)")
         self.events.append(event)
         asyncio.get_running_loop().create_task(self._process(event))
     async def _process(self, event):
@@ -121,6 +125,45 @@ from pathlib import Path
 def get_hermes_home():
     return Path(os.environ["HERMES_HOME"])
 ''',
+    'gateway/session_context.py': '''
+from contextvars import ContextVar
+SESSION = ContextVar("session", default={})
+def get_session_env(name, default=""):
+    return SESSION.get().get(name, default)
+''',
+    'tools/__init__.py': '',
+    'tools/clarify_gateway.py': '''
+calls = []
+def resolve_gateway_clarify(clarify_id, response):
+    calls.append((clarify_id, response))
+    return True
+''',
+    'tools/approval.py': '''
+calls = []
+def resolve_gateway_approval(session_key, choice, resolve_all=False, reason=None, request_id=None):
+    calls.append((session_key, choice, reason))
+    return 1
+''',
+    'hermes_state.py': '''
+class SessionDB:
+    meta, sessions, lineage, messages = {}, set(), {}, {}
+    def __init__(self, db_path=None):
+        self.db_path = db_path
+    def get_meta(self, key):
+        return self.meta.get(key)
+    def set_meta(self, key, value):
+        self.meta[key] = value
+    def get_session(self, session_id):
+        return {"id": session_id} if session_id in self.sessions else None
+    def get_resume_conversations(self, session_id):
+        return self.messages.get(session_id, []), []
+    def resolve_resume_session_id(self, session_id):
+        while session_id in self.lineage:
+            session_id = self.lineage[session_id]
+        return session_id
+    def close(self):
+        pass
+''',
 }
 
 
@@ -139,6 +182,8 @@ def load_plugin(stubs: Path):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     import hermes_plugins.coconut.adapter as adapter
+    import hermes_plugins.coconut.hooks  # noqa: F401
+    import hermes_plugins.coconut.tools  # noqa: F401
     return module, adapter
 
 
@@ -198,6 +243,15 @@ class GatewayAdapterTests(unittest.TestCase):
             time.sleep(.02)
         self.assertTrue(self.service.gateway_bridge.connected(self.home))
 
+    def decisions(self):
+        # The thread of a turn uses the same database connection, so a read in the test takes the service lock.
+        with self.service.lock:
+            return self.service._all('decisions')
+
+    def read(self, table, identity):
+        with self.service.lock:
+            return self.service._get(table, identity)
+
     def replies(self, task):
         return [(m['text'], bool(m.get('_interim'))) for m in self.service._task_messages(task['id'])
                 if m['role'] == 'assistant' and m['kind'] == 'text']
@@ -217,7 +271,7 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual((event.text, event.source.chat_id, event.allow_gateway_control),
                          ('/new is plain text here', self.bot['id'], False))
         self.assertEqual(self.provider.starts, [])
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
         self.assertEqual(self.replies(task), [('I am looking.', True), ('Hello from the gateway.', False)])
 
     def test_a_final_reply_without_streaming_and_a_send_outside_a_turn(self):
@@ -264,7 +318,7 @@ class GatewayAdapterTests(unittest.TestCase):
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Finish.'})
         self.service._run_task(task['id'])
         self.assertEqual(failures, ['done'])
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
         self.assertEqual(self.adapter._active, set())
 
     def test_the_adapter_asks_again_after_the_service_starts_with_a_new_token(self):
@@ -288,12 +342,192 @@ class GatewayAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'loopback'):
             self.adapter_module.Bridge(path).request('/v1/gateway/poll', {}, 1)
 
+    def session(self, chat_id):
+        from gateway.session_context import SESSION
+        return SESSION.set({'HERMES_SESSION_PLATFORM': 'coconut', 'HERMES_SESSION_CHAT_ID': chat_id})
+
+    def test_streamed_text_of_the_hooks_reaches_the_reply_before_the_final_send(self):
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        seen = []
+        async def runner(event):
+            def model_call():
+                token = self.session(event.source.chat_id)
+                try:
+                    hooks.stream_start()
+                    for piece in ('Hello', ' from', ' the stream.'):
+                        hooks.stream_delta(delta=piece, kind='text', surface='coconut')
+                    hooks.stream_delta(delta='private', kind='reasoning')
+                    hooks.stream_end(final_text='Hello from the stream.')
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            await asyncio.to_thread(model_call)
+            # The service translates the streamed pieces in the thread of the turn.
+            for _ in range(100):
+                with self.service.lock:
+                    texts = [m['text'] for m in self.service._task_messages(task['id']) if m['role'] == 'assistant']
+                if texts == ['Hello from the stream.']:
+                    break
+                await asyncio.sleep(.02)
+            seen.append(texts)
+            return 'Hello from the stream.'
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Stream, please.'})
+        self.service._run_task(task['id'])
+        self.assertEqual(seen, [['Hello from the stream.']])
+        self.assertEqual(self.replies(task), [('Hello from the stream.', False)])
+        # Outside a Coconut chat the hooks do nothing.
+        hooks.stream_delta(delta='ignored', kind='text')
+
+    def test_a_clarify_question_and_an_approval_become_cards_and_their_answers_return_to_hermes(self):
+        import tools.approval
+        import tools.clarify_gateway
+        from gateway.platforms.base import SendResult
+        class Prompt:
+            chat_id, session_key, command, description = None, 'agent:main:coconut:dm', 'rm -rf build', 'Delete files?'
+            actions = [('Allow once', 'once', 'primary'), ('Deny', 'deny', 'danger')]
+        async def runner(event):
+            Prompt.chat_id = event.source.chat_id
+            sent = await self.adapter.send_clarify(event.source.chat_id, 'Which region?', ['Europe', 'America'],
+                                                   'clarify-1', 'agent:main:coconut:dm')
+            assert isinstance(sent, SendResult) and sent.success
+            await self.adapter._send_exec_approval_prompt(Prompt)
+            for _ in range(200):
+                if tools.clarify_gateway.calls and tools.approval.calls:
+                    break
+                await asyncio.sleep(.05)
+            return 'Done.'
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Deploy.'})
+        thread = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and len([d for d in self.decisions() if d['task_id'] == task['id']]) < 2:
+            time.sleep(.02)
+        cards = {d['title']: d for d in self.decisions() if d['task_id'] == task['id']}
+        self.write('POST', f'/v1/decisions/{cards["Which region?"]["id"]}/answer', {'option_id': 'choice-1', 'revision': 1})
+        self.write('POST', f'/v1/decisions/{cards["Delete files?"]["id"]}/answer', {'option_id': 'once', 'revision': 1})
+        thread.join(15)
+        self.assertEqual(tools.clarify_gateway.calls, [('clarify-1', 'America')])
+        self.assertEqual(tools.approval.calls, [('agent:main:coconut:dm', 'once', None)])
+        self.assertEqual(cards['Delete files?']['explanation'], 'rm -rf build')
+        self.assertEqual(self.replies(task), [('Done.', False)])
+
+    def test_the_coconut_tools_act_for_the_turn_of_the_chat(self):
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        results = []
+        async def runner(event):
+            def tool_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    results.append(json.loads(tools._service_tool('message_bot')({'bot': 'Lin', 'text': 'Check it.'})))
+                    results.append(json.loads(tools._service_tool('message_bot')({'bot': 'Nobody', 'text': 'x'})))
+                    results.append(json.loads(tools.ask({'question': 'Ship it?', 'choices': ['Yes', 'No']})))
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            await asyncio.to_thread(tool_calls)
+            return 'Asked.'
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Work with Lin.'})
+        thread = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(d['task_id'] == task['id'] for d in self.decisions()):
+            time.sleep(.02)
+        card = next(d for d in self.decisions() if d['task_id'] == task['id'])
+        self.write('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'choice-0', 'revision': 1})
+        thread.join(15)
+        self.assertEqual((results[0]['status'], results[0]['target_bot_id']), ('queued', other['id']))
+        self.assertIn('Lin', results[1]['error'])
+        self.assertEqual(results[2], {'answer': 'Yes'})
+        # Outside a Coconut chat a tool refuses.
+        self.assertIn('error', json.loads(tools.ask({'question': 'x'})))
+        self.assertIn('error', json.loads(tools._service_tool('track_pr')({'url': 'x'})))
+
+    def test_the_gateway_session_of_a_chat_joins_the_native_conversation_of_the_bot(self):
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        from hermes_state import SessionDB
+        from gateway.config import Platform
+        from gateway.platforms.event import MessageEvent, SessionSource
+        class Entry:
+            def __init__(self, key, session_id):
+                self.session_key, self.session_id = key, session_id
+        class Store:
+            def __init__(self, session_id):
+                self.entry, self.switched = Entry('agent:main:coconut:dm:bot', session_id), []
+            def get_or_create_session(self, source, force_new=False):
+                if force_new:
+                    self.entry = Entry(self.entry.session_key, 'gateway-new')
+                    SessionDB.sessions.add('gateway-new')
+                return self.entry
+            def switch_session(self, session_key, target_session_id):
+                self.switched.append((session_key, target_session_id))
+                self.entry.session_id = target_session_id
+        from gateway.config import PlatformConfig
+        adapter = self.adapter_module.CoconutAdapter(PlatformConfig())
+        def event(root):
+            adapter._roots['bot'] = root
+            return MessageEvent(text='Hi', source=SessionSource(Platform('coconut'), 'bot'))
+        for table in (SessionDB.meta, SessionDB.sessions, SessionDB.lineage, SessionDB.messages):
+            table.clear()
+        with patch.dict(os.environ, HERMES_HOME=str(self.home)):
+            # A bot without a conversation: the gateway session becomes the tip, for the worker.
+            store = Store('gateway-1')
+            self.assertIsNone(hooks.join_conversation(event=event('root-a'), session_store=store))
+            self.assertEqual((store.switched, SessionDB.meta), ([], {hooks.TIP_KEY + 'root-a': 'gateway-1'}))
+            # A bot with a worker conversation: the gateway session moves to its newest session.
+            SessionDB.sessions.update({'root-b', 'worker-tip', 'worker-child'})
+            SessionDB.meta[hooks.TIP_KEY + 'root-b'] = 'worker-tip'
+            SessionDB.lineage['worker-tip'] = 'worker-child'
+            store = Store('gateway-2')
+            hooks.join_conversation(event=event('root-b'), session_store=store)
+            self.assertEqual(store.switched, [('agent:main:coconut:dm:bot', 'worker-child')])
+            # The next turn finds the same session and changes nothing.
+            hooks.join_conversation(event=event('root-b'), session_store=store)
+            self.assertEqual(len(store.switched), 1)
+            # Another platform and a turn without a root stay as they are.
+            adapter._roots['chat'] = 'root-b'
+            other = MessageEvent(text='Hi', source=SessionSource(Platform('telegram'), 'chat'))
+            hooks.join_conversation(event=other, session_store=store)
+            hooks.join_conversation(event=event(''), session_store=store)
+            self.assertEqual(len(store.switched), 1)
+            # A new root, for example after a restart of the bots, starts a new session when the chat's session
+            # holds the earlier conversation.
+            SessionDB.messages['worker-child'] = [{'role': 'user', 'content': 'Old.'}]
+            hooks.join_conversation(event=event('root-c'), session_store=store)
+            self.assertEqual((store.entry.session_id, SessionDB.meta[hooks.TIP_KEY + 'root-c']), ('gateway-new', 'gateway-new'))
+
+    def test_a_stopped_or_finished_turn_wakes_its_waiting_question(self):
+        from gateway.config import PlatformConfig
+        adapter = self.adapter_module.CoconutAdapter(PlatformConfig())
+        holders = {}
+        for turn in ('turn-a', 'turn-b'):
+            holders[turn] = {'event': threading.Event(), 'answer': None, 'turn': turn}
+            adapter._questions[turn + '-q'] = ('ask', holders[turn])
+        adapter._wake_questions('turn-a')
+        self.assertEqual((holders['turn-a']['event'].is_set(), holders['turn-b']['event'].is_set()), (True, False))
+        adapter._wake_questions()
+        self.assertTrue(holders['turn-b']['event'].is_set())
+
     def test_registration_declares_a_trusted_service_platform_for_this_hermes(self):
-        calls = []
+        calls, tool_names, hook_names = [], [], []
         class Context:
             def register_platform(self, **options):
                 calls.append(options)
+            def register_tool(self, **options):
+                tool_names.append((options['name'], options['toolset']))
+            def register_hook(self, name, callback):
+                hook_names.append(name)
         self.plugin.register(Context())
+        self.assertEqual(tool_names, [('coconut_ask', 'coconut'), ('coconut_track_pr', 'coconut'),
+                                      ('coconut_message_bot', 'coconut')])
+        self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end'])
+        # A Coconut worker registers its own coconut tools.
+        with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
+            self.plugin.register(Context())
+        self.assertEqual(len(tool_names), 3)
         options = calls[0]
         self.assertEqual((options['name'], options['label'], options['trusted_inbound'], options['display_tier']),
                          ('coconut', 'Coconut', True, 'high'))

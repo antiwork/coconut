@@ -6,7 +6,11 @@ the main listener, with the token of `<data>/gateway/bridge.json`:
 
 - `POST /v1/gateway/poll` waits for turns of one Hermes home (one profile, one bot), and for turns to stop. The request
   lists the turns that still run in the gateway.
-- `POST /v1/gateway/events` reports what the gateway does with a turn: `typing`, `send`, `edit`, `delete` and `done`.
+- `POST /v1/gateway/events` reports what the gateway does with a turn: `typing`, `delta`, `send`, `edit`, `delete`,
+  `question` and `done`.
+- `POST /v1/gateway/tools` runs a Coconut tool of the `coconut` toolset for the task of a running turn (gateway_chat).
+
+A poll also returns the answers to the questions of the adapter's turns. A question is a decision card on the phone.
 
 The service thread of the turn translates these events into the provider events of the worker path (TurnEvents), so
 the phone sees the same messages. A turn that no adapter takes in TAKE_SECONDS goes back to the worker.
@@ -29,25 +33,28 @@ POLL_SECONDS = 25
 SILENT_SECONDS = 90
 ADAPTER_SECONDS = 60
 MAX_TEXT = 200_000
-KINDS = ('typing', 'send', 'edit', 'delete', 'done')
+KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
+QUESTION_KINDS = ('clarify', 'approval', 'ask')
 
-# A chat turn with one of these inputs needs Coconut's own tools, cards, work tracking or context. The worker runs it.
+# A chat turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: an
+# attachment, a card to answer, a reaction, work items and claims, routines, bot exchanges, GitHub source activity,
+# PR reviews, bot creation and deletion, and the recovery and withdrawal paths. The worker runs it.
 WORKER_INPUTS = (
     'attachments', '_pending_decisions', '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
-    '_work_context_id', '_work_context', '_work_todos', '_work_resume', '_work_dependencies', '_recent_work_updates',
-    '_tracked_prs', '_tracked_work', '_pr_review', '_background_completion', '_handoff_assignment', '_is_return',
-    '_bot_messages', '_outgoing_bot_messages', '_source_activity', '_source_answer_steps', '_source_audit_prompt',
-    '_reaction_feedback', '_technical_lane', '_self_recovery', '_native_receipts', '_bot_creation_receipts',
-    '_bot_deletion_receipts', '_withdrawal_corrections', '_direct_reply_message_id', '_work_status_only')
+    '_work_context_id', '_work_context', '_work_todos', '_work_resume', '_work_dependencies', '_pr_review',
+    '_background_completion', '_handoff_assignment', '_is_return', '_bot_messages', '_outgoing_bot_messages',
+    '_source_activity', '_source_answer_steps', '_source_audit_prompt', '_reaction_feedback', '_technical_lane',
+    '_self_recovery', '_native_receipts', '_bot_creation_receipts', '_bot_deletion_receipts', '_withdrawal_corrections',
+    '_direct_reply_message_id', '_work_status_only')
 
 
-# A message with one of these fields carries Coconut context that a gateway message does not: a quoted message, a
-# mention of another bot, a work item, or a reaction.
-WORKER_MESSAGE_FIELDS = ('reply_to', 'bot_mentions', 'work_context', 'reaction_event')
+# A message with one of these fields carries Coconut context that a gateway message does not: a work item, or a
+# reaction. A quote and a bot mention go into the text of the gateway message (native_conversation.message_content).
+WORKER_MESSAGE_FIELDS = ('work_context', 'reaction_event')
 
 
 def plain_chat_turn(task: dict) -> bool:
-    """Whether a new turn is a plain chat turn: a person's text message in a bot's own chat, and nothing else."""
+    """Whether a new turn can run in the gateway: a person's message in a bot's own chat without a worker input."""
     return bool(task.get('_chat_session')) and not any(task.get(key) for key in WORKER_INPUTS)
 
 
@@ -56,10 +63,13 @@ class GatewayUnavailable(RuntimeError):
 
 
 class _Turn:
-    def __init__(self, task_id, home, chat_id, text, chat_name):
+    def __init__(self, task_id, home, chat_id, text, chat_name, session_root=None):
         self.id = str(uuid.uuid4())
         self.task_id, self.home, self.chat_id = task_id, home, chat_id
         self.request = {'id': self.id, 'chat_id': chat_id, 'chat_name': chat_name, 'text': text}
+        if session_root:
+            # The adapter joins the gateway session of the chat with this native conversation (hooks.py).
+            self.request['session_root'] = session_root
         self.state = 'pending'  # pending, active, done, cancelled, stopping
         self.created = self.seen = time.monotonic()
         self.events: list[dict] = []
@@ -72,6 +82,8 @@ class GatewayBridge:
         self.lock = threading.Condition()
         self.adapters: dict[str, float] = {}
         self.turns: dict[str, _Turn] = {}
+        # Answers to questions, for the next poll of each Hermes home.
+        self.answers: dict[str, list[dict]] = {}
         self.closed = False
 
     @property
@@ -117,15 +129,19 @@ class GatewayBridge:
                         turn.seen = current
                 offered = [turn for turn in mine if turn.state == 'pending']
                 stopping = [turn for turn in mine if turn.state == 'stopping']
-                if offered or stopping or self.closed or current >= deadline:
+                if offered or stopping or self.answers.get(home) or self.closed or current >= deadline:
                     break
                 self.lock.wait(deadline - current)
             for turn in offered:
                 turn.state, turn.seen = 'active', time.monotonic()
             for turn in stopping:
                 self.turns.pop(turn.id, None)
+            answers = self.answers.pop(home, [])
             self.lock.notify_all()
-        return {'turns': [turn.request for turn in offered], 'stop': [turn.chat_id for turn in stopping]}
+        result = {'turns': [turn.request for turn in offered], 'stop': [turn.chat_id for turn in stopping]}
+        if answers:
+            result['answers'] = answers
+        return result
 
     def event(self, data: dict) -> dict:
         kind, text, message_id = data.get('kind'), data.get('text'), data.get('message_id')
@@ -133,22 +149,45 @@ class GatewayBridge:
             raise ValueError('Send a known gateway event.')
         if kind in ('send', 'edit', 'delete') and not isinstance(message_id, str):
             raise ValueError('Name the message of this event.')
+        if kind == 'delta' and (type(data.get('stream')) is not int or not text):
+            raise ValueError('Name the model call of the streamed text.')
+        if kind == 'question':
+            question_choices(data)
         with self.lock:
             turn = self.turns.get(data.get('turn_id'))
             if turn is None or turn.state != 'active':
                 # A cancelled or finished turn. The gateway may still send its last messages.
                 return {'ok': False}
             turn.seen = time.monotonic()
-            turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome') if key in data})
+            turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome', 'stream',
+                                                           'question_id', 'question_kind', 'detail', 'choices')
+                                if key in data})
             if kind == 'done':
                 turn.state = 'done'
             self.lock.notify_all()
         return {'ok': True}
 
-    def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut') -> None:
+    def task_of(self, turn_id) -> str | None:
+        """The task of a running turn, for a tool of that turn."""
+        with self.lock:
+            turn = self.turns.get(turn_id)
+            return turn.task_id if turn is not None and turn.state == 'active' else None
+
+    def answer(self, turn_id: str, answer: dict) -> bool:
+        """Give the answer to a question to the adapter of its turn, with its next poll."""
+        with self.lock:
+            turn = self.turns.get(turn_id)
+            if turn is None or turn.state != 'active':
+                return False
+            self.answers.setdefault(turn.home, []).append(answer)
+            self.lock.notify_all()
+        return True
+
+    def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut',
+                 session_root: str | None = None) -> None:
         """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends."""
-        turn = _Turn(task_id, os.path.realpath(home), chat_id, text, chat_name)
-        events = TurnEvents(emit)
+        turn = _Turn(task_id, os.path.realpath(home), chat_id, text, chat_name, session_root)
+        events = TurnEvents(emit, turn.id)
         with self.lock:
             # A stop that no adapter collected is old news after this long.
             for old in [old for old in self.turns.values()
@@ -199,37 +238,83 @@ class GatewayBridge:
             self.lock.notify_all()
 
 
+def question_choices(data: dict) -> list[dict]:
+    """Check a question event and return its choices: up to eight, each with an ID and a label."""
+    choices = data.get('choices') or []
+    if (data.get('question_kind') not in QUESTION_KINDS or not isinstance(data.get('question_id'), str)
+            or not isinstance(data.get('text'), str) or not data['text'].strip()
+            or not isinstance(data.get('detail', ''), str) or not isinstance(choices, list) or len(choices) > 8
+            or any(not isinstance(choice, dict) or not isinstance(choice.get('id'), str)
+                   or not isinstance(choice.get('label'), str) or not choice['label'].strip() for choice in choices)
+            or len({choice['id'] for choice in choices}) != len(choices)):
+        raise ValueError('Send a question with a text and at most eight distinct choices.')
+    return choices
+
+
 class TurnEvents:
     """Translate the gateway events of one turn into provider events, as the worker sends them.
 
+    Streamed text (`delta`) from the hooks of the plugin fills the streaming reply while the model writes. Each model
+    call has its own stream number: text of a new call starts a new segment.
     The gateway sends a reply in segments: each `send` starts one, and `edit` replaces its text while Hermes streams.
     The newest segment is the streaming reply of the turn. A new segment keeps the earlier one as a complete interim
-    message. A send that the gateway marks as interim, such as commentary, is a complete message at once.
+    message. A send that the gateway marks as interim, such as commentary, is a complete message at once, and it ends
+    the streamed segment of the same text. The first send that is not interim takes over from the streamed text: later
+    deltas only repeat what the gateway sends and edits.
     """
 
-    def __init__(self, emit):
+    def __init__(self, emit, turn_id=None):
         self.emit = emit
+        self.turn_id = turn_id
         self.stream = None
         self.text = ''
         self.phase = None
+        # The stream number of the streamed segment, the numbers that ended, and whether the gateway sends the reply.
+        self.delta_stream = None
+        self.ended_streams = set()
+        self.sent = False
 
     def apply(self, event: dict) -> bool:
         """Apply one event. Return True at the end of the turn."""
         kind, text = event['kind'], event.get('text') or ''
         if kind == 'typing':
             self._phase('thinking')
-        elif kind == 'send' and text.strip():
+        elif kind == 'delta':
+            number = event['stream']
+            if self.sent or number in self.ended_streams or (self.delta_stream is not None and number < self.delta_stream):
+                return False
             self._phase('writing')
-            if event.get('interim'):
-                self._seal()
-                self.emit('interim_message', {'text': text})
-            elif self.stream is not None and text == self.text:
-                # The final send of a reply that the stream already shows.
-                self.stream = event['message_id']
+            if self.stream is not None and self.delta_stream == number:
+                self.emit('text_delta', {'text': text})
+                self.text += text
             else:
                 self._seal()
                 self.emit('text_delta', {'text': text})
-                self.stream, self.text = event['message_id'], text
+                self.stream, self.text, self.delta_stream = f'stream:{number}', text, number
+        elif kind == 'question':
+            self.emit('gateway_question', {key: event.get(key) for key in (
+                'question_id', 'question_kind', 'text', 'detail', 'choices')} | {'turn_id': self.turn_id})
+        elif kind == 'send' and text.strip():
+            self._phase('writing')
+            streamed = self.stream is not None and self.stream.startswith('stream:')
+            if event.get('interim'):
+                if streamed:
+                    # Commentary of the model call that the stream shows. Keep its exact text as the interim message.
+                    if text != self.text:
+                        self.emit('text_delta', {'text': text, 'replace': True})
+                    self._seal()
+                else:
+                    self._seal()
+                    self.emit('interim_message', {'text': text})
+            elif self.stream is not None and (text == self.text or streamed):
+                # The send of a reply that the stream already shows, maybe with small differences.
+                if text != self.text:
+                    self.emit('text_delta', {'text': text, 'replace': True})
+                self.stream, self.text, self.sent = event['message_id'], text, True
+            else:
+                self._seal()
+                self.emit('text_delta', {'text': text})
+                self.stream, self.text, self.sent = event['message_id'], text, True
         elif kind == 'edit' and event['message_id'] == self.stream and text != self.text:
             self.emit('text_delta', {'text': text, 'replace': True})
             self.text = text
@@ -249,6 +334,8 @@ class TurnEvents:
     def _seal(self):
         if self.stream is not None:
             self.emit('interim_seal', {})
+            if self.delta_stream is not None and self.stream == f'stream:{self.delta_stream}':
+                self.ended_streams.add(self.delta_stream)
             self.stream, self.text = None, ''
 
     def _phase(self, phase):

@@ -41,7 +41,7 @@ class RoutingRuleTests(unittest.TestCase):
         self.assertTrue(plain_chat_turn(plain))
         self.assertFalse(plain_chat_turn(dict(plain, _chat_session=False)))
         for key in ('attachments', '_pending_decisions', '_native_job', '_work_context_id', '_bot_messages',
-                    '_reaction_feedback', '_recent_work_updates', '_direct_reply_message_id'):
+                    '_reaction_feedback', '_source_activity', '_direct_reply_message_id'):
             with self.subTest(key=key):
                 self.assertFalse(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
 
@@ -72,6 +72,34 @@ class TurnEventTests(unittest.TestCase):
             ('text_delta', {'text': 'The test passes.', 'replace': True}),
             ('completed', {'summary': 'Complete.'})])
         self.assertEqual(done, [False] * 8 + [True])
+
+    def test_streamed_text_becomes_the_reply_and_commentary_an_interim_message(self):
+        emitted, _ = self.translate(
+            {'kind': 'delta', 'stream': 1, 'text': 'I will '},
+            {'kind': 'delta', 'stream': 1, 'text': 'check.'},
+            # The gateway sends the commentary of that model call after it ends.
+            {'kind': 'send', 'message_id': 't:1', 'text': 'I will check.', 'interim': True},
+            # A late piece of the ended call changes nothing.
+            {'kind': 'delta', 'stream': 1, 'text': ' Late.'},
+            {'kind': 'delta', 'stream': 2, 'text': 'It passes'},
+            {'kind': 'send', 'message_id': 't:2', 'text': 'It passes.'},
+            # After the reply send, the gateway's own sends and edits lead.
+            {'kind': 'delta', 'stream': 2, 'text': ' again'},
+            {'kind': 'done', 'outcome': 'success'})
+        self.assertEqual(emitted, [
+            ('phase', {'phase': 'writing'}),
+            ('text_delta', {'text': 'I will '}), ('text_delta', {'text': 'check.'}),
+            ('interim_seal', {}),
+            ('text_delta', {'text': 'It passes'}),
+            ('text_delta', {'text': 'It passes.', 'replace': True}),
+            ('completed', {'summary': 'Complete.'})])
+
+    def test_a_question_event_asks_for_a_card(self):
+        emitted, done = self.translate({'kind': 'question', 'question_id': 'q', 'question_kind': 'ask', 'text': 'Which?',
+                                        'detail': '', 'choices': []})
+        self.assertEqual(emitted, [('gateway_question', {'question_id': 'q', 'question_kind': 'ask', 'text': 'Which?',
+                                                         'detail': '', 'choices': [], 'turn_id': None})])
+        self.assertEqual(done, [False])
 
     def test_a_deleted_preview_and_a_failed_turn(self):
         emitted, _ = self.translate({'kind': 'send', 'message_id': 't:1', 'text': 'Draft'},
@@ -116,7 +144,11 @@ class BridgeTests(unittest.TestCase):
 
     def test_events_of_unknown_turns_are_refused_and_bad_events_raise(self):
         self.assertEqual(self.bridge.event({'turn_id': 'gone', 'kind': 'send', 'message_id': 'm', 'text': 'x'}), {'ok': False})
-        for event in ({'kind': 'other'}, {'kind': 'send', 'text': 'no message'}, {'kind': 'edit', 'message_id': 'm', 'text': 1}):
+        for event in ({'kind': 'other'}, {'kind': 'send', 'text': 'no message'}, {'kind': 'edit', 'message_id': 'm', 'text': 1},
+                      {'kind': 'delta', 'text': 'no stream'}, {'kind': 'question', 'question_id': 'q', 'question_kind': 'poll',
+                                                               'text': 'x'},
+                      {'kind': 'question', 'question_id': 'q', 'question_kind': 'ask', 'text': 'x',
+                       'choices': [{'id': 'a', 'label': 'A'}, {'id': 'a', 'label': 'B'}]}):
             with self.subTest(event=event), self.assertRaises(ValueError):
                 self.bridge.event(event)
         with self.assertRaises(ValueError):
@@ -144,6 +176,15 @@ class ServiceRoutingTests(unittest.TestCase):
 
     def send(self, text):
         return self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': text})
+
+    def decisions(self):
+        # The thread of a turn uses the same database connection, so a read in the test takes the service lock.
+        with self.service.lock:
+            return self.service._all('decisions')
+
+    def read(self, table, identity):
+        with self.service.lock:
+            return self.service._get(table, identity)
 
     def replies(self, task):
         return [(m['text'], m['streaming'], bool(m.get('_interim'))) for m in self.service._task_messages(task['id'])
@@ -176,9 +217,9 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(self.provider.starts, [])
         self.assertEqual(adapter.turns[0]['chat_id'], self.bot['id'])
         self.assertEqual(adapter.turns[0]['text'], 'How are you?')
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
         self.assertEqual(self.replies(task), [('Let me think.', False, True), ('I am well.', False, False)])
-        self.assertEqual(self.service._get('bots', self.bot['id'])['last_message'], 'I am well.')
+        self.assertEqual(self.read('bots', self.bot['id'])['last_message'], 'I am well.')
         self.assertEqual(self.service.gateway_status()['connected_profiles'], [self.service.profiles.row(self.bot)['name']])
 
     def test_the_worker_runs_the_turn_with_the_worker_setting_or_without_an_adapter(self):
@@ -192,29 +233,157 @@ class ServiceRoutingTests(unittest.TestCase):
             task = self.send('Still the worker.')
             self.service._run_task(task['id'])
         self.assertEqual(len(self.provider.starts), 2)
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
 
     def test_a_turn_with_coconut_inputs_or_one_that_no_adapter_takes_runs_in_the_worker(self):
         self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
         Adapter(self.service.gateway_bridge, self.home, [])
         task = self.send('A reaction is Coconut context.')
         with self.service.transaction():
-            stored = self.service._get('tasks', task['id'])
+            stored = self.read('tasks', task['id'])
             stored['_reaction_feedback'] = [{'emoji': '👍'}]
             self.service._put('tasks', stored)
         self.service._run_task(task['id'])
         self.assertEqual(len(self.provider.starts), 1)
-        # A quoted reply needs its quote, which only the worker passes on.
-        answer = next(m for m in self.service._task_messages(task['id']) if m['role'] == 'assistant')
-        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages',
-                          {'text': 'Do that instead.', 'reply_to_message_id': answer['id']})
-        self.service._run_task(task['id'])
-        self.assertEqual(len(self.provider.starts), 2)
         task = self.send('Nobody takes this one.')
         with patch.object(gateway_bridge, 'TAKE_SECONDS', 0.2):
             self.service._run_task(task['id'])
-        self.assertEqual(len(self.provider.starts), 3)
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(len(self.provider.starts), 2)
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+
+    def test_a_quoted_reply_carries_its_quote_and_the_turn_names_the_native_conversation(self):
+        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
+        first = self.send('First.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [{'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.service._run_task(first['id'])
+        adapter.join(5)
+        with self.service.transaction():
+            answer = self.service._message(self.bot['id'], 'Use the blue one.', task_id=first['id'])
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages',
+                          {'text': 'Do that instead.', 'reply_to_message_id': answer['id']})
+        adapter = Adapter(self.service.gateway_bridge, self.home, [{'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.service._run_task(task['id'])
+        adapter.join(5)
+        self.assertEqual(self.provider.starts, [])
+        self.assertIn('Use the blue one.', adapter.turns[0]['text'])
+        self.assertTrue(adapter.turns[0]['text'].endswith('Do that instead.'))
+        from coconut.native_conversation import session_root
+        stored = self.read('tasks', task['id'])
+        self.assertEqual(adapter.turns[0]['session_root'],
+                         session_root(self.read('bots', self.bot['id']), epoch=stored.get('_conversation_epoch')))
+
+    def test_a_question_of_the_gateway_is_a_card_and_its_answer_returns_to_the_turn(self):
+        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
+        task = self.send('Deploy it.')
+        bridge = self.service.gateway_bridge
+        adapter = Adapter(bridge, self.home, [{'kind': 'question', 'question_id': 'q1', 'question_kind': 'clarify',
+                                               'text': 'Which region?', 'choices': [
+                                                   {'id': 'choice-0', 'label': 'Europe'},
+                                                   {'id': 'choice-1', 'label': 'America'}]}])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(d['task_id'] == task['id'] for d in self.decisions()):
+            time.sleep(.02)
+        card = next(d for d in self.decisions() if d['task_id'] == task['id'])
+        self.assertEqual((card['title'], card['status'], [o['label'] for o in card['options']]),
+                         ('Which region?', 'pending', ['Europe', 'America']))
+        # The turn waits for the answer, so the task keeps working.
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'working')
+        self.write('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'choice-1', 'revision': 1})
+        answers = bridge.poll({'home': str(self.home), 'wait': 0, 'active': [adapter.turns[0]['id']]})['answers']
+        self.assertEqual(answers, [{'question_id': 'q1', 'text': 'America', 'choice': 'choice-1'}])
+        self.assertEqual(self.read('decisions', card['id'])['status'], 'approved')
+        bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'send', 'message_id': 'm:1', 'text': 'Deployed in America.'})
+        bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.replies(task), [('Deployed in America.', False, False)])
+
+    def test_an_open_question_closes_when_the_turn_ends_and_a_typed_answer_declines_a_command(self):
+        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
+        task = self.send('Clean up.')
+        bridge = self.service.gateway_bridge
+        adapter = Adapter(bridge, self.home, [
+            {'kind': 'question', 'question_id': 'q1', 'question_kind': 'approval', 'text': 'Allow rm -rf build?',
+             'detail': 'rm -rf build', 'choices': [{'id': 'once', 'label': 'Allow once'},
+                                                   {'id': 'deny', 'label': 'Deny', 'deny': True}]},
+            {'kind': 'question', 'question_id': 'q2', 'question_kind': 'ask', 'text': 'Anything else?'}])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and len([d for d in self.decisions() if d['task_id'] == task['id']]) < 2:
+            time.sleep(.02)
+        approval, ask = sorted((d for d in self.decisions() if d['task_id'] == task['id']),
+                               key=lambda d: d['title'])
+        self.assertEqual((approval['action_type'], [o['answer'] for o in approval['options']]),
+                         ('native_approval', ['approve', 'reject']))
+        self.write('POST', f'/v1/decisions/{approval["id"]}/answer',
+                   {'choice': 'reply', 'correction': 'Keep the build folder.', 'revision': 1})
+        answers = bridge.poll({'home': str(self.home), 'wait': 0, 'active': [adapter.turns[0]['id']]})['answers']
+        self.assertEqual(answers, [{'question_id': 'q1', 'text': 'Keep the build folder.', 'choice': 'deny'}])
+        bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        self.assertEqual(self.read('decisions', ask['id'])['status'], 'failed')
+        with self.assertRaises(ServiceError):
+            self.write('POST', f'/v1/decisions/{ask["id"]}/answer', {'choice': 'reply', 'correction': 'No.', 'revision': 1})
+
+    def test_a_dismissed_card_returns_its_rejection_to_the_waiting_turn(self):
+        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
+        task = self.send('Clean up.')
+        bridge = self.service.gateway_bridge
+        adapter = Adapter(bridge, self.home, [{'kind': 'question', 'question_id': 'q1', 'question_kind': 'approval',
+                                               'text': 'Allow rm?', 'choices': [{'id': 'once', 'label': 'Allow once'},
+                                                                                {'id': 'deny', 'label': 'Deny', 'deny': True}]}])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(d['task_id'] == task['id'] for d in self.decisions()):
+            time.sleep(.02)
+        card = next(d for d in self.decisions() if d['task_id'] == task['id'])
+        # The Inbox finishes a swipe with the generic answer path (decision_inbox.finish_inbox_swipes).
+        with self.service.transaction():
+            self.service._answer(self.service._get('decisions', card['id']), self.service._get('tasks', task['id']),
+                                 dict(choice='reject', revision=1), 'phone')
+        answers = bridge.poll({'home': str(self.home), 'wait': 0, 'active': [adapter.turns[0]['id']]})['answers']
+        self.assertEqual(answers, [{'question_id': 'q1', 'text': '', 'choice': 'deny'}])
+        self.assertEqual(self.read('decisions', card['id'])['status'], 'rejected')
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'working')
+        bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+
+    def test_a_coconut_tool_of_the_gateway_acts_for_the_task_of_its_turn(self):
+        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        task = self.send('Ask Lin.')
+        bridge = self.service.gateway_bridge
+        adapter = Adapter(bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        receipt = self.service.gateway_tool({'turn_id': turn, 'tool': 'message_bot',
+                                             'arguments': {'bot': 'lin', 'text': 'Please check the logs.'}})
+        self.assertEqual((receipt['status'], receipt['target_bot_id']), ('queued', other['id']))
+        delivered = self.read('tasks', receipt['task_id'])
+        self.assertEqual((delivered['bot_id'], delivered['source_task_id']), (other['id'], task['id']))
+        with self.assertRaisesRegex(ServiceError, 'Lin'):
+            self.service.gateway_tool({'turn_id': turn, 'tool': 'message_bot', 'arguments': {'bot': 'Nobody', 'text': 'x'}})
+        with self.assertRaises(ServiceError):
+            self.service.gateway_tool({'turn_id': turn, 'tool': 'delete_everything', 'arguments': {}})
+        bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        with self.assertRaisesRegex(ServiceError, 'no longer runs'):
+            self.service.gateway_tool({'turn_id': turn, 'tool': 'message_bot', 'arguments': {'bot': 'Lin', 'text': 'x'}})
 
     def test_a_cancelled_turn_stops_in_the_gateway(self):
         self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
@@ -227,7 +396,7 @@ class ServiceRoutingTests(unittest.TestCase):
         self.write('POST', f'/v1/tasks/{task["id"]}/cancel')
         runner.join(5)
         self.assertFalse(runner.is_alive())
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'cancelled')
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'cancelled')
         self.assertEqual(self.service.gateway_bridge.poll({'home': str(self.home), 'wait': 0})['stop'], [self.bot['id']])
         self.assertEqual(self.service.gateway_bridge.event(
             {'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'cancelled'}), {'ok': False})

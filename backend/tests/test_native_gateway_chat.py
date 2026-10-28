@@ -1,5 +1,7 @@
 """A chat message goes through a real `hermes gateway run` and its reply reaches Coconut.
 
+The turn continues the bot's native conversation from an earlier worker turn, gets the coconut tools, and streams.
+
 Setup's edit (skill_dirs.py with the config writer of Hermes) installs the `coconut` platform in a new Hermes home. The
 service starts the gateway for that home, the adapter connects over loopback, and a local stand-in of an OpenAI
 compatible model answers. The test fails when the gateway loads no adapter, takes no turn, or sends no reply.
@@ -118,12 +120,30 @@ class NativeGatewayChatTests(unittest.TestCase):
             self.assertTrue(service.gateway_bridge.connected(home), diagnostics())
             self.assertEqual(service.gateway_status()['connected_profiles'], ['default'])
             bot = next(bot for bot in service.snapshot()['bots'] if service.profiles.row(bot)['name'] == 'default')
+            # An earlier worker turn of this bot, in its native conversation (native_conversation.NativeConversation).
+            from hermes_state import SessionDB
+            from coconut.native_conversation import session_root
+            root = session_root(service._get('bots', bot['id']), epoch=service._setting('conversation_epoch'))
+            db = SessionDB(db_path=home / 'state.db')
+            db.create_session(root, source='coconut', model='stub-model')
+            db.replace_messages(root, [{'role': 'user', 'content': 'Remember the word mango.'},
+                                       {'role': 'assistant', 'content': 'I will remember mango.'}])
+            db.close()
             task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Say hello.'}, str(uuid4()), 'phone')
             service._run_task(task['id'])
             replies = [m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
             self.assertEqual(service._get('tasks', task['id'])['status'], 'completed', diagnostics())
+            # The streamed pieces and the final send make one reply.
             self.assertEqual(replies, [REPLY], diagnostics())
-            self.assertTrue(any('Say hello.' in json.dumps(request['messages']) for request in Model.requests))
+            turn = [request for request in Model.requests if 'Say hello.' in json.dumps(request['messages'])]
+            self.assertTrue(turn, diagnostics())
+            # The gateway turn continues the bot's native conversation, and it has the coconut tools.
+            self.assertIn('mango', json.dumps(turn[0]['messages']), diagnostics())
+            # Hermes lists plugin tools behind its tool search bridge (tools/tool_search.py): the names are in the
+            # listing of tool_search, and tool_call runs them.
+            tools = json.dumps(turn[0].get('tools') or [])
+            for name in ('coconut_ask', 'coconut_track_pr', 'coconut_message_bot'):
+                self.assertIn(name, tools, diagnostics())
             process = service.gateway_process
         finally:
             service.close()

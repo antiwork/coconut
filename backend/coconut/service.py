@@ -2650,6 +2650,9 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         return message['id']
 
     def _answer(self, decision: dict, task: dict, data: dict, device: str) -> dict:
+        if decision.get('_gateway_question'):
+            # The answer, a reply or a dismissal from the Inbox, goes to the waiting gateway turn.
+            return self.answer_gateway_question(decision, task, data, device)
         if decision.get('_source_recheck'):
             raise ServiceError(409, 'The source changed. Coconut is updating this decision.')
         if not isinstance(data.get('revision'), int) or isinstance(data['revision'], bool) or data['revision'] != decision['revision']:
@@ -3779,6 +3782,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             elif kind == 'interim_seal':
                 from .interim_messages import seal
                 seal(self, task)
+            elif kind == 'gateway_question':
+                self.record_gateway_question(task, payload)
             elif kind == 'activity':
                 self._message(bot_id, str(payload.get('text', payload.get('summary', 'Working')))[:500], task_id=task_id, kind='activity')
             elif kind == 'decision':
