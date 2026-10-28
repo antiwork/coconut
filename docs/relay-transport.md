@@ -72,7 +72,7 @@ A reset ends the Noise sessions, because their keys live in the sidecar's channe
 
 1. The relay sends `mac_offline` to each open phone session. The phone ends that session with `connectionLost`, which it retries once after 0.4 seconds.
 2. The sidecar connects again at once.
-3. A phone socket that arrives while no host is connected waits in the relay for up to 5 seconds. The relay keeps its first messages, at most 8 KB, and gives them to the next host with `open`. After 5 seconds without a host, the phone gets `mac_offline`.
+3. A phone socket that arrives while no host is connected waits in the relay for up to 5 seconds. The relay keeps its first messages in the socket attachment, which holds 2,048 bytes, so they survive hibernation. The phone's first Noise message is 96 bytes. A phone that sends more than about 1 KB while it waits gets `mac_offline`. The relay gives the kept messages to the next host after `open`. After 5 seconds without a host, the phone gets `mac_offline`.
 
 The sidecar sends each stream to the backend's plain HTTP listener on `127.0.0.1:8961` as one HTTP request. It sets `X-Coconut-Peer` to the iPhone's static key in lowercase hex. The backend reads this header only on that listener.
 

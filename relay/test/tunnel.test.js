@@ -291,14 +291,24 @@ test('a client that connects between two host sockets reaches the next host', as
   assert.deepEqual(await next.control(), { type: 'closed', id: open.id });
 });
 
-test('a waiting client that sends more than 8 KB gets mac_offline', async t => {
-  const { connect, route, host, clientToken } = await tunnel(t);
+test('a waiting client that sends more than its attachment holds gets mac_offline', async t => {
+  const { connect, route, hostToken, host, clientToken } = await tunnel(t);
   host.ws.close(1000);
   await new Promise(resolve => setTimeout(resolve, 200));
+  // A first Noise message of 96 bytes and a few more small messages fit.
   const phone = await connect(route, 'client', `Bearer ${clientToken}`);
-  phone.send(new Uint8Array(8 * 1024));
-  phone.send(new Uint8Array(1));
-  assert.deepEqual(JSON.parse(await phone.next()), { type: 'error', code: 'mac_offline' });
+  phone.send(new Uint8Array(96));
+  for (let i = 0; i < 4; i++) phone.send(new Uint8Array(64));
+  // 1,600 bytes would pass the 2,048-byte attachment limit in base64. The relay refuses them before it stores them.
+  const large = await connect(route, 'client', `Bearer ${clientToken}`);
+  large.send(new Uint8Array(1600));
+  assert.deepEqual(JSON.parse(await large.next()), { type: 'error', code: 'mac_offline' });
+  assert.equal((await large.closed()).code, 4001);
+  const next = await connect(route, 'host', `Bearer ${hostToken}`);
+  const open = await next.control();
+  assert.equal(open.type, 'open');
+  assert.equal((await next.next()).length, 4 + 96);
+  for (let i = 0; i < 4; i++) assert.equal((await next.next()).length, 4 + 64);
 });
 
 test('a route allows 3,000 frames a minute', async t => {

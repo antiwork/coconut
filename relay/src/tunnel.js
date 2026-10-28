@@ -14,7 +14,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 //     `mac_offline` (no host connected in time, or the host socket ended), `host_reconnected`, `revoked`,
 //     or `closed` (by the host).
 // - A client that connects while no host is connected waits up to 5 seconds for one. The relay keeps the client's
-//   first messages, at most 8 KB. When a host connects, the relay sends `open` and those messages to it. Otherwise
+//   first messages, about 1 KB. When a host connects, the relay sends `open` and those messages to it. Otherwise
 //   the client gets `mac_offline`. Cloudflare can reset a long-lived host socket at any time, for example when it
 //   restarts a server, so the sidecar connects again at once, and a phone does not see the short gap.
 // - Host to relay, on channel 0 (a hash is the lowercase hex SHA-256 of the token string):
@@ -42,9 +42,12 @@ const MAX_CHANNELS = 8;
 const MAX_CLIENT_TOKENS = 32;
 const MAX_TICKETS = 8;
 const FRAMES_PER_MINUTE = 3000;
-// How long a client waits for a host, and how much it can send meanwhile.
+// How long a client waits for a host.
 const HOST_WAIT_MS = 5000;
-const MAX_WAITING_BYTES = 8 * 1024;
+// The relay keeps the messages of a waiting client in its socket attachment, so they survive hibernation. An
+// attachment can hold 2,048 bytes, so the whole attachment stays at or below this size as JSON. The first Noise
+// message of the phone is 96 bytes, 128 bytes in base64.
+const MAX_WAITING_ATTACHMENT = 1536;
 const REGISTRATIONS_PER_HOUR = 10;
 const HEX64 = /^[a-f0-9]{64}$/;
 
@@ -189,7 +192,7 @@ export class Tunnel {
       send(host, control({ type: 'open', id: channel, auth, hash: digest }));
     } else {
       // The host socket can be gone for a moment, for example after Cloudflare resets it. The client waits for the next one.
-      server.serializeAttachment({ role: 'client', channel, waiting: { since: now, auth, hash: digest, frames: [], bytes: 0 } });
+      server.serializeAttachment({ role: 'client', channel, waiting: { since: now, auth, hash: digest, frames: [] } });
       await this.wake(now + HOST_WAIT_MS);
     }
     return new Response(null, { status: 101, webSocket: client });
@@ -242,11 +245,11 @@ export class Tunnel {
     if (typeof message === 'string') return close(ws, 1003, 'binary_only');
     const bytes = new Uint8Array(message);
     if (attachment?.waiting) {
-      const waiting = attachment.waiting;
-      waiting.bytes += bytes.length;
-      if (waiting.bytes > MAX_WAITING_BYTES) return this.end(ws, 4001, 'mac_offline');
-      waiting.frames.push(Buffer.from(bytes).toString('base64'));
-      return ws.serializeAttachment(attachment);
+      // A client that sends more than the attachment holds gets mac_offline, never an exception.
+      attachment.waiting.frames.push(Buffer.from(bytes).toString('base64'));
+      if (JSON.stringify(attachment).length > MAX_WAITING_ATTACHMENT) return this.end(ws, 4001, 'mac_offline');
+      try { ws.serializeAttachment(attachment); } catch { this.end(ws, 4001, 'mac_offline'); }
+      return;
     }
     if (attachment?.role === 'client') {
       const host = this.host();
