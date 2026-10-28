@@ -96,6 +96,29 @@ struct DisconnectCause: Equatable {
     var summary: String { detail.map { "\(kind.rawValue) (\($0))" } ?? kind.rawValue }
 }
 
+/// The wait before the next connection attempt to the relay, and the backoff after it.
+///
+/// Cloudflare resets a long-lived WebSocket from time to time, for example when it restarts a server. Such a reset ends a
+/// healthy socket, so the first attempt after it starts at once. iPhones that connect during the gap wait in the relay
+/// for up to 5 seconds. Failed attempts after that wait longer each time, up to `maxBackoff`.
+struct ReconnectDelay: Equatable {
+    /// A socket that stayed up this long was healthy.
+    static let healthyUptime: TimeInterval = 60
+    /// A network change or a wake waits this long, so the new network path can settle.
+    static let settle: TimeInterval = 0.2
+
+    var delay: TimeInterval
+    var backoff: TimeInterval
+
+    /// `uptime` is the age of the socket that ended, or nil for a failed attempt. `jitter` is a factor near 1.
+    static func next(immediately: Bool, uptime: TimeInterval?, backoff: TimeInterval, maxBackoff: TimeInterval,
+                     jitter: Double) -> ReconnectDelay {
+        if immediately { return ReconnectDelay(delay: settle, backoff: 1) }
+        if let uptime, uptime > healthyUptime { return ReconnectDelay(delay: 0, backoff: 1) }
+        return ReconnectDelay(delay: backoff * jitter, backoff: min(backoff * 2, maxBackoff))
+    }
+}
+
 /// A bounded log of JSON lines. The file rotates at `maxBytes` and keeps one previous file, `<name>.1`, both mode 0600.
 /// `record` only formats the line. A private serial queue writes it, so slow disk I/O never blocks the tunnel.
 final class TunnelEventLog {

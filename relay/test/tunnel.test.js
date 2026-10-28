@@ -49,8 +49,8 @@ function socket(ws) {
   return {
     status: 101, ws,
     send: data => ws.send(data),
-    async next() {
-      await until(() => messages.length || closed);
+    async next(wait) {
+      await until(() => messages.length || closed, wait);
       if (!messages.length) throw new Error(`Closed with ${closed.code}`);
       return messages.shift();
     },
@@ -254,9 +254,51 @@ test('clients get mac_offline when no host is connected', async t => {
   host.ws.close(1000);
   assert.deepEqual(JSON.parse(await phone.next()), { type: 'error', code: 'mac_offline' });
   assert.equal((await phone.closed()).code, 4001);
+  // A later client waits 5 seconds for a host, then gets mac_offline.
+  const started = Date.now();
   const late = await r.connect(route, 'client', `Bearer ${clientToken}`);
-  assert.deepEqual(JSON.parse(await late.next()), { type: 'error', code: 'mac_offline' });
+  late.send(new Uint8Array([1]));
+  assert.deepEqual(JSON.parse(await late.next(10000)), { type: 'error', code: 'mac_offline' });
+  assert.ok(Date.now() - started >= 4900, `mac_offline after ${Date.now() - started} ms`);
   assert.equal((await late.closed()).code, 4001);
+});
+
+test('a client that connects between two host sockets reaches the next host', async t => {
+  const { connect, route, hostToken, host, clientToken, client } = await tunnel(t);
+  const before = await client();
+  // Cloudflare resets the host socket. The open session ends, because its Noise keys lived on that socket.
+  host.ws.close(1011);
+  assert.deepEqual(JSON.parse(await before.next()), { type: 'error', code: 'mac_offline' });
+  // The phone connects again before the sidecar does. Its handshake waits in the relay.
+  const phone = await connect(route, 'client', `Bearer ${clientToken}`);
+  phone.send(new Uint8Array([1, 2]));
+  phone.send(new Uint8Array([3]));
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const next = await connect(route, 'host', `Bearer ${hostToken}`);
+  const open = await next.control();
+  assert.deepEqual(open, { type: 'open', id: open.id, auth: 'token', hash: hash(clientToken) });
+  assert.deepEqual([...await next.next()], [...frame(open.id, [1, 2])]);
+  assert.deepEqual([...await next.next()], [...frame(open.id, [3])]);
+  next.send(frame(open.id, [4]));
+  assert.deepEqual([...await phone.next()], [4]);
+  phone.send(new Uint8Array([5]));
+  assert.deepEqual([...await next.next()], [...frame(open.id, [5])]);
+  // The alarm does not end a client that a host took.
+  await new Promise(resolve => setTimeout(resolve, 5000));
+  phone.send(new Uint8Array([6]));
+  assert.deepEqual([...await next.next()], [...frame(open.id, [6])]);
+  phone.ws.close();
+  assert.deepEqual(await next.control(), { type: 'closed', id: open.id });
+});
+
+test('a waiting client that sends more than 8 KB gets mac_offline', async t => {
+  const { connect, route, host, clientToken } = await tunnel(t);
+  host.ws.close(1000);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const phone = await connect(route, 'client', `Bearer ${clientToken}`);
+  phone.send(new Uint8Array(8 * 1024));
+  phone.send(new Uint8Array(1));
+  assert.deepEqual(JSON.parse(await phone.next()), { type: 'error', code: 'mac_offline' });
 });
 
 test('a route allows 3,000 frames a minute', async t => {

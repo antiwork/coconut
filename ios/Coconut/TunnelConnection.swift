@@ -73,7 +73,10 @@ enum TunnelError: Error, Equatable, Sendable {
     // The relay sends `{"type":"error","code":c}` as a text message before it closes the socket.
     static func relay(code: String, duringHandshake: Bool) -> TunnelError {
         switch code {
-        case "mac_offline": .macOffline
+        // During a handshake, the relay says this after it waits 5 seconds for a Mac. On an open session, it means that
+        // the Mac's relay socket ended. Cloudflare resets that socket from time to time. The Mac connects again at once,
+        // and the relay holds the next handshake until then, so a second attempt usually works.
+        case "mac_offline": duringHandshake ? .macOffline : .connectionLost
         case "revoked": .needsRepair
         // The Mac closes the channel when it does not know the phone key or the pairing ticket.
         case "closed": duringHandshake ? .needsRepair : .connectionLost
@@ -235,6 +238,8 @@ actor TunnelConnection {
             switch error {
             case .macOffline, .backendDown: self = .macOffline
             case .needsRepair: self = .needsRepair
+            // An open socket ended. The next request connects again, so the app does not show a fault.
+            case .connectionLost: self = .connecting
             default: self = .relayUnreachable
             }
         }

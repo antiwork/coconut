@@ -11,7 +11,12 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 // - Text messages come from the relay itself, never from the other peer:
 //   - `ping` gets the automatic reply `pong`, on both sockets, without waking the Durable Object.
 //   - On a client socket, `{"type":"error","code":c}` comes right before the relay closes it:
-//     `mac_offline` (no host is connected), `host_reconnected`, `revoked`, or `closed` (by the host).
+//     `mac_offline` (no host connected in time, or the host socket ended), `host_reconnected`, `revoked`,
+//     or `closed` (by the host).
+// - A client that connects while no host is connected waits up to 5 seconds for one. The relay keeps the client's
+//   first messages, at most 8 KB. When a host connects, the relay sends `open` and those messages to it. Otherwise
+//   the client gets `mac_offline`. Cloudflare can reset a long-lived host socket at any time, for example when it
+//   restarts a server, so the sidecar connects again at once, and a phone does not see the short gap.
 // - Host to relay, on channel 0 (a hash is the lowercase hex SHA-256 of the token string):
 //   - `{"type":"add_ticket","hash":h,"ttl":s}` allows one client connection with that pairing ticket
 //     for s seconds (1 to 600).
@@ -37,16 +42,21 @@ const MAX_CHANNELS = 8;
 const MAX_CLIENT_TOKENS = 32;
 const MAX_TICKETS = 8;
 const FRAMES_PER_MINUTE = 3000;
+// How long a client waits for a host, and how much it can send meanwhile.
+const HOST_WAIT_MS = 5000;
+const MAX_WAITING_BYTES = 8 * 1024;
 const REGISTRATIONS_PER_HOUR = 10;
 const HEX64 = /^[a-f0-9]{64}$/;
 
 export const hash = value => createHash('sha256').update(value).digest('hex');
-const control = value => {
-  const json = new TextEncoder().encode(JSON.stringify(value));
-  const frame = new Uint8Array(4 + json.length);
-  frame.set(json, 4);
+// A host message: `channel u32 big-endian | bytes`.
+const framed = (channel, bytes) => {
+  const frame = new Uint8Array(4 + bytes.length);
+  new DataView(frame.buffer).setUint32(0, channel);
+  frame.set(bytes, 4);
   return frame;
 };
+const control = value => framed(0, new TextEncoder().encode(JSON.stringify(value)));
 const close = (ws, code, reason) => { try { ws.close(code, reason); } catch {} };
 const send = (ws, data) => { try { ws.send(data); } catch {} };
 
@@ -150,12 +160,13 @@ export class Tunnel {
       }
       // A newer host socket replaces the older one. The old Noise sessions end with it.
       for (const ws of this.ctx.getWebSockets('host')) close(ws, 1000, 'replaced');
-      for (const ws of this.clients()) this.end(ws, 1012, 'host_reconnected');
+      for (const ws of this.clients()) if (!ws.deserializeAttachment()?.waiting) this.end(ws, 1012, 'host_reconnected');
       const generation = (this.meta('host_generation') || 0) + 1;
       this.setMeta('host_generation', generation);
       const [client, server] = Object.values(new WebSocketPair());
       this.ctx.acceptWebSocket(server, ['host']);
       server.serializeAttachment({ role: 'host', generation });
+      this.adopt(server, generation);
       return new Response(null, { status: 101, webSocket: client });
     }
     let auth;
@@ -172,11 +183,48 @@ export class Tunnel {
     this.setMeta('next_channel', channel >= 0xffffffff ? 1 : channel + 1);
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server, ['client', `channel:${channel}`, `key:${digest}`]);
-    server.serializeAttachment({ role: 'client', channel, generation: this.meta('host_generation') });
     const host = this.host();
-    if (host) send(host, control({ type: 'open', id: channel, auth, hash: digest }));
-    else this.end(server, 4001, 'mac_offline');
+    if (host) {
+      server.serializeAttachment({ role: 'client', channel, generation: this.meta('host_generation') });
+      send(host, control({ type: 'open', id: channel, auth, hash: digest }));
+    } else {
+      // The host socket can be gone for a moment, for example after Cloudflare resets it. The client waits for the next one.
+      server.serializeAttachment({ role: 'client', channel, waiting: { since: now, auth, hash: digest, frames: [], bytes: 0 } });
+      await this.wake(now + HOST_WAIT_MS);
+    }
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // Sets the alarm to `at`, unless an earlier alarm is already set.
+  async wake(at) {
+    const current = await this.ctx.storage.getAlarm();
+    if (current === null || current > at) await this.ctx.storage.setAlarm(at);
+  }
+
+  // Ends the clients that waited too long for a host, and wakes again for the others.
+  async alarm() {
+    const now = Date.now();
+    let next;
+    for (const ws of this.clients()) {
+      const waiting = ws.deserializeAttachment()?.waiting;
+      if (!waiting) continue;
+      const deadline = waiting.since + HOST_WAIT_MS;
+      if (deadline <= now) this.end(ws, 4001, 'mac_offline');
+      else next = Math.min(next ?? deadline, deadline);
+    }
+    if (next !== undefined) await this.wake(next);
+  }
+
+  // Gives the waiting clients to a new host: `open`, then the messages that each client sent while it waited.
+  adopt(host, generation) {
+    for (const ws of this.clients()) {
+      const attachment = ws.deserializeAttachment();
+      if (!attachment?.waiting) continue;
+      const { auth, hash: digest, frames } = attachment.waiting;
+      ws.serializeAttachment({ role: 'client', channel: attachment.channel, generation });
+      send(host, control({ type: 'open', id: attachment.channel, auth, hash: digest }));
+      for (const data of frames) send(host, framed(attachment.channel, Buffer.from(data, 'base64')));
+    }
   }
 
   end(ws, code, reason) {
@@ -193,13 +241,17 @@ export class Tunnel {
     }
     if (typeof message === 'string') return close(ws, 1003, 'binary_only');
     const bytes = new Uint8Array(message);
+    if (attachment?.waiting) {
+      const waiting = attachment.waiting;
+      waiting.bytes += bytes.length;
+      if (waiting.bytes > MAX_WAITING_BYTES) return this.end(ws, 4001, 'mac_offline');
+      waiting.frames.push(Buffer.from(bytes).toString('base64'));
+      return ws.serializeAttachment(attachment);
+    }
     if (attachment?.role === 'client') {
       const host = this.host();
       if (!host) return this.end(ws, 4001, 'mac_offline');
-      const frame = new Uint8Array(4 + bytes.length);
-      new DataView(frame.buffer).setUint32(0, attachment.channel);
-      frame.set(bytes, 4);
-      return send(host, frame);
+      return send(host, framed(attachment.channel, bytes));
     }
     if (attachment?.role !== 'host' || bytes.length < 4) return close(ws, 1003, 'invalid');
     const channel = new DataView(bytes.buffer, bytes.byteOffset).getUint32(0);
@@ -246,7 +298,8 @@ export class Tunnel {
       const host = this.host();
       if (host && attachment.generation === this.meta('host_generation')) send(host, control({ type: 'closed', id: attachment.channel }));
     } else if (attachment?.role === 'host' && attachment.generation === this.meta('host_generation')) {
-      for (const client of this.clients()) this.end(client, 4001, 'mac_offline');
+      // The Noise sessions end with the host socket. A client that waits for the next host keeps waiting.
+      for (const client of this.clients()) if (!client.deserializeAttachment()?.waiting) this.end(client, 4001, 'mac_offline');
     }
   }
 }

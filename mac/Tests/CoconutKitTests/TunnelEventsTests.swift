@@ -159,4 +159,21 @@ final class TunnelEventsTests: XCTestCase {
         XCTAssertEqual(sessionErrorName(Failure.invalidRekey), "invalidRekey")
         XCTAssertEqual(sessionErrorName(Failure.unknownType(9)), "unknownType")
     }
+
+    func testAResetOfAHealthySocketGetsANewAttemptAtOnce() {
+        // A reset by Cloudflare after 26 minutes: no wait, and the backoff starts again.
+        XCTAssertEqual(ReconnectDelay.next(immediately: false, uptime: 1589, backoff: 8, maxBackoff: 60, jitter: 1.1),
+                       ReconnectDelay(delay: 0, backoff: 1))
+        // The first attempt after it fails: the normal backoff with jitter.
+        XCTAssertEqual(ReconnectDelay.next(immediately: false, uptime: nil, backoff: 1, maxBackoff: 60, jitter: 1.1),
+                       ReconnectDelay(delay: 1.1, backoff: 2))
+        // A socket that ends soon after it connects, for example when two hosts replace each other, backs off.
+        XCTAssertEqual(ReconnectDelay.next(immediately: false, uptime: 5, backoff: 4, maxBackoff: 60, jitter: 1),
+                       ReconnectDelay(delay: 4, backoff: 8))
+        XCTAssertEqual(ReconnectDelay.next(immediately: false, uptime: nil, backoff: 60, maxBackoff: 60, jitter: 1),
+                       ReconnectDelay(delay: 60, backoff: 60))
+        // A network change or a wake waits only for the new path.
+        XCTAssertEqual(ReconnectDelay.next(immediately: true, uptime: 5, backoff: 32, maxBackoff: 60, jitter: 1),
+                       ReconnectDelay(delay: 0.2, backoff: 1))
+    }
 }

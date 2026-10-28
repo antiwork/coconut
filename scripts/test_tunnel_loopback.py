@@ -152,8 +152,8 @@ class TunnelLoopbackTests(unittest.TestCase):
         for name in ('identity.key', 'route.json'):
             self.assertEqual((self.data / 'tunnel' / name).stat().st_mode & 0o777, 0o600)
         self.assertEqual(route['relay'], url)
-        self.start([str(self.sidecar), 'run', '--data-dir', str(self.data), '--backend', f'127.0.0.1:{coalescing_proxy(tunnel_port)}'],
-                   log='tunnel.log')
+        sidecar = [str(self.sidecar), 'run', '--data-dir', str(self.data), '--backend', f'127.0.0.1:{coalescing_proxy(tunnel_port)}']
+        running = self.start(sidecar, log='tunnel.log')
         wait(lambda: self.status()['state'] == 'connected', 20, 'The sidecar did not connect to the relay.')
 
         steps = self.run_client()
@@ -212,6 +212,26 @@ class TunnelLoopbackTests(unittest.TestCase):
         time.sleep(1)
         self.assertEqual(self.run_client(payloads[-1])['state']['status'], 200)
         self.assertEqual(len(self.peers()), 3)
+
+        # Cloudflare resets the host socket from time to time. Here the sidecar stops without a close frame during a
+        # session, and a new sidecar starts a second later. The phone's next request waits in the relay for it.
+        link = pairing.link(pairing.tunnel_payload(self.data))
+        client = subprocess.Popen([str(self.client), link], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                  env={**os.environ, 'COCONUT_TEST_HOST_RESET': '1'})
+        self.processes.append(client)
+        lines = []
+        for line in client.stdout:
+            lines.append(line)
+            if '"before reset"' in line:
+                running.kill()
+                running.wait(10)
+                time.sleep(1)
+                running = self.start(sidecar, log='tunnel-after-reset.log')
+        self.assertEqual(client.wait(60), 0, ''.join(lines) + client.stderr.read())
+        reset = next(json.loads(line) for line in lines if '"host reset"' in line)
+        self.assertEqual(reset['status'], 200)
+        self.assertLess(reset['seconds'], 6)
+        print(json.dumps(reset), file=sys.stderr)
 
 
 if __name__ == '__main__':
