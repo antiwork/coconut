@@ -18,12 +18,15 @@ import os
 from pathlib import Path
 import subprocess
 import threading
+import time
 
 from . import profile_registry
 from .profiles import NO_PROFILE, SKILLS, ProfileError, _write
 
 LOG = logging.getLogger(__name__)
 SCAN_SECONDS = 5
+# A failed write of the default model into a profile runs again after this.
+FOLLOW_RETRY_SECONDS = 300
 COMMAND_SECONDS = 300
 DEFAULT_BOT_NAME = 'Hermes'
 
@@ -114,6 +117,8 @@ class BotProfiles:
             # Settings are native: the default settings are those of the default profile, `<Hermes home>/config.yaml`.
             catalog.use_hermes_home(self.hermes_home)
         self.profile_watcher = None
+        self.model_follow_wake = threading.Event()
+        self.model_follow_failed, self.model_follow_at = False, 0.0
 
     def _reload_profile_rows(self) -> None:
         """Follow the table after a rolled back transaction. Other threads read the dict, so it never becomes empty."""
@@ -177,8 +182,11 @@ class BotProfiles:
             try:
                 current = sorted(profile_registry.scan(self.hermes_home))
                 if current != signature:
-                    self.rescan_profiles()
+                    changes = self.rescan_profiles()
                     signature = current
+                    if changes:
+                        # A found profile gets its choice. One that returns gets the current default.
+                        self.wake_model_follow()
             except Exception:
                 LOG.exception('The Hermes profile scan failed. The next scan tries again.')
 
@@ -191,13 +199,95 @@ class BotProfiles:
         """Set Coconut's own entries in the Hermes profiles again, in the background, at each start.
 
         The entries are the skills folder in `skills.external_dirs` and the `coconut` gateway platform (skill_dirs.py,
-        gateway_plugin.py). Only these keys change. A failure is a warning: the service starts all the same.
+        gateway_plugin.py). Only these keys change. Then the bots that follow the default model get it again
+        (reconcile_model_follow). A failure is a warning: the service starts all the same.
         """
         python, source = getattr(self.provider, 'python', None), getattr(self.provider, 'hermes_root', None)
         if self.scan_profiles and python and source:
-            self.hermes_entries = threading.Thread(target=self._set_hermes_entries, args=(python, source),
+            self.hermes_entries = threading.Thread(target=self._reconcile_hermes_profiles, args=(python, source),
                                                    name='coconut-hermes-entries', daemon=True)
             self.hermes_entries.start()
+        if self.scan_profiles and hasattr(self.provider, 'follow_default_model'):
+            self.model_follow = threading.Thread(target=self._model_follow_loop, name='coconut-model-follow', daemon=True)
+            self.model_follow.start()
+
+    def _reconcile_hermes_profiles(self, python, source) -> None:
+        self._set_hermes_entries(python, source)
+        # A change of the default outside the app, such as `hermes config set`, reaches the bots here.
+        self.reconcile_model_follow()
+
+    def wake_model_follow(self) -> None:
+        """Ask the background worker for a reconcile. A request calls this after its commit and waits for nothing."""
+        self.model_follow_wake.set()
+
+    def _model_follow_loop(self) -> None:
+        while not self.stopping.is_set():
+            woke = self.model_follow_wake.wait(SCAN_SECONDS)
+            if self.stopping.is_set():
+                return
+            # A write that failed runs again after a while, also without a wake.
+            retry = self.model_follow_failed and time.monotonic() >= self.model_follow_at + FOLLOW_RETRY_SECONDS
+            if woke or retry:
+                self.model_follow_wake.clear()
+                self.reconcile_model_follow()
+
+    def reconcile_model_follow(self) -> bool:
+        """Make the profile of each active bot that follows the default model match the default profile.
+
+        Hermes profiles do not inherit from the default profile, so Coconut copies the model keys of the default into
+        the profile of each bot that follows it (model_catalog._follow_default). The `model_follows_default` field of
+        the bot is the only state. A bot without the field gets it here: a bot of an earlier install or a profile that a
+        scan found. The step is idempotent and keeps no state of a request. A failed write stays on the bot as
+        `model_follow_error` until a later reconcile succeeds. Return whether a write failed.
+        """
+        follow = getattr(self.provider, 'follow_default_model', None)
+        if follow is None:
+            return False
+        try:
+            with self.model_settings_lock:
+                failed = self._reconcile_model_follow(follow)
+        except Exception:
+            LOG.exception('Coconut could not set the default model in the profiles of the bots that follow it.')
+            failed = True
+        self.model_follow_failed, self.model_follow_at = failed, time.monotonic()
+        return failed
+
+    def _reconcile_model_follow(self, follow) -> bool:
+        with self.lock:
+            # Only active bots: never a deleted or archived bot, or a profile that is removed or missing. Coconut keeps
+            # the folder of a removed bot, and that folder belongs to the person.
+            bots = [bot for bot in self._all('bots') if not bot.get('_deleted') and not bot.get('archived')
+                    and (self.profiles.rows.get(bot['id']) or {}).get('state') == 'active'
+                    and bot.get('model_follows_default', True)]
+        if not bots:
+            return False
+        try:
+            results = follow([bot['id'] for bot in bots], [bot['id'] for bot in bots if 'model_follows_default' not in bot])
+        except ValueError as error:
+            results = {bot['id']: {'error': str(error)} for bot in bots}
+        failed = []
+        with self.transaction():
+            for bot_id, result in results.items():
+                bot = self._get('bots', bot_id)
+                before = dict(bot)
+                if 'follows' in result and 'model_follows_default' not in bot:
+                    bot['model_follows_default'] = result['follows']
+                if bot.get('model_follows_default'):
+                    bot['model_override'] = None
+                if 'error' in result:
+                    bot['model_follow_error'] = result['error']
+                    failed.append(bot)
+                elif 'skipped' not in result:
+                    bot.pop('model_follow_error', None)
+                if bot != before:
+                    self._put('bots', bot)
+        changed = sorted(self.profiles.rows[bot_id]['name'] for bot_id, result in results.items()
+                         if result.get('changed') and bot_id in self.profiles.rows)
+        if changed:
+            LOG.info('Coconut set the default model in the profiles that follow it: %s', ', '.join(changed))
+        for bot in failed:
+            LOG.warning('Coconut could not set the default model in the profile of %s: %s', bot['name'], bot['model_follow_error'])
+        return bool(failed)
 
     def _set_hermes_entries(self, python, source) -> bool:
         from .hermes_runtime import NO_LAZY_INSTALLS

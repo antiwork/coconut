@@ -107,6 +107,18 @@ An assignment waits while its dependencies run. Each reply resumes the original 
 The final result returns to the original requester. Intermediate turns do not send completion notifications.
 Native profile data is not copied into peer messages automatically.
 
+### The model of a bot
+
+A Hermes profile does not inherit settings from the default profile. Hermes merges a profile's config only over its built-in defaults. Coconut keeps the choice of each bot in `coconut.sqlite3`, in the `model_follows_default` field of the bot: the bot follows the default model, or it has its own model.
+
+- A bot that follows the default gets the model keys of `<Hermes home>/config.yaml` in its own `config.yaml`: `model.default`, `model.provider`, `model.base_url` and the reasoning effort (`agent.reasoning_effort`). These are the keys of the app's default model setting. The API fallback and the other settings do not follow.
+- A request only records state. The default lives in `<Hermes home>/config.yaml`, and each bot has only `model_follows_default`. `PATCH /v1/bots/<id>` with a model in `model_override` gives the bot its own model and writes it into its profile at once. `model_override: null` makes the bot follow the default again. The bot view shows `model_override: null` for a bot that follows the default.
+- One reconcile step (`BotProfiles.reconcile_model_follow`) writes the keys into the profile of each active bot that follows the default. It is idempotent and keeps no state of a request. It runs at each service start after Coconut's Hermes entries, and in a background worker after a request commits, after a scan, and after a restore. A change outside the app, such as `hermes config set` on the default profile, reaches the bots at the next start or the next reconcile.
+- The settings process writes each profile with the config writer of Hermes. A failed write stays on the bot as `model_follow_error` and goes into the log. The worker tries again after five minutes, and each reconcile also tries again. A success clears the error.
+- Active means: the bot is not deleted or archived, and its profile row is `active`, not `removed` or `missing`. Coconut keeps the folder of a removed bot, and that folder belongs to the person. A restored bot gets the current default at the next reconcile.
+- A bot that Coconut creates follows the default. A bot without a choice, from an earlier install or a profile made outside Coconut, gets one in the reconcile. It follows the default when its profile has no model or the model and provider of the default, else it keeps its own model. The first write after this choice keeps a copy of the earlier file in `<data-dir>/backups/model-follow`.
+- The `default` profile is the default model, so Coconut never writes into it for this. A model for its bot changes the default and reaches the bots that follow it.
+
 ## The Hermes gateway
 
 Coconut moves its bot turns from its own worker processes to the person's Hermes gateway, in phases. Phase 1 made each bot a Hermes profile.
