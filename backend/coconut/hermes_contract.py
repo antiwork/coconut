@@ -332,7 +332,8 @@ def verify_gateway_contract():
     from tools.clarify_gateway import resolve_gateway_clarify
     if not isinstance(getattr(GatewayRunner, '_startup_restore_in_progress', None), bool):
         raise ValueError('Hermes changed the startup restore of the gateway. Review the coconut adapter.')
-    missing = {'pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end'} - set(VALID_HOOKS)
+    missing = {'pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end', 'on_session_start',
+               'on_interim_message', 'post_llm_call', 'on_session_end'} - set(VALID_HOOKS)
     if missing:
         raise ValueError('Hermes removed plugin hooks of the coconut platform: ' + ', '.join(sorted(missing)))
     require_keywords(BasePlatformAdapter.send_clarify, ['chat_id', 'question', 'choices', 'clarify_id', 'session_key'])
@@ -343,6 +344,11 @@ def verify_gateway_contract():
     require_keywords(resolve_gateway_clarify, ['clarify_id', 'response'])
     if not callable(get_session_env) or 'session_key' not in SessionEntry.__dataclass_fields__:
         raise ValueError('Hermes changed the gateway session context.')
+    # A cron run of the gateway finds its job through the identity that Hermes binds for each fire.
+    from cron.execution_identity import CronExecution, current_cron_execution
+    if not callable(current_cron_execution) or not {'job_id', 'job_name', 'execution_id'} <= set(
+            CronExecution.__dataclass_fields__):
+        raise ValueError('Hermes changed the identity of a cron run.')
     if not hasattr(BasePlatformAdapter, '_send_exec_approval_prompt'):
         raise ValueError('Hermes changed the approval prompt of a gateway platform.')
 

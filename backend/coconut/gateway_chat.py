@@ -233,6 +233,100 @@ class GatewayChat:
         self._refresh_bot(task['bot_id'])
         return self._public(decision)
 
+    def gateway_ticked_bots(self) -> set[str]:
+        """The bots whose cron store a running Hermes gateway ticks. That gateway fires their routines.
+
+        Hermes ticks the cron store of every profile that a gateway serves, and it has no setting that keeps a served
+        profile out of its ticks (gateway/run_bootstrap.py, `_cron_tick_profile_homes`). A host gateway of the Hermes
+        home ticks every profile except a parked one. A profile with its own gateway is ticked by that gateway.
+        """
+        if not getattr(self, 'scan_profiles', False):
+            return set()
+        host = live_gateway_pid(self.hermes_home) is not None
+        ticked = set()
+        for row in list((self.profiles.rows or {}).values()):
+            if row.get('state') != 'active':
+                continue
+            home = Path(row['home'])
+            if (host and not (home / 'gateway.parked').exists()) or (
+                    os.path.realpath(home) != os.path.realpath(self.hermes_home) and live_gateway_pid(home) is not None):
+                ticked.add(row['bot_id'])
+        return ticked
+
+    def gateway_cron(self, data: dict) -> dict:
+        """POST /v1/gateway/cron: a cron run of the gateway starts in a bot's profile. Open its Coconut turn.
+
+        The run becomes a routine task in the bot's chat. Return {skip: true} for a profile that is not a bot.
+        """
+        from uuid import UUID, uuid5
+        from .service import ServiceError, now, require_text, uid
+        if data.get('event') != 'start':
+            raise ServiceError(400, 'Send the start of a cron run.')
+        home = os.path.realpath(require_text(data, 'home', 4096))
+        job_id, execution_id = require_text(data, 'job_id', 200), require_text(data, 'execution_id', 200)
+        name = str(data.get('job_name') or 'Routine').strip()[:200] or 'Routine'
+        row = next((row for row in list((self.profiles.rows or {}).values())
+                    if row.get('state') == 'active' and os.path.realpath(row['home']) == home), None)
+        if row is None:
+            return {'skip': True}
+        with self.transaction():
+            previous = next((task for task in self._all('tasks')
+                             if (task.get('_gateway_cron') or {}).get('execution_id') == execution_id), None)
+            if previous is not None:
+                turn = previous['_gateway_cron']['turn_id']
+                if self.gateway_bridge.task_of(turn) == previous['id']:
+                    return {'turn_id': turn, 'task_id': previous['id'], 'chat_id': previous['bot_id']}
+                return {'skip': True}
+            bot = self._get('bots', row['bot_id'])
+            if bot['archived'] or bot.get('_deleted'):
+                return {'skip': True}
+            task = self._get('tasks', self._send(bot, {'text': name, 'mode': 'queue'}, record_message=False,
+                                                 human_authored=False)['id'])
+            turn = self.gateway_bridge.open_turn(task['id'], home, bot['id'])
+            routine_id = str(uuid5(UUID(bot['id']), 'cron:' + job_id))
+            # The gateway owns the native claim of this run, so Coconut has no native job to finish.
+            task.update(status='working', summary='Working', title=name, routine_id=routine_id,
+                        _native_job_finished=True, _turn_started_at=now(), _native_turn_id=uid(),
+                        _gateway_cron=dict(job_id=job_id, execution_id=execution_id, turn_id=turn), updated_at=now())
+            self._put('tasks', task)
+            self._event('task.updated', self._public(task), bot['id'], task['id'])
+            routine = self.db.execute('SELECT data FROM routines WHERE id=?', (routine_id,)).fetchone()
+            if routine is not None:
+                routine = json.loads(routine[0])
+                routine['last_task_id'] = task['id']
+                self._put('routines', routine)
+            self._event('routine.triggered', {'routine_id': routine_id, 'task_id': task['id']}, bot['id'], task['id'])
+            self._refresh_bot(bot['id'])
+        threading.Thread(target=self._run_gateway_cron, args=(task['id'], turn), name='coconut-gateway-cron',
+                         daemon=True).start()
+        return {'turn_id': turn, 'task_id': task['id'], 'chat_id': bot['id']}
+
+    def _run_gateway_cron(self, task_id: str, turn: str) -> None:
+        """Translate the events of a cron run into its routine task, as _run_task does for a chat turn."""
+        try:
+            self.gateway_bridge.follow(turn, lambda kind, payload: self.emit(task_id, kind, payload))
+        except Exception as error:
+            if not self.stopping.is_set():
+                with self.lock:
+                    working = self._get('tasks', task_id)['status'] == 'working'
+                if working:
+                    try:
+                        self.emit(task_id, 'failed', {'summary': f'The routine stopped: {str(error)[:200]}'})
+                    except Exception:
+                        LOG.exception('The routine task %s did not record its failure.', task_id)
+        finally:
+            self._close_gateway_questions(task_id)
+            if not self.stopping.is_set():
+                with self.transaction():
+                    task = self._get('tasks', task_id)
+                    for message in self._task_messages(task_id):
+                        if message['task_id'] == task_id and message['streaming']:
+                            message['streaming'] = False
+                            self._put('messages', message)
+                            self._event('message.updated', message, message['bot_id'], task_id)
+                            self.push.record('message.completed', message, message['bot_id'], task_id)
+                    self._refresh_bot(task['bot_id'])
+
     def _close_gateway_questions(self, task_id: str) -> None:
         """Close the open questions of a gateway turn that ended. Hermes no longer waits for their answers."""
         with self.transaction():

@@ -101,7 +101,58 @@ def turn_of(message_id) -> str:
     return str(message_id).partition(':')[0]
 
 
-class CoconutAdapter(BasePlatformAdapter):
+class StreamRelay:
+    """Send the streamed text of turns to the service in small pieces. The adapter and a cron run (cron.py) use it.
+
+    hooks.py calls these methods in a Hermes dispatcher thread, never on the event loop.
+    """
+
+    def _init_relay(self):
+        # Streamed text that waits for the service: turn -> [stream number, text, time of the last report].
+        self._streams: dict[str, list] = {}
+        self._streams_lock = threading.Lock()
+        # The number of the current model call of each turn (hooks.stream_start).
+        self._stream_numbers: dict[str, int] = {}
+
+    def drop_stream(self, turn: str) -> None:
+        with self._streams_lock:
+            self._streams.pop(turn, None)
+        self._stream_numbers.pop(turn, None)
+
+    def stream(self, turn: str, number: int, text: str) -> None:
+        pending = None
+        with self._streams_lock:
+            entry = self._streams.get(turn)
+            if entry is None or entry[0] != number:
+                if entry is not None and entry[1]:
+                    pending = (entry[0], entry[1])
+                entry = self._streams[turn] = [number, '', 0.0]
+            entry[1] += text
+            due = time.monotonic() - entry[2] >= STREAM_SECONDS or len(entry[1]) >= STREAM_CHARACTERS
+        if pending is not None:
+            self._send_stream(turn, *pending)
+        if due:
+            self.flush_stream(turn)
+
+    def flush_stream(self, turn: str) -> None:
+        with self._streams_lock:
+            entry = self._streams.get(turn)
+            if entry is None or not entry[1]:
+                return
+            number, text = entry[0], entry[1]
+            entry[1], entry[2] = '', time.monotonic()
+        self._send_stream(turn, number, text)
+
+    def _send_stream(self, turn: str, number: int, text: str) -> None:
+        try:
+            self._bridge.request('/v1/gateway/events', {'turn_id': turn, 'kind': 'delta', 'stream': number,
+                                                        'text': text}, REQUEST_SECONDS)
+        except Exception as error:
+            # The final send of the turn carries the whole reply, so a lost piece only delays the preview.
+            LOG.debug('Coconut: a streamed piece did not reach the service (%s).', type(error).__name__)
+
+
+class CoconutAdapter(StreamRelay, BasePlatformAdapter):
     SUPPORTS_MESSAGE_EDITING = True
     # A longer reply would arrive in parts, and Coconut would show the earlier parts as interim messages.
     MAX_MESSAGE_LENGTH = 100_000
@@ -124,14 +175,10 @@ class CoconutAdapter(BasePlatformAdapter):
         self._count = 0
         # Open questions on the phone: question ID -> how the answer returns to Hermes.
         self._questions: dict[str, tuple] = {}
-        # Streamed text that waits for the service: turn -> [stream number, text, time of the last report].
-        self._streams: dict[str, list] = {}
-        self._streams_lock = threading.Lock()
         # The root of the bot's native conversation for each chat, from the newest turn (hooks.join_conversation).
         # The gateway refuses inbound metadata of other platforms, so the root stays here.
         self._roots: dict[str, str] = {}
-        # The number of the current model call of each turn (hooks.stream_start).
-        self._stream_numbers: dict[str, int] = {}
+        self._init_relay()
         ADAPTERS.add(self)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -247,9 +294,7 @@ class CoconutAdapter(BasePlatformAdapter):
             del self._turns[event.source.chat_id]
         self._typing.discard(event.message_id)
         self._wake_questions(event.message_id)
-        with self._streams_lock:
-            self._streams.pop(event.message_id, None)
-        self._stream_numbers.pop(event.message_id, None)
+        self.drop_stream(event.message_id)
         # The turn stays active in the polls until the service has its end. Otherwise the service would fail a
         # finished turn after a short outage.
         for delay in (*RETRY_SECONDS, None):
@@ -292,40 +337,6 @@ class CoconutAdapter(BasePlatformAdapter):
         if turn is not None and turn not in self._typing:
             self._typing.add(turn)
             await self._report(turn, 'typing')
-
-    # Streamed text. hooks.py calls these in a Hermes dispatcher thread, never on the event loop.
-
-    def stream(self, turn: str, number: int, text: str) -> None:
-        pending = None
-        with self._streams_lock:
-            entry = self._streams.get(turn)
-            if entry is None or entry[0] != number:
-                if entry is not None and entry[1]:
-                    pending = (entry[0], entry[1])
-                entry = self._streams[turn] = [number, '', 0.0]
-            entry[1] += text
-            due = time.monotonic() - entry[2] >= STREAM_SECONDS or len(entry[1]) >= STREAM_CHARACTERS
-        if pending is not None:
-            self._send_stream(turn, *pending)
-        if due:
-            self.flush_stream(turn)
-
-    def flush_stream(self, turn: str) -> None:
-        with self._streams_lock:
-            entry = self._streams.get(turn)
-            if entry is None or not entry[1]:
-                return
-            number, text = entry[0], entry[1]
-            entry[1], entry[2] = '', time.monotonic()
-        self._send_stream(turn, number, text)
-
-    def _send_stream(self, turn: str, number: int, text: str) -> None:
-        try:
-            self._bridge.request('/v1/gateway/events', {'turn_id': turn, 'kind': 'delta', 'stream': number,
-                                                        'text': text}, REQUEST_SECONDS)
-        except Exception as error:
-            # The final send of the turn carries the whole reply, so a lost piece only delays the preview.
-            LOG.debug('Coconut: a streamed piece did not reach the service (%s).', type(error).__name__)
 
     # Questions. The service shows each as a decision card and returns the answer in a later poll.
 

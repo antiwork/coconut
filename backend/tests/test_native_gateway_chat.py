@@ -1,6 +1,7 @@
 """A chat message goes through a real `hermes gateway run` and its reply reaches Coconut.
 
-The turn continues the bot's native conversation from an earlier worker turn, gets the coconut tools, and streams.
+The turn continues the bot's native conversation from an earlier worker turn, gets the coconut tools, and streams. A
+routine of the bot fires in the gateway's cron, and its run is a Coconut turn in the bot's chat.
 
 Setup's edit (skill_dirs.py with the config writer of Hermes) installs the `coconut` platform in a new Hermes home. The
 service starts the gateway for that home, the adapter connects over loopback, and a local stand-in of an OpenAI
@@ -144,6 +145,32 @@ class NativeGatewayChatTests(unittest.TestCase):
             tools = json.dumps(turn[0].get('tools') or [])
             for name in ('coconut_ask', 'coconut_track_pr', 'coconut_message_bot'):
                 self.assertIn(name, tools, diagnostics())
+
+            # A routine of the bot: the gateway's cron fires it, and the run is a Coconut turn in the bot's chat.
+            job = subprocess.run([PYTHON, '-c', 'import json, sys; sys.path.insert(0, sys.argv[1]); '
+                                  'from cron.jobs import create_job; '
+                                  'print(json.dumps(create_job("Run the routine check.", "every 1m", '
+                                  'name="Routine check", deliver="local")["id"]))', SOURCE],
+                                 env=environment, capture_output=True, text=True, timeout=120)
+            self.assertEqual(job.returncode, 0, job.stderr[-4000:])
+            # The gateway ticks this profile, so Coconut claims none of its routines.
+            self.assertIn(bot['id'], service.gateway_ticked_bots())
+            deadline = time.monotonic() + 240
+            routine_task = None
+            while time.monotonic() < deadline:
+                with service.lock:
+                    routine_task = next((t for t in service._all('tasks') if t.get('_gateway_cron')
+                                         and t['status'] not in ('working', 'queued')), None)
+                if routine_task is not None:
+                    break
+                time.sleep(1)
+            self.assertIsNotNone(routine_task, diagnostics())
+            self.assertEqual((routine_task['status'], routine_task['title']), ('completed', 'Routine check'), diagnostics())
+            with service.lock:
+                routine_replies = [m['text'] for m in service._task_messages(routine_task['id'])
+                                   if m['role'] == 'assistant' and m['kind'] == 'text']
+            self.assertEqual(routine_replies, [REPLY], diagnostics())
+            self.assertFalse(any(t.get('_native_job') for t in service._all('tasks')))
             process = service.gateway_process
         finally:
             service.close()

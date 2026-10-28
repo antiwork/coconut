@@ -9,6 +9,9 @@ the main listener, with the token of `<data>/gateway/bridge.json`:
 - `POST /v1/gateway/events` reports what the gateway does with a turn: `typing`, `delta`, `send`, `edit`, `delete`,
   `question` and `done`.
 - `POST /v1/gateway/tools` runs a Coconut tool of the `coconut` toolset for the task of a running turn (gateway_chat).
+- `POST /v1/gateway/cron` opens a turn for a cron run of the gateway (gateway_chat.gateway_cron). The plugin reports
+  its events like those of a chat turn.
+- `POST /v1/gateway/answers` waits for the answer to one question of a turn. A cron run has no adapter that polls.
 
 A poll also returns the answers to the questions of the adapter's turns. A question is a decision card on the phone.
 
@@ -31,6 +34,10 @@ TAKE_SECONDS = 30
 # The adapter polls at most POLL_SECONDS apart and lists its running turns in each poll.
 POLL_SECONDS = 25
 SILENT_SECONDS = 90
+# A cron run reports no heartbeat between its events, and a tool can run for long. Hermes stops a run that is idle for
+# HERMES_CRON_TIMEOUT (600 s by default), and the plugin then reports its end.
+CRON_SILENT_SECONDS = 3 * 3600
+ANSWER_SECONDS = 25
 ADAPTER_SECONDS = 60
 MAX_TEXT = 200_000
 KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
@@ -73,6 +80,9 @@ class _Turn:
         self.state = 'pending'  # pending, active, done, cancelled, stopping
         self.created = self.seen = time.monotonic()
         self.events: list[dict] = []
+        self.silent_seconds = SILENT_SECONDS
+        # Answers to the questions of this turn, for a waiting tool (wait_answer).
+        self.answers: dict[str, dict] = {}
 
 
 class GatewayBridge:
@@ -180,14 +190,39 @@ class GatewayBridge:
             if turn is None or turn.state != 'active':
                 return False
             self.answers.setdefault(turn.home, []).append(answer)
+            turn.answers[str(answer.get('question_id'))] = answer
             self.lock.notify_all()
         return True
+
+    def wait_answer(self, data: dict) -> dict:
+        """POST /v1/gateway/answers: the answer to one question of a running turn, or none after a short wait."""
+        wait = max(0.0, min(float(data.get('wait', ANSWER_SECONDS)), ANSWER_SECONDS))
+        deadline = time.monotonic() + wait
+        with self.lock:
+            while True:
+                turn = self.turns.get(data.get('turn_id'))
+                if turn is None or turn.state != 'active':
+                    return {'ended': True}
+                turn.seen = time.monotonic()
+                answer = turn.answers.pop(str(data.get('question_id')), None)
+                if answer is not None:
+                    return {'answer': answer}
+                if self.closed or time.monotonic() >= deadline:
+                    return {}
+                self.lock.wait(deadline - time.monotonic())
+
+    def open_turn(self, task_id: str, home, chat_id: str) -> str:
+        """Register a turn that the gateway already runs, for example a cron run. Return its ID for follow()."""
+        turn = _Turn(task_id, os.path.realpath(home), chat_id, '', 'Coconut')
+        turn.state, turn.silent_seconds = 'active', CRON_SILENT_SECONDS
+        with self.lock:
+            self.turns[turn.id] = turn
+        return turn.id
 
     def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut',
                  session_root: str | None = None) -> None:
         """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, text, chat_name, session_root)
-        events = TurnEvents(emit, turn.id)
         with self.lock:
             # A stop that no adapter collected is old news after this long.
             for old in [old for old in self.turns.values()
@@ -195,6 +230,13 @@ class GatewayBridge:
                 del self.turns[old.id]
             self.turns[turn.id] = turn
             self.lock.notify_all()
+        self.follow(turn.id, emit)
+
+    def follow(self, turn_id: str, emit) -> None:
+        """Translate the events of a registered turn with `emit` until the turn ends."""
+        with self.lock:
+            turn = self.turns[turn_id]
+        events = TurnEvents(emit, turn.id)
         try:
             while True:
                 with self.lock:
@@ -202,7 +244,7 @@ class GatewayBridge:
                         current = time.monotonic()
                         if turn.state == 'pending' and current - turn.created > TAKE_SECONDS:
                             raise GatewayUnavailable('No Hermes gateway took this turn.')
-                        if turn.state == 'active' and current - turn.seen > SILENT_SECONDS:
+                        if turn.state == 'active' and current - turn.seen > turn.silent_seconds:
                             raise RuntimeError('The Hermes gateway stopped answering during this turn.')
                         self.lock.wait(1)
                     if turn.state in ('cancelled', 'stopping'):

@@ -9,6 +9,9 @@ session holds an earlier conversation, for example after a restart of the bots. 
 session, and each follows the compression lineage of Hermes from it, so a worker turn and a gateway turn see the same
 history.
 
+Cron runs. A cron run of the gateway in a bot's profile reports to a Coconut turn through the session hooks
+(cron.py).
+
 Streamed text. The `on_stream_*` hooks receive the text deltas of each model call, also when the gateway streams nothing
 to the platform (`streaming.enabled` off). A hook runs in a Hermes dispatcher thread with the session context of the
 turn, so `get_session_env` names the chat. Only a turn of a Coconut chat that an adapter of this process runs goes to
@@ -31,6 +34,11 @@ def register(ctx):
     ctx.register_hook('on_stream_start', stream_start)
     ctx.register_hook('on_stream_delta', stream_delta)
     ctx.register_hook('on_stream_end', stream_end)
+    # A cron run of the gateway in a bot's profile is a Coconut turn (cron.py).
+    ctx.register_hook('on_session_start', cron_start)
+    ctx.register_hook('on_interim_message', cron_interim)
+    ctx.register_hook('post_llm_call', cron_answer)
+    ctx.register_hook('on_session_end', cron_end)
 
 
 def join_conversation(event=None, session_store=None, **_):
@@ -69,11 +77,42 @@ def join_conversation(event=None, session_store=None, **_):
 
 
 def _turn():
+    """The holder (an adapter or a cron run) and the Coconut turn of this context, or (None, None)."""
     from gateway.session_context import get_session_env
-    if get_session_env('HERMES_SESSION_PLATFORM', '') != NAME:
-        return None, None
-    from .adapter import turn_for_chat
-    return turn_for_chat(get_session_env('HERMES_SESSION_CHAT_ID', ''))
+    if get_session_env('HERMES_SESSION_PLATFORM', '') == NAME:
+        from .adapter import turn_for_chat
+        holder, turn = turn_for_chat(get_session_env('HERMES_SESSION_CHAT_ID', ''))
+        if turn is not None:
+            return holder, turn
+    from . import cron
+    run = cron.current()
+    return (run, run.turn) if run is not None else (None, None)
+
+
+def cron_start(**_):
+    from . import cron
+    cron.current()
+
+
+def cron_interim(text='', already_streamed=False, **_):
+    from . import cron
+    run = cron.current()
+    if run is not None and str(text).strip():
+        run.flush_stream(run.turn)
+        run.send(text, interim=True)
+
+
+def cron_answer(assistant_response='', **_):
+    from . import cron
+    run = cron.current()
+    if run is not None and str(assistant_response or '').strip():
+        run.flush_stream(run.turn)
+        run.send(assistant_response)
+
+
+def cron_end(completed=False, failed=False, interrupted=False, **_):
+    from . import cron
+    cron.finish('cancelled' if interrupted else 'success' if completed and not failed else 'failure')
 
 
 def stream_start(**_):

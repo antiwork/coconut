@@ -124,8 +124,8 @@ A Hermes profile does not inherit settings from the default profile. Hermes merg
 Coconut moves its bot turns from its own worker processes to the person's Hermes gateway, in phases. Phase 1 made each bot a Hermes profile.
 
 1. Phase 2: plain chat turns run in the gateway, behind a setting.
-2. Phase 3: Coconut tools and cards become tools of the `coconut` plugin, and both runtimes share one conversation. This version.
-3. Phase 4: cron jobs and Kanban work run in the gateway.
+2. Phase 3: Coconut tools and cards become tools of the `coconut` plugin, and both runtimes share one conversation.
+3. Phase 4: routines run in the gateway as Coconut turns, and each profile keeps its model keys the Hermes way. This version. Kanban stays with Coconut for now.
 4. Phase 5: Coconut deletes its worker runtime.
 
 ### Rules for the phases
@@ -166,6 +166,29 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - Gateway notices, such as "No home channel is set", stay in the gateway log. They name gateway commands, and Coconut sends chat text without gateway commands.
 - A profile without a connected adapter uses the worker. This happens when the gateway does not multiplex, or when the person created the profile outside Coconut after the last setup. A gateway that already runs loads the platform after its next restart.
 - Steering during a turn waits for the next turn.
+
+### Phase 4: routines in the gateway
+
+- Evidence. Every Hermes gateway ticks the cron store of each profile that it serves, also with one profile only (`gateway/run_bootstrap.py`, `_start_gateway_start_cron_and_housekeeping` and `_cron_tick_profile_homes`). Hermes has no setting that keeps a served profile or a job out of these ticks. A `cron.provider` of a plugin cannot replace the ticker of a multiplexing gateway (`cron/scheduler_provider.py`, `scheduler_for_profile_mode`). A cron run executes in a Hermes cron session, often in a separate worker process, never as an inbound turn of a platform. So the gateway cannot deliver a cron run "as a Coconut turn" through `deliver=coconut`: delivery carries only the final text.
+- One firing owner. When a gateway ticks a bot's profile, the gateway fires the bot's routines, and Coconut claims none of them (`gateway_chat.gateway_ticked_bots`). A host gateway of the Hermes home ticks each profile except a parked one. A profile with its own gateway is ticked by that gateway. Without a gateway, Coconut claims the routines as before, with the native fire claims. The native fire claim decides a race at a change, so a routine never fires twice.
+- A cron run is a Coconut turn. The plugin's session hooks see a cron run through `cron.execution_identity.current_cron_execution`. At its start (`on_session_start`) the plugin opens a turn with `POST /v1/gateway/cron`, and the service makes a routine task in the bot's chat. The run reports to that turn: streamed text, commentary (`on_interim_message`), the answer (`post_llm_call`) and the end (`on_session_end`). The coconut tools act for that task. `coconut_ask` shows a card and waits for its answer with `POST /v1/gateway/answers`, because a cron worker process has no adapter that polls.
+- `chat_runtime: worker`. Coconut starts no gateway, so Coconut fires the routines. A gateway that the person runs still ticks every profile that it serves: Hermes gives no way to stop that. Coconut then leaves those routines to that gateway, and its runs come to Coconut as turns through the plugin, as in `gateway` mode.
+- Model keys. Each profile reads its provider keys from its own `.env`, as Hermes keeps them. The Hermes entries of each update and start copy the provider keys of the default profile to each bot profile that does not have them (#284).
+
+### Kanban: not yet
+
+Coconut keeps its private board in `<data>/kanban/kanban.db` and dispatches it itself (`kanban_scheduler`, `kanban_runtime`). Its spawn function makes a Coconut task for each claim, so the work has Coconut cards, receipts and workspaces. The embedded dispatcher of the gateway calls `dispatch_once` with the default spawn of Hermes (`gateway/kanban_watchers_dispatcher.py`, `tick_once_for_board`), which starts a plain `hermes -p <assignee>` worker, and a plugin cannot give it another spawn function. It dispatches the boards of the Hermes home, not `<data>/kanban`. So the gateway does not serve Coconut's board, and the two dispatchers never share one. Upstream ask: a spawn hook for the embedded dispatcher.
+
+### What phase 5 deletes
+
+Phase 5 deletes the worker runtime when `gateway` is the only chat runtime:
+
+- `hermes_worker.py`, `worker_protocol.py`, `worker_transport.py`, `worker_cli.py`, `worker_activity.py` and the worker parts of `providers.py`.
+- The native bridge of the worker: `native_bridge.py`, `native_conversation.py` (the gateway joins the same session), `native_execution.py`, `native_relay.py`, `native_mcp.py` and the other `native_*` modules that serve worker turns.
+- Coconut's routine claims: `native_routine_execution.py`, `native_routine_receipts.py` and the claim and finish code of `routine_coordinator.py`, after the gateway is the only firing owner.
+- `kanban_scheduler.py` and `kanban_runtime.py` only after Hermes gives its dispatcher a spawn hook. Until then they stay.
+
+While `worker` stays the default, both paths stay.
 
 ## Transport and future providers
 
