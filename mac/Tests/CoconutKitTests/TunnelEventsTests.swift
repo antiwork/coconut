@@ -53,6 +53,43 @@ final class TunnelEventsTests: XCTestCase {
         XCTAssertNoThrow(try lines(previous))
     }
 
+    func testAShortWriteStillWritesTheWholeLine() throws {
+        let url = directory.appendingPathComponent("events.log")
+        let log = TunnelEventLog(url: url)
+        // Each call takes at most 5 bytes, and every second call is interrupted once.
+        var calls = 0
+        log.systemWrite = { descriptor, bytes, count in
+            calls += 1
+            if calls % 2 == 0 { errno = EINTR; return -1 }
+            return Darwin.write(descriptor, bytes, min(count, 5))
+        }
+        log.record("connected", ["took_ms": 412])
+        log.record("backoff", ["delay_ms": 990])
+        log.flush()
+        XCTAssertEqual(try lines(url).map { $0["event"] as? String }, ["connected", "backoff"])
+    }
+
+    func testAFailedWriteLeavesNoPartialLine() throws {
+        let url = directory.appendingPathComponent("events.log")
+        let log = TunnelEventLog(url: url)
+        log.record("start", ["pid": 1])
+        log.flush()
+        // The disk takes 10 bytes of the next line, then fails.
+        var calls = 0
+        log.systemWrite = { descriptor, bytes, count in
+            calls += 1
+            if calls == 1 { return Darwin.write(descriptor, bytes, min(count, 10)) }
+            errno = ENOSPC
+            return -1
+        }
+        log.record("connected", ["took_ms": 412])
+        log.flush()
+        log.systemWrite = { Darwin.write($0, $1, $2) }
+        log.record("backoff", ["delay_ms": 990])
+        log.flush()
+        XCTAssertEqual(try lines(url).map { $0["event"] as? String }, ["start", "backoff"])
+    }
+
     func testTheCauseKeepsNoTokensOrKeys() throws {
         let route = String(repeating: "a1", count: 32)
         let cause = DisconnectCause.relayClosed(code: .protocolCode(.internalServerError),

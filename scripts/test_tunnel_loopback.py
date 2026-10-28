@@ -175,14 +175,19 @@ class TunnelLoopbackTests(unittest.TestCase):
              'The sidecar did not reconnect.')
         host.close()
         # The sidecar records the cause from the relay's close frame, and its event log holds no secret.
-        last = self.status()['last_disconnect']
+        last = wait(lambda: self.status().get('last_disconnect'), 10, 'The status has no last disconnect.')
         self.assertEqual((last['cause'], last['code'], last['reason']), ('relay_closed', 1000, 'replaced'))
         self.assertEqual(self.status()['reconnects'], 1)
-        log = (self.data / 'tunnel/events.log').read_text()
+        # A queue writes the log after the status, so wait for the second connected event.
+        expected = {'start', 'connect_start', 'channel_open', 'disconnected', 'backoff'}
+
+        def logged():
+            text = (self.data / 'tunnel/events.log').read_text()
+            events = [json.loads(line)['event'] for line in text.splitlines()]
+            return text if expected <= set(events) and events.count('connected') >= 2 else None
+
+        log = wait(logged, 10, 'The sidecar did not log the reconnect.')
         self.assertEqual((self.data / 'tunnel/events.log').stat().st_mode & 0o777, 0o600)
-        events = [json.loads(line)['event'] for line in log.splitlines()]
-        for event in ('start', 'connect_start', 'connected', 'channel_open', 'disconnected', 'backoff'):
-            self.assertIn(event, events)
         for secret in (host_token, route['route'], route['mac_key']):
             self.assertNotIn(secret, log)
         self.assertEqual(self.run_client()['state']['status'], 200)

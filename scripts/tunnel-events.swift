@@ -108,6 +108,8 @@ final class TunnelEventLog {
     private let formatter: ISO8601DateFormatter
     private var descriptor: Int32 = -1
     private var size = 0
+    /// The system call that writes bytes. Tests replace it to make short or failed writes.
+    var systemWrite: (Int32, UnsafeRawPointer, Int) -> Int = { Darwin.write($0, $1, $2) }
 
     init(url: URL, maxBytes: Int = TunnelEventLog.defaultMaxBytes) {
         self.url = url
@@ -148,8 +150,29 @@ final class TunnelEventLog {
         if descriptor < 0 { open() }
         if descriptor >= 0, size > 0, size + line.count > maxBytes { rotate() }
         guard descriptor >= 0 else { return }
-        let written = line.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
-        if written > 0 { size += written }
+        // A write can take only part of the line. Write the rest, and remove a partial line when a write fails.
+        let start = size
+        let complete = line.withUnsafeBytes { bytes -> Bool in
+            guard let base = bytes.baseAddress else { return true }
+            var offset = 0
+            while offset < bytes.count {
+                let written = systemWrite(descriptor, base + offset, bytes.count - offset)
+                if written > 0 {
+                    offset += written
+                } else if written < 0 && errno == EINTR {
+                    continue
+                } else {
+                    return false
+                }
+            }
+            return true
+        }
+        if complete {
+            size = start + line.count
+        } else {
+            ftruncate(descriptor, off_t(start))
+            size = start
+        }
     }
 
     private func open() {
