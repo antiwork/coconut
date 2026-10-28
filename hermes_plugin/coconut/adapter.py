@@ -175,6 +175,7 @@ class CoconutAdapter(BasePlatformAdapter):
         turn = self._turns.get(str(chat_id))
         if turn is None:
             # For example a cron delivery. Coconut shows only the replies of its own turns for now.
+            LOG.warning('Coconut: refused a message outside a Coconut turn.')
             return SendResult(success=False, error='Coconut takes messages only during its own turns.')
         self._count += 1
         message_id = f'{turn}:{self._count}'

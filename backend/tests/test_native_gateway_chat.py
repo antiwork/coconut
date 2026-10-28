@@ -100,6 +100,12 @@ class NativeGatewayChatTests(unittest.TestCase):
         server = APIServer(('127.0.0.1', 0), service)
         threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .1}, daemon=True).start()
         log = data / 'gateway/gateway.log'
+
+        def diagnostics():
+            parts = [f'Model requests: {len(Model.requests)}', 'gateway.log:', log.read_text()[-4000:]]
+            for path in sorted((home / 'logs').glob('*.log')):
+                parts += [str(path.name) + ':', path.read_text(errors='replace')[-6000:]]
+            return '\n'.join(parts)
         try:
             service.gateway_bridge.publish(f'http://127.0.0.1:{server.server_address[1]}')
             service.mutate('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'}, str(uuid4()), 'phone')
@@ -107,16 +113,16 @@ class NativeGatewayChatTests(unittest.TestCase):
             self.assertEqual(service.gateway_state['state'], 'running', service.gateway_state)
             deadline = time.monotonic() + 180
             while not service.gateway_bridge.connected(home) and time.monotonic() < deadline:
-                self.assertIsNone(service.gateway_process.poll(), log.read_text()[-6000:])
+                self.assertIsNone(service.gateway_process.poll(), diagnostics())
                 time.sleep(.5)
-            self.assertTrue(service.gateway_bridge.connected(home), log.read_text()[-6000:])
+            self.assertTrue(service.gateway_bridge.connected(home), diagnostics())
             self.assertEqual(service.gateway_status()['connected_profiles'], ['default'])
             bot = next(bot for bot in service.snapshot()['bots'] if service.profiles.row(bot)['name'] == 'default')
             task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Say hello.'}, str(uuid4()), 'phone')
             service._run_task(task['id'])
             replies = [m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
-            self.assertEqual(service._get('tasks', task['id'])['status'], 'completed', log.read_text()[-6000:])
-            self.assertEqual(replies, [REPLY], log.read_text()[-6000:])
+            self.assertEqual(service._get('tasks', task['id'])['status'], 'completed', diagnostics())
+            self.assertEqual(replies, [REPLY], diagnostics())
             self.assertTrue(any('Say hello.' in json.dumps(request['messages']) for request in Model.requests))
             process = service.gateway_process
         finally:
