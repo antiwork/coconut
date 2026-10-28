@@ -137,13 +137,7 @@ private struct MacConnectionSettingsView: View {
                     LabeledContent("Mac") {
                         Text(store.pairedMacDescription).font(.caption).textSelection(.enabled)
                     }
-                    if store.usesLegacyPairing {
-                        // A version 1 pairing used Tailscale. Only a new pairing link connects this iPhone again.
-                        Text(PairingSetupError.legacyMessage).font(.footnote).foregroundStyle(.secondary)
-                        PairMacButton()
-                    } else {
-                        Button("Reconnect") { Task { await store.reconnect() } }
-                    }
+                    Button("Reconnect") { Task { await store.reconnect() } }
                 } else {
                     PairMacButton()
                 }

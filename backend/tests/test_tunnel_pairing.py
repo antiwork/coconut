@@ -145,13 +145,8 @@ class PairingLinkTests(unittest.TestCase):
 
     def test_a_version_2_setup_goes_in_a_version_3_link(self):
         link = pairing.link(self.payload())
-        token, marker = link.removeprefix('coconut://pair/').split('?setup=')
-        self.assertRegex(token, r'^[a-z2-7]+$')
+        self.assertRegex(link.removeprefix('coconut://pair/'), r'^[a-z2-7]+$')
         self.assertEqual(pairing.read_link(link), self.payload())
-        self.assertEqual(pairing.read_link(link.replace('Mac mini', 'x')), self.payload())  # The token holds the name.
-        # App builds before this format read only the setup field. Both kinds ask the person to update the app.
-        old_build = json.loads(base64.urlsafe_b64decode(marker + '=' * (-len(marker) % 4)))
-        self.assertEqual(old_build, dict(version=3, server_url='', certificate_sha256='', pairing_code=''))
         self.assertNotIn('eyJ', link)
 
     def test_a_version_3_link_holds_the_longest_relay_host_name(self):
@@ -161,15 +156,10 @@ class PairingLinkTests(unittest.TestCase):
             with self.subTest(relay=relay[-12:]):
                 self.assertEqual(pairing.read_link(pairing.link(self.payload() | {'relay': relay})), self.payload() | {'relay': relay})
 
-    def test_the_earlier_link_format_still_reads(self):
-        data = json.dumps(self.payload(), separators=(',', ':')).encode()
-        earlier = 'coconut://pair?setup=' + base64.urlsafe_b64encode(data).decode().rstrip('=')
-        self.assertEqual(pairing.read_link(earlier), self.payload())
-
     def test_a_damaged_link_is_refused(self):
         link = pairing.link(self.payload())
-        token = link.removeprefix('coconut://pair/').split('?')[0]
-        for damaged in [link.replace(token, token[:40]), link.replace(token, token[:6] + '...' + token[-4:]),
+        token = link.removeprefix('coconut://pair/')
+        for damaged in ['coconut://pair', 'coconut://pair/', link.replace(token, token[:40]), link.replace(token, token[:6] + '...' + token[-4:]),
                         link.replace(token, token.upper()), link.replace(token, 'b' + token[1:])]:
             with self.subTest(damaged=damaged[:60]), self.assertRaises(ValueError):
                 pairing.read_link(damaged)

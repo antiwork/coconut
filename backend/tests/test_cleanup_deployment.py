@@ -30,10 +30,6 @@ class DeploymentCleanupTests(unittest.TestCase):
             path.write_bytes(('Test ' + name).encode())
         self.plist = self.root / 'agent.plist'
         self.plist.write_text('Owned LaunchAgent.')
-        # The hermes command that older versions installed. Cleanup removes it.
-        self.wrapper = self.root / '.local/bin/hermes'
-        self.wrapper.parent.mkdir(parents=True)
-        self.wrapper.write_text('#!/bin/sh\n# Coconut owns this Hermes launcher.\nexec /usr/bin/python3 terminal.py launch -- "$@"\n')
         self.build = self.root / '.build/App'
         self.build.parent.mkdir()
         self.build.write_bytes(b'Keep the iOS build.')
@@ -52,7 +48,6 @@ class DeploymentCleanupTests(unittest.TestCase):
         self.assertEqual(after, before)
         self.assertFalse((self.runtime / 'hermes').exists())
         self.assertFalse((self.runtime / 'host').exists())
-        self.assertFalse(self.wrapper.exists())
         self.assertFalse(self.plist.exists())
         self.assertEqual(self.build.read_bytes(), b'Keep the iOS build.')
         self.run_cleanup('--yes')
@@ -63,7 +58,6 @@ class DeploymentCleanupTests(unittest.TestCase):
             self.run_cleanup('--yes', stop_error=SystemExit('Could not stop the owned service.'))
         self.assertTrue((self.runtime / 'hermes/source/run_agent.py').is_file())
         self.assertTrue((self.runtime / 'ssh/coconut_ed25519').is_file())
-        self.assertTrue(self.wrapper.exists())
         self.assertTrue(self.plist.exists())
 
     def test_preview_keeps_every_file(self):

@@ -23,8 +23,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BACKEND = PROJECT_ROOT / 'backend'
 # The shared model home of the bots stays in the folder of the old private runtime until bots become Hermes profiles.
 DEFAULT_HOME = PROJECT_ROOT / '.runtime/hermes/terminal'
-# Coconut wrote this line into its own `hermes` command. That command is not the person's Hermes.
-LAUNCHER_MARKER = b'Coconut owns this Hermes launcher.'
 MODULES = 'run_agent, hermes_cli, hermes_state, cron, tools, agent, gateway, dotenv, ruamel.yaml, mcp, PIL'
 INSTALL_HINT = 'Install Hermes from https://github.com/NousResearch/hermes-agent.'
 STATUS_FILE = 'hermes.json'
@@ -174,13 +172,11 @@ def wrapper_target(text: str) -> Path | None:
 
 
 def launcher_target(command: Path, environ=None, home=None, depth: int = 0) -> tuple[Path, Path | None] | None:
-    """Return (Python, source folder or None) for a `hermes` command, or None for Coconut's own launcher."""
+    """Return (Python, source folder or None) for a `hermes` command, or None when it leads to no Python."""
     try:
         with command.resolve().open('rb') as handle:
             head = handle.read(262144)
     except OSError:
-        return None
-    if LAUNCHER_MARKER in head:
         return None
     text = head.decode('utf-8', errors='replace')
     words = text[2:].splitlines()[0].split() if head.startswith(b'#!') else []
@@ -222,7 +218,7 @@ def candidates(environ=None, home=None) -> list:
         else:
             pythons = source_pythons(root, environ, home) or [root / 'venv/bin/python']
             found.extend((python, root, True) for python in pythons)
-    # As the shell does, the first `hermes` on PATH counts. Coconut's old launcher can come first, so the search goes on.
+    # As the shell does, the first `hermes` on PATH counts. A command that leads to no Python lets the search go on.
     for folder in environ.get('PATH', os.defpath).split(os.pathsep):
         command = shutil.which('hermes', path=folder) if folder else None
         target = launcher_target(Path(command), environ, home) if command else None
@@ -232,12 +228,7 @@ def candidates(environ=None, home=None) -> list:
     source = home / '.hermes/hermes-agent'
     found.extend((python, source, False) for python in source_pythons(source, environ, home))
     result, seen = [], set()
-    private = [PROJECT_ROOT / '.runtime/hermes' / name for name in ('venv', 'source')]
     for python, root, explicit in found:
-        # The private runtime that older Coconut versions installed is not the person's Hermes. The person's own Hermes
-        # home can sit in .runtime/hermes/terminal, where older versions kept the shared home of the bots.
-        if not explicit and any(folder in python.absolute().parents for folder in private):
-            continue
         if str(python) not in seen:
             seen.add(str(python))
             result.append((python, root, explicit))
@@ -558,17 +549,3 @@ def public(value: dict | None) -> dict:
     return {'status': status, 'version': value.get('version'), 'reason': value.get('reason'),
             'tested': is_tested(value.get('version')) if status == 'ok' else None}
 
-
-def remove_coconut_launcher(home=None) -> bool:
-    """Delete ~/.local/bin/hermes when Coconut wrote it. Another program at that path stays."""
-    path = Path(home or Path.home()) / '.local/bin/hermes'
-    try:
-        if path.is_symlink() or not path.is_file():
-            return False
-        with path.open('rb') as handle:
-            if LAUNCHER_MARKER not in handle.read(4096):
-                return False
-        path.unlink()
-    except OSError:
-        return False
-    return True

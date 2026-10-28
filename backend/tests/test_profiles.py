@@ -40,9 +40,9 @@ class ProfileTests(unittest.TestCase):
             self.assertFalse(metadata['created'])
         self.assertNotEqual(self.profiles.home(self.bot), self.profiles.home(other))
 
-    def test_a_bot_without_a_row_needs_the_migration(self):
+    def test_a_bot_without_a_row_has_no_home(self):
         profiles = HermesProfiles(self.root)
-        with self.assertRaisesRegex(ProfileError, 'migrate_bots_to_profiles'):
+        with self.assertRaisesRegex(ProfileError, 'has no Hermes profile'):
             profiles.home(self.bot)
         self.assertEqual(profiles.sync(self.bot | {'_deleted': True})['status'], 'deleted')
         self.assertFalse((self.root / 'bots').exists())

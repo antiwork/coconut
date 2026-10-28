@@ -17,7 +17,7 @@ import re
 import socket
 import subprocess
 import sys
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 import host
 
@@ -25,11 +25,6 @@ import host
 ROOT = Path(__file__).resolve().parents[1]
 V2_FIELDS = {"version", "relay", "route", "mac_key", "secret", "expires", "name"}
 LINK_VERSION = 3
-# App builds before the version 3 link read only the setup field. This value is base64url of a JSON object with the
-# field names of the old version 1 setup and version 3, so those builds ask the person to update the app. The space before the
-# object keeps the text from starting with "eyJ", which Hermes masks as a JSON Web Token.
-OLD_BUILD_SETUP = base64.urlsafe_b64encode(
-    b' {"version":3,"server_url":"","certificate_sha256":"","pairing_code":""}').decode().rstrip("=")
 
 
 def unpadded(value: str, size: int) -> bytes | None:
@@ -111,13 +106,13 @@ def tunnel_payload(data: Path) -> dict:
 def link(payload: dict) -> str:
     """A setup link opens Coconut on the iPhone. The QR code holds the same link.
 
-    A version 2 setup goes in a version 3 link: coconut://pair/<token>?setup=<OLD_BUILD_SETUP>. The token is the
-    packed setup in lowercase base32. Hermes masks text that looks like a secret before its agent sends the link,
+    A version 2 setup goes in a version 3 link: coconut://pair/<token>. The token is the packed setup in lowercase
+    base32. Hermes masks text that looks like a secret before its agent sends the link,
     and no Hermes rule matches lowercase letters and the digits 2 to 7 after a slash.
     """
     payload = validate(payload)
     token = base64.b32encode(pack(payload)).decode().rstrip("=").lower()
-    return f"coconut://pair/{token}?setup={OLD_BUILD_SETUP}"
+    return f"coconut://pair/{token}"
 
 
 def pack(payload: dict) -> bytes:
@@ -133,14 +128,11 @@ def pack(payload: dict) -> bytes:
 
 
 def read_link(text: str) -> dict:
-    """Return the setup of a link from link(), in the version 3 or the earlier format."""
+    """Return the setup of a link from link()."""
     parts = urlsplit(text.strip())
     if parts.scheme != "coconut" or parts.netloc != "pair":
         raise ValueError("This is not a Coconut setup link.")
     token = parts.path.removeprefix("/")
-    if not token:
-        encoded = parse_qs(parts.query).get("setup", [""])[0]
-        return validate(json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))))
     if not re.fullmatch(r"[a-z2-7]+", token):
         raise ValueError("The setup link is damaged.")
     data = base64.b32decode(token.upper() + "=" * (-len(token) % 8))

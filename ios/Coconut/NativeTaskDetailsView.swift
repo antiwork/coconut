@@ -34,29 +34,6 @@ struct CheckoutRecoveryPairing: Codable, Equatable, Sendable {
     let deviceId: String
     let route: String
     let macKey: String
-
-    init(deviceId: String, route: String, macKey: String) {
-        self.deviceId = deviceId
-        self.route = route
-        self.macKey = macKey
-    }
-
-    private enum CodingKeys: String, CodingKey { case deviceId, route, macKey, serverURL, fingerprint }
-
-    // A confirmation saved before the relay transport has the TLS address and pin in place of the route and key.
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        deviceId = try values.decode(String.self, forKey: .deviceId)
-        route = try values.decodeIfPresent(String.self, forKey: .route) ?? values.decode(String.self, forKey: .serverURL)
-        macKey = try values.decodeIfPresent(String.self, forKey: .macKey) ?? values.decode(String.self, forKey: .fingerprint)
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(deviceId, forKey: .deviceId)
-        try values.encode(route, forKey: .route)
-        try values.encode(macKey, forKey: .macKey)
-    }
 }
 
 struct CheckoutRecoveryCheck: Sendable {

@@ -44,10 +44,7 @@ def main() -> None:
     for target in targets:
         if target.is_symlink():
             raise SystemExit(f"Cleanup did not follow a symbolic link: {target}")
-    import host
     plist = stop_for_cleanup()
-    # Older versions installed their own hermes command. The person's own Hermes stays.
-    host.hermes_runtime().remove_coconut_launcher()
     if plist.exists():
         plist.unlink()
     for target in targets:

@@ -23,27 +23,6 @@ def item(build, **changes):
     return mac_feed.Item(**values)
 
 
-# An item of an earlier feed with two channels. Sparkle in the earlier app showed it only on the nightly channel.
-LEGACY_NIGHTLY = """    <item>
-      <title>Coconut 0.1.0 (518)</title>
-      <pubDate>Mon, 26 Oct 2026 12:00:00 +0000</pubDate>
-      <sparkle:version>518</sparkle:version>
-      <sparkle:shortVersionString>0.1.0</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
-      <sparkle:channel>nightly</sparkle:channel>
-      <enclosure url="{base}/Coconut-0.1.0-518-nightly-0123456789abcdef.zip" length="518" type="application/octet-stream" sparkle:edSignature="sig518" />
-    </item>
-"""
-
-
-def legacy_feed(*items):
-    """A feed of the earlier format: a nightly item for build 518, and stable items without a channel."""
-    data = mac_feed.render(list(items)).decode()
-    if 'xmlns:sparkle' not in data:
-        data = data.replace('<rss ', f'<rss xmlns:sparkle="{mac_feed.SPARKLE}" ', 1)
-    return data.replace('  </channel>', LEGACY_NIGHTLY.format(base=BASE) + '  </channel>').encode()
-
-
 class FeedTests(unittest.TestCase):
     def setUp(self):
         self.folder = Path(tempfile.mkdtemp())
@@ -91,13 +70,8 @@ class FeedTests(unittest.TestCase):
         merged = mac_feed.merge([item(8, signature='old'), item(7)], item(8, signature='new'))
         self.assertEqual([(entry.build, entry.signature) for entry in merged], [(8, 'new'), (7, 'sig7')])
 
-    def test_an_earlier_feed_with_two_items_of_one_build_keeps_the_first(self):
-        merged = mac_feed.merge([item(8, file='first.zip'), item(8, file='second.zip')], item(9))
-        self.assertEqual([(entry.build, entry.file) for entry in merged], [(9, 'Coconut-0.1.0-9.zip'), (8, 'first.zip')])
-
     def test_the_latest_build(self):
         self.assertEqual(mac_feed.latest_build(mac_feed.render([item(9), item(8)])), 9)
-        self.assertEqual(mac_feed.latest_build(legacy_feed(item(505))), 518)
         self.assertEqual(mac_feed.latest_build(None), 0)
 
     def test_the_new_item_reads_the_version_and_the_build_from_the_archive(self):
@@ -123,22 +97,6 @@ class FeedTests(unittest.TestCase):
         self.assertEqual((output / 'mac' / new_name).read_bytes(), new.read_bytes())
         self.assertEqual((output / '_headers').read_text(), (mac_feed.ROOT / 'updates/_headers').read_text())
         self.assertEqual(mac_feed.parse((output / 'mac/appcast.xml').read_bytes()), items)
-
-    def test_the_first_publish_after_the_channels_keeps_the_nightly_archives_without_a_channel(self):
-        """A Mac on the nightly channel of an earlier app keeps its updates: no new item has a channel, and the archives
-        of the earlier items stay, so the cached earlier appcast still works."""
-        nightly = self.archive(518)
-        name = mac_feed.published_name(nightly)
-        feed = legacy_feed().replace(b'Coconut-0.1.0-518-nightly-0123456789abcdef.zip', name.encode()) \
-            .replace(b'length="518"', f'length="{nightly.stat().st_size}"'.encode())
-        new = self.archive(519, size=4096)
-        output = self.folder / 'public'
-        items = mac_feed.publish(new, 'sig', output, feed=feed, download=lambda url: nightly.read_bytes())
-        self.assertEqual([entry.build for entry in items], [519, 518])
-        appcast = (output / 'mac/appcast.xml').read_bytes()
-        self.assertNotIn(b'sparkle:channel', appcast)
-        self.assertEqual((output / 'mac' / name).read_bytes(), nightly.read_bytes())
-        self.assertEqual((output / '_redirects').read_text(), f'/mac/download /mac/{mac_feed.published_name(new)} 302\n')
 
     def test_publish_writes_the_install_script_and_the_download_link(self):
         new = self.archive(512)
@@ -335,14 +293,6 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn('defaults write', self.log.read_text())
         self.assertIn(f'paired {CODE}', result.stdout)
         self.assertIn('cannot change its update settings yet', self.note(result))
-
-    def test_an_item_of_an_earlier_feed_with_a_channel_installs_too(self):
-        feed = self.feed(518)
-        path = Path(feed.removeprefix('file://'))
-        path.write_text(path.read_text().replace('<sparkle:version>', '<sparkle:channel>nightly</sparkle:channel><sparkle:version>'))
-        result = self.run_script(CODE, feed=feed)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Downloading Coconut-0.1.0-518-', result.stderr)
 
     def test_an_empty_feed_installs_nothing(self):
         (self.folder / 'appcast.xml').write_text(mac_feed.render([]).decode())

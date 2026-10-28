@@ -176,14 +176,6 @@ class PairingToolsTests(unittest.TestCase):
                     mac_key=base64.urlsafe_b64encode(bytes(32)).decode().rstrip("="),
                     secret=base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("="), expires=1_800_000_000, name="Mac mini")
 
-    def test_pairing_refuses_the_old_tls_setup(self):
-        old = dict(version=1, server_url="https://mini.example.ts.net:8960", certificate_sha256="a" * 64, pairing_code="0123456789")
-        with self.assertRaises(ValueError):
-            pairing.validate(old)
-        encoded = base64.urlsafe_b64encode(json.dumps(old).encode()).decode().rstrip("=")
-        with self.assertRaises(ValueError):
-            pairing.read_link("coconut://pair?setup=" + encoded)
-
     def test_a_mac_without_the_tunnel_cannot_pair(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(pairing.host, "DEFAULT_DATA", Path(directory)), \
                 self.assertRaisesRegex(SystemExit, "setup_coconut.py"):

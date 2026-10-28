@@ -1,8 +1,6 @@
 """Manage native Hermes MCP configuration and the MCP connections of one profile."""
-from copy import deepcopy
 import hashlib
 import json
-from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
@@ -101,73 +99,6 @@ def manage(request, home):
     else:
         raise ValueError('Unknown MCP operation.')
     return dict(ok=True, tools=[], servers=public_servers(home))
-
-
-def _references(value, found):
-    """Collect the names of environment variables that ${NAME} placeholders in this value refer to."""
-    from tools.mcp_tool_config import _CONTEXT_VAR_RESOLVERS, _ENV_VAR_PATTERN
-    from tools.mcp_tool_common import _env_ref_name
-    if isinstance(value, str):
-        found.update(_env_ref_name(match.group(1)) for match in _ENV_VAR_PATTERN.finditer(value)
-                     if match.group(1).strip() not in _CONTEXT_VAR_RESOLVERS)
-    elif isinstance(value, dict):
-        for item in value.values():
-            _references(item, found)
-    elif isinstance(value, list):
-        for item in value:
-            _references(item, found)
-    return found
-
-
-def import_servers(source, home):
-    """Add the MCP servers of another Hermes home that this home does not have. Existing servers always win.
-
-    Coconut copies each variable that a server refers to and the source .env defines. Existing values always win.
-    A server that refers to a missing variable, or signs in with OAuth, is added turned off and needs setup.
-    Coconut never copies OAuth tokens, because two homes that share one sign-in log each other out.
-    """
-    from agent.secret_scope import load_env_file
-    from hermes_cli.config import save_env_value
-    from hermes_cli.mcp_security import validate_mcp_server_entry
-    raw, save = _settings()
-    incoming = raw(source).get('mcp_servers') or {}
-    if not isinstance(incoming, dict):
-        raise ValueError('The Hermes MCP settings must contain a mapping.')
-    config = raw(home)
-    entries = servers(home)
-    source_values = load_env_file(Path(source) / '.env')
-    values = load_env_file(Path(home) / '.env')
-    added, setup, skipped = [], [], []
-    for name, entry in incoming.items():
-        if not isinstance(name, str) or not 0 < len(name) <= 64:
-            continue
-        # Hermes does not start a server that its security check rejects, so Coconut does not copy one.
-        if name in entries or not isinstance(entry, dict) or validate_mcp_server_entry(name, entry):
-            skipped.append(name)
-            continue
-        entry = deepcopy(entry)
-        missing = False
-        for reference in sorted(_references(entry, set())):
-            if values.get(reference):
-                continue
-            if not source_values.get(reference):
-                missing = True
-                continue
-            try:
-                save_env_value(reference, source_values[reference])
-            except ValueError:
-                missing = True
-                continue
-            values[reference] = source_values[reference]
-        if missing or str(entry.get('auth') or '').strip().lower() == 'oauth':
-            entry['enabled'] = False
-            setup.append(name)
-        entries[name] = entry
-        added.append(name)
-    if added:
-        config['mcp_servers'] = entries
-        save(home, config)
-    return dict(added=sorted(added), needs_setup=sorted(setup), skipped=sorted(skipped), servers=public_servers(home))
 
 
 _signature = None

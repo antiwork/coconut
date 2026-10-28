@@ -112,30 +112,27 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertNil(launch.standardError)
     }
 
-    func testThePairingLinkSaysHowLongEachKindOfCodeLasts() throws {
+    func testThePairingLinkSaysHowLongTheCodeLasts() throws {
         let python = URL(fileURLWithPath: "/usr/bin/env")
-        // Each case has its own folder: Python would reuse the cached module of a file with the same size and time.
-        for (version, minutes) in [(2, "ten"), (1, "five")] {
-            try write("""
-                def local_payload():
-                    return {'version': \(version)}
-                def link(payload):
-                    return 'coconut://pair/abc?setup=x'
-                """, to: "Coconut\(version)/scripts/pairing.py")
-            let launch = Launch.pairingLink(install: Install(root: home.appendingPathComponent("Coconut\(version)")),
-                                            python: python, environment: [:])
-            let process = Process()
-            process.executableURL = python
-            process.arguments = ["python3"] + launch.arguments.dropFirst()
-            let output = Pipe()
-            process.standardOutput = output
-            try process.run()
-            let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            process.waitUntilExit()
-            XCTAssertEqual(process.terminationStatus, 0)
-            XCTAssertEqual(PairingLink(output: text)?.link, "coconut://pair/abc?setup=x")
-            XCTAssertTrue(text.contains("expires after \(minutes) minutes"), text)
-        }
+        try write("""
+            def local_payload():
+                return {'version': 2}
+            def link(payload):
+                return 'coconut://pair/abc'
+            """, to: "Coconut/scripts/pairing.py")
+        let launch = Launch.pairingLink(install: Install(root: home.appendingPathComponent("Coconut")), python: python,
+                                        environment: [:])
+        let process = Process()
+        process.executableURL = python
+        process.arguments = ["python3"] + launch.arguments.dropFirst()
+        let output = Pipe()
+        process.standardOutput = output
+        try process.run()
+        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        XCTAssertEqual(process.terminationStatus, 0)
+        XCTAssertEqual(PairingLink(output: text)?.link, "coconut://pair/abc")
+        XCTAssertTrue(text.contains("expires after ten minutes"), text)
     }
 
     func testTheSavedHermesSettingsReachTheService() {
@@ -312,18 +309,6 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertNil(DeployResult(output: "Traceback"))
     }
 
-    // MARK: Update channel
-
-    func testTheChannelOfAnEarlierVersionIsRemoved() {
-        let store = MemoryPreferences(["updateChannel": "nightly", "SUAutomaticallyUpdate": false])
-        let preferences = UpdatePreferences(store: store)
-        preferences.removeLegacyChannel()
-        XCTAssertNil(store.values["updateChannel"])
-        XCTAssertEqual(store.values["SUAutomaticallyUpdate"] as? Bool, false, "The other settings stay.")
-        preferences.removeLegacyChannel()
-        XCTAssertNil(store.values["updateChannel"])
-    }
-
     // MARK: Update preferences
 
     func testAutomaticUpdatesAreOnUntilTurnedOff() {
@@ -387,7 +372,7 @@ final class CoconutKitTests: XCTestCase {
     }
 
     func testTheStatusTextNamesTheSettingsAndTheLastError() {
-        let store = MemoryPreferences(["SULastCheckTime": Date(timeIntervalSince1970: 1_793_000_000), "updateChannel": "nightly",
+        let store = MemoryPreferences(["SULastCheckTime": Date(timeIntervalSince1970: 1_793_000_000),
                                        "SUAutomaticallyUpdate": false])
         let preferences = UpdatePreferences(store: store)
         preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 1_793_000_100), outcome: .failed,
@@ -418,14 +403,13 @@ final class CoconutKitTests: XCTestCase {
 
     func testThePairingOutputGivesTheLinkAndTheImage() {
         let output = """
-            Setup link: coconut://pair?setup=abc
+            Setup link: coconut://pair/mfrggzdf
             QR image: /Users/a/Coconut/.runtime/pairing/iphone-setup.png
             On the iPhone, tap the link, or scan the QR image in Coconut.
             """
         XCTAssertEqual(PairingLink(output: output),
-                       PairingLink(link: "coconut://pair?setup=abc", image: "/Users/a/Coconut/.runtime/pairing/iphone-setup.png"))
-        XCTAssertEqual(PairingLink(output: "Setup link: coconut://pair/mfrggzdf?setup=IHsi\n")?.link,
-                       "coconut://pair/mfrggzdf?setup=IHsi")
+                       PairingLink(link: "coconut://pair/mfrggzdf", image: "/Users/a/Coconut/.runtime/pairing/iphone-setup.png"))
+        XCTAssertNil(PairingLink(output: "Setup link: coconut://pair?setup=abc\n"))
         XCTAssertNil(PairingLink(output: "Coconut could not create the setup QR."))
         XCTAssertNil(PairingLink(output: "Setup link: https://example.com"))
     }

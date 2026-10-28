@@ -88,8 +88,6 @@ Each bot is one Hermes profile of the person, keyed by the profile name. `defaul
 - A settings write to a missing profile fails. Coconut never creates a profile folder itself.
 - Coconut keeps its own files of a bot in `<data-dir>/bots/<uuid>`: workspace, browser, temporary files, routine receipts, and terminal scripts.
 - Deleting a bot means "Remove from Coconut": the folder stays, and a scan does not add it again. To delete the Hermes profile itself, the person sends `POST /v1/bots/<id>/profile/delete` with `{"confirm": "<profile name>"}`. Coconut uses Hermes's `delete_profile` and never deletes `default`. A bot cannot request this deletion.
-
-A bot of an earlier install has its home in `<data-dir>/bots/<uuid>/home` and no profiles row. It runs no turns until a person runs `scripts/migrate_bots_to_profiles.py`, and `GET /v1/setup` returns `migration_required: true`.
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.
 Coconut scopes Codex, GitHub CLI, and XDG settings through their native environment variables.

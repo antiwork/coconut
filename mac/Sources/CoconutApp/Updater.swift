@@ -25,8 +25,6 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
     private var installsForRequest = false
 
     override init() {
-        // An earlier version kept an update channel. Sparkle does not need it any more.
-        preferences.removeLegacyChannel()
         automaticUpdates = preferences.automaticUpdates
         lastResult = preferences.lastResult
         super.init()

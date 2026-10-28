@@ -27,7 +27,7 @@ class ProfileError(ValueError):
     pass
 
 
-MIGRATE = 'This bot has no Hermes profile. Run scripts/migrate_bots_to_profiles.py on this Mac.'
+NO_PROFILE = 'This bot has no Hermes profile.'
 
 
 MAX_PROMPT_FILE_BYTES = 1024 * 1024
@@ -158,7 +158,7 @@ class HermesProfiles:
     def home(self, bot: dict) -> Path:
         row = self.row(bot)
         if row is None:
-            raise ProfileError(MIGRATE)
+            raise ProfileError(NO_PROFILE)
         path = Path(row['home'])
         _safe(path, self.boundary(path))
         return path
@@ -172,7 +172,7 @@ class HermesProfiles:
 
     def read_instructions(self, bot: dict) -> str:
         if self.row(bot) is None:
-            # A bot from before the migration shows its saved instructions. It runs no turns.
+            # A bot without a profile row shows its saved instructions. It runs no turns.
             return bot.get('instructions', '')
         home = self.home(bot)
         path = home / 'SOUL.md'
@@ -193,8 +193,8 @@ class HermesProfiles:
         """Check the profile of this bot. Coconut changes no profile here."""
         status = 'deleted' if bot.get('_deleted') else 'archived' if bot.get('archived') else 'active'
         if status != 'deleted' and self.row(bot) is None:
-            # A bot from before the migration. The service starts, and the bot runs no turns until the migration.
-            status = 'unmigrated'
+            # The service starts, and the bot runs no turns.
+            status = 'no_profile'
         elif status != 'deleted' and not self.home(bot).is_dir():
             status = 'missing'
         return dict(profile_id=profile_id(bot), bot_id=bot['id'], session_id=bot['session_id'], status=status, created=False)

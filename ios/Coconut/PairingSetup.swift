@@ -1,11 +1,10 @@
 import Foundation
 
-// A version 2 setup from `scripts/pairing.py`, in a version 3 link:
-// coconut://pair/<token>?setup=<base64url JSON for earlier app builds>
+// A version 2 setup from `scripts/pairing.py`, in a version 3 link: coconut://pair/<token>
 // The token is lowercase base32 of the link version 3, the route (32 bytes), the Mac key (32 bytes), the one-time
 // code (32 bytes), the expiry (4 bytes, big-endian Unix seconds), the relay length (2 bytes, big-endian), the relay, and the Mac
 // name. Hermes masks base64url JSON as a JSON Web Token, but no Hermes rule matches this token.
-// The app also reads the earlier link: coconut://pair?setup=<base64url {version:2, relay, route, mac_key, secret, expires, name}>
+// The rendezvous box of a pairing code holds the setup as JSON: {version:2, relay, route, mac_key, secret, expires, name}.
 struct PairingSetup: Equatable, Sendable {
     let relay: URL
     let route: String
@@ -16,14 +15,13 @@ struct PairingSetup: Equatable, Sendable {
     let expires: Date
     let name: String
 
-    static let linkPrefix = "coconut://pair?"
     private static let fields: Set<String> = ["version", "relay", "route", "mac_key", "secret", "expires", "name"]
 
     var endpoint: TunnelEndpoint { TunnelEndpoint(relay: relay, route: route, macKey: macKey) }
 
     static func isLink(_ url: URL) -> Bool { url.scheme?.lowercased() == "coconut" && url.host?.lowercased() == "pair" }
 
-    // The QR code holds the same link. A QR code from `pairing.py --stdin` holds the JSON.
+    // The QR code holds the same link.
     static func parse(_ payload: String) throws -> Self {
         // The size limit applies to the whole input, before any trimming.
         guard payload.utf8.count <= 4_096 else { throw PairingSetupError.invalidPayload }
@@ -36,13 +34,8 @@ struct PairingSetup: Equatable, Sendable {
         guard let url = URL(string: link), isLink(url),
               let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { throw PairingSetupError.invalidPayload }
         let token = parts.path.hasPrefix("/") ? String(parts.path.dropFirst()) : parts.path
-        if !token.isEmpty { return try parse(token: token) }
-        guard let items = parts.queryItems, items.count == 1, items[0].name == "setup",
-              let encoded = items[0].value, !encoded.isEmpty else { throw PairingSetupError.invalidPayload }
-        // Earlier links can keep their base64 padding.
-        let unpadded = encoded.hasSuffix("==") ? String(encoded.dropLast(2)) : encoded.hasSuffix("=") ? String(encoded.dropLast()) : encoded
-        guard let data = Data(base64URL: unpadded) else { throw PairingSetupError.invalidPayload }
-        return try parse(json: data)
+        guard !token.isEmpty else { throw PairingSetupError.damagedLink }
+        return try parse(token: token)
     }
 
     private static func parse(token: String) throws -> Self {
@@ -60,11 +53,7 @@ struct PairingSetup: Equatable, Sendable {
     }
 
     private static func parse(json data: Data) throws -> Self {
-        // A version 1 setup used Tailscale and a TLS certificate. This app pairs only through the relay.
         guard let probe = try? JSONDecoder().decode(VersionProbe.self, from: data) else { throw PairingSetupError.invalidPayload }
-        if probe.version == 1 { throw PairingSetupError.legacyLink }
-        // Only a version 3 link has version 3 in the setup field, for earlier app builds. Its token is missing.
-        if probe.version == 3 { throw PairingSetupError.damagedLink }
         guard probe.version == 2 else { throw PairingSetupError.unsupportedVersion }
         let fields: Fields
         do { fields = try JSONDecoder().decode(Fields.self, from: data) }
@@ -137,16 +126,12 @@ struct PairingSetup: Equatable, Sendable {
 }
 
 enum PairingSetupError: LocalizedError, Equatable {
-    case invalidPayload, unsupportedVersion, legacyLink, damagedLink, invalidRelay, invalidRoute, invalidKey, invalidName
-
-    // A version 1 link or pairing used Tailscale and a TLS certificate.
-    static let legacyMessage = "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link."
+    case invalidPayload, unsupportedVersion, damagedLink, invalidRelay, invalidRoute, invalidKey, invalidName
 
     var errorDescription: String? {
         switch self {
         case .invalidPayload: "This is not a Coconut pairing link. Ask your Hermes for a new pairing link."
         case .unsupportedVersion: "This pairing link needs a different Coconut version. Update the app and try again."
-        case .legacyLink: Self.legacyMessage
         case .invalidRelay: "The pairing link has an invalid relay address. Ask your Hermes for a new pairing link."
         case .damagedLink, .invalidRoute, .invalidKey: "The pairing link is damaged. Ask your Hermes for a new pairing link."
         case .invalidName: "The pairing link has an invalid Mac name. Ask your Hermes for a new pairing link."

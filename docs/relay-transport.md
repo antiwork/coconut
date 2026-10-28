@@ -86,7 +86,7 @@ The sidecar keeps its files in `<data>/tunnel`. Each file has mode 0600, and the
 
 ## Pairing v2
 
-`scripts/pairing.py` makes a version 2 setup when `tunnel/route.json` exists. `--share` prints it in a version 3 link. `--legacy` makes a version 1 setup for app builds that use TLS, in the earlier link format.
+`scripts/pairing.py` makes a version 2 setup when `tunnel/route.json` exists. `--share` prints it in a version 3 link.
 
 The setup has these values:
 
@@ -97,7 +97,7 @@ The setup has these values:
 The version 3 link:
 
 ```
-coconut://pair/<token>?setup=IHsidmVyc2lvbiI6Mywic2VydmVyX3VybCI6IiIsImNlcnRpZmljYXRlX3NoYTI1NiI6IiIsInBhaXJpbmdfY29kZSI6IiJ9
+coconut://pair/<token>
 ```
 
 The token is unpadded lowercase base32 (RFC 4648) of these bytes:
@@ -113,13 +113,7 @@ The token is unpadded lowercase base32 (RFC 4648) of these bytes:
 | Length of `relay` | `relay`, UTF-8 |
 | The rest | `name`, UTF-8 |
 
-Hermes masks text that looks like a secret before its agent sends the link. The earlier link held base64url JSON, which always starts with `eyJ`, so Hermes masked it as a JSON Web Token. No rule of Hermes 0.22.4 or 0.22.5 matches the token. `backend/tests/test_native_pairing_redaction.py` checks this with the redaction functions of the installed Hermes, in the native CI job for the minimum and the latest Hermes.
-
-App builds before the version 3 link read only the `setup` field. Its value is base64url of ` {"version":3,"server_url":"","certificate_sha256":"","pairing_code":""}`, so every earlier build tells the person to update the app. The space before the object keeps the value from starting with `eyJ`. The app still reads the earlier link:
-
-```
-coconut://pair?setup=<base64url {version:2, relay, route, mac_key, secret, expires, name}>
-```
+Hermes masks text that looks like a secret before its agent sends the link. Base64url JSON always starts with `eyJ`, so Hermes masks it as a JSON Web Token. No rule of Hermes 0.22.4 or 0.22.5 matches the token. `backend/tests/test_native_pairing_redaction.py` checks this with the redaction functions of the installed Hermes, in the native CI job for the minimum and the latest Hermes.
 
 The iPhone and the Mac derive these values with HKDF-SHA256, an empty salt, and a 32-byte output:
 
@@ -202,8 +196,6 @@ The app shows these connection states:
 | `needsRepair` | The relay refuses the token or route (401 or 404, or `revoked`), the Mac refuses the phone key or answers with another Mac key, or the backend answers 401. | A banner with Pair. The phone stops polling until it pairs again. |
 
 The phone's static key and the relay client token live in the Keychain (`local.coconut.tunnel`). Each pairing makes a new key. `pairing.json` holds `{version: 2, relay, route, macKey, deviceId, macName}`. A pending checkout recovery belongs to the route and the Mac key.
-
-A version 1 link, and a version 1 pairing from before the relay, show "Coconut no longer needs Tailscale. Ask your Hermes for a new pairing link." `scripts/pairing.py` makes only version 2 links.
 
 ## Backend listeners
 

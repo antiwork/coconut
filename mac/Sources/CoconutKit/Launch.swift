@@ -38,10 +38,8 @@ public struct Launch: Equatable {
                 link = pairing.link(payload)
             except (ValueError, KeyError, OSError, subprocess.CalledProcessError):
                 sys.exit('Coconut could not create a setup link. Check that the service runs, then try again.')
-            # A relay setup (version 2) lasts ten minutes. The earlier direct setup lasts five, as pairing.py says.
-            minutes = 'ten' if payload.get('version') == 2 else 'five'
             print('Setup link: ' + link)
-            print(f'The setup code works once and expires after {minutes} minutes. Send it only to the person who pairs.')
+            print('The setup code works once and expires after ten minutes. Send it only to the person who pairs.')
             """
         return Launch(executable: python,
                       arguments: [python.path, "-c", script, install.root.appendingPathComponent("scripts").path],

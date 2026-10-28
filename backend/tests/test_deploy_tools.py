@@ -13,7 +13,6 @@ import textwrap
 import time
 import unittest
 from unittest.mock import MagicMock, Mock, patch
-from uuid import uuid4
 
 
 SCRIPTS = Path(__file__).resolve().parents[2] / 'scripts'
@@ -422,8 +421,8 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.assertEqual((self.target / 'README.md').read_bytes(), package_files()['README.md'])
         self.assertIn(('restore', self.target, operations.state), operations.calls)
 
-    def test_an_update_from_the_private_runtime_needs_a_working_hermes(self):
-        # Versions before the Hermes check ran on their own private Hermes, which worked. They saved no status.
+    def test_an_update_without_a_saved_status_needs_a_working_hermes(self):
+        # A service that saved no Hermes status counts as one that worked.
         self.receive()
         operations = FakeOperations(mode='managed', hermes='missing')
         with self.assertRaisesRegex(deploy.DeployError, 'no Hermes'):
@@ -449,49 +448,6 @@ class DeploymentLifecycleTests(unittest.TestCase):
         self.receive(operations=operations)
         self.assertIn('hermes', [call[0] for call in operations.calls])
         self.assertIn('install', [call[0] for call in operations.calls])
-
-    def test_recovery_restores_the_runtime_and_settings_of_an_older_installers_update(self):
-        # An older installer moved .runtime/hermes to hermes-rollback-<id> and stopped before it moved the shared settings.
-        self.receive()
-        runtime = self.target / '.runtime/hermes'
-        (runtime / 'terminal/hermes').mkdir(parents=True)
-        (runtime / 'terminal/hermes/auth.json').write_text('Login.')
-        (runtime / 'install.json').write_text(json.dumps({'commit': 'a' * 40}))
-        with self.assertRaises(deploy.DeployError):
-            self.receive(files=package_files(**{'README.md': b'New code.\n'}),
-                         operations=FakeOperations(mode='managed', fail='prepare', fail_stop_after=1))
-        journal = self.target / '.runtime/deploy/update.json'
-        record = json.loads(journal.read_text())
-        record['runtime_change'] = {'previous': 'a' * 40, 'candidate': 'b' * 40}
-        journal.write_text(json.dumps(record))
-        saved = self.target / f".runtime/hermes-rollback-{record['deployment_id']}"
-        runtime.rename(saved)
-        runtime.mkdir()
-        (runtime / 'install.json').write_text(json.dumps({'commit': 'b' * 40}))
-        files = package_files(**{'README.md': b'Newer code.\n'})
-        self.receive(files=files, operations=FakeOperations(mode='managed'))
-        self.assertEqual((runtime / 'terminal/hermes/auth.json').read_text(), 'Login.')
-        self.assertEqual(json.loads((runtime / 'install.json').read_text())['commit'], 'a' * 40)
-        self.assertFalse(saved.exists())
-        self.assertEqual((self.target / 'README.md').read_bytes(), files['README.md'])
-
-    def test_a_runtime_copy_with_the_shared_settings_stays(self):
-        self.receive()
-        copy = self.target / f'.runtime/hermes-rollback-{uuid4()}'
-        (copy / 'terminal/hermes').mkdir(parents=True)
-        self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=FakeOperations(mode='managed'))
-        self.assertTrue((copy / 'terminal/hermes').is_dir())
-
-    def test_a_finished_update_removes_old_runtime_copies(self):
-        self.receive()
-        runtime = self.target / '.runtime'
-        copies = [runtime / f'hermes-rollback-{uuid4()}', runtime / f'hermes-failed-{uuid4()}']
-        manual = runtime / 'hermes-upgrade-2026-9-11'
-        for path in (*copies, manual):
-            (path / 'venv').mkdir(parents=True)
-        self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=FakeOperations(mode='managed'))
-        self.assertFalse(any(path.exists() for path in copies))
-        self.assertTrue(manual.is_dir())
 
     def test_an_update_without_a_drain_step_still_stops_the_service(self):
         operations = FakeOperations(mode='managed')
@@ -870,11 +826,6 @@ class DeploymentHealthTests(unittest.TestCase):
     def test_health_fails_when_the_service_never_answers(self):
         with self.assertRaisesRegex(deploy.DeployError, 'loopback health check'):
             self.check_health([(200, b'{"ok":false}')], delayed=True)
-
-    def test_an_older_updater_can_still_pass_the_https_address(self):
-        with patch.object(deploy.Operations, '_health', return_value={'ok': True}) as check:
-            self.assertEqual(deploy.Operations().health(Path('/Coconut'), 'https://mini.example.ts.net:8960'), {'ok': True})
-        check.assert_called_once_with(Path('/Coconut'), deploy.HEALTH_WAIT_SECONDS)
 
     def test_the_recovery_probe_waits_less_than_a_real_start(self):
         waits = []

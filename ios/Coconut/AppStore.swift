@@ -96,9 +96,6 @@ final class AppStore {
     @ObservationIgnored private var snapshotRequest: (id: UUID, generation: UUID, epoch: UUID, client: APIClient, task: Task<StateSnapshot, Error>)?
 
     var hasPairing: Bool { pairing != nil }
-    // A version 1 pairing from before the relay used Tailscale and TLS. It cannot connect, so the phone needs a new
-    // pairing link.
-    var usesLegacyPairing: Bool { pairing?.isLegacy ?? false }
     var pairedMacDescription: String {
         guard let pairing else { return "no Mac" }
         return pairing.macName ?? "your Mac"
@@ -293,9 +290,8 @@ final class AppStore {
     private func makeClient(_ pairing: PairingConfiguration, token: String) throws -> APIClient {
         guard pairing.usesTunnel else {
             #if DEBUG && targetEnvironment(simulator)
-            if !pairing.isLegacy, let address = pairing.serverURL { return try APIClient(loopback: address, token: token) }
+            if let address = pairing.serverURL { return try APIClient(loopback: address, token: token) }
             #endif
-            // A version 1 pairing reached the Mac through Tailscale and TLS. The Mac no longer serves that.
             throw TunnelError.needsRepair
         }
         if let tunnel, tunnel.endpoint == pairing.tunnelEndpoint { return APIClient(tunnel: tunnel, token: token) }
@@ -2190,9 +2186,8 @@ private final class BackgroundTask {
     }
 }
 
-// pairing.json. Version 2 pairs through the relay tunnel. Version 1 (no `version` key) paired over TLS through
-// Tailscale, and its `serverURL` is the Mac's HTTPS address. Such a pairing cannot connect: the phone needs a new pairing
-// link. A simulator debug build also uses version 1, with an http:// loopback address, for the test servers.
+// pairing.json. Version 2 pairs through the relay tunnel. Only a simulator debug build uses version 1, with an http://
+// loopback address in `serverURL`, for the test servers. Any other version 1 pairing cannot connect.
 struct PairingConfiguration: Codable, Equatable, Sendable {
     var version = 2
     let deviceId: String
@@ -2202,8 +2197,6 @@ struct PairingConfiguration: Codable, Equatable, Sendable {
     // The name of the Mac from the pairing link, for display only.
     var macName: String?
     var serverURL: String?
-    // The certificate pin of a version 1 pairing. Only its pending checkout recovery still uses it, to stay visible.
-    var fingerprint: String?
 
     init(setup: PairingSetup, deviceId: String) {
         self.deviceId = deviceId
@@ -2230,21 +2223,12 @@ struct PairingConfiguration: Codable, Equatable, Sendable {
         macKey = try values.decodeIfPresent(String.self, forKey: .macKey)
         macName = try values.decodeIfPresent(String.self, forKey: .macName)
         serverURL = try values.decodeIfPresent(String.self, forKey: .serverURL)
-        fingerprint = try values.decodeIfPresent(String.self, forKey: .fingerprint)
         guard version == 2 ? tunnelEndpoint != nil : serverURL != nil else {
             throw DecodingError.dataCorruptedError(forKey: .version, in: values, debugDescription: "Incomplete pairing")
         }
     }
 
     var usesTunnel: Bool { version == 2 }
-    // Only a test pairing in a simulator debug build has a loopback address.
-    var isLegacy: Bool {
-        #if DEBUG && targetEnvironment(simulator)
-        return !usesTunnel && serverURL?.hasPrefix("http://") != true
-        #else
-        return !usesTunnel
-        #endif
-    }
 
     var tunnelEndpoint: TunnelEndpoint? {
         guard version == 2, let relay, let url = URL(string: relay), let route,
@@ -2252,11 +2236,11 @@ struct PairingConfiguration: Codable, Equatable, Sendable {
         return TunnelEndpoint(relay: url, route: route, macKey: key)
     }
 
-    // A pending checkout recovery belongs to one device on one Mac: the route and the Mac key, or for a version 1
-    // pairing the address and the certificate pin.
+    // A pending checkout recovery belongs to one device on one Mac: the route and the Mac key, or for the loopback
+    // test pairing the address.
     var checkoutIdentity: CheckoutRecoveryPairing {
         usesTunnel ? CheckoutRecoveryPairing(deviceId: deviceId, route: route ?? "", macKey: macKey ?? "")
-            : CheckoutRecoveryPairing(deviceId: deviceId, route: serverURL ?? "", macKey: fingerprint ?? "")
+            : CheckoutRecoveryPairing(deviceId: deviceId, route: serverURL ?? "", macKey: "")
     }
 }
 struct SnapshotCache: Codable, Sendable {

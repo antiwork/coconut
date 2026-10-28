@@ -16,8 +16,7 @@ The Worker keeps no files between deployments, so each release builds the comple
   mac_feed.py publish --archive Coconut-0.1.0-512.zip --signature <EdDSA> --output updates/public
 
 The feed has one channel: every Mac gets every build. An item has no <sparkle:channel>, and Sparkle shows an item without
-a channel to every app, also to an earlier app that allows the channel "nightly". Earlier feeds had a stable channel and
-a nightly channel. This script reads their items and writes them again without a channel.
+a channel to every app.
 """
 from __future__ import annotations
 
@@ -94,10 +93,7 @@ def parse(data: bytes) -> list[Item]:
 
 
 def merge(items: list[Item], new: Item, keep: int = KEEP) -> list[Item]:
-    """Add the new item, replace an item of the same build, and keep the newest `keep` items.
-
-    An earlier feed can have a stable item and a nightly item of one build. The first of them stays.
-    """
+    """Add the new item, replace an item of the same build, and keep the newest `keep` items."""
     builds = {new.build: new}
     for item in items:
         builds.setdefault(item.build, item)
