@@ -67,6 +67,27 @@ class HermesEntryTests(unittest.TestCase):
         # The other profiles get their entries all the same.
         self.assertIn('coconut', self.config(self.home)['plugins']['enabled'])
 
+    def test_the_gateway_starts_only_after_the_entries_and_never_after_the_stop(self):
+        import threading
+        from coconut import gateway_chat
+        release = threading.Event()
+        self.service.hermes_entries = threading.Thread(target=release.wait, daemon=True)
+        self.service.hermes_entries.start()
+        with self.service.transaction():
+            self.service.set_chat_runtime({'chat_runtime': 'gateway'})
+        with patch.object(gateway_chat, 'live_gateway_pid', return_value=None), \
+                patch.object(self.service, '_start_gateway') as start:
+            self.service._check_gateway()
+            self.assertEqual(self.service.gateway_state['state'], 'starting')
+            release.set()
+            self.service.hermes_entries.join(5)
+            self.service.stopping.set()
+            self.service._check_gateway()
+            start.assert_not_called()
+            self.service.stopping.clear()
+            self.service._check_gateway()
+            start.assert_called_once_with(self.home)
+
     def test_a_failure_is_a_warning_and_the_service_starts(self):
         with self.assertLogs('coconut.bot_profiles', logging.WARNING):
             self.assertFalse(self.service._set_hermes_entries('/nonexistent/python', self.source))
