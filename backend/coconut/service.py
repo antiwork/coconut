@@ -412,6 +412,9 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 self.__dict__.pop('_published_in_transaction', None)
                 for bot_id in self.__dict__.pop('_forget_bots_on_commit', set()):
                     self.__dict__.get('_published_bots', {}).pop(bot_id, None)
+                follow = self.__dict__.pop('_follow_on_commit', None)
+                if follow:
+                    self._start_follow(follow)
                 self.changed.notify_all()
             except BaseException:
                 self._profile_pending = {}
@@ -419,6 +422,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 for bot_id in self.__dict__.pop('_published_in_transaction', set()):
                     self.__dict__.get('_published_bots', {}).pop(bot_id, None)
                 self.__dict__.pop('_forget_bots_on_commit', None)
+                self.__dict__.pop('_follow_on_commit', None)
                 # The kept tasks can hold rows that this rollback removes. Forget them first: ROLLBACK can raise.
                 self._forget_cached_tasks()
                 self.db.execute('ROLLBACK')
@@ -1182,7 +1186,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         observed = None
         if not error and intent and intent.get('bot_id'):
             with self.lock:
-                bot = self._get('bots', intent['bot_id'])
+                bot = self._model_intent_bot(self._get('bots', intent['bot_id']), intent)
             observed = self.provider.observe_bot(bot) if hasattr(self.provider, 'observe_bot') else dict(bot, instructions=self.profiles.read_instructions(bot))
         with self.transaction():
             if not error and intent and intent.get('bot_id'):
@@ -1213,7 +1217,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if intent.get('bot_id'):
                 try:
                     with self.lock:
-                        bot = self._get('bots', intent['bot_id'])
+                        bot = self._model_intent_bot(self._get('bots', intent['bot_id']), intent)
                     observed = self.provider.observe_bot(bot) if hasattr(self.provider, 'observe_bot') else dict(bot, instructions=self.profiles.read_instructions(bot))
                     actual = {field: observed.get(field) for field in intent['expected']}
                     matches = not bot.get('_deleted') and actual == intent['expected']
@@ -1224,6 +1228,13 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 matches = actual == intent['expected']
             message = None if matches else 'The Mac could not confirm that settings change. Check the current Hermes settings before trying again.'
             self._finish_model_update(key, catalog, error=message, intent=intent)
+
+    @staticmethod
+    def _model_intent_bot(bot: dict, intent: dict) -> dict:
+        """The bot as the pending change leaves it. A model_override of null makes it follow the default model."""
+        if 'model_override' in intent.get('expected', {}):
+            return dict(bot, model_follows_default=intent['expected']['model_override'] is None)
+        return bot
 
     def _previous_request(self, key: str, fingerprint: str) -> dict | None:
         with self.lock:
@@ -1301,7 +1312,20 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 raise ServiceError(409, str(error)) from None
             except Exception:
                 raise ServiceError(503, 'The Mac could not confirm the profile change. Retry with the same request key.') from None
-            return self._finish_model_update(key, catalog, intent=intent)
+            response = self._finish_model_update(key, catalog, intent=intent)
+            if expected.get('model_override') is not None and self._is_default_profile(bot_id):
+                # The model of the default profile is the default model.
+                self._follow_default_after_change()
+            return response
+
+    def _follow_default_after_change(self) -> list[dict]:
+        """Bring the default model to the bots that follow it, after a change of the default. The caller holds
+        model_settings_lock. The default is saved already, so a failure is in the result and the log only."""
+        try:
+            return self._follow_default_model()
+        except Exception:
+            logging.getLogger(__name__).exception('Coconut could not set the default model in the profiles that follow it.')
+            return [{'bot_id': None, 'name': None, 'error': 'Coconut could not set the default model in the profiles that follow it.'}]
 
     def mutate_mcp(self, data: dict, key: str, fingerprint: str) -> dict:
         if not hasattr(self.provider, 'native_settings'):
@@ -1339,7 +1363,12 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             except Exception:
                 # Keep the durable intent. A retry observes the native result first.
                 raise ServiceError(503, 'The Mac could not confirm the model change. Retry with the same request key.') from None
-            return self._finish_model_update(key, catalog)
+            failures = self._follow_default_after_change()
+            response = self._finish_model_update(key, catalog)
+            if failures:
+                # Each failed bot also keeps model_follow_error, and the next start tries again.
+                response = dict(response, model_follow_errors=failures)
+            return response
 
     def _create_bot(self, data: dict, *, audit: dict | None = None, profile: dict | None = None) -> dict:
         """Create a bot. `profile` is {name, home} of a profile that a scan found. Without it, Hermes creates one."""
@@ -1355,12 +1384,15 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         bot = dict(id=uid(), session_id=uid(), name=require_text(data, 'name', 80), role=str(data.get('role', ''))[:160], avatar=str(data.get('avatar', f'coconut.{avatar}'))[:80], color=str(data.get('color', color))[:20], instructions=data.get('instructions', ''), notifications=True, status='idle', last_message='', unread_count=0, archived=False, pinned=data.get('pinned', False), created_at=now())
         bot['profile_id'] = profile_id(bot)
         bot['model_override'] = None
-        if profile is None:
+        created = profile is None
+        if created:
             try:
                 profile = self._new_profile(bot)
             except (ProfileError, OSError) as error:
                 raise ServiceError(503, f'Hermes did not create the profile of this bot: {error}') from None
         self._attach_profile(bot, profile)
+        if created:
+            self._follow_in_new_profile(bot)
         self._put('bots', bot)
         self._event('bot.created', bot | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
         return bot
@@ -1512,6 +1544,9 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if len(parts) == 3 and method == 'PATCH':
                 if 'model_override' in data:
                     bot['model_override'] = self._model_override(data['model_override'], self._request_model_catalog)
+                    # null makes the bot follow the default model again. A model makes it the bot's own.
+                    bot['model_follows_default'] = bot['model_override'] is None
+                    bot.pop('model_follow_error', None)
                 if 'profile_id' in data and data['profile_id'] != bot['profile_id']:
                     raise ServiceError(409, 'A bot keeps its original Hermes profile ID.')
                 for field in ('name', 'role', 'avatar', 'color', 'instructions'):

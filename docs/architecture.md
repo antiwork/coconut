@@ -107,6 +107,16 @@ An assignment waits while its dependencies run. Each reply resumes the original 
 The final result returns to the original requester. Intermediate turns do not send completion notifications.
 Native profile data is not copied into peer messages automatically.
 
+### The model of a bot
+
+A Hermes profile does not inherit settings from the default profile. Hermes merges a profile's config only over its built-in defaults. Coconut keeps the choice of each bot in `coconut.sqlite3`, in the `model_follows_default` field of the bot: the bot follows the default model, or it has its own model.
+
+- A bot that follows the default gets the model keys of `<Hermes home>/config.yaml` in its own `config.yaml`: `model.default`, `model.provider`, `model.base_url` and the reasoning effort (`agent.reasoning_effort`). These are the keys of the app's default model setting. The API fallback and the other settings do not follow.
+- Coconut writes these keys when the default changes in the app, at each service start, and after it creates a bot. A change outside the app, such as `hermes config set` on the default profile, reaches the bots at the next start. The settings process writes each profile with the config writer of Hermes. A failure stays on the bot as `model_follow_error`, goes into the log, and returns in `model_follow_errors` of `PUT /v1/settings/model`.
+- `PATCH /v1/bots/<id>` with a model in `model_override` gives the bot its own model. `model_override: null` makes the bot follow the default again. The bot view shows `model_override: null` for a bot that follows the default.
+- A bot that Coconut creates follows the default. A bot without a choice, from an earlier install or a profile made outside Coconut, gets one at the next start or scan. It follows the default when its profile has no model or the model and provider of the default, else it keeps its own model. The first write after this choice keeps a copy of the earlier file in `<data-dir>/backups/model-follow`.
+- The `default` profile is the default model, so Coconut never writes into it for this. A model for its bot changes the default and reaches the bots that follow it.
+
 ## The Hermes gateway
 
 Coconut moves its bot turns from its own worker processes to the person's Hermes gateway, in phases. Phase 1 made each bot a Hermes profile.

@@ -314,7 +314,10 @@ class HermesProvider(FixtureProvider):
             observed = dict(bot)
             values = native.get(bot['id'], {})
             observed['model_override'] = values.get('model_override')
-            if values.get('effective_model'):
+            if bot.get('model_follows_default'):
+                # The profile holds a copy of the default model. The app shows the bot on the default model.
+                observed['model_override'] = None
+            elif values.get('effective_model'):
                 observed['_native_effective_model'] = values['effective_model']
             if values.get('error'):
                 observed['_model_error'] = values['error']
@@ -385,7 +388,18 @@ class HermesProvider(FixtureProvider):
                 'completions': {bot['id']: saved[bot['id']]['completions'] for bot in bots}}
 
     def set_bot_model(self, bot, selection):
+        """Give the bot its own model, or make it follow the default model (selection None)."""
+        if selection is None:
+            # Hermes profiles do not inherit from the default profile, so the profile gets the default model itself.
+            result = self.follow_default_model([bot['id']])[bot['id']]
+            if 'error' in result:
+                from .model_catalog import ModelCatalogError
+                raise ModelCatalogError(result['error'])
+            return result
         return self.catalog.set_profile(bot['id'], selection)
+
+    def follow_default_model(self, bot_ids, classify=()):
+        return self.catalog.follow_default(bot_ids, classify)
 
     def set_model_default(self, selection):
         return self.catalog.set_default(selection)
