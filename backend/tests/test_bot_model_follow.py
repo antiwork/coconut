@@ -282,6 +282,72 @@ class BotModelFollowTests(unittest.TestCase):
         self.assertEqual(self.provider.profiles[following], self.selection())
 
 
+    # Coconut never writes into the profile of a deleted or archived bot, or into a removed or missing profile.
+
+    def targeted(self):
+        return {bot_id for bot_ids, _ in self.provider.calls for bot_id in bot_ids}
+
+    def test_a_bot_removed_after_a_failed_reset_gets_no_write_on_the_retry_or_later(self):
+        bot = self.bot('Ada')
+        self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': self.selection()})
+        self.provider.failing.add(bot['id'])
+        key = str(uuid4())
+        with self.assertRaises(ServiceError):
+            self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)
+        self.write('DELETE', '/v1/bots/' + bot['id'], {})
+        self.assertEqual(self.service.profiles.rows[bot['id']]['state'], 'removed')
+        self.provider.failing.clear()
+        self.provider.calls.clear()
+        with self.assertRaises(ServiceError) as raised:
+            self.write('PATCH', '/v1/bots/' + bot['id'], {'model_override': None}, key)
+        self.assertEqual(raised.exception.status, 409)
+        self.write('PUT', '/v1/settings/model', dict(model='model-a', provider='native-a', reasoning_effort='high'))
+        self.follow()
+        self.assertNotIn(bot['id'], self.targeted())
+        self.assertEqual(self.provider.profiles[bot['id']], self.selection())
+
+    def test_a_start_skips_a_removed_profile_and_a_missing_one(self):
+        removed, missing, kept = self.bot('Ada'), self.bot('Lin'), self.bot('Kai')
+        with self.service.transaction():
+            row = self.service.profiles.rows[removed['id']]
+            self.service._write_profile_row(dict(row, state='removed'))
+        missing_home = Path(self.service.profiles.rows[missing['id']]['home'])
+        for path in missing_home.iterdir():
+            path.unlink()
+        missing_home.rmdir()
+        self.service.rescan_profiles()
+        self.assertEqual(self.service.profiles.rows[missing['id']]['state'], 'missing')
+        self.provider.calls.clear()
+        self.provider.default = dict(self.provider.default, model='model-b', provider='native-b')
+        with patch.object(self.service, '_set_hermes_entries', return_value=True):
+            self.service._reconcile_hermes_profiles(sys.executable, '/hermes/source')
+        self.assertIn(kept['id'], self.targeted())
+        self.assertFalse({removed['id'], missing['id']} & self.targeted())
+        self.assertEqual(self.provider.profiles[kept['id']]['model'], 'model-b')
+        self.assertEqual(self.provider.profiles[removed['id']]['model'], 'model-a')
+
+    def test_an_archived_bot_gets_the_default_model_when_the_person_restores_it(self):
+        bot = self.bot('Ada')
+        self.write('PATCH', '/v1/bots/' + bot['id'], {'archived': True})
+        self.provider.calls.clear()
+        self.write('PUT', '/v1/settings/model', self.selection())
+        self.assertNotIn(bot['id'], self.targeted())
+        self.assertEqual(self.provider.profiles[bot['id']]['model'], 'model-a')
+        self.write('PATCH', '/v1/bots/' + bot['id'], {'archived': False})
+        self.assertEqual(self.provider.profiles[bot['id']], self.selection())
+
+    def test_the_settings_process_never_starts_for_a_profile_that_is_not_active(self):
+        from coconut.model_catalog import HermesModelCatalog
+        import threading
+        catalog = object.__new__(HermesModelCatalog)
+        catalog._lock, catalog._profile_cache = threading.RLock(), {}
+        catalog.profile_rows = {'a': {'state': 'removed'}, 'b': {'state': 'missing'}}
+        with patch.object(catalog, '_call', side_effect=AssertionError('No write may start.')):
+            result = catalog.follow_default(['a', 'b', 'c'])
+        self.assertEqual(set(result), {'a', 'b', 'c'})
+        self.assertTrue(all('skipped' in value for value in result.values()))
+
+
 class ObservedModelTests(unittest.TestCase):
     def test_a_following_bot_shows_no_own_model_and_a_bot_with_its_own_model_shows_it(self):
         provider = object.__new__(HermesProvider)

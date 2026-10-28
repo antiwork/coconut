@@ -225,9 +225,8 @@ class BotProfiles:
         if follow is None:
             return []
         with self.lock:
-            bots = [bot for bot in self._all('bots') if not bot.get('_deleted')
-                    and (self.profiles.rows.get(bot['id']) or {}).get('state') == 'active'
-                    and (bot_ids is None or bot['id'] in bot_ids)]
+            # The check runs in the read that selects the targets, just before the write.
+            bots = [bot for bot in self._all('bots') if self._can_follow(bot) and (bot_ids is None or bot['id'] in bot_ids)]
         classify = [bot['id'] for bot in bots if 'model_follows_default' not in bot]
         targets = [bot['id'] for bot in bots if bot.get('model_follows_default', True)]
         if not targets:
@@ -280,9 +279,20 @@ class BotProfiles:
     def _is_default_profile(self, bot_id: str) -> bool:
         return (self.profiles.rows.get(bot_id) or {}).get('name') == profile_registry.DEFAULT
 
+    def _can_follow(self, bot: dict, *, archived: bool = False) -> bool:
+        """Whether Coconut may write the default model into the profile of this bot.
+
+        Never for a deleted bot or a profile that is `removed` or `missing`: Coconut keeps the folder of a removed bot,
+        and that folder belongs to the person. An archived bot gets the default model again when the person restores it.
+        """
+        return (not bot.get('_deleted') and (archived or not bot.get('archived'))
+                and (self.profiles.rows.get(bot['id']) or {}).get('state') == 'active')
+
     @staticmethod
     def _apply_follow_result(bot: dict, result: dict) -> None:
         """Record one result of follow_default_model on the bot. A choice that the person made stays."""
+        if 'skipped' in result:
+            return
         if 'follows' in result and 'model_follows_default' not in bot:
             bot['model_follows_default'] = result['follows']
         if bot.get('model_follows_default'):

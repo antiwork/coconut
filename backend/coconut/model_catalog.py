@@ -454,7 +454,12 @@ class HermesModelCatalog:
         (_follow_default). Return {bot_id: {'follows': bool, 'changed': bool} or {'error': text}}.
         """
         result, homes = {}, {}
+        rows = getattr(self, 'profile_rows', None)
         for bot_id in bot_ids:
+            if rows is not None and (rows.get(bot_id) or {}).get('state') != 'active':
+                # A removed or missing profile belongs to the person. Coconut does not write into it.
+                result[bot_id] = {'skipped': 'The Hermes profile of this bot is not active in Coconut.'}
+                continue
             try:
                 homes[bot_id] = str(self._profile_home(bot_id, write=True))
             except ModelCatalogError as error:

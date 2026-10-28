@@ -392,6 +392,9 @@ class HermesProvider(FixtureProvider):
         if selection is None:
             # Hermes profiles do not inherit from the default profile, so the profile gets the default model itself.
             result = self.follow_default_model([bot['id']])[bot['id']]
+            if 'skipped' in result:
+                from .profiles import ProfileError
+                raise ProfileError(result['skipped'])
             if 'error' in result:
                 from .model_catalog import ModelCatalogError
                 raise ModelCatalogError(result['error'])

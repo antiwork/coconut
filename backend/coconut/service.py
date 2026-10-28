@@ -1220,11 +1220,16 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 try:
                     with self.lock:
                         bot = self._model_intent_bot(self._get('bots', intent['bot_id']), intent)
-                    if ('model_override' in intent['expected'] and intent['expected']['model_override'] is None
-                            and hasattr(self.provider, 'follow_default_model')):
+                        follow = (('model_override' in intent['expected'] and intent['expected']['model_override'] is None
+                                   and hasattr(self.provider, 'follow_default_model')))
+                        if follow and not self._can_follow(bot):
+                            # A deleted or archived bot, or a removed profile, gets no write. The change stays unconfirmed.
+                            raise ServiceError(409, 'This bot no longer follows the default model.')
+                    if follow:
                         # The view of a following bot shows no own model, so the profile itself confirms the change.
                         # The write is the same as the change, and a second one changes nothing.
-                        if 'error' in self.provider.follow_default_model([bot['id']]).get(bot['id'], {'error': ''}):
+                        result = self.provider.follow_default_model([bot['id']]).get(bot['id'], {'error': ''})
+                        if 'error' in result or 'skipped' in result:
                             raise ServiceError(503, 'The profile does not have the default model.')
                     observed = self.provider.observe_bot(bot) if hasattr(self.provider, 'observe_bot') else dict(bot, instructions=self.profiles.read_instructions(bot))
                     actual = {field: observed.get(field) for field in intent['expected']}
@@ -1329,13 +1334,16 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if expected.get('model_override') is not None and self._is_default_profile(bot_id):
                 # The model of the default profile is the default model.
                 self._follow_default_after_change()
+            elif data.get('archived') is False:
+                # An archived bot got no default model. It gets the current one when the person restores it.
+                self._follow_default_after_change([bot_id])
             return response
 
-    def _follow_default_after_change(self) -> list[dict]:
+    def _follow_default_after_change(self, bot_ids=None) -> list[dict]:
         """Bring the default model to the bots that follow it, after a change of the default. The caller holds
         model_settings_lock. The default is saved already, so a failure is in the result and the log only."""
         try:
-            return self._follow_default_model()
+            return self._follow_default_model(bot_ids)
         except Exception:
             logging.getLogger(__name__).exception('Coconut could not set the default model in the profiles that follow it.')
             return [{'bot_id': None, 'name': None, 'error': 'Coconut could not set the default model in the profiles that follow it.'}]
