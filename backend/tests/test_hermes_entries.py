@@ -110,10 +110,11 @@ class HermesEntryTests(unittest.TestCase):
         saved.write_text('{not json')
         with self.assertLogs('coconut.bot_profiles', logging.INFO):
             self.service._set_hermes_entries(sys.executable, self.source)
-        # The keys that Hermes has still reach the named profile. The bad file waits, claimed, for a fix.
+        # The keys that Hermes has still reach the named profile. The bad file goes aside, so a new file can come.
         self.assertEqual(self.env(self.home / 'profiles/work')['ANTHROPIC_API_KEY'], 'default-anthropic')
         claimed = self.service.root / 'credentials.json.importing'
-        self.assertTrue(claimed.exists())
+        self.assertFalse(claimed.exists())
+        self.assertEqual((self.service.root / 'credentials.json.invalid').read_text(), '{not json')
         # A claimed file comes first. A file that arrives later waits for the next run, and the run never removes it.
         claimed.write_text(json.dumps({'OPENAI_API_KEY': 'claimed-openai'}))
         saved.write_text(json.dumps({'OPENROUTER_API_KEY': 'new-openrouter'}))

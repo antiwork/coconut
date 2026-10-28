@@ -52,13 +52,21 @@ def import_saved(default: Path, saved: Path) -> list[str]:
     file that an earlier run did not finish comes first.
     """
     claimed = saved.with_name(saved.name + '.importing')
-    if not claimed.is_file() or claimed.is_symlink():
-        if not saved.is_file() or saved.is_symlink():
-            return []
-        os.replace(saved, claimed)
-    values = json.loads(claimed.read_text())
-    if not isinstance(values, dict):
-        values = {}
+    while True:
+        if not claimed.is_file() or claimed.is_symlink():
+            if not saved.is_file() or saved.is_symlink():
+                return []
+            os.replace(saved, claimed)
+        try:
+            values = json.loads(claimed.read_text())
+            if not isinstance(values, dict):
+                raise ValueError('not an object')
+            break
+        except ValueError:
+            # Keep a bad file aside for the person, and go on with a file that arrived after it.
+            os.replace(claimed, saved.with_name(saved.name + '.invalid'))
+            if not saved.is_file():
+                raise
     present = read_env(default)
     moved = []
     for key in COCONUT_KEYS:

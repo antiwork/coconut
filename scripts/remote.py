@@ -304,7 +304,17 @@ def status(config: dict) -> None:
     code = HEALTH_CODE + """
 def model_keys_in_hermes():
     # The service moves the saved model keys into the .env of the default Hermes profile.
-    path = pathlib.Path.home() / '.hermes/.env'
+    # The Hermes home of the service: the HERMES_HOME of its launch agent, else ~/.hermes.
+    import plistlib
+    sys.path.insert(0, str(root / 'scripts'))
+    import host
+    home = pathlib.Path.home() / '.hermes'
+    try:
+        agent = pathlib.Path.home() / 'Library/LaunchAgents' / (host.LABEL + '.plist')
+        home = pathlib.Path(plistlib.loads(agent.read_bytes())['EnvironmentVariables']['HERMES_HOME'])
+    except (OSError, KeyError, TypeError, ValueError, plistlib.InvalidFileException):
+        pass
+    path = home / '.env'
     try:
         lines = path.read_text().splitlines()
     except OSError:
@@ -340,6 +350,9 @@ def hermes_env(home: Path) -> dict:
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
             value = value[1:-1]
+        elif " #" in value:
+            # As python-dotenv reads an unquoted value: a comment after a space is not part of it.
+            value = value.split(" #", 1)[0].rstrip()
         values[key.strip()] = value
     return values
 

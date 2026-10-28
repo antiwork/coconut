@@ -111,9 +111,11 @@ class RemoteToolsTests(unittest.TestCase):
             home = Path(directory)
             (home / "hermes").mkdir()
             (home / "hermes/.env").write_text('# Hermes\nexport ANTHROPIC_API_KEY="hermes-anthropic"\n'
-                                              "TELEGRAM_BOT_TOKEN=other\nOPENAI_API_KEY=\n")
+                                              "TELEGRAM_BOT_TOKEN=other\nOPENAI_API_KEY=\n"
+                                              "OPENROUTER_API_KEY=hermes-openrouter # personal\n")
             with patch.object(remote, "ROOT", home / "Coconut"), patch.dict("os.environ", HERMES_HOME=str(home / "hermes")):
-                self.assertEqual(remote.local_model_keys(), {"ANTHROPIC_API_KEY": "hermes-anthropic"})
+                self.assertEqual(remote.local_model_keys(), {"ANTHROPIC_API_KEY": "hermes-anthropic",
+                                                             "OPENROUTER_API_KEY": "hermes-openrouter"})
                 # Keys that Coconut saved and did not move yet come first.
                 (home / "Coconut/.runtime/host").mkdir(parents=True)
                 saved = home / "Coconut/.runtime/host/credentials.json"
@@ -127,7 +129,19 @@ class RemoteToolsTests(unittest.TestCase):
             (Path(directory) / ".hermes").mkdir()
             (Path(directory) / ".hermes/.env").write_text("ANTHROPIC_API_KEY=hermes-anthropic\n")
             result = json.loads(self.run_on_mini(directory, remote.status, answer=self.healthy))
-        self.assertTrue(result["model_access_saved"])
+            self.assertTrue(result["model_access_saved"])
+            # A service with its own Hermes home: the launch agent names it.
+            import plistlib
+            agents = Path(directory) / "Library/LaunchAgents"
+            agents.mkdir(parents=True)
+            (agents / "local.coconut.agent.plist").write_bytes(plistlib.dumps(
+                {"EnvironmentVariables": {"HERMES_HOME": str(Path(directory) / "other")}}))
+            result = json.loads(self.run_on_mini(directory, remote.status, answer=self.healthy))
+            self.assertFalse(result["model_access_saved"])
+            (Path(directory) / "other").mkdir()
+            (Path(directory) / "other/.env").write_text("OPENAI_API_KEY=other-openai\n")
+            result = json.loads(self.run_on_mini(directory, remote.status, answer=self.healthy))
+            self.assertTrue(result["model_access_saved"])
 
     def test_remote_health_requires_the_service_and_reports_the_tunnel(self):
         with tempfile.TemporaryDirectory() as directory:
