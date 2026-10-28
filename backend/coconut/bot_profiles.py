@@ -152,8 +152,12 @@ class BotProfiles:
                                      profile=dict(name=name, home=str(home)))
                     changes.append(('new', name))
                 elif row['state'] == 'missing':
-                    self._set_profile_state(row, 'active')
+                    self._set_profile_state(dict(row, home=str(home)), 'active')
                     changes.append(('returned', name))
+                elif row['state'] == 'active' and row['home'] != str(home):
+                    # The service started with another Hermes home (HERMES_HOME). The name now maps to this folder.
+                    self._write_profile_row(dict(row, home=str(home), seen_at=profile_registry.now()))
+                    changes.append(('moved', name))
             for row in by_name.values():
                 if row['state'] == 'active' and row['name'] not in found:
                     self._set_profile_state(row, 'missing')

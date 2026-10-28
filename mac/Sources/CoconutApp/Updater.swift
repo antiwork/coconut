@@ -66,15 +66,25 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
         updater.resetUpdateCycle()
     }
 
-    /// Answer a request of `coconut update`: check now, and install a newer build without a question.
+    /// Answer a request of `coconut update`: check now, and install a newer build without a question, also with
+    /// automatic updates off. Sparkle accepts automatic downloads only because Info.plist sets SUAllowsAutomaticUpdates:
+    /// without it, Sparkle allows them only while automatic checks are on. When Sparkle would still ask in its window,
+    /// the request fails at once (UpdateRequestAction), so the tool does not wait for a click that nobody can see.
     func checkForRequest() {
         guard preferences.pendingRequest != nil else { return }
         let updater = controller.updater
-        if !updater.automaticallyDownloadsUpdates {
+        if !updater.sessionInProgress && !updater.automaticallyDownloadsUpdates {
             installsForRequest = true
             updater.automaticallyDownloadsUpdates = true
         }
-        updater.checkForUpdatesInBackground()
+        switch UpdateRequestAction.decide(sessionInProgress: updater.sessionInProgress,
+                                          downloadsAutomatically: updater.automaticallyDownloadsUpdates) {
+        case .check:
+            updater.checkForUpdatesInBackground()
+        case .fail(let message):
+            record(.failed, message: message)
+            endRequest()
+        }
     }
 
     private func record(_ outcome: UpdateResult.Outcome, version: String? = nil, message: String? = nil) {

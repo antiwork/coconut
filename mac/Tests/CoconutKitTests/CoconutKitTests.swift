@@ -339,6 +339,24 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertTrue(preferences.automaticUpdates)
     }
 
+    func testARequestInstallsWithoutAQuestionOrFailsAtOnce() {
+        XCTAssertEqual(UpdateRequestAction.decide(sessionInProgress: false, downloadsAutomatically: true), .check)
+        // Sparkle would show its window and wait for a click that nobody sees, for example over SSH.
+        guard case .fail(let question) = UpdateRequestAction.decide(sessionInProgress: false, downloadsAutomatically: false) else {
+            return XCTFail("A check that would ask must not start.")
+        }
+        XCTAssertTrue(question.contains("coconut settings automatic-updates on"))
+        guard case .fail(let busy) = UpdateRequestAction.decide(sessionInProgress: true, downloadsAutomatically: true) else {
+            return XCTFail("Sparkle ignores a check while another one runs.")
+        }
+        XCTAssertTrue(busy.contains("in progress"))
+        // The failure answers the request at once, so `coconut update` does not wait five minutes.
+        let preferences = UpdatePreferences(store: MemoryPreferences())
+        preferences.requestCheck(at: Date(timeIntervalSince1970: 100))
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 101), outcome: .failed, message: question))
+        XCTAssertNil(preferences.pendingRequest)
+    }
+
     func testARequestWaitsUntilAResultAnswersIt() {
         let preferences = UpdatePreferences(store: MemoryPreferences())
         XCTAssertNil(preferences.pendingRequest)

@@ -145,6 +145,28 @@ public struct UpdatePreferences {
     }
 }
 
+/// What the app does for a request of `coconut update`.
+///
+/// The request is explicit, so the app installs a newer build without a question, also with automatic updates off.
+/// Sparkle installs without a question only when it can download by itself. Otherwise it shows its window and waits for
+/// a click, and nobody can see that window over SSH. Then the request fails at once with this message.
+public enum UpdateRequestAction: Equatable {
+    case check
+    case fail(String)
+
+    public static func decide(sessionInProgress: Bool, downloadsAutomatically: Bool) -> UpdateRequestAction {
+        if sessionInProgress {
+            return .fail("Coconut.app has an update check in progress. It can wait for an answer in its window. "
+                         + "Open the Coconut menu to answer it, or run coconut update again later.")
+        }
+        if !downloadsAutomatically {
+            return .fail("Sparkle cannot install without a question on this Mac, so Coconut.app did not check. "
+                         + "Use Check for Updates in the Coconut menu, or run coconut settings automatic-updates on.")
+        }
+        return .check
+    }
+}
+
 /// An in-memory preferences domain for tests.
 public final class MemoryPreferences: PreferenceStore {
     public var values: [String: Any] = [:]

@@ -183,5 +183,65 @@ class SkillFolderTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout.strip().splitlines()[-1]), [str(self.folder.resolve())])
 
 
+
+@needs_hermes
+class MovedHomeTests(unittest.TestCase):
+    """The profile migration moves config.yaml values from the old bot home through the config writer of Hermes.
+    See config_paths.py."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.old = self.root / 'data/bots/41ba/home'
+        self.home = self.root / 'hermes/profiles/ada'
+        self.home.mkdir(parents=True)
+
+    def run_edit(self):
+        # As scripts/migrate_bots_to_profiles.py runs it: isolated, with the Hermes source folder as an argument.
+        env = {key: os.environ[key] for key in ('PATH', 'HOME') if key in os.environ}
+        env.update(HERMES_HOME=str(self.root / 'check'), HERMES_DISABLE_LAZY_INSTALLS='1', HERMES_DISABLE_TELEMETRY='1')
+        result = subprocess.run([PYTHON, '-I', '-B', str(BACKEND / 'coconut/config_paths.py'), str(Path(SOURCE).resolve()),
+                                 str(self.old), str(self.home)], env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr[-6000:])
+        return result.stdout
+
+    def load(self, path):
+        result = subprocess.run([PYTHON, '-c', 'import json, sys; from ruamel.yaml import YAML; '
+                                 'print(json.dumps(YAML(typ="safe", pure=True).load(open(sys.argv[1]))))', str(path)],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_block_and_inline_lists_nested_maps_and_quoted_values_move(self):
+        old, new = self.old, self.home
+        config = self.home / 'config.yaml'
+        config.write_text(f"""# The settings of Ada.
+terminal:
+  shell_init_files:
+    - {old}/.profile
+    - /etc/zshrc  # Not in the home.
+  cwd: "{old}/work"
+  other: '{old}-sibling/x'
+  middle: /mirror{old}/x
+inline: [{old}/.zshrc, /a:{old}/bin]
+hooks:
+  pre:
+    path: '{old}/hooks/a.sh'
+    nested:
+      - deep: [{old}]
+""")
+        self.assertIn('config.yaml: changed', self.run_edit())
+        text = config.read_text()
+        self.assertIn('# The settings of Ada.', text)
+        self.assertEqual(self.load(config), {
+            'terminal': {'shell_init_files': [f'{new}/.profile', '/etc/zshrc'], 'cwd': f'{new}/work',
+                         'other': f'{old}-sibling/x', 'middle': f'/mirror{old}/x'},
+            'inline': [f'{new}/.zshrc', f'/a:{old}/bin'],
+            'hooks': {'pre': {'path': f'{new}/hooks/a.sh', 'nested': [{'deep': [str(new)]}]}},
+        })
+        self.assertIn('config.yaml: unchanged', self.run_edit())
+
+
 if __name__ == '__main__':
     unittest.main()
