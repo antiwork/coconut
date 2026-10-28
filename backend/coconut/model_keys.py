@@ -9,7 +9,8 @@ A key that a profile already has stays, also when it differs.
 Earlier versions of Coconut kept model keys in `<data>/credentials.json` and gave them to the workers through the
 service environment. The first run of this step moves those keys into the default profile's `.env` (only the keys that
 it does not have yet), and then removes the file. `scripts/host.py save-model-access` and `remote.py model-access`
-still write that file. The next start of the service moves the keys in the same way.
+still write that file. The next start of the service moves the keys in the same way. Before it reads the file, this
+step claims it with an atomic rename, so a file that arrives during an import waits for the next start.
 
 skill_dirs.py runs this step under the Python of the person's Hermes, with the env writer of Hermes
 (`hermes_cli.config.save_env_value`), at setup, at each update and at each start. It never prints a key value.
@@ -45,10 +46,19 @@ def save(home: Path, key: str, value: str) -> None:
 
 
 def import_saved(default: Path, saved: Path) -> list[str]:
-    """Move the keys of Coconut's credentials.json into the default profile's `.env`. Return the moved key names."""
-    if not saved.is_file() or saved.is_symlink():
-        return []
-    values = json.loads(saved.read_text())
+    """Move the keys of Coconut's credentials.json into the default profile's `.env`. Return the moved key names.
+
+    The step claims the file with an atomic rename before it reads it, and it removes only the claimed file. A claimed
+    file that an earlier run did not finish comes first.
+    """
+    claimed = saved.with_name(saved.name + '.importing')
+    if not claimed.is_file() or claimed.is_symlink():
+        if not saved.is_file() or saved.is_symlink():
+            return []
+        os.replace(saved, claimed)
+    values = json.loads(claimed.read_text())
+    if not isinstance(values, dict):
+        values = {}
     present = read_env(default)
     moved = []
     for key in COCONUT_KEYS:
@@ -56,8 +66,7 @@ def import_saved(default: Path, saved: Path) -> list[str]:
         if isinstance(value, str) and value and key not in present:
             save(default, key, value)
             moved.append(key)
-    if all(key in read_env(default) for key in COCONUT_KEYS if values.get(key)):
-        saved.unlink()
+    claimed.unlink()
     return moved
 
 

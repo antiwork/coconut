@@ -111,15 +111,20 @@ def main(arguments: list[str]) -> int:
     failed = False
     if action == 'add':
         # Model access the Hermes way: each profile's own .env. See model_keys.
+        # An error in Coconut's saved keys does not stop the copy of the keys that Hermes already has.
         try:
-            names = model_keys.provider_keys()
             saved = os.environ.get('COCONUT_SAVED_MODEL_KEYS')
             moved = model_keys.import_saved(Path(default), Path(saved)) if saved else []
             if moved:
                 print(f'{Path(default) / ".env"}: model keys moved from Coconut: {", ".join(moved)}')
         except Exception as error:
+            failed = True
+            print(f'{Path(default) / ".env"}: saved model keys not moved: {type(error).__name__}')
+        try:
+            names = model_keys.provider_keys()
+        except Exception as error:
             failed, names = True, set()
-            print(f'{Path(default) / ".env"}: model keys not changed: {type(error).__name__}')
+            print(f'{Path(default) / ".env"}: model keys not copied: {type(error).__name__}')
     for home, create in homes(Path(default), [Path(path) for path in others]):
         try:
             result = update(home, os.path.normpath(folder), action == 'add', create=create)

@@ -39,10 +39,10 @@ python3 scripts/remote.py install --copy-model-access
 The default destination is `~/Coconut` on the mini. Configuration accepts a different folder below the remote account's home.
 The installer refuses an unrelated folder. It does not install Hermes. See [The Hermes that Coconut uses](#the-hermes-that-coconut-uses).
 
-`--copy-model-access` transfers this Mac's saved model keys through SSH. The receiver stores them with permissions `0600`.
+`--copy-model-access` transfers this Mac's model keys through SSH: the keys that Coconut saved, else the keys in the `.env` of the default Hermes profile. The receiver stores them with permissions `0600`, and its service moves them into Hermes at the restart.
 Omit this flag to configure separate model access on the mini.
 
-Model keys live in Hermes, as Hermes keeps them: each profile reads its provider keys from its own `.env`. At each start, update and setup, Coconut moves keys that it saved in `<data>/credentials.json` into the default profile's `.env`, then removes that file. It also gives each named profile the provider keys of the default profile that the profile lacks, as `hermes_cli.profiles.backfill_profile_envs` does for a profile without a `.env`. A key that a profile already has stays. Coconut never prints a key. See `backend/coconut/model_keys.py`.
+Model keys live in Hermes, as Hermes keeps them: each profile reads its provider keys from its own `.env`. At each start, update and setup, Coconut moves keys that it saved in `<data>/credentials.json` into the default profile's `.env`, then removes that file. It first claims the file with an atomic rename, so a file that arrives during the move waits for the next start. It also gives each named profile the provider keys of the default profile that the profile lacks, as `hermes_cli.profiles.backfill_profile_envs` does for a profile without a `.env`. A key that a profile already has stays. Coconut never prints a key. See `backend/coconut/model_keys.py`.
 The source package never includes keys, bot data, logs, or builds.
 
 The first installation starts a user LaunchAgent. It restarts Coconut after a process failure and starts after macOS account login.

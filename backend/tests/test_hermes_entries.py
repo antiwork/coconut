@@ -104,6 +104,30 @@ class HermesEntryTests(unittest.TestCase):
         self.assertTrue(self.service._set_hermes_entries(sys.executable, self.source))
         self.assertEqual((self.home / 'profiles/work/.env').read_bytes(), before)
 
+    def test_a_bad_saved_key_file_stops_no_copy_and_a_claimed_file_comes_first(self):
+        (self.home / '.env').write_text('ANTHROPIC_API_KEY=default-anthropic\n')
+        saved = self.service.root / 'credentials.json'
+        saved.write_text('{not json')
+        with self.assertLogs('coconut.bot_profiles', logging.INFO):
+            self.service._set_hermes_entries(sys.executable, self.source)
+        # The keys that Hermes has still reach the named profile. The bad file waits, claimed, for a fix.
+        self.assertEqual(self.env(self.home / 'profiles/work')['ANTHROPIC_API_KEY'], 'default-anthropic')
+        claimed = self.service.root / 'credentials.json.importing'
+        self.assertTrue(claimed.exists())
+        # A claimed file comes first. A file that arrives later waits for the next run, and the run never removes it.
+        claimed.write_text(json.dumps({'OPENAI_API_KEY': 'claimed-openai'}))
+        saved.write_text(json.dumps({'OPENROUTER_API_KEY': 'new-openrouter'}))
+        with self.assertLogs('coconut.bot_profiles', logging.INFO):
+            self.assertTrue(self.service._set_hermes_entries(sys.executable, self.source))
+        self.assertEqual(self.env(self.home)['OPENAI_API_KEY'], 'claimed-openai')
+        self.assertNotIn('OPENROUTER_API_KEY', self.env(self.home))
+        self.assertFalse(claimed.exists())
+        self.assertTrue(saved.exists())
+        with self.assertLogs('coconut.bot_profiles', logging.INFO):
+            self.assertTrue(self.service._set_hermes_entries(sys.executable, self.source))
+        self.assertEqual(self.env(self.home)['OPENROUTER_API_KEY'], 'new-openrouter')
+        self.assertFalse(saved.exists())
+
     def test_another_plugin_named_coconut_stays_and_the_start_goes_on(self):
         (self.home / 'profiles/work/plugins/coconut').mkdir(parents=True)
         with self.assertLogs('coconut.bot_profiles', logging.WARNING) as logs:

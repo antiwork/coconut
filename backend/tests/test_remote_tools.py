@@ -106,6 +106,29 @@ class RemoteToolsTests(unittest.TestCase):
         self.assertEqual(result, dict(installed=True, healthy=True, tunnel="connected", model_access_saved=False,
                                       package_id="package"))
 
+    def test_model_access_comes_from_hermes_after_coconut_moved_its_saved_keys(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "hermes").mkdir()
+            (home / "hermes/.env").write_text('# Hermes\nexport ANTHROPIC_API_KEY="hermes-anthropic"\n'
+                                              "TELEGRAM_BOT_TOKEN=other\nOPENAI_API_KEY=\n")
+            with patch.object(remote, "ROOT", home / "Coconut"), patch.dict("os.environ", HERMES_HOME=str(home / "hermes")):
+                self.assertEqual(remote.local_model_keys(), {"ANTHROPIC_API_KEY": "hermes-anthropic"})
+                # Keys that Coconut saved and did not move yet come first.
+                (home / "Coconut/.runtime/host").mkdir(parents=True)
+                saved = home / "Coconut/.runtime/host/credentials.json"
+                saved.write_text(json.dumps({"OPENAI_API_KEY": "saved-openai"}))
+                saved.chmod(0o600)
+                self.assertEqual(remote.local_model_keys(), {"OPENAI_API_KEY": "saved-openai"})
+
+    def test_remote_status_finds_the_model_keys_in_hermes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.installed(directory, "connected")
+            (Path(directory) / ".hermes").mkdir()
+            (Path(directory) / ".hermes/.env").write_text("ANTHROPIC_API_KEY=hermes-anthropic\n")
+            result = json.loads(self.run_on_mini(directory, remote.status, answer=self.healthy))
+        self.assertTrue(result["model_access_saved"])
+
     def test_remote_health_requires_the_service_and_reports_the_tunnel(self):
         with tempfile.TemporaryDirectory() as directory:
             self.installed(directory, None)
