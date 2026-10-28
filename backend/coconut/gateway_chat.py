@@ -166,6 +166,15 @@ class GatewayChat:
             self.gateway_state = {'state': 'stopped', 'pid': None, 'reason': STOPPED.format(
                 code=self._gateway_exit, log=self.gateway_bridge.folder / 'gateway.log')}
             return
+        entries = getattr(self, 'hermes_entries', None)
+        if entries is not None and entries.is_alive():
+            # The gateway loads the plugin and the platform settings at its start, so they come first. The next
+            # check starts it.
+            self.gateway_state = {'state': 'starting', 'pid': None,
+                                  'reason': 'Coconut sets its entries in the Hermes profiles first.'}
+            return
+        if self.stopping.is_set():
+            return
         self._start_gateway(home)
 
     def _start_gateway(self, home):

@@ -2836,6 +2836,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self.source_poller = threading.Thread(target=self._poll_work_sources, name='coconut-source-poll', daemon=True)
         self.source_poller.start()
         self._start_profile_watcher()
+        self._start_hermes_entries()
         self._start_gateway_supervisor()
         self.push.start()
 

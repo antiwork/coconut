@@ -17,13 +17,16 @@ from pathlib import Path
 
 NAME = 'coconut'
 PLUGIN = Path(__file__).resolve().parents[2] / 'hermes_plugin' / NAME
+# Coconut's keys in `gateway.platforms.coconut`. Each run sets them again. Other keys of the block stay.
+PLATFORM = {'enabled': True}
 
 
 def with_platform(config: dict, present: bool) -> dict | None:
     """Return a copy of the config with the plugin and its platform enabled (present) or without them.
 
     Return None when nothing changes, or when `plugins`, `plugins.enabled`, `gateway` or `gateway.platforms` has a form
-    that Hermes does not read. An existing `gateway.platforms.coconut` block stays as the person wrote it.
+    that Hermes does not read. Coconut owns its keys in `gateway.platforms.coconut` (PLATFORM) and sets them again.
+    Other keys of that block stay.
     """
     def value(mapping, key, empty):
         found = mapping.get(key)
@@ -40,8 +43,10 @@ def with_platform(config: dict, present: bool) -> dict | None:
     elif not present and NAME in enabled:
         # The list stays, also when it is empty: Hermes reads a missing list as "nothing chosen yet".
         result['plugins'] = dict(plugins, enabled=[entry for entry in enabled if entry != NAME])
-    if present and NAME not in platforms:
-        result['gateway'] = dict(gateway, platforms=dict(platforms, **{NAME: {'enabled': True}}))
+    block = platforms.get(NAME)
+    if present and (not isinstance(block, dict) or any(block.get(key) != value for key, value in PLATFORM.items())):
+        block = dict(block, **PLATFORM) if isinstance(block, dict) else dict(PLATFORM)
+        result['gateway'] = dict(gateway, platforms=dict(platforms, **{NAME: block}))
     elif not present and NAME in platforms:
         platforms = {key: value for key, value in platforms.items() if key != NAME}
         gateway = dict(gateway, platforms=platforms) if platforms else {k: v for k, v in gateway.items() if k != 'platforms'}

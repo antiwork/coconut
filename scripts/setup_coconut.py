@@ -73,8 +73,8 @@ def use_hermes() -> None:
 
 
 def add_skill() -> None:
-    """Let the person's Hermes load the `coconut` skill of this checkout. See hermes_skills.py. Coconut changes the
-    Hermes config only during setup. A failure does not stop the setup: Coconut works without the skill."""
+    """Let the person's Hermes load the `coconut` skill of this checkout. See hermes_skills.py. Coconut changes only
+    its own entries in the Hermes config. Each update and each service start set them again. A failure does not stop the setup: Coconut works without the skill."""
     result = subprocess.run(script("hermes_skills.py", "add"), cwd=ROOT, text=True, capture_output=True)
     sys.stdout.write(result.stdout)
     if result.returncode:
