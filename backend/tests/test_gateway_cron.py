@@ -79,6 +79,14 @@ class GatewayCronTests(unittest.TestCase):
         with self.service.lock:
             self.assertFalse(self.service._service_busy())
 
+    def test_a_cron_turn_without_its_thread_leaves_no_working_task(self):
+        with patch.object(threading.Thread, 'start', side_effect=RuntimeError("can't start new thread")):
+            with self.assertRaises(RuntimeError):
+                self.start()
+        with self.service.lock:
+            self.assertFalse([t for t in self.service._all('tasks') if t.get('_gateway_cron')])
+            self.assertFalse(self.service._service_busy())
+
     def test_a_question_of_a_cron_run_is_a_card_and_its_tool_waits_for_the_answer(self):
         started = self.start()
         bridge = self.service.gateway_bridge
