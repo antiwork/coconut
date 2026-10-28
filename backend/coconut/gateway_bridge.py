@@ -12,6 +12,8 @@ the main listener, with the token of `<data>/gateway/bridge.json`:
 - `POST /v1/gateway/cron` opens a turn for a cron run of the gateway (gateway_chat.gateway_cron). The plugin reports
   its events like those of a chat turn.
 - `POST /v1/gateway/answers` waits for the answer to one question of a turn. A cron run has no adapter that polls.
+- `POST /v1/gateway/messages` takes a send, an edit or a delete of the gateway outside a Coconut turn
+  (gateway_chat.gateway_message).
 
 A poll also returns the answers to the questions of the adapter's turns. A question is a decision card on the phone.
 

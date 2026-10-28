@@ -351,6 +351,11 @@ def verify_gateway_contract():
         raise ValueError('Hermes changed the identity of a cron run.')
     if not hasattr(BasePlatformAdapter, '_send_exec_approval_prompt'):
         raise ValueError('Hermes changed the approval prompt of a gateway platform.')
+    # A send outside a turn that Coconut refuses must not come back as a plain text copy.
+    from gateway.platforms.base import SendResult
+    if not callable(getattr(BasePlatformAdapter, '_send_retry_is_final', None)) or (
+            'raw_response' not in SendResult.__dataclass_fields__):
+        raise ValueError('Hermes changed the retry of a failed send. Review the coconut adapter.')
 
 
 def verify_profile_api_contract():
