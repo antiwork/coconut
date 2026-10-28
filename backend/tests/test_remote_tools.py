@@ -114,7 +114,8 @@ class RemoteToolsTests(unittest.TestCase):
                                               "TELEGRAM_BOT_TOKEN=other\nOPENAI_API_KEY=\n"
                                               "OPENROUTER_API_KEY=hermes-openrouter # personal\n"
                                               "OPENAI_API_KEY='hermes-openai' # work\n")
-            with patch.object(remote, "ROOT", home / "Coconut"), patch.dict("os.environ", HERMES_HOME=str(home / "hermes")):
+            with patch.object(remote, "ROOT", home / "Coconut"), patch.dict("os.environ", HERMES_HOME=str(home / "hermes")), \
+                    patch.object(remote, "hermes_env_reader", return_value=None):
                 self.assertEqual(remote.local_model_keys(), {"ANTHROPIC_API_KEY": "hermes-anthropic",
                                                              "OPENROUTER_API_KEY": "hermes-openrouter",
                                                              "OPENAI_API_KEY": "hermes-openai"})
@@ -124,6 +125,24 @@ class RemoteToolsTests(unittest.TestCase):
                 saved.write_text(json.dumps({"OPENAI_API_KEY": "saved-openai"}))
                 saved.chmod(0o600)
                 self.assertEqual(remote.local_model_keys(), {"OPENAI_API_KEY": "saved-openai"})
+
+    def test_model_access_reads_the_env_file_with_the_reader_of_hermes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / "hermes").mkdir()
+            (home / "hermes/.env").write_text("OPENAI_API_KEY=plain\n")
+            source = home / "hermes-agent/agent/secret_scope.py"
+            source.parent.mkdir(parents=True)
+            source.write_text("def load_env_file(path):\n    return {'OPENAI_API_KEY': 'from-hermes'}\n")
+            runtime = type("Runtime", (), {"root": home / "hermes-agent"})()
+            finder = type("Finder", (), {"find": staticmethod(lambda: runtime)})()
+            with patch.object(remote, "ROOT", home / "Coconut"), patch.dict("os.environ", HERMES_HOME=str(home / "hermes")), \
+                    patch.object(remote.host, "hermes_runtime", return_value=finder):
+                self.assertEqual(remote.local_model_keys(), {"OPENAI_API_KEY": "from-hermes"})
+            # Without a Hermes, the plain reader reads the file.
+            with patch.object(remote, "ROOT", home / "Coconut"), patch.dict("os.environ", HERMES_HOME=str(home / "hermes")), \
+                    patch.object(remote.host, "hermes_runtime", side_effect=RuntimeError("no Hermes")):
+                self.assertEqual(remote.local_model_keys(), {"OPENAI_API_KEY": "plain"})
 
     def test_remote_status_finds_the_model_keys_in_hermes(self):
         with tempfile.TemporaryDirectory() as directory:

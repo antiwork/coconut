@@ -335,10 +335,21 @@ else:
 
 
 def hermes_env(home: Path) -> dict:
-    """The values in the `.env` of a Hermes home, read as plain KEY=VALUE lines."""
+    """The values in the `.env` of a Hermes home, read with the `.env` reader of the person's Hermes.
+
+    Hermes reads every `.env` through `agent.secret_scope.load_env_file`, so the keys that this command copies are the
+    keys that Hermes uses. That module uses the standard library only. Without a Hermes on this Mac, a plain reader
+    with the same rules for comments and quotes reads the file.
+    """
     path = home / ".env"
     if not path.is_file() or path.is_symlink():
         return {}
+    try:
+        reader = hermes_env_reader()
+    except Exception:
+        reader = None
+    if reader is not None:
+        return dict(reader(path))
     values = {}
     for line in path.read_text().splitlines():
         line = line.strip()
@@ -356,6 +367,18 @@ def hermes_env(home: Path) -> dict:
             value = value.split(" #", 1)[0].rstrip()
         values[key.strip()] = value
     return values
+
+
+def hermes_env_reader():
+    """`load_env_file` of the person's Hermes, or None."""
+    import importlib.util
+    source = host.hermes_runtime().find().root / "agent/secret_scope.py"
+    if not source.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location("coconut_hermes_secret_scope", source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.load_env_file
 
 
 def local_model_keys() -> dict:
