@@ -638,6 +638,24 @@ class OutsideTurnTests(unittest.TestCase):
         self.assertEqual(streaming, [False] * 4)
         self.assertEqual([kind for kind, _, _ in self.pushes()], ['message'] * 4)
 
+    def test_a_deleted_reply_that_the_person_read_leaves_the_unread_count(self):
+        self.message(text='Task t_1 is done.')
+        self.service.mutate('POST', f'/v1/bots/{self.bot["id"]}/read', {}, str(uuid4()), self.device)
+        self.message(message_id='outside:2', text='The report is ready.')
+        self.assertEqual(self.bot_row(), ('The report is ready.', 1))
+        # The person read the first reply, so only the second reply stays unread.
+        self.message('delete', 'outside:1', '')
+        self.assertEqual(self.bot_row(), ('The report is ready.', 1))
+        self.message('delete', 'outside:2', '')
+        self.assertEqual(self.bot_row(), ('', 0))
+
+    def test_an_edit_changes_the_preview_only_for_the_newest_message(self):
+        self.message(text='Done.')
+        self.service.mutate('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Done.'}, str(uuid4()), self.device)
+        # The preview shows the message of the person, although the earlier reply has the same text.
+        self.message('edit', 'outside:1', 'The build finished.')
+        self.assertEqual(self.bot_row()[0], 'Done.')
+
     def test_a_cron_delivery_of_a_run_that_the_chat_shows_is_dropped(self):
         self.assertTrue(self.message(job_id='intake')['recorded'])
         started = self.service.gateway_cron({'event': 'start', 'home': self.home, 'job_id': 'intake',

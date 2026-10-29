@@ -302,26 +302,34 @@ class GatewayChat:
 
     def _change_gateway_message(self, bot: dict, message: dict, kind: str, text: str, finalize: bool) -> dict:
         """Edit or delete a message outside a turn, and keep the bot's preview and unread count true. The caller holds
-        the transaction."""
+        the transaction.
+
+        The newest visible message that is not a reaction gives the preview (Service._message). The newest
+        `unread_count` visible replies of the bot are its unread replies, as in Service._withdraw_stream.
+        """
         if message.get('_hidden'):
             return {'recorded': False, 'reason': 'The chat no longer shows this message.'}
-        old = message['text']
         finished = bool(message.get('streaming')) and finalize
+        visible = ("json_extract(data,'$.bot_id')=? AND COALESCE(json_extract(data,'$._hidden'),0)=0 "
+                   "AND COALESCE(json_extract(data,'$._deleted'),0)=0")
+        previews = [json.loads(raw) for (raw,) in self.db.execute(
+            f"SELECT data FROM messages WHERE {visible} AND json_extract(data,'$.reaction_event') IS NULL "
+            "ORDER BY rowid DESC LIMIT 2", (bot['id'],))]
+        newest = bool(previews) and previews[0]['id'] == message['id']
         if kind == 'delete' or not text.strip():
+            unread = {row[0] for row in self.db.execute(
+                f"SELECT id FROM messages WHERE {visible} AND json_extract(data,'$.role')='assistant' "
+                "ORDER BY rowid DESC LIMIT ?", (bot['id'], max(0, bot['unread_count'])))}
+            if message['id'] in unread:
+                bot['unread_count'] -= 1
             message.update(_hidden=True, streaming=False)
-            bot['unread_count'] = max(0, bot['unread_count'] - 1)
-            newest = self.db.execute(
-                "SELECT data FROM messages WHERE json_extract(data,'$.bot_id')=? AND id<>? "
-                "AND COALESCE(json_extract(data,'$._hidden'),0)=0 AND COALESCE(json_extract(data,'$._deleted'),0)=0 "
-                "AND json_extract(data,'$.reaction_event') IS NULL ORDER BY rowid DESC LIMIT 1",
-                (bot['id'], message['id'])).fetchone()
-            if bot.get('last_message') == old[:160]:
-                bot['last_message'] = json.loads(newest[0])['text'][:160] if newest else ''
+            if newest:
+                bot['last_message'] = previews[1]['text'][:160] if len(previews) > 1 else ''
         else:
             message['text'] = text
             if finished:
                 message['streaming'] = False
-            if bot.get('last_message') == old[:160]:
+            if newest:
                 bot['last_message'] = text[:160]
         self._put('bots', bot)
         self._put('messages', message)
