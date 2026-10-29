@@ -176,6 +176,7 @@ from .decision_freshness import DecisionFreshness
 from .withdrawal_corrections import WithdrawalCorrections
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 from .technical_lane import TechnicalLane
+from .service_yield import ServiceYield
 from .hermes_setup import HermesSetup
 from .bot_profiles import BotProfiles
 from .gateway_chat import GatewayChat
@@ -200,7 +201,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat):
+class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, ServiceYield, HermesSetup, BotProfiles, GatewayChat):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -259,6 +260,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS workspace_recoveries (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS native_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS service_yields (id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS artifact_content (id TEXT PRIMARY KEY, content BLOB NOT NULL);
         CREATE INDEX IF NOT EXISTS native_receipts_executing ON native_receipts
             (json_extract(data, '$.task_id'), json_extract(data, '$.turn_id'))
@@ -3736,6 +3738,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             return self.record_block_pause(task_id, payload)
         if kind == 'work_continue':
             return self.continue_native_work(task_id, payload)
+        if kind == 'service_yield':
+            return self.yield_test_services(task_id, payload)
         if kind == 'work_wait':
             return self.wait_for_task(task_id, payload)
         if kind == 'decision_response':

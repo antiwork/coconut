@@ -647,13 +647,13 @@ class HermesProvider(FixtureProvider):
                     except Exception:
                         logging.getLogger(__name__).debug('Ignored a phase update for task %s', task_id, exc_info=True)
                     continue
-                if event.get('type') not in ('steering_ready', 'steering_consumed', 'text_delta', 'interim_message', 'activity', 'decision', 'artifact', 'completed', 'failed', 'bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'withdrawal_correction', 'work_wait', 'work_continue', 'dependency_unlink', 'block_pause', 'native_call', 'native_result', 'native_approval', 'native_question', 'native_proposal', 'decision_response') or not isinstance(event.get('data'), dict):
+                if event.get('type') not in ('steering_ready', 'steering_consumed', 'text_delta', 'interim_message', 'activity', 'decision', 'artifact', 'completed', 'failed', 'bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'withdrawal_correction', 'work_wait', 'work_continue', 'service_yield', 'dependency_unlink', 'block_pause', 'native_call', 'native_result', 'native_approval', 'native_question', 'native_proposal', 'decision_response') or not isinstance(event.get('data'), dict):
                     raise RuntimeError('Hermes returned an invalid structured event.')
                 if event['type'] in ('native_call', 'native_question', 'native_proposal', 'decision_response'):
                     revision = event['data'].get('_worker_profile_revision')
                     if not isinstance(revision, str) or not re.fullmatch(r'[0-9a-f]{64}', revision):
                         raise RuntimeError('Hermes returned an event without its captured profile revision.')
-                if (event['type'] in ('artifact', 'native_question') and event.get('request_id')) or event['type'] in ('bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'withdrawal_correction', 'work_wait', 'work_continue', 'dependency_unlink', 'block_pause', 'native_call', 'native_result', 'native_proposal', 'decision_response'):
+                if (event['type'] in ('artifact', 'native_question') and event.get('request_id')) or event['type'] in ('bot_message', 'native_bot_message', 'bot_create', 'bot_delete', 'service_restart', 'withdrawal_correction', 'work_wait', 'work_continue', 'service_yield', 'dependency_unlink', 'block_pause', 'native_call', 'native_result', 'native_proposal', 'decision_response'):
                     request_id = event.get('request_id')
                     if type(request_id) is not int or request_id < 1:
                         raise RuntimeError('Hermes returned an operation without a receipt request.')
@@ -663,7 +663,7 @@ class HermesProvider(FixtureProvider):
                         if event['type'] == 'native_question':
                             paused = True
                             receipt = {'status': 'recorded'}
-                        elif event['type'] in ('artifact', 'native_call', 'native_result', 'service_restart', 'withdrawal_correction', 'work_wait', 'work_continue', 'dependency_unlink', 'block_pause', 'native_proposal', 'decision_response'):
+                        elif event['type'] in ('artifact', 'native_call', 'native_result', 'service_restart', 'withdrawal_correction', 'work_wait', 'work_continue', 'service_yield', 'dependency_unlink', 'block_pause', 'native_proposal', 'decision_response'):
                             receipt = result
                         elif event['type'] == 'bot_create':
                             from .hermes_worker import bot_creation_receipt
@@ -689,7 +689,7 @@ class HermesProvider(FixtureProvider):
                                 receipt = ({'status': 'recorded', 'decision_id': error.decision_id}
                                            if isinstance(error, YieldForDecision) else
                                            {'status': 'unconfirmed', 'error': 'The service did not confirm this decision.'})
-                        elif event['type'] in ('artifact', 'withdrawal_correction', 'work_wait', 'work_continue', 'dependency_unlink', 'block_pause', 'decision_response', 'native_proposal', 'native_call') and isinstance(error, ServiceError) and 400 <= error.status < 500:
+                        elif event['type'] in ('artifact', 'withdrawal_correction', 'work_wait', 'work_continue', 'service_yield', 'dependency_unlink', 'block_pause', 'decision_response', 'native_proposal', 'native_call') and isinstance(error, ServiceError) and 400 <= error.status < 500:
                             receipt = {'status': 'rejected', 'error': str(error)}
                         elif event['type'] in ('bot_create', 'bot_delete') and isinstance(error, ServiceError) and 400 <= error.status < 500:
                             message = {
