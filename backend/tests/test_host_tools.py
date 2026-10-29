@@ -1,12 +1,14 @@
 import argparse
 import fcntl
 import importlib.util
+import io
 import json
 from pathlib import Path
 import plistlib
 import sys
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 import unittest.mock
@@ -252,7 +254,7 @@ class HostLifecycleTests(unittest.TestCase):
             output = next(outputs)
             return subprocess.CompletedProcess(arguments, 1 if output is None else 0, output or '', '')
         with patch.object(host.subprocess, 'run', side_effect=run), patch.object(host.os, 'kill') as kill, \
-             patch.object(host.time, 'sleep'):
+             patch.object(host.time, 'sleep'), patch.object(host, 'process_table', return_value={}):
             host.stop_owned_process()
         kill.assert_called_once_with(4242, host.signal.SIGTERM)
         self.assertEqual(calls[0], ['ps', '-ww', '-p', '4242', '-o', 'stat=,command='])
@@ -266,7 +268,7 @@ class HostLifecycleTests(unittest.TestCase):
             output = next(outputs)
             return subprocess.CompletedProcess(arguments, 1 if output is None else 0, output or '', '')
         with patch.object(host.subprocess, 'run', side_effect=run), patch.object(host.os, 'kill') as kill, \
-             patch.object(host.time, 'sleep') as sleep:
+             patch.object(host.time, 'sleep') as sleep, patch.object(host, 'process_table', return_value={}):
             host.stop_owned_process()
         kill.assert_not_called()
         sleep.assert_called_once()
@@ -535,8 +537,8 @@ class HostLifecycleTests(unittest.TestCase):
 
     def test_pid_change_during_stop_does_not_signal_the_new_process(self):
         with patch.object(host, 'owned_process', side_effect=[(4242, self.options), (4343, self.options)]), \
-             patch.object(host.os, 'kill') as kill:
-            with self.assertRaisesRegex(SystemExit, 'Another Coconut process started'):
+             patch.object(host, 'process_table', return_value={}), patch.object(host.os, 'kill') as kill:
+            with self.assertRaisesRegex(SystemExit, r'Another Coconut process \(4343\) started while process 4242 stopped'):
                 host.stop_owned_process()
             kill.assert_called_once_with(4242, host.signal.SIGTERM)
 
@@ -557,6 +559,253 @@ class HostLifecycleTests(unittest.TestCase):
             start.assert_not_called()
 
 
+
+
+# A service that matches host.owned_process. On SIGTERM it stops its gateway, a child in its own session, as
+# Service.close does. The environment sets how slowly each one stops: a number of seconds, or "ignore" for never.
+FAKE_SERVICE = '''
+import fcntl, json, os, signal, subprocess, sys, time
+data = sys.argv[sys.argv.index('--data-dir') + 1]
+lock = open(os.path.join(data, 'service.lock'), 'a')
+fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+gateway_stop = os.environ['FAKE_GATEWAY_STOP']
+handler = 'signal.SIG_IGN' if gateway_stop == 'ignore' else f'lambda *a: (time.sleep({gateway_stop}), sys.exit(0))'
+gateway = subprocess.Popen([sys.executable, '-c', f'import signal, sys, time\\nsignal.signal(signal.SIGTERM, {handler})\\n'
+                            'while True: time.sleep(1)'], start_new_session=True)
+# A worker that starts a background command of a turn in a session of its own. Both ignore SIGTERM, as a stuck worker
+# and a long command can. The SIGKILL of the worker does not reach the command.
+worker = subprocess.Popen([sys.executable, '-c', 'import signal, subprocess, sys, time\\n'
+                           'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'
+                           'command = subprocess.Popen([sys.executable, "-c", "import signal, time\\\\n'
+                           'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\\\nwhile True: time.sleep(1)"], start_new_session=True)\\n'
+                           'print(command.pid, flush=True)\\nwhile True: time.sleep(1)'],
+                          start_new_session=True, stdout=subprocess.PIPE, text=True)
+background = int(worker.stdout.readline())
+with open(os.path.join(data, 'events'), 'a') as events:
+    events.write(json.dumps({'start': os.getpid(), 'gateway': gateway.pid, 'worker': worker.pid, 'background': background,
+                             'source': open(os.path.join(os.environ['FAKE_PROJECT'], 'source')).read()}) + '\\n')
+with open(os.path.join(data, 'process.json'), 'w') as record:
+    json.dump({'pid': os.getpid(), 'project': os.environ['FAKE_PROJECT'], 'data_dir': data}, record)
+def stop(*arguments):
+    if os.environ['FAKE_SERVICE_STOP'] == 'ignore':
+        return
+    if os.environ['FAKE_SERVICE_STOP'] != 'leave-gateway':
+        os.killpg(gateway.pid, signal.SIGTERM)
+        gateway.wait()
+    sys.exit(0)
+signal.signal(signal.SIGTERM, stop)
+while True:
+    time.sleep(1)
+'''
+
+# The `coconut service` tool of the login item: it waits while the update hold holds, then becomes the service.
+FAKE_TOOL = '''
+import os, sys, time
+hold = os.path.join(os.environ['FAKE_DATA'], 'update-hold')
+def held():
+    try:
+        return float(open(hold).read()) > time.time()
+    except (OSError, ValueError):
+        return False
+while held():
+    if os.path.exists(os.path.join(os.environ['FAKE_DATA'], 'quit')):
+        sys.exit(0)
+    time.sleep(.1)
+os.chdir(os.environ['FAKE_PACKAGE'])
+os.execv(sys.executable, [sys.executable, '-m', 'coconut', '--data-dir', os.environ['FAKE_DATA'], '--port', '9000',
+                          '--provider', 'fixture', '--tunnel-port', str(os.environ['FAKE_TUNNEL_PORT'])])
+'''
+
+
+class AppServiceStopTests(unittest.TestCase):
+    """Real processes: a login item with KeepAlive, its service, and the gateway child of the service.
+
+    On the Mac mini, the gateway of the service needed more time to stop than the stop waited (2026-10-29). The stop
+    then failed, released the hold, and launchd started the old source again.
+    """
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix='coconut app stop ')
+        self.addCleanup(self.directory.cleanup)
+        base = Path(self.directory.name)
+        self.root = base / 'Coconut'
+        self.data = self.root / '.runtime/host'
+        self.data.mkdir(parents=True)
+        package = base / 'fake'
+        (package / 'coconut').mkdir(parents=True)
+        (package / 'coconut/__init__.py').write_text('')
+        (package / 'coconut/__main__.py').write_text(FAKE_SERVICE)
+        self.tool = base / 'tool.py'
+        self.tool.write_text(FAKE_TOOL)
+        # The installed source. An update replaces it while the hold keeps the service stopped.
+        (self.root / 'source').write_text('old')
+        self.environment = dict(host.os.environ, FAKE_DATA=str(self.data), FAKE_PACKAGE=str(package),
+                                FAKE_PROJECT=str(self.root), FAKE_TUNNEL_PORT=str(host.TUNNEL_PORT),
+                                FAKE_SERVICE_STOP='gateway', FAKE_GATEWAY_STOP='0')
+        for name, value in (('ROOT', self.root), ('DEFAULT_DATA', self.data)):
+            patcher = patch.object(host, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.quit = False
+        self.addCleanup(self.stop_everything)
+
+    def start_login_item(self, **settings):
+        """Run the tool again after each exit, as launchd does for a KeepAlive login item."""
+        self.environment.update(settings)
+        def keep_alive():
+            while not self.quit:
+                subprocess.run([sys.executable, str(self.tool)], env=self.environment, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                time.sleep(.2)
+        self.launchd = threading.Thread(target=keep_alive, daemon=True)
+        self.launchd.start()
+        return self.wait_for_start(1)
+
+    def events(self):
+        path = self.data / 'events'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def wait_for_start(self, count, seconds=10):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            events = self.events()
+            if len(events) >= count and (self.data / 'process.json').exists() \
+                    and json.loads((self.data / 'process.json').read_text())['pid'] == events[count - 1]['start']:
+                return events[count - 1]
+            time.sleep(.05)
+        self.fail(f'The service did not start {count} times.')
+
+    def alive(self, pid):
+        state = host.process_state(pid)
+        return state is not None and not any(letter in state[0] for letter in host.EXITED)
+
+    def stop_everything(self):
+        self.quit = True
+        (self.data / 'quit').touch()
+        for attempt in range(2):
+            for event in self.events():
+                for pid in (event['start'], event['gateway'], event['worker'], event['background']):
+                    try:
+                        host.os.kill(pid, host.signal.SIGKILL)
+                    except OSError:
+                        pass
+            if hasattr(self, 'launchd') and not attempt:
+                self.launchd.join(timeout=5)
+
+    def test_the_stop_waits_for_a_slow_gateway_and_the_hold_keeps_the_service_down_until_release(self):
+        first = self.start_login_item(FAKE_GATEWAY_STOP='2')
+        started = time.monotonic()
+        with patch.object(host, 'CHILD_STOP_SECONDS', .5):
+            self.assertEqual(host.stop_for_app_update()['mode'], 'app')
+        self.assertGreaterEqual(time.monotonic() - started, 2)
+        self.assertFalse(self.alive(first['background']))
+        self.assertFalse(self.alive(first['start']))
+        self.assertFalse(self.alive(first['gateway']))
+        # launchd starts the tool again at once, but the tool waits for the hold.
+        time.sleep(1)
+        self.assertEqual(len(self.events()), 1)
+        (self.root / 'source').write_text('new')
+        host.release_login_item()
+        self.assertEqual(self.wait_for_start(2)['source'], 'new')
+
+    def test_a_service_that_does_not_stop_gets_sigkill_and_its_gateway_stops_too(self):
+        first = self.start_login_item(FAKE_SERVICE_STOP='ignore', FAKE_GATEWAY_STOP='ignore')
+        with patch.object(host, 'STOP_GRACE_SECONDS', .5), patch.object(host, 'CHILD_STOP_SECONDS', .5):
+            self.assertEqual(host.stop_for_app_update()['mode'], 'app')
+        self.assertFalse(self.alive(first['start']))
+        # The gateway, the worker, and its background command ran in sessions of their own, so the SIGKILL of the service
+        # did not reach them. The stop found them by their parents.
+        self.assertFalse(self.alive(first['gateway']))
+        self.assertFalse(self.alive(first['worker']))
+        self.assertFalse(self.alive(first['background']))
+        self.assertTrue((self.data / host.UPDATE_HOLD).exists())
+        time.sleep(.5)
+        self.assertEqual(len(self.events()), 1)
+
+    def test_a_gateway_that_outlives_its_service_is_stopped(self):
+        first = self.start_login_item(FAKE_SERVICE_STOP='leave-gateway', FAKE_GATEWAY_STOP='0')
+        with patch.object(host, 'CHILD_STOP_SECONDS', .5):
+            self.assertEqual(host.stop_for_app_update()['mode'], 'app')
+        for name in ('start', 'gateway', 'worker', 'background'):
+            self.assertFalse(self.alive(first[name]), name)
+
+    def test_a_gateway_that_the_person_started_keeps_running(self):
+        # Not a process of the service: no parent links it to the service, and it leads its own group.
+        person = subprocess.Popen([sys.executable, '-c', 'import time\nwhile True: time.sleep(1)'], start_new_session=True)
+        self.addCleanup(person.wait)
+        self.addCleanup(person.kill)
+        self.start_login_item(FAKE_SERVICE_STOP='leave-gateway', FAKE_GATEWAY_STOP='0')
+        with patch.object(host, 'CHILD_STOP_SECONDS', .5):
+            host.stop_for_app_update()
+        self.assertIsNone(person.poll())
+
+
+class StopDescendantsTests(unittest.TestCase):
+    SERVICE = ('Thu Oct 29 16:08:05 2026', 'python -m coconut --data-dir /data')
+    LISTING = (' 1 0 1 Ss Mon Oct 26 09:05:20 2026 /sbin/launchd\n'
+               ' 4242 1 4242 Ss Thu Oct 29 16:08:05 2026 python -m coconut --data-dir /data\n'
+               ' 20 4242 20 Ss Thu Oct 29 16:08:06 2026 python -c gateway run\n'
+               ' 21 4242 21 Ss Thu Oct 29 16:08:07 2026 python hermes_worker.py\n'
+               ' 30 21 30 Ss Thu Oct 29 16:09:00 2026 /bin/zsh -c npm run dev\n'
+               ' 31 1 30 S Thu Oct 29 16:09:01 2026 node server.js\n'
+               ' 40 1 40 Ss Thu Oct 29 16:00:00 2026 python -m hermes_cli.main gateway run\n'
+               ' 41 40 40 S Thu Oct 29 16:00:01 2026 python gateway helper\n')
+
+    def table(self, listing):
+        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, listing, '')) as run:
+            table = host.process_table()
+        self.assertEqual(run.call_args.args[0], ['ps', '-A', '-ww', '-o', 'pid=,ppid=,pgid=,stat=,lstart=,command='])
+        return table
+
+    def stop(self, listing, known):
+        """Run stop_descendants against a fixed process list. Return the signalled processes and the error output."""
+        errors = io.StringIO()
+        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, listing, '')), \
+             patch.object(host.os, 'kill') as kill, patch.object(host, 'CHILD_STOP_SECONDS', 0), \
+             patch.object(host, 'KILL_WAIT_SECONDS', 0), patch.object(sys, 'stderr', errors):
+            try:
+                host.stop_descendants(4242, known)
+            except SystemExit:
+                pass
+        return {call.args[0] for call in kill.call_args_list}, errors.getvalue()
+
+    def test_the_processes_of_the_service_are_its_descendants_and_the_groups_they_lead(self):
+        known = {4242: self.SERVICE}
+        host.record_descendants(known, self.table(self.LISTING))
+        # 31 lost its parent, but it is in the group that the background command 30 leads, and 30 still runs.
+        # 40 and 41 are a gateway that a person started, and its helper.
+        self.assertEqual(set(known), {4242, 20, 21, 30, 31})
+        self.assertEqual(known[21], ('Thu Oct 29 16:08:07 2026', 'python hermes_worker.py'))
+
+    def test_a_reused_process_id_proves_nothing_about_its_children(self):
+        # Worker 21 ended. Another program got its process ID and started a child. Neither gets a signal.
+        reused = (' 21 1 21 Ss Thu Oct 29 16:30:00 2026 /usr/bin/ssh-agent\n'
+                  ' 50 21 21 S Thu Oct 29 16:30:01 2026 /usr/bin/ssh-agent helper\n')
+        known = {4242: self.SERVICE, 21: ('Thu Oct 29 16:08:07 2026', 'python hermes_worker.py')}
+        host.record_descendants(known, self.table(reused))
+        self.assertEqual(set(known), {4242, 21})
+        signalled, _ = self.stop(reused, known)
+        self.assertEqual(signalled, set())
+
+    def test_a_process_in_the_group_of_an_ended_process_is_named_but_not_signalled(self):
+        # The background command 30 ended. 31 is still in its group, but no living process proves that 31 is Coconut's.
+        listing = ' 31 1 30 S Thu Oct 29 16:09:01 2026 node server.js\n'
+        signalled, errors = self.stop(listing, {30: ('Thu Oct 29 16:09:00 2026', '/bin/zsh -c npm run dev')})
+        self.assertEqual(signalled, set())
+        self.assertIn('Coconut did not stop process 31 (node server.js)', errors)
+
+    def test_only_the_processes_of_the_service_get_signals(self):
+        known = {4242: self.SERVICE}
+        host.record_descendants(known, self.table(self.LISTING))
+        # The service itself already ended. The person's gateway 40 and its helper 41 get nothing.
+        signalled, _ = self.stop(self.LISTING.replace(' 4242 1 4242 Ss', ' 4242 1 4242 Z'), known)
+        self.assertEqual(signalled, {20, 21, 30, 31})
+
+    def test_a_failed_process_list_signals_nothing(self):
+        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'error')), \
+             patch.object(host.os, 'kill') as kill:
+            host.stop_descendants(4242, {20: ('Thu Oct 29 16:08:06 2026', 'python -c gateway run')})
+        kill.assert_not_called()
 
 
 class ServiceEnvironmentTests(unittest.TestCase):
