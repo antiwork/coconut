@@ -1,4 +1,4 @@
-"""The card tools and the wait tool of a bot turn: their schemas, and the rules for cards.
+"""The card tools, the wait tool and the card correction tool of a bot turn: their schemas, and the rules for cards.
 
 The worker (native_bridge, hermes_worker) and the coconut plugin of the Hermes gateway (hermes_plugin/coconut/tools.py)
 offer the same tools with these schemas. The plugin loads this file by its path, so it imports nothing.
@@ -106,6 +106,25 @@ GATEWAY_WAIT_SCHEMA = {'name': 'coconut_wait', 'description':
         key: value for key, value in WAIT_SCHEMA['parameters']['properties'].items() if key != 'process_id'}}}
 GATEWAY_PROCESS_WAIT = ('Coconut has no record of the processes of this chat. Wait for a background process with the '
                         'native process tool: process(action="wait"), or notify_on_complete=true and finish the turn.')
+
+# Service maintenance: reopen a card that an automatic card check withdrew in error (withdrawal_corrections).
+CORRECTION_SCHEMA = {
+    'name': 'coconut_correct_withdrawal',
+    'description': (
+        'Service maintenance: reopen one card that an automatic card check withdrew in error. The same card, choices, '
+        'and exact draft return to the person. Use only for a card of the outcome that owns this turn or delegated it to you. '
+        'First read each linked source now, and confirm that no person answered, dismissed, or replaced the card. '
+        'This never answers, approves, sends, or discards. Coconut refuses a card that a person handled or that changed.'),
+    'parameters': {'type': 'object', 'additionalProperties': False, 'properties': {
+        'decision_id': {'type': 'string', 'description': 'The withdrawn card.'},
+        'expected_revision': {'type': 'integer', 'minimum': 1, 'description': 'The current revision of the withdrawn card.'},
+        'withdrawal_context_id': {'type': 'string', 'description': 'The automatic card check that recorded the withdrawal.'},
+        'draft_hash': {'type': 'string', 'description': 'Required for a message draft: its saved draft_hash. The draft stays unchanged.'},
+        'source_revisions': {'type': 'object', 'additionalProperties': {'type': 'string'},
+                             'description': 'Map each linked GitHub issue or PR URL to the exact updated_at you just read from the GitHub issues API.'},
+        'reason': {'type': 'string', 'maxLength': 1000, 'description': 'The verified facts that show the withdrawal was wrong.'},
+    }, 'required': ['decision_id', 'expected_revision', 'withdrawal_context_id', 'reason']},
+}
 
 # A typed answer from chat names its card and the human message (decision_inbox.resolve_chat_decision).
 CHAT_REPLY_SCHEMA = dict(REPLY_SCHEMA, parameters=dict(

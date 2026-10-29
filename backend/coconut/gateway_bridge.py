@@ -47,17 +47,17 @@ KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
 QUESTION_KINDS = ('clarify', 'approval')
 
 # A chat turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: a work item
-# with its own work session and workspace, claims, routines, bot exchanges, GitHub source activity, PR reviews, bot
-# creation and deletion, and the recovery and withdrawal paths. The worker runs it until phase 5 moves it.
-# Attachments, reactions, pending cards, the saved task list of the chat's assignment and its dependencies go to the
-# gateway as text of the turn (gateway_chat.gateway_turn_text), and the plugin has the card tools and coconut_wait.
+# with its own work session and workspace, claims, routines, bot exchanges, GitHub source activity, PR reviews, the
+# technical lane of a native outcome, and bot creation and deletion. The worker runs it until phase 5 moves it.
+# Attachments, reactions, pending cards, the saved task list of the chat's assignment, its dependencies, a recovery
+# context and a direct reply go to the gateway as text of the turn (gateway_chat.gateway_turn_text). The plugin has
+# the card tools, coconut_wait and coconut_correct_withdrawal.
 WORKER_INPUTS = (
     '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
     '_work_context_id', '_work_context', '_pr_review',
     '_background_completion', '_handoff_assignment', '_is_return', '_bot_messages', '_outgoing_bot_messages',
     '_source_activity', '_source_answer_steps', '_source_audit_prompt', '_technical_lane',
-    '_self_recovery', '_native_receipts', '_bot_creation_receipts', '_bot_deletion_receipts', '_withdrawal_corrections',
-    '_direct_reply_message_id', '_work_status_only')
+    '_native_receipts', '_bot_creation_receipts', '_bot_deletion_receipts', '_work_status_only')
 
 
 # A message with one of these fields carries Coconut context that a gateway message does not: a work item. A quote, a
