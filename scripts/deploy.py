@@ -84,6 +84,12 @@ def output_tail(data):
     return text if len(text) <= LOG_OUTPUT_CHARACTERS else '[...]' + text[-LOG_OUTPUT_CHARACTERS:]
 
 
+def log_output(phase, output, errors):
+    for name, data in (('output', output), ('error output', errors)):
+        if data:
+            log(f'{phase} {name}:\n{output_tail(data)}')
+
+
 def failure_reason(errors):
     """Return the last line of an error output: the message of a SystemExit, or the exception line of a traceback."""
     lines = [line.strip() for line in (errors or b'').decode('utf-8', errors='replace').splitlines() if line.strip()]
@@ -297,6 +303,7 @@ def load_host(root):
 class Operations:
     @staticmethod
     def terminate_group(process):
+        """Stop the process group of the command. Return the output that the command wrote and nobody read yet."""
         # macOS answers "not permitted" for a group whose last process has just exited and waits to be reaped. The group
         # is gone for our purpose, exactly as when it is not found.
         try:
@@ -312,10 +319,12 @@ class Operations:
         except (ProcessLookupError, PermissionError):
             pass
         try:
-            process.communicate(timeout=3)
-        except subprocess.TimeoutExpired:
+            return process.communicate(timeout=3)
+        except (subprocess.TimeoutExpired, ValueError):
+            # ValueError: the pipes were closed already.
             process.kill()
             process.wait()
+        return None, None
 
     def command(self, command, root, phase, *, input_data=None, timeout=1200, explain=False):
         """Run a command and return its standard output. LOG_PATH gets both outputs.
@@ -334,15 +343,17 @@ class Operations:
         try:
             output, errors = process.communicate(input=input_data, timeout=timeout)
         except BaseException as error:
-            self.terminate_group(process)
+            # communicate keeps what it read before the timeout. The next communicate returns it with the rest.
+            output, errors = self.terminate_group(process)
             log(f'{phase}: {type(error).__name__} after {time.monotonic() - started:.1f}s. Its process group was stopped.')
+            log_output(phase, output, errors)
             if isinstance(error, subprocess.TimeoutExpired):
-                raise DeployError(phase + f' timed out after {timeout} seconds. Its process group was stopped.') from None
+                reason = failure_reason(errors) if explain else ''
+                raise DeployError(phase + f' timed out after {timeout} seconds. Its process group was stopped.'
+                                  + (f' Its last message: {reason}' if reason else '')) from None
             raise
         log(f'{phase}: exit {process.returncode} after {time.monotonic() - started:.1f}s')
-        for name, data in (('output', output), ('error output', errors)):
-            if data:
-                log(f'{phase} {name}:\n{output_tail(data)}')
+        log_output(phase, output, errors)
         if process.returncode:
             self.terminate_group(process)
             reason = failure_reason(errors) if explain else ''

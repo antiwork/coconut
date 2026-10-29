@@ -253,7 +253,7 @@ class HostLifecycleTests(unittest.TestCase):
             output = next(outputs)
             return subprocess.CompletedProcess(arguments, 1 if output is None else 0, output or '', '')
         with patch.object(host.subprocess, 'run', side_effect=run), patch.object(host.os, 'kill') as kill, \
-             patch.object(host.time, 'sleep'), patch.object(host, 'child_processes', return_value={}):
+             patch.object(host.time, 'sleep'), patch.object(host, 'process_table', return_value={}):
             host.stop_owned_process()
         kill.assert_called_once_with(4242, host.signal.SIGTERM)
         self.assertEqual(calls[0], ['ps', '-ww', '-p', '4242', '-o', 'stat=,command='])
@@ -267,7 +267,7 @@ class HostLifecycleTests(unittest.TestCase):
             output = next(outputs)
             return subprocess.CompletedProcess(arguments, 1 if output is None else 0, output or '', '')
         with patch.object(host.subprocess, 'run', side_effect=run), patch.object(host.os, 'kill') as kill, \
-             patch.object(host.time, 'sleep') as sleep, patch.object(host, 'child_processes', return_value={}):
+             patch.object(host.time, 'sleep') as sleep, patch.object(host, 'process_table', return_value={}):
             host.stop_owned_process()
         kill.assert_not_called()
         sleep.assert_called_once()
@@ -536,7 +536,7 @@ class HostLifecycleTests(unittest.TestCase):
 
     def test_pid_change_during_stop_does_not_signal_the_new_process(self):
         with patch.object(host, 'owned_process', side_effect=[(4242, self.options), (4343, self.options)]), \
-             patch.object(host, 'child_processes', return_value={}), patch.object(host.os, 'kill') as kill:
+             patch.object(host, 'process_table', return_value={}), patch.object(host.os, 'kill') as kill:
             with self.assertRaisesRegex(SystemExit, r'Another Coconut process \(4343\) started while process 4242 stopped'):
                 host.stop_owned_process()
             kill.assert_called_once_with(4242, host.signal.SIGTERM)
@@ -571,8 +571,18 @@ gateway_stop = os.environ['FAKE_GATEWAY_STOP']
 handler = 'signal.SIG_IGN' if gateway_stop == 'ignore' else f'lambda *a: (time.sleep({gateway_stop}), sys.exit(0))'
 gateway = subprocess.Popen([sys.executable, '-c', f'import signal, sys, time\\nsignal.signal(signal.SIGTERM, {handler})\\n'
                             'while True: time.sleep(1)'], start_new_session=True)
+# A worker that starts a background command of a turn in a session of its own. Both ignore SIGTERM, as a stuck worker
+# and a long command can. The SIGKILL of the worker does not reach the command.
+worker = subprocess.Popen([sys.executable, '-c', 'import signal, subprocess, sys, time\\n'
+                           'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\n'
+                           'command = subprocess.Popen([sys.executable, "-c", "import signal, time\\\\n'
+                           'signal.signal(signal.SIGTERM, signal.SIG_IGN)\\\\nwhile True: time.sleep(1)"], start_new_session=True)\\n'
+                           'print(command.pid, flush=True)\\nwhile True: time.sleep(1)'],
+                          start_new_session=True, stdout=subprocess.PIPE, text=True)
+background = int(worker.stdout.readline())
 with open(os.path.join(data, 'events'), 'a') as events:
-    events.write(json.dumps({'start': os.getpid(), 'gateway': gateway.pid, 'source': open(os.path.join(os.environ['FAKE_PROJECT'], 'source')).read()}) + '\\n')
+    events.write(json.dumps({'start': os.getpid(), 'gateway': gateway.pid, 'worker': worker.pid, 'background': background,
+                             'source': open(os.path.join(os.environ['FAKE_PROJECT'], 'source')).read()}) + '\\n')
 with open(os.path.join(data, 'process.json'), 'w') as record:
     json.dump({'pid': os.getpid(), 'project': os.environ['FAKE_PROJECT'], 'data_dir': data}, record)
 def stop(*arguments):
@@ -673,7 +683,7 @@ class AppServiceStopTests(unittest.TestCase):
         (self.data / 'quit').touch()
         for attempt in range(2):
             for event in self.events():
-                for pid in (event['start'], event['gateway']):
+                for pid in (event['start'], event['gateway'], event['worker'], event['background']):
                     try:
                         host.os.kill(pid, host.signal.SIGKILL)
                     except OSError:
@@ -684,8 +694,10 @@ class AppServiceStopTests(unittest.TestCase):
     def test_the_stop_waits_for_a_slow_gateway_and_the_hold_keeps_the_service_down_until_release(self):
         first = self.start_login_item(FAKE_GATEWAY_STOP='2')
         started = time.monotonic()
-        self.assertEqual(host.stop_for_app_update()['mode'], 'app')
+        with patch.object(host, 'CHILD_STOP_SECONDS', .5):
+            self.assertEqual(host.stop_for_app_update()['mode'], 'app')
         self.assertGreaterEqual(time.monotonic() - started, 2)
+        self.assertFalse(self.alive(first['background']))
         self.assertFalse(self.alive(first['start']))
         self.assertFalse(self.alive(first['gateway']))
         # launchd starts the tool again at once, but the tool waits for the hold.
@@ -700,32 +712,63 @@ class AppServiceStopTests(unittest.TestCase):
         with patch.object(host, 'STOP_GRACE_SECONDS', .5), patch.object(host, 'CHILD_STOP_SECONDS', .5):
             self.assertEqual(host.stop_for_app_update()['mode'], 'app')
         self.assertFalse(self.alive(first['start']))
-        # The gateway ran in its own session, so the SIGKILL of the service did not reach it. The stop found it.
+        # The gateway, the worker, and its background command ran in sessions of their own, so the SIGKILL of the service
+        # did not reach them. The stop found them by their parents.
         self.assertFalse(self.alive(first['gateway']))
+        self.assertFalse(self.alive(first['worker']))
+        self.assertFalse(self.alive(first['background']))
         self.assertTrue((self.data / host.UPDATE_HOLD).exists())
         time.sleep(.5)
         self.assertEqual(len(self.events()), 1)
 
     def test_a_gateway_that_outlives_its_service_is_stopped(self):
         first = self.start_login_item(FAKE_SERVICE_STOP='leave-gateway', FAKE_GATEWAY_STOP='0')
-        self.assertEqual(host.stop_for_app_update()['mode'], 'app')
-        self.assertFalse(self.alive(first['start']))
-        self.assertFalse(self.alive(first['gateway']))
+        with patch.object(host, 'CHILD_STOP_SECONDS', .5):
+            self.assertEqual(host.stop_for_app_update()['mode'], 'app')
+        for name in ('start', 'gateway', 'worker', 'background'):
+            self.assertFalse(self.alive(first[name]), name)
+
+    def test_a_gateway_that_the_person_started_keeps_running(self):
+        # Not a process of the service: no parent links it to the service, and it leads its own group.
+        person = subprocess.Popen([sys.executable, '-c', 'import time\nwhile True: time.sleep(1)'], start_new_session=True)
+        self.addCleanup(person.wait)
+        self.addCleanup(person.kill)
+        self.start_login_item(FAKE_SERVICE_STOP='leave-gateway', FAKE_GATEWAY_STOP='0')
+        with patch.object(host, 'CHILD_STOP_SECONDS', .5):
+            host.stop_for_app_update()
+        self.assertIsNone(person.poll())
 
 
-class StopChildrenTests(unittest.TestCase):
+class StopDescendantsTests(unittest.TestCase):
+    LISTING = (' 1 0 1 Ss Mon Oct 26 09:05:20 2026 /sbin/launchd\n'
+               ' 20 4242 20 Ss Thu Oct 29 16:08:06 2026 python -c gateway run\n'
+               ' 21 4242 21 Ss Thu Oct 29 16:08:07 2026 python hermes_worker.py\n'
+               ' 30 21 30 Ss Thu Oct 29 16:09:00 2026 /bin/zsh -c npm run dev\n'
+               ' 31 1 30 S Thu Oct 29 16:09:01 2026 node server.js\n'
+               ' 40 1 40 Ss Thu Oct 29 16:00:00 2026 python -m hermes_cli.main gateway run\n')
+
+    def test_the_processes_of_the_service_are_its_descendants_and_their_groups(self):
+        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, self.LISTING, '')) as run:
+            table = host.process_table()
+        self.assertEqual(run.call_args.args[0], ['ps', '-A', '-ww', '-o', 'pid=,ppid=,pgid=,stat=,lstart=,command='])
+        known = {}
+        host.record_descendants(known, {4242}, table)
+        # 31 lost its parent, but it is in the group of the background command 30. 40 is a gateway that a person started.
+        self.assertEqual(set(known), {20, 21, 30, 31})
+        self.assertEqual(known[21], ('Thu Oct 29 16:08:07 2026', 'python hermes_worker.py'))
+
     def test_a_reused_process_id_is_not_signalled(self):
-        with patch.object(host, 'process_state', return_value=('S', '/bin/sh -c another program')), \
-             patch.object(host.os, 'killpg') as killpg, patch.object(host.os, 'kill') as kill:
-            host.stop_children({4343: (4343, 'python -c gateway')})
-        killpg.assert_not_called()
+        reused = self.LISTING.replace('16:08:06 2026 python -c gateway run', '16:30:00 2026 /usr/bin/ssh-agent')
+        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, reused, '')), \
+             patch.object(host.os, 'kill') as kill:
+            host.stop_descendants({20: ('Thu Oct 29 16:08:06 2026', 'python -c gateway run')})
         kill.assert_not_called()
 
-    def test_children_are_read_from_one_process_list(self):
-        listing = ' 10   1  10 launchd child\n 20 4242  20 python -c gateway run\n 21 4242  4242 python worker\n 30 20 20 hermes tool\n'
-        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, listing, '')) as run:
-            self.assertEqual(host.child_processes(4242), {20: (20, 'python -c gateway run'), 21: (4242, 'python worker')})
-        self.assertEqual(run.call_args.args[0], ['ps', '-A', '-ww', '-o', 'pid=,ppid=,pgid=,command='])
+    def test_a_failed_process_list_signals_nothing(self):
+        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'error')), \
+             patch.object(host.os, 'kill') as kill:
+            host.stop_descendants({20: ('Thu Oct 29 16:08:06 2026', 'python -c gateway run')})
+        kill.assert_not_called()
 
 
 class ServiceEnvironmentTests(unittest.TestCase):

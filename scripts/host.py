@@ -291,74 +291,95 @@ def managed_current_process(data_dir: Path | None = None) -> bool:
 STOP_GRACE_SECONDS = 120
 # After SIGKILL, the kernel ends a process at once. The wait covers a slow ps.
 KILL_WAIT_SECONDS = 10
-# The child processes of the service that are still alive after it ended get this long after SIGTERM, then SIGKILL.
+# The processes that the service started and that are still alive after it ended get this long after SIGTERM, then SIGKILL.
 CHILD_STOP_SECONDS = 10
 
 
-def child_processes(pid: int) -> dict[int, tuple[int, str]]:
-    """Return the child processes of a process: {process ID: (process group ID, command)}.
+def process_table() -> dict[int, tuple[int, int, str, str, str]]:
+    """Return every process: {process ID: (parent ID, process group ID, state letters, start time, command)}.
 
-    The service starts its Hermes gateway, its workers, and the Kanban dispatcher as children, each in its own session.
-    A signal to the service does not reach them. ps lists them by their parent only while the service lives.
+    The start time and the command together identify a process. A reused process ID has another start time. An empty
+    table means that ps failed, so no process is known and none gets a signal.
     """
     try:
-        result = subprocess.run(["ps", "-A", "-ww", "-o", "pid=,ppid=,pgid=,command="], capture_output=True, text=True)
+        result = subprocess.run(["ps", "-A", "-ww", "-o", "pid=,ppid=,pgid=,stat=,lstart=,command="],
+                                capture_output=True, text=True, env=dict(os.environ, LC_ALL="C"))
     except OSError:
         return {}
     if result.returncode:
         return {}
-    children = {}
+    table = {}
     for line in result.stdout.splitlines():
-        fields = line.split(None, 3)
-        if len(fields) == 4 and fields[0].isdigit() and fields[1] == str(pid) and fields[2].isdigit():
-            children[int(fields[0])] = (int(fields[2]), fields[3])
-    return children
+        # lstart has five words, for example "Thu Oct 29 16:08:06 2026".
+        fields = line.split(None, 9)
+        if len(fields) == 10 and all(field.isdigit() for field in fields[:3]):
+            table[int(fields[0])] = (int(fields[1]), int(fields[2]), fields[3], " ".join(fields[4:9]), fields[9])
+    return table
 
 
-def same_process(pid: int, command: str) -> bool:
-    """True while the process lives and still runs the command that Coconut saw. A reused process ID runs another one."""
-    state = process_state(pid)
-    return state is not None and not any(letter in state[0] for letter in EXITED) and state[1] == command
+def record_descendants(known: dict[int, tuple[str, str]], roots: set[int], table: dict) -> None:
+    """Add to `known` each process in the table that descends from `roots` or from a known process, or that is in the
+    process group of one of them. Keep its start time and command, which identify it later.
 
-
-def signal_child(pid: int, group: int, number: int) -> None:
-    # A child in its own session leads its process group. The group also holds its helpers, as Service.close stops them.
-    try:
-        if group == pid:
-            os.killpg(group, number)
-        else:
-            os.kill(pid, number)
-    except (ProcessLookupError, PermissionError):
-        pass
-
-
-def stop_children(children: dict[int, tuple[int, str]]) -> None:
-    """Stop the child processes of an ended service that are still alive: SIGTERM, then SIGKILL.
-
-    A Hermes gateway of the old source that keeps running blocks the gateway of the new source. A worker of the old source
-    can write to the data of the new one. So the update waits until each child has ended.
+    The service starts its Hermes gateway, its workers, and the Kanban dispatcher in their own sessions. A worker starts
+    the background commands of its turns in further sessions. A signal to the service reaches none of them. Their parent
+    proves that they belong to the service, also after the parent ends. A person-started gateway has no such parent.
     """
-    alive = {pid: value for pid, value in children.items() if same_process(pid, value[1])}
+    parents = roots | set(known)
+    while True:
+        added = {pid for pid, (parent, group, *_) in table.items()
+                 if pid not in parents and (parent in parents or group in parents)}
+        if not added:
+            break
+        parents |= added
+    for pid in parents - roots:
+        if pid not in known and pid in table:
+            known[pid] = (table[pid][3], table[pid][4])
+
+
+def alive_processes(known: dict[int, tuple[str, str]], table: dict) -> dict[int, tuple[str, str]]:
+    """The known processes that still run as the same process: same start time and command, not a zombie."""
+    return {pid: identity for pid, identity in known.items()
+            if pid in table and (table[pid][3], table[pid][4]) == identity
+            and not any(letter in table[pid][2] for letter in EXITED)}
+
+
+def stop_descendants(known: dict[int, tuple[str, str]]) -> None:
+    """Stop the processes of an ended service that are still alive: SIGTERM, then SIGKILL. Check each one before each
+    signal, and add the processes that they started meanwhile.
+
+    A Hermes gateway of the old source that keeps running blocks the gateway of the new source. A worker or a background
+    command of the old source can change the files of the new one. So the update waits until each one has ended.
+    """
+    alive = {}
     for number, seconds in ((signal.SIGTERM, CHILD_STOP_SECONDS), (signal.SIGKILL, KILL_WAIT_SECONDS)):
+        table = process_table()
+        record_descendants(known, set(alive_processes(known, table)), table)
+        alive = alive_processes(known, table)
         if not alive:
             return
-        for pid, (group, _) in alive.items():
-            signal_child(pid, group, number)
+        for pid in alive:
+            try:
+                os.kill(pid, number)
+            except (ProcessLookupError, PermissionError):
+                pass
         deadline = time.monotonic() + seconds
         while alive and time.monotonic() < deadline:
             time.sleep(.1)
-            alive = {pid: value for pid, value in alive.items() if same_process(pid, value[1])}
+            table = process_table()
+            record_descendants(known, set(alive), table)
+            alive = alive_processes(known, table)
     if alive:
         pid, (_, command) = next(iter(alive.items()))
-        raise SystemExit(f"The service ended, but its child process {pid} ({command[:120]}) did not end after SIGKILL. "
+        raise SystemExit(f"The service ended, but its process {pid} ({command[:120]}) did not end after SIGKILL. "
                          "Coconut kept its data unchanged.")
 
 
 def stop_owned_process() -> None:
-    """Stop the service of this installation and its child processes. Return only when all of them have ended.
+    """Stop the service of this installation and every process that it started. Return only when all of them have ended.
 
-    The service gets SIGTERM and STOP_GRACE_SECONDS to stop its children itself. Then it gets SIGKILL, and Coconut stops the
-    children that remain. Each failure names the process and the step.
+    The service gets SIGTERM and STOP_GRACE_SECONDS to stop its processes itself. Then it gets SIGKILL, and Coconut stops
+    the processes that remain. Each failure names the process and the step.
     """
     current = owned_process()
     if current is None:
@@ -368,7 +389,9 @@ def stop_owned_process() -> None:
             return
     else:
         pid = current[0]
-    children = child_processes(pid)
+    # {process ID: (start time, command)} of each process that the service started.
+    known: dict[int, tuple[str, str]] = {}
+    record_descendants(known, {pid}, process_table())
     if current is not None:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -384,10 +407,9 @@ def stop_owned_process() -> None:
                              "Coconut kept its data unchanged.")
         if current is None and ended(pid):
             break
-        # The service can start a child while it stops. Its children are known by their parent only while it lives.
-        # ps lists every process, so the list is read again once a second.
+        # The processes start more processes while they stop. ps lists every process, so the list is read once a second.
         if time.monotonic() - listed >= 1:
-            children.update(child_processes(pid))
+            record_descendants(known, {pid}, process_table())
             listed = time.monotonic()
         if time.monotonic() >= deadline:
             if killed:
@@ -400,7 +422,7 @@ def stop_owned_process() -> None:
             killed = True
             deadline = time.monotonic() + KILL_WAIT_SECONDS
         time.sleep(.1)
-    stop_children(children)
+    stop_descendants(known)
 
 
 def wait_for_agent_unloaded(timeout: float = 10) -> None:

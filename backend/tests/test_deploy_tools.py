@@ -798,6 +798,21 @@ class DeploymentCommandTests(unittest.TestCase):
             time.sleep(.6)
             self.assertFalse(marker.exists(), 'The helper descendant survived command cleanup.')
 
+    def test_a_command_that_times_out_keeps_its_output_in_the_log_and_names_the_timeout(self):
+        deploy.TRANSCRIPT.clear()
+        self.addCleanup(deploy.TRANSCRIPT.clear)
+        program = ('import sys, time; print("built half", flush=True); '
+                   'print("Waiting for process 4242 to stop.", file=sys.stderr, flush=True); time.sleep(30)')
+        with tempfile.TemporaryDirectory() as directory, \
+             self.assertRaisesRegex(deploy.DeployError, r'^Service stop timed out after 0.5 seconds\. Its process group was '
+                                                        r'stopped\. Its last message: Waiting for process 4242 to stop\.$'):
+            deploy.Operations().command([sys.executable, '-c', program], Path(directory), 'Service stop', timeout=.5,
+                                        explain=True)
+        text = '\n'.join(deploy.TRANSCRIPT)
+        self.assertIn('Service stop: TimeoutExpired', text)
+        self.assertIn('built half', text)
+        self.assertIn('Waiting for process 4242 to stop.', text)
+
     def test_command_timeout_stops_descendants(self):
         self.assert_descendants_stop(timeout=.1, parent_exit='wait')
 
