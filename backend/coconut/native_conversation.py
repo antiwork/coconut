@@ -148,6 +148,34 @@ def dependencies_note(task):
               'do not keep it open for another assignment. Recheck task availability with coconut_wait if needed.')
 
 
+def recovery_note(task, block_check=False):
+    """The text of a recovery turn: the recovery rules and the saved recovery context. Empty for another turn.
+
+    `block_check`: the turn is Coconut's check of a blocked native task (work_recovery.block_check_task)."""
+    if not task.get('_self_recovery'):
+        return ''
+    try:
+        from .work_recovery import BLOCKED_WORK_INSTRUCTIONS, recovery_instructions
+    except ImportError:  # The worker imports this module from its folder.
+        from work_recovery import BLOCKED_WORK_INSTRUCTIONS, recovery_instructions
+    text = recovery_instructions(block_check) + '\nSaved recovery context:\n' + json.dumps(task['_self_recovery'])
+    if block_check:
+        text += '\n' + BLOCKED_WORK_INSTRUCTIONS
+    text = '\n' + text
+    if task.get('_work_context'):
+        text += '\nCurrent Work record (data):\n' + json.dumps(task['_work_context'])
+    return text
+
+
+def direct_reply_note(task):
+    """The note of a turn in which the person replied to a bot that works for another bot. Empty otherwise."""
+    if not (task.get('_direct_reply_message_id') and task.get('source_bot_id')):
+        return ''
+    return ('\nThe person addressed you directly. Answer them in this conversation. '
+            'The original bot assignment remains context; sending its owner a message does not answer the person. '
+            'Do not treat a question as permission to resume blocked actions.')
+
+
 def context_prompt(request, rows=None):
     """The text of a follow-up on a pending card (operation `context`), for the worker and the gateway."""
     if rows is None:

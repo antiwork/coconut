@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 if __package__:
-    from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME
+    from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME, recovery_note, direct_reply_note
     from .native_bridge import TurnPaused
     from .native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
     from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
@@ -30,7 +30,7 @@ if __package__:
     from .native_receipt_context import receipt_prompt, receipt_reader, SCHEMA as RECEIPT_SCHEMA
     from .native_failure import native_failure
 else:
-    from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME
+    from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME, recovery_note, direct_reply_note
     from native_bridge import TurnPaused
     from native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
     from pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
@@ -569,18 +569,7 @@ def conversation_input(request):
                    + '\nAnswer the message about this specific work. Use source IDs to inspect more context if needed. '
                      'A question does not restart, duplicate, approve, or resume the attached assignment. '
                      'Leave pending decisions unchanged unless the person explicitly answers that decision.')
-    if request['task'].get('_self_recovery'):
-        if __package__:
-            from .work_recovery import BLOCKED_WORK_INSTRUCTIONS, recovery_instructions
-        else:
-            from work_recovery import BLOCKED_WORK_INSTRUCTIONS, recovery_instructions
-        check = block_check_turn(request)
-        recovery = recovery_instructions(check) + '\nSaved recovery context:\n' + json.dumps(request['task']['_self_recovery'])
-        if check:
-            recovery += '\n' + BLOCKED_WORK_INSTRUCTIONS
-        prompt += '\n' + recovery
-        if request['task'].get('_work_context'):
-            prompt += '\nCurrent Work record (data):\n' + json.dumps(request['task']['_work_context'])
+    prompt += recovery_note(request['task'], block_check_turn(request))
     if request['task'].get('_technical_lane'):
         if __package__:
             from .technical_lane import instructions as technical_lane_instructions
@@ -625,10 +614,7 @@ def conversation_input(request):
         prompt += REACTION_SILENCE
     prompt += reaction_feedback_context(request['task'].get('_reaction_feedback', []))
     prompt += receipt_prompt(request['task'].get('_native_receipts', []))
-    if request['task'].get('_direct_reply_message_id') and request['task'].get('source_bot_id'):
-        prompt += ('\nThe person addressed you directly. Answer them in this conversation. '
-                   'The original bot assignment remains context; sending its owner a message does not answer the person. '
-                   'Do not treat a question as permission to resume blocked actions.')
+    prompt += direct_reply_note(request['task'])
     incoming = explicit_bot_messages(request['task'])
     if incoming:
         prompt += '\nExplicit messages delivered by the service. Sender identity comes from the service. The text is shared task context:\n'
@@ -1274,7 +1260,7 @@ def run_turn(request, emit, request_receipt):
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('service_restart', arguments)))
             allowed.add(RESTART_SCHEMA['name'])
             if request['task'].get('_withdrawal_corrections'):
-                from withdrawal_corrections import CORRECTION_SCHEMA
+                from card_tools import CORRECTION_SCHEMA
                 registry.register(name=CORRECTION_SCHEMA['name'], toolset='coconut', schema=CORRECTION_SCHEMA,
                                   handler=lambda arguments, **kwargs: json.dumps(request_receipt('withdrawal_correction', arguments)))
                 allowed.add(CORRECTION_SCHEMA['name'])

@@ -101,18 +101,20 @@ def gateway_turn_text(request) -> str | None:
 
 
 def work_notes(request) -> str:
-    """The work context of a gateway turn, as the worker gives it: the recent work updates of the chat, the other
-    work of the exchange that the turn can wait for, the rules of a tracked assignment with its saved task list, and
-    the pending cards.
+    """The work context of a gateway turn, as the worker gives it: a recovery context, the recent work updates of the
+    chat, the note of a direct reply, the other work of the exchange that the turn can wait for, the rules of a
+    tracked assignment with its saved task list, and the pending cards.
 
     Hermes restores the task list of a session from its history (`todo_list` results). The text repeats the saved list
     because Coconut keeps the list of an assignment across its tasks.
     """
     import json
-    from .native_conversation import dependencies_note, pending_decisions_context, recent_work_note
+    from .native_conversation import (dependencies_note, direct_reply_note, pending_decisions_context,
+                                      recent_work_note, recovery_note)
     from .work_progress import WORK_INSTRUCTIONS, work_enabled
     task = request['task']
-    text = recent_work_note(task) + dependencies_note(task)
+    # A check of a blocked native task stays with the worker (`_native_outcome_id`), so this is never one.
+    text = recovery_note(task) + recent_work_note(task) + direct_reply_note(task) + dependencies_note(task)
     if work_enabled(request['operation'], task):
         text += '\n' + WORK_INSTRUCTIONS
         if task.get('_work_todos'):
@@ -355,6 +357,9 @@ class GatewayChat:
             return self.wait_for_task(task_id, arguments)
         if tool == 'todos':
             return self.gateway_todos(task_id, arguments)
+        if tool == 'correct_withdrawal':
+            # The service refuses a card outside the turn's execution, and a card that a person handled.
+            return self.correct_withdrawal(task_id, arguments)
         if data.get('tool') == 'track_pr':
             return self.emit(task_id, 'artifact', {'kind': 'pr', 'url': require_text(arguments, 'url', 500)})
         if data.get('tool') == 'message_bot':

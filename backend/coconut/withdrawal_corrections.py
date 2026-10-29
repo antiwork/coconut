@@ -11,23 +11,11 @@ A later human message in the card's outcome refuses the correction on purpose; s
 import json
 
 
-CORRECTION_SCHEMA = {
-    'name': 'coconut_correct_withdrawal',
-    'description': (
-        'Service maintenance: reopen one card that an automatic card check withdrew in error. The same card, choices, '
-        'and exact draft return to the person. Use only for a card of the outcome that owns this turn or delegated it to you. '
-        'First read each linked source now, and confirm that no person answered, dismissed, or replaced the card. '
-        'This never answers, approves, sends, or discards. Coconut refuses a card that a person handled or that changed.'),
-    'parameters': {'type': 'object', 'additionalProperties': False, 'properties': {
-        'decision_id': {'type': 'string', 'description': 'The withdrawn card.'},
-        'expected_revision': {'type': 'integer', 'minimum': 1, 'description': 'The current revision of the withdrawn card.'},
-        'withdrawal_context_id': {'type': 'string', 'description': 'The automatic card check that recorded the withdrawal.'},
-        'draft_hash': {'type': 'string', 'description': 'Required for a message draft: its saved draft_hash. The draft stays unchanged.'},
-        'source_revisions': {'type': 'object', 'additionalProperties': {'type': 'string'},
-                             'description': 'Map each linked GitHub issue or PR URL to the exact updated_at you just read from the GitHub issues API.'},
-        'reason': {'type': 'string', 'maxLength': 1000, 'description': 'The verified facts that show the withdrawal was wrong.'},
-    }, 'required': ['decision_id', 'expected_revision', 'withdrawal_context_id', 'reason']},
-}
+# The schema of the tool. The worker and the coconut plugin of the gateway offer it (card_tools).
+try:
+    from .card_tools import CORRECTION_SCHEMA
+except ImportError:  # The worker imports this module from its folder.
+    from card_tools import CORRECTION_SCHEMA
 
 # The issue facts that GitHubPRTracker._issue_record reads. The baseline must hold all of them, and all must match.
 ISSUE_FACTS = ('state', 'state_reason', 'title', 'updated_at', 'comments')

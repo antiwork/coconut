@@ -40,13 +40,13 @@ class RoutingRuleTests(unittest.TestCase):
         plain = {'_chat_session': True, 'attachments': [], '_pending_decisions': [], '_tracked_pr_observations': []}
         self.assertTrue(plain_chat_turn(plain))
         self.assertFalse(plain_chat_turn(dict(plain, _chat_session=False)))
-        for key in ('_native_job', '_work_context_id', '_bot_messages', '_source_activity', '_direct_reply_message_id',
+        for key in ('_native_job', '_work_context_id', '_bot_messages', '_source_activity', '_technical_lane',
                     '_execution_session_id', '_work_status_only'):
             with self.subTest(key=key):
                 self.assertFalse(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
         # Attachments, reactions, pending cards and the work of the chat's assignment go to the gateway as text.
         for key in ('attachments', '_reaction_feedback', '_pending_decisions', '_work_todos', '_work_resume',
-                    '_work_dependencies'):
+                    '_work_dependencies', '_self_recovery', '_withdrawal_corrections', '_direct_reply_message_id'):
             with self.subTest(key=key):
                 self.assertTrue(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
 
@@ -626,6 +626,55 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual((self.read('decisions', card['id'])['status'], self.read('tasks', task['id'])['status']),
                          ('pending', 'needs_you'))
         self.assertEqual(self.provider.contexts, [])
+
+    def test_a_typed_reply_to_a_card_continues_in_the_gateway(self):
+        task, card, _ = self.ask_in_gateway()
+        self.write('POST', f'/v1/decisions/{card["id"]}/answer',
+                   {'choice': 'reply', 'correction': 'Wait until Monday.', 'revision': 1})
+        stored = self.read('tasks', task['id'])
+        # A typed reply names the person's message, and the task resumes with it.
+        self.assertEqual((stored['status'], stored['_resume_decision']), ('queued', card['id']))
+        self.assertTrue(stored['_direct_reply_message_id'])
+        text = self.run_in_gateway(stored, [{'kind': 'send', 'message_id': 'm:1', 'text': 'I will wait.'},
+                                            {'kind': 'done', 'outcome': 'success'}])
+        self.assertTrue(text.startswith('The person replied with text.'))
+        self.assertIn('Wait until Monday.', text)
+        self.assertEqual(self.provider.resumes, [])
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+
+    def test_a_recovery_context_and_a_direct_reply_go_into_the_turn_text(self):
+        from coconut.gateway_chat import work_notes
+        recovery = {'previous_task_id': 'task-1', 'unknown_tools': [{'id': 'receipt-1', 'action': {'name': 'terminal'}}]}
+        text = work_notes(dict(operation='start', task={'_self_recovery': recovery, '_work_context': {'id': 'work-1'}}))
+        self.assertIn('Coconut queued this recovery turn.', text)
+        self.assertIn('"receipt-1"', text)
+        self.assertIn('Current Work record (data):', text)
+        # The worker's rule for a paused outcome applies, and the block check rules do not: a check stays with the worker.
+        self.assertIn('paused_by_decision_id', text)
+        self.assertNotIn('coconut_record_pause', text)
+        text = work_notes(dict(operation='start', task={'_direct_reply_message_id': 'm-1', 'source_bot_id': 'bot-2'}))
+        self.assertIn('The person addressed you directly.', text)
+        self.assertEqual(work_notes(dict(operation='start', task={'_direct_reply_message_id': 'm-1'})), '')
+
+    def test_a_card_correction_of_the_gateway_goes_to_the_service_check(self):
+        task = self.send('Reopen the withdrawn draft.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        arguments = {'decision_id': 'card-1', 'expected_revision': 2, 'withdrawal_context_id': 'context-1',
+                     'reason': 'The check read the reply of another card.'}
+        with patch.object(self.service, 'correct_withdrawal', return_value={'status': 'reopened'}) as correct:
+            self.assertEqual(self.service.gateway_tool({'turn_id': turn, 'tool': 'correct_withdrawal',
+                                                        'arguments': arguments}), {'status': 'reopened'})
+        correct.assert_called_once_with(task['id'], arguments)
+        # Without a withdrawn card in the scope of the turn, the service check refuses it.
+        with self.assertRaises(ServiceError):
+            self.service.gateway_tool({'turn_id': turn, 'tool': 'correct_withdrawal', 'arguments': arguments})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
 
     def test_a_command_approval_of_a_worker_turn_resumes_in_the_worker(self):
         from coconut.gateway_chat import gateway_resume

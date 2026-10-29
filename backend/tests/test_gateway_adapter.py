@@ -741,7 +741,8 @@ class GatewayAdapterTests(unittest.TestCase):
                 sections[id] = (text, content({'platform': 'telegram'}), len(text) <= max_chars)
         self.plugin.register(Context())
         self.assertEqual([name for name, _ in tool_names], ['coconut_ask', 'coconut_suggest', 'coconut_resolve_reply',
-                                                             'coconut_wait', 'coconut_track_pr', 'coconut_message_bot'])
+                                                             'coconut_wait', 'coconut_correct_withdrawal',
+                                                             'coconut_track_pr', 'coconut_message_bot'])
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
                                       'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
                                       'pre_tool_call', 'post_tool_call'])
@@ -754,7 +755,7 @@ class GatewayAdapterTests(unittest.TestCase):
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
-        self.assertEqual(len(tool_names), 6)
+        self.assertEqual(len(tool_names), 7)
         # A gateway turn waits for its processes with the process tool of Hermes, not with coconut_wait.
         self.assertNotIn('process_id', schemas['coconut_wait']['parameters']['properties'])
         options = calls[0]
