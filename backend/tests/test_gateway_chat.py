@@ -623,6 +623,20 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertFalse(gateway_resume(plain, {'action_type': 'question', '_receipt_id': 'receipt'}))
         # A task of a later group stays with the worker.
         self.assertFalse(gateway_resume(dict(plain, _work_context_id='work'), {'action_type': 'question'}))
+        # The routine task of a gateway cron run continues the run's Hermes session.
+        self.assertFalse(gateway_resume({}, {'action_type': 'question'}))
+        self.assertTrue(gateway_resume({}, {'action_type': 'question'}, cron_session='cron-session'))
+
+    def test_a_dismissed_card_continues_nothing(self):
+        task, card, _ = self.ask_in_gateway()
+        with self.service.lock:
+            stored = self.service._get('decisions', card['id'])
+        Adapter(self.service.gateway_bridge, self.home, [])
+        self.assertTrue(self.service.run_gateway_resume(self.read('tasks', task['id']), self.bot, [],
+                                                        dict(stored, status='dismissed'), lambda *_: None))
+        # No turn reached the gateway, and the worker did not resume.
+        self.assertEqual(self.service.gateway_bridge.poll({'home': str(self.home), 'wait': 0})['turns'], [])
+        self.assertEqual(self.provider.resumes, [])
 
     def test_a_cancelled_turn_stops_in_the_gateway(self):
         task = self.send('A long answer, please.')

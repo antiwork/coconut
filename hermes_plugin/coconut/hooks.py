@@ -138,9 +138,9 @@ def _turn():
     return (run, run.turn) if run is not None else (None, None)
 
 
-def cron_start(**_):
+def cron_start(session_id='', **_):
     from . import cron
-    cron.current()
+    cron.current(session_id)
 
 
 def cron_interim(text='', already_streamed=False, **_):

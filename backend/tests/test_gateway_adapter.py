@@ -583,6 +583,8 @@ class GatewayAdapterTests(unittest.TestCase):
             task = self.read('tasks', card['task_id'])
         self.assertEqual((task['status'], task['title'], task['_gateway_cron']['job_id']),
                          ('completed', 'Desk fast work intake', 'intake'))
+        # The run names its Hermes session. An answer to a card of the run continues that session.
+        self.assertEqual(task['_gateway_cron']['session_id'], 'cron-session')
         self.assertEqual(self.replies(task), [('Checking the queue.', True), ('Filed two items.', False)])
         # Outside a cron run and a Coconut chat, the hooks do nothing.
         hooks.cron_answer(assistant_response='Ignored.')

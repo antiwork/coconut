@@ -39,7 +39,8 @@ class GatewayCronTests(unittest.TestCase):
 
     def start(self, execution='run-1'):
         return self.service.gateway_cron({'event': 'start', 'home': str(self.home), 'job_id': 'intake',
-                                          'job_name': 'Desk fast work intake', 'execution_id': execution})
+                                          'job_name': 'Desk fast work intake', 'execution_id': execution,
+                                          'session_id': 'cron-session-1'})
 
     def test_a_cron_run_of_the_gateway_is_a_routine_turn_in_the_bot_chat(self):
         started = self.start()
@@ -101,6 +102,22 @@ class GatewayCronTests(unittest.TestCase):
         with self.service.lock:
             decision = next(d for d in self.service._all('decisions') if d['task_id'] == started['task_id'])
         self.assertEqual((decision['title'], decision['status']), ('File these items?', 'pending'))
+        # The answer continues the Hermes session of the cron run, with the routine's prompt and tool results.
+        self.service.mutate('POST', f'/v1/decisions/{decision["id"]}/answer', {'option_id': 'file', 'revision': 1},
+                            str(uuid4()), 'phone')
+        self.service.gateway_enabled = lambda: True
+        from test_gateway_chat import Adapter
+        adapter = Adapter(bridge, self.home, [{'kind': 'send', 'message_id': 'm:1', 'text': 'Filed both items.'},
+                                              {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.service._run_task(started['task_id'])
+        adapter.join(5)
+        turn = adapter.turns[0]
+        self.assertEqual(turn['session_root'], 'cron-session-1')
+        self.assertTrue(turn['text'].startswith('Continue the original task using this recorded answer.'))
+        self.assertEqual(self.read('tasks', started['task_id'])['status'], 'completed')
+        self.assertEqual(self.messages(started['task_id'])[-1], ('Filed both items.', False))
+        self.assertEqual(self.provider.resumes, [])
 
     def test_the_gateway_fires_the_routines_of_a_served_profile_and_coconut_fires_the_others(self):
         due = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()

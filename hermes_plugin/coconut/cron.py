@@ -39,8 +39,10 @@ def _bridge_path():
 class CronRun(StreamRelay):
     """The Coconut turn of one cron run. It offers what the hooks and the tools use of an adapter."""
 
-    def __init__(self, execution):
+    def __init__(self, execution, session_id=''):
         self.execution = execution
+        # The Hermes session of the run. An answer to a card of the run continues this session.
+        self.session_id = str(session_id or '')
         self._bridge = Bridge(_bridge_path())
         self._init_relay()
         self.turn = None
@@ -52,7 +54,8 @@ class CronRun(StreamRelay):
         try:
             answer = self._bridge.request('/v1/gateway/cron', {
                 'event': 'start', 'home': os.path.realpath(get_hermes_home()), 'job_id': execution.job_id,
-                'job_name': execution.job_name, 'execution_id': execution.execution_id}, REQUEST_SECONDS)
+                'job_name': execution.job_name, 'execution_id': execution.execution_id,
+                'session_id': self.session_id}, REQUEST_SECONDS)
         except Exception as error:
             # Without the service, the run goes on as a plain cron run.
             LOG.info('Coconut: no Coconut turn for cron run %s (%s).', execution.execution_id, type(error).__name__)
@@ -75,8 +78,11 @@ class CronRun(StreamRelay):
         self.count += 1
         self.report('send', message_id=f'{self.turn}:{self.count}', text=str(text), interim=interim)
 
-def current():
-    """The CronRun of the cron run of this context, or None outside a cron run or outside a bot's profile."""
+
+def current(session_id=''):
+    """The CronRun of the cron run of this context, or None outside a cron run or outside a bot's profile.
+
+    on_session_start comes first and names the session of the run (hooks.cron_start)."""
     try:
         from cron.execution_identity import current_cron_execution
         execution = current_cron_execution()
@@ -87,7 +93,7 @@ def current():
     with _LOCK:
         run = _RUNS.get(execution.execution_id)
         if run is None:
-            run = _RUNS[execution.execution_id] = CronRun(execution)
+            run = _RUNS[execution.execution_id] = CronRun(execution, session_id)
             run.open()
     return run if run.turn is not None else None
 

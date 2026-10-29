@@ -36,7 +36,7 @@ import threading
 import time
 
 from . import hermes_runtime
-from .gateway_bridge import WORKER_MESSAGE_FIELDS, GatewayBridge, GatewayUnavailable, plain_chat_turn
+from .gateway_bridge import WORKER_INPUTS, WORKER_MESSAGE_FIELDS, GatewayBridge, GatewayUnavailable, plain_chat_turn
 from .native_conversation import reaction_only_turn
 
 LOG = logging.getLogger(__name__)
@@ -95,14 +95,16 @@ def gateway_turn_text(request) -> str | None:
     return text if text.strip() else None
 
 
-def gateway_resume(task: dict, decision: dict) -> bool:
+def gateway_resume(task: dict, decision: dict, cron_session: str = '') -> bool:
     """Whether the gateway continues a task after an answered card.
 
-    The task must be a chat turn that the gateway takes (plain_chat_turn). A command approval of a worker turn stays
-    with the worker: it allows one exact tool call that the worker recorded, and the worker repeats that call.
+    The task must be a chat turn that the gateway takes (plain_chat_turn), or a routine task of a gateway cron run
+    whose Hermes session is known (`cron_session`): the answer continues that session, with the routine's prompt and
+    tool results. A command approval of a worker turn stays with the worker: it allows one exact tool call that the
+    worker recorded, and the worker repeats that call.
     """
-    return (plain_chat_turn(task) and decision.get('action_type') != 'native_approval'
-            and not decision.get('_receipt_id'))
+    chat = plain_chat_turn(task) or (bool(cron_session) and not any(task.get(key) for key in WORKER_INPUTS))
+    return chat and decision.get('action_type') != 'native_approval' and not decision.get('_receipt_id')
 
 
 def live_gateway_pid(home) -> int | None:
@@ -175,13 +177,19 @@ class GatewayChat:
     def run_gateway_resume(self, task: dict, bot: dict, history: list, decision: dict, emit) -> bool:
         """Continue a task after an answered card in the gateway, as the worker resumes it. False: the worker does.
 
-        `decision` is the stored card. The turn text is the worker's text for the same answer."""
-        if not self.gateway_enabled() or not gateway_resume(task, decision):
+        `decision` is the stored card. The turn text is the worker's text for the same answer. A dismissed card has no
+        answer, so it continues nothing. The card of a gateway cron run continues the Hermes session of that run."""
+        if decision.get('status') == 'dismissed':
+            return True
+        with self.lock:
+            cron_session = (self._get('tasks', task['id']).get('_gateway_cron') or {}).get('session_id') or ''
+        if not self.gateway_enabled() or not gateway_resume(task, decision, cron_session):
             return False
         from .native_conversation import pending_decisions_context, resume_prompt
         card = self._public(decision) | {'action': decision.get('_action')}
         text = resume_prompt(dict(operation='resume', task=task, history=history, decision=card))
-        return self._run_in_gateway(task, bot, text + pending_decisions_context(task), emit)
+        return self._run_in_gateway(task, bot, text + pending_decisions_context(task), emit,
+                                    session=cron_session or None)
 
     def run_gateway_context(self, task: dict, request_task: dict, bot: dict, history: list, context: dict,
                             emit) -> bool:
@@ -213,8 +221,11 @@ class GatewayChat:
         return self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted)
 
     def _run_in_gateway(self, task: dict, bot: dict, text: str, emit, *, silent: bool = False,
-                        context_id: str | None = None, wanted=None) -> bool:
-        """Give a turn to the adapter of the bot's profile. Wait for one, at most GATEWAY_WAIT_SECONDS."""
+                        context_id: str | None = None, wanted=None, session: str | None = None) -> bool:
+        """Give a turn to the adapter of the bot's profile. Wait for one, at most GATEWAY_WAIT_SECONDS.
+
+        The turn joins the bot's conversation, or the Hermes session `session`, for example of a cron run
+        (hooks.join_conversation finds a session by its ID when no conversation has that root)."""
         from .native_conversation import session_root
         home = self.profiles.home(bot)
         deadline = time.monotonic() + GATEWAY_WAIT_SECONDS
@@ -233,7 +244,8 @@ class GatewayChat:
                         # The worker resumes the chat of a bot from this root (native_conversation.NativeConversation).
                         self.gateway_bridge.run_turn(
                             task['id'], home, bot['id'], text, emit, chat_name=bot.get('name') or 'Coconut',
-                            session_root=session_root(bot, epoch=task.get('_conversation_epoch')), silent=silent,
+                            session_root=session or session_root(bot, epoch=task.get('_conversation_epoch')),
+                            silent=silent,
                             context_id=context_id)
                         return True
                     except GatewayUnavailable:
@@ -554,7 +566,8 @@ class GatewayChat:
             # The gateway owns the native claim of this run, so Coconut has no native job to finish.
             task.update(status='working', summary='Working', title=name, routine_id=routine_id,
                         _native_job_finished=True, _turn_started_at=now(), _native_turn_id=uid(),
-                        _gateway_cron=dict(job_id=job_id, execution_id=execution_id, turn_id=turn), updated_at=now())
+                        _gateway_cron=dict(job_id=job_id, execution_id=execution_id, turn_id=turn,
+                                           session_id=str(data.get('session_id') or '')[:200]), updated_at=now())
             self._put('tasks', task)
             self._event('task.updated', self._public(task), bot['id'], task['id'])
             routine = self.db.execute('SELECT data FROM routines WHERE id=?', (routine_id,)).fetchone()
