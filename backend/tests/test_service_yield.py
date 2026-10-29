@@ -50,7 +50,7 @@ class FakeDocker:
 
     def __init__(self, items, volumes, networks):
         self.items, self.volumes, self.networks = items, volumes, networks
-        self.calls, self.clients = [], []
+        self.calls, self.clients, self.machines = [], [], []
         self.stop_behavior = None
         self.on_containers = None
 
@@ -75,6 +75,12 @@ class FakeDocker:
     def port_clients(self, ports, addresses):
         self.calls.append(('port_clients', tuple(sorted(ports)), tuple(addresses)))
         return list(self.clients)
+
+    def running_machines(self):
+        self.calls.append(('machines',))
+        if isinstance(self.machines, Exception):
+            raise self.machines
+        return copy.deepcopy(self.machines)
 
     def stop(self, ids):
         self.calls.append(('stop', tuple(ids)))
@@ -476,7 +482,8 @@ class ServiceYieldTests(unittest.TestCase):
             release.set()
             thread.join()
         # Only read-only checks ran before the gate.
-        self.assertEqual({call[0] for call in self.docker.calls}, {'containers', 'network', 'volume', 'port_clients'})
+        self.assertEqual({call[0] for call in self.docker.calls},
+                         {'containers', 'network', 'volume', 'port_clients', 'machines'})
 
     def test_the_slow_checks_run_without_the_dispatch_gate_and_any_change_before_the_gate_stops_nothing(self):
         free = []
@@ -854,6 +861,30 @@ class ServiceYieldTests(unittest.TestCase):
                 IPAddress='172.30.250.250') or set()):
             self.refused('changed while Coconut checked it')
 
+    def test_a_running_orbstack_machine_or_an_unreadable_machine_list_refuses(self):
+        # A running OrbStack Linux machine can connect to the containers through docker.orb.internal, out of sight of
+        # lsof on this Mac and of docker ps. Its name and details never reach the receipt.
+        machine = {'name': 'secret-ubuntu-machine', 'state': 'running', 'image': {'distro': 'ubuntu'}}
+        for machines, pattern in (([machine], 'OrbStack machine runs'),
+                                  (Refused('Coconut cannot read the OrbStack machines.'), 'cannot read the OrbStack')):
+            self.docker.machines = machines
+            with self.subTest(pattern=pattern):
+                self.refused(pattern)
+        # A machine that starts after the slow checks refuses in the check under the dispatch gate.
+        self.docker.machines = []
+        with patch('coconut.service_yield.process_outcomes',
+                   side_effect=lambda probe=None: self.docker.machines.append(machine) or set()):
+            self.refused('OrbStack machine runs')
+        self.assertEqual([c for c in self.docker.calls if c[0] == 'machines'], [('machines',)] * 4)
+        # No running machine: the yield proceeds, and the receipt holds no machine data.
+        self.docker.machines = []
+        receipt = self.call()
+        self.assert_stopped(receipt)
+        [record] = self.records()
+        for saved in (receipt, record):
+            self.assertNotIn('secret-ubuntu-machine', json.dumps(saved))
+            self.assertNotIn('machine', json.dumps(saved).lower())
+
     def test_a_technical_lane_turn_cannot_yield(self):
         self.assertIn('service_yield', REFUSED_EVENTS)
         task, _ = lanes.IndependentTechnicalWorkTests.admitted_turn.__get__(self)()
@@ -929,6 +960,36 @@ class DockerCliTests(unittest.TestCase):
             DockerCli('docker').port_clients({3074}, ())
         with patch('coconut.service_yield.subprocess.run') as run:
             self.assertEqual(DockerCli('docker').port_clients(set(), ()), [])
+        run.assert_not_called()
+
+
+class OrbMachineListTests(unittest.TestCase):
+    def run_list(self, **result):
+        with patch('coconut.service_yield.orb_executable', return_value='/opt/homebrew/bin/orb'), \
+                patch('coconut.service_yield.subprocess.run', **result) as run:
+            try:
+                return DockerCli('docker').running_machines()
+            finally:
+                for call in run.call_args_list:
+                    self.assertEqual(call.args[0], ['/opt/homebrew/bin/orb', 'list', '--running', '--format', 'json'])
+
+    def test_only_a_readable_json_list_passes(self):
+        self.assertEqual(self.run_list(return_value=Mock(returncode=0, stdout='[]\n')), [])
+        self.assertEqual(len(self.run_list(return_value=Mock(returncode=0, stdout='[{"name": "ubuntu"}]'))), 1)
+        for result in (dict(return_value=Mock(returncode=1, stdout='[]')), dict(return_value=Mock(returncode=0, stdout='')),
+                       dict(return_value=Mock(returncode=0, stdout='not json')),
+                       dict(return_value=Mock(returncode=0, stdout='{"machines": []}')),
+                       dict(return_value=Mock(returncode=0, stdout='null')),
+                       dict(side_effect=subprocess.TimeoutExpired('orb', 30)), dict(side_effect=OSError('denied'))):
+            with self.subTest(result=result), self.assertRaisesRegex(Refused, 'cannot read the OrbStack machines'):
+                self.run_list(**result)
+
+    def test_a_missing_orb_command_refuses_without_running_anything(self):
+        with patch('coconut.service_yield.shutil.which', return_value=None), \
+                patch('coconut.service_yield.os.path.isfile', return_value=False), \
+                patch('coconut.service_yield.subprocess.run') as run, \
+                self.assertRaisesRegex(Refused, 'without the orb command'):
+            DockerCli('docker').running_machines()
         run.assert_not_called()
 
 

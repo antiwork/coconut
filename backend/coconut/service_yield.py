@@ -54,6 +54,9 @@ LOOPBACK_BINDINGS = ('127.0.0.1', '::1')
 # *.orb.local name resolves to it. lsof -n shows such a client with the container's address as the destination, on any
 # port. Docker shows each address of a container's network endpoint in these fields.
 ADDRESS_FIELDS = ('IPAddress', 'GlobalIPv6Address', 'LinkLocalIPv6Address')
+# A running OrbStack Linux machine can connect to the containers through docker.orb.internal. Neither lsof on this
+# Mac nor docker ps can see that connection, so any running machine refuses. This reads the list and changes nothing.
+MACHINES = ('list', '--running', '--format', 'json')
 # A local test setup has a few services. A larger project is not task-local test setup.
 CONTAINER_LIMIT = 32
 STOP_GRACE_SECONDS = 10
@@ -178,7 +181,7 @@ def evidence(docker, project, binding):
     network. It shares no namespace and no other container's volumes. No other running container may share a volume,
     a network, a namespace, a link, or the workspace, and none may use the host network. No local process may hold an established TCP connection or a
     connected UDP socket to a published port or to an address of a running container. A one-off command, an exec
-    session, a paused container, or a restarting container means the project is in use.
+    session, a paused container, or a restarting container means the project is in use. No OrbStack machine may run.
     """
     root = binding['path']
     containers = docker.containers()
@@ -262,6 +265,9 @@ def evidence(docker, project, binding):
             raise Refused('Another container uses this project or its workspace.')
     if docker.port_clients(ports, addresses):
         raise Refused('A local process is connected to a port or an address of this project.')
+    # Only the count matters. No machine name or detail goes into the evidence or the receipt.
+    if docker.running_machines():
+        raise Refused('An OrbStack machine runs, and it can reach these containers out of Coconut’s sight.')
     found = [state(c) for c in own]
     return dict(working_dir=working_dir, config_files=files, containers=found, addresses=sorted(addresses),
                 stop_ids=sorted(c['id'] for c in found if c['running']))
@@ -283,8 +289,17 @@ def docker_executable():
     raise Refused('Docker is not available on this Mac.')
 
 
+def orb_executable():
+    for candidate in (shutil.which('orb'), '/opt/homebrew/bin/orb', '/usr/local/bin/orb',
+                      str(Path.home() / '.orbstack' / 'bin' / 'orb'), '/Applications/OrbStack.app/Contents/MacOS/bin/orb'):
+        if candidate and os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    raise Refused('Coconut cannot check the OrbStack machines without the orb command.')
+
+
 class DockerCli:
-    """Fixed Docker and lsof commands. No argument comes from a bot except a validated project name or container ID."""
+    """Fixed Docker, lsof, and orb commands. No argument comes from a bot except a validated project name or container
+    ID."""
 
     def __init__(self, executable=None):
         self.executable = executable
@@ -352,6 +367,21 @@ class DockerCli:
                 if ip in targets or (ip.is_loopback or ip.is_unspecified) and int(port) in ports:
                     found.append(dict(pid=pid, command=command, remote=remote))
         return found
+
+    def running_machines(self):
+        """The running OrbStack machines, from a read-only list. Anything but a readable JSON list refuses.
+
+        With no running machine, this command exits 0 and prints [] on the OrbStack of this deployment. Other output,
+        null included, is not that answer, so it refuses.
+        """
+        try:
+            result = subprocess.run([orb_executable(), *MACHINES], capture_output=True, text=True, timeout=30)
+            machines = json.loads(result.stdout) if result.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired, ValueError) as error:
+            raise Refused('Coconut cannot read the OrbStack machines.') from error
+        if not isinstance(machines, list):
+            raise Refused('Coconut cannot read the OrbStack machines.')
+        return machines
 
     def stop(self, ids):
         """Stop the exact containers. Return Docker's exit status and message, or raise when the result is unknown."""
