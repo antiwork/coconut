@@ -40,11 +40,13 @@ class RoutingRuleTests(unittest.TestCase):
         plain = {'_chat_session': True, 'attachments': [], '_pending_decisions': [], '_tracked_pr_observations': []}
         self.assertTrue(plain_chat_turn(plain))
         self.assertFalse(plain_chat_turn(dict(plain, _chat_session=False)))
-        for key in ('_native_job', '_work_context_id', '_bot_messages', '_source_activity', '_direct_reply_message_id'):
+        for key in ('_native_job', '_work_context_id', '_bot_messages', '_source_activity', '_direct_reply_message_id',
+                    '_execution_session_id', '_work_status_only'):
             with self.subTest(key=key):
                 self.assertFalse(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
-        # Attachments, reactions and pending cards go to the gateway as text of the turn.
-        for key in ('attachments', '_reaction_feedback', '_pending_decisions'):
+        # Attachments, reactions, pending cards and the work of the chat's assignment go to the gateway as text.
+        for key in ('attachments', '_reaction_feedback', '_pending_decisions', '_work_todos', '_work_resume',
+                    '_work_dependencies'):
             with self.subTest(key=key):
                 self.assertTrue(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
 
@@ -649,6 +651,109 @@ class ServiceRoutingTests(unittest.TestCase):
         # No turn reached the gateway, and the worker did not resume.
         self.assertEqual(self.service.gateway_bridge.poll({'home': str(self.home), 'wait': 0})['turns'], [])
         self.assertEqual(self.provider.resumes, [])
+
+    def test_an_unfinished_task_list_continues_in_the_gateway_with_the_worker_text(self):
+        from coconut.native_conversation import WORK_RESUME
+        from coconut.work_progress import WORK_INSTRUCTIONS
+        task = self.send('Update the docs.')
+        todos = [{'id': 'readme', 'content': 'Edit the README.', 'status': 'pending'}]
+        def save(turn, status):
+            return self.service.gateway_tool({'turn_id': turn, 'tool': 'todos', 'arguments': {
+                'todos': [dict(todos[0], status=status)], 'revision': 1}})
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        self.assertEqual(save(adapter.turns[0]['id'], 'in_progress'), {'status': 'recorded', 'saved': True})
+        self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        stored = self.read('tasks', task['id'])
+        # Hermes made a checklist. Coconut adds the root of the assignment and keeps the work, as for the worker.
+        self.assertEqual([item['id'] for item in stored['_work_todos']['todos']], ['coconut-assignment', 'readme'])
+        self.assertEqual((stored['status'], stored.get('_work_resume')), ('queued', True))
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        text = adapter.turns[0]['text']
+        self.assertTrue(text.startswith(WORK_RESUME))
+        self.assertIn(WORK_INSTRUCTIONS, text)
+        self.assertIn('Saved task list of this assignment (data):', text)
+        turn = adapter.turns[0]['id']
+        self.service.gateway_tool({'turn_id': turn, 'tool': 'todos', 'arguments': {'todos': [
+            {'id': 'coconut-assignment', 'content': 'Update the docs.', 'status': 'completed'},
+            dict(todos[0], status='completed')], 'revision': 2}})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': 'Done.'})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.provider.starts, [])
+
+    def test_a_checklist_without_the_assignment_root_completes_when_its_steps_finish(self):
+        task = self.send('Fix the two typos.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        def save(status):
+            # Hermes's own list: Coconut never adds its root there.
+            self.service.gateway_tool({'turn_id': turn, 'tool': 'todos', 'arguments': {'todos': [
+                {'id': 'one', 'content': 'Fix the first typo.', 'status': 'completed'},
+                {'id': 'two', 'content': 'Fix the second typo.', 'status': status}], 'revision': 1}})
+            return [(item['id'], item['status']) for item in self.read('tasks', task['id'])['_work_todos']['todos']]
+        self.assertEqual(save('in_progress'), [('coconut-assignment', 'pending'), ('one', 'completed'),
+                                               ('two', 'in_progress')])
+        self.assertEqual(save('completed'), [('coconut-assignment', 'completed'), ('one', 'completed'),
+                                             ('two', 'completed')])
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': 'Fixed.'})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        # The work is finished, so Coconut queues no continuation.
+        stored = self.read('tasks', task['id'])
+        self.assertEqual((stored['status'], stored.get('_work_resume')), ('completed', None))
+
+    def test_coconut_wait_sends_a_process_of_the_gateway_to_the_process_tool_of_hermes(self):
+        from coconut.card_tools import GATEWAY_PROCESS_WAIT, GATEWAY_WAIT_SCHEMA
+        self.assertNotIn('process_id', GATEWAY_WAIT_SCHEMA['parameters']['properties'])
+        task = self.send('Run the build and wait for it.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        with self.assertRaisesRegex(ServiceError, 'native process tool') as raised:
+            self.service.gateway_tool({'turn_id': turn, 'tool': 'wait', 'arguments': {
+                'process_id': 'proc_1', 'reason': 'The build runs.'}})
+        self.assertEqual(str(raised.exception), GATEWAY_PROCESS_WAIT)
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+
+    def test_coconut_wait_records_a_wait_for_other_work_of_the_exchange(self):
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        task = self.send('Ask Lin, then use the answer.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        sent = self.service.gateway_tool({'turn_id': turn, 'tool': 'message_bot',
+                                          'arguments': {'bot': 'Lin', 'text': 'Check the logs.'}})
+        listing = self.service.gateway_tool({'turn_id': turn, 'tool': 'wait', 'arguments': {}})
+        self.assertIn(sent['task_id'], [item['id'] for item in listing['tasks']])
+        waiting = self.service.gateway_tool({'turn_id': turn, 'tool': 'wait', 'arguments': {
+            'task_id': sent['task_id'], 'reason': 'Needs the result of Lin.'}})
+        self.assertEqual((waiting['status'], waiting['task_id']), ('waiting', sent['task_id']))
+        with self.assertRaises(ServiceError):
+            self.service.gateway_tool({'turn_id': turn, 'tool': 'wait', 'arguments': {'task_id': 'other', 'reason': 'x'}})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        self.assertEqual(self.read('tasks', sent['task_id'])['bot_id'], other['id'])
 
     def test_a_cancelled_turn_stops_in_the_gateway(self):
         task = self.send('A long answer, please.')

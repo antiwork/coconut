@@ -39,6 +39,11 @@ ASK = 'Ask me on a card.'
 ASKED = 'I asked you on a card.'
 RESUMED = 'Continue the original task using this recorded answer.'
 SHIPPED = 'Shipping now.'
+# A chat turn that leaves its task list unfinished, and the turn that Coconut starts to continue it.
+LIST = 'Track the docs work in a list.'
+LISTED = 'The list is ready.'
+CONTINUE = 'Continue the unfinished assignment from its saved task list.'
+FINISHED_LIST = 'The docs work is done.'
 CARD = dict(title='Ship the release?', context='The build passed and the notes are ready.',
             options=[dict(id='ship', label='Ship it', explanation=''), dict(id='wait', label='Wait a day', explanation='')])
 
@@ -57,6 +62,16 @@ def answer(request):
         return dict(role='assistant', content='[SILENT]')
     if RESUMED in last:
         return dict(role='assistant', content=SHIPPED)
+    if (LIST in last or CONTINUE in last) and request.get('tools'):
+        if any(message.get('role') == 'tool' for message in messages[users[-1]:]):
+            return dict(role='assistant', content=FINISHED_LIST if CONTINUE in last else LISTED)
+        status = 'completed' if CONTINUE in last else 'pending'
+        todos = [dict(id='coconut-assignment', content=LIST, status=status), dict(id='docs', content='Write the docs.', status=status)]
+        # A Hermes lists todo_list directly or behind its tool search bridge.
+        names = {tool.get('function', {}).get('name') for tool in request['tools']}
+        call = (dict(name='todo_list', arguments=json.dumps(dict(todos=todos))) if 'todo_list' in names else
+                dict(name='tool_call', arguments=json.dumps(dict(name='todo_list', arguments=dict(todos=todos)))))
+        return dict(role='assistant', content=None, tool_calls=[dict(id='call-todo', type='function', function=call)])
     if ASK in last and request.get('tools'):
         if any(message.get('role') == 'tool' for message in messages[users[-1]:]):
             return dict(role='assistant', content=ASKED)
@@ -234,6 +249,18 @@ class NativeGatewayChatTests(unittest.TestCase):
             self.assertEqual((service._get('tasks', task['id'])['status'], replies[-1:]), ('completed', [SHIPPED]),
                              diagnostics())
             self.assertNotIn(ASKED, replies, diagnostics())
+
+            # The todo list of a gateway turn is the work of its task. An unfinished list continues in a later turn.
+            task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': LIST}, str(uuid4()), 'phone')
+            service._run_task(task['id'])
+            stored = service._get('tasks', task['id'])
+            self.assertEqual((stored['status'], stored.get('_work_resume')), ('queued', True), diagnostics())
+            self.assertEqual([item['id'] for item in stored['_work_todos']['todos']], ['coconut-assignment', 'docs'],
+                             diagnostics())
+            service._run_task(task['id'])
+            replies = [m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
+            self.assertEqual((service._get('tasks', task['id'])['status'], replies[-1:]), ('completed', [FINISHED_LIST]),
+                             diagnostics())
 
             # A background process of a chat turn. Hermes runs its own turn for the completion, outside a Coconut
             # turn, and its reply reaches the bot's chat as a message of the bot.

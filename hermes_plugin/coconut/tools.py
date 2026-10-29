@@ -97,5 +97,6 @@ def register(ctx):
     for schema, handler in ((module.QUESTION_SCHEMA, _service_tool('ask')),
                             (module.SUGGEST_SCHEMA, _service_tool('suggest')),
                             (reply_schema(), _service_tool('resolve_reply')),
+                            (module.GATEWAY_WAIT_SCHEMA, _service_tool('wait')),
                             (TRACK_PR, _service_tool('track_pr')), (MESSAGE_BOT, _service_tool('message_bot'))):
         ctx.register_tool(name=schema['name'], toolset=TOOLSET, schema=schema, handler=handler, emoji='🥥')
