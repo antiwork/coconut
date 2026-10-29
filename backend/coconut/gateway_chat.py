@@ -172,6 +172,18 @@ class GatewayChat:
         return bool(getattr(self, 'scan_profiles', False) and getattr(self.provider, 'python', None)
                     and getattr(self.provider, 'hermes_root', None))
 
+    def join_conversation(self, task: dict) -> None:
+        """Make a new task of a bot exchange or of an accepted proposal a turn of the bot's conversation. The caller
+        holds the transaction and saves the task.
+
+        The dispatchers give a task outside the conversation its own work session, which only the worker has
+        (`_ensure_execution_session`, the Kanban dispatch). With the gateway, such a task runs in the bot's gateway chat
+        instead, as a chat turn (`_chat_session`). A task that already has a work session keeps it, and fixture mode
+        keeps the worker's way.
+        """
+        if self.gateway_enabled() and not task.get('_execution_session_id'):
+            task['_chat_session'] = True
+
     def gateway_status(self) -> dict:
         homes = set(self.gateway_bridge.connected_homes())
         profiles = sorted(row['name'] for row in self.profiles.rows.values()

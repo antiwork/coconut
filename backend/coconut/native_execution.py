@@ -303,6 +303,9 @@ class NativeExecution:
                            conversation_bot_id=task['conversation_bot_id'], record_message=False, human_authored=False)
                 stored = self._get('tasks', continuation['id'])
                 stored['_resume_decision'] = decision['id']
+                if task.get('_chat_session'):
+                    # With the gateway, a proposal of the bot's conversation continues there.
+                    self.join_conversation(stored)
                 if choice == 'reply':
                     stored['_direct_reply_message_id'] = reply_message_id
                 stored['title'] = decision['title'][:120]

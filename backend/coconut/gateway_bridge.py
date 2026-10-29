@@ -65,14 +65,13 @@ WORKER_MESSAGE_FIELDS = ('work_context',)
 
 
 def plain_chat_turn(task: dict) -> bool:
-    """Whether a turn can run in the gateway: a turn of a bot's own conversation without a worker input.
+    """Whether a turn can run in the gateway: a turn of the bot's conversation (`_chat_session`) without a worker input.
 
-    A person's message in the bot's chat, a message of another bot, the return of a delegated task and the
-    continuation of a proposal all run in the bot's own conversation in the worker (native_conversation.
-    NativeConversation without a work session), so they all run in its gateway chat. A task with its own work session
+    With the gateway, a message of another bot, the return of a delegated task and the continuation of an accepted
+    proposal are turns of the bot's conversation too (gateway_chat.join_conversation). A task with its own work session
     (`_execution_session_id`) stays with the worker.
     """
-    return not any(task.get(key) for key in WORKER_INPUTS)
+    return bool(task.get('_chat_session')) and not any(task.get(key) for key in WORKER_INPUTS)
 
 
 class GatewayUnavailable(RuntimeError):

@@ -1963,6 +1963,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                     # The coordinator continues the failed worker in its saved workspace.
                     self._ensure_execution_session(previous)
                     task['_execution_session_id'] = previous['_execution_session_id']
+            # With the gateway, the message or the return is a turn of the target bot's conversation.
+            self.join_conversation(task)
         if native_reply or native_return:
             pass
         elif not continuation_owner and target_id == assignment.get('source_bot_id') and owner_id:
