@@ -348,6 +348,10 @@ class GatewayChat:
         if tool == 'resolve_reply':
             return self.resolve_chat_decision(task_id, arguments)
         if tool == 'wait':
+            if arguments.get('process_id'):
+                # Hermes runs the processes of a gateway turn, and Coconut has no receipts for them.
+                from .card_tools import GATEWAY_PROCESS_WAIT
+                raise ServiceError(400, GATEWAY_PROCESS_WAIT)
             return self.wait_for_task(task_id, arguments)
         if tool == 'todos':
             return self.gateway_todos(task_id, arguments)
@@ -385,7 +389,8 @@ class GatewayChat:
             if task.get('_gateway_cron'):
                 # A cron run keeps its list in its own Hermes session. Coconut does not continue a routine itself.
                 return {'status': 'recorded', 'saved': False}
-            payload = NativeWork(dict(operation='start', task=task)).from_state(state)
+            # Hermes's list of the turn never holds the assignment root, so Coconut infers it each time.
+            payload = NativeWork(dict(operation='start', task=task)).from_state(state, inferred_root=True)
             self._save_work_progress(task, payload)
         return {'status': 'recorded', 'saved': bool(payload)}
 

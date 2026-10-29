@@ -691,6 +691,48 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
         self.assertEqual(self.provider.starts, [])
 
+    def test_a_checklist_without_the_assignment_root_completes_when_its_steps_finish(self):
+        task = self.send('Fix the two typos.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        def save(status):
+            # Hermes's own list: Coconut never adds its root there.
+            self.service.gateway_tool({'turn_id': turn, 'tool': 'todos', 'arguments': {'todos': [
+                {'id': 'one', 'content': 'Fix the first typo.', 'status': 'completed'},
+                {'id': 'two', 'content': 'Fix the second typo.', 'status': status}], 'revision': 1}})
+            return [(item['id'], item['status']) for item in self.read('tasks', task['id'])['_work_todos']['todos']]
+        self.assertEqual(save('in_progress'), [('coconut-assignment', 'pending'), ('one', 'completed'),
+                                               ('two', 'in_progress')])
+        self.assertEqual(save('completed'), [('coconut-assignment', 'completed'), ('one', 'completed'),
+                                             ('two', 'completed')])
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': 'Fixed.'})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        # The work is finished, so Coconut queues no continuation.
+        stored = self.read('tasks', task['id'])
+        self.assertEqual((stored['status'], stored.get('_work_resume')), ('completed', None))
+
+    def test_coconut_wait_sends_a_process_of_the_gateway_to_the_process_tool_of_hermes(self):
+        from coconut.card_tools import GATEWAY_PROCESS_WAIT, GATEWAY_WAIT_SCHEMA
+        self.assertNotIn('process_id', GATEWAY_WAIT_SCHEMA['parameters']['properties'])
+        task = self.send('Run the build and wait for it.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        with self.assertRaisesRegex(ServiceError, 'native process tool') as raised:
+            self.service.gateway_tool({'turn_id': turn, 'tool': 'wait', 'arguments': {
+                'process_id': 'proc_1', 'reason': 'The build runs.'}})
+        self.assertEqual(str(raised.exception), GATEWAY_PROCESS_WAIT)
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+
     def test_coconut_wait_records_a_wait_for_other_work_of_the_exchange(self):
         other = self.write('POST', '/v1/bots', {'name': 'Lin'})
         task = self.send('Ask Lin, then use the answer.')

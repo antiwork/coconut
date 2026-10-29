@@ -71,10 +71,22 @@ class NativeWork:
             return {}
         return self.from_state(snapshot(agent._todo_store.snapshot()))
 
-    def from_state(self, state):
-        """The saved work of a todo list (a snapshot): the assignment root comes first. {} when nothing to save."""
+    def from_state(self, state, *, inferred_root=False):
+        """The saved work of a todo list (a snapshot): the assignment root comes first. {} when nothing to save.
+
+        With `inferred_root`, the list never holds the root: Coconut adds it, as for the gateway, whose Hermes list
+        Coconut does not change. The root is then completed when every step is completed or cancelled. The worker
+        restores the root into the agent's list, so its list keeps the root.
+        """
         if not self.capture:
             return {}
+        if inferred_root and state['todos'] and not any(t['id'] == ROOT_ID for t in state['todos']):
+            saved = next((t for t in (self.saved or {}).get('todos', []) if t['id'] == ROOT_ID), None)
+            root = dict(saved or self.initial()['todos'][0])
+            root['status'] = ('completed' if all(t['status'] in ('completed', 'cancelled') for t in state['todos'])
+                              else 'pending' if root['status'] in ('completed', 'cancelled') else root['status'])
+            state['todos'] = [root] + state['todos'][:255]
+            return {'_work_todos': state}
         if not self.enabled:
             if not state['todos']:
                 return {}

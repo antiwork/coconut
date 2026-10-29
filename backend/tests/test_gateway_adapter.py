@@ -727,12 +727,13 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(adapter.MODES['turn-b'], 'context')
 
     def test_registration_declares_a_trusted_service_platform_for_this_hermes(self):
-        calls, tool_names, hook_names, sections = [], [], [], {}
+        calls, tool_names, hook_names, sections, schemas = [], [], [], {}, {}
         class Context:
             def register_platform(self, **options):
                 calls.append(options)
             def register_tool(self, **options):
                 tool_names.append((options['name'], options['toolset']))
+                schemas[options['name']] = options['schema']
             def register_hook(self, name, callback):
                 hook_names.append(name)
             def register_system_prompt_section(self, id, content, *, position='after_memory', max_chars=4000):
@@ -754,6 +755,8 @@ class GatewayAdapterTests(unittest.TestCase):
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
         self.assertEqual(len(tool_names), 6)
+        # A gateway turn waits for its processes with the process tool of Hermes, not with coconut_wait.
+        self.assertNotIn('process_id', schemas['coconut_wait']['parameters']['properties'])
         options = calls[0]
         self.assertEqual((options['name'], options['label'], options['trusted_inbound'], options['display_tier']),
                          ('coconut', 'Coconut', True, 'high'))
