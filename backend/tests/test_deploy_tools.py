@@ -65,6 +65,8 @@ class FakeOperations:
         self.fail = fail
         self.fail_stop_after = fail_stop_after
         self.stop_count = 0
+        # The host.py that each helper call ran in place of the installed one, with its content at the call.
+        self.helpers = []
 
     def record(self, name, root, *args):
         self.calls.append((name, Path(root), *args))
@@ -74,14 +76,19 @@ class FakeOperations:
     def preflight(self, root, package):
         self.record('preflight', root, package)
 
-    def inspect(self, root):
+    def note_helper(self, name, source):
+        self.helpers.append((name, None if source is None else Path(source).read_bytes()))
+
+    def inspect(self, root, source=None):
+        self.note_helper('inspect', source)
         self.record('inspect', root)
         return self.state.copy()
 
     def assert_stopped(self, root):
         self.record('assert_stopped', root)
 
-    def stop(self, root):
+    def stop(self, root, source=None):
+        self.note_helper('stop', source)
         self.stop_count += 1
         self.record('stop', root)
         if self.fail_stop_after is not None and self.stop_count > self.fail_stop_after:
@@ -248,7 +255,7 @@ class DeploymentLifecycleTests(unittest.TestCase):
     def test_an_update_under_the_app_drains_stops_and_restores_the_login_item(self):
         self.receive()
         class DrainingOperations(FakeOperations):
-            def drain(self, root):
+            def drain(self, root, source=None):
                 self.record('drain', root)
         operations = DrainingOperations(mode='app')
         result = self.receive(files=package_files(**{'README.md': b'New code.\n'}), operations=operations)
@@ -386,7 +393,7 @@ class DeploymentLifecycleTests(unittest.TestCase):
 
     def test_an_update_lets_the_running_turns_finish_before_it_stops_the_service(self):
         class DrainingOperations(FakeOperations):
-            def drain(self, root):
+            def drain(self, root, source=None):
                 self.record('drain', root)
                 return {'drained': True}
         self.receive()
@@ -483,6 +490,48 @@ class DeploymentLifecycleTests(unittest.TestCase):
             self.receive(files=package_files(**{'README.md': b'Replacement\n'}), operations=operations)
         self.assertEqual((self.target / 'README.md').read_bytes(), before)
         self.assertNotIn('prepare', [call[0] for call in operations.calls])
+
+    def test_an_update_stops_the_old_service_with_the_host_of_the_new_package(self):
+        # The installed host.py of an earlier release can have an older stop. The new package brings the fixed one.
+        self.receive()
+        new_host = b'print("new host entry")\n'
+        operations = FakeOperations(mode='app')
+        self.receive(files=package_files(**{'scripts/host.py': new_host}), operations=operations)
+        self.assertEqual(operations.helpers, [('inspect', new_host), ('stop', new_host)])
+        self.assertFalse((self.target / '.runtime/deploy/host-helper.py').exists())
+
+    def test_a_failed_stop_names_its_reason(self):
+        self.receive()
+        operations = FakeOperations(mode='app', fail='stop')
+        with self.assertRaisesRegex(deploy.DeployError, 'Source was not replaced.* Reason: The injected operation failed.'):
+            self.receive(files=package_files(**{'README.md': b'Replacement\n'}), operations=operations)
+        self.assertFalse((self.target / '.runtime/deploy/host-helper.py').exists())
+
+    def test_the_journal_of_a_failed_stop_recovers_with_the_stop_of_the_new_package(self):
+        # The state of the Mac mini after app 539: the stop failed, so the journal stays at "prepared" with the old source.
+        self.receive()
+        before = (self.target / 'README.md').read_bytes()
+        with self.assertRaises(deploy.DeployError):
+            self.receive(files=package_files(**{'README.md': b'Stuck update.\n'}), operations=FakeOperations(mode='app', fail='stop'))
+        journal = self.target / '.runtime/deploy/update.json'
+        self.assertEqual(json.loads(journal.read_text())['phase'], 'prepared')
+        self.assertEqual((self.target / 'README.md').read_bytes(), before)
+        # The next app brings a fixed host.py. Its install first rolls the journal back, then updates.
+        fixed_host = b'print("fixed host entry")\n'
+        operations = FakeOperations(mode='app')
+        self.receive(files=package_files(**{'scripts/host.py': fixed_host, 'README.md': b'Fixed update.\n'}),
+                     operations=operations)
+        self.assertEqual(operations.helpers, [('stop', fixed_host), ('inspect', fixed_host), ('stop', fixed_host)])
+        self.assertEqual([call[0] for call in operations.calls][:3], ['preflight', 'stop', 'restore'])
+        self.assertFalse(journal.exists())
+        self.assertEqual((self.target / 'README.md').read_bytes(), b'Fixed update.\n')
+
+    def test_a_failed_recovery_stop_names_its_reason(self):
+        self.receive()
+        with self.assertRaises(deploy.DeployError):
+            self.receive(files=package_files(**{'README.md': b'Stuck update.\n'}), operations=FakeOperations(mode='app', fail='stop'))
+        with self.assertRaisesRegex(deploy.DeployError, 'could not stop its service.* Reason: The injected operation failed.'):
+            self.receive(files=package_files(**{'README.md': b'Retry.\n'}), operations=FakeOperations(mode='app', fail='stop'))
 
     def test_failed_cleanup_stop_keeps_current_code_for_the_running_process(self):
         self.receive()
@@ -754,6 +803,107 @@ class DeploymentCommandTests(unittest.TestCase):
 
     def test_failed_command_stops_descendants(self):
         self.assert_descendants_stop(timeout=2, parent_exit='failure')
+
+
+class DeploymentHelperTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        (self.root / 'scripts').mkdir()
+        # The installed host.py of an earlier release, whose stop gives up too early.
+        (self.root / 'scripts/host.py').write_text("def stop_for_update():\n    raise SystemExit('Coconut did not stop.')\n")
+
+    def test_the_stop_runs_the_given_host_in_place_of_the_installed_one(self):
+        source = self.root / 'new-host.py'
+        source.write_text("ROOT = __file__\ndef stop_for_update():\n    return {'mode': 'app', 'project': ROOT}\n")
+        result = deploy.Operations().stop(self.root, source)
+        # The new code runs as the installed host.py, so it finds the install and its data from its own path.
+        self.assertEqual(result, {'mode': 'app', 'project': str(self.root / 'scripts/host.py')})
+
+    def test_a_failed_stop_names_the_reason_of_the_host(self):
+        with self.assertRaisesRegex(deploy.DeployError, r'^Service stop failed \(exit 1\): Coconut did not stop\.$'):
+            deploy.Operations().stop(self.root)
+
+    def test_the_stop_helper_waits_longer_than_the_stop_of_the_host(self):
+        spec = importlib.util.spec_from_file_location('coconut_deploy_tools_host', SCRIPTS / 'host.py')
+        host = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(host)
+        stop = host.STOP_GRACE_SECONDS + host.KILL_WAIT_SECONDS + 2 * (host.CHILD_STOP_SECONDS + host.KILL_WAIT_SECONDS)
+        self.assertGreater(deploy.STOP_HELPER_SECONDS, stop)
+        with patch.object(deploy.Operations, 'helper', return_value={}) as helper:
+            deploy.Operations().stop(self.root)
+        self.assertEqual(helper.call_args.kwargs['timeout'], deploy.STOP_HELPER_SECONDS)
+
+
+class DeploymentLogTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.home = Path(self.temporary.name).resolve()
+        self.root = self.home / 'Coconut'
+        (self.root / '.runtime/host').mkdir(parents=True)
+        self.log = self.root / deploy.LOG_PATH
+        deploy.TRANSCRIPT.clear()
+        self.addCleanup(deploy.TRANSCRIPT.clear)
+
+    def run_main(self, error):
+        def receive(directory, stream):
+            try:
+                deploy.Operations().command([sys.executable, '-c', 'import sys; print("helper output");'
+                                             'sys.exit("Coconut process 4242 did not end.")'],
+                                            self.root, 'Service stop', explain=True)
+            except deploy.DeployError as cause:
+                raise error from cause
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['deploy.py', 'receive', '--directory', 'Coconut']), \
+             patch.object(deploy, 'receive', side_effect=receive), patch.object(deploy.Path, 'home', return_value=self.home), \
+             patch.object(sys, 'stdout', output), self.assertRaises(SystemExit):
+            deploy.main()
+        return output.getvalue()
+
+    def test_a_failed_run_writes_its_output_and_traceback_to_the_log(self):
+        output = self.run_main(deploy.DeployError('Source was not replaced.'))
+        self.assertEqual(output.splitlines()[-1], 'COCONUT_DEPLOY_RESULT={"ok": false, "error": "Source was not replaced."}')
+        text = self.log.read_text()
+        for part in ('deploy.py receive --directory Coconut', 'Service stop: exit 1', 'helper output',
+                     'Coconut process 4242 did not end.', 'Traceback', 'The above exception was the direct cause',
+                     'COCONUT_DEPLOY_RESULT='):
+            self.assertIn(part, text)
+        self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
+
+    def test_the_log_moves_aside_when_it_is_full(self):
+        self.log.parent.mkdir()
+        self.log.write_text('x' * (deploy.LOG_LIMIT_BYTES + 1))
+        self.run_main(deploy.DeployError('First.'))
+        self.assertEqual(self.log.with_name('install-source.log.1').stat().st_size, deploy.LOG_LIMIT_BYTES + 1)
+        self.assertIn('First.', self.log.read_text())
+        self.run_main(deploy.DeployError('Second.'))
+        self.assertIn('First.', self.log.read_text())
+        self.assertIn('Second.', self.log.read_text())
+
+    def test_a_long_output_keeps_its_end(self):
+        deploy.log('Phase output:\n' + deploy.output_tail(b'a' * (deploy.LOG_OUTPUT_CHARACTERS + 10) + b'end'))
+        deploy.write_log(self.root)
+        text = self.log.read_text()
+        self.assertIn('[...]', text)
+        self.assertTrue(text.rstrip().endswith('end'))
+        self.assertLess(len(text), deploy.LOG_OUTPUT_CHARACTERS + 200)
+
+    def test_a_first_install_without_a_data_folder_gets_no_log(self):
+        shutil.rmtree(self.root / '.runtime')
+        deploy.log('A first install failed.')
+        self.assertIsNone(deploy.write_log(self.root))
+        self.assertFalse((self.root / '.runtime').exists())
+        self.assertEqual(deploy.TRANSCRIPT, [])
+
+    def test_the_log_does_not_follow_a_symbolic_link(self):
+        outside = self.home / 'outside.log'
+        self.log.parent.mkdir()
+        self.log.symlink_to(outside)
+        deploy.log('A run.')
+        self.assertIsNone(deploy.write_log(self.root))
+        self.assertFalse(outside.exists())
 
 
 class DeploymentAppTests(unittest.TestCase):

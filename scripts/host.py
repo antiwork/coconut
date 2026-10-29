@@ -55,7 +55,8 @@ def stopped_service(data: Path, action: str):
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise SystemExit(f"Stop Coconut before {action}. Unload its LaunchAgent if installed.") from None
+            raise SystemExit(f"Another process still locks {lock}. Stop Coconut before {action}. "
+                             "Unload its LaunchAgent if installed.") from None
         yield
 
 
@@ -285,7 +286,80 @@ def managed_current_process(data_dir: Path | None = None) -> bool:
     return launchd_pid(LABEL) == os.getpid()
 
 
+# The service stops its Hermes gateway and its workers before it exits (Service.close). Each one can take many seconds, so
+# a stop waits this long for a clean exit. Then it sends SIGKILL. An update drains the turns first, so little work is lost.
+STOP_GRACE_SECONDS = 120
+# After SIGKILL, the kernel ends a process at once. The wait covers a slow ps.
+KILL_WAIT_SECONDS = 10
+# The child processes of the service that are still alive after it ended get this long after SIGTERM, then SIGKILL.
+CHILD_STOP_SECONDS = 10
+
+
+def child_processes(pid: int) -> dict[int, tuple[int, str]]:
+    """Return the child processes of a process: {process ID: (process group ID, command)}.
+
+    The service starts its Hermes gateway, its workers, and the Kanban dispatcher as children, each in its own session.
+    A signal to the service does not reach them. ps lists them by their parent only while the service lives.
+    """
+    try:
+        result = subprocess.run(["ps", "-A", "-ww", "-o", "pid=,ppid=,pgid=,command="], capture_output=True, text=True)
+    except OSError:
+        return {}
+    if result.returncode:
+        return {}
+    children = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 3)
+        if len(fields) == 4 and fields[0].isdigit() and fields[1] == str(pid) and fields[2].isdigit():
+            children[int(fields[0])] = (int(fields[2]), fields[3])
+    return children
+
+
+def same_process(pid: int, command: str) -> bool:
+    """True while the process lives and still runs the command that Coconut saw. A reused process ID runs another one."""
+    state = process_state(pid)
+    return state is not None and not any(letter in state[0] for letter in EXITED) and state[1] == command
+
+
+def signal_child(pid: int, group: int, number: int) -> None:
+    # A child in its own session leads its process group. The group also holds its helpers, as Service.close stops them.
+    try:
+        if group == pid:
+            os.killpg(group, number)
+        else:
+            os.kill(pid, number)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def stop_children(children: dict[int, tuple[int, str]]) -> None:
+    """Stop the child processes of an ended service that are still alive: SIGTERM, then SIGKILL.
+
+    A Hermes gateway of the old source that keeps running blocks the gateway of the new source. A worker of the old source
+    can write to the data of the new one. So the update waits until each child has ended.
+    """
+    alive = {pid: value for pid, value in children.items() if same_process(pid, value[1])}
+    for number, seconds in ((signal.SIGTERM, CHILD_STOP_SECONDS), (signal.SIGKILL, KILL_WAIT_SECONDS)):
+        if not alive:
+            return
+        for pid, (group, _) in alive.items():
+            signal_child(pid, group, number)
+        deadline = time.monotonic() + seconds
+        while alive and time.monotonic() < deadline:
+            time.sleep(.1)
+            alive = {pid: value for pid, value in alive.items() if same_process(pid, value[1])}
+    if alive:
+        pid, (_, command) = next(iter(alive.items()))
+        raise SystemExit(f"The service ended, but its child process {pid} ({command[:120]}) did not end after SIGKILL. "
+                         "Coconut kept its data unchanged.")
+
+
 def stop_owned_process() -> None:
+    """Stop the service of this installation and its child processes. Return only when all of them have ended.
+
+    The service gets SIGTERM and STOP_GRACE_SECONDS to stop its children itself. Then it gets SIGKILL, and Coconut stops the
+    children that remain. Each failure names the process and the step.
+    """
     current = owned_process()
     if current is None:
         # A service that exits already can still hold service.lock. Wait until it is gone.
@@ -294,18 +368,39 @@ def stop_owned_process() -> None:
             return
     else:
         pid = current[0]
+    children = child_processes(pid)
+    if current is not None:
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
-            return
-    for _ in range(100):
+            pass
+    deadline = time.monotonic() + STOP_GRACE_SECONDS
+    killed = False
+    listed = time.monotonic()
+    while True:
         current = owned_process()
         if current is not None and current[0] != pid:
-            raise SystemExit("Another Coconut process started during the stop. Coconut kept its data unchanged.")
+            raise SystemExit(f"Another Coconut process ({current[0]}) started while process {pid} stopped. "
+                             "Coconut kept its data unchanged.")
         if current is None and ended(pid):
-            return
+            break
+        # The service can start a child while it stops. Its children are known by their parent only while it lives.
+        # ps lists every process, so the list is read again once a second.
+        if time.monotonic() - listed >= 1:
+            children.update(child_processes(pid))
+            listed = time.monotonic()
+        if time.monotonic() >= deadline:
+            if killed:
+                raise SystemExit(f"Coconut process {pid} did not end {KILL_WAIT_SECONDS} seconds after SIGKILL. "
+                                 "Its source and data remain unchanged.")
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            killed = True
+            deadline = time.monotonic() + KILL_WAIT_SECONDS
         time.sleep(.1)
-    raise SystemExit("Coconut did not stop. Its source and data remain unchanged.")
+    stop_children(children)
 
 
 def wait_for_agent_unloaded(timeout: float = 10) -> None:

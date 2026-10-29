@@ -85,6 +85,7 @@ All Coconut data is in the install folder (default `~/Coconut`). Read the files 
 |---|---|
 | `.runtime/host/logs/service.log` | The output of the service. |
 | `.runtime/host/logs/error.log` | The errors of the service. |
+| `.runtime/host/logs/install-source.log`, `install-source.log.1` | The full output of each source install, with the traceback of a failure. |
 | `.runtime/host/logs/tunnel.log`, `tunnel-error.log` | The relay sidecar. |
 | `.runtime/host/tunnel/events.log`, `events.log.1` | The connection events of the relay sidecar, as JSON lines. |
 | `.runtime/host/tunnel/status.json` | The state of the relay sidecar, with the last disconnect and its cause. |
