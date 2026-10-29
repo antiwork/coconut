@@ -236,6 +236,9 @@ class GatewayBridge:
         With `silent`, the turn may end in silence (TurnEvents)."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, text, chat_name, session_root)
         turn.silent = silent
+        if silent:
+            # The adapter marks the message as one that needs no reply (MessageEvent.reply_expected).
+            turn.request['silent'] = True
         with self.lock:
             # A stop that no adapter collected is old news after this long.
             for old in [old for old in self.turns.values()

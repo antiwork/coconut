@@ -208,7 +208,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 ### Phase 5, group 1: attachments and reactions
 
 - A chat turn with attached files, a reaction, or earlier emoji feedback goes to the gateway. The service writes the same context into the text of the turn as the worker writes into its prompt (`gateway_chat.gateway_turn_text`, with the shared `native_conversation.attachment_context` and `reaction_feedback_context`). The text of a text file goes into the turn, up to 128000 characters. A binary file, such as an image, is named, and the bot is told that it cannot read it, as in the worker.
-- A reaction turn may stay silent. The turn asks for `[SILENT]` when no useful reply exists. Hermes drops a reply that is only a marker, but the plugin streams the text first. So the service takes back the streamed marker, shows no commentary, and ends the task as a silent completion, as the worker does (`TurnEvents` with `silent`, `silent_responses.is_silence_reply`).
+- A reaction turn may stay silent. The turn asks for `[SILENT]` when no useful reply exists. The adapter marks its message with `reply_expected=False`, because Hermes otherwise replaces a silence marker on a person's message with a notice (`gateway.response_filters.silence_allowed`). Hermes then drops the marker, but the plugin streams the text first. So the service takes back the streamed marker, shows no commentary, and ends the task as a silent completion, as the worker does (`TurnEvents` with `silent`, `silent_responses.is_silence_reply`).
 - The service marks earlier emoji feedback as done after the turn, for both runtimes.
 - The worker still builds the same context for a turn that also has an input of a later group, for example an attachment with an open card.
 
