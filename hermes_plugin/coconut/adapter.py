@@ -11,6 +11,11 @@ reads the file again after a failed request. `gateway.platforms.coconut.extra.br
 Under a multiplexing gateway, each served profile has its own adapter. It connects in the scope of its profile, so the
 Hermes home that it names to the service is the home of that profile.
 
+Hermes also sends to a chat outside a Coconut turn. For example, it runs its own turn in the gateway session of the
+chat for the completion of a background process, a Kanban wake or a delegated result, and sends the reply at the end.
+Such a message goes to the service (`POST /v1/gateway/messages`), which shows it as a message of the bot in its chat.
+A status send outside a turn, such as a shutdown notice, stays in the gateway log.
+
 Clarify questions, command approvals and coconut_ask become decision cards on the phone, and the answer returns to
 Hermes through a later poll. The hooks (hooks.py) relay the streamed text of a turn and join the gateway session of a
 chat with the bot's native conversation. The tools (tools.py) reach the Coconut task of the chat.
@@ -25,6 +30,7 @@ import os
 from pathlib import Path
 import threading
 import time
+import urllib.error
 import urllib.request
 import uuid
 import weakref
@@ -48,6 +54,8 @@ STREAM_SECONDS = 0.2
 STREAM_CHARACTERS = 400
 # coconut_ask waits this long for the person.
 ASK_SECONDS = 6 * 3600
+# The ID of a message outside a Coconut turn starts with this prefix. Its edits and its delete take the same route.
+OUTSIDE = 'outside:'
 # The adapters of this process. The tools and the hooks find the adapter of a chat here.
 ADAPTERS = weakref.WeakSet()
 
@@ -289,9 +297,14 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        self._turns[event.source.chat_id] = event.message_id
+        # Only a turn that the service gave is a Coconut turn. Hermes also runs its own inputs through the adapter, for
+        # example the completion of a background process. Their sends go to the chat as messages outside a turn.
+        if event.message_id in self._active:
+            self._turns[event.source.chat_id] = event.message_id
 
     async def on_processing_complete(self, event: MessageEvent, outcome) -> None:
+        if event.message_id not in self._active:
+            return
         if self._turns.get(event.source.chat_id) == event.message_id:
             del self._turns[event.source.chat_id]
         self._typing.discard(event.message_id)
@@ -309,9 +322,7 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
     async def send(self, chat_id: str, content: str, reply_to=None, metadata=None) -> SendResult:
         turn = self._turns.get(str(chat_id))
         if turn is None:
-            # For example a cron delivery. Coconut shows only the replies of its own turns for now.
-            LOG.warning('Coconut: refused a message outside a Coconut turn.')
-            return SendResult(success=False, error='Coconut takes messages only during its own turns.')
+            return await self._send_outside(str(chat_id), str(content), metadata or {})
         self._count += 1
         message_id = f'{turn}:{self._count}'
         # The gateway marks status and commentary sends with _interim_send. Each is a complete message.
@@ -320,17 +331,71 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)
         return SendResult(success=True, message_id=message_id)
 
+    async def _send_outside(self, chat_id: str, content: str, metadata: dict) -> SendResult:
+        """Send a message outside a Coconut turn to the bot's chat, for example the reply of a Hermes turn for the
+        completion of a background process. The service records it as a message of the bot."""
+        if metadata.get('_interim_send'):
+            # The gateway marks status and advisory sends as interim, for example a shutdown notice. Outside a turn,
+            # no reply follows them, and they name gateway behavior that Coconut does not show.
+            LOG.info('Coconut: a gateway status message for chat %s stays in the log: %s', chat_id, content[:200])
+            return SendResult(success=True)
+        message_id = OUTSIDE + str(uuid.uuid4())
+        # The stream consumer of Hermes marks the first piece of a streamed reply with `expect_edits`.
+        fields = dict(kind='send', message_id=message_id, text=content, streaming=bool(metadata.get('expect_edits')))
+        if metadata.get('job_id'):
+            # A cron delivery. The service shows no second copy of a run that is already a routine task in the chat.
+            fields['job_id'] = str(metadata['job_id'])
+        result = await self._outside(chat_id, fields)
+        return SendResult(success=True, message_id=message_id) if result is True else result
+
+    async def _outside(self, chat_id: str, fields: dict):
+        """Report a message outside a turn to the service. True, or the failed SendResult."""
+        try:
+            answer = await self._request('/v1/gateway/messages', dict(fields, home=self._home, chat_id=chat_id))
+        except urllib.error.HTTPError as error:
+            if error.code >= 500:
+                return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)
+            # For example a chat that is not a bot of this profile. A second try or a plain text gets the same answer.
+            LOG.warning('Coconut: the service refused a %s outside a Coconut turn for chat %s (HTTP %s).',
+                        fields['kind'], chat_id, error.code)
+            return SendResult(success=False, error='Coconut refused this message.',
+                              raw_response={'coconut_refused': True})
+        except Exception as error:
+            LOG.warning('Coconut: the Coconut service did not take a %s outside a Coconut turn (%s).', fields['kind'],
+                        type(error).__name__)
+            return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)
+        if fields['kind'] == 'send':
+            if answer.get('recorded'):
+                LOG.info('Coconut: a message outside a Coconut turn went to chat %s (%d characters).', chat_id,
+                         len(fields['text']))
+            else:
+                LOG.info('Coconut: chat %s does not show a message outside a Coconut turn: %s', chat_id,
+                         answer.get('reason') or 'no reason')
+        return True
+
+    def _send_retry_is_final(self, result) -> bool:
+        # Hermes then neither tries again nor sends a plain text copy.
+        return isinstance(getattr(result, 'raw_response', None), dict) and bool(result.raw_response.get('coconut_refused'))
+
     async def send_private_notice(self, chat_id: str, user_id, content: str, reply_to=None, metadata=None) -> SendResult:
         # The phone shows the replies of Hermes, not its gateway notices. The gateway log keeps them.
         LOG.info('Coconut: a gateway notice for chat %s stays in the log: %s', chat_id, str(content)[:200])
         return SendResult(success=True)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
+        if str(message_id).startswith(OUTSIDE):
+            # Hermes streams the reply of its own turn: a first send, then edits of the same message.
+            # The edit with `finalize` ends the reply, and the service pushes it then.
+            result = await self._outside(str(chat_id), dict(kind='edit', message_id=str(message_id), text=str(content),
+                                                            finalize=bool(finalize)))
+            return SendResult(success=True, message_id=message_id) if result is True else result
         if not await self._report(turn_of(message_id), 'edit', message_id=str(message_id), text=str(content)):
             return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)
         return SendResult(success=True, message_id=message_id)
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        if str(message_id).startswith(OUTSIDE):
+            return await self._outside(str(chat_id), dict(kind='delete', message_id=str(message_id))) is True
         return await self._report(turn_of(message_id), 'delete', message_id=str(message_id))
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:

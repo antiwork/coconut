@@ -81,13 +81,14 @@ class MessageEvent:
     'gateway/platforms/base.py': '''
 import asyncio
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
 from gateway.platforms.event import ProcessingOutcome, SessionSource
 @dataclass
 class SendResult:
     success: bool
     message_id: Optional[str] = None
     error: Optional[str] = None
+    raw_response: Any = None
     retryable: bool = False
 class BasePlatformAdapter:
     gateway_runner = None
@@ -293,6 +294,12 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
         self.assertEqual(self.replies(task), [('I am looking.', True), ('Hello from the gateway.', False)])
 
+    def outside(self):
+        """The messages of the bot outside its Coconut turns: (text, hidden)."""
+        with self.service.lock:
+            return [(m['text'], bool(m.get('_hidden'))) for m in self.service._all('messages')
+                    if m['bot_id'] == self.bot['id'] and m.get('_gateway_message_id')]
+
     def test_a_final_reply_without_streaming_and_a_send_outside_a_turn(self):
         async def runner(event):
             return 'The final answer.'
@@ -301,12 +308,54 @@ class GatewayAdapterTests(unittest.TestCase):
         self.service._run_task(task['id'])
         self.assertEqual(self.replies(task), [('The final answer.', False)])
         self.assertEqual(self.adapter._turns, {})
-        # For example a cron delivery. Coconut takes no messages outside its own turns yet.
-        self.assertFalse(self.complete(self.adapter.send(self.bot['id'], 'A cron result.')).success)
-        # Gateway notices name gateway commands, so they stay in the gateway log.
+        # For example the reply of a Hermes turn for a background process. It goes to the bot's chat, not to the
+        # finished turn.
+        sent = self.complete(self.adapter.send(self.bot['id'], 'The background job finished.'))
+        self.assertTrue(sent.success)
+        self.assertTrue(sent.message_id.startswith('outside:'))
+        # Hermes streams the reply of its own turn with edits of the same message.
+        self.assertTrue(self.complete(self.adapter.edit_message(self.bot['id'], sent.message_id,
+                                                                'The background job finished with no errors.')).success)
+        self.assertEqual(self.outside(), [('The background job finished with no errors.', False)])
+        self.assertTrue(self.complete(self.adapter.delete_message(self.bot['id'], sent.message_id)))
+        self.assertEqual(self.outside(), [('The background job finished with no errors.', True)])
+        self.assertEqual(self.replies(task), [('The final answer.', False)])
+        # Gateway notices name gateway commands, so they stay in the gateway log. So do the status sends that the
+        # gateway marks as interim, for example a shutdown notice.
         self.assertEqual(self.adapter.config.extra['notice_delivery'], 'private')
         self.assertTrue(self.complete(self.adapter.send_private_notice(self.bot['id'], 'coconut', 'Type /sethome.')).success)
-        self.assertEqual(self.replies(task), [('The final answer.', False)])
+        self.assertTrue(self.complete(self.adapter.send(self.bot['id'], 'The gateway restarts.',
+                                                        metadata={'_interim_send': True})).success)
+        self.assertEqual(len(self.outside()), 1)
+
+    def test_a_send_outside_a_turn_to_another_chat_fails_without_a_retry(self):
+        self.connect(None)
+        result = self.complete(self.adapter.send('not-a-bot', 'Hello.'))
+        self.assertFalse(result.success)
+        self.assertFalse(result.retryable)
+        # Hermes then sends no plain text copy.
+        self.assertTrue(self.adapter._send_retry_is_final(result))
+        self.assertFalse(self.adapter._send_retry_is_final(self.adapter_module.SendResult(success=False)))
+        # Without the service, Hermes tries again.
+        self.adapter._bridge.address = {'url': 'http://127.0.0.1:1', 'token': 'x'}
+        result = self.complete(self.adapter.send(self.bot['id'], 'Hello.'))
+        self.assertEqual((result.success, result.retryable), (False, True))
+        self.assertEqual(self.outside(), [])
+
+    def test_a_hermes_input_through_the_adapter_does_not_take_the_turn_of_the_chat(self):
+        # Hermes runs some of its own inputs through the adapter, for example the completion of a background process
+        # without a session authority. The reply goes to the bot's chat as a message outside a turn.
+        from gateway.platforms.event import MessageEvent
+        async def runner(event):
+            return 'The process exited with code 0.'
+        self.connect(runner)
+        source = self.adapter.build_source(chat_id=self.bot['id'], chat_type='dm', user_id='coconut')
+        self.complete(self.adapter.handle_message(MessageEvent(text='[process finished]', source=source)))
+        deadline = time.monotonic() + 5
+        while not self.outside() and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertEqual(self.outside(), [('The process exited with code 0.', False)])
+        self.assertEqual((self.adapter._turns, self.adapter._active), ({}, set()))
 
     def test_the_adapter_takes_turns_only_after_the_gateway_restored_its_sessions(self):
         # While the gateway restores sessions after its start, it queues each inbound message and ends its

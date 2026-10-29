@@ -5,6 +5,9 @@ With `gateway`, a chat turn (gateway_bridge.plain_chat_turn) goes to the `coconu
 the adapter of the bot's profile is connected. Each other turn, and each turn that no adapter takes, runs in the
 Coconut worker as before. Both runtimes continue the same native conversation of the bot (hermes_plugin/coconut/hooks.py).
 
+Hermes also sends to a bot's chat outside a Coconut turn, for example the reply of its own turn for the completion of a
+background process (gateway_message). Such a message becomes a message of the bot in a finished task of its chat.
+
 A gateway turn reaches Coconut in two more ways. A question of Hermes (clarify, command approval, coconut_ask) becomes a
 decision card, and its answer returns to the waiting turn (record_gateway_question, answer_gateway_question). A tool of
 the `coconut` toolset acts for the task of the turn (gateway_tool).
@@ -47,6 +50,12 @@ NOT_LOADED = ('A Hermes gateway already runs for {home} (process {pid}), but it 
               'Restart that gateway after Coconut setup (hermes gateway restart), or stop it so that Coconut starts its '
               'own. Until then, chats use the Coconut worker.')
 STOPPED = 'The Hermes gateway stopped with exit code {code}. Coconut starts it again soon. See {log}.'
+# Messages outside a turn that arrive this close together share one task, for example a Kanban notice and the reply of
+# the Hermes turn that it woke.
+OUTSIDE_GROUP_SECONDS = 10 * 60
+# A cron delivery repeats the answer of its run. A run in a bot's profile is a routine task in its chat (gateway_cron),
+# so the delivery of a job with such a task in this time shows nothing new.
+CRON_DELIVERY_SECONDS = 24 * 3600
 
 
 def live_gateway_pid(home) -> int | None:
@@ -162,6 +171,130 @@ class GatewayChat:
             return {key: receipt[key] for key in ('status', 'target_bot_id', 'task_id') if key in receipt}
         raise ServiceError(404, 'This Coconut tool does not exist.')
 
+    def gateway_message(self, data: dict) -> dict:
+        """POST /v1/gateway/messages: a send, an edit or a delete of the gateway outside a Coconut turn.
+
+        The chat must be the bot of the adapter's profile. A send becomes a message of the bot, and the push rules
+        apply to it as to a reply. Return {recorded: false, reason} for a send that the chat does not show.
+        """
+        from .gateway_bridge import MAX_TEXT
+        from .service import ServiceError, require_text
+        kind, text = data.get('kind'), data.get('text', '')
+        if kind not in ('send', 'edit', 'delete') or not isinstance(text, str) or len(text) > MAX_TEXT:
+            raise ServiceError(400, 'Send a send, an edit or a delete with a text.')
+        home = os.path.realpath(require_text(data, 'home', 4096))
+        chat_id, message_id = require_text(data, 'chat_id', 200), require_text(data, 'message_id', 200)
+        if (self._gateway_profile(home) or {}).get('bot_id') != chat_id:
+            raise ServiceError(404, 'This chat is not the bot of this Hermes profile.')
+        with self.transaction():
+            bot = self._get('bots', chat_id)
+            if bot['archived'] or bot.get('_deleted'):
+                return {'recorded': False, 'reason': 'The bot is archived or deleted.'}
+            row = self.db.execute(
+                "SELECT data FROM messages WHERE json_extract(data,'$.bot_id')=? "
+                "AND json_extract(data,'$._gateway_message_id')=? ORDER BY rowid DESC LIMIT 1",
+                (chat_id, message_id)).fetchone()
+            message = json.loads(row[0]) if row else None
+            if kind != 'send':
+                if message is None:
+                    return {'recorded': False, 'reason': 'The chat does not show this message.'}
+                return self._change_gateway_message(bot, message, kind, text, bool(data.get('finalize')))
+            if message is not None:
+                return {'recorded': True, 'task_id': message['task_id']}
+            if not text.strip():
+                return {'recorded': False, 'reason': 'The message has no text.'}
+            job_id = data.get('job_id')
+            if isinstance(job_id, str) and job_id and self._gateway_cron_shown(chat_id, job_id):
+                return {'recorded': False, 'reason': 'A routine task in the chat shows this cron run.'}
+            # A streamed reply whose last edit never came ends with the next message.
+            for (raw,) in self.db.execute(
+                    "SELECT data FROM messages WHERE json_extract(data,'$.bot_id')=? "
+                    "AND json_extract(data,'$._gateway_message_id') IS NOT NULL "
+                    "AND json_extract(data,'$.streaming') IN (1, 'true')", (chat_id,)).fetchall():
+                self._change_gateway_message(bot, json.loads(raw), 'edit', json.loads(raw)['text'], True)
+            task = self._gateway_outside_task(bot, text)
+            # A reply that Hermes streams arrives as a first piece and then edits. It pushes when the last edit ends it.
+            message = self._message(bot['id'], text, task_id=task['id'], streaming=data.get('streaming') is True)
+            message['_gateway_message_id'] = message_id
+            self._put('messages', message)
+            self._refresh_bot(bot['id'])
+        LOG.info('The Hermes gateway sent a message to bot %s outside a Coconut turn (task %s).', chat_id, task['id'])
+        return {'recorded': True, 'task_id': task['id']}
+
+    def _gateway_profile(self, home: str) -> dict | None:
+        """The active profile row of a Hermes home (a real path), or None for a home that is not a bot's profile."""
+        return next((row for row in list((self.profiles.rows or {}).values())
+                     if row.get('state') == 'active' and os.path.realpath(row['home']) == home), None)
+
+    def _change_gateway_message(self, bot: dict, message: dict, kind: str, text: str, finalize: bool) -> dict:
+        """Edit or delete a message outside a turn, and keep the bot's preview and unread count true. The caller holds
+        the transaction."""
+        if message.get('_hidden'):
+            return {'recorded': False, 'reason': 'The chat no longer shows this message.'}
+        old = message['text']
+        finished = bool(message.get('streaming')) and finalize
+        if kind == 'delete' or not text.strip():
+            message.update(_hidden=True, streaming=False)
+            bot['unread_count'] = max(0, bot['unread_count'] - 1)
+            newest = self.db.execute(
+                "SELECT data FROM messages WHERE json_extract(data,'$.bot_id')=? AND id<>? "
+                "AND COALESCE(json_extract(data,'$._hidden'),0)=0 AND COALESCE(json_extract(data,'$._deleted'),0)=0 "
+                "AND json_extract(data,'$.reaction_event') IS NULL ORDER BY rowid DESC LIMIT 1",
+                (bot['id'], message['id'])).fetchone()
+            if bot.get('last_message') == old[:160]:
+                bot['last_message'] = json.loads(newest[0])['text'][:160] if newest else ''
+        else:
+            message['text'] = text
+            if finished:
+                message['streaming'] = False
+            if bot.get('last_message') == old[:160]:
+                bot['last_message'] = text[:160]
+        self._put('bots', bot)
+        self._put('messages', message)
+        self._event('message.updated', dict(self._public(message), _hidden=bool(message.get('_hidden'))),
+                    message['bot_id'], message['task_id'])
+        if finished:
+            self.push.record('message.completed', message, message['bot_id'], message['task_id'])
+        self._refresh_bot(message['bot_id'])
+        return {'recorded': True, 'task_id': message['task_id']}
+
+    def _gateway_cron_shown(self, bot_id: str, job_id: str) -> bool:
+        """Whether a recent routine task of the bot shows a cron run of this job. The caller holds the transaction."""
+        from datetime import datetime, timedelta, timezone
+        row = self.db.execute(
+            "SELECT data FROM tasks WHERE json_extract(data,'$.bot_id')=? "
+            "AND json_extract(data,'$._gateway_cron.job_id')=? ORDER BY rowid DESC LIMIT 1", (bot_id, job_id)).fetchone()
+        if row is None:
+            return False
+        created = datetime.fromisoformat(json.loads(row[0])['created_at'].replace('Z', '+00:00'))
+        return datetime.now(timezone.utc) - created < timedelta(seconds=CRON_DELIVERY_SECONDS)
+
+    def _gateway_outside_task(self, bot: dict, text: str) -> dict:
+        """The finished task in the bot's chat for a message outside a turn. The caller holds the transaction.
+
+        The newest task of the bot takes the message when it holds a message outside a turn from a short time ago.
+        Otherwise a new task starts. It has no request of the person and no run.
+        """
+        from .service import now, uid
+        row = self.db.execute("SELECT data FROM tasks WHERE json_extract(data,'$.bot_id')=? ORDER BY rowid DESC LIMIT 1",
+                              (bot['id'],)).fetchone()
+        task = json.loads(row[0]) if row else None
+        if (task is not None and task.get('_gateway_outside') and task['conversation_bot_id'] == bot['id']
+                and time.time() - task['_gateway_outside'] < OUTSIDE_GROUP_SECONDS):
+            task.update(_gateway_outside=time.time(), updated_at=now())
+        else:
+            task_id = uid()
+            # The message pushes as a reply. A push for the completion would only repeat it.
+            task = dict(id=task_id, thread_id=task_id, parent_task_id=None, bot_id=bot['id'],
+                        conversation_bot_id=bot['id'], session_id=bot['session_id'], source_bot_id=None,
+                        source_task_id=None, exchange_id=self._new_exchange(), exchange_depth=0,
+                        title=' '.join(text.split())[:72], status='completed', summary='Complete.', created_at=now(),
+                        updated_at=now(), scheduled_at=None, _attachment_ids=[], _gateway_outside=time.time(),
+                        _silent_completion=True)
+        self._put('tasks', task)
+        self._event('task.updated', self._public(task), bot['id'], task['id'])
+        return task
+
     def record_gateway_question(self, task: dict, payload: dict) -> None:
         """A question of a gateway turn becomes a decision card. The caller holds the transaction.
 
@@ -268,8 +401,7 @@ class GatewayChat:
         home = os.path.realpath(require_text(data, 'home', 4096))
         job_id, execution_id = require_text(data, 'job_id', 200), require_text(data, 'execution_id', 200)
         name = str(data.get('job_name') or 'Routine').strip()[:200] or 'Routine'
-        row = next((row for row in list((self.profiles.rows or {}).values())
-                    if row.get('state') == 'active' and os.path.realpath(row['home']) == home), None)
+        row = self._gateway_profile(home)
         if row is None:
             return {'skip': True}
         with self.transaction():

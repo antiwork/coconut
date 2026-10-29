@@ -402,6 +402,123 @@ class ServiceRoutingTests(unittest.TestCase):
             {'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'cancelled'}), {'ok': False})
 
 
+class OutsideTurnTests(unittest.TestCase):
+    """POST /v1/gateway/messages: a send of the gateway outside a Coconut turn becomes a message of the bot."""
+
+    def setUp(self):
+        from test_push import pair_phone
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.service = Service(self.temp.name, Provider(), start_workers=False)
+        self.addCleanup(self.service.close)
+        self.device = pair_phone(self.service)
+        self.service.push.registration(self.device, dict(token='a' * 64, environment='development', enabled=True,
+                                                         preferences=dict(level='every', messages=True)))
+        self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Ada'}, str(uuid4()), self.device)
+        self.home = str(self.service.profiles.home(self.bot))
+
+    def message(self, kind='send', message_id='outside:1', text='The build finished.', **fields):
+        return self.service.gateway_message(dict(fields, home=self.home, chat_id=self.bot['id'], kind=kind,
+                                                 message_id=message_id, text=text))
+
+    def chat(self):
+        with self.service.lock:
+            return [(m['text'], m['task_id'], bool(m.get('_hidden'))) for m in self.service._all('messages')
+                    if m['bot_id'] == self.bot['id'] and m['role'] == 'assistant' and m['kind'] == 'text']
+
+    def pushes(self):
+        return self.service.db.execute('SELECT kind,task_id,message_id FROM push_items ORDER BY rowid').fetchall()
+
+    def test_a_send_is_a_message_of_the_bot_in_a_finished_task_and_it_pushes_as_a_reply(self):
+        answer = self.message()
+        self.assertTrue(answer['recorded'])
+        with self.service.lock:
+            task = self.service._get('tasks', answer['task_id'])
+            bot = self.service._get('bots', self.bot['id'])
+        self.assertEqual((task['status'], task['bot_id'], task['conversation_bot_id'], task['title']),
+                         ('completed', self.bot['id'], self.bot['id'], 'The build finished.'))
+        self.assertEqual(self.chat(), [('The build finished.', task['id'], False)])
+        self.assertEqual((bot['last_message'], bot['unread_count']), ('The build finished.', 1))
+        message_id = self.service.db.execute('SELECT id FROM messages ORDER BY rowid DESC LIMIT 1').fetchone()[0]
+        # One push for the message. The task sends no second push for its completion.
+        self.assertEqual(self.pushes(), [('message', task['id'], message_id)])
+        # A second send of the same message, for example after a lost answer, shows nothing new.
+        self.assertEqual(self.message(), {'recorded': True, 'task_id': task['id']})
+        self.assertEqual(len(self.chat()), 1)
+
+    def test_sends_close_together_share_a_task_and_a_streamed_reply_is_edited_and_deleted(self):
+        first = self.message(text='Task t_1 is done.')
+        second = self.message(message_id='outside:2', text='The')
+        self.assertEqual(second['task_id'], first['task_id'])
+        self.assertEqual(self.message('edit', 'outside:2', 'The report is ready.')['recorded'], True)
+        self.assertEqual([text for text, _, _ in self.chat()], ['Task t_1 is done.', 'The report is ready.'])
+        self.assertTrue(self.message('delete', 'outside:2', '')['recorded'])
+        self.assertEqual([hidden for _, _, hidden in self.chat()], [False, True])
+        self.assertFalse(self.message('edit', 'outside:9', 'Unknown.')['recorded'])
+        # A send after the grouping time starts a new task, and so does one after another task of the chat.
+        with self.service.transaction():
+            task = self.service._get('tasks', first['task_id'])
+            task['_gateway_outside'] -= gateway_chat.OUTSIDE_GROUP_SECONDS + 1
+            self.service._put('tasks', task)
+        third = self.message(message_id='outside:3', text='Later news.')
+        self.assertNotEqual(third['task_id'], first['task_id'])
+        self.service.mutate('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Thanks.'}, str(uuid4()), self.device)
+        self.assertNotEqual(self.message(message_id='outside:4', text='More news.')['task_id'], third['task_id'])
+
+    def bot_row(self):
+        with self.service.lock:
+            bot = self.service._get('bots', self.bot['id'])
+        return bot['last_message'], bot['unread_count']
+
+    def test_a_streamed_reply_pushes_when_it_ends_and_a_deleted_reply_leaves_the_preview(self):
+        first = self.message(text='Task t_1 is done.')
+        self.assertEqual(len(self.pushes()), 1)
+        self.message(message_id='outside:2', text='The', streaming=True)
+        self.message('edit', 'outside:2', 'The report')
+        # No push while Hermes still streams the reply.
+        self.assertEqual(len(self.pushes()), 1)
+        self.assertEqual(self.bot_row(), ('The report', 2))
+        self.message('edit', 'outside:2', 'The report is ready.', finalize=True)
+        message_id = self.service.db.execute('SELECT id FROM messages ORDER BY rowid DESC LIMIT 1').fetchone()[0]
+        self.assertEqual(self.pushes()[-1], ('message', first['task_id'], message_id))
+        self.assertEqual(self.bot_row(), ('The report is ready.', 2))
+        # A deleted reply no longer counts as unread, and the preview shows the reply before it.
+        self.message('delete', 'outside:2', '')
+        self.assertEqual(self.bot_row(), ('Task t_1 is done.', 1))
+        self.assertFalse(self.message('edit', 'outside:2', 'Back again.')['recorded'])
+        # A streamed reply whose last edit never came ends with the next message, and it pushes then.
+        self.message(message_id='outside:3', text='Half', streaming=True)
+        self.message(message_id='outside:4', text='Next.')
+        with self.service.lock:
+            streaming = [m['streaming'] for m in self.service._all('messages') if m.get('_gateway_message_id')]
+        self.assertEqual(streaming, [False] * 4)
+        self.assertEqual([kind for kind, _, _ in self.pushes()], ['message'] * 4)
+
+    def test_a_cron_delivery_of_a_run_that_the_chat_shows_is_dropped(self):
+        self.assertTrue(self.message(job_id='intake')['recorded'])
+        started = self.service.gateway_cron({'event': 'start', 'home': self.home, 'job_id': 'intake',
+                                             'job_name': 'Intake', 'execution_id': 'run-1'})
+        self.service.gateway_bridge.event({'turn_id': started['turn_id'], 'kind': 'done', 'outcome': 'success'})
+        self.service.gateway_cron_threads[started['task_id']].join(5)
+        answer = self.message(message_id='outside:2', text='Two new items.', job_id='intake')
+        self.assertEqual(answer, {'recorded': False, 'reason': 'A routine task in the chat shows this cron run.'})
+        self.assertTrue(self.message(message_id='outside:3', text='Other job.', job_id='other')['recorded'])
+
+    def test_only_the_bot_of_the_adapter_profile_takes_messages(self):
+        other = self.service.mutate('POST', '/v1/bots', {'name': 'Grace'}, str(uuid4()), self.device)
+        for fields in (dict(chat_id=other['id']), dict(chat_id='not-a-bot'), dict(home=self.temp.name)):
+            with self.subTest(fields=fields), self.assertRaises(ServiceError) as raised:
+                self.service.gateway_message(dict(dict(home=self.home, chat_id=self.bot['id'], kind='send',
+                                                       message_id='outside:1', text='Hello.'), **fields))
+            self.assertEqual(raised.exception.status, 404)
+        with self.assertRaises(ServiceError):
+            self.message(kind='typing')
+        self.assertEqual(self.message(text='  '), {'recorded': False, 'reason': 'The message has no text.'})
+        self.service.mutate('PATCH', f'/v1/bots/{self.bot["id"]}', {'archived': True}, str(uuid4()), self.device)
+        self.assertFalse(self.message()['recorded'])
+        self.assertEqual(self.chat(), [])
+
+
 FAKE_HERMES = '''import os, sys, time
 from pathlib import Path
 def main():
