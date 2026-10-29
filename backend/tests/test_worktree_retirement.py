@@ -2837,6 +2837,43 @@ class WorktreeRetirementTests(unittest.TestCase):
             work_workspace.trim_nested_archives(self.workspaces, keep={needed})
         self.assertEqual(sorted(p.name for p in folder.glob('*.tar.gz')), ['item-1.tar.gz'])
 
+    def test_old_retirement_archives_go_unless_a_binding_names_them(self):
+        folder = self.workspaces / 'archive'
+        (folder / 'nested').mkdir(parents=True)
+        old = time.time() - (work_workspace.NESTED_ARCHIVE_DAYS + 1) * 86400
+        names = ('unnamed', 'retired', 'failed', 'handoff', 'nested/inner')
+        for name in names:
+            (folder / f'{name}.tar.gz').write_bytes(b'x' * 1000)
+            os.utime(folder / f'{name}.tar.gz', (old, old))
+        fresh = folder / 'fresh.tar.gz'
+        fresh.write_bytes(b'x' * 1000)
+        manifest = self.workspaces / 'worktrees.json'
+        manifest.write_text('{')
+        # Without the registry, no retirement archive goes.
+        work_workspace.sweep_temporary(self.workspaces)
+        self.assertTrue((folder / 'unnamed.tar.gz').exists())
+        manifest.write_text(json.dumps({
+            'one': dict(path='/x/one', retired=dict(archive=str(folder / 'retired.tar.gz'))),
+            'two': dict(path='/x/two', retire_failed=dict(archive=str(folder / 'failed.tar.gz'))),
+            'three': dict(path='/x/three', handoff=dict(archive=str(folder.resolve() / 'handoff.tar.gz')))}))
+        with self.assertLogs('coconut.work_workspace', 'WARNING') as logs:
+            work_workspace.sweep_temporary(self.workspaces)
+        self.assertIn('unnamed.tar.gz', '\n'.join(logs.output))
+        self.assertEqual(sorted(p.name for p in folder.glob('*.tar.gz')),
+                         ['failed.tar.gz', 'fresh.tar.gz', 'handoff.tar.gz', 'retired.tar.gz'])
+        # The nested archive follows its own rule.
+        self.assertFalse((folder / 'nested' / 'inner.tar.gz').exists())
+        # Over the size limit, the oldest unnamed archive goes first. A named archive stays.
+        for index, age in enumerate((300, 200)):
+            item = folder / f'item-{index}.tar.gz'
+            item.write_bytes(b'x' * 1000)
+            os.utime(item, (time.time() - age, time.time() - age))
+        with patch('coconut.work_workspace.NESTED_ARCHIVE_LIMIT_BYTES', 5500), \
+                patch('coconut.work_workspace.NESTED_ARCHIVE_KEEP_SECONDS', 0):
+            work_workspace.sweep_temporary(self.workspaces)
+        self.assertEqual(sorted(p.name for p in folder.glob('*.tar.gz')),
+                         ['failed.tar.gz', 'fresh.tar.gz', 'handoff.tar.gz', 'item-1.tar.gz', 'retired.tar.gz'])
+
     def test_an_outcome_that_resumes_during_the_nested_archive_keeps_the_nested_worktree(self):
         _, identity, path, _ = self.outcome()
         inner = self.nested_worktree(path)
@@ -3280,6 +3317,79 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.retire()
         self.assertFalse(reader.exists())
         self.assertFalse((workspace / 'coverage').exists())
+
+    def test_an_empty_scratch_workspace_goes_after_a_day_unless_it_is_in_use(self):
+        old = time.time() - 2 * 86400
+        def folder(name, age=old):
+            place = self.workspaces / name
+            place.mkdir()
+            os.utime(place, (age, age))
+            return place
+        idle = folder(str(uuid4()))
+        fresh = folder(str(uuid4()), time.time())
+        full = folder(str(uuid4()))
+        (full / 'notes.txt').write_text('keep')
+        os.utime(full, (old, old))
+        own = folder(self.bot['id'])
+        archive = folder('archive')
+        named = folder(str(uuid4()))
+        active, _, _, _ = self.outcome(status='queued')
+        busy = folder(active)
+        saved = {'one': dict(path=str(named / 'worktree'))}
+        with patch.object(retirement, 'changed_at', lambda info: info.st_mtime):
+            self.service._remove_empty_scratch(self.workspaces, saved, time.time())
+        self.assertFalse(idle.exists())
+        for kept in (fresh, full, own, archive, named, busy):
+            self.assertTrue(kept.exists(), kept)
+        # An older kept folder does not take the place of a folder that can go.
+        os.utime(busy, (old - 86400, old - 86400))
+        idle = folder(str(uuid4()))
+        with patch.object(retirement, 'changed_at', lambda info: info.st_mtime), \
+                patch.object(retirement, 'EMPTY_SCRATCH_BATCH', 1):
+            self.service._remove_empty_scratch(self.workspaces, saved, time.time())
+        self.assertFalse(idle.exists())
+        self.assertTrue(busy.exists())
+        # The retirement pass runs the rule.
+        idle = folder(str(uuid4()))
+        with patch.object(retirement, 'changed_at', lambda info: info.st_mtime):
+            self.retire()
+        self.assertFalse(idle.exists())
+        self.assertTrue(busy.exists())
+
+    def test_a_bot_tmp_entry_goes_after_three_days_while_the_bot_runs_no_turn(self):
+        tmp = self.service.root / 'bots' / self.bot['id'] / 'tmp'
+        workspace = self.bot_workspace()
+        def entries():
+            for place in (tmp / 'old-build', workspace / 'old-clone'):
+                place.mkdir(parents=True, exist_ok=True)
+                (place / 'file.bin').write_bytes(b'x')
+                self.age(place, 4)
+        entries()
+        # A running turn of the bot keeps its tmp entries until the workspace wait.
+        _, _, _, task = self.outcome(status='working')
+        self.service.running[task['id']] = SimpleNamespace()
+        with self.stale_rule():
+            self.service._clear_stale_bot_workspaces(time.time(), {}, False)
+        self.assertTrue((tmp / 'old-build').exists())
+        # A turn that starts during the pass keeps them too.
+        self.service.running.pop(task['id'])
+        with self.stale_rule(), patch.object(self.service, '_bots_with_turns', side_effect=[set(), {self.bot['id']}]):
+            self.service._clear_stale_bot_workspaces(time.time(), {}, False)
+        self.assertTrue((tmp / 'old-build').exists())
+        # A failed check keeps them.
+        with self.stale_rule(), patch.object(self.service, '_bots_with_turns', return_value=None):
+            self.service._clear_stale_bot_workspaces(time.time(), {}, False)
+        self.assertTrue((tmp / 'old-build').exists())
+        # Without a turn, the tmp entry goes. The workspace entry waits the full time.
+        with self.stale_rule():
+            self.service._clear_stale_bot_workspaces(time.time(), {}, False)
+        self.assertFalse((tmp / 'old-build').exists())
+        self.assertTrue((workspace / 'old-clone').exists())
+        # A fresh tmp entry stays.
+        (tmp / 'new').write_text('x')
+        with self.stale_rule():
+            self.service._clear_stale_bot_workspaces(time.time(), {}, False)
+        self.assertTrue((tmp / 'new').exists())
 
     def test_bare_source_executable_does_not_protect_unrelated_workspace_directory(self):
         workspace = self.bot_workspace()
