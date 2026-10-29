@@ -21,6 +21,7 @@ It saves the receipt with the exact containers before it stops them. A repeated 
 Docker shows the project stopped. If the project runs again, the call checks everything again and can stop it once
 more. A receipt without a verified result is checked again, and Coconut never repeats its stop.
 """
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -49,8 +50,10 @@ ANONYMOUS_LABEL = 'com.docker.volume.anonymous'
 # A task-local test setup publishes TCP ports on this Mac's loopback address only. lsof sees every client of such a
 # port. A port on another or every address can also have clients on the network, so Coconut refuses it.
 LOOPBACK_BINDINGS = ('127.0.0.1', '::1')
-# How lsof -n shows a local client's destination for those bindings, including an IPv4-mapped IPv6 socket.
-LOOPBACK_CLIENTS = ('127.0.0.1', '[::1]', '[::ffff:127.0.0.1]', '0.0.0.0', '[::]', 'localhost')
+# A Mac process can also reach a container directly at its network address, as OrbStack routes it and as a
+# *.orb.local name resolves to it. lsof -n shows such a client with the container's address as the destination, on any
+# port. Docker shows each address of a container's network endpoint in these fields.
+ADDRESS_FIELDS = ('IPAddress', 'GlobalIPv6Address', 'LinkLocalIPv6Address')
 # A local test setup has a few services. A larger project is not task-local test setup.
 CONTAINER_LIMIT = 32
 STOP_GRACE_SECONDS = 10
@@ -140,6 +143,18 @@ def references(container, own):
             or any(named(str(item).split(':')[0]) for item in host.get('Links') or []))
 
 
+def address(value):
+    """The IP address of a Docker address or an lsof -n host, or None. IPv4-mapped IPv6 reads as IPv4."""
+    value = str(value)
+    if value.startswith('[') and value.endswith(']'):
+        value = value[1:-1]
+    try:
+        ip = ipaddress.ip_address(value.split('%', 1)[0])
+    except ValueError:
+        return None
+    return (ip.ipv4_mapped or ip) if ip.version == 6 else ip
+
+
 def labels(record):
     return (record.get('Config') or {}).get('Labels') or record.get('Labels') or {}
 
@@ -159,10 +174,11 @@ def evidence(docker, project, binding):
     Every container of the project must come from one Compose configuration inside the workspace, and not from the
     worktree of another outcome inside it. Its bind mounts must stay there too, and its volumes and networks must
     belong to the project. An anonymous volume of an image belongs to its container. A published port must be TCP on
-    the loopback address. It shares no namespace and no other container's volumes. No other running container may
-    share a volume, a network, a namespace, a link, or the workspace, and no local process may hold a connection to a
-    published port. A one-off command, an exec session, a paused container, or a restarting container means the
-    project is in use.
+    the loopback address. A running container must declare TCP ports only and show a readable address on each
+    network. It shares no namespace and no other container's volumes. No other running container may share a volume,
+    a network, a namespace, a link, or the workspace, and none may use the host network. No local process may hold an established TCP connection or a
+    connected UDP socket to a published port or to an address of a running container. A one-off command, an exec
+    session, a paused container, or a restarting container means the project is in use.
     """
     root = binding['path']
     containers = docker.containers()
@@ -180,7 +196,7 @@ def evidence(docker, project, binding):
     files = (config or '').split(',')
     if not owned(working_dir, binding) or not all(owned(f, binding) for f in files):
         raise Refused('This Compose project does not come from the workspace of this work.')
-    volumes, networks, ports, ids = set(), set(), set(), {c['Id'] for c in own}
+    volumes, networks, ports, addresses, ids = set(), set(), set(), set(), {c['Id'] for c in own}
     for container in own:
         current = state(container)
         if current['paused'] or current['restarting']:
@@ -204,10 +220,20 @@ def evidence(docker, project, binding):
         if (any((host.get(key) or '') == 'host' or (host.get(key) or '').startswith('container:')
                 for key in ('NetworkMode', 'PidMode', 'IpcMode')) or host.get('VolumesFrom')):
             raise Refused('A container of this project shares a namespace or the volumes of another container.')
-        for name, network in ((container.get('NetworkSettings') or {}).get('Networks') or {}).items():
+        settings = container.get('NetworkSettings') or {}
+        endpoints = [settings]
+        for name, network in (settings.get('Networks') or {}).items():
             if labels(docker.network(name)).get(PROJECT_LABEL) != project:
                 raise Refused('A container of this project uses a network that this project does not own.')
             networks.add(network.get('NetworkID') or name)
+            if current['running'] and not any(network.get(field) for field in ADDRESS_FIELDS):
+                raise Refused('Docker shows no address of a running container of this project.')
+            endpoints.append(network)
+        for value in (e.get(field) for e in endpoints for field in ADDRESS_FIELDS if current['running']):
+            if value and address(value) is None:
+                raise Refused('Docker shows an address of this project that Coconut cannot read.')
+            if value:
+                addresses.add(str(address(value)))
         for exposed, published in ((container.get('NetworkSettings') or {}).get('Ports') or {}).items():
             for port in published or []:
                 if (not str(exposed).endswith('/tcp') or not isinstance(port, dict)
@@ -215,18 +241,29 @@ def evidence(docker, project, binding):
                     raise Refused('A container of this project publishes a port that is not TCP on this Mac’s loopback '
                                   'address, so Coconut cannot see all of its clients.')
                 ports.add(int(port['HostPort']))
+        served = set((container.get('Config') or {}).get('ExposedPorts') or {}) | set(settings.get('Ports') or {})
+        if current['running'] and any(not str(port).endswith('/tcp') for port in served):
+            # lsof shows a connected UDP socket, but a sender without a connection has none. Coconut cannot see
+            # inside a container, so this check covers declared ports only. An undeclared UDP port is a limit.
+            raise Refused('A container of this project serves a port that is not TCP, so Coconut cannot see its '
+                          'clients.')
     for other in containers:
         if other['Id'] in ids or not state(other)['running']:
             continue
-        attached = {n.get('NetworkID') or name for name, n in ((other.get('NetworkSettings') or {}).get('Networks') or {}).items()}
+        endpoints = (other.get('NetworkSettings') or {}).get('Networks') or {}
+        if (other.get('HostConfig') or {}).get('NetworkMode') == 'host' or 'host' in endpoints:
+            # A container on the host network shares the network of the Docker machine. It can reach every container
+            # address there, and lsof on this Mac cannot see its connections.
+            raise Refused('Another running container uses the host network, so it can reach this project.')
+        attached = {n.get('NetworkID') or name for name, n in endpoints.items()}
         if (any(m.get('Type') == 'volume' and m.get('Name') in volumes
                 or m.get('Type') == 'bind' and inside(m.get('Source'), root) for m in other.get('Mounts') or [])
                 or attached & networks or references(other, own)):
             raise Refused('Another container uses this project or its workspace.')
-    if docker.port_clients(ports):
-        raise Refused('A local process is connected to a port of this project.')
+    if docker.port_clients(ports, addresses):
+        raise Refused('A local process is connected to a port or an address of this project.')
     found = [state(c) for c in own]
-    return dict(working_dir=working_dir, config_files=files, containers=found,
+    return dict(working_dir=working_dir, config_files=files, containers=found, addresses=sorted(addresses),
                 stop_ids=sorted(c['id'] for c in found if c['running']))
 
 
@@ -281,12 +318,19 @@ class DockerCli:
             return {}
         return json.loads(self.run('network', 'inspect', name))[0]
 
-    def port_clients(self, ports):
-        """The local processes with an open connection to one of the published ports."""
-        if not ports:
+    def port_clients(self, ports, addresses):
+        """The local processes with an open connection to a loopback port or to any port of the addresses.
+
+        An established TCP connection or a connected UDP socket counts. A UDP sender without a connection shows no
+        destination, so lsof cannot see it.
+        """
+        targets = {address(value) for value in addresses}
+        if None in targets:
+            raise Refused('Docker shows an address of this project that Coconut cannot read.')
+        if not ports and not targets:
             return []
         try:
-            result = subprocess.run(['lsof', '-n', '-P', '-w', '-iTCP', '-sTCP:ESTABLISHED', '-F', 'pcn'],
+            result = subprocess.run(['lsof', '-n', '-P', '-w', '-iTCP', '-sTCP:ESTABLISHED', '-iUDP', '-F', 'pcn'],
                                     capture_output=True, text=True, errors='replace', timeout=60)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise Refused('Coconut cannot check the connections without lsof.') from error
@@ -302,9 +346,10 @@ class DockerCli:
             elif line.startswith('n') and '->' in line:
                 remote = line.split('->', 1)[1]
                 host, _, port = remote.rpartition(':')
-                if not host or not port.isdigit():
+                ip = address(host)
+                if ip is None or not port.isdigit():
                     raise Refused('Coconut cannot read a connection that lsof shows.')
-                if host in LOOPBACK_CLIENTS and int(port) in ports:
+                if ip in targets or (ip.is_loopback or ip.is_unspecified) and int(port) in ports:
                     found.append(dict(pid=pid, command=command, remote=remote))
         return found
 

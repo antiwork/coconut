@@ -15,11 +15,19 @@ from coconut.technical_lane import REFUSED_EVENTS
 import test_independent_technical_work as lanes
 
 PROJECT = 'gp4074dev'
+# The fixed lsof command: established TCP connections and connected UDP sockets, numeric, one field per line.
+LSOF = ['lsof', '-n', '-P', '-w', '-iTCP', '-sTCP:ESTABLISHED', '-iUDP', '-F', 'pcn']
 MERGE_URL = 'https://github.com/antiwork/gumroad/pull/8723'
 
 
 def identity(name):
     return hashlib.sha256(name.encode()).hexdigest()
+
+
+def ip(name, version=4):
+    """A stable container address for a name, as Docker shows it on the network endpoint."""
+    digest = hashlib.sha256(name.encode()).digest()
+    return '172.30.%d.%d' % (digest[0], digest[1] or 1) if version == 4 else 'fd07:b51a:cc66::%x' % (digest[0] * 256 + digest[1])
 
 
 def container(name, project, service, workdir, *, running=True, mounts=(), networks=None, ports=None, oneoff=False,
@@ -32,8 +40,9 @@ def container(name, project, service, workdir, *, running=True, mounts=(), netwo
             'State': {'Running': running, 'Paused': False, 'Restarting': False,
                       'Status': 'running' if running else 'exited', 'FinishedAt': '2026-10-28T10:00:00Z'},
             'Mounts': list(mounts), 'HostConfig': {'NetworkMode': mode or project + '_default'},
-            'NetworkSettings': {'Networks': {project + '_default': {'NetworkID': 'net-' + project}} if networks is None
-                                else networks, 'Ports': ports or {}}}
+            'NetworkSettings': {'Networks': {project + '_default': {'NetworkID': 'net-' + project, 'IPAddress': ip(name),
+                                                                    'GlobalIPv6Address': ip(name, 6)}}
+                                if networks is None else networks, 'Ports': ports or {}}}
 
 
 class FakeDocker:
@@ -63,8 +72,8 @@ class FakeDocker:
         self.calls.append(('network', name))
         return copy.deepcopy(self.networks.get(name, {}))
 
-    def port_clients(self, ports):
-        self.calls.append(('port_clients', tuple(sorted(ports))))
+    def port_clients(self, ports, addresses):
+        self.calls.append(('port_clients', tuple(sorted(ports)), tuple(addresses)))
         return list(self.clients)
 
     def stop(self, ids):
@@ -738,14 +747,14 @@ class ServiceYieldTests(unittest.TestCase):
                 web['NetworkSettings']['Ports'] = ports
                 self.refused('not TCP on this Mac’s loopback address')
         # Only exposed ports, without a binding, publish nothing.
-        web['NetworkSettings']['Ports'] = dict(loopback, **{'9000/tcp': None, '9001/udp': []})
+        web['NetworkSettings']['Ports'] = dict(loopback, **{'9000/tcp': None})
         # The real lsof parser reads every form of a local client of the loopback port.
         lsof = []
 
         def run(arguments, **kwargs):
             self.assertEqual(arguments[0], 'lsof')
             return Mock(returncode=0 if lsof else 1, stdout=''.join(lsof))
-        self.docker.port_clients = lambda ports: DockerCli('docker').port_clients(ports)
+        self.docker.port_clients = lambda ports, addresses: DockerCli('docker').port_clients(ports, addresses)
         with patch('coconut.service_yield.subprocess.run', side_effect=run):
             for remote in ('127.0.0.1:3074', '[::1]:3074', '[::ffff:127.0.0.1]:3074', '0.0.0.0:3074', '[::]:3074'):
                 lsof[:] = ['p42\ncruby\nn127.0.0.1:61000->' + remote + '\n']
@@ -757,6 +766,93 @@ class ServiceYieldTests(unittest.TestCase):
             lsof[:] = ['p77\ncOrbStack Helper\nn127.0.0.1:3074->127.0.0.1:61000\nn[::1]:3074->[::1]:61001\n'
                        'p90\ncnode\nn127.0.0.1:62000->127.0.0.1:3080\n']
             self.assert_stopped(self.call())
+
+    def test_a_direct_client_of_a_running_container_address_refuses_without_any_published_port(self):
+        # OrbStack routes a Mac process straight to a container's address, and web.gp4074dev.orb.local resolves to it.
+        # lsof -n then shows that numeric address as the destination, on any container port.
+        web, db, migrate, other = self.docker.items
+        web['NetworkSettings']['Ports'] = {}
+        web['NetworkSettings']['Networks'][PROJECT + '_default']['LinkLocalIPv6Address'] = 'fe80::42:acff:fe1e:2'
+        seen, lsof, commands = [], [], []
+
+        def clients(ports, addresses):
+            seen.append(sorted(addresses))
+            return DockerCli('docker').port_clients(ports, addresses)
+
+        def run(arguments, **kwargs):
+            commands.append(arguments)
+            return Mock(returncode=0 if lsof else 1, stdout=''.join(lsof))
+        self.docker.port_clients = clients
+        with patch('coconut.service_yield.subprocess.run', side_effect=run):
+            for remote in (ip('gp4074dev-web-1') + ':3000', ip('gp4074dev-web-1') + ':8080',
+                           ip('gp4074dev-db-1') + ':5432', '[' + ip('gp4074dev-db-1', 6) + ']:5432',
+                           '[::ffff:' + ip('gp4074dev-web-1') + ']:3000', '[fe80::42:acff:fe1e:2%bridge100]:3000',
+                           ip('gp4074dev-db-1') + ':8125'):
+                lsof[:] = ['p42\ncruby\nn192.168.215.1:50000->' + remote + '\n']
+                with self.subTest(client=remote):
+                    self.refused('connected to a port or an address of this project')
+            # A name instead of a number means lsof did not show the address. Coconut cannot match it.
+            lsof[:] = ['p42\ncruby\nn192.168.215.1:50000->web.gp4074dev.orb.local:3000\n']
+            self.refused('cannot read a connection')
+            # Clients of another project's container, of an exited container, or of the network are no consumers.
+            lsof[:] = ['p90\ncnode\nn192.168.215.1:50001->' + ip('gp4080dev-web-1') + ':3000\n'
+                       'n192.168.215.1:50002->' + ip('gp4074dev-migrate-1') + ':3000\n'
+                       'n10.0.0.2:50003->93.184.216.34:443\n']
+            self.assert_stopped(self.call())
+        # Each check asked lsof for established TCP connections and for connected UDP sockets, as a UDP sender to an
+        # undeclared port (db:8125 above) has one.
+        self.assertEqual({tuple(command) for command in commands}, {tuple(LSOF)})
+        self.assertEqual(seen[-1], sorted(['fe80::42:acff:fe1e:2', ip('gp4074dev-web-1'), ip('gp4074dev-web-1', 6),
+                                           ip('gp4074dev-db-1'), ip('gp4074dev-db-1', 6)]))
+
+    def test_a_running_container_without_a_readable_address_or_with_udp_refuses(self):
+        web, db, migrate, other = self.docker.items
+        endpoint = db['NetworkSettings']['Networks'][PROJECT + '_default']
+        for change, pattern in (
+                (dict(IPAddress='', GlobalIPv6Address=''), 'no address of a running container'),
+                (dict(IPAddress='not-an-address'), 'cannot read'),
+                (dict(GlobalIPv6Address='fd07::zz'), 'cannot read')):
+            saved = dict(endpoint)
+            endpoint.update(change)
+            with self.subTest(change=change):
+                self.refused(pattern)
+            endpoint.clear()
+            endpoint.update(saved)
+        db['NetworkSettings']['IPAddress'] = '999.1.1.1'
+        self.refused('cannot read')
+        db['NetworkSettings'].pop('IPAddress')
+        # lsof cannot see UDP clients, so a running container that serves UDP refuses, published or not.
+        for served in ({'Config': {'ExposedPorts': {'8125/udp': {}}}}, {'NetworkSettings': {'Ports': {'8125/udp': None}}}):
+            key, value = next(iter(served.items()))
+            saved = copy.deepcopy(db[key])
+            db[key].update(value)
+            with self.subTest(served=served):
+                self.refused('serves a port that is not TCP')
+            db[key] = saved
+        # An exited container has no address and serves nothing.
+        migrate['NetworkSettings']['Networks'][PROJECT + '_default'].update(IPAddress='', GlobalIPv6Address='')
+        migrate['Config']['ExposedPorts'] = {'8125/udp': {}}
+        self.assert_stopped(self.call())
+
+    def test_a_running_container_on_the_host_network_refuses_and_an_exited_one_does_not(self):
+        # It shares the Docker machine's network, reaches every container address there, and lsof cannot see it.
+        sidecar = container('tools-agent-1', 'tools', 'agent', '/Users/coconut/elsewhere/tools', mode='host',
+                            networks={'host': {'NetworkID': 'net-host', 'IPAddress': ''}})
+        self.docker.items.append(sidecar)
+        self.refused('uses the host network')
+        sidecar['NetworkSettings']['Networks'] = {}
+        self.refused('uses the host network')
+        sidecar['HostConfig']['NetworkMode'] = 'tools_default'
+        sidecar['NetworkSettings']['Networks'] = {'host': {'NetworkID': 'net-host'}}
+        self.refused('uses the host network')
+        sidecar['State']['Running'] = False
+        self.assert_stopped(self.call())
+
+    def test_an_address_change_after_the_slow_checks_stops_nothing(self):
+        endpoint = self.docker.items[1]['NetworkSettings']['Networks'][PROJECT + '_default']
+        with patch('coconut.service_yield.process_outcomes', side_effect=lambda probe=None: endpoint.update(
+                IPAddress='172.30.250.250') or set()):
+            self.refused('changed while Coconut checked it')
 
     def test_a_technical_lane_turn_cannot_yield(self):
         self.assertIn('service_yield', REFUSED_EVENTS)
@@ -802,25 +898,37 @@ class DockerCliTests(unittest.TestCase):
                   'p77\ncOrbStack Helper\nn127.0.0.1:3074->127.0.0.1:61000\n'
                   'p90\ncnode\nn127.0.0.1:62000->127.0.0.1:3080\nn10.0.0.2:5000->93.184.216.34:3074\n')
         with patch('coconut.service_yield.subprocess.run', return_value=Mock(returncode=0, stdout=output)) as run:
-            self.assertEqual(DockerCli('docker').port_clients({3074}),
+            self.assertEqual(DockerCli('docker').port_clients({3074}, ()),
                              [dict(pid='42', command='ruby', remote='127.0.0.1:3074')])
-        self.assertIn('-sTCP:ESTABLISHED', run.call_args.args[0])
+        self.assertEqual(run.call_args.args[0], LSOF)
         for remote in ('[::1]:3074', '[::ffff:127.0.0.1]:3074'):
             output = 'p42\ncruby\nn[::1]:61000->' + remote + '\n'
             with self.subTest(remote=remote), \
                     patch('coconut.service_yield.subprocess.run', return_value=Mock(returncode=0, stdout=output)):
-                self.assertEqual(DockerCli('docker').port_clients({3074}), [dict(pid='42', command='ruby', remote=remote)])
+                self.assertEqual(DockerCli('docker').port_clients({3074}, ()), [dict(pid='42', command='ruby', remote=remote)])
         for line in ('n127.0.0.1:61000->127.0.0.1:http', 'n127.0.0.1:61000->3074', 'n127.0.0.1:61000->[::1]'):
             with self.subTest(line=line), self.assertRaisesRegex(Refused, 'cannot read a connection'), \
                     patch('coconut.service_yield.subprocess.run', return_value=Mock(returncode=0, stdout='p1\ncx\n' + line)):
-                DockerCli('docker').port_clients({3074})
+                DockerCli('docker').port_clients({3074}, ())
+        # Any port of a container address matches, in each form that lsof -n shows it.
+        for target, remote in (('172.30.1.2', '172.30.1.2:9999'), ('172.30.1.2', '[::ffff:172.30.1.2]:80'),
+                               ('fd07:b51a:cc66:0:0:0:0:3', '[fd07:b51a:cc66::3]:3000'),
+                               ('fe80::2', '[fe80::2%bridge100]:22')):
+            output = 'p42\ncruby\nn192.168.215.1:50000->' + remote + '\n'
+            with self.subTest(remote=remote), \
+                    patch('coconut.service_yield.subprocess.run', return_value=Mock(returncode=0, stdout=output)):
+                self.assertEqual(DockerCli('docker').port_clients(set(), [target]),
+                                 [dict(pid='42', command='ruby', remote=remote)])
+        with patch('coconut.service_yield.subprocess.run') as run, self.assertRaisesRegex(Refused, 'cannot read'):
+            DockerCli('docker').port_clients(set(), ['web.gp4074dev.orb.local'])
+        run.assert_not_called()
         with patch('coconut.service_yield.subprocess.run', return_value=Mock(returncode=1, stdout='')):
-            self.assertEqual(DockerCli('docker').port_clients({3074}), [])
+            self.assertEqual(DockerCli('docker').port_clients({3074}, ()), [])
         with patch('coconut.service_yield.subprocess.run', return_value=Mock(returncode=2, stdout='')), \
                 self.assertRaises(Refused):
-            DockerCli('docker').port_clients({3074})
+            DockerCli('docker').port_clients({3074}, ())
         with patch('coconut.service_yield.subprocess.run') as run:
-            self.assertEqual(DockerCli('docker').port_clients(set()), [])
+            self.assertEqual(DockerCli('docker').port_clients(set(), ()), [])
         run.assert_not_called()
 
 
