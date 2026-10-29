@@ -401,10 +401,20 @@ class RegisteredDelegationTests(unittest.TestCase):
         self.service._put('artifacts', dict(pr, work_outcome_id=other['id']))
         self.assert_rejected(owner, self.owner_caller(owner), UNRELATED)
 
-    def test_two_owner_prs_of_the_registered_work_stay_ambiguous(self):
+    def test_two_open_owner_prs_of_the_registered_work_continue_together(self):
         owner, audit, coordinator, work, requester_pr, pr = self.saved_graph()
-        self.service._put('artifacts', dict(pr, id='second-delegated-pr', url=URL[:-1] + '9'))
-        self.assert_rejected(owner, self.owner_caller(owner), 'Choose one retained Work item')
+        second = dict(pr, id='second-delegated-pr', url=URL[:-1] + '9')
+        finished = dict(pr, id='finished-delegated-pr', url=URL[:-1] + '8', status='merged', pr_state='merged')
+        for item in (second, finished):
+            self.service._put('artifacts', item)
+        caller = self.owner_caller(owner)
+        # A finished PR among them keeps the choice ambiguous.
+        self.assert_rejected(owner, caller, 'Choose one retained Work item')
+        self.service.db.execute('DELETE FROM artifacts WHERE id=?', (finished['id'],))
+        self.assertEqual(self.resume(caller)['task_id'], owner['id'])
+        self.assertIsNone(self.service._get('tasks', owner['id']).get('_work_context_id'))
+        for item in (pr, second):
+            self.assertEqual(self.service._get('artifacts', item['id']), dict(item, _native_outcome_id='t_existing'))
 
     def test_another_tenant_or_requester_cannot_use_the_registration(self):
         owner, audit, coordinator, work, requester_pr, pr = self.saved_graph()
