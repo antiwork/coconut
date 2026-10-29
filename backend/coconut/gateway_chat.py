@@ -210,8 +210,11 @@ class GatewayChat:
 
         def follow_up(kind, payload):
             # The answer is the text of the turn. The worker sends no completion for a follow-up either.
-            if kind in ('phase', 'interim_message', 'interim_seal', 'completed'):
+            if kind in ('phase', 'interim_message', 'completed'):
                 return None
+            if kind == 'interim_seal':
+                # The streamed text so far was commentary, not the answer.
+                return emit('text_delta', {'text': '', 'replace': True})
             if kind == 'gateway_question':
                 raise ServiceError(409, 'A follow-up on a card cannot ask the person.')
             return emit(kind, payload)

@@ -610,6 +610,8 @@ class ServiceRoutingTests(unittest.TestCase):
         with self.assertRaisesRegex(ServiceError, 'pending decision stays open'):
             self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'ask', 'arguments': self.CARD})
         bridge = self.service.gateway_bridge
+        # Commentary streams before a tool call, and the gateway sends it as interim after that call.
+        bridge.event({'turn_id': turn['id'], 'kind': 'delta', 'stream': 1, 'text': 'Only the notes.'})
         bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'c:1', 'text': 'Only the notes.', 'interim': True})
         bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'm:1', 'text': 'Two fixes and the notes.'})
         bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
