@@ -540,6 +540,38 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertIn('error', json.loads(tools.ask({'question': 'x'})))
         self.assertIn('error', json.loads(tools._service_tool('track_pr')({'url': 'x'})))
 
+    def test_a_dismissed_coconut_ask_returns_the_status_dismissed(self):
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        results = []
+        async def runner(event):
+            def tool_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    results.append(json.loads(tools.ask({'question': 'Ship it?', 'choices': ['Yes', 'No']})))
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            await asyncio.to_thread(tool_calls)
+            return 'Asked.'
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Ship.'})
+        thread = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not any(d['task_id'] == task['id'] for d in self.decisions()):
+            time.sleep(.02)
+        card = next(d for d in self.decisions() if d['task_id'] == task['id'])
+        self.write('POST', f'/v1/decisions/{card["id"]}/inbox', {'action': 'dismiss', 'revision': 1})
+        with self.service.transaction():
+            saved = self.service._get('decisions', card['id'])
+            saved['inbox_undo_until'] = '2000-01-01T00:00:00Z'
+            self.service._put('decisions', saved)
+        self.service.finish_inbox_swipes()
+        thread.join(15)
+        self.assertEqual(results[0]['status'], 'dismissed')
+        self.assertIn('not a rejection', results[0]['detail'])
+        self.assertNotIn('answer', results[0])
+
     def test_a_cron_run_in_a_bot_profile_reports_to_a_coconut_turn(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']
         tools = sys.modules['hermes_plugins.coconut.tools']

@@ -87,7 +87,7 @@ struct DecisionQueue {
     }
 }
 
-/// Later preserves a decision. Dismiss rejects it after the Undo window.
+/// Later preserves a decision. Dismiss removes it without an answer after the Undo window. It is not a rejection.
 enum InboxSwipeAction: String {
     case later, dismiss
 
