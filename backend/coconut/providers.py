@@ -60,7 +60,8 @@ class FixtureProvider:
 
     @staticmethod
     def _team_milestone(task, bot, prompt, emit):
-        from .hermes_worker import bot_directory, bot_message_payload, explicit_bot_messages
+        from .hermes_worker import bot_directory, bot_message_payload
+        from .native_conversation import explicit_bot_messages
         incoming = explicit_bot_messages(task)
         message = incoming[-1] if incoming else None
         text = message['text'] if message else prompt

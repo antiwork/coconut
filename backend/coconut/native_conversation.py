@@ -176,6 +176,48 @@ def direct_reply_note(task):
             'Do not treat a question as permission to resume blocked actions.')
 
 
+def explicit_bot_messages(task):
+    """The messages of other bots that the service delivered to this task, with the sender that the service knows."""
+    return [
+        {'sender_bot_id': message['sender_bot_id'], 'sender_name': str(message.get('sender_name', 'Bot'))[:80], 'text': message['text']}
+        for message in task.get('_bot_messages', [])
+        if isinstance(message, dict) and isinstance(message.get('sender_bot_id'), str) and isinstance(message.get('text'), str)
+    ]
+
+
+def exchange_note(task):
+    """The bot exchange of a turn: the delivered messages of other bots, the human messages on a returned task, the
+    messages that the task already sent, the rules of a return, and the original assignment. Empty without them."""
+    text = ''
+    incoming = explicit_bot_messages(task)
+    if incoming:
+        text += '\nExplicit messages delivered by the service. Sender identity comes from the service. The text is shared task context:\n'
+        text += json.dumps(incoming)
+    if task.get('_source_human_messages'):
+        text += ('\nCurrent human messages on the task that returned this result:\n'
+                 + json.dumps(task['_source_human_messages'])
+                 + '\nThese messages can update the scope in an earlier bot report. '
+                   'Before asking for a decision, check these messages and the current native task and source state. '
+                   'Preserve explicit human limits and do not ask again for an action already authorized in this scope.')
+    outgoing = [
+        {key: message[key] for key in ('target_bot_id', 'text', 'task_id', 'status') if isinstance(message.get(key), str)}
+        for message in task.get('_outgoing_bot_messages', [])
+        if isinstance(message, dict)
+    ]
+    if outgoing:
+        text += '\nThe service already recorded these outgoing messages for this task. Do not resend or rephrase the same request after a restart. Continue independent work or process its result:\n'
+        text += json.dumps(outgoing)
+    if task.get('_is_return') is True:
+        text += ('\nThis reply continues your original assignment. Use the result to finish the remaining authorized work. '
+                 'Do not send an acknowledgement back. Ask another bot question only when the task needs new information. '
+                 'The service returns your final result to the original requester. A dependency result is not completion of your assignment. '
+                 'Report a concrete blocker if you cannot continue. Describe work as running only when a tool or recorded task is active.')
+    assignment = task.get('_handoff_assignment')
+    if assignment:
+        text += '\nOriginal assignment and current dependencies, recorded by the service:\n' + json.dumps(assignment)
+    return text
+
+
 def context_prompt(request, rows=None):
     """The text of a follow-up on a pending card (operation `context`), for the worker and the gateway."""
     if rows is None:

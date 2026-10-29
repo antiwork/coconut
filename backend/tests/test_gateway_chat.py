@@ -39,14 +39,16 @@ class RoutingRuleTests(unittest.TestCase):
     def test_only_a_plain_chat_turn_goes_to_the_gateway(self):
         plain = {'_chat_session': True, 'attachments': [], '_pending_decisions': [], '_tracked_pr_observations': []}
         self.assertTrue(plain_chat_turn(plain))
-        self.assertFalse(plain_chat_turn(dict(plain, _chat_session=False)))
-        for key in ('_native_job', '_work_context_id', '_bot_messages', '_source_activity', '_technical_lane',
+        # A turn of the bot's own conversation without a person's chat message runs there too, as in the worker.
+        self.assertTrue(plain_chat_turn(dict(plain, _chat_session=False)))
+        for key in ('_native_job', '_work_context_id', '_source_activity', '_technical_lane',
                     '_execution_session_id', '_work_status_only'):
             with self.subTest(key=key):
                 self.assertFalse(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
         # Attachments, reactions, pending cards and the work of the chat's assignment go to the gateway as text.
         for key in ('attachments', '_reaction_feedback', '_pending_decisions', '_work_todos', '_work_resume',
-                    '_work_dependencies', '_self_recovery', '_withdrawal_corrections', '_direct_reply_message_id'):
+                    '_work_dependencies', '_self_recovery', '_withdrawal_corrections', '_direct_reply_message_id',
+                    '_bot_messages', '_is_return', '_handoff_assignment', '_outgoing_bot_messages'):
             with self.subTest(key=key):
                 self.assertTrue(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
 
@@ -676,6 +678,64 @@ class ServiceRoutingTests(unittest.TestCase):
         self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
         runner.join(5)
 
+    def test_a_message_of_another_bot_and_its_return_run_in_the_gateway(self):
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        other_home = self.service.profiles.home(other)
+        task = self.send('Ask Lin to check the logs.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        sent = self.service.gateway_tool({'turn_id': turn, 'tool': 'message_bot',
+                                          'arguments': {'bot': 'Lin', 'text': 'Please check the error logs of today.'}})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': 'I asked Lin.'})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        # Lin's task runs in Lin's gateway chat, with the delivered message as the worker gives it.
+        adapter = Adapter(self.service.gateway_bridge, other_home, [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'The logs are clean.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.service._run_task(sent['task_id'])
+        adapter.join(5)
+        text = adapter.turns[0]['text']
+        self.assertEqual(adapter.turns[0]['chat_id'], other['id'])
+        self.assertIn('Explicit messages delivered by the service.', text)
+        self.assertIn('Please check the error logs of today.', text)
+        self.assertEqual(self.read('tasks', sent['task_id'])['status'], 'completed')
+        # The result returns to Ada as a new task of Ada's own conversation, which also runs in the gateway.
+        # The dispatcher of the service returns the result (Service._drain_returns).
+        self.service._drain_returns()
+        with self.service.lock:
+            returned = next(t for t in self.service._all('tasks') if t['bot_id'] == self.bot['id']
+                            and t.get('_is_return') and t['status'] == 'queued')
+        text = self.run_in_gateway(returned, [{'kind': 'send', 'message_id': 'm:1', 'text': 'Lin says the logs are clean.'},
+                                              {'kind': 'done', 'outcome': 'success'}])
+        self.assertIn('The logs are clean.', text)
+        self.assertIn('This reply continues your original assignment.', text)
+        self.assertEqual(self.read('tasks', returned['id'])['status'], 'completed')
+
+    def test_an_accepted_proposal_continues_in_the_gateway(self):
+        task = self.send('Fix the typo.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        self.service.gateway_tool({'turn_id': turn, 'tool': 'suggest', 'arguments': dict(self.CARD, key='release')})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        card = next(d for d in self.decisions() if d['task_id'] == task['id'])
+        self.write('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'ship', 'revision': 1})
+        # The proposal continues in a new task of the bot's conversation that resumes the card.
+        continuation = self.read('tasks', self.read('decisions', card['id'])['_execution_task_id'])
+        text = self.run_in_gateway(continuation, [{'kind': 'send', 'message_id': 'm:1', 'text': 'Shipping.'},
+                                                  {'kind': 'done', 'outcome': 'success'}])
+        self.assertTrue(text.startswith('Continue the original task using this recorded answer.'))
+        self.assertEqual(self.read('tasks', continuation['id'])['status'], 'completed')
+
     def test_a_command_approval_of_a_worker_turn_resumes_in_the_worker(self):
         from coconut.gateway_chat import gateway_resume
         plain = {'_chat_session': True}
@@ -686,8 +746,8 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertFalse(gateway_resume(plain, {'action_type': 'question', '_receipt_id': 'receipt'}))
         # A task of a later group stays with the worker.
         self.assertFalse(gateway_resume(dict(plain, _work_context_id='work'), {'action_type': 'question'}))
-        # The routine task of a gateway cron run continues the run's Hermes session.
-        self.assertFalse(gateway_resume({}, {'action_type': 'question'}))
+        # A task of the bot's own conversation, for example from another bot, continues in the gateway too.
+        self.assertTrue(gateway_resume({'source_bot_id': 'bot-2'}, {'action_type': 'question'}))
         self.assertTrue(gateway_resume({}, {'action_type': 'question'}, cron_session='cron-session'))
 
     def test_a_dismissed_card_continues_nothing(self):
