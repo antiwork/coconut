@@ -167,6 +167,7 @@ class MessagePageTests(PhoneReadCase):
         self.quiet = self.write('POST', '/v1/bots', {'name': 'Quiet'})
         self.gone = self.write('POST', '/v1/bots', {'name': 'Gone'})
         bots = [self.bot['id'], self.other['id'], self.quiet['id'], self.gone['id']]
+        rows = []
         with self.service.transaction():
             for number in range(60):
                 owner, peer = bots[number % 4], bots[(number + 1) % 4]
@@ -181,6 +182,12 @@ class MessagePageTests(PhoneReadCase):
                 if number % 13 == 0:
                     row['_deleted'] = True
                 self.service._put('messages', row)
+                rows.append(row)
+            # Triggers keep the exchange list when a row changes its audience or leaves.
+            self.service._put('messages', dict(rows[5], recipient_bot_ids=[bots[2]]))
+            self.service._put('messages', dict(rows[10], kind='text', sender_bot_id=None, recipient_bot_ids=[]))
+            self.service._put('messages', dict(rows[3], kind='bot_exchange', sender_bot_id=bots[3], recipient_bot_ids=[bots[1]]))
+            self.service.db.execute('DELETE FROM messages WHERE id=?', (rows[15]['id'],))
             gone = self.service._get('bots', self.gone['id'])
             gone['_deleted'] = True
             self.service._put('bots', gone)
@@ -208,10 +215,10 @@ class MessagePageTests(PhoneReadCase):
             view._message_page(self.quiet['id'])
             view.db.set_trace_callback(None)
             steps = [row[3] for row in view.db.execute('EXPLAIN QUERY PLAN ' + statements[-1])]
-            self.assertIn('SEARCH messages USING INDEX messages_chat (<expr>=?)', steps)
-            self.assertIn('SCAN messages USING INDEX messages_exchange', steps)
-            # No step reads every message.
-            self.assertNotIn('SCAN messages', steps)
+            self.assertIn('SEARCH m USING INDEX messages_chat (<expr>=?)', steps)
+            self.assertIn('SEARCH a USING PRIMARY KEY (bot_id=?)', steps)
+            # No step reads every message, and no step sorts: both parts stop at the newest rows of the bot.
+            self.assertFalse([step for step in steps if step.startswith(('SCAN m', 'USE TEMP B-TREE'))], steps)
         statements.clear()
         with patch.object(Service, '_read_view', self.traced(statements)):
             self.service.snapshot(content_only=True, compact_history=True)
@@ -219,6 +226,32 @@ class MessagePageTests(PhoneReadCase):
         with self.service._read_view() as view:
             plan = ' '.join(row[3] for row in view.db.execute('EXPLAIN QUERY PLAN ' + confirmed))
         self.assertIn('messages_client_request', plan)
+
+    def test_a_page_does_not_read_more_with_a_longer_exchange_history(self):
+        def add_exchanges(count):
+            with self.service.transaction():
+                for number in range(count):
+                    sender = (self.other['id'], self.quiet['id'])[number % 2]
+                    self.service._put('messages', dict(
+                        id=str(uuid4()), bot_id=sender, task_id=None, role='assistant', kind='bot_exchange', text='x' * 200,
+                        sender_bot_id=sender, recipient_bot_ids=[self.bot['id'] if number % 2 else self.other['id']],
+                        created_at='2026-10-29T00:00:00Z', streaming=False))
+        def steps():
+            counted = []
+            with self.service._read_view() as view, view._read_transaction():
+                view.db.set_progress_handler(lambda: counted.append(1), 100)
+                started = time.perf_counter()
+                for bot_id in self.bots:
+                    view._message_page(bot_id)
+                elapsed = time.perf_counter() - started
+            return len(counted), elapsed
+        add_exchanges(200)
+        short, _ = steps()
+        add_exchanges(4000)
+        long, elapsed = steps()
+        # The old page sorted every exchange row for each bot, so its work grew with the history (here 20 times).
+        self.assertLess(long, short * 1.5, (short, long))
+        self.assertLess(elapsed, 0.5)
 
     def traced(self, statements):
         original = Service._read_view

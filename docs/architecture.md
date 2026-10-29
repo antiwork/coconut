@@ -232,7 +232,7 @@ The host continues while the phone is disconnected or suspended.
 ### Reads and retention
 
 - The phone's reads (state, updates, events, history, cards, search, settings, learning) use their own read-only SQLite connection. A WAL reader sees the last commit. It does not wait for the service lock or for a write transaction.
-- The state read pages each conversation through the `messages_chat` and `messages_exchange` indexes. It reads the tasks, the confirmed requests and the Work outcomes through indexes too, so its time does not grow with the history.
+- The state read pages each conversation through the `messages_chat` index and the `message_exchange_audience` list. The list holds, for each bot, the positions of the exchange rows that its conversation shows. Triggers keep it with the messages. A page reads only the newest rows of one bot. The state read also reads the tasks, the confirmed requests and the Work outcomes through indexes, so its time does not grow with the history.
 - The service logs `coconut.request_timing` for each request from the phone: the route without IDs, the status, the time in ms, the wait of a long poll, and the stages of a state read.
 - The hourly database maintenance deletes events older than 2 days, but keeps the newest 10,000. It deletes the completed receipts of outcomes that stayed idle for 7 days. It keeps the rows that a lookup still reads.
 - A task that ended and did not change for 30 days is retired. Its kept events and its completed receipts go too, also when other tasks of its bot still run.

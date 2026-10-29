@@ -51,17 +51,55 @@ def finished_before(item, cutoff):
     return True
 
 
-# The exchange rows that a page can show in the conversation of another bot. The partial index messages_exchange
-# (Service.__init__) has this condition, so a query that repeats it word for word reads only these rows.
-EXCHANGE_MESSAGE = ("(json_extract(data,'$.kind')='bot_exchange' "
-                    "OR json_array_length(data,'$.exchange_recipient_bot_ids')>0)")
-# Service.__init__ creates these partial indexes. They hold only the rows that the state read searches: the exchange
-# rows of _message_page and the messages with a confirmed request. So neither read scans every message.
+# An exchange row can appear in the conversation of its sender and of each recipient, besides its own bot.
+EXCHANGE = "(json_extract({data},'$.kind')='bot_exchange' OR json_array_length({data},'$.exchange_recipient_bot_ids')>0)"
+
+
+def exchange_inserts(source, data, position):
+    """The statements that list each exchange row of `source` for its sender and for each of its recipients."""
+    exchange = EXCHANGE.format(data=data)
+    return ([f"INSERT OR IGNORE INTO message_exchange_audience SELECT json_extract({data},'$.sender_bot_id'), {position} "
+             f"FROM {source} WHERE json_type({data},'$.sender_bot_id')='text' AND {exchange}"]
+            + [f"INSERT OR IGNORE INTO message_exchange_audience SELECT j.value, {position} FROM {source}, "
+               f"json_each({data},'$.{field}') j WHERE j.type='text' AND {exchange}"
+               for field in ('recipient_bot_ids', 'exchange_recipient_bot_ids')])
+
+
+NEW_EXCHANGE = ''.join(statement + ';\n' for statement in exchange_inserts('(SELECT 1)', 'NEW.data', 'NEW.rowid'))
+# Service.__init__ creates these. message_exchange_audience lists, for each bot, the positions (rowids) of the exchange
+# rows that its conversation shows, in rowid order. So a page of one bot reads only its newest exchange rows, without a
+# sort. Triggers keep the list with the messages. A full VACUUM can renumber rowids, so maintenance builds it again.
+# messages_client_request holds only the messages with a confirmed request.
 READ_INDEXES = f"""
-CREATE INDEX IF NOT EXISTS messages_exchange ON messages (id) WHERE {EXCHANGE_MESSAGE};
 CREATE INDEX IF NOT EXISTS messages_client_request ON messages (json_extract(data,'$.client_request_id'))
     WHERE json_type(data,'$.client_request_id')='text';
+CREATE TABLE IF NOT EXISTS message_exchange_audience (
+    bot_id TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (bot_id, position)) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS message_exchange_audience_position ON message_exchange_audience (position);
+CREATE TRIGGER IF NOT EXISTS message_exchange_insert AFTER INSERT ON messages BEGIN
+{NEW_EXCHANGE}END;
+CREATE TRIGGER IF NOT EXISTS message_exchange_update AFTER UPDATE OF data ON messages
+WHEN json_extract(OLD.data,'$.kind') IS NOT json_extract(NEW.data,'$.kind')
+  OR json_extract(OLD.data,'$.sender_bot_id') IS NOT json_extract(NEW.data,'$.sender_bot_id')
+  OR json_extract(OLD.data,'$.recipient_bot_ids') IS NOT json_extract(NEW.data,'$.recipient_bot_ids')
+  OR json_extract(OLD.data,'$.exchange_recipient_bot_ids') IS NOT json_extract(NEW.data,'$.exchange_recipient_bot_ids')
+BEGIN
+DELETE FROM message_exchange_audience WHERE position=OLD.rowid;
+{NEW_EXCHANGE}END;
+CREATE TRIGGER IF NOT EXISTS message_exchange_delete AFTER DELETE ON messages BEGIN
+DELETE FROM message_exchange_audience WHERE position=OLD.rowid;
+END;
 """
+
+
+def index_exchange_audience(db, rebuild=False):
+    """Fill message_exchange_audience from the stored messages once, or again after a full VACUUM."""
+    if not rebuild and db.execute("SELECT 1 FROM settings WHERE key='message_exchange_audience_indexed'").fetchone():
+        return
+    db.execute('DELETE FROM message_exchange_audience')
+    for statement in exchange_inserts('messages m', 'm.data', 'm.rowid'):
+        db.execute(statement)
+    db.execute("INSERT OR REPLACE INTO settings VALUES ('message_exchange_audience_indexed','true')")
 
 
 class StateSync:
@@ -158,18 +196,17 @@ class StateSync:
             raise ServiceError(404, 'This bot was removed.')
         # Decision rows stay in their stored conversation. Exchange rows can appear for both bots.
         # Row IDs give pagination a stable boundary when timestamps are equal.
-        # The bot's own rows come from the messages_chat index and the exchange rows from the messages_exchange index.
-        # Each part stops at the newest limit + 1 rows, so a quiet bot no longer reads the whole table.
-        visible = "AND NOT COALESCE(json_extract(data,'$._hidden'),0) AND NOT COALESCE(json_extract(data,'$._deleted'),0) "
+        # The bot's own rows come from the messages_chat index, and its exchange rows from message_exchange_audience.
+        # Both are in rowid order for one bot, so each part stops at the newest limit + 1 rows without a sort.
+        visible = "AND NOT COALESCE(json_extract(m.data,'$._hidden'),0) AND NOT COALESCE(json_extract(m.data,'$._deleted'),0) "
         row = self.db.execute("SELECT json_group_array(json_array(position,json(data))) FROM (SELECT rowid AS position,data "
-            "FROM messages WHERE rowid IN (SELECT rowid FROM (SELECT rowid FROM messages WHERE json_extract(data,'$.bot_id')=:bot "
-            "AND (:before IS NULL OR rowid<:before) " + visible + "ORDER BY rowid DESC LIMIT :rows) "
-            "UNION ALL SELECT rowid FROM (SELECT rowid FROM messages INDEXED BY messages_exchange WHERE " + EXCHANGE_MESSAGE + " "
-            "AND (:before IS NULL OR rowid<:before) " + visible +
-            "AND (json_extract(data,'$.sender_bot_id')=:bot OR EXISTS(SELECT 1 FROM json_each(messages.data,'$.recipient_bot_ids') WHERE value=:bot) "
-            "OR EXISTS(SELECT 1 FROM json_each(messages.data,'$.exchange_recipient_bot_ids') WHERE value=:bot)) "
-            "AND EXISTS(SELECT 1 FROM bots WHERE id=json_extract(messages.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0)) "
-            "ORDER BY rowid DESC LIMIT :rows)) ORDER BY rowid DESC LIMIT :rows)",
+            "FROM messages WHERE rowid IN (SELECT position FROM (SELECT m.rowid AS position FROM messages m "
+            "WHERE json_extract(m.data,'$.bot_id')=:bot AND (:before IS NULL OR m.rowid<:before) " + visible +
+            "ORDER BY m.rowid DESC LIMIT :rows) "
+            "UNION ALL SELECT position FROM (SELECT a.position FROM message_exchange_audience a JOIN messages m ON m.rowid=a.position "
+            "WHERE a.bot_id=:bot AND (:before IS NULL OR a.position<:before) " + visible +
+            "AND EXISTS(SELECT 1 FROM bots WHERE id=json_extract(m.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0)) "
+            "ORDER BY a.position DESC LIMIT :rows)) ORDER BY rowid DESC LIMIT :rows)",
             dict(bot=bot_id, before=before, rows=limit + 1)).fetchone()
         rows = json.loads(row[0])
         page = rows[:limit]

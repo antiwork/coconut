@@ -26,7 +26,7 @@ from .pr_tracking import REVIEW_CHECK_NAMES, GitHubPRTracker, PRTrackingError, p
 from .routines import validate_schedule, next_run
 from .native_conversation import reaction_only_turn
 from .profiles import HermesProfiles, ProfileError, profile_id
-from .state_sync import READ_INDEXES, StateSync
+from .state_sync import READ_INDEXES, StateSync, index_exchange_audience
 
 
 class ServiceError(Exception):
@@ -337,6 +337,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if self.kanban and not getattr(self, '_workspace_recovery_hold', False):
                 self.kanban.call({'op': 'snapshot'})
             self._index_message_audience()
+            with self.transaction():
+                index_exchange_audience(self.db)
             with self.transaction():
                 self._migrate_threads()
                 self._migrate_bot_exchanges()

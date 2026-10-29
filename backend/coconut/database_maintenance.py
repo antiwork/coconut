@@ -7,6 +7,7 @@ so a phone request or a tool call waits for at most one batch.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import contextlib
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import time
 from .background_processes import PENDING_COMPLETIONS
 from .log_rotation import rotate_log
 from .session_maintenance import SESSION_RETENTION_DAYS
+from .state_sync import index_exchange_audience
 from .work_capacity import execution_key
 from .worktree_retirement import NATIVE_IDLE_STATUSES
 
@@ -161,6 +163,12 @@ class DatabaseMaintenance:
         if backup is None:
             return
         backup[1].close()
+        with contextlib.closing(sqlite3.connect(backup[0])) as copy:
+            copied = copy.execute('SELECT EXISTS(SELECT 1 FROM events) OR EXISTS(SELECT 1 FROM native_receipts)').fetchone()[0]
+        if not copied:
+            # A pass that deleted nothing copied nothing. The first pass that deletes rows still makes the backup.
+            backup[0].unlink()
+            return
         if complete:
             with self.transaction():
                 self.db.execute("INSERT OR REPLACE INTO settings VALUES ('retention_backup', ?)", (json.dumps(backup[0].name),))
@@ -420,8 +428,11 @@ class DatabaseMaintenance:
                     started = time.monotonic()
                     self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')
                     self.db.execute('VACUUM')
-                    # VACUUM can renumber rowids, so the kept tasks can lose their row order.
+                    # VACUUM can renumber rowids, so the kept tasks can lose their row order, and the exchange
+                    # positions of the message pages can name other rows.
                     self._forget_cached_tasks()
+                    with self.transaction():
+                        index_exchange_audience(self.db, rebuild=True)
                     logging.getLogger(__name__).warning('coconut.database_vacuum %s', json.dumps(dict(
                         pages_before=pages, free_before=free, seconds=round(time.monotonic() - started, 1))))
                     freed += free

@@ -439,6 +439,18 @@ class HistoryRetentionTests(ServiceCase):
         with sqlite3.connect(backup) as db:
             self.assertFalse(db.execute('SELECT seq FROM events WHERE seq IN (%s)' % ','.join('?' * len(later)), later).fetchall())
 
+    def test_a_pass_that_deletes_nothing_leaves_the_backup_to_the_first_retirement(self):
+        # The store has no history to retire yet.
+        self.assertTrue(self.service.maintain_database(NOW)['retired'])
+        self.assertEqual((self.backups(), self.service._setting('retention_backup')), ([], None))
+        gone = self.history(self.task())
+        [self.event('message.updated', created_at=RECENT) for _ in range(2)]
+        self.service.maintain_database(NOW + database_maintenance.DATABASE_MAINTENANCE_SECONDS)
+        [backup] = self.backups()
+        with sqlite3.connect(backup) as db:
+            self.assertEqual([row[0] for row in db.execute('SELECT seq FROM events ORDER BY seq')], gone)
+        self.assertEqual(self.service._setting('retention_backup'), backup.name)
+
     def test_a_disk_without_room_for_the_copy_keeps_the_history(self):
         kept = self.history(self.task()) + [self.event('message.updated', created_at=RECENT) for _ in range(2)]
         full = SimpleNamespace(free=database_maintenance.VACUUM_DISK_RESERVE_BYTES)
