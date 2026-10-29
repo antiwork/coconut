@@ -507,47 +507,56 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(cards['Delete files?']['explanation'], 'rm -rf build')
         self.assertEqual(self.replies(task), [('Done.', False)])
 
-    def test_the_coconut_tools_act_for_the_turn_of_the_chat(self):
+    def test_the_coconut_tools_act_for_the_turn_of_the_chat_and_a_card_ends_the_turn(self):
         tools = sys.modules['hermes_plugins.coconut.tools']
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
         other = self.write('POST', '/v1/bots', {'name': 'Lin'})
         results = []
+        card = {'title': 'Ship it?', 'context': 'The build passed.',
+                'options': [{'id': 'ship', 'label': 'Ship it', 'explanation': ''},
+                            {'id': 'wait', 'label': 'Wait', 'explanation': ''}]}
         async def runner(event):
             def tool_calls():
                 token = self.session(event.source.chat_id)
                 try:
                     results.append(json.loads(tools._service_tool('message_bot')({'bot': 'Lin', 'text': 'Check it.'})))
                     results.append(json.loads(tools._service_tool('message_bot')({'bot': 'Nobody', 'text': 'x'})))
-                    results.append(json.loads(tools.ask({'question': 'Ship it?', 'choices': ['Yes', 'No']})))
+                    results.append(json.loads(tools._service_tool('suggest')(dict(card, key='tests', title='Add a test?'))))
+                    results.append(json.loads(tools._service_tool('ask')(card)))
+                    # The card ended the turn: Hermes asks the hook before each further tool call.
+                    results.append(hooks.guard_tool(tool_name='terminal', args={}))
                 finally:
                     from gateway.session_context import SESSION
                     SESSION.reset(token)
             await asyncio.to_thread(tool_calls)
-            return 'Asked.'
+            return 'I asked you on a card.'
         self.connect(runner)
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Work with Lin.'})
-        thread = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
-        thread.start()
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not any(d['task_id'] == task['id'] for d in self.decisions()):
-            time.sleep(.02)
-        card = next(d for d in self.decisions() if d['task_id'] == task['id'])
-        self.write('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'choice-0', 'revision': 1})
-        thread.join(15)
+        self.service._run_task(task['id'])
         self.assertEqual((results[0]['status'], results[0]['target_bot_id']), ('queued', other['id']))
         self.assertIn('Lin', results[1]['error'])
-        self.assertEqual(results[2], {'answer': 'Yes'})
+        self.assertEqual(results[2]['status'], 'recorded')
+        self.assertEqual((results[3]['status'], results[3]['paused']), ('waiting', True))
+        self.assertEqual(results[4], {'action': 'block', 'message': hooks.PAUSED_MESSAGE})
+        cards = {d['title']: d for d in self.decisions() if d['task_id'] == task['id']}
+        self.assertEqual((cards['Ship it?']['status'], cards['Add a test?']['inbox_kind']), ('pending', 'proposal'))
+        # The task waits for the answer. The text after the card is not a reply.
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'needs_you')
+        self.assertEqual(self.replies(task), [])
         # Outside a Coconut chat a tool refuses.
-        self.assertIn('error', json.loads(tools.ask({'question': 'x'})))
+        self.assertIn('error', json.loads(tools._service_tool('ask')(card)))
         self.assertIn('error', json.loads(tools._service_tool('track_pr')({'url': 'x'})))
 
-    def test_a_dismissed_coconut_ask_returns_the_status_dismissed(self):
+    def test_a_dismissed_card_of_coconut_ask_continues_nothing(self):
         tools = sys.modules['hermes_plugins.coconut.tools']
         results = []
         async def runner(event):
             def tool_calls():
                 token = self.session(event.source.chat_id)
                 try:
-                    results.append(json.loads(tools.ask({'question': 'Ship it?', 'choices': ['Yes', 'No']})))
+                    results.append(json.loads(tools._service_tool('ask')({
+                        'title': 'Ship it?', 'context': 'The build passed.',
+                        'options': [{'id': 'ship', 'label': 'Ship it', 'explanation': ''}]})))
                 finally:
                     from gateway.session_context import SESSION
                     SESSION.reset(token)
@@ -555,11 +564,8 @@ class GatewayAdapterTests(unittest.TestCase):
             return 'Asked.'
         self.connect(runner)
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Ship.'})
-        thread = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
-        thread.start()
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not any(d['task_id'] == task['id'] for d in self.decisions()):
-            time.sleep(.02)
+        self.service._run_task(task['id'])
+        self.assertEqual(results[0]['status'], 'waiting')
         card = next(d for d in self.decisions() if d['task_id'] == task['id'])
         self.write('POST', f'/v1/decisions/{card["id"]}/inbox', {'action': 'dismiss', 'revision': 1})
         with self.service.transaction():
@@ -567,10 +573,12 @@ class GatewayAdapterTests(unittest.TestCase):
             saved['inbox_undo_until'] = '2000-01-01T00:00:00Z'
             self.service._put('decisions', saved)
         self.service.finish_inbox_swipes()
-        thread.join(15)
-        self.assertEqual(results[0]['status'], 'dismissed')
-        self.assertIn('not a rejection', results[0]['detail'])
-        self.assertNotIn('answer', results[0])
+        # The card ended its turn. A dismissal records no answer and starts no turn.
+        saved = self.read('decisions', card['id'])
+        self.assertEqual((saved['status'], saved['_answers']), ('dismissed', []))
+        stored = self.read('tasks', task['id'])
+        self.assertNotEqual(stored['status'], 'queued')
+        self.assertNotIn('_resume_decision', stored)
 
     def test_a_cron_run_in_a_bot_profile_reports_to_a_coconut_turn(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']
@@ -579,7 +587,7 @@ class GatewayAdapterTests(unittest.TestCase):
         from hermes_cli.config import CONFIG
         CONFIG['gateway'] = {'platforms': {'coconut': {'extra': {'bridge': str(self.service.gateway_bridge.address_file)}}}}
         self.addCleanup(CONFIG.clear)
-        answers = []
+        proposals = []
         def cron_run():
             # As Hermes runs a cron job: in the job's profile, with the identity of the fire bound.
             token = CURRENT.set(CronExecution('intake', 'Desk fast work intake', 'execution-1'))
@@ -589,20 +597,18 @@ class GatewayAdapterTests(unittest.TestCase):
                     hooks.stream_start()
                     hooks.stream_delta(delta='Checking the queue.', kind='text')
                     hooks.cron_interim(text='Checking the queue.')
-                    answers.append(json.loads(tools.ask({'question': 'File two items?', 'choices': ['Yes', 'No']})))
+                    proposals.append(json.loads(tools._service_tool('suggest')({
+                        'key': 'intake', 'title': 'File two items?', 'context': 'Two items wait.',
+                        'options': [{'id': 'file', 'label': 'File them', 'explanation': ''}]})))
                     hooks.cron_answer(assistant_response='Filed two items.')
                     hooks.cron_end(completed=True, failed=False, interrupted=False)
             finally:
                 CURRENT.reset(token)
         thread = threading.Thread(target=cron_run, daemon=True)
         thread.start()
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not any(d['title'] == 'File two items?' for d in self.decisions()):
-            time.sleep(.02)
-        card = next(d for d in self.decisions() if d['title'] == 'File two items?')
-        self.write('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'choice-0', 'revision': 1})
         thread.join(15)
-        self.assertEqual(answers, [{'answer': 'Yes'}])
+        self.assertEqual(proposals[0]['status'], 'recorded')
+        card = next(d for d in self.decisions() if d['title'] == 'File two items?')
         task = self.read('tasks', card['task_id'])
         deadline = time.monotonic() + 5
         while task['status'] == 'working' and time.monotonic() < deadline:
@@ -610,6 +616,8 @@ class GatewayAdapterTests(unittest.TestCase):
             task = self.read('tasks', card['task_id'])
         self.assertEqual((task['status'], task['title'], task['_gateway_cron']['job_id']),
                          ('completed', 'Desk fast work intake', 'intake'))
+        # The run names its Hermes session. An answer to a card of the run continues that session.
+        self.assertEqual(task['_gateway_cron']['session_id'], 'cron-session')
         self.assertEqual(self.replies(task), [('Checking the queue.', True), ('Filed two items.', False)])
         # Outside a cron run and a Coconut chat, the hooks do nothing.
         hooks.cron_answer(assistant_response='Ignored.')
@@ -668,20 +676,32 @@ class GatewayAdapterTests(unittest.TestCase):
             hooks.join_conversation(event=event('root-c'), session_store=store)
             self.assertEqual((store.entry.session_id, SessionDB.meta[hooks.TIP_KEY + 'root-c']), ('gateway-new', 'gateway-new'))
 
-    def test_a_stopped_or_finished_turn_wakes_its_waiting_question(self):
+    def test_the_hook_blocks_tools_after_a_card_and_cards_in_a_follow_up(self):
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        adapter = self.adapter_module
+        self.addCleanup(adapter.PAUSED.clear)
+        self.addCleanup(adapter.MODES.clear)
+        with patch.object(hooks, '_turn', return_value=(None, 'turn-a')):
+            self.assertIsNone(hooks.guard_tool(tool_name='terminal'))
+            adapter.MODES['turn-a'] = 'context'
+            # A follow-up on a pending card answers the question. It makes no card and acts for nobody.
+            self.assertEqual(hooks.guard_tool(tool_name='coconut_ask'), {'action': 'block', 'message': hooks.CONTEXT_MESSAGE})
+            self.assertEqual(hooks.guard_tool(tool_name='clarify')['action'], 'block')
+            self.assertIsNone(hooks.guard_tool(tool_name='coconut_resolve_reply'))
+            self.assertIsNone(hooks.guard_tool(tool_name='read_file'))
+            adapter.PAUSED.add('turn-a')
+            self.assertEqual(hooks.guard_tool(tool_name='read_file'), {'action': 'block', 'message': hooks.PAUSED_MESSAGE})
+        # Outside a Coconut turn the hook does nothing.
+        with patch.object(hooks, '_turn', return_value=(None, None)):
+            self.assertIsNone(hooks.guard_tool(tool_name='terminal'))
+        # The turn of a follow-up names its mode, and the end of the turn forgets it.
         from gateway.config import PlatformConfig
-        adapter = self.adapter_module.CoconutAdapter(PlatformConfig())
-        holders = {}
-        for turn in ('turn-a', 'turn-b'):
-            holders[turn] = {'event': threading.Event(), 'answer': None, 'turn': turn}
-            adapter._questions[turn + '-q'] = ('ask', holders[turn])
-        adapter._wake_questions('turn-a')
-        self.assertEqual((holders['turn-a']['event'].is_set(), holders['turn-b']['event'].is_set()), (True, False))
-        adapter._wake_questions()
-        self.assertTrue(holders['turn-b']['event'].is_set())
+        coconut = adapter.CoconutAdapter(PlatformConfig())
+        coconut._event({'id': 'turn-b', 'chat_id': 'bot', 'text': 'Why?', 'mode': 'context'})
+        self.assertEqual(adapter.MODES['turn-b'], 'context')
 
     def test_registration_declares_a_trusted_service_platform_for_this_hermes(self):
-        calls, tool_names, hook_names = [], [], []
+        calls, tool_names, hook_names, sections = [], [], [], {}
         class Context:
             def register_platform(self, **options):
                 calls.append(options)
@@ -689,15 +709,25 @@ class GatewayAdapterTests(unittest.TestCase):
                 tool_names.append((options['name'], options['toolset']))
             def register_hook(self, name, callback):
                 hook_names.append(name)
+            def register_system_prompt_section(self, id, content, *, position='after_memory', max_chars=4000):
+                text = content({'platform': 'coconut'})
+                sections[id] = (text, content({'platform': 'telegram'}), len(text) <= max_chars)
         self.plugin.register(Context())
-        self.assertEqual(tool_names, [('coconut_ask', 'coconut'), ('coconut_track_pr', 'coconut'),
-                                      ('coconut_message_bot', 'coconut')])
+        self.assertEqual([name for name, _ in tool_names], ['coconut_ask', 'coconut_suggest', 'coconut_resolve_reply',
+                                                             'coconut_track_pr', 'coconut_message_bot'])
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
-                                      'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end'])
+                                      'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
+                                      'pre_tool_call'])
+        # The card rules of the worker go into each Coconut session, in parts that Hermes allows.
+        from coconut.card_tools import DECISION_INSTRUCTIONS
+        self.assertEqual(sorted(sections), ['coconut.cards.0', 'coconut.cards.1', 'coconut.cards.2'])
+        self.assertTrue(all(fits and text and other == '' for text, other, fits in sections.values()))
+        self.assertEqual(' '.join(' '.join(text for text, _, _ in sections.values()).split()),
+                         ' '.join(DECISION_INSTRUCTIONS.split()))
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
-        self.assertEqual(len(tool_names), 3)
+        self.assertEqual(len(tool_names), 5)
         options = calls[0]
         self.assertEqual((options['name'], options['label'], options['trusted_inbound'], options['display_tier']),
                          ('coconut', 'Coconut', True, 'high'))

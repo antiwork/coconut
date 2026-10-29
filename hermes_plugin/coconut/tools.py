@@ -7,23 +7,40 @@ chat. The service then acts for the Coconut task of that turn (backend/coconut/g
 Hermes enables a plugin toolset on each platform by default and lists plugin tools behind its tool search. A check_fn
 that reads the session context hid the tools also in Coconut chats (the native check of a real gateway showed it), so
 the tools show on each platform. Each tool refuses to act outside a Coconut chat turn.
+
+Cards. coconut_ask, coconut_suggest and coconut_resolve_reply have the schemas of the worker's tools
+(backend/coconut/card_tools.py, loaded by its path). A card of coconut_ask ends the turn, as in the worker: the service
+keeps the task waiting for the answer, and the pre_tool_call hook blocks each further tool call of the turn
+(hooks.guard_tool). The answer continues the work in a later turn.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
+from pathlib import Path
 
 TOOLSET = 'coconut'
+_CARDS = None
 
-ASK = {'name': 'coconut_ask', 'description': (
-    'Show a decision card in Coconut and wait for the answer of the person. Use it for a choice, a permission, a '
-    'confirmation or a missing fact. The person can choose an option or type a reply. Returns the answer as text, '
-    'or the status dismissed when the person removed the card without an answer.'),
-    'parameters': {'type': 'object', 'properties': {
-        'question': {'type': 'string', 'maxLength': 300, 'description': 'The question, in one sentence.'},
-        'choices': {'type': 'array', 'maxItems': 8, 'items': {'type': 'string', 'maxLength': 120},
-                    'description': 'Up to eight short choices. Omit for a free answer.'},
-        'detail': {'type': 'string', 'maxLength': 2000, 'description': 'The facts that the person needs to decide.'}},
-        'required': ['question']}}
+
+def cards():
+    """backend/coconut/card_tools.py of this Coconut install. It imports nothing, so the gateway can load it."""
+    global _CARDS
+    if _CARDS is None:
+        path = Path(__file__).resolve().parents[2] / 'backend' / 'coconut' / 'card_tools.py'
+        spec = importlib.util.spec_from_file_location('coconut_card_tools', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _CARDS = module
+    return _CARDS
+
+
+def reply_schema():
+    """coconut_resolve_reply: a typed answer from chat names its card and message. A follow-up on one card does not."""
+    module = cards()
+    chat = module.CHAT_REPLY_SCHEMA['parameters']
+    return dict(module.REPLY_SCHEMA, parameters=dict(chat, required=module.REPLY_SCHEMA['parameters']['required']))
+
 TRACK_PR = {'name': 'coconut_track_pr', 'description': (
     'Track an existing GitHub pull request and its checks in Coconut Work. Call it when you create a PR or begin work '
     'on one, or when the person asks to follow one. Coconut reads GitHub and resumes the bot when results change. This '
@@ -50,32 +67,20 @@ def _result(value) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def ask(arguments, **_):
-    adapter, turn = _turn()
-    if turn is None:
-        return _result({'error': 'coconut_ask works only during a Coconut chat turn.'})
-    choices = [str(choice) for choice in (arguments.get('choices') or [])][:8]
-    answer = adapter.ask(turn, str(arguments.get('question') or ''), choices, str(arguments.get('detail') or ''))
-    from .adapter import DISMISSED
-    if answer is DISMISSED:
-        return _result({'status': 'dismissed', 'detail': (
-            'The person dismissed this question without an answer. This is not a rejection. Continue without the '
-            'answer, and do not ask the same question again while its facts are unchanged.')})
-    if answer is None:
-        return _result({'status': 'no_answer', 'detail': 'The person did not answer. Continue without the answer.'})
-    return _result({'answer': answer})
-
-
 def _service_tool(name):
     def handler(arguments, **_):
         adapter, turn = _turn()
         if turn is None:
             return _result({'error': f'{name} works only during a Coconut chat turn.'})
         import urllib.error
-        from .adapter import REQUEST_SECONDS
+        from .adapter import PAUSED, REQUEST_SECONDS
         try:
-            return _result(adapter._bridge.request('/v1/gateway/tools', {
-                'turn_id': turn, 'tool': name, 'arguments': dict(arguments or {})}, REQUEST_SECONDS * 6))
+            result = adapter._bridge.request('/v1/gateway/tools', {
+                'turn_id': turn, 'tool': name, 'arguments': dict(arguments or {})}, REQUEST_SECONDS * 6)
+            if result.get('paused'):
+                # The card ends the turn. The hook blocks each further tool call (hooks.guard_tool).
+                PAUSED.add(turn)
+            return _result(result)
         except urllib.error.HTTPError as error:
             # The service refused the request, for example an unknown bot. Its reason helps the model.
             try:
@@ -88,6 +93,9 @@ def _service_tool(name):
 
 
 def register(ctx):
-    for schema, handler in ((ASK, ask), (TRACK_PR, _service_tool('track_pr')),
-                            (MESSAGE_BOT, _service_tool('message_bot'))):
+    module = cards()
+    for schema, handler in ((module.QUESTION_SCHEMA, _service_tool('ask')),
+                            (module.SUGGEST_SCHEMA, _service_tool('suggest')),
+                            (reply_schema(), _service_tool('resolve_reply')),
+                            (TRACK_PR, _service_tool('track_pr')), (MESSAGE_BOT, _service_tool('message_bot'))):
         ctx.register_tool(name=schema['name'], toolset=TOOLSET, schema=schema, handler=handler, emoji='🥥')

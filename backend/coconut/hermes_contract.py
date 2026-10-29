@@ -333,9 +333,12 @@ def verify_gateway_contract():
     if not isinstance(getattr(GatewayRunner, '_startup_restore_in_progress', None), bool):
         raise ValueError('Hermes changed the startup restore of the gateway. Review the coconut adapter.')
     missing = {'pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end', 'on_session_start',
-               'on_interim_message', 'post_llm_call', 'on_session_end'} - set(VALID_HOOKS)
+               'on_interim_message', 'post_llm_call', 'on_session_end', 'pre_tool_call'} - set(VALID_HOOKS)
     if missing:
         raise ValueError('Hermes removed plugin hooks of the coconut platform: ' + ', '.join(sorted(missing)))
+    # The card rules go into the system prompt of each Coconut session (hermes_plugin/coconut/hooks.py).
+    from hermes_cli.plugins import PluginContext
+    require_keywords(PluginContext.register_system_prompt_section, ['id', 'content', 'position', 'max_chars'])
     require_keywords(BasePlatformAdapter.send_clarify, ['chat_id', 'question', 'choices', 'clarify_id', 'session_key'])
     require_keywords(BasePlatformAdapter.on_processing_complete, ['event', 'outcome'])
     require_keywords(SessionStore.get_or_create_session, ['source', 'force_new'])

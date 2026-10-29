@@ -34,6 +34,13 @@ FINISHED = 'The background job finished.'
 ATTACHED = 'native-attachment-marker'
 READ = 'I read the attached notes.'
 REACTION = 'changed an emoji reaction'
+# A chat turn that asks on a card, and the turn that continues after the answer.
+ASK = 'Ask me on a card.'
+ASKED = 'I asked you on a card.'
+RESUMED = 'Continue the original task using this recorded answer.'
+SHIPPED = 'Shipping now.'
+CARD = dict(title='Ship the release?', context='The build passed and the notes are ready.',
+            options=[dict(id='ship', label='Ship it', explanation=''), dict(id='wait', label='Wait a day', explanation='')])
 
 
 def answer(request):
@@ -48,6 +55,15 @@ def answer(request):
         return dict(role='assistant', content=READ)
     if REACTION in last:
         return dict(role='assistant', content='[SILENT]')
+    if RESUMED in last:
+        return dict(role='assistant', content=SHIPPED)
+    if ASK in last and request.get('tools'):
+        if any(message.get('role') == 'tool' for message in messages[users[-1]:]):
+            return dict(role='assistant', content=ASKED)
+        # Hermes lists plugin tools behind its tool search bridge, so the model calls coconut_ask through tool_call.
+        arguments = dict(name='coconut_ask', arguments=CARD)
+        return dict(role='assistant', content=None, tool_calls=[dict(
+            id='call-card', type='function', function=dict(name='tool_call', arguments=json.dumps(arguments)))])
     if START in last and request.get('tools'):
         if any(message.get('role') == 'tool' for message in messages[users[-1]:]):
             return dict(role='assistant', content=STARTED)
@@ -204,6 +220,20 @@ class NativeGatewayChatTests(unittest.TestCase):
             self.assertFalse([m for m in service._task_messages(reaction['id']) if m['role'] == 'assistant'
                               and m['kind'] == 'text' and not m.get('_hidden')], diagnostics())
             self.assertTrue(any(REACTION in json.dumps(request['messages']) for request in Model.requests), diagnostics())
+
+            # A card of coconut_ask ends the gateway turn. The answer continues the conversation in a later turn.
+            task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': ASK}, str(uuid4()), 'phone')
+            service._run_task(task['id'])
+            self.assertEqual(service._get('tasks', task['id'])['status'], 'needs_you', diagnostics())
+            card = next(d for d in service._all('decisions') if d['task_id'] == task['id'])
+            self.assertEqual((card['title'], card['status']), (CARD['title'], 'pending'), diagnostics())
+            service.mutate('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'ship', 'revision': 1},
+                           str(uuid4()), 'phone')
+            service._run_task(task['id'])
+            replies = [m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
+            self.assertEqual((service._get('tasks', task['id'])['status'], replies[-1:]), ('completed', [SHIPPED]),
+                             diagnostics())
+            self.assertNotIn(ASKED, replies, diagnostics())
 
             # A background process of a chat turn. Hermes runs its own turn for the completion, outside a Coconut
             # turn, and its reply reaches the bot's chat as a message of the bot.

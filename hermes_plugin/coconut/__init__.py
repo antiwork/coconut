@@ -8,7 +8,8 @@ import os
 
 NAME = 'coconut'
 HINT = ('You are in Coconut, the iPhone app of the person who runs this Hermes. Coconut shows Markdown. '
-        'Write the answer for a phone screen. Ask the person with coconut_ask when you need a choice or a fact.')
+        'Write the answer for a phone screen. Ask the person with coconut_ask when you need a choice or a fact: '
+        'the card ends your turn, and Coconut continues the conversation with the answer.')
 # The phone shows the replies and the interim messages. Tool progress and long-run notices would be extra messages.
 DISPLAY = {'tool_progress': 'off', 'tool_preview_length': 0, 'show_reasoning': False,
            'long_running_notifications': False, 'busy_ack_detail': False}
