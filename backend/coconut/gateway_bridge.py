@@ -18,7 +18,8 @@ the main listener, with the token of `<data>/gateway/bridge.json`:
 A poll also returns the answers to the questions of the adapter's turns. A question is a decision card on the phone.
 
 The service thread of the turn translates these events into the provider events of the worker path (TurnEvents), so
-the phone sees the same messages. A turn that no adapter takes in TAKE_SECONDS goes back to the worker.
+the phone sees the same messages. A turn that no adapter takes in TAKE_SECONDS goes back to the service, which
+waits for an adapter (gateway_chat.run_gateway_chat).
 """
 from __future__ import annotations
 
@@ -31,6 +32,8 @@ import tempfile
 import threading
 import time
 import uuid
+
+from .silent_responses import is_silence_reply
 
 TAKE_SECONDS = 30
 # The adapter polls at most POLL_SECONDS apart and lists its running turns in each poll.
@@ -45,21 +48,22 @@ MAX_TEXT = 200_000
 KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
 QUESTION_KINDS = ('clarify', 'approval', 'ask')
 
-# A chat turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: an
-# attachment, a card to answer, a reaction, work items and claims, routines, bot exchanges, GitHub source activity,
-# PR reviews, bot creation and deletion, and the recovery and withdrawal paths. The worker runs it until phase 5 moves it.
+# A chat turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: a card to
+# answer, work items and claims, routines, bot exchanges, GitHub source activity, PR reviews, bot creation and deletion,
+# and the recovery and withdrawal paths. The worker runs it until phase 5 moves it. Attachments and reactions go to
+# the gateway as text of the turn (gateway_chat.gateway_turn_text).
 WORKER_INPUTS = (
-    'attachments', '_pending_decisions', '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
+    '_pending_decisions', '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
     '_work_context_id', '_work_context', '_work_todos', '_work_resume', '_work_dependencies', '_pr_review',
     '_background_completion', '_handoff_assignment', '_is_return', '_bot_messages', '_outgoing_bot_messages',
-    '_source_activity', '_source_answer_steps', '_source_audit_prompt', '_reaction_feedback', '_technical_lane',
+    '_source_activity', '_source_answer_steps', '_source_audit_prompt', '_technical_lane',
     '_self_recovery', '_native_receipts', '_bot_creation_receipts', '_bot_deletion_receipts', '_withdrawal_corrections',
     '_direct_reply_message_id', '_work_status_only')
 
 
-# A message with one of these fields carries Coconut context that a gateway message does not: a work item, or a
-# reaction. A quote and a bot mention go into the text of the gateway message (native_conversation.message_content).
-WORKER_MESSAGE_FIELDS = ('work_context', 'reaction_event')
+# A message with one of these fields carries Coconut context that a gateway message does not: a work item. A quote, a
+# reaction and a bot mention go into the text of the gateway message (native_conversation.message_content).
+WORKER_MESSAGE_FIELDS = ('work_context',)
 
 
 def plain_chat_turn(task: dict) -> bool:
@@ -85,6 +89,8 @@ class _Turn:
         self.silent_seconds = SILENT_SECONDS
         # A cron run of the gateway (open_turn). The adapter cannot stop it: it runs in a cron session, not in the chat.
         self.cron = False
+        # A turn that may end in silence, such as a reaction (TurnEvents).
+        self.silent = False
         # Answers to the questions of this turn, for a waiting tool (wait_answer).
         self.answers: dict[str, dict] = {}
 
@@ -224,9 +230,15 @@ class GatewayBridge:
         return turn.id
 
     def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut',
-                 session_root: str | None = None) -> None:
-        """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends."""
+                 session_root: str | None = None, silent: bool = False) -> None:
+        """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends.
+
+        With `silent`, the turn may end in silence (TurnEvents)."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, text, chat_name, session_root)
+        turn.silent = silent
+        if silent:
+            # The adapter marks the message as one that needs no reply (MessageEvent.reply_expected).
+            turn.request['silent'] = True
         with self.lock:
             # A stop that no adapter collected is old news after this long.
             for old in [old for old in self.turns.values()
@@ -240,7 +252,7 @@ class GatewayBridge:
         """Translate the events of a registered turn with `emit` until the turn ends."""
         with self.lock:
             turn = self.turns[turn_id]
-        events = TurnEvents(emit, turn.id)
+        events = TurnEvents(emit, turn.id, silent=turn.silent)
         try:
             while True:
                 with self.lock:
@@ -308,11 +320,16 @@ class TurnEvents:
     message. A send that the gateway marks as interim, such as commentary, is a complete message at once, and it ends
     the streamed segment of the same text. The first send that is not interim takes over from the streamed text: later
     deltas only repeat what the gateway sends and edits.
+
+    A `silent` turn, such as a reaction, shows no commentary. When Hermes sends no reply, or a reply that is a silence
+    marker, the turn ends without a message, as the worker ends it (silent_responses.is_silence_reply). Hermes drops a
+    reply that is only a marker, but the plugin streams its text, or only its start, before that.
     """
 
-    def __init__(self, emit, turn_id=None):
+    def __init__(self, emit, turn_id=None, silent=False):
         self.emit = emit
         self.turn_id = turn_id
+        self.silent = silent
         self.stream = None
         self.text = ''
         self.phase = None
@@ -344,6 +361,13 @@ class TurnEvents:
         elif kind == 'send' and text.strip():
             self._phase('writing')
             streamed = self.stream is not None and self.stream.startswith('stream:')
+            if event.get('interim') and self.silent:
+                # A reaction turn shows no commentary, as in the worker. Take back the streamed text of the commentary.
+                if streamed:
+                    self.emit('text_delta', {'text': '', 'replace': True})
+                    self.ended_streams.add(self.delta_stream)
+                    self.stream, self.text = None, ''
+                return False
             if event.get('interim'):
                 if streamed:
                     # Commentary of the model call that the stream shows. Keep its exact text as the interim message.
@@ -369,7 +393,14 @@ class TurnEvents:
             self.emit('text_delta', {'text': '', 'replace': True})
             self.stream, self.text = None, ''
         elif kind == 'done':
-            if event.get('outcome') == 'success':
+            # Hermes sends no reply when the model chose silence. The plugin may have streamed the marker, or only its
+            # start, which Hermes holds back.
+            if event.get('outcome') == 'success' and self.silent and (not self.sent or is_silence_reply(self.text)):
+                if self.text:
+                    # Take back the streamed marker.
+                    self.emit('text_delta', {'text': '', 'replace': True})
+                self.emit('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})
+            elif event.get('outcome') == 'success':
                 self.emit('completed', {'summary': 'Complete.'})
             elif event.get('outcome') == 'cancelled':
                 self.emit('failed', {'summary': 'Hermes stopped this turn.'})

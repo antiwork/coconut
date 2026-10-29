@@ -37,6 +37,7 @@ import time
 
 from . import hermes_runtime
 from .gateway_bridge import WORKER_MESSAGE_FIELDS, GatewayBridge, GatewayUnavailable, plain_chat_turn
+from .native_conversation import reaction_only_turn
 
 LOG = logging.getLogger(__name__)
 CHECK_SECONDS = 5
@@ -68,6 +69,27 @@ NOT_CONNECTED = ('The Hermes gateway did not connect for this bot in {minutes} m
                  'the gateway runs. See GET /v1/setup and {log}.')
 PARKED = ('The Hermes profile of this bot is parked ({path}), so no Hermes gateway serves its chats. Remove that file '
           'to chat with the bot. Its routines run with Coconut meanwhile.')
+
+
+def gateway_turn_text(request) -> str | None:
+    """The text of a chat turn for the gateway, with the context that the worker gives the same turn, or None for a
+    turn whose input the gateway cannot take yet (WORKER_MESSAGE_FIELDS) or a turn without input.
+
+    A quote, a reaction and a bot mention go into the text of each message (native_conversation.message_content). A
+    reaction-only turn may stay silent. Earlier emoji feedback and the attached files follow the messages.
+    """
+    from .native_conversation import (REACTION_SILENCE, attachment_context, current_messages, message_content,
+                                      reaction_feedback_context)
+    messages = current_messages(request)
+    if any(message.get(field) for message in messages for field in WORKER_MESSAGE_FIELDS):
+        return None
+    task = request['task']
+    text = '\n\n'.join(message_content(message) for message in messages)
+    if reaction_only_turn(request):
+        text += REACTION_SILENCE
+    text += reaction_feedback_context(task.get('_reaction_feedback', []))
+    text += attachment_context(task.get('attachments', []))
+    return text if text.strip() else None
 
 
 def live_gateway_pid(home) -> int | None:
@@ -131,15 +153,12 @@ class GatewayChat:
         """Run a chat turn through the gateway. False: the turn is of another type, and the worker runs it."""
         if not self.gateway_enabled() or not plain_chat_turn(task):
             return False
-        from .native_conversation import message_content, session_root
-        turn = set(task.get('_turn_message_ids', []))
-        messages = [message for message in history if message.get('id') in turn]
-        if any(message.get(field) for message in messages for field in WORKER_MESSAGE_FIELDS):
+        from .native_conversation import session_root
+        request = dict(operation='start', task=task, history=history)
+        text = gateway_turn_text(request)
+        if text is None:
             return False
-        # A quote and a bot mention go into the text, as the worker writes them.
-        text = '\n\n'.join(message_content(message) for message in messages)
-        if not text.strip():
-            return False
+        silent = reaction_only_turn(request)
         home = self.profiles.home(bot)
         deadline = time.monotonic() + GATEWAY_WAIT_SECONDS
         try:
@@ -154,7 +173,7 @@ class GatewayChat:
                         # The worker resumes the chat of a bot from this root (native_conversation.NativeConversation).
                         self.gateway_bridge.run_turn(
                             task['id'], home, bot['id'], text, emit, chat_name=bot.get('name') or 'Coconut',
-                            session_root=session_root(bot, epoch=task.get('_conversation_epoch')))
+                            session_root=session_root(bot, epoch=task.get('_conversation_epoch')), silent=silent)
                         return True
                     except GatewayUnavailable:
                         # No adapter took the turn, so nothing ran. Wait for the next adapter.

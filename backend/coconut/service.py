@@ -3773,6 +3773,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 previous = next((m for m in reversed(self._task_messages(task_id)) if m['streaming']), None)
                 if replacing and not text:
                     self._withdraw_stream(task_id)
+                    # A held start of a silence marker goes too.
+                    task.pop('_silence_candidate', None)
                     self._put('tasks', task)
                     return
                 # A later chunk may turn the marker into an ordinary sentence.

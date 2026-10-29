@@ -349,6 +349,10 @@ def verify_gateway_contract():
     if not callable(current_cron_execution) or not {'job_id', 'job_name', 'execution_id'} <= set(
             CronExecution.__dataclass_fields__):
         raise ValueError('Hermes changed the identity of a cron run.')
+    # A reaction turn may stay silent. Without reply_expected=False, Hermes replaces a silence marker with a notice.
+    from gateway.platforms.event import MessageEvent
+    if 'reply_expected' not in getattr(MessageEvent, '__dataclass_fields__', {}):
+        raise ValueError('Hermes changed how a platform marks a message that needs no reply.')
     if not hasattr(BasePlatformAdapter, '_send_exec_approval_prompt'):
         raise ValueError('Hermes changed the approval prompt of a gateway platform.')
     # A send outside a turn that Coconut refuses must not come back as a plain text copy.

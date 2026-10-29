@@ -5,6 +5,19 @@ def is_silent_response(text):
     return isinstance(text, str) and text.strip() == '[SILENT]'
 
 
+# The silence markers of Hermes (gateway/response_filters.py, LIVE_GATEWAY_SILENT_MARKERS).
+SILENCE_MARKERS = ('[SILENT]', 'SILENT', 'NO_REPLY', 'NO REPLY')
+
+
+def is_silence_reply(text):
+    """Whether the reply of a turn that may stay silent is silence: empty, or a silence marker as the whole reply or as
+    its first or last line. Hermes uses this rule for cron runs (cron.scheduler._is_cron_silence_response)."""
+    if not isinstance(text, str) or not text.strip():
+        return True
+    lines = [line.strip() for line in text.strip().splitlines() if line.strip()]
+    return any(line.upper() in SILENCE_MARKERS for line in {lines[0], lines[-1]})
+
+
 def is_silent_message(message):
     return (message.get('kind', 'text') in ('text', 'bot_exchange')
             and (message.get('role') == 'assistant' or message.get('sender_bot_id'))

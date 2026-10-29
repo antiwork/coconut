@@ -77,6 +77,7 @@ class MessageEvent:
     message_id: Optional[str] = None
     allow_gateway_control: bool = True
     metadata: dict = field(default_factory=dict)
+    reply_expected: Optional[bool] = None
 ''',
     'gateway/platforms/base.py': '''
 import asyncio
@@ -276,6 +277,13 @@ class GatewayAdapterTests(unittest.TestCase):
     def replies(self, task):
         return [(m['text'], bool(m.get('_interim'))) for m in self.service._task_messages(task['id'])
                 if m['role'] == 'assistant' and m['kind'] == 'text']
+
+    def test_a_turn_that_may_stay_silent_needs_no_reply_in_hermes(self):
+        from gateway.config import PlatformConfig
+        adapter = self.adapter_module.CoconutAdapter(PlatformConfig({'bridge': str(self.service.gateway_bridge.address_file)}))
+        turn = {'id': 'turn', 'chat_id': self.bot['id'], 'text': 'Reaction added: 👍'}
+        self.assertIsNone(adapter._event(turn).reply_expected)
+        self.assertIs(adapter._event(dict(turn, silent=True)).reply_expected, False)
 
     def test_a_streamed_reply_and_its_interim_message_reach_coconut(self):
         async def runner(event):

@@ -275,8 +275,11 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         if turn.get('session_root'):
             # hooks.join_conversation reads it before the gateway runs the turn.
             self._roots[str(turn['chat_id'])] = str(turn['session_root'])
+        # A turn that may stay silent, such as a reaction, needs no reply. Hermes then keeps a silence marker silent
+        # instead of a notice (gateway.response_filters.silence_allowed).
         return MessageEvent(text=str(turn['text']), message_type=MessageType.TEXT, source=source,
-                            message_id=str(turn['id']), allow_gateway_control=False)
+                            message_id=str(turn['id']), allow_gateway_control=False,
+                            reply_expected=False if turn.get('silent') else None)
 
     async def _stop(self, chat_id: str) -> None:
         """Stop the running turn of a chat, as `/stop` does. Coconut cancelled it."""
