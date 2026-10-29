@@ -74,6 +74,16 @@ class TurnEventTests(unittest.TestCase):
             ('phase', {'phase': 'writing'}), ('text_delta', {'text': '[SILENT]'}),
             ('text_delta', {'text': '', 'replace': True}),
             ('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})])
+        # Commentary that the plugin streamed before its interim send goes too, also when a later call follows.
+        emitted, _ = self.translate(
+            {'kind': 'delta', 'stream': 1, 'text': 'Let me look.'},
+            {'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True},
+            {'kind': 'delta', 'stream': 2, 'text': '[SILENT]'},
+            {'kind': 'done', 'outcome': 'success'}, silent=True)
+        self.assertNotIn(('interim_seal', {}), emitted)
+        self.assertEqual([data for kind, data in emitted if kind == 'text_delta'], [
+            {'text': 'Let me look.'}, {'text': '', 'replace': True}, {'text': '[SILENT]'}, {'text': '', 'replace': True}])
+        self.assertEqual(emitted[-1][1].get('silent_response'), True)
         # Hermes holds back the start of a marker and sends no reply.
         emitted, _ = self.translate({'kind': 'delta', 'stream': 1, 'text': '[SILEN'}, {'kind': 'done', 'outcome': 'success'},
                                     silent=True)

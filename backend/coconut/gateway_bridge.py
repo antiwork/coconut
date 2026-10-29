@@ -362,7 +362,11 @@ class TurnEvents:
             self._phase('writing')
             streamed = self.stream is not None and self.stream.startswith('stream:')
             if event.get('interim') and self.silent:
-                # A reaction turn shows no commentary, as in the worker.
+                # A reaction turn shows no commentary, as in the worker. Take back the streamed text of the commentary.
+                if streamed:
+                    self.emit('text_delta', {'text': '', 'replace': True})
+                    self.ended_streams.add(self.delta_stream)
+                    self.stream, self.text = None, ''
                 return False
             if event.get('interim'):
                 if streamed:
