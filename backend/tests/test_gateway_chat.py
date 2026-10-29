@@ -728,6 +728,51 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertIn('This reply continues your original assignment.', text)
         self.assertEqual(self.read('tasks', returned['id'])['status'], 'completed')
 
+    def test_a_failed_exchange_can_be_asked_again_in_the_gateway(self):
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        other_home = self.service.profiles.home(other)
+        task = self.send('Ask Lin to check the logs.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        sent = self.service.gateway_tool({'turn_id': turn, 'tool': 'message_bot',
+                                          'arguments': {'bot': 'Lin', 'text': 'Please check the logs.'}})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        # Lin's turn fails in the gateway, and the failure returns to Ada.
+        adapter = Adapter(self.service.gateway_bridge, other_home, [{'kind': 'done', 'outcome': 'failure'}])
+        adapter.start()
+        self.dispatch(sent['task_id'])
+        adapter.join(5)
+        self.assertEqual(self.read('tasks', sent['task_id'])['status'], 'failed')
+        self.service._drain_returns()
+        with self.service.lock:
+            returned = next(t for t in self.service._all('tasks') if t['bot_id'] == self.bot['id']
+                            and t.get('_is_return') and t['status'] == 'queued')
+        # Ada asks Lin again from the return. The retry joins Lin's gateway conversation: the failed turn had no work
+        # session to continue.
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        self.service._dispatch_pending()
+        adapter.join(5)
+        retry = self.service.gateway_tool({'turn_id': adapter.turns[0]['id'], 'tool': 'message_bot',
+                                           'arguments': {'bot': 'Lin', 'text': 'Please try the logs again.'}})
+        self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        self.service.running[returned['id']].join(10)
+        stored = self.read('tasks', retry['task_id'])
+        self.assertEqual((stored['status'], stored.get('_chat_session')), ('queued', True))
+        self.assertNotIn('_execution_session_id', stored)
+        adapter = Adapter(self.service.gateway_bridge, other_home, [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'The logs are clean now.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.dispatch(retry['task_id'])
+        adapter.join(5)
+        self.assertEqual(self.read('tasks', retry['task_id'])['status'], 'completed')
+        self.assertEqual(self.provider.starts, [])
+
     def test_an_accepted_proposal_continues_in_the_gateway(self):
         task = self.send('Fix the typo.')
         adapter = Adapter(self.service.gateway_bridge, self.home, [])

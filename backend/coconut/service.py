@@ -1959,8 +1959,10 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 previous = self._get('tasks', source['source_task_id'])
                 if (previous['status'] == 'failed'
                         and all(previous.get(k) == task.get(k) for k in ('bot_id', 'session_id', 'conversation_bot_id'))
-                        and previous.get('_conversation_epoch') == self._setting('conversation_epoch')):
-                    # The coordinator continues the failed worker in its saved workspace.
+                        and previous.get('_conversation_epoch') == self._setting('conversation_epoch')
+                        and (previous.get('_execution_session_id') or not previous.get('_chat_session'))):
+                    # The coordinator continues the failed worker in its saved workspace. A failed turn of the bot's
+                    # gateway conversation has no work session: the retry joins that conversation (join_conversation).
                     self._ensure_execution_session(previous)
                     task['_execution_session_id'] = previous['_execution_session_id']
             # With the gateway, the message or the return is a turn of the target bot's conversation.
