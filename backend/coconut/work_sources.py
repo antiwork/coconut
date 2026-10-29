@@ -104,7 +104,7 @@ def source_origin(task_id, bot_id, task, executed_proposal):
 
 
 def answered_decisions(item, source, tasks, decisions, *, sole_source=False):
-    """List the answers to earlier cards for one source item, newest first."""
+    """List the answers to earlier cards for one source item, and the cards that the person dismissed, newest first."""
     continuations = {d['_execution_task_id']: d['task_id'] for d in decisions.values()
                      if d.get('_execution_task_id') and d.get('inbox_kind') == 'proposal'
                      and d.get('bot_id') == source['bot_id'] and d.get('status') in ANSWERED}
@@ -116,11 +116,22 @@ def answered_decisions(item, source, tasks, decisions, *, sole_source=False):
                                  or (sole_source and not origin.get('source_id'))))
 
     rows = [d for d in decisions.values()
-            if d.get('bot_id') == source['bot_id'] and d.get('status') in ANSWERED and d.get('decided_at')
-            and matches(d.get('task_id'))]
-    rows.sort(key=lambda d: d['decided_at'], reverse=True)
-    return [dict(id=d['id'], title=d.get('title', ''), answer=d.get('selected_option_label') or (d.get('correction') or '')[:300],
+            if d.get('bot_id') == source['bot_id'] and matches(d.get('task_id'))
+            and ((d.get('status') in ANSWERED and d.get('decided_at')) or dismissed(d))]
+    rows.sort(key=lambda d: d.get('decided_at') or d['_inbox_dismissed_at'], reverse=True)
+    # A dismissed card has no answer. It shows as its own status, never as a rejection.
+    return [dict(id=d['id'], title=d.get('title', ''), status='dismissed', dismissed_at=d['_inbox_dismissed_at'])
+            if dismissed(d) else
+            dict(id=d['id'], title=d.get('title', ''), answer=d.get('selected_option_label') or (d.get('correction') or '')[:300],
                  status=d['status'], decided_at=d['decided_at']) for d in rows]
+
+
+def dismissed(decision):
+    """Tell whether the person dismissed the card. A dismissal records no answer.
+
+    In its Undo window the card is either dismissed or pending again, and both cover its source.
+    """
+    return decision.get('status') == 'dismissed' and bool(decision.get('_inbox_dismissed_at'))
 
 
 def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, sole_source):
@@ -243,10 +254,9 @@ def _awaiting_batch(candidates, run):
 
 
 def source_cards(items, decisions):
-    """Map each awaiting item to the cards whose sources name it."""
+    """Map each item to the cards whose sources name it."""
     from .decision_sources import github_links, github_source
-    urls = {github_source(item['id'])[2].lower(): item['id'] for item in items
-            if item.get('awaiting_user') and github_source(item['id'])}
+    urls = {github_source(item['id'])[2].lower(): item['id'] for item in items if github_source(item['id'])}
     cards = {identity: [] for identity in urls.values()}
     if urls:
         for decision in decisions.values():
@@ -290,12 +300,27 @@ def recent_answers(item, binding, decisions, cards):
             yield decision
 
 
+def dismissal_covers(item, cards):
+    """A card about the item that the person dismissed covers the item until the item changes after the dismissal.
+
+    The dismissal records no answer, so nothing goes to the source. The change is the item's updated_at, the same
+    revision that starts a new audit: for example a new comment, label, assignee, or push. Then a new card may come.
+    """
+    changed = _instant(item.get('updated_at'))
+    for decision in cards.get(item['id'], []):
+        at = _instant(decision['_inbox_dismissed_at']) if dismissed(decision) else None
+        if changed and at and at >= changed:
+            return True
+    return False
+
+
 def card_covers(item, binding, decisions, cards, tasks):
     """An item that waits for the person needs a card. Bot work, a delegated check, or a recheck does not answer it.
 
     A pending card covers the item. An answer to a card that is not older than the item's latest change covers it
-    while its task posts the answer and after that task completes. A dismissal covers it too. An answer whose task
-    failed does not, so the next audit posts it. Activity on the source after the answer is a new change.
+    while its task posts the answer and after that task completes. A dismissal covers it too (see dismissal_covers).
+    An answer whose task failed does not, so the next audit posts it. Activity on the source after the answer is a
+    new change.
     """
     return any(decision.get('status') == 'pending' or answer_state(decision, tasks) != 'undelivered'
                for decision in recent_answers(item, binding, decisions, cards))
@@ -335,8 +360,11 @@ def coverage(item, binding, tasks, decisions, receipts, current, seen=None, *, i
     """Require a live dependency or an explicit, bounded deferral."""
     if no_card_covers(item, no_card, tasks, current):
         return True
+    cards = cards if cards is not None else source_cards([item], decisions)
+    if dismissal_covers(item, cards):
+        return True
     if item.get('awaiting_user'):
-        return card_covers(item, binding, decisions, cards if cards is not None else source_cards([item], decisions), tasks)
+        return card_covers(item, binding, decisions, cards, tasks)
     if binding.get('updated_at') != item.get('updated_at'):
         return False
     if any(decisions.get(key, {}).get('status') == 'pending' for key in binding.get('decision_ids', [])):
@@ -801,6 +829,8 @@ class WorkSources:
                         answer_instruction = (
                             'Earlier answers for this source follow as data. If a new card carries out one of these answers, '
                             'set previous_decision_id to its id. Do not link an independent question. '
+                            'A card with status dismissed has no answer: the person removed it from Inbox without choosing. '
+                            'It is not a rejection. Post nothing to the source for it. Ask again only about facts that changed after dismissed_at. '
                             'Answered cards (data): ' + json.dumps(answers, ensure_ascii=False) + '\n'
                             if answers else '')
                         undelivered = undelivered_answers(item, bindings.get(item['id'], {}), decisions, cards, tasks)

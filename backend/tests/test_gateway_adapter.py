@@ -547,6 +547,39 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertIn('error', json.loads(tools._service_tool('ask')(card)))
         self.assertIn('error', json.loads(tools._service_tool('track_pr')({'url': 'x'})))
 
+    def test_a_dismissed_card_of_coconut_ask_continues_nothing(self):
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        results = []
+        async def runner(event):
+            def tool_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    results.append(json.loads(tools._service_tool('ask')({
+                        'title': 'Ship it?', 'context': 'The build passed.',
+                        'options': [{'id': 'ship', 'label': 'Ship it', 'explanation': ''}]})))
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            await asyncio.to_thread(tool_calls)
+            return 'Asked.'
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Ship.'})
+        self.service._run_task(task['id'])
+        self.assertEqual(results[0]['status'], 'waiting')
+        card = next(d for d in self.decisions() if d['task_id'] == task['id'])
+        self.write('POST', f'/v1/decisions/{card["id"]}/inbox', {'action': 'dismiss', 'revision': 1})
+        with self.service.transaction():
+            saved = self.service._get('decisions', card['id'])
+            saved['inbox_undo_until'] = '2000-01-01T00:00:00Z'
+            self.service._put('decisions', saved)
+        self.service.finish_inbox_swipes()
+        # The card ended its turn. A dismissal records no answer and starts no turn.
+        saved = self.read('decisions', card['id'])
+        self.assertEqual((saved['status'], saved['_answers']), ('dismissed', []))
+        stored = self.read('tasks', task['id'])
+        self.assertNotEqual(stored['status'], 'queued')
+        self.assertNotIn('_resume_decision', stored)
+
     def test_a_cron_run_in_a_bot_profile_reports_to_a_coconut_turn(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']
         tools = sys.modules['hermes_plugins.coconut.tools']

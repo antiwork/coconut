@@ -11,13 +11,15 @@ Coconut.app updates itself with Sparkle from the Coconut update feed. The app ca
 
 The second part is safe for running work:
 
-1. The service starts no new turn. The running bot turns finish. The update waits up to ten minutes for them, then it stops the service.
+1. The service starts no new turn. The running bot turns finish. The update waits up to ten minutes for them, then it stops the service, its Hermes gateway, and its workers.
 2. The update replaces the source files. It checks each hash first. It refuses to replace a file that somebody changed.
 3. It runs the Coconut contract check against the installed Hermes.
 4. It starts the service and waits for its health check.
 5. If a step fails, it restores the earlier source and the earlier service mode. It does not restore an older database.
 
 If the installed Hermes worked with the earlier Coconut and fails the check of the new one, the update restores the earlier Coconut.
+
+To find why an update failed, read `.runtime/host/logs/install-source.log` in the install folder. It has the output of each step and the traceback of the failure.
 
 ## Update Coconut now
 

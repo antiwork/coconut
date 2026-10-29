@@ -189,8 +189,9 @@ DECISION_INSTRUCTIONS = (
     'Use specific action labels. Respect standing preferences when generating options. '
     'Use coconut_ask for a required answer. Use coconut_suggest for a useful optional proposal while continuing the current work. '
     'Do not turn ordinary replies, activity, or completed work into Inbox entries. '
-    'In Inbox, Later leaves a decision pending. Dismiss rejects a required decision after the Undo window, or removes an optional suggestion. '
-    'Do not recreate dismissed proposals. A proposal is not authorization to perform it. '
+    'In Inbox, Later leaves a decision pending. Dismiss removes a card without an answer: it is not a rejection and not an approval. '
+    'Coconut does not resume the task for a dismissed card. Do not ask the same question again while its facts are unchanged. '
+    'A proposal is not authorization to perform it. '
     'A response received is not an action completed. Report outcomes only after verification. '
 )
 

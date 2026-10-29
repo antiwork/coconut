@@ -24,6 +24,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import traceback
 from uuid import UUID, uuid4
 
 MAX_COMPRESSED_BYTES = 32 * 1024 * 1024
@@ -50,7 +51,17 @@ DRAIN_WAIT_SECONDS = 600 + 90
 # opens the folders for its own changes, then closes them again.
 SKILL_FILE_MODE = 0o400
 SKILL_FOLDER_MODE = 0o500
-
+# host.stop_for_update waits up to host.STOP_GRACE_SECONDS for a clean exit of the service. Then it sends SIGKILL and
+# stops the child processes. The helper gets this long for all of it.
+STOP_HELPER_SECONDS = 300
+# deploy.py adds the full output of each run to this file in the data folder, with the traceback of a failure. A file
+# that grows past LOG_LIMIT_BYTES moves to LOG_PATH.1, so at most two files remain.
+LOG_PATH = Path('.runtime/host/logs/install-source.log')
+LOG_LIMIT_BYTES = 1024 * 1024
+# The log keeps at most this many characters of each output of one command.
+LOG_OUTPUT_CHARACTERS = 64 * 1024
+# The lines of the current run. main() adds them to LOG_PATH.
+TRANSCRIPT = []
 
 
 class DeployError(Exception):
@@ -62,6 +73,52 @@ class Package:
     files: dict[str, bytes]
     hashes: dict[str, str]
     package_id: str
+
+
+def log(text):
+    TRANSCRIPT.append(f'{datetime.now(timezone.utc).isoformat(timespec="seconds")} {text}')
+
+
+def output_tail(data):
+    text = data.decode('utf-8', errors='replace')
+    return text if len(text) <= LOG_OUTPUT_CHARACTERS else '[...]' + text[-LOG_OUTPUT_CHARACTERS:]
+
+
+def log_output(phase, output, errors):
+    for name, data in (('output', output), ('error output', errors)):
+        if data:
+            log(f'{phase} {name}:\n{output_tail(data)}')
+
+
+def failure_reason(errors):
+    """Return the last line of an error output: the message of a SystemExit, or the exception line of a traceback."""
+    lines = [line.strip() for line in (errors or b'').decode('utf-8', errors='replace').splitlines() if line.strip()]
+    return lines[-1][:500] if lines else ''
+
+
+def write_log(root):
+    """Add the lines of this run to LOG_PATH in the install. Return the path, or None when there is no data folder.
+
+    A file larger than LOG_LIMIT_BYTES first moves to LOG_PATH.1. A failed first install has no data folder and gets no log.
+    """
+    lines = TRANSCRIPT[:]
+    TRANSCRIPT.clear()
+    if not lines:
+        return None
+    try:
+        if not safe_path(root / '.runtime/host', root).is_dir():
+            return None
+        path = safe_path(root / LOG_PATH, root)
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        safe_path(path, root)
+        if path.is_file() and path.stat().st_size > LOG_LIMIT_BYTES:
+            os.replace(path, path.with_name(path.name + '.1'))
+        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(descriptor, 'a', encoding='utf-8') as handle:
+            handle.write('\n'.join(lines) + '\n\n')
+        return path
+    except (OSError, DeployError):
+        return None
 
 
 def canonical(value):
@@ -246,6 +303,7 @@ def load_host(root):
 class Operations:
     @staticmethod
     def terminate_group(process):
+        """Stop the process group of the command. Return the output that the command wrote and nobody read yet."""
         # macOS answers "not permitted" for a group whose last process has just exited and waits to be reaped. The group
         # is gone for our purpose, exactly as when it is not found.
         try:
@@ -261,27 +319,47 @@ class Operations:
         except (ProcessLookupError, PermissionError):
             pass
         try:
-            process.communicate(timeout=3)
-        except subprocess.TimeoutExpired:
+            return process.communicate(timeout=3)
+        except (subprocess.TimeoutExpired, ValueError):
+            # ValueError: the pipes were closed already.
             process.kill()
             process.wait()
+        return None, None
 
-    def command(self, command, root, phase, *, input_data=None, timeout=1200):
+    def command(self, command, root, phase, *, input_data=None, timeout=1200, explain=False):
+        """Run a command and return its standard output. LOG_PATH gets both outputs.
+
+        A failure names the phase and the exit code. With explain, it also gives the last line of the error output. Only
+        Coconut's own host helper uses explain: its error output is a message of host.py.
+        """
+        started = time.monotonic()
+        log(f'{phase}: start')
         try:
             process = subprocess.Popen(command, cwd=root, stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-        except OSError:
+        except OSError as error:
+            log(f'{phase}: could not start: {error}')
             raise DeployError(phase + ' could not start. No command output was exposed.') from None
         try:
-            output, _ = process.communicate(input=input_data, timeout=timeout)
+            output, errors = process.communicate(input=input_data, timeout=timeout)
         except BaseException as error:
-            self.terminate_group(process)
+            # communicate keeps what it read before the timeout. The next communicate returns it with the rest.
+            output, errors = self.terminate_group(process)
+            log(f'{phase}: {type(error).__name__} after {time.monotonic() - started:.1f}s. Its process group was stopped.')
+            log_output(phase, output, errors)
             if isinstance(error, subprocess.TimeoutExpired):
-                raise DeployError(phase + ' timed out. Its process group was stopped.') from None
+                reason = failure_reason(errors) if explain else ''
+                raise DeployError(phase + f' timed out after {timeout} seconds. Its process group was stopped.'
+                                  + (f' Its last message: {reason}' if reason else '')) from None
             raise
+        log(f'{phase}: exit {process.returncode} after {time.monotonic() - started:.1f}s')
+        log_output(phase, output, errors)
         if process.returncode:
             self.terminate_group(process)
-            raise DeployError(phase + f' failed (exit {process.returncode}). No command output was exposed.')
+            reason = failure_reason(errors) if explain else ''
+            if reason:
+                raise DeployError(phase + f' failed (exit {process.returncode}): {reason}')
+            raise DeployError(phase + f' failed (exit {process.returncode}). Its output is in {LOG_PATH}.')
         return output
 
     def preflight(self, root, package):
@@ -312,7 +390,8 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
         command = [sys.executable, '-c', program, str(root), operation]
         if source is not None:
             command.append(str(source))
-        output = self.command(command, root, 'Service ' + operation, input_data=canonical(state), timeout=timeout)
+        output = self.command(command, root, 'Service ' + operation, input_data=canonical(state), timeout=timeout,
+                              explain=True)
         lines = [line for line in output.decode('utf-8', errors='replace').splitlines() if line.startswith('COCONUT_HOST_STATE=')]
         if len(lines) != 1:
             raise DeployError('The service helper returned an invalid state.')
@@ -334,18 +413,20 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
                 except BlockingIOError:
                     raise DeployError('Coconut is still running.') from None
 
-    def inspect(self, root):
-        return self.helper(root, 'inspect')
+    # With `source`, the helper runs that host.py in place of the installed one. An update gives it the host.py of the
+    # new package, so the stop of the new code stops the old service. The installed host.py can have an older stop.
+    def inspect(self, root, source=None):
+        return self.helper(root, 'inspect', source=source)
 
-    def drain(self, root):
+    def drain(self, root, source=None):
         """Let the running turns of the service finish before the update stops it. See host.drain_for_update."""
-        return self.helper(root, 'drain', timeout=DRAIN_WAIT_SECONDS)
+        return self.helper(root, 'drain', source=source, timeout=DRAIN_WAIT_SECONDS)
 
-    def stop(self, root):
-        return self.helper(root, 'stop')
+    def stop(self, root, source=None):
+        return self.helper(root, 'stop', source=source, timeout=STOP_HELPER_SECONDS)
 
     def stop_recovery(self, root, source):
-        return self.helper(root, 'stop', source=source)
+        return self.stop(root, source)
 
     def restore(self, root, state):
         self.helper(root, 'restore', state)
@@ -479,7 +560,20 @@ def copy_source(source, target):
             temporary.unlink(missing_ok=True)
 
 
-def reconcile(root, operations):
+def reason(error):
+    """The text of an error and of the errors that caused it, for a result that names the actual reason."""
+    parts = []
+    while error is not None and len(parts) < 4:
+        text = str(error) if isinstance(error, (DeployError, SystemExit)) else f'{type(error).__name__}: {error}'
+        if text and text not in parts:
+            parts.append(text)
+        error = error.__cause__
+    return ' Reason: '.join(parts)
+
+
+def reconcile(root, operations, helper=None):
+    """Finish or roll back the update of the journal. `helper` is a host.py that stops the service in place of the
+    installed one (Operations.stop)."""
     journal = safe_path(root / '.runtime/deploy/update.json', root)
     if not journal.exists():
         return
@@ -531,7 +625,10 @@ def reconcile(root, operations):
             return
     try:
         if (root / 'scripts/host.py').is_file():
-            operations.stop(root)
+            if helper is not None:
+                operations.stop(root, helper)
+            else:
+                operations.stop(root)
         elif not old['files'] and record['phase'] in ('starting', 'rollback_stopped', 'code_restored'):
             source = safe_path(backup / 'scripts/host.py', root)
             if not source.is_file() or sha256(source.read_bytes()) != record['new_files'].get('scripts/host.py'):
@@ -542,7 +639,8 @@ def reconcile(root, operations):
         else:
             raise DeployError('The service cannot prove that execution stopped.')
     except BaseException as error:
-        raise DeployError('The incomplete update could not stop its service. Its journal, source, and runtime remain intact.') from error
+        raise DeployError('The incomplete update could not stop its service. Its journal, source, and runtime remain '
+                          'intact. Reason: ' + reason(error)) from error
     record['phase'] = 'rollback_stopped'
     write_json(journal, record)
     lock_skills(root, locked=False)
@@ -564,7 +662,8 @@ def reconcile(root, operations):
             if record['service_state']['mode'] != 'stopped':
                 operations.health(root)
     except BaseException as error:
-        raise DeployError('Previous source was restored, but its service could not restart. Runtime data was not rewound.') from error
+        raise DeployError('Previous source was restored, but its service could not restart. Runtime data was not '
+                          'rewound. Reason: ' + reason(error)) from error
     record['phase'] = 'rolled_back'
     write_json(journal, record)
     remove_journal(root, record)
@@ -611,6 +710,16 @@ def check_runtime_receipt(root, marker):
     return runtime_receipt, runtime_present
 
 
+def write_helper(deployment, package):
+    """Write the host.py of the package for Operations.stop, and return its path. See reconcile and receive."""
+    path = deployment / 'host-helper.py'
+    path.unlink(missing_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'wb') as handle:
+        handle.write(package.files['scripts/host.py'])
+    return path
+
+
 def recover(directory, *, home=None, operations=None):
     """Finish or roll back a pending update from its journal. Install no package. Return True when a journal was pending.
 
@@ -651,11 +760,13 @@ def receive(directory, stream, *, home=None, operations=None):
     deployment = safe_path(root / '.runtime/deploy', root)
     deployment.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor = os.open(deployment / 'deploy.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
-    with os.fdopen(descriptor, 'a') as lock:
+    with os.fdopen(descriptor, 'a') as lock, contextlib.ExitStack() as cleanup:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise DeployError('Another Coconut deployment is already running.') from None
+        helper = write_helper(deployment, package)
+        cleanup.callback(helper.unlink, missing_ok=True)
         if marker is not None:
             if read_marker(root) != marker:
                 raise DeployError('The installation changed while the package was being checked. Retry the update.')
@@ -664,7 +775,7 @@ def receive(directory, stream, *, home=None, operations=None):
         original = marker
         marker = marker or {'version': 1, 'installation_id': str(uuid4()), 'files': {}, 'package_id': '', 'state': 'pending'}
         write_json(root / MARKER_PATH, marker)
-        reconcile(root, operations)
+        reconcile(root, operations, helper)
         marker = read_marker(root)
         initial_install = not marker['files'] or not runtime_present or bool(marker.get('initial_install_pending'))
         if initial_install and not marker.get('initial_install_pending'):
@@ -694,7 +805,7 @@ def receive(directory, stream, *, home=None, operations=None):
             copy_source(staging / 'scripts/host.py', backup / 'scripts/host.py')
         # The service saved its Hermes status at its last start. Read it before the new code checks Hermes again.
         previous_hermes = read_hermes_status(root)
-        state = operations.inspect(root) if old_names else {'mode': 'stopped', 'project': str(root), 'data_dir': str(root / '.runtime/host')}
+        state = operations.inspect(root, helper) if old_names else {'mode': 'stopped', 'project': str(root), 'data_dir': str(root / '.runtime/host')}
         if not isinstance(state, dict) or state.get('mode') not in SERVICE_MODES:
             raise DeployError('The service returned an invalid execution mode.')
         record = {'version': 1, 'deployment_id': str(uuid4()), 'original': marker, 'new_files': package.hashes, 'new_package_id': package.package_id,
@@ -706,8 +817,8 @@ def receive(directory, stream, *, home=None, operations=None):
             if old_names:
                 # Turns that a stop interrupts lose their tool results, and their tasks fail at the next start.
                 if hasattr(operations, 'drain'):
-                    operations.drain(root)
-                stopped = operations.stop(root)
+                    operations.drain(root, helper)
+                stopped = operations.stop(root, helper)
                 if stopped != state:
                     record['service_state'] = stopped
                     write_json(journal, record)
@@ -749,9 +860,10 @@ def receive(directory, stream, *, home=None, operations=None):
         except BaseException as error:
             if not applied:
                 # A failed stop can have unloaded the job. Keep its recovery state.
-                raise DeployError('Source was not replaced. The recovery journal remains; check service status before retrying.') from error
+                raise DeployError('Source was not replaced. The recovery journal remains; check service status before '
+                                  'retrying. Reason: ' + reason(error)) from error
             try:
-                reconcile(root, operations)
+                reconcile(root, operations, helper)
             except DeployError as recovery_error:
                 raise DeployError(str(recovery_error)) from error
             detail = str(error) if isinstance(error, DeployError) else type(error).__name__
@@ -772,17 +884,38 @@ def main():
     parser.add_argument('command', choices=['receive', 'recover'], help='recover replays a pending update journal and installs no package.')
     parser.add_argument('--directory', default='Coconut')
     args = parser.parse_args()
+    log(f'deploy.py {args.command} --directory {args.directory}')
     try:
         if args.command == 'recover':
             result = {'recovered': recover(args.directory)}
         else:
             result = receive(args.directory, sys.stdin.buffer)
     except (DeployError, KeyboardInterrupt) as error:
+        # The full chain of causes, with each traceback, goes only to the log.
+        log('Traceback of the failure:\n' + ''.join(traceback.format_exception(error)).rstrip())
         if isinstance(error, KeyboardInterrupt):
             error = DeployError('The deployment was interrupted. Check host status before retrying.')
-        print('COCONUT_DEPLOY_RESULT=' + json.dumps({'ok': False, 'error': str(error)}))
+        line = 'COCONUT_DEPLOY_RESULT=' + json.dumps({'ok': False, 'error': str(error)})
+        finish(args.directory, line)
         raise SystemExit(1)
-    print('COCONUT_DEPLOY_RESULT=' + json.dumps({'ok': True, **result}))
+    except BaseException as error:
+        log('Traceback of the failure:\n' + ''.join(traceback.format_exception(error)).rstrip())
+        finish(args.directory, None)
+        raise
+    finish(args.directory, 'COCONUT_DEPLOY_RESULT=' + json.dumps({'ok': True, **result}))
+
+
+def finish(directory, line):
+    """Print the result line, and add the run to LOG_PATH of the install."""
+    if line is not None:
+        log(line)
+        print(line, flush=True)
+    try:
+        root = destination(directory, Path.home().resolve())
+    except DeployError:
+        TRANSCRIPT.clear()
+        return
+    write_log(root)
 
 
 if __name__ == '__main__':

@@ -305,29 +305,118 @@ class DecisionInboxTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(option_id='check', revision=1))
 
-    def test_required_dismissal_rejects_after_window_and_restart(self):
+    def assert_dismissed_without_answer(self, decision):
+        current = self.service._get('decisions', decision['id'])
+        self.assertEqual(current['status'], 'dismissed')
+        self.assertEqual(current['_answers'], [])
+        self.assertIsNone(current['decided_at'])
+        self.assertIsNone(current.get('selected_option_id'))
+        self.assertFalse(current.get('_inbox_reject_device'))
+        self.assertEqual(current['outcome'], 'Dismissed. No answer was sent.')
+        # The task ends without a follow-up turn. Nothing resumes it.
+        task = self.service._get('tasks', self.task['id'])
+        self.assertEqual(task['status'], 'completed')
+        self.assertNotIn('_resume_decision', task)
+        self.assertFalse([t for t in self.service._all('tasks') if t.get('parent_task_id') == self.task['id']])
+        self.assertFalse(self.service.snapshot()['artifacts'])
+        return current
+
+    def test_required_dismissal_records_no_answer_after_window_and_restart(self):
         decision = self.question()
         self.write('POST', f"/v1/decisions/{decision['id']}/inbox", dict(action='dismiss', revision=1))
         self.restart()
         self.expire_swipe(decision)
-        current = self.service._get('decisions', decision['id'])
-        self.assertEqual(current['status'], 'rejected')
-        self.assertIsNone(current['selected_option_id'])
-        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'queued')
-        self.assertFalse(self.service.snapshot()['artifacts'])
+        current = self.assert_dismissed_without_answer(decision)
+        self.assertEqual(self.service.snapshot()['decisions'][0]['status'], 'dismissed')
         with self.assertRaises(ServiceError):
             self.write('POST', f"/v1/decisions/{decision['id']}/inbox", dict(action='restore', revision=1))
-        count = len(current['_answers'])
+        for answer in (dict(choice='reject'), dict(option_id='check')):
+            with self.subTest(answer=answer), self.assertRaises(ServiceError):
+                self.write('POST', f"/v1/decisions/{decision['id']}/answer", dict(answer, revision=current['revision']))
         self.service.finish_inbox_swipes()
-        self.assertEqual(len(self.service._get('decisions', decision['id'])['_answers']), count)
+        self.assertEqual(self.service._get('decisions', decision['id']), current)
+
+    def test_dismissal_keeps_a_task_that_waits_for_another_card(self):
+        decision = self.question()
+        with self.service.transaction():
+            other = dict(self.service._get('decisions', decision['id']), id=str(uuid4()))
+            self.service._put('decisions', other)
+        self.write('POST', f"/v1/decisions/{decision['id']}/inbox", dict(action='dismiss', revision=1))
+        self.expire_swipe(decision)
+        self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'dismissed')
+        self.assertEqual(self.service._get('decisions', other['id'])['status'], 'pending')
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
+
+    def asked_with_receipt(self):
+        receipt = self.event('native_call', {'name': 'coconut_ask', 'arguments': {'title': 'Investigate references?'}})
+        with self.assertRaises(YieldForDecision):
+            self.event('native_question', dict(title='Investigate references?', receipt_id=receipt['id'],
+                                               options=[{'id': 'check', 'label': 'Check references'}]))
+        return self.service.snapshot()['decisions'][-1], receipt
+
+    def test_dismissal_takes_effect_only_after_the_undo_window(self):
+        decision, receipt = self.asked_with_receipt()
+        path = f"/v1/decisions/{decision['id']}/inbox"
+        # Dismiss, then Undo inside the window: nothing finished, and the card is whole again.
+        dismissed = self.write('POST', path, dict(action='dismiss', revision=1))
+        self.service.finish_inbox_swipes()
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
+        self.assertEqual(self.service._get('native_receipts', receipt['id'])['state'], 'awaiting_answer')
+        restored = self.write('POST', path, dict(action='restore', revision=1, swipe_id=dismissed['inbox_swipe_id']))
+        self.service.finish_inbox_swipes()
+        current = self.service._get('decisions', decision['id'])
+        self.assertEqual((current['status'], current['_answers'], current.get('outcome')), ('pending', [], None))
+        self.assertNotIn('_inbox_dismissed_at', current)
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
+        self.assertEqual(self.service._get('native_receipts', receipt['id'])['state'], 'awaiting_answer')
+        # Dismiss again and let the window end: now the dismissal takes effect.
+        self.write('POST', path, dict(action='dismiss', revision=restored['revision']))
+        self.expire_swipe(decision)
+        self.assert_dismissed_without_answer(decision)
+        self.assertEqual(self.service._get('native_receipts', receipt['id'])['state'], 'completed')
+
+    def test_staggered_dismissals_keep_the_task_open_while_another_undo_window_is_open(self):
+        decision = self.question()
+        with self.service.transaction():
+            other = dict(self.service._get('decisions', decision['id']), id=str(uuid4()))
+            self.service._put('decisions', other)
+        self.write('POST', f"/v1/decisions/{decision['id']}/inbox", dict(action='dismiss', revision=1))
+        second = self.write('POST', f"/v1/decisions/{other['id']}/inbox", dict(action='dismiss', revision=1))
+        # The first window ends while the second card can still come back.
+        self.expire_swipe(decision)
+        self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'dismissed')
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
+        restored = self.write('POST', f"/v1/decisions/{other['id']}/inbox",
+                              dict(action='restore', revision=1, swipe_id=second['inbox_swipe_id']))
+        self.assertEqual(restored['status'], 'pending')
+        self.service.finish_inbox_swipes()
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
+        # When the second card is dismissed and its window ends, the task ends.
+        self.write('POST', f"/v1/decisions/{other['id']}/inbox", dict(action='dismiss', revision=restored['revision']))
+        self.expire_swipe(other)
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'completed')
+
+    def test_dismissal_tells_the_asking_tool_call_that_the_card_has_no_answer(self):
+        import json
+        receipt = self.event('native_call', {'name': 'coconut_ask', 'arguments': {'title': 'Investigate references?'}})
+        with self.assertRaises(YieldForDecision):
+            self.event('native_question', dict(title='Investigate references?', receipt_id=receipt['id'],
+                                               options=[{'id': 'check', 'label': 'Check references'}]))
+        decision = self.service.snapshot()['decisions'][-1]
+        self.write('POST', f"/v1/decisions/{decision['id']}/inbox", dict(action='dismiss', revision=1))
+        self.expire_swipe(decision)
+        self.assert_dismissed_without_answer(decision)
+        record = self.service._get('native_receipts', receipt['id'])
+        self.assertEqual(record['state'], 'completed')
+        result = json.loads(record['result'])
+        self.assertEqual(result['resolution'], 'dismissed')
+        self.assertIn('not a rejection', result['response'])
 
     def test_file_dismissal_never_creates_the_file(self):
         decision = self.file_proposal()
         self.write('POST', f"/v1/decisions/{decision['id']}/inbox", dict(action='dismiss', revision=1))
         self.expire_swipe(decision)
-        self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'rejected')
-        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'completed')
-        self.assertFalse(self.service.snapshot()['artifacts'])
+        self.assert_dismissed_without_answer(decision)
 
     def test_plain_chat_keeps_pending_decision_and_bot_can_resolve_it(self):
         decision = self.question()
@@ -408,14 +497,17 @@ class DecisionInboxTests(unittest.TestCase):
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
         self.assertFalse(self.service._all('contexts'))
 
-    def test_native_approval_dismissal_records_only_rejection(self):
+    def test_native_approval_dismissal_records_no_answer_and_never_runs_the_tool(self):
+        import json
         decision = self.approval()
         self.write('POST', f"/v1/decisions/{decision['id']}/inbox", dict(action='dismiss', revision=1))
         self.expire_swipe(decision)
-        current = self.service._get('decisions', decision['id'])
-        self.assertEqual(current['status'], 'rejected')
-        self.assertIsNone(current['selected_option_id'])
-        self.assertFalse(self.service.snapshot()['artifacts'])
+        current = self.assert_dismissed_without_answer(decision)
+        record = self.service._get('native_receipts', current['_receipt_id'])
+        self.assertEqual(record['state'], 'completed')
+        result = json.loads(record['result'])
+        self.assertEqual(result['resolution'], 'dismissed')
+        self.assertIn('The tool did not run.', result['error'])
 
     def test_proposal_dismissal_and_undo_share_the_same_record(self):
         decision = self.question(optional=True)
@@ -616,19 +708,15 @@ class DecisionInboxTests(unittest.TestCase):
         self.service._invalidate_terminal_pr_cards(self.bot['id'], replace(observation('merged'), pr_state='merged'))
         return self.service._get('decisions', decision['id'])
 
-    def test_refreshing_required_dismissal_records_only_rejection(self):
+    def test_refreshing_required_dismissal_records_no_answer(self):
         decision = self.refreshing_question()
         self.write('POST', f"/v1/decisions/{decision['id']}/inbox", dict(action='dismiss', revision=decision['revision']))
         self.service.finish_inbox_swipes()
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
         self.expire_swipe(decision)
         self.service.finish_inbox_swipes()
-        saved = self.service._get('decisions', decision['id'])
-        self.assertEqual(saved['status'], 'rejected')
-        self.assertEqual([answer['choice'] for answer in saved['_answers']], ['reject'])
+        saved = self.assert_dismissed_without_answer(decision)
         self.assertFalse(saved.get('_source_recheck'))
-        self.assertFalse(saved.get('_inbox_reject_device'))
-        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'queued')
 
     def test_preexisting_refreshing_dismissal_does_not_block_dispatch(self):
         import threading
@@ -653,11 +741,8 @@ class DecisionInboxTests(unittest.TestCase):
         self.service._dispatch_pending()
         self.assertTrue(progressed.wait(3), 'The unrelated task must reach its fixture provider.')
         self.service._dispatch_pending()
-        saved = self.service._get('decisions', decision['id'])
-        self.assertEqual(saved['_answers'][0]['choice'], 'reject')
-        self.assertEqual(len(saved['_answers']), 1)
-        self.assertEqual(saved['decided_by'], 'synthetic-phone')
-        self.assertFalse(saved.get('_inbox_reject_device'))
+        # A dismissal saved before this release closes as a dismissal too. It rejects nothing.
+        self.assert_dismissed_without_answer(decision)
 
     def test_refreshing_dismissal_undo_retains_refresh_and_answer_fence(self):
         decision = self.refreshing_question()

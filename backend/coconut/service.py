@@ -2667,7 +2667,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
 
     def _answer(self, decision: dict, task: dict, data: dict, device: str) -> dict:
         if decision.get('_gateway_question'):
-            # The answer, a reply or a dismissal from the Inbox, goes to the waiting gateway turn.
+            # The answer or a reply goes to the waiting gateway turn. A dismissal goes there too (dismiss_gateway_question).
             return self.answer_gateway_question(decision, task, data, device)
         if decision.get('_source_recheck'):
             raise ServiceError(409, 'The source changed. Coconut is updating this decision.')

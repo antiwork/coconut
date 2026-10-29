@@ -82,6 +82,19 @@ class AwaitingUserTests(unittest.TestCase):
         other = dict(id='other', status='pending', sources=[dict(kind='issue', title='Other', url=URL[:-1] + '8')])
         self.assertFalse(coverage(item, binding, tasks, {'other': other}, {}, current))
 
+    def test_a_dismissed_card_covers_its_source_until_the_source_changes(self):
+        current = datetime.now(timezone.utc)
+        card = dict(id='card', status='dismissed', decided_at=None, _inbox_dismissed_at='2026-10-21T08:00:00Z',
+                    sources=[dict(kind='issue', title='Payout', url=URL)])
+        for awaiting in (True, False):
+            with self.subTest(awaiting=awaiting):
+                item = dict(self.item, awaiting_user=awaiting)
+                # No live work covers the item. Only the dismissal does.
+                self.assertTrue(coverage(item, {}, {}, {'card': card}, {}, current))
+                # A new comment, label, or assignee after the dismissal is a change. Then a new card may come.
+                changed = dict(item, updated_at='2026-10-21T09:00:00Z')
+                self.assertFalse(coverage(changed, {}, {}, {'card': card}, {}, current))
+
 
 class AnswerStepsTests(unittest.TestCase):
     def test_answer_steps_leave_the_workflow_to_the_bot_skills(self):
@@ -188,6 +201,29 @@ class AwaitingAuditTests(unittest.TestCase):
         state = self.audit()
         prompt = self.service._get('tasks', state['task_id'])['_source_audit_prompt']
         self.assertNotIn('This source waits for the person', prompt)
+
+    def test_a_dismissed_card_stops_audits_until_the_source_changes_and_reaches_the_bot_as_dismissed(self):
+        state = self.audit()
+        asking = self.service._get('tasks', state['task_id'])
+        with self.service.transaction():
+            asking['status'] = 'completed'
+            self.service._put('tasks', asking)
+            self.service._put('decisions', dict(id='card', task_id=asking['id'], bot_id=self.bot['id'], title='Pay out?',
+                                                status='dismissed', decided_at=None, _answers=[],
+                                                _inbox_dismissed_at='2026-10-21T08:00:00Z',
+                                                sources=[dict(kind='issue', title='Payout', url=URL)]))
+        count = len(self.service._all('tasks'))
+        state = self.audit()
+        self.assertEqual(state['missing'], [])
+        self.assertEqual(len(self.service._all('tasks')), count)
+        self.item['updated_at'] = '2026-10-21T09:00:00Z'
+        state = self.audit()
+        self.assertEqual(state['missing'], [URL])
+        prompt = self.service._get('tasks', state['task_id'])['_source_audit_prompt']
+        data = json.loads(prompt.split('Answered cards (data): ', 1)[1].split('\n', 1)[0])
+        self.assertEqual(data, [dict(id='card', title='Pay out?', status='dismissed', dismissed_at='2026-10-21T08:00:00Z')])
+        self.assertIn('A card with status dismissed has no answer', prompt)
+        self.assertNotIn('Answers to post', prompt)
 
     def test_pending_card_stops_another_audit(self):
         with self.service.transaction():

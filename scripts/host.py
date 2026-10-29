@@ -55,7 +55,8 @@ def stopped_service(data: Path, action: str):
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise SystemExit(f"Stop Coconut before {action}. Unload its LaunchAgent if installed.") from None
+            raise SystemExit(f"Another process still locks {lock}. Stop Coconut before {action}. "
+                             "Unload its LaunchAgent if installed.") from None
         yield
 
 
@@ -285,7 +286,118 @@ def managed_current_process(data_dir: Path | None = None) -> bool:
     return launchd_pid(LABEL) == os.getpid()
 
 
+# The service stops its Hermes gateway and its workers before it exits (Service.close). Each one can take many seconds, so
+# a stop waits this long for a clean exit. Then it sends SIGKILL. An update drains the turns first, so little work is lost.
+STOP_GRACE_SECONDS = 120
+# After SIGKILL, the kernel ends a process at once. The wait covers a slow ps.
+KILL_WAIT_SECONDS = 10
+# The processes that the service started and that are still alive after it ended get this long after SIGTERM, then SIGKILL.
+CHILD_STOP_SECONDS = 10
+
+
+def process_table() -> dict[int, tuple[int, int, str, str, str]]:
+    """Return every process: {process ID: (parent ID, process group ID, state letters, start time, command)}.
+
+    The start time and the command together identify a process. A reused process ID has another start time. An empty
+    table means that ps failed, so no process is known and none gets a signal.
+    """
+    try:
+        result = subprocess.run(["ps", "-A", "-ww", "-o", "pid=,ppid=,pgid=,stat=,lstart=,command="],
+                                capture_output=True, text=True, env=dict(os.environ, LC_ALL="C"))
+    except OSError:
+        return {}
+    if result.returncode:
+        return {}
+    table = {}
+    for line in result.stdout.splitlines():
+        # lstart has five words, for example "Thu Oct 29 16:08:06 2026".
+        fields = line.split(None, 9)
+        if len(fields) == 10 and all(field.isdigit() for field in fields[:3]):
+            table[int(fields[0])] = (int(fields[1]), int(fields[2]), fields[3], " ".join(fields[4:9]), fields[9])
+    return table
+
+
+def identity(table: dict, pid: int) -> tuple[str, str]:
+    return table[pid][3], table[pid][4]
+
+
+def alive_processes(known: dict[int, tuple[str, str]], table: dict) -> dict[int, tuple[str, str]]:
+    """The known processes that still run as the same process: same start time and command, not a zombie."""
+    return {pid: value for pid, value in known.items()
+            if pid in table and identity(table, pid) == value and not any(letter in table[pid][2] for letter in EXITED)}
+
+
+def record_descendants(known: dict[int, tuple[str, str]], table: dict) -> None:
+    """Add to `known` the processes that provably belong to the service, with their start time and command.
+
+    A process belongs when its parent is a known process that still runs as itself, or when it is in the process group
+    that such a process leads. `known` starts with the service. The service starts its Hermes gateway, its workers, and the
+    Kanban dispatcher in sessions of their own, and a worker starts the background commands of its turns in further
+    sessions, so a signal to the service reaches none of them. A process ID that now runs another process proves nothing,
+    so its children and its group are never added. Only processes of the same session can join a group, so a member of a
+    group whose leader still runs as itself is a process of that leader. A gateway that a person started has no such link.
+    """
+    proven = set(alive_processes(known, table))
+    while True:
+        added = {pid for pid, (parent, group, *_) in table.items()
+                 if pid not in proven and pid not in known and (parent in proven or group in proven)}
+        if not added:
+            return
+        for pid in added:
+            known[pid] = identity(table, pid)
+        proven |= added
+
+
+def log_unproven(known: dict[int, tuple[str, str]], table: dict) -> None:
+    """Name the processes in a group of an ended process of the service. They can be its background commands, but no
+    living process proves it, so they get no signal. deploy.py keeps this output in its log."""
+    ended_leaders = set(known) - set(alive_processes(known, table))
+    for pid, (parent, group, state, _, command) in sorted(table.items()):
+        if group in ended_leaders and pid not in known and not any(letter in state for letter in EXITED):
+            print(f"Coconut did not stop process {pid} ({command[:120]}). It is in the process group of process {group} "
+                  "of the old service, which ended, so nothing proves that it belongs to Coconut.", file=sys.stderr)
+
+
+def stop_descendants(service: int, known: dict[int, tuple[str, str]]) -> None:
+    """Stop the processes of an ended service that are still alive: SIGTERM, then SIGKILL. Check each one before each
+    signal, and add the processes that they started meanwhile.
+
+    A Hermes gateway of the old source that keeps running blocks the gateway of the new source. A worker or a background
+    command of the old source can change the files of the new one. So the update waits until each one has ended.
+    """
+    def remaining(table):
+        record_descendants(known, table)
+        return {pid: value for pid, value in alive_processes(known, table).items() if pid != service}
+    alive = {}
+    table = {}
+    for number, seconds in ((signal.SIGTERM, CHILD_STOP_SECONDS), (signal.SIGKILL, KILL_WAIT_SECONDS)):
+        table = process_table()
+        alive = remaining(table)
+        if not alive:
+            break
+        for pid in alive:
+            try:
+                os.kill(pid, number)
+            except (ProcessLookupError, PermissionError):
+                pass
+        deadline = time.monotonic() + seconds
+        while alive and time.monotonic() < deadline:
+            time.sleep(.1)
+            table = process_table()
+            alive = remaining(table)
+    if alive:
+        pid, (_, command) = next(iter(alive.items()))
+        raise SystemExit(f"The service ended, but its process {pid} ({command[:120]}) did not end after SIGKILL. "
+                         "Coconut kept its data unchanged.")
+    log_unproven(known, table)
+
+
 def stop_owned_process() -> None:
+    """Stop the service of this installation and every process that it started. Return only when all of them have ended.
+
+    The service gets SIGTERM and STOP_GRACE_SECONDS to stop its processes itself. Then it gets SIGKILL, and Coconut stops
+    the processes that remain. Each failure names the process and the step.
+    """
     current = owned_process()
     if current is None:
         # A service that exits already can still hold service.lock. Wait until it is gone.
@@ -294,18 +406,41 @@ def stop_owned_process() -> None:
             return
     else:
         pid = current[0]
+    # {process ID: (start time, command)} of each process that the service started.
+    table = process_table()
+    known: dict[int, tuple[str, str]] = {pid: identity(table, pid)} if pid in table else {}
+    record_descendants(known, table)
+    if current is not None:
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
-            return
-    for _ in range(100):
+            pass
+    deadline = time.monotonic() + STOP_GRACE_SECONDS
+    killed = False
+    listed = time.monotonic()
+    while True:
         current = owned_process()
         if current is not None and current[0] != pid:
-            raise SystemExit("Another Coconut process started during the stop. Coconut kept its data unchanged.")
+            raise SystemExit(f"Another Coconut process ({current[0]}) started while process {pid} stopped. "
+                             "Coconut kept its data unchanged.")
         if current is None and ended(pid):
-            return
+            break
+        # The processes start more processes while they stop. ps lists every process, so the list is read once a second.
+        if time.monotonic() - listed >= 1:
+            record_descendants(known, process_table())
+            listed = time.monotonic()
+        if time.monotonic() >= deadline:
+            if killed:
+                raise SystemExit(f"Coconut process {pid} did not end {KILL_WAIT_SECONDS} seconds after SIGKILL. "
+                                 "Its source and data remain unchanged.")
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            killed = True
+            deadline = time.monotonic() + KILL_WAIT_SECONDS
         time.sleep(.1)
-    raise SystemExit("Coconut did not stop. Its source and data remain unchanged.")
+    stop_descendants(pid, known)
 
 
 def wait_for_agent_unloaded(timeout: float = 10) -> None:
