@@ -529,7 +529,36 @@ struct Routine: Codable, Identifiable, Equatable, Sendable {
     var updatedAt: String
     var script: String? = nil
     var error: String? = nil
+    /// True for a Hermes job that runs one time. Older Macs do not send it.
+    var oneTime: Bool? = nil
+    /// The Hermes job state, for example "scheduled", "paused", or "completed". Older Macs do not send it.
+    var state: String? = nil
+    /// The time of a one-time job. Hermes keeps it when it clears `nextRunAt`.
+    var runAt: String? = nil
     var scheduleLabel: String { enabled ? cron : "Paused · " + cron }
+}
+
+/// The routines of one bot settings page: recurring routines, and one-time jobs that still run.
+/// The page hides a finished one-time job and a paused one-time job whose time has passed.
+struct RoutineGroups: Equatable {
+    var recurring: [Routine] = []
+    var scheduledChecks: [Routine] = []
+
+    init(_ routines: [Routine], now: Date = Date()) {
+        var checks: [(routine: Routine, time: Date?)] = []
+        for routine in routines {
+            guard routine.oneTime == true else {
+                recurring.append(routine)
+                continue
+            }
+            if routine.state == "completed" || routine.state == "error" { continue }
+            let time = (routine.nextRunAt ?? routine.runAt)?.apiDate
+            let paused = routine.state == "paused" || !routine.enabled
+            if paused, (time ?? .distantPast) < now { continue }
+            checks.append((routine, time))
+        }
+        scheduledChecks = checks.sorted { ($0.time ?? .distantFuture) < ($1.time ?? .distantFuture) }.map(\.routine)
+    }
 }
 
 struct LearningGroup: Codable, Identifiable, Equatable, Sendable {
