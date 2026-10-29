@@ -1,5 +1,5 @@
 """Dispatch native schedules while Coconut owns their durable conversation tasks."""
-from datetime import datetime
+from datetime import datetime, timezone
 import time
 import json
 from uuid import UUID, uuid5
@@ -758,10 +758,8 @@ class NativeRoutines:
 
     def native_scheduler_status(self):
         stamp = getattr(self, '_native_cron_last_success', None)
-        # The Hermes gateway fires the jobs. Coconut's pass keeps the claims and the routine list true.
         running = (stamp is not None and time.monotonic() - stamp < 60
-                   and not getattr(self, '_native_cron_error', False) and not self.stopping.is_set()
-                   and self.gateway_state.get('state') in ('running', 'external'))
+                   and not getattr(self, '_native_cron_error', False) and not self.stopping.is_set())
         return {'scheduler': 'coconut', 'scheduler_running': running}
 
     def refresh_native_routines(self):
@@ -984,20 +982,23 @@ class NativeRoutines:
             probes = getattr(self, '_release_probes', {})
             for identity in set(probes) - awaiting:
                 del probes[identity]
-            # The Hermes gateway fires the scheduled routines, and its runs reach Coconut as turns
-            # (hermes_plugin/coconut/cron.py). Coconut claims a routine only to recover a claim of its own, from a run
-            # that the person started (mutate_native_routine) before the service stopped.
+            # A gateway that serves a bot's profile fires its routines, and its runs reach Coconut as turns
+            # (hermes_plugin/coconut/cron.py). Coconut fires the routines of a bot that no gateway serves, for example a
+            # profile that the person parked in Hermes. The native fire claim decides a race at a switch.
+            served = self.gateway_served_bots() if hasattr(self, 'gateway_served_bots') else set()
             with self.transaction():
                 # One grouping of the tasks serves every routine. A task that a claim adds belongs to its own routine,
                 # so it cannot change the result for another routine.
                 index = None
                 for routine in self._all('routines'):
                     bot = self._get('bots', routine['bot_id'])
-                    if not routine.get('_recover_claim'):
+                    due = routine.get('next_run_at')
+                    if routine['bot_id'] in served and not routine.get('_recover_claim'):
                         continue
                     if routine['id'] in finished or routine.get('error') or not routine['enabled'] or bot['archived'] or self._active_routine_task(routine['id'], index := index or self._routine_index()):
                         continue
-                    self.claim_native_routine(routine)
+                    if routine.get('_recover_claim') or (due and datetime.fromisoformat(due.replace('Z', '+00:00')) <= datetime.now(timezone.utc)):
+                        self.claim_native_routine(routine)
             self._native_cron_last_success = time.monotonic()
             self._native_cron_error = False
         except Exception:

@@ -227,19 +227,22 @@ class WaitingOccurrenceTests(unittest.TestCase):
         self.assertEqual(after['_native_release'], dict(native_id='t_orig', run_id=5332, turn_id='turn-original',
                          receipt_id=self.original, job_id='job', owner='owner'))
 
-    def test_release_is_idempotent_and_the_gateway_fires_the_next_occurrence(self):
+    def test_release_is_idempotent_and_the_routine_fires_again_exactly_once(self):
         self.build(capture=False)
         self.routine = dict(id=self.routine_id, bot_id=self.bot['id'], name='Fast intake', enabled=True, _native_id='job',
                             next_run_at='2000-01-01T00:00:00Z')
         self.tick()
         self.assert_released()
-        # The Hermes gateway fires the next occurrence, so no pass of Coconut claims it.
-        self.tick()
-        self.tick()
+        # The routine is not claimed in the pass that finished it.
         self.assertEqual(self.operations('routine_claim'), [])
-        # The old task is neither finished nor heartbeated again.
+        self.tick()
+        self.assertEqual(self.operations('routine_claim'), ['routine_claim'])
         self.assertEqual(self.operations(), ['routine_finish'])
-        self.assertEqual(len(self.service._all('tasks')), 1)
+        # The new occurrence heartbeats its own claim. The old task is neither finished nor heartbeated again.
+        self.tick()
+        self.assertEqual(self.operations('routine_claim'), ['routine_claim'])
+        self.assertEqual(self.operations(), ['routine_finish', 'routine_heartbeat'])
+        self.assertEqual(len(self.service._all('tasks')), 2)
         self.assertEqual(self.event_count('routine.reconciliation_required'), 0)
 
     def test_released_occurrence_continues_with_its_original_provenance(self):

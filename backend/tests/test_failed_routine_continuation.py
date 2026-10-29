@@ -145,10 +145,8 @@ class FailedRoutineContinuationTests(unittest.TestCase):
     def between_tools(self, route):
         native, owner, source = self.finished_native()
         self.resume(source)
-        # The pass of the service claims only a claim of its own that it recovers. The Hermes gateway fires the rest.
         routine = dict(id=owner['routine_id'], bot_id=owner['bot_id'], name='Next occurrence',
-                       enabled=True, _native_id='job', next_run_at='2000-01-01T00:00:00Z',
-                       _recover_claim=route == 'scheduler')
+                       enabled=True, _native_id='job', next_run_at='2000-01-01T00:00:00Z')
         self.service._put('routines', routine)
         self.service.refresh_native_routines = lambda: None
         claims, dispatches = [], []
@@ -201,7 +199,7 @@ class FailedRoutineContinuationTests(unittest.TestCase):
             self.assertFalse(native.job['_coconut_completion']['success'])
             self.assertEqual(native.job['repeat']['completed'], 1)
 
-    def test_a_recovered_claim_cannot_claim_before_or_between_recovery_tools(self):
+    def test_scheduler_cannot_claim_before_or_between_recovery_tools(self):
         self.between_tools('scheduler')
 
     def test_manual_run_cannot_claim_before_or_between_recovery_tools(self):
@@ -442,9 +440,8 @@ class FailedClaimTests(unittest.TestCase):
         task['_native_job_completion']['continuation']['task_id'] = task['id']
         service._put('tasks', task)
         bridge.request['task'] = task
-        # The pass of the service claims only a claim of its own that it recovers. The Hermes gateway fires the rest.
         routine = dict(id='routine', bot_id=bot['id'], name='Next occurrence', enabled=True,
-                       _native_id='job', next_run_at='2000-01-01T00:00:00Z', _recover_claim=not manual)
+                       _native_id='job', next_run_at='2000-01-01T00:00:00Z')
         service._put('routines', routine)
         service.refresh_native_routines = lambda: None
         service.provider.native_settings = lambda operation, bots, **kw: receipts.claim(
@@ -533,7 +530,7 @@ class FailedClaimTests(unittest.TestCase):
             with self.assertRaises(TurnPaused):
                 self.run_tool(bridge)
 
-    def test_a_recovered_claim_cannot_dispatch_during_continuation_tool(self):
+    def test_scheduled_claim_cannot_dispatch_during_continuation_tool(self):
         self.reserve_during_service_claim(manual=False)
 
     def test_manual_claim_cannot_dispatch_during_continuation_tool(self):

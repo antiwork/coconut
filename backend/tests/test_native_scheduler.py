@@ -50,13 +50,12 @@ class SchedulerIntegrationTests(unittest.TestCase):
         self.assertFalse(updated['enabled'])
         self.assertIn('routine_update', calls)
 
-    def test_the_gateway_fires_a_due_job_and_a_recovered_claim_makes_one_durable_task(self):
+    def test_due_job_creates_one_durable_task_and_survives_restart(self):
         identity = str(uuid4())
         routine = dict(id=identity, bot_id=self.bot['id'], name='Refresh', enabled=True,
                        _native_id=self.job['id'], next_run_at='2000-01-01T00:00:00Z')
         with self.service.transaction():
             self.service._put('routines', routine)
-        self.service.gateway_state = {'state': 'running', 'pid': 1, 'reason': None}
         job = dict(self.job, fire_claim={'by': 'owner'})
         calls = []
         def native(operation, bots, **arguments):
@@ -68,13 +67,6 @@ class SchedulerIntegrationTests(unittest.TestCase):
             raise AssertionError(operation)
         self.service.provider.native_settings = native
         self.service.refresh_native_routines = lambda: None
-        self.service.tick_native_routines()
-        # The Hermes gateway fires the due job. Coconut claims none.
-        self.assertEqual((self.service._all('tasks'), calls), ([], []))
-        # A claim that Coconut made before it stopped comes back once.
-        with self.service.transaction():
-            self.service._put('routines', dict(routine, _recover_claim=True))
-        self.service._native_cron_next = 0
         self.service.tick_native_routines()
         tasks = self.service._all('tasks')
         self.assertEqual(len(tasks), 1)
@@ -130,9 +122,6 @@ class SchedulerIntegrationTests(unittest.TestCase):
             return self.service.emit(task['id'], 'native_call', {'name': 'cronjob_manage', 'arguments': {'action': 'list'}})
         self.assertFalse(status()['scheduler_running'])
         self.service._native_cron_last_success = time.monotonic()
-        # The Hermes gateway runs the jobs, so the scheduler runs only with the gateway.
-        self.assertFalse(status()['scheduler_running'])
-        self.service.gateway_state = {'state': 'external', 'pid': 1, 'reason': None}
         self.assertTrue(status()['scheduler_running'])
         self.service._native_cron_last_success -= 61
         self.assertFalse(status()['scheduler_running'])

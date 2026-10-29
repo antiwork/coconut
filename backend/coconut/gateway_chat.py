@@ -20,8 +20,9 @@ to `<data>/gateway/gateway.log`. When the process stops, the service starts it a
 gateway that the service did not start already runs for that home, the service uses it and starts no second one.
 GET /v1/setup says which gateway runs chats, or why none does.
 
-The gateway's cron fires the routines of the bots, and each run is a Coconut turn (gateway_cron). Coconut claims no
-scheduled routine itself. It claims only a routine that the person runs now.
+The gateway's cron fires the routines of each bot that it serves, and each run is a Coconut turn (gateway_cron). A bot
+whose profile no gateway serves, for example a profile that the person parked in Hermes, keeps its routines with
+Coconut's scheduler (routine_coordinator.tick_native_routines). GET /v1/setup lists such profiles.
 """
 from __future__ import annotations
 
@@ -65,6 +66,8 @@ GATEWAY_WAIT_SECONDS = 5 * 60
 WAITING = 'Waiting for the Hermes gateway. See Settings > Hermes when this takes long.'
 NOT_CONNECTED = ('The Hermes gateway did not connect for this bot in {minutes} minutes. Send the message again after '
                  'the gateway runs. See GET /v1/setup and {log}.')
+PARKED = ('The Hermes profile of this bot is parked ({path}), so no Hermes gateway serves its chats. Remove that file '
+          'to chat with the bot. Its routines run with Coconut meanwhile.')
 
 
 def live_gateway_pid(home) -> int | None:
@@ -107,7 +110,22 @@ class GatewayChat:
         homes = set(self.gateway_bridge.connected_homes())
         profiles = sorted(row['name'] for row in self.profiles.rows.values()
                           if row.get('state') == 'active' and os.path.realpath(row['home']) in homes)
-        return dict(self.gateway_state, connected_profiles=profiles)
+        # A profile that no gateway serves has no chats. Coconut runs its routines (gateway_served_bots).
+        unserved = sorted(row['name'] for row in self.profiles.rows.values()
+                          if row.get('state') == 'active' and os.path.realpath(row['home']) not in homes)
+        return dict(self.gateway_state, connected_profiles=profiles, unserved_profiles=unserved)
+
+    def gateway_served_bots(self) -> set[str]:
+        """The bots whose profile a running gateway serves now: the coconut adapter of that home is connected.
+
+        The gateway fires the routines of these bots. Coconut fires the routines of the other bots. The adapter
+        connection is the evidence, not the config: a parked profile, a gateway that did not load the platform, or a
+        gateway that starts again has no connected adapter.
+        """
+        if not self.gateway_enabled():
+            return set()
+        return {row['bot_id'] for row in list((self.profiles.rows or {}).values())
+                if row.get('state') == 'active' and self.gateway_bridge.connected(row['home'])}
 
     def run_gateway_chat(self, task: dict, bot: dict, history: list, emit) -> bool:
         """Run a chat turn through the gateway. False: the turn is of another type, and the worker runs it."""
@@ -141,6 +159,10 @@ class GatewayChat:
                     except GatewayUnavailable:
                         # No adapter took the turn, so nothing ran. Wait for the next adapter.
                         LOG.warning('No Hermes gateway took chat turn %s. It waits for the gateway.', task['id'])
+                parked = Path(home) / 'gateway.parked'
+                if parked.exists():
+                    # The person parked the profile in Hermes, so no gateway serves it. Waiting does not help.
+                    raise RuntimeError(PARKED.format(path=parked))
                 if time.monotonic() >= deadline or self.stopping.is_set():
                     raise RuntimeError(NOT_CONNECTED.format(minutes=GATEWAY_WAIT_SECONDS // 60,
                                                             log=self.gateway_bridge.folder / 'gateway.log'))

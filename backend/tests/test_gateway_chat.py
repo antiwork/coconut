@@ -194,7 +194,8 @@ class ServiceRoutingTests(unittest.TestCase):
 
     def test_the_gateway_is_the_only_chat_runtime_and_the_old_setting_goes_at_start(self):
         self.assertEqual(self.service.hermes_setup()['gateway'],
-                         {'state': 'off', 'pid': None, 'reason': None, 'connected_profiles': []})
+                         {'state': 'off', 'pid': None, 'reason': None, 'connected_profiles': [],
+                          'unserved_profiles': [self.service.profiles.row(self.bot)['name']]})
         with self.assertRaises(ServiceError):
             self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'worker'})
         # An install of an earlier version has the setting. The next start removes it.
