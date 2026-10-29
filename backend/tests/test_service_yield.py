@@ -719,6 +719,45 @@ class ServiceYieldTests(unittest.TestCase):
         self.service._put('tasks', reviewer)
         self.assert_stopped(self.call())
 
+    def test_only_loopback_tcp_ports_pass_and_the_real_lsof_check_sees_each_loopback_client(self):
+        web = self.docker.items[0]
+        # A later container with a bind mount, after the container that publishes a port, still checks its mount.
+        self.docker.items[1]['Mounts'].append({'Type': 'bind', 'Source': str(self.workspace / 'db-init'),
+                                               'Destination': '/docker-entrypoint-initdb.d'})
+        loopback = {'3000/tcp': [{'HostIp': '127.0.0.1', 'HostPort': '3074'}, {'HostIp': '::1', 'HostPort': '3074'}]}
+        # A port on every address or a network address can have clients that lsof cannot tie to this Mac.
+        refused = [{'3000/tcp': [{'HostIp': '0.0.0.0', 'HostPort': '3074'}, {'HostIp': '::', 'HostPort': '3074'}]}]
+        for host in ('0.0.0.0', '', None, '192.168.1.20', '10.0.0.5', '::', '2001:db8::5', 'fe80::1',
+                     '::ffff:127.0.0.1', '127.0.0.2', 'localhost'):
+            refused.append({'3000/tcp': [{'HostIp': host, 'HostPort': '3074'}]})
+        refused += [{'3000/tcp': [{'HostPort': '3074'}]}, {'5353/udp': [{'HostIp': '127.0.0.1', 'HostPort': '5353'}]},
+                    {'3000/tcp': [{'HostIp': '127.0.0.1', 'HostPort': ''}]}, {'3000/tcp': ['127.0.0.1:3074']},
+                    {'3000': [{'HostIp': '127.0.0.1', 'HostPort': '3074'}]}]
+        for ports in refused:
+            with self.subTest(ports=ports):
+                web['NetworkSettings']['Ports'] = ports
+                self.refused('not TCP on this Mac’s loopback address')
+        # Only exposed ports, without a binding, publish nothing.
+        web['NetworkSettings']['Ports'] = dict(loopback, **{'9000/tcp': None, '9001/udp': []})
+        # The real lsof parser reads every form of a local client of the loopback port.
+        lsof = []
+
+        def run(arguments, **kwargs):
+            self.assertEqual(arguments[0], 'lsof')
+            return Mock(returncode=0 if lsof else 1, stdout=''.join(lsof))
+        self.docker.port_clients = lambda ports: DockerCli('docker').port_clients(ports)
+        with patch('coconut.service_yield.subprocess.run', side_effect=run):
+            for remote in ('127.0.0.1:3074', '[::1]:3074', '[::ffff:127.0.0.1]:3074', '0.0.0.0:3074', '[::]:3074'):
+                lsof[:] = ['p42\ncruby\nn127.0.0.1:61000->' + remote + '\n']
+                with self.subTest(client=remote):
+                    self.refused('connected to a port')
+            lsof[:] = ['p42\ncruby\nn127.0.0.1:61000->127.0.0.1:3074 (unexpected)\n']
+            self.refused('cannot read a connection')
+            # The server side of the connection and another port's client are no clients of this project.
+            lsof[:] = ['p77\ncOrbStack Helper\nn127.0.0.1:3074->127.0.0.1:61000\nn[::1]:3074->[::1]:61001\n'
+                       'p90\ncnode\nn127.0.0.1:62000->127.0.0.1:3080\n']
+            self.assert_stopped(self.call())
+
     def test_a_technical_lane_turn_cannot_yield(self):
         self.assertIn('service_yield', REFUSED_EVENTS)
         task, _ = lanes.IndependentTechnicalWorkTests.admitted_turn.__get__(self)()
@@ -766,6 +805,15 @@ class DockerCliTests(unittest.TestCase):
             self.assertEqual(DockerCli('docker').port_clients({3074}),
                              [dict(pid='42', command='ruby', remote='127.0.0.1:3074')])
         self.assertIn('-sTCP:ESTABLISHED', run.call_args.args[0])
+        for remote in ('[::1]:3074', '[::ffff:127.0.0.1]:3074'):
+            output = 'p42\ncruby\nn[::1]:61000->' + remote + '\n'
+            with self.subTest(remote=remote), \
+                    patch('coconut.service_yield.subprocess.run', return_value=Mock(returncode=0, stdout=output)):
+                self.assertEqual(DockerCli('docker').port_clients({3074}), [dict(pid='42', command='ruby', remote=remote)])
+        for line in ('n127.0.0.1:61000->127.0.0.1:http', 'n127.0.0.1:61000->3074', 'n127.0.0.1:61000->[::1]'):
+            with self.subTest(line=line), self.assertRaisesRegex(Refused, 'cannot read a connection'), \
+                    patch('coconut.service_yield.subprocess.run', return_value=Mock(returncode=0, stdout='p1\ncx\n' + line)):
+                DockerCli('docker').port_clients({3074})
         with patch('coconut.service_yield.subprocess.run', return_value=Mock(returncode=1, stdout='')):
             self.assertEqual(DockerCli('docker').port_clients({3074}), [])
         with patch('coconut.service_yield.subprocess.run', return_value=Mock(returncode=2, stdout='')), \

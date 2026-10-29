@@ -46,6 +46,11 @@ ONEOFF_LABEL = 'com.docker.compose.oneoff'
 # folder of redis. It has a random 64-hex name and no project label. Only the container that created it uses it.
 ANONYMOUS_VOLUME = re.compile(r'[0-9a-f]{64}')
 ANONYMOUS_LABEL = 'com.docker.volume.anonymous'
+# A task-local test setup publishes TCP ports on this Mac's loopback address only. lsof sees every client of such a
+# port. A port on another or every address can also have clients on the network, so Coconut refuses it.
+LOOPBACK_BINDINGS = ('127.0.0.1', '::1')
+# How lsof -n shows a local client's destination for those bindings, including an IPv4-mapped IPv6 socket.
+LOOPBACK_CLIENTS = ('127.0.0.1', '[::1]', '[::ffff:127.0.0.1]', '0.0.0.0', '[::]', 'localhost')
 # A local test setup has a few services. A larger project is not task-local test setup.
 CONTAINER_LIMIT = 32
 STOP_GRACE_SECONDS = 10
@@ -153,7 +158,8 @@ def evidence(docker, project, binding):
 
     Every container of the project must come from one Compose configuration inside the workspace, and not from the
     worktree of another outcome inside it. Its bind mounts must stay there too, and its volumes and networks must
-    belong to the project. An anonymous volume of an image belongs to its container. It shares no namespace and no other container's volumes. No other running container may
+    belong to the project. An anonymous volume of an image belongs to its container. A published port must be TCP on
+    the loopback address. It shares no namespace and no other container's volumes. No other running container may
     share a volume, a network, a namespace, a link, or the workspace, and no local process may hold a connection to a
     published port. A one-off command, an exec session, a paused container, or a restarting container means the
     project is in use.
@@ -202,8 +208,13 @@ def evidence(docker, project, binding):
             if labels(docker.network(name)).get(PROJECT_LABEL) != project:
                 raise Refused('A container of this project uses a network that this project does not own.')
             networks.add(network.get('NetworkID') or name)
-        for bindings in ((container.get('NetworkSettings') or {}).get('Ports') or {}).values():
-            ports.update(int(b['HostPort']) for b in bindings or [] if str(b.get('HostPort', '')).isdigit())
+        for exposed, published in ((container.get('NetworkSettings') or {}).get('Ports') or {}).items():
+            for port in published or []:
+                if (not str(exposed).endswith('/tcp') or not isinstance(port, dict)
+                        or port.get('HostIp') not in LOOPBACK_BINDINGS or not str(port.get('HostPort', '')).isdigit()):
+                    raise Refused('A container of this project publishes a port that is not TCP on this Mac’s loopback '
+                                  'address, so Coconut cannot see all of its clients.')
+                ports.add(int(port['HostPort']))
     for other in containers:
         if other['Id'] in ids or not state(other)['running']:
             continue
@@ -291,7 +302,9 @@ class DockerCli:
             elif line.startswith('n') and '->' in line:
                 remote = line.split('->', 1)[1]
                 host, _, port = remote.rpartition(':')
-                if host in ('127.0.0.1', 'localhost', '[::1]', '0.0.0.0', '[::]') and port.isdigit() and int(port) in ports:
+                if not host or not port.isdigit():
+                    raise Refused('Coconut cannot read a connection that lsof shows.')
+                if host in LOOPBACK_CLIENTS and int(port) in ports:
                     found.append(dict(pid=pid, command=command, remote=remote))
         return found
 
