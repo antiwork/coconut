@@ -321,9 +321,9 @@ class TurnEvents:
     the streamed segment of the same text. The first send that is not interim takes over from the streamed text: later
     deltas only repeat what the gateway sends and edits.
 
-    A `silent` turn, such as a reaction, shows no commentary, and a reply that is a silence marker or nothing ends it
-    without a message, as the worker ends it (silent_responses.is_silence_reply). Hermes itself drops a reply that is
-    only a marker, but the plugin streams its text before that.
+    A `silent` turn, such as a reaction, shows no commentary. When Hermes sends no reply, or a reply that is a silence
+    marker, the turn ends without a message, as the worker ends it (silent_responses.is_silence_reply). Hermes drops a
+    reply that is only a marker, but the plugin streams its text, or only its start, before that.
     """
 
     def __init__(self, emit, turn_id=None, silent=False):
@@ -389,7 +389,9 @@ class TurnEvents:
             self.emit('text_delta', {'text': '', 'replace': True})
             self.stream, self.text = None, ''
         elif kind == 'done':
-            if event.get('outcome') == 'success' and self.silent and is_silence_reply(self.text):
+            # Hermes sends no reply when the model chose silence. The plugin may have streamed the marker, or only its
+            # start, which Hermes holds back.
+            if event.get('outcome') == 'success' and self.silent and (not self.sent or is_silence_reply(self.text)):
                 if self.text:
                     # Take back the streamed marker.
                     self.emit('text_delta', {'text': '', 'replace': True})

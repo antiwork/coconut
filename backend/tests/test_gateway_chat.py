@@ -74,6 +74,11 @@ class TurnEventTests(unittest.TestCase):
             ('phase', {'phase': 'writing'}), ('text_delta', {'text': '[SILENT]'}),
             ('text_delta', {'text': '', 'replace': True}),
             ('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})])
+        # Hermes holds back the start of a marker and sends no reply.
+        emitted, _ = self.translate({'kind': 'delta', 'stream': 1, 'text': '[SILEN'}, {'kind': 'done', 'outcome': 'success'},
+                                    silent=True)
+        self.assertEqual(emitted[-2:], [('text_delta', {'text': '', 'replace': True}),
+                                        ('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})])
         # A useful reply of a silent turn is an ordinary reply.
         emitted, _ = self.translate(
             {'kind': 'send', 'message_id': 'm:1', 'text': 'Glad it helped. One more detail: the cache is warm.'},
@@ -354,7 +359,7 @@ class ServiceRoutingTests(unittest.TestCase):
             task = next(t for t in self.service._all('tasks') if t['status'] == 'queued')
         text = self.run_in_gateway(task, [
             {'kind': 'send', 'message_id': 'c:1', 'text': 'Thinking about the reaction.', 'interim': True},
-            {'kind': 'delta', 'stream': 1, 'text': '[SILENT]'}, {'kind': 'done', 'outcome': 'success'}])
+            {'kind': 'delta', 'stream': 1, 'text': '[SILEN'}, {'kind': 'done', 'outcome': 'success'}])
         self.assertIn('The person changed an emoji reaction on the quoted message.', text)
         self.assertIn('The build passed.', text)
         self.assertTrue(text.endswith('return exactly [SILENT]. Do not explain the silence.'))
