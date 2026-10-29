@@ -256,9 +256,12 @@ class DecisionInbox:
                           else {'error': DISMISSED_RESPONSE + ' The tool did not run.'})
                 record.update(state='completed', completed_at=now(), result=encoded(dict(result, resolution='dismissed')))
                 self._put('native_receipts', record)
+        # Another required card keeps the task open while it is pending, and while its own Undo window is open:
+        # Undo can still return it to pending. Its own window end then closes the task.
         if task['status'] != 'needs_you' or any(
-                d['id'] != decision['id'] and d['task_id'] == task['id'] and d['status'] == 'pending'
-                and d.get('inbox_kind') != 'proposal' for d in self._all('decisions')):
+                d['id'] != decision['id'] and d['task_id'] == task['id'] and d.get('inbox_kind') != 'proposal'
+                and (d['status'] == 'pending' or (d['status'] == 'dismissed' and d.get('inbox_undo_until')))
+                for d in self._all('decisions')):
             return
         task.update(status='completed', summary=DISMISSED_OUTCOME, updated_at=now())
         self._finish_assignment_turn(task, DISMISSED_RESPONSE, 'completed')
