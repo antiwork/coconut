@@ -151,9 +151,10 @@ class NativeKanbanTests(unittest.TestCase):
         unrelated = self.write('/v1/bots/' + recipient['id'] + '/messages',
                                {'text': 'Independent fixture work', 'mode': 'queue'})
         self.settle(lambda: unrelated['id'] in self.provider.started)
+        # A dismissal saved before this release closes as a dismissal. It records no answer and rejects nothing.
         saved = self.service._get('decisions', decision['id'])
-        self.assertEqual([answer['choice'] for answer in saved['_answers']], ['reject'])
-        self.assertEqual(saved['decided_by'], 'synthetic-phone')
+        self.assertEqual((saved['status'], saved['_answers'], saved['decided_at']), ('dismissed', [], None))
+        self.assertFalse(saved.get('inbox_undo_until'))
         self.assertFalse(saved.get('_inbox_reject_device'))
         self.assertFalse(saved.get('_source_recheck'))
 

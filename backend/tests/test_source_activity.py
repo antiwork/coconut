@@ -52,7 +52,7 @@ class ThreadTracker(GitHubPRTracker):
         super().__init__(token='test-token')
         self.service = service
         self.threads = {42: Thread(), 43: Thread(pull=True)}
-        self.paths, self.deadlines, self.lock_free = [], [], []
+        self.paths, self.deadlines, self.lock_free, self.read_started = [], [], [], []
         self.offline = False
         self.delay = 0
         self.before_list = None
@@ -62,6 +62,7 @@ class ThreadTracker(GitHubPRTracker):
         self.threads[42].add(*comments)
 
     def _request(self, path, deadline, cache=True):
+        self.read_started.append(time.monotonic())
         self.cached[path] = cache
         if self.service is not None:
             acquired = threading.Event()
@@ -138,6 +139,7 @@ class SourceActivityTests(unittest.TestCase):
         self.tracker.paths.clear()
         self.tracker.deadlines.clear()
         self.tracker.lock_free.clear()
+        self.tracker.read_started.clear()
         return decision
 
     def turn(self, render=True, error=None):
@@ -252,7 +254,12 @@ class SourceActivityTests(unittest.TestCase):
         started = time.monotonic()
         with patch.object(decision_sources, 'SOURCE_READ_SECONDS', 0.3):
             task, prompt = self.turn()
-        self.assertTrue(all(deadline <= started + 0.35 for deadline in self.tracker.deadlines))
+        # Every read gets the one deadline that the turn set. A budget for each read would give each its own.
+        # The deadline is the budget after a time between the start and the first read, so no wall-clock margin applies.
+        self.assertGreaterEqual(len(self.tracker.deadlines), 2)
+        self.assertEqual(len(set(self.tracker.deadlines)), 1)
+        self.assertLessEqual(self.tracker.deadlines[0], min(self.tracker.read_started) + 0.3)
+        self.assertGreaterEqual(self.tracker.deadlines[0], started + 0.3)
         self.assertEqual(task['_source_activity'][0]['new_activity'][0]['body'], 'Scale requirement.')
         self.assertEqual(task['_source_activity'][1], dict(url=PR_URL, read_failed=True))
         self.assertIn('Coconut could not read these GitHub sources: ' + PR_URL, prompt)
