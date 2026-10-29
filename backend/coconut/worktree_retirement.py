@@ -599,9 +599,9 @@ class WorktreeRetirement:
             keep = {bot['id'] for bot in self._all('bots')} | set(getattr(self, '_kanban_claim_outcomes', ()))
             keep |= {execution_key(task) for task in self._all('tasks')
                      if task.get('status') in ACTIVE_STATUSES or task['id'] in self.running}
-            for _, folder in sorted(candidates)[:EMPTY_SCRATCH_BATCH]:
-                if folder.name in keep:
-                    continue
+            # Skip the kept folders before the batch, so that they do not fill it on every pass.
+            eligible = [(age, folder) for age, folder in candidates if folder.name not in keep]
+            for _, folder in sorted(eligible)[:EMPTY_SCRATCH_BATCH]:
                 try:
                     folder.rmdir()
                 except OSError:

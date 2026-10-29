@@ -3341,6 +3341,14 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.assertFalse(idle.exists())
         for kept in (fresh, full, own, archive, named, busy):
             self.assertTrue(kept.exists(), kept)
+        # An older kept folder does not take the place of a folder that can go.
+        os.utime(busy, (old - 86400, old - 86400))
+        idle = folder(str(uuid4()))
+        with patch.object(retirement, 'changed_at', lambda info: info.st_mtime), \
+                patch.object(retirement, 'EMPTY_SCRATCH_BATCH', 1):
+            self.service._remove_empty_scratch(self.workspaces, saved, time.time())
+        self.assertFalse(idle.exists())
+        self.assertTrue(busy.exists())
         # The retirement pass runs the rule.
         idle = folder(str(uuid4()))
         with patch.object(retirement, 'changed_at', lambda info: info.st_mtime):
