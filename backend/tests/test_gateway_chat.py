@@ -40,17 +40,45 @@ class RoutingRuleTests(unittest.TestCase):
         plain = {'_chat_session': True, 'attachments': [], '_pending_decisions': [], '_tracked_pr_observations': []}
         self.assertTrue(plain_chat_turn(plain))
         self.assertFalse(plain_chat_turn(dict(plain, _chat_session=False)))
-        for key in ('attachments', '_pending_decisions', '_native_job', '_work_context_id', '_bot_messages',
-                    '_reaction_feedback', '_source_activity', '_direct_reply_message_id'):
+        for key in ('_pending_decisions', '_native_job', '_work_context_id', '_bot_messages',
+                    '_source_activity', '_direct_reply_message_id'):
             with self.subTest(key=key):
                 self.assertFalse(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
+        # Attachments and reactions go to the gateway as text of the turn.
+        for key in ('attachments', '_reaction_feedback'):
+            with self.subTest(key=key):
+                self.assertTrue(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
+
+    def test_silence_is_a_marker_as_the_whole_reply_or_its_first_or_last_line(self):
+        from coconut.silent_responses import is_silence_reply
+        for text in ('', '  ', '[SILENT]', 'no_reply', '[SILENT]\nNothing to add.', 'Noted.\nSILENT'):
+            with self.subTest(text=text):
+                self.assertTrue(is_silence_reply(text))
+        for text in ('Thanks!', 'I stay [SILENT] here.', 'First.\n[SILENT]\nLast.'):
+            with self.subTest(text=text):
+                self.assertFalse(is_silence_reply(text))
 
 
 class TurnEventTests(unittest.TestCase):
-    def translate(self, *events):
+    def translate(self, *events, silent=False):
         emitted = []
-        turn = TurnEvents(lambda kind, data: emitted.append((kind, data)))
+        turn = TurnEvents(lambda kind, data: emitted.append((kind, data)), silent=silent)
         return emitted, [turn.apply(event) for event in events]
+
+    def test_a_silent_turn_shows_no_commentary_and_a_silence_marker_ends_it_without_a_message(self):
+        emitted, _ = self.translate(
+            {'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True},
+            {'kind': 'delta', 'stream': 1, 'text': '[SILENT]'},
+            {'kind': 'done', 'outcome': 'success'}, silent=True)
+        self.assertEqual(emitted, [
+            ('phase', {'phase': 'writing'}), ('text_delta', {'text': '[SILENT]'}),
+            ('text_delta', {'text': '', 'replace': True}),
+            ('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})])
+        # A useful reply of a silent turn is an ordinary reply.
+        emitted, _ = self.translate(
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'Glad it helped. One more detail: the cache is warm.'},
+            {'kind': 'done', 'outcome': 'success'}, silent=True)
+        self.assertEqual(emitted[-1], ('completed', {'summary': 'Complete.'}))
 
     def test_segments_become_interim_messages_and_the_last_one_is_the_reply(self):
         emitted, done = self.translate(
@@ -280,13 +308,73 @@ class ServiceRoutingTests(unittest.TestCase):
 
     def test_a_turn_with_coconut_inputs_still_runs_in_the_worker(self):
         Adapter(self.service.gateway_bridge, self.home, [])
-        task = self.send('A reaction is Coconut context.')
+        task = self.send('A GitHub audit is Coconut context.')
         with self.service.transaction():
             stored = self.read('tasks', task['id'])
-            stored['_reaction_feedback'] = [{'emoji': '👍'}]
+            stored['_source_audit_prompt'] = 'Check the linked issue.'
             self.service._put('tasks', stored)
         self.service._run_task(task['id'])
         self.assertEqual(len(self.provider.starts), 1)
+
+    def run_in_gateway(self, task, script):
+        adapter = Adapter(self.service.gateway_bridge, self.home, script)
+        adapter.start()
+        self.service._run_task(task['id'])
+        adapter.join(5)
+        self.assertEqual(self.provider.starts, [])
+        return adapter.turns[0]['text']
+
+    def test_an_attached_file_goes_to_the_gateway_as_text_of_the_turn(self):
+        import base64
+        notes = self.write('POST', '/v1/attachments', {'bot_id': self.bot['id'], 'filename': 'notes.txt',
+                                                       'content_base64': base64.b64encode(b'The cache is warm.').decode()})
+        image = self.write('POST', '/v1/attachments', {'bot_id': self.bot['id'], 'filename': 'photo.png',
+                                                       'content_base64': base64.b64encode(b'\x89PNG\xff\x00').decode()})
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages',
+                          {'text': 'Read these.', 'attachment_ids': [notes['id'], image['id']]})
+        text = self.run_in_gateway(task, [{'kind': 'send', 'message_id': 'm:1', 'text': 'Read.'},
+                                          {'kind': 'done', 'outcome': 'success'}])
+        self.assertTrue(text.startswith('Read these.'))
+        self.assertIn('Attached file: notes.txt\n<attachment_content>\nThe cache is warm.\n</attachment_content>', text)
+        self.assertIn('Attached file: photo.png\nThis attachment is binary.', text)
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+
+    def bot_reply(self, text):
+        first = self.send('Hello.')
+        self.run_in_gateway(first, [{'kind': 'send', 'message_id': 'm:1', 'text': text},
+                                    {'kind': 'done', 'outcome': 'success'}])
+        self.provider.starts.clear()
+        with self.service.lock:
+            return next(m for m in self.service._task_messages(first['id']) if m['role'] == 'assistant')
+
+    def test_a_reaction_turn_runs_in_the_gateway_and_may_end_in_silence(self):
+        reply = self.bot_reply('The build passed.')
+        self.write('POST', f'/v1/messages/{reply["id"]}/reactions', {'emoji': '👍', 'active': True})
+        with self.service.lock:
+            task = next(t for t in self.service._all('tasks') if t['status'] == 'queued')
+        text = self.run_in_gateway(task, [
+            {'kind': 'send', 'message_id': 'c:1', 'text': 'Thinking about the reaction.', 'interim': True},
+            {'kind': 'delta', 'stream': 1, 'text': '[SILENT]'}, {'kind': 'done', 'outcome': 'success'}])
+        self.assertIn('The person changed an emoji reaction on the quoted message.', text)
+        self.assertIn('The build passed.', text)
+        self.assertTrue(text.endswith('return exactly [SILENT]. Do not explain the silence.'))
+        stored = self.read('tasks', task['id'])
+        self.assertEqual((stored['status'], stored['_silent_completion']), ('completed', True))
+        self.assertEqual(self.replies(stored), [])
+
+    def test_earlier_emoji_feedback_goes_with_the_next_turn_and_is_then_done(self):
+        reply = self.bot_reply('Use the blue one.')
+        # A passive reaction starts no turn. It waits for the next turn of the bot.
+        self.write('POST', f'/v1/messages/{reply["id"]}/reactions', {'emoji': '😄', 'active': True})
+        self.assertTrue(self.read('bots', self.bot['id']).get('_pending_reactions'))
+        task = self.send('And the size?')
+        text = self.run_in_gateway(task, [{'kind': 'send', 'message_id': 'm:1', 'text': 'Large.'},
+                                          {'kind': 'done', 'outcome': 'success'}])
+        self.assertTrue(text.startswith('And the size?'))
+        self.assertIn('Earlier emoji feedback, supplied with this work turn', text)
+        self.assertIn('"excerpt": "Use the blue one."', text)
+        self.assertFalse(self.read('bots', self.bot['id']).get('_pending_reactions'))
+        self.assertEqual(self.replies(task), [('Large.', False, False)])
 
     def test_a_quoted_reply_carries_its_quote_and_the_turn_names_the_native_conversation(self):
         first = self.send('First.')

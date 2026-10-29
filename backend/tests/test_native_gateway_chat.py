@@ -30,6 +30,10 @@ START = 'Start the background job.'
 STARTED = 'The job runs in the background.'
 OUTPUT = 'background-job-output'
 FINISHED = 'The background job finished.'
+# An attached text file, and the reply for a turn that reads it.
+ATTACHED = 'native-attachment-marker'
+READ = 'I read the attached notes.'
+REACTION = 'changed an emoji reaction'
 
 
 def answer(request):
@@ -40,6 +44,10 @@ def answer(request):
     last = json.dumps(messages[users[-1]].get('content')) if users else ''
     if OUTPUT in last:
         return dict(role='assistant', content=FINISHED)
+    if ATTACHED in last:
+        return dict(role='assistant', content=READ)
+    if REACTION in last:
+        return dict(role='assistant', content='[SILENT]')
     if START in last and request.get('tools'):
         if any(message.get('role') == 'tool' for message in messages[users[-1]:]):
             return dict(role='assistant', content=STARTED)
@@ -174,6 +182,28 @@ class NativeGatewayChatTests(unittest.TestCase):
             tools = json.dumps(turn[0].get('tools') or [])
             for name in ('coconut_ask', 'coconut_track_pr', 'coconut_message_bot'):
                 self.assertIn(name, tools, diagnostics())
+
+            # An attached text file goes to the gateway as text of the turn.
+            import base64
+            notes = service.mutate('POST', '/v1/attachments', {
+                'bot_id': bot['id'], 'filename': 'notes.txt',
+                'content_base64': base64.b64encode(ATTACHED.encode()).decode()}, str(uuid4()), 'phone')
+            task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages',
+                                  {'text': 'Read the notes.', 'attachment_ids': [notes['id']]}, str(uuid4()), 'phone')
+            service._run_task(task['id'])
+            replies = [m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
+            self.assertEqual((service._get('tasks', task['id'])['status'], replies), ('completed', [READ]), diagnostics())
+            # A reaction to a reply is a turn in the gateway, and the bot may stay silent.
+            reply = next(m for m in service._task_messages(task['id']) if m['role'] == 'assistant')
+            service.mutate('POST', f'/v1/messages/{reply["id"]}/reactions', {'emoji': '👍', 'active': True},
+                           str(uuid4()), 'phone')
+            reaction = next(t for t in service._all('tasks') if t['status'] == 'queued')
+            service._run_task(reaction['id'])
+            stored = service._get('tasks', reaction['id'])
+            self.assertEqual((stored['status'], stored.get('_silent_completion')), ('completed', True), diagnostics())
+            self.assertFalse([m for m in service._task_messages(reaction['id']) if m['role'] == 'assistant'
+                              and m['kind'] == 'text' and not m.get('_hidden')], diagnostics())
+            self.assertTrue(any(REACTION in json.dumps(request['messages']) for request in Model.requests), diagnostics())
 
             # A background process of a chat turn. Hermes runs its own turn for the completion, outside a Coconut
             # turn, and its reply reaches the bot's chat as a message of the bot.

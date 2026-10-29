@@ -126,7 +126,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 1. Phase 2: plain chat turns run in the gateway, behind a setting.
 2. Phase 3: Coconut tools and cards become tools of the `coconut` plugin, and both runtimes share one conversation.
 3. Phase 4: routines run in the gateway as Coconut turns, and each profile keeps its model keys the Hermes way. Kanban stays with Coconut for now.
-4. Phase 5: the gateway is always on (this version). Then the other turn types move to the gateway, one group at a time, and Coconut deletes the worker code that served them.
+4. Phase 5: the gateway is always on. Then the other turn types move to the gateway, one group at a time, and Coconut deletes the worker code that served them. Group 1, attachments and reactions, is this version.
 
 ### Rules for the phases
 
@@ -202,8 +202,15 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - When no adapter of the bot's profile is connected, the turn waits, at most 5 minutes (`GATEWAY_WAIT_SECONDS`). The task stays working, and its summary says that it waits for the Hermes gateway. `GET /v1/setup` shows the state of the gateway, the reason and the connected profiles. When the wait ends without an adapter, the task fails with a reason that names the gateway log.
 - While the supervised gateway starts again, the chat turns wait. The service starts it again 30 seconds after an exit, and the adapters connect after the gateway restored its sessions. The waiting turns then run. A turn that the gateway ran when it stopped fails, because the adapter stops listing it.
 - The gateway fires the routines of each profile that it serves (phase 4). Coconut fires the routines of a profile that no gateway serves: a profile that the person parked in Hermes (`gateway.parked`), or any profile while the gateway starts again. Coconut does not remove a parked file, because that is the person's setting. `GET /v1/setup` lists these profiles in `gateway.unserved_profiles`. A chat turn of a parked profile fails at once and says why.
-- Turns of the other types still run in the worker: attachments, open cards, reactions, work items and claims, bot exchanges and returns, GitHub source activity, PR reviews, bot creation and deletion confirmations, and recovery and withdrawal turns. The next phase 5 changes move them, one group at a time.
+- Turns of the other types still run in the worker: open cards, work items and claims, bot exchanges and returns, GitHub source activity, PR reviews, bot creation and deletion confirmations, and recovery and withdrawal turns. The next phase 5 changes move them, one group at a time.
 - A service without a Hermes home (fixture mode and tests) has no gateway. Its provider runs every turn.
+
+### Phase 5, group 1: attachments and reactions
+
+- A chat turn with attached files, a reaction, or earlier emoji feedback goes to the gateway. The service writes the same context into the text of the turn as the worker writes into its prompt (`gateway_chat.gateway_turn_text`, with the shared `native_conversation.attachment_context` and `reaction_feedback_context`). The text of a text file goes into the turn, up to 128000 characters. A binary file, such as an image, is named, and the bot is told that it cannot read it, as in the worker.
+- A reaction turn may stay silent. The turn asks for `[SILENT]` when no useful reply exists. Hermes drops a reply that is only a marker, but the plugin streams the text first. So the service takes back the streamed marker, shows no commentary, and ends the task as a silent completion, as the worker does (`TurnEvents` with `silent`, `silent_responses.is_silence_reply`).
+- The service marks earlier emoji feedback as done after the turn, for both runtimes.
+- The worker still builds the same context for a turn that also has an input of a later group, for example an attachment with an open card.
 
 ### Kanban: not yet
 
