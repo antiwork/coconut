@@ -56,6 +56,13 @@ BOT_WORKSPACE_STALE_SECONDS = 14 * 24 * 60 * 60
 BOT_WORKSPACE_LOW_DISK_STALE_SECONDS = 3 * 24 * 60 * 60
 # The folders of bots/<id> that the stale entry cleanup reads.
 BOT_FILE_FOLDERS = ('workspace', 'tmp')
+# bots/<id>/tmp holds only temporary files, so its entries go after this shorter wait. The shorter wait applies only
+# while no turn of the bot runs. During a turn, the tmp folder gets the wait of the workspace folder.
+BOT_TMP_STALE_SECONDS = 3 * 24 * 60 * 60
+# An empty scratch workspace that nothing changed for this long goes. A turn creates its scratch workspace again.
+EMPTY_SCRATCH_SECONDS = 24 * 60 * 60
+# One pass deletes at most this many empty scratch workspaces, so it holds the service lock only briefly.
+EMPTY_SCRATCH_BATCH = 2000
 # A scratch workspace is named by its outcome. execution_key gives a task id, a session id, or a bot id.
 SCRATCH_NAME = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|t_[0-9a-f]{8}')
 # A pull request in one of these states holds no more work for its outcome.
@@ -556,6 +563,72 @@ class WorktreeRetirement:
                 with contextlib.suppress(*work_workspace.GIT_ERRORS):
                     work_workspace.git(repository, 'worktree', 'prune', timeout=work_workspace.CHECKOUT_SECONDS)
 
+    def _remove_empty_scratch(self, root, saved, current):
+        """Delete the empty scratch workspaces (workspaces/<outcome>) that nothing changed for EMPTY_SCRATCH_SECONDS.
+
+        _clear_idle_scratch leaves an empty folder, and nothing removed it. A folder of an outcome with an active task
+        or a claim stays, and so do a bot's own folder and a folder that a binding names. A turn creates its scratch
+        workspace again (providers.py). rmdir deletes only an empty folder, so a file written since the check keeps it.
+        """
+        # A binding path and each folder above it stay. Compare both spellings, because a path can hold a link.
+        named = set()
+        for binding in saved.values():
+            if isinstance(binding, dict) and isinstance(binding.get('path'), str):
+                for path in {Path(binding['path']), Path(os.path.realpath(binding['path']))}:
+                    named.update((path, *path.parents))
+        real = Path(os.path.realpath(root))
+        candidates = []
+        for folder in root.iterdir():
+            if not SCRATCH_NAME.fullmatch(folder.name) or folder in named or real / folder.name in named:
+                continue
+            try:
+                info = folder.lstat()
+                if (not stat.S_ISDIR(info.st_mode) or current - changed_at(info) < EMPTY_SCRATCH_SECONDS
+                        or any(folder.iterdir())):
+                    continue
+            except OSError:
+                continue
+            candidates.append((changed_at(info), folder))
+        if not candidates or self.stopping.is_set() or self.restart_pending:
+            return
+        if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
+            return
+        removed = 0
+        try:
+            # A turn starts under this lock, so no outcome becomes active while the folders go.
+            keep = {bot['id'] for bot in self._all('bots')} | set(getattr(self, '_kanban_claim_outcomes', ()))
+            keep |= {execution_key(task) for task in self._all('tasks')
+                     if task.get('status') in ACTIVE_STATUSES or task['id'] in self.running}
+            for _, folder in sorted(candidates)[:EMPTY_SCRATCH_BATCH]:
+                if folder.name in keep:
+                    continue
+                try:
+                    folder.rmdir()
+                except OSError:
+                    continue
+                removed += 1
+        finally:
+            self.lock.release()
+        if removed:
+            logging.getLogger(__name__).warning('Coconut removed %s empty scratch workspaces.', removed)
+
+    def _bots_with_turns(self):
+        """Return the IDs of the bots with a running turn or a claim, or None when Coconut cannot tell."""
+        from .service import ServiceError
+        if not self.lock.acquire(timeout=SERVICE_WAIT_SECONDS):
+            return None
+        try:
+            busy = set(getattr(self, '_kanban_claim_bots', ()))
+            # A task in self.running counts as running, as in _finished_outcomes. The other two keep ended threads.
+            live = [('tasks', identity) for identity in self.running]
+            for table, workers in (('contexts', self.context_threads), ('tasks', getattr(self, 'gateway_cron_threads', {}))):
+                live += [(table, identity) for identity, worker in list(workers.items()) if worker.is_alive()]
+            return busy | {self._get(table, identity).get('bot_id') for table, identity in live}
+        except ServiceError:
+            return None
+        finally:
+            self.lock.release()
+
     def _refresh_native_snapshot(self):
         """Read the native board again. Return False when it cannot be read. Call it without the service lock."""
         call = getattr(self.kanban, 'call', None)
@@ -581,6 +654,7 @@ class WorktreeRetirement:
         other entries: Coconut judges them as if they were at the level of the folder. Without this rule, one protected
         file kept every old entry next to it, for example weeks of snapshots beside a bindings file. A work-source
         reader keeps its whole entry, because it can read the files next to it.
+        An entry of bots/<id>/tmp goes after BOT_TMP_STALE_SECONDS instead, while the bot runs no turn.
         A bot with work in progress is cleaned too: it is busy all day on a busy install, and a rule that skips it would never
         free its disk. A turn can read an old entry without opening it during the pass, and a read changes no time.
         The age, the open-file check, and the Git work check are the protection. Coconut moves a folder to a
@@ -626,15 +700,19 @@ class WorktreeRetirement:
             logging.getLogger(__name__).warning('Skipping bot workspace cleanup: work sources could not be read (%s).',
                                                type(error).__name__)
             return
-        found = []
+        found, cutoffs = [], {}
+        # A bot without a running turn loses its old temporary files sooner. A failed read gives every bot the long wait.
+        busy = self._bots_with_turns()
+        tmp_before = max(stale_before, current - BOT_TMP_STALE_SECONDS)
         for bot in sorted(place for name in BOT_FILE_FOLDERS for place in (self.root / 'bots').glob('*/' + name)):
             if bot.is_symlink() or not bot.is_dir():
                 continue
+            before = tmp_before if bot.name == 'tmp' and busy is not None and bot.parent.name not in busy else stale_before
             # A folder that Coconut cannot read, or that goes while it reads, must not stop the pass for the other bots.
             try:
                 # A stop between a move and its deletion leaves trash. Empty it first, in the workspace and one level down.
                 for place in (bot, *(child for child in bot.iterdir() if child.is_dir() and not child.is_symlink())):
-                    settle_checking(place, stale_before)
+                    settle_checking(place, before)
                     empty_moved(place)
                 # Each folder to read, and whether a fresh folder in it is read too. Only the top level, and a folder
                 # that is open because it holds a protected path, go one level down into a fresh folder.
@@ -643,7 +721,7 @@ class WorktreeRetirement:
                     parent, deeper = pending.pop()
                     if parent != bot and parent.parent != bot:
                         # The loop above settled the top level. A deeper folder gets a trash folder too.
-                        settle_checking(parent, stale_before)
+                        settle_checking(parent, before)
                         empty_moved(parent)
                     for entry in sorted(parent.iterdir()):
                         # .stale-kept holds the entries that put_back could not return. They age out like any other entry.
@@ -656,11 +734,13 @@ class WorktreeRetirement:
                                 pending.append((entry, deeper))
                             continue
                         try:
-                            state = stale_tree(entry, stale_before)
+                            state = stale_tree(entry, before)
                         except OSError:
                             continue
                         if state is not None:
                             found.append((entry, *state))
+                            if before != stale_before:
+                                cutoffs[entry] = (before, bot.parent.name)
                         elif deeper and entry.is_dir() and not is_repository(entry):
                             pending.append((entry, False))
             except OSError as error:
@@ -694,7 +774,13 @@ class WorktreeRetirement:
                 try:
                     # A turn starts under this lock. Check the top of the entry again, and move it before the lock goes.
                     # The full walk ran before, and it can take seconds, so the walk of the moved entry comes after the lock.
-                    if top_changed(entry, stale_before):
+                    before, owner = cutoffs.get(entry, (stale_before, None))
+                    if owner is not None:
+                        # The short tmp wait needs a bot without a running turn. Check again, because a turn can start.
+                        now_busy = self._bots_with_turns()
+                        if now_busy is None or owner in now_busy:
+                            continue
+                    if top_changed(entry, before):
                         continue
                     if entry.is_dir() and not entry.is_symlink():
                         trash = entry.parent / work_workspace.SCRATCH_TRASH
@@ -714,7 +800,7 @@ class WorktreeRetirement:
                     # A worker that does not hold the service lock can write deep in the entry after the first walk.
                     # Nothing new starts in the moved entry, so one more full walk sees every change that happened.
                     try:
-                        unchanged = stale_tree(target, stale_before, skip_root=True) is not None
+                        unchanged = stale_tree(target, before, skip_root=True) is not None
                     except OSError:
                         unchanged = False
                     if not unchanged:
@@ -865,6 +951,10 @@ class WorktreeRetirement:
             self._clear_stale_bot_workspaces(current, saved, low_disk)
         except (ValueError, OSError, subprocess.TimeoutExpired, sqlite3.Error) as error:
             logging.getLogger(__name__).warning('Coconut could not clear stale bot workspaces: %s', error)
+        try:
+            self._remove_empty_scratch(root, saved, current)
+        except (ValueError, OSError, sqlite3.Error) as error:
+            logging.getLogger(__name__).warning('Coconut could not remove empty scratch workspaces: %s', error)
         if not saved:
             return []
         for repository in repositories(saved):

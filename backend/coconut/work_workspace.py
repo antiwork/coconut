@@ -1852,7 +1852,8 @@ def sweep_temporary(root):
 
     Run before any retirement starts. Coconut never restores a nested or a discard archive: a discarded worktree
     comes back as a new checkout of its branch. Each is kept NESTED_ARCHIVE_DAYS, within NESTED_ARCHIVE_LIMIT_BYTES
-    for each folder, for a person to recover work.
+    for each folder, for a person to recover work. A retirement archive in archive/ that no binding names follows the
+    same rules. A retirement archive that a binding names stays, because a restore needs it.
     """
     for folder in (Path(root) / 'archive', Path(root) / 'archive' / 'nested', Path(root) / 'archive' / 'done'):
         for temporary in folder.glob('.*.tar.gz.tmp'):
@@ -1866,6 +1867,10 @@ def sweep_temporary(root):
         except OSError as error:
             logging.getLogger(__name__).warning('Coconut could not empty %s: %s', trash, error)
     trim_nested_archives(root)
+    named = named_retirement_archives(root)
+    # Without the registry, Coconut cannot tell which archive a restore needs. Then all of them stay.
+    if named is not None:
+        trim_nested_archives(root, folder='.', keep=named)
     held = Path(root) / 'archive' / HELD
     if held.is_dir() and not held.is_symlink():
         for folder in held.iterdir():
@@ -1923,14 +1928,39 @@ def named_discard_archives(root):
     return named
 
 
+def named_retirement_archives(root):
+    """Return the resolved paths of the archives that a binding names, or None when the registry cannot be read.
+
+    A retired, a failed, an interrupted, and a handed-off worktree each name their archive.
+    """
+    try:
+        saved = json.loads((Path(root) / 'worktrees.json').read_text())
+    except FileNotFoundError:
+        return set()
+    except (OSError, ValueError):
+        return None
+    if not isinstance(saved, dict):
+        return None
+    named = set()
+    for binding in saved.values():
+        if not isinstance(binding, dict):
+            continue
+        for key in ('retired', 'retire_failed', ORPHAN_REMOVAL, 'handoff'):
+            record = binding.get(key)
+            if isinstance(record, dict) and isinstance(record.get('archive'), str) and record['archive']:
+                named.add(Path(record['archive']).resolve())
+    return named
+
+
 def trim_nested_archives(root, keep=(), *, folder='nested'):
     """Delete the archives in archive/<folder> older than NESTED_ARCHIVE_DAYS, then the oldest over NESTED_ARCHIVE_LIMIT_BYTES.
 
     The archives in `keep` and those younger than NESTED_ARCHIVE_KEEP_SECONDS stay, and count toward the limit.
+    `keep` can name an archive by its resolved path. The folder '.' is archive/ itself.
     """
     oldest, kept, total = time.time() - NESTED_ARCHIVE_DAYS * 86400, [], 0
     for archive in (Path(root) / 'archive' / folder).glob('*.tar.gz'):
-        if archive in keep:
+        if archive in keep or archive.resolve() in keep:
             with contextlib.suppress(FileNotFoundError):
                 total += archive.stat().st_size
             continue

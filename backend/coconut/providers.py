@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -585,6 +586,10 @@ class HermesProvider(FixtureProvider):
             if hint and retired_path(root, execution_key(task), hint):
                 hint = None
             request['workspace'] = str(workspace if explicit else hint or workspace)
+            if Path(request['workspace']) == root / execution_key(task):
+                # Retirement removes an empty scratch workspace after a day. The turn needs it as its working directory.
+                with contextlib.suppress(OSError):
+                    (root / execution_key(task)).mkdir(mode=0o700, exist_ok=True)
         with self._lock:
             prepared = self._prepared.pop(task.get('_kanban_external_id'), None)
             if self._closed or task_id in self._cancelled or task.get('_context_id') in self._cancelled_contexts:
