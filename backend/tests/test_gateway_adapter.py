@@ -297,7 +297,7 @@ class GatewayAdapterTests(unittest.TestCase):
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': '/new is plain text here'})
         self.service._run_task(task['id'])
         event = self.adapter.events[0]
-        self.assertEqual((event.text, event.source.chat_id, event.allow_gateway_control),
+        self.assertEqual((event.text.split('\n')[0], event.source.chat_id, event.allow_gateway_control),
                          ('/new is plain text here', self.bot['id'], False))
         self.assertEqual(self.provider.starts, [])
         self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
@@ -742,20 +742,25 @@ class GatewayAdapterTests(unittest.TestCase):
         self.plugin.register(Context())
         self.assertEqual([name for name, _ in tool_names], ['coconut_ask', 'coconut_suggest', 'coconut_resolve_reply',
                                                              'coconut_wait', 'coconut_correct_withdrawal',
+                                                             'coconut_create_bot', 'coconut_delete_bot',
                                                              'coconut_track_pr', 'coconut_message_bot'])
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
                                       'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
                                       'pre_tool_call', 'post_tool_call'])
         # The card rules of the worker go into each Coconut session, in parts that Hermes allows.
         from coconut.card_tools import DECISION_INSTRUCTIONS
-        self.assertEqual(sorted(sections), ['coconut.cards.0', 'coconut.cards.1', 'coconut.cards.2'])
+        self.assertEqual(sorted(sections), ['coconut.cards.0', 'coconut.cards.1', 'coconut.cards.2', 'coconut.rules.0'])
         self.assertTrue(all(fits and text and other == '' for text, other, fits in sections.values()))
-        self.assertEqual(' '.join(' '.join(text for text, _, _ in sections.values()).split()),
+        self.assertEqual(' '.join(' '.join(sections[f'coconut.cards.{n}'][0] for n in range(3)).split()),
                          ' '.join(DECISION_INSTRUCTIONS.split()))
+        # The rules of a merge card and of bot changes, as the worker gives them.
+        from coconut.card_tools import BOT_CREATION_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
+        self.assertIn(PR_MERGE_INSTRUCTIONS[:80], sections['coconut.rules.0'][0])
+        self.assertIn(BOT_CREATION_INSTRUCTIONS.strip()[:80], sections['coconut.rules.0'][0])
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
-        self.assertEqual(len(tool_names), 7)
+        self.assertEqual(len(tool_names), 9)
         # A gateway turn waits for its processes with the process tool of Hermes, not with coconut_wait.
         self.assertNotIn('process_id', schemas['coconut_wait']['parameters']['properties'])
         options = calls[0]

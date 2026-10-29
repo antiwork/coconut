@@ -1784,6 +1784,12 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         owners = (previous, self._assignment(previous), tasks.get(execution_key(previous), previous))
         native = any(owner.get(key) for owner in owners
                      for key in ('_chat_session', '_native_outcome_id', '_native_job', 'routine_id'))
+        if (self.gateway_enabled() and previous.get('_chat_session') and not previous.get('_execution_session_id')
+                and previous['status'] == 'failed' and previous['bot_id'] == target_id
+                and not any(owner.get(key) for owner in owners for key in ('_native_outcome_id', '_native_job', 'routine_id'))):
+            # A failed turn of the bot's gateway conversation has no work session to continue. The message joins
+            # that conversation as a new turn (join_conversation), which has the earlier turns in its history.
+            return None
         if (previous['status'] != 'failed' or native
                 or previous['bot_id'] != target_id
                 or previous['session_id'] != self._get('bots', target_id)['session_id']

@@ -41,14 +41,15 @@ class RoutingRuleTests(unittest.TestCase):
         self.assertTrue(plain_chat_turn(plain))
         # A task outside the bot's conversation gets its own work session from the dispatchers, which only the worker has.
         self.assertFalse(plain_chat_turn(dict(plain, _chat_session=False)))
-        for key in ('_native_job', '_work_context_id', '_source_activity', '_technical_lane',
+        for key in ('_native_job', '_work_context_id', '_source_audit_prompt', '_technical_lane',
                     '_execution_session_id', '_work_status_only'):
             with self.subTest(key=key):
                 self.assertFalse(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
         # Attachments, reactions, pending cards and the work of the chat's assignment go to the gateway as text.
         for key in ('attachments', '_reaction_feedback', '_pending_decisions', '_work_todos', '_work_resume',
                     '_work_dependencies', '_self_recovery', '_withdrawal_corrections', '_direct_reply_message_id',
-                    '_bot_messages', '_is_return', '_handoff_assignment', '_outgoing_bot_messages'):
+                    '_bot_messages', '_is_return', '_handoff_assignment', '_outgoing_bot_messages',
+                    '_source_activity', '_pr_review', '_bot_creation_receipts', '_bot_deletion_receipts'):
             with self.subTest(key=key):
                 self.assertTrue(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
 
@@ -268,7 +269,9 @@ class ServiceRoutingTests(unittest.TestCase):
         adapter.join(5)
         self.assertEqual(self.provider.starts, [])
         self.assertEqual(adapter.turns[0]['chat_id'], self.bot['id'])
-        self.assertEqual(adapter.turns[0]['text'], 'How are you?')
+        # The message comes first. The context of the turn follows, as the worker gives it.
+        self.assertTrue(adapter.turns[0]['text'].startswith('How are you?\n'))
+        self.assertIn('Direct human messages eligible to request bot creation', adapter.turns[0]['text'])
         self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
         self.assertEqual(self.replies(task), [('Let me think.', False, True), ('I am well.', False, False)])
         self.assertEqual(self.read('bots', self.bot['id'])['last_message'], 'I am well.')
@@ -385,7 +388,7 @@ class ServiceRoutingTests(unittest.TestCase):
             {'kind': 'delta', 'stream': 1, 'text': '[SILEN'}, {'kind': 'done', 'outcome': 'success'}])
         self.assertIn('The person changed an emoji reaction on the quoted message.', text)
         self.assertIn('The build passed.', text)
-        self.assertTrue(text.endswith('return exactly [SILENT]. Do not explain the silence.'))
+        self.assertIn('return exactly [SILENT]. Do not explain the silence.', text)
         stored = self.read('tasks', task['id'])
         self.assertEqual((stored['status'], stored['_silent_completion']), ('completed', True))
         self.assertEqual(self.replies(stored), [])
@@ -420,7 +423,7 @@ class ServiceRoutingTests(unittest.TestCase):
         adapter.join(5)
         self.assertEqual(self.provider.starts, [])
         self.assertIn('Use the blue one.', adapter.turns[0]['text'])
-        self.assertTrue(adapter.turns[0]['text'].endswith('Do that instead.'))
+        self.assertIn('Do that instead.\n', adapter.turns[0]['text'])
         from coconut.native_conversation import session_root
         stored = self.read('tasks', task['id'])
         self.assertEqual(adapter.turns[0]['session_root'],
@@ -793,6 +796,95 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertNotIn('_execution_session_id', self.read('tasks', continuation['id']))
         self.assertTrue(text.startswith('Continue the original task using this recorded answer.'))
         self.assertEqual(self.read('tasks', continuation['id'])['status'], 'completed')
+
+    def test_a_pr_review_of_a_chat_task_runs_in_the_gateway_with_the_worker_text(self):
+        from coconut.pull_request_reviews import PR_REVIEW_INSTRUCTIONS
+        task = self.send('Open the PR for the docs fix.')
+        self.run_in_gateway(task, [{'kind': 'done', 'outcome': 'success'}])
+        review = {'url': 'https://github.com/example/shop/pull/7', 'pr_state': 'open', 'head_sha': 'abc123',
+                  'checks_state': 'success'}
+        with self.service.transaction():
+            stored = self.service._get('tasks', task['id'])
+            stored.update(status='queued', _pr_review=review)
+            self.service._put('tasks', stored)
+        text = self.run_in_gateway(self.read('tasks', task['id']), [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'The PR is ready to merge.'}, {'kind': 'done', 'outcome': 'success'}],
+            dispatch=True)
+        self.assertTrue(text.startswith(PR_REVIEW_INSTRUCTIONS))
+        self.assertIn('"head_sha": "abc123"', text)
+        self.assertIn('Original task context:', text)
+        self.assertEqual(self.provider.starts, [])
+
+    def test_github_source_activity_goes_into_the_turn_text(self):
+        from coconut.gateway_chat import work_notes
+        activity = [{'url': 'https://github.com/example/shop/issues/3', 'new_activity': [{'body': 'Please ship it.'}]},
+                    {'url': 'https://github.com/example/shop/issues/4', 'read_failed': True}]
+        text = work_notes(dict(operation='start', task={'_source_activity': activity,
+                                                        '_tracked_pr_observations': [{'url': 'pr-7', 'checks': 'green'}]}))
+        self.assertIn('Current GitHub source activity since the last revision Coconut recorded', text)
+        self.assertIn('Please ship it.', text)
+        self.assertIn('Coconut could not read these GitHub sources: https://github.com/example/shop/issues/4', text)
+        self.assertIn('Latest saved GitHub observations for these PRs', text)
+
+    def test_a_chat_creates_and_deletes_a_bot_with_the_tools_of_the_gateway(self):
+        task = self.send('Please create a bot named Scout that watches the build.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        text = adapter.turns[0]['text']
+        source = self.read('tasks', task['id'])['_turn_message_ids'][0]
+        # The turn lists the person's message that can ask for a bot, as the worker gives it.
+        self.assertIn('Direct human messages eligible to request bot creation', text)
+        self.assertIn(source, text)
+        turn = adapter.turns[0]['id']
+        created = self.service.gateway_tool({'turn_id': turn, 'tool': 'create_bot', 'arguments': {
+            'source_message_id': source, 'name': 'Scout', 'role': 'Watches the build.', 'instructions': 'Watch the build.'}})
+        self.assertEqual((created['status'], created['name']), ('created', 'Scout'))
+        with self.assertRaises(ServiceError):
+            self.service.gateway_tool({'turn_id': turn, 'tool': 'create_bot', 'arguments': {
+                'source_message_id': 'not-a-message', 'name': 'Other', 'role': 'x', 'instructions': ''}})
+        deleted = self.service.gateway_tool({'turn_id': turn, 'tool': 'delete_bot', 'arguments': {
+            'source_message_id': source, 'target_bot_id': created['bot_id'], 'expected_name': 'Scout'}})
+        self.assertEqual((deleted['status'], deleted['bot_id']), ('deleted', created['bot_id']))
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        self.assertEqual(self.provider.starts, [])
+
+    def test_a_coordinator_continues_a_failed_gateway_task_in_its_conversation(self):
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        other_home = self.service.profiles.home(other)
+        task = self.send('Ask Lin to check the logs.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        sent = self.service.gateway_tool({'turn_id': adapter.turns[0]['id'], 'tool': 'message_bot',
+                                          'arguments': {'bot': 'Lin', 'text': 'Please check the logs.'}})
+        self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        adapter = Adapter(self.service.gateway_bridge, other_home, [{'kind': 'done', 'outcome': 'failure'}])
+        adapter.start()
+        self.dispatch(sent['task_id'])
+        adapter.join(5)
+        self.service._drain_returns()
+        with self.service.lock:
+            returned = next(t for t in self.service._all('tasks') if t['bot_id'] == self.bot['id']
+                            and t.get('_is_return') and t['status'] == 'queued')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        self.service._dispatch_pending()
+        adapter.join(5)
+        # The coordinator names the failed task. It has no work session, so the message joins Lin's conversation.
+        retry = self.service.emit(returned['id'], 'bot_message', {
+            'target_bot_id': other['id'], 'text': 'Please continue the log check.', 'continuation_task_id': sent['task_id']})
+        self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        self.service.running[returned['id']].join(10)
+        stored = self.read('tasks', retry['task_id'])
+        self.assertEqual((stored['status'], stored.get('_chat_session'), stored['bot_id']), ('queued', True, other['id']))
+        self.assertNotIn('_execution_session_id', stored)
 
     def test_a_command_approval_of_a_worker_turn_resumes_in_the_worker(self):
         from coconut.gateway_chat import gateway_resume

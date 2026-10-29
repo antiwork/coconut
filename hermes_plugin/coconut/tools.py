@@ -99,5 +99,7 @@ def register(ctx):
                             (reply_schema(), _service_tool('resolve_reply')),
                             (module.GATEWAY_WAIT_SCHEMA, _service_tool('wait')),
                             (module.CORRECTION_SCHEMA, _service_tool('correct_withdrawal')),
+                            (module.BOT_CREATION_SCHEMA, _service_tool('create_bot')),
+                            (module.BOT_DELETION_SCHEMA, _service_tool('delete_bot')),
                             (TRACK_PR, _service_tool('track_pr')), (MESSAGE_BOT, _service_tool('message_bot'))):
         ctx.register_tool(name=schema['name'], toolset=TOOLSET, schema=schema, handler=handler, emoji='🥥')

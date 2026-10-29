@@ -3,21 +3,11 @@ import json
 import threading
 
 # How to review a PR, and when to merge without a card, is the person's workflow. It lives in the bot's own Hermes skills.
-# Coconut keeps the merge card contract and the permission rails.
-PR_MERGE_INSTRUCTIONS = (
-    'Before a merge decision or a merge, verify the PR as your skills for pull request review and merge say. '
-    'Use the original human request and standing instructions in your native profile to determine merge permission. '
-    'Standing approval applies only to its stated repository, changes, and conditions. Green CI alone does not grant permission. '
-    'Preserve explicit human holds, rejected decisions, visual approval requirements, and native tool approval checks. '
-    'If merge permission is missing, ask once. Offer one coconut_ask merge decision yourself when the evidence supports it. '
-    'Coconut preserves the recorded conversation route. Do not wait for the requesting bot to present the card. '
-    'Reuse an existing pending merge decision for this PR. Do not bypass its unanswered choice or duplicate its action. '
-    'Include a Leave open option. Identify the PR and merge scope in each choice. '
-    'Set risk_level low, medium, or high and one risk sentence for the merge. '
-    'Set merge_pr_url to the tracked PR URL so an external merge retires the card. '
-    'Before an authorized merge, recheck the exact head and use a merge operation that rejects a changed head. '
-    'Merge permission does not expand deployment or other external-action permission. '
-)
+# Coconut keeps the merge card contract and the permission rails (card_tools.PR_MERGE_INSTRUCTIONS).
+try:
+    from .card_tools import PR_MERGE_INSTRUCTIONS  # noqa: F401
+except ImportError:  # The worker imports this module from its folder.
+    from card_tools import PR_MERGE_INSTRUCTIONS  # noqa: F401
 
 # The cards that name one PR as their merge. The index decisions_merge_url finds them.
 MERGE_DECISIONS = "SELECT data FROM decisions WHERE lower(json_extract(data,'$.merge_pr_url'))=?"

@@ -1,4 +1,5 @@
-"""The card tools, the wait tool and the card correction tool of a bot turn: their schemas, and the rules for cards.
+"""The card tools, the wait tool, the card correction tool and the bot change tools of a bot turn: their schemas,
+and the rules for cards, merges and bot changes.
 
 The worker (native_bridge, hermes_worker) and the coconut plugin of the Hermes gateway (hermes_plugin/coconut/tools.py)
 offer the same tools with these schemas. The plugin loads this file by its path, so it imports nothing.
@@ -251,3 +252,78 @@ DECISION_INSTRUCTIONS = (
 # The result of coconut_ask in the gateway. The plugin then blocks each further tool call of the turn.
 PAUSED = ('Coconut shows this card in chat and Inbox. End this turn now: do not call other tools and do not write more. '
           'Coconut continues this conversation with the answer.')
+
+# The rules for a merge card. Every turn gets them (pull_request_reviews).
+PR_MERGE_INSTRUCTIONS = (
+    'Before a merge decision or a merge, verify the PR as your skills for pull request review and merge say. '
+    'Use the original human request and standing instructions in your native profile to determine merge permission. '
+    'Standing approval applies only to its stated repository, changes, and conditions. Green CI alone does not grant permission. '
+    'Preserve explicit human holds, rejected decisions, visual approval requirements, and native tool approval checks. '
+    'If merge permission is missing, ask once. Offer one coconut_ask merge decision yourself when the evidence supports it. '
+    'Coconut preserves the recorded conversation route. Do not wait for the requesting bot to present the card. '
+    'Reuse an existing pending merge decision for this PR. Do not bypass its unanswered choice or duplicate its action. '
+    'Include a Leave open option. Identify the PR and merge scope in each choice. '
+    'Set risk_level low, medium, or high and one risk sentence for the merge. '
+    'Set merge_pr_url to the tracked PR URL so an external merge retires the card. '
+    'Before an authorized merge, recheck the exact head and use a merge operation that rejects a changed head. '
+    'Merge permission does not expand deployment or other external-action permission. '
+)
+
+# Create and delete Coconut bots from a chat, for a direct human request (service._create_bot_from_chat,
+# _delete_bot_from_chat).
+BOT_CREATION_SCHEMA = {
+    'name': 'coconut_create_bot',
+    'description': 'Create one Coconut bot when a listed direct human message requests it. A capability question alone does not request creation. The service creates a separate Hermes profile that inherits the default model. Wait for a confirmed receipt before claiming success.',
+    'parameters': {
+        'type': 'object', 'additionalProperties': False,
+        'properties': {
+            'source_message_id': {'type': 'string', 'description': 'The exact listed human message ID that requests this bot.'},
+            'name': {'type': 'string', 'minLength': 1, 'maxLength': 80, 'description': 'The requested name, or a suitable name for the requested role.'},
+            'role': {'type': 'string', 'minLength': 1, 'maxLength': 160, 'description': 'One short description of the requested role.'},
+            'instructions': {'type': 'string', 'maxLength': 20000, 'description': 'Self-contained instructions for the requested purpose. Do not copy your private instructions, memory, preferences, credentials, files, or unrelated conversation.'},
+        },
+        'required': ['source_message_id', 'name', 'role', 'instructions'],
+    },
+}
+
+
+BOT_DELETION_SCHEMA = {
+    'name': 'coconut_delete_bot',
+    'description': 'Delete another Coconut bot when a listed direct human message requests deletion. Use its listed ID and current name. Ask which bot when the name is ambiguous. This removes the contact from Coconut and stops its work and routines. Its Hermes profile folder stays on the Mac: only the person can delete a Hermes profile, with a typed confirmation. Wait for a confirmed receipt before claiming success.',
+    'parameters': {
+        'type': 'object', 'additionalProperties': False,
+        'properties': {
+            'source_message_id': {'type': 'string', 'description': 'The exact listed human message ID that requests deletion.'},
+            'target_bot_id': {'type': 'string', 'description': 'The exact ID from the deletion directory or a creation receipt in this turn.'},
+            'expected_name': {'type': 'string', 'description': 'The exact current name for this ID. Never substitute another bot after an unconfirmed deletion.'},
+        },
+        'required': ['source_message_id', 'target_bot_id', 'expected_name'],
+    },
+}
+
+
+BOT_CREATION_INSTRUCTIONS = (
+    '\nThe current tool list defines your capabilities. Earlier assistant messages may describe an older build. '
+    'When coconut_create_bot is available, you can create Coconut bots from this conversation. '
+    'Answer capability questions directly without creating a bot until the person requests one. '
+    'When a listed human source requests a bot, call coconut_create_bot. '
+    'Use that request to write the new bot\'s purpose and instructions. '
+    'Never copy your private instructions, memory, preferences, credentials, files, or unrelated chat into the new bot. '
+    'The new bot inherits the native default model and has a separate Hermes profile. '
+    'Only a matching created or duplicate service receipt confirms creation. '
+    'Do not claim success after a rejected or unconfirmed request. '
+    'After confirmation, use the returned bot ID for a requested handoff. '
+    'Creating a bot does not bypass any approval. '
+    'Give one short confirmation. Do not repeat the receipt or add an approval footer.')
+
+BOT_DELETION_INSTRUCTIONS = (
+    '\nWhen coconut_delete_bot is available, you can delete other Coconut bots on a direct human request. '
+    'A capability question alone requests no deletion. Use the listed exact ID and name. '
+    'If several contacts match, ask the person which one. Never choose the first match. '
+    'Do not delete yourself or the bot whose conversation is open. '
+    'Deletion removes the contact from Coconut and stops its work and routines. Its Hermes profile remains on the Mac. '
+    'You cannot delete a Hermes profile. '
+    'Do not claim success without a matching deleted or duplicate service receipt in this turn. '
+    'After an unconfirmed result, retry only the same source, target ID, and name. Never delete a replacement with the same name. '
+    'Give one short confirmation after the receipt. Do not repeat internal IDs or add an approval footer.')
+
