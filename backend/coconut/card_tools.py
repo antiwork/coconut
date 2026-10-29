@@ -1,9 +1,10 @@
-"""The card tools of a bot turn: their schemas, and the rules for cards.
+"""The card tools and the wait tool of a bot turn: their schemas, and the rules for cards.
 
 The worker (native_bridge, hermes_worker) and the coconut plugin of the Hermes gateway (hermes_plugin/coconut/tools.py)
 offer the same tools with these schemas. The plugin loads this file by its path, so it imports nothing.
 
-A card that needs an answer (coconut_ask) ends the turn. The answer resumes the work in a later turn. An optional
+coconut_wait records that the work of a turn waits for another task, a background process or a card
+(work_progress.wait_for_task). A card that needs an answer (coconut_ask) ends the turn. The answer resumes the work in a later turn. An optional
 proposal (coconut_suggest) does not end the turn. coconut_resolve_reply records a typed answer to a pending card.
 """
 
@@ -72,6 +73,22 @@ REPLY_SCHEMA = {
         'quote': {'type': 'string', 'description': 'Exact words from this human reply that give the instruction.'},
     }, 'required': ['choice', 'quote']},
 }
+
+WAIT_SCHEMA = {'name': 'coconut_wait', 'description':
+    'Wait for existing work. Call without arguments to list tasks, decisions, and background processes in this exchange. '
+    'Supply task_id, process_id, or decision_id and a short reason to register a durable wait. '
+    'Use decision_id for an existing card, including when its owner waits for your work. '
+    'Use process_id only when the terminal result confirms notify_on_complete=true. '
+    'Otherwise use native process(action="wait") until the process exits. '
+    'especially if its owner task already depends on your reply. Finish your turn after registration; '
+    'Coconut resumes it once the task finishes or fails. A completed task or process returns its saved result immediately; '
+    'use that result without waiting again. This does not send a message or create new work. '
+    'In an audit of a work source, set no_card with a reason to record that the source needs no card now.',
+    'parameters': {'type': 'object', 'properties': {
+        'task_id': {'type': 'string'}, 'process_id': {'type': 'string'}, 'decision_id': {'type': 'string'}, 'reason': {'type': 'string', 'maxLength': 80},
+        'no_card': {'type': 'boolean', 'description': 'Only in an audit of a work source: the source needs no card now. '
+            'Coconut audits it again at next_check_at or when the source changes. With task_id, only while that live task owns the work.'},
+        'next_check_at': {'type': 'string', 'description': 'With no_card: an ISO 8601 UTC time to audit again. Defaults to 24 hours, at most 7 days.'}}}}
 
 # A typed answer from chat names its card and the human message (decision_inbox.resolve_chat_decision).
 CHAT_REPLY_SCHEMA = dict(REPLY_SCHEMA, parameters=dict(

@@ -69,7 +69,12 @@ class NativeWork:
     def payload(self, agent):
         if not self.capture or agent is None or not hasattr(agent, '_todo_store'):
             return {}
-        state = snapshot(agent._todo_store.snapshot())
+        return self.from_state(snapshot(agent._todo_store.snapshot()))
+
+    def from_state(self, state):
+        """The saved work of a todo list (a snapshot): the assignment root comes first. {} when nothing to save."""
+        if not self.capture:
+            return {}
         if not self.enabled:
             if not state['todos']:
                 return {}

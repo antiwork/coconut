@@ -76,23 +76,48 @@ def gateway_turn_text(request) -> str | None:
     turn whose input the gateway cannot take yet (WORKER_MESSAGE_FIELDS) or a turn without input.
 
     A quote, a reaction and a bot mention go into the text of each message (native_conversation.message_content). A
-    reaction-only turn may stay silent. Earlier emoji feedback, the attached files and the pending cards follow the
-    messages.
+    reaction-only turn may stay silent. Earlier emoji feedback, the attached files and the work notes follow the
+    messages (work_notes). A turn that continues an unfinished assignment starts with the worker's text for it, also
+    when no new message came.
     """
-    from .native_conversation import (REACTION_SILENCE, attachment_context, current_messages, message_content,
-                                      pending_decisions_context, reaction_feedback_context)
+    from .native_conversation import (REACTION_SILENCE, WORK_RESUME, attachment_context, current_messages,
+                                      message_content, reaction_feedback_context)
     messages = current_messages(request)
     if any(message.get(field) for message in messages for field in WORKER_MESSAGE_FIELDS):
         return None
     task = request['task']
     text = '\n\n'.join(message_content(message) for message in messages)
+    if not text.strip() and task.get('_work_resume'):
+        text = task['title']
     if reaction_only_turn(request):
         text += REACTION_SILENCE
     text += reaction_feedback_context(task.get('_reaction_feedback', []))
     text += attachment_context(task.get('attachments', []))
-    if text.strip():
-        text += pending_decisions_context(task)
-    return text if text.strip() else None
+    if not text.strip():
+        return None
+    if task.get('_work_resume'):
+        text = WORK_RESUME + text
+    return text + work_notes(request)
+
+
+def work_notes(request) -> str:
+    """The work context of a gateway turn, as the worker gives it: the recent work updates of the chat, the other
+    work of the exchange that the turn can wait for, the rules of a tracked assignment with its saved task list, and
+    the pending cards.
+
+    Hermes restores the task list of a session from its history (`todo_list` results). The text repeats the saved list
+    because Coconut keeps the list of an assignment across its tasks.
+    """
+    import json
+    from .native_conversation import dependencies_note, pending_decisions_context, recent_work_note
+    from .work_progress import WORK_INSTRUCTIONS, work_enabled
+    task = request['task']
+    text = recent_work_note(task) + dependencies_note(task)
+    if work_enabled(request['operation'], task):
+        text += '\n' + WORK_INSTRUCTIONS
+        if task.get('_work_todos'):
+            text += '\nSaved task list of this assignment (data):\n' + json.dumps(task['_work_todos'])
+    return text + pending_decisions_context(task)
 
 
 def gateway_resume(task: dict, decision: dict, cron_session: str = '') -> bool:
@@ -185,10 +210,10 @@ class GatewayChat:
             cron_session = (self._get('tasks', task['id']).get('_gateway_cron') or {}).get('session_id') or ''
         if not self.gateway_enabled() or not gateway_resume(task, decision, cron_session):
             return False
-        from .native_conversation import pending_decisions_context, resume_prompt
+        from .native_conversation import resume_prompt
         card = self._public(decision) | {'action': decision.get('_action')}
-        text = resume_prompt(dict(operation='resume', task=task, history=history, decision=card))
-        return self._run_in_gateway(task, bot, text + pending_decisions_context(task), emit,
+        request = dict(operation='resume', task=task, history=history, decision=card)
+        return self._run_in_gateway(task, bot, resume_prompt(request) + work_notes(request), emit,
                                     session=cron_session or None)
 
     def run_gateway_context(self, task: dict, request_task: dict, bot: dict, history: list, context: dict,
@@ -322,6 +347,10 @@ class GatewayChat:
             return self.native_event(task_id, 'native_proposal', arguments)
         if tool == 'resolve_reply':
             return self.resolve_chat_decision(task_id, arguments)
+        if tool == 'wait':
+            return self.wait_for_task(task_id, arguments)
+        if tool == 'todos':
+            return self.gateway_todos(task_id, arguments)
         if data.get('tool') == 'track_pr':
             return self.emit(task_id, 'artifact', {'kind': 'pr', 'url': require_text(arguments, 'url', 500)})
         if data.get('tool') == 'message_bot':
@@ -339,6 +368,26 @@ class GatewayChat:
                                                          'text': require_text(arguments, 'text', 20000)})
             return {key: receipt[key] for key in ('status', 'target_bot_id', 'task_id') if key in receipt}
         raise ServiceError(404, 'This Coconut tool does not exist.')
+
+    def gateway_todos(self, task_id: str, state: dict) -> dict:
+        """The todo list of a gateway turn changed (hooks.save_todos). Save it as the work of the task, as the worker
+        saves the todo store of its agent (work_progress.NativeWork)."""
+        from .service import ServiceError
+        from .work_progress import NativeWork, snapshot
+        try:
+            state = snapshot(state)
+        except (ValueError, TypeError) as error:
+            raise ServiceError(400, str(error)) from None
+        with self.transaction():
+            task = self._get('tasks', task_id)
+            if task['status'] != 'working':
+                raise ServiceError(409, 'This task no longer saves its work.')
+            if task.get('_gateway_cron'):
+                # A cron run keeps its list in its own Hermes session. Coconut does not continue a routine itself.
+                return {'status': 'recorded', 'saved': False}
+            payload = NativeWork(dict(operation='start', task=task)).from_state(state)
+            self._save_work_progress(task, payload)
+        return {'status': 'recorded', 'saved': bool(payload)}
 
     def gateway_message(self, data: dict) -> dict:
         """POST /v1/gateway/messages: a send, an edit or a delete of the gateway outside a Coconut turn.

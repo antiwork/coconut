@@ -12,6 +12,9 @@ history.
 Cron runs. A cron run of the gateway in a bot's profile reports to a Coconut turn through the session hooks
 (cron.py).
 
+Work. `save_todos` (post_tool_call) reports each todo list of a Coconut turn, and Coconut keeps it as the work of the
+task. An unfinished list continues in a later turn, as with the worker.
+
 Cards. A card of coconut_ask ends its turn, and a follow-up on a pending card cannot make a card. `guard_tool`
 (pre_tool_call) blocks those tool calls. The card rules of the worker (card_tools.DECISION_INSTRUCTIONS) go into the
 system prompt of each Coconut session, in parts of at most 4000 characters, as Hermes allows.
@@ -44,6 +47,7 @@ def register(ctx):
     ctx.register_hook('post_llm_call', cron_answer)
     ctx.register_hook('on_session_end', cron_end)
     ctx.register_hook('pre_tool_call', guard_tool)
+    ctx.register_hook('post_tool_call', save_todos)
     from .tools import cards
     for number, part in enumerate(prompt_parts(cards().DECISION_INSTRUCTIONS)):
         ctx.register_system_prompt_section(f'coconut.cards.{number}', _section(part), max_chars=SECTION_CHARS)
@@ -75,6 +79,32 @@ def _section(text):
     def render(session_info=None, **_):
         return text if (session_info or {}).get('platform') == NAME else ''
     return render
+
+
+# The todo tool of Hermes and its earlier names. Its result holds the whole list.
+TODO_TOOLS = ('todo_list', 'todo')
+
+
+def save_todos(tool_name='', result=None, **_):
+    """post_tool_call: report the todo list of a Coconut turn, so Coconut keeps the work of the task (as the worker)."""
+    if tool_name not in TODO_TOOLS:
+        return None
+    from .adapter import MODES
+    holder, turn = _turn()
+    if turn is None or MODES.get(turn) == 'context':
+        # A follow-up on a pending card does not change the work of its task.
+        return None
+    try:
+        import json
+        state = json.loads(result) if isinstance(result, str) else result
+        if not isinstance(state, dict) or not isinstance(state.get('todos'), list):
+            return None
+        from .adapter import REQUEST_SECONDS
+        holder._bridge.request('/v1/gateway/tools', {'turn_id': turn, 'tool': 'todos', 'arguments': {
+            'todos': state['todos'], 'revision': state.get('revision', 0)}}, REQUEST_SECONDS)
+    except Exception as error:
+        LOG.warning('Coconut: the Coconut service did not save the todo list of a turn (%s).', type(error).__name__)
+    return None
 
 
 def guard_tool(tool_name='', **_):

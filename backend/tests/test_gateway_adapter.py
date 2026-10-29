@@ -676,6 +676,32 @@ class GatewayAdapterTests(unittest.TestCase):
             hooks.join_conversation(event=event('root-c'), session_store=store)
             self.assertEqual((store.entry.session_id, SessionDB.meta[hooks.TIP_KEY + 'root-c']), ('gateway-new', 'gateway-new'))
 
+    def test_the_todo_list_of_a_turn_reaches_coconut_as_the_work_of_its_task(self):
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        todos = [{'id': 'coconut-assignment', 'content': 'Update the docs.', 'status': 'in_progress'},
+                 {'id': 'readme', 'content': 'Edit the README.', 'status': 'pending'}]
+        async def runner(event):
+            def tool_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    # As Hermes reports the result of its todo tool, and of another tool.
+                    hooks.save_todos(tool_name='todo_list', args={}, result=json.dumps({'todos': todos, 'revision': 2}))
+                    hooks.save_todos(tool_name='terminal', args={}, result='{"todos": []}')
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            await asyncio.to_thread(tool_calls)
+            return 'Started.'
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Update the docs.'})
+        self.service._run_task(task['id'])
+        stored = self.read('tasks', task['id'])
+        self.assertEqual([item['id'] for item in stored['_work_todos']['todos']], ['coconut-assignment', 'readme'])
+        # The list is unfinished, so Coconut continues the assignment in a later turn, as after a worker turn.
+        self.assertEqual((stored['status'], stored.get('_work_resume')), ('queued', True))
+        # Outside a Coconut turn the hook does nothing.
+        self.assertIsNone(hooks.save_todos(tool_name='todo_list', result=json.dumps({'todos': todos})))
+
     def test_the_hook_blocks_tools_after_a_card_and_cards_in_a_follow_up(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']
         adapter = self.adapter_module
@@ -714,10 +740,10 @@ class GatewayAdapterTests(unittest.TestCase):
                 sections[id] = (text, content({'platform': 'telegram'}), len(text) <= max_chars)
         self.plugin.register(Context())
         self.assertEqual([name for name, _ in tool_names], ['coconut_ask', 'coconut_suggest', 'coconut_resolve_reply',
-                                                             'coconut_track_pr', 'coconut_message_bot'])
+                                                             'coconut_wait', 'coconut_track_pr', 'coconut_message_bot'])
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
                                       'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
-                                      'pre_tool_call'])
+                                      'pre_tool_call', 'post_tool_call'])
         # The card rules of the worker go into each Coconut session, in parts that Hermes allows.
         from coconut.card_tools import DECISION_INSTRUCTIONS
         self.assertEqual(sorted(sections), ['coconut.cards.0', 'coconut.cards.1', 'coconut.cards.2'])
@@ -727,7 +753,7 @@ class GatewayAdapterTests(unittest.TestCase):
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
-        self.assertEqual(len(tool_names), 5)
+        self.assertEqual(len(tool_names), 6)
         options = calls[0]
         self.assertEqual((options['name'], options['label'], options['trusted_inbound'], options['display_tier']),
                          ('coconut', 'Coconut', True, 'high'))
