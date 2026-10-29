@@ -12,6 +12,10 @@ OPTION_EXPLANATION_LIMIT = 200
 # The cards with an open or expired Undo window. The partial index decisions_undo holds them.
 # No ORDER BY: it makes SQLite scan the table. The few rows sort in Python.
 SWIPED_DECISIONS = "SELECT rowid, data FROM decisions WHERE json_extract(data,'$.inbox_undo_until') IS NOT NULL"
+# A dismissed card closes with this outcome. A party that waited for it gets the response.
+DISMISSED_OUTCOME = 'Dismissed. No answer was sent.'
+DISMISSED_RESPONSE = ('The person dismissed this card without an answer. This is not a rejection and not an approval. '
+                      'Do not act on the card, and do not ask the same question again while its facts are unchanged.')
 
 
 def decision_risk(payload):
@@ -183,7 +187,10 @@ class DecisionInbox:
                 raise ServiceError(409, 'Another swipe changed this decision.')
             if decision['status'] not in ('pending', 'dismissed'):
                 raise ServiceError(409, 'This decision is no longer pending.')
-            if decision.pop('_inbox_reject_device', None) is not None:
+            # A required card gets a new revision, so an answer sent before the swipe cannot land after Undo.
+            # A dismissal saved before this release also kept the device that would reject it.
+            legacy = decision.pop('_inbox_reject_device', None) is not None
+            if legacy or decision.get('inbox_kind') != 'proposal':
                 decision['revision'] += 1
             decision.pop('_inbox_dismissed_at', None)
             decision.update(status='pending', inbox_deferred_at=None, inbox_undo_until=None, inbox_swipe_id=None)
@@ -193,10 +200,9 @@ class DecisionInbox:
             decision['inbox_swipe_id'] = uid()
             decision['inbox_undo_until'] = (datetime.now(timezone.utc) + timedelta(seconds=10)).isoformat()
             if action == 'dismiss':
+                # A dismissal is no answer. finish_inbox_swipes closes the card after the Undo window.
                 decision['status'] = 'dismissed'
                 decision['_inbox_dismissed_at'] = now()
-                if decision.get('inbox_kind') != 'proposal':
-                    decision['_inbox_reject_device'] = self._request_device_id or 'local'
             else:
                 decision['inbox_deferred_at'] = now()
         else:
@@ -207,37 +213,58 @@ class DecisionInbox:
 
     def finish_inbox_swipes(self):
         from datetime import datetime, timezone
-        callbacks = []
         with self.transaction():
             for decision in (json.loads(row[1]) for row in sorted(self.db.execute(SWIPED_DECISIONS).fetchall())):
                 deadline = decision.get('inbox_undo_until')
                 if not deadline or datetime.fromisoformat(deadline.replace('Z', '+00:00')) > datetime.now(timezone.utc):
                     continue
                 task = self._get('tasks', decision['task_id'])
-                device = decision.get('_inbox_reject_device')
-                if device and task['status'] != 'cancelled' and self._task_paused(task):
-                    continue
                 decision['inbox_undo_until'] = None
                 decision['inbox_swipe_id'] = None
+                # A dismissal saved before this release kept the device that would reject the card. It rejects nothing now.
                 decision.pop('_inbox_reject_device', None)
-                if device and decision['status'] == 'dismissed' and task['status'] != 'cancelled':
-                    # Keep the rejection reversible until Undo expires. No worker resumes before this transaction.
-                    decision['status'] = 'pending'
-                    data = dict(choice='reject', revision=decision['revision'])
-                    if decision.get('_native'):
-                        # The person already dismissed this card. Finalize only
-                        # that rejection, including swipes saved before upgrade.
-                        decision.pop('_source_recheck', None)
-                        self.answer_native(decision, task, data, device, callbacks)
-                    else:
-                        self._answer(decision, task, data, device)
-                else:
-                    if device and task['status'] == 'cancelled':
+                if decision['status'] == 'dismissed' and decision.get('inbox_kind') != 'proposal':
+                    if task['status'] == 'cancelled':
                         decision['status'] = 'cancelled'
-                    self._put('decisions', decision)
-                    self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
-        for callback in callbacks:
-            callback()
+                    else:
+                        self._close_dismissed_card(decision, task)
+                self._put('decisions', decision)
+                self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
+
+    def _close_dismissed_card(self, decision, task):
+        """Close a required card that the person dismissed. The caller holds the transaction and saves the card.
+
+        A dismissal is no answer: it is not a rejection and not an approval. The card keeps the status `dismissed`,
+        with no entry in `_answers` and no `decided_at`. Nothing goes to a source, and no follow-up turn starts.
+        Only a waiting party learns that the card closed, so that it does not wait forever:
+        - A gateway turn that waits for the card gets the dismissal (gateway_chat.dismiss_gateway_question).
+        - The tool call that asked the card records the resolution `dismissed`. A dismissed approval never runs its tool.
+        - A task that only waited for this card ends without a turn. A bot that assigned the task gets its result.
+        A dismissed card about a source covers that source until the source changes (work_sources.coverage).
+        """
+        from .service import now, encoded
+        decision.pop('_source_recheck', None)
+        decision['outcome'] = DISMISSED_OUTCOME
+        if decision.get('_gateway_question'):
+            self.dismiss_gateway_question(decision)
+            return
+        if decision.get('_receipt_id'):
+            record = self._get('native_receipts', decision['_receipt_id'])
+            if record['state'] in ('awaiting_answer', 'awaiting_approval'):
+                # A dismissed approval never runs its tool.
+                result = ({'response': DISMISSED_RESPONSE} if record['state'] == 'awaiting_answer'
+                          else {'error': DISMISSED_RESPONSE + ' The tool did not run.'})
+                record.update(state='completed', completed_at=now(), result=encoded(dict(result, resolution='dismissed')))
+                self._put('native_receipts', record)
+        if task['status'] != 'needs_you' or any(
+                d['id'] != decision['id'] and d['task_id'] == task['id'] and d['status'] == 'pending'
+                and d.get('inbox_kind') != 'proposal' for d in self._all('decisions')):
+            return
+        task.update(status='completed', summary=DISMISSED_OUTCOME, updated_at=now())
+        self._finish_assignment_turn(task, DISMISSED_RESPONSE, 'completed')
+        self._put('tasks', task)
+        self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+        self._refresh_bot(task['bot_id'])
 
     def decision_chat_input(self, task):
         from .service import ServiceError
@@ -510,7 +537,8 @@ DECISION_INSTRUCTIONS = (
     'Use specific action labels. Respect standing preferences when generating options. '
     'Use coconut_ask for a required answer. Use coconut_suggest for a useful optional proposal while continuing the current work. '
     'Do not turn ordinary replies, activity, or completed work into Inbox entries. '
-    'In Inbox, Later leaves a decision pending. Dismiss rejects a required decision after the Undo window, or removes an optional suggestion. '
-    'Do not recreate dismissed proposals. A proposal is not authorization to perform it. '
+    'In Inbox, Later leaves a decision pending. Dismiss removes a card without an answer: it is not a rejection and not an approval. '
+    'Coconut does not resume the task for a dismissed card. Do not ask the same question again while its facts are unchanged. '
+    'A proposal is not authorization to perform it. '
     'A response received is not an action completed. Report outcomes only after verification. '
 )

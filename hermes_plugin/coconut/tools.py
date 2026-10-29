@@ -16,7 +16,8 @@ TOOLSET = 'coconut'
 
 ASK = {'name': 'coconut_ask', 'description': (
     'Show a decision card in Coconut and wait for the answer of the person. Use it for a choice, a permission, a '
-    'confirmation or a missing fact. The person can choose an option or type a reply. Returns the answer as text.'),
+    'confirmation or a missing fact. The person can choose an option or type a reply. Returns the answer as text, '
+    'or the status dismissed when the person removed the card without an answer.'),
     'parameters': {'type': 'object', 'properties': {
         'question': {'type': 'string', 'maxLength': 300, 'description': 'The question, in one sentence.'},
         'choices': {'type': 'array', 'maxItems': 8, 'items': {'type': 'string', 'maxLength': 120},
@@ -55,6 +56,11 @@ def ask(arguments, **_):
         return _result({'error': 'coconut_ask works only during a Coconut chat turn.'})
     choices = [str(choice) for choice in (arguments.get('choices') or [])][:8]
     answer = adapter.ask(turn, str(arguments.get('question') or ''), choices, str(arguments.get('detail') or ''))
+    from .adapter import DISMISSED
+    if answer is DISMISSED:
+        return _result({'status': 'dismissed', 'detail': (
+            'The person dismissed this question without an answer. This is not a rejection. Continue without the '
+            'answer, and do not ask the same question again while its facts are unchanged.')})
     if answer is None:
         return _result({'status': 'no_answer', 'detail': 'The person did not answer. Continue without the answer.'})
     return _result({'answer': answer})

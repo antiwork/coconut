@@ -471,27 +471,37 @@ class ServiceRoutingTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.write('POST', f'/v1/decisions/{ask["id"]}/answer', {'choice': 'reply', 'correction': 'No.', 'revision': 1})
 
-    def test_a_dismissed_card_returns_its_rejection_to_the_waiting_turn(self):
+    def test_a_dismissed_card_tells_the_waiting_turn_that_it_has_no_answer(self):
+        from coconut.decision_inbox import DISMISSED_RESPONSE
         task = self.send('Clean up.')
         bridge = self.service.gateway_bridge
-        adapter = Adapter(bridge, self.home, [{'kind': 'question', 'question_id': 'q1', 'question_kind': 'approval',
-                                               'text': 'Allow rm?', 'choices': [{'id': 'once', 'label': 'Allow once'},
-                                                                                {'id': 'deny', 'label': 'Deny', 'deny': True}]}])
+        adapter = Adapter(bridge, self.home, [
+            {'kind': 'question', 'question_id': 'q1', 'question_kind': 'approval', 'text': 'Allow rm?',
+             'choices': [{'id': 'once', 'label': 'Allow once'}, {'id': 'deny', 'label': 'Deny', 'deny': True}]},
+            {'kind': 'question', 'question_id': 'q2', 'question_kind': 'ask', 'text': 'Which folder?'}])
         adapter.start()
         runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
         runner.start()
         adapter.join(5)
         deadline = time.monotonic() + 5
-        while time.monotonic() < deadline and not any(d['task_id'] == task['id'] for d in self.decisions()):
+        while time.monotonic() < deadline and len([d for d in self.decisions() if d['task_id'] == task['id']]) < 2:
             time.sleep(.02)
-        card = next(d for d in self.decisions() if d['task_id'] == task['id'])
-        # The Inbox finishes a swipe with the generic answer path (decision_inbox.finish_inbox_swipes).
-        with self.service.transaction():
-            self.service._answer(self.service._get('decisions', card['id']), self.service._get('tasks', task['id']),
-                                 dict(choice='reject', revision=1), 'phone')
+        cards = [d for d in self.decisions() if d['task_id'] == task['id']]
+        for card in cards:
+            self.write('POST', f'/v1/decisions/{card["id"]}/inbox', {'action': 'dismiss', 'revision': 1})
+            with self.service.transaction():
+                saved = self.service._get('decisions', card['id'])
+                saved['inbox_undo_until'] = '2000-01-01T00:00:00Z'
+                self.service._put('decisions', saved)
+        self.service.finish_inbox_swipes()
         answers = bridge.poll({'home': str(self.home), 'wait': 0, 'active': [adapter.turns[0]['id']]})['answers']
-        self.assertEqual(answers, [{'question_id': 'q1', 'text': '', 'choice': 'deny'}])
-        self.assertEqual(self.read('decisions', card['id'])['status'], 'rejected')
+        # An approval cannot run without an answer, so Hermes denies the command. The reason says it was a dismissal.
+        self.assertEqual(sorted(answers, key=lambda a: a['question_id']), [
+            {'question_id': 'q1', 'text': DISMISSED_RESPONSE, 'choice': 'deny', 'dismissed': True},
+            {'question_id': 'q2', 'text': DISMISSED_RESPONSE, 'choice': '', 'dismissed': True}])
+        for card in cards:
+            saved = self.read('decisions', card['id'])
+            self.assertEqual((saved['status'], saved['_answers'], saved['decided_at']), ('dismissed', [], None))
         self.assertEqual(self.read('tasks', task['id'])['status'], 'working')
         bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
         runner.join(5)

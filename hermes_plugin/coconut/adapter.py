@@ -54,6 +54,8 @@ STREAM_SECONDS = 0.2
 STREAM_CHARACTERS = 400
 # coconut_ask waits this long for the person.
 ASK_SECONDS = 6 * 3600
+# coconut_ask returns this when the person dismissed its card: no answer, and not a rejection.
+DISMISSED = object()
 # The ID of a message outside a Coconut turn starts with this prefix. Its edits and its delete take the same route.
 OUTSIDE = 'outside:'
 # The adapters of this process. The tools and the hooks find the adapter of a chat here.
@@ -445,6 +447,8 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
                 'choices': [dict(id=f'choice-{index}', label=str(choice)) for index, choice in enumerate(choices)]},
                 REQUEST_SECONDS)
             holder['event'].wait(ASK_SECONDS)
+            if holder.get('dismissed'):
+                return DISMISSED
             return holder['answer']
         finally:
             self._questions.pop(question_id, None)
@@ -469,6 +473,7 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
                 resolve_gateway_approval(route[1], choice or 'deny', reason=text or None)
             else:
                 route[1]['answer'] = text
+                route[1]['dismissed'] = bool(item.get('dismissed'))
                 route[1]['event'].set()
         except Exception:
             LOG.exception('Coconut: Hermes did not take the answer to a question.')

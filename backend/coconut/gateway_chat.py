@@ -441,6 +441,20 @@ class GatewayChat:
         self._refresh_bot(task['bot_id'])
         return self._public(decision)
 
+    def dismiss_gateway_question(self, decision: dict) -> None:
+        """The person dismissed the card of a question of a gateway turn. The caller holds the transaction.
+
+        The turn still waits, so it gets the dismissal: no answer, and not a rejection. A coconut_ask returns the
+        status `dismissed`, and a clarify gets the dismissal as its text. A command approval cannot run without an
+        answer, so Hermes denies the command with the dismissal as the reason.
+        """
+        from .decision_inbox import DISMISSED_OUTCOME, DISMISSED_RESPONSE
+        question = decision['_gateway_question']
+        delivered = self.gateway_bridge.answer(question['turn_id'], dict(
+            question_id=question['question_id'], text=DISMISSED_RESPONSE,
+            choice='deny' if question['kind'] == 'approval' else '', dismissed=True))
+        decision['outcome'] = DISMISSED_OUTCOME if delivered else 'Hermes stopped waiting for this answer.'
+
     def gateway_cron(self, data: dict) -> dict:
         """POST /v1/gateway/cron: a cron run of the gateway starts in a bot's profile. Open its Coconut turn.
 
