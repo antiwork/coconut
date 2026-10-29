@@ -9,6 +9,7 @@ The test client (scripts/tunnel-test-client.swift) pairs with a version 2 link, 
 from pathlib import Path
 import json
 import os
+import queue
 import shutil
 import socket
 import subprocess
@@ -152,8 +153,8 @@ class TunnelLoopbackTests(unittest.TestCase):
         for name in ('identity.key', 'route.json'):
             self.assertEqual((self.data / 'tunnel' / name).stat().st_mode & 0o777, 0o600)
         self.assertEqual(route['relay'], url)
-        self.start([str(self.sidecar), 'run', '--data-dir', str(self.data), '--backend', f'127.0.0.1:{coalescing_proxy(tunnel_port)}'],
-                   log='tunnel.log')
+        sidecar = [str(self.sidecar), 'run', '--data-dir', str(self.data), '--backend', f'127.0.0.1:{coalescing_proxy(tunnel_port)}']
+        running = self.start(sidecar, log='tunnel.log')
         wait(lambda: self.status()['state'] == 'connected', 20, 'The sidecar did not connect to the relay.')
 
         steps = self.run_client()
@@ -212,6 +213,46 @@ class TunnelLoopbackTests(unittest.TestCase):
         time.sleep(1)
         self.assertEqual(self.run_client(payloads[-1])['state']['status'], 200)
         self.assertEqual(len(self.peers()), 3)
+
+        # Cloudflare resets the host socket from time to time. Here the sidecar stops without a close frame during a
+        # session, and a new sidecar starts a second later. The phone's next request waits in the relay for it.
+        link = pairing.link(pairing.tunnel_payload(self.data))
+        errors = (Path(self.temp.name) / 'reset-client.err').open('w+')
+        self.addCleanup(errors.close)
+        client = subprocess.Popen([str(self.client), link], stdout=subprocess.PIPE, stderr=errors, text=True,
+                                  env={**os.environ, 'COCONUT_TEST_HOST_RESET': '1'})
+        self.processes.append(client)
+        # A thread reads the output, so every wait below has a deadline, also when the client stalls.
+        output = queue.Queue()
+        threading.Thread(target=lambda: [*map(output.put, client.stdout), output.put(None)], daemon=True).start()
+        lines = []
+        deadline = time.monotonic() + 120
+        while True:
+            try:
+                line = output.get(timeout=max(0, deadline - time.monotonic()))
+            except queue.Empty:
+                client.kill()
+                errors.seek(0)
+                self.fail(f'The reset client did not finish in 120 seconds.\n{"".join(lines)}{errors.read()}')
+            if line is None:
+                break
+            lines.append(line)
+            if '"before reset"' in line:
+                running.kill()
+                running.wait(10)
+                time.sleep(1)
+                running = self.start(sidecar, log='tunnel-after-reset.log')
+        try:
+            code = client.wait(10)
+        except subprocess.TimeoutExpired:
+            client.kill()
+            code = None
+        errors.seek(0)
+        self.assertEqual(code, 0, ''.join(lines) + errors.read())
+        reset = next(json.loads(line) for line in lines if '"host reset"' in line)
+        self.assertEqual(reset['status'], 200)
+        self.assertLess(reset['seconds'], 6)
+        print(json.dumps(reset), file=sys.stderr)
 
 
 if __name__ == '__main__':

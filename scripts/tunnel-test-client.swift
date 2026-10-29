@@ -226,5 +226,28 @@ struct TunnelTestClient {
         } catch {
             report(["step": "spent ticket", "result": "refused"])
         }
+
+        // 7. With COCONUT_TEST_HOST_RESET=1, the test stops the sidecar during a session and starts it again a second
+        // later, as when Cloudflare resets the Mac's relay socket. The next request waits in the relay for the new
+        // sidecar, so it succeeds on its first attempt, within the app's short budget.
+        guard ProcessInfo.processInfo.environment["COCONUT_TEST_HOST_RESET"] == "1" else { return }
+        let session = TunnelConnection(endpoint: endpoint, phoneKey: phone, credential: .token(clientToken))
+        let before = try await send(session, "GET", "/v1/state", headers: auth)
+        try check(before.status == 200, "GET /v1/state before the reset answered \(before.status)")
+        report(["step": "before reset", "status": before.status])
+        let deadline = Date().addingTimeInterval(30)
+        while await session.state == .connected {
+            try check(Date() < deadline, "the relay did not end the session after the reset")
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let lost = await session.state
+        try check(lost == .connecting, "the host reset gave the state \(lost)")
+        started = Date()
+        let after = try await send(session, "GET", "/v1/state", headers: auth)
+        try check(after.status == 200, "GET /v1/state after the reset answered \(after.status)")
+        let sockets = await session.connectAttempts
+        try check(sockets == 2, "the request after the reset opened \(sockets - 1) sockets")
+        report(["step": "host reset", "status": after.status, "seconds": Date().timeIntervalSince(started)])
+        await session.close()
     }
 }

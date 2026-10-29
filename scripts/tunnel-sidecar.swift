@@ -400,9 +400,9 @@ final class Sidecar {
             guard immediately, let retry else { return }
             retry.cancel()
             backoff = 1
-            schedule(after: 0.2)
+            schedule(after: ReconnectDelay.settle)
             log("Reconnecting at once (\(cause.summary)).")
-            events.record("backoff", cause.fields.merging(["delay_ms": 200]) { $1 })
+            events.record("backoff", cause.fields.merging(["delay_ms": Int(ReconnectDelay.settle * 1000)]) { $1 })
             return
         }
         reconnecting = true
@@ -420,11 +420,12 @@ final class Sidecar {
         relay = nil
         for channel in channels.values { drop(channel) }
         channels = [:]
-        // A socket that stayed up for a minute was healthy, so the next attempt starts with a short wait.
-        if let connectedAt, Date().timeIntervalSince(connectedAt) > 60 { backoff = 1 }
+        // The end of a healthy socket, for example a reset by Cloudflare, gets a new attempt at once.
+        let next = ReconnectDelay.next(immediately: immediately, uptime: connectedAt.map { Date().timeIntervalSince($0) },
+                                       backoff: backoff, maxBackoff: maxBackoff, jitter: Double.random(in: 0.8...1.2))
         connectedAt = nil
-        let delay = immediately ? 0.2 : backoff * Double.random(in: 0.8...1.2)
-        backoff = immediately ? 1 : min(backoff * 2, maxBackoff)
+        let delay = next.delay
+        backoff = next.backoff
         events.record("backoff", ["delay_ms": Int((delay * 1000).rounded())])
         setState("offline")
         log("The relay socket ended (\(cause.summary)). Retrying in \(String(format: "%.1f", delay)) seconds.")

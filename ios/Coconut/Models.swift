@@ -609,6 +609,7 @@ enum ConnectionState: String, Sendable {
         switch TunnelConnection.State(failure) {
         case .macOffline: self = .macOffline
         case .needsRepair: self = .needsRepair
+        case .connecting: self = .connecting
         default: self = .relayUnreachable
         }
     }

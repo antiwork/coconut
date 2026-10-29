@@ -109,7 +109,8 @@ final class TunnelConnectionTests: XCTestCase {
         let tunnel = connection(mac)
         _ = try await tunnel.send(getRequest("/v1/state"), timeout: .seconds(5))
         mac.dropSocket()
-        try await waitFor { await tunnel.state == .relayUnreachable }
+        // A socket that ends after it opened is no fault to show: the next request connects again.
+        try await waitFor { await tunnel.state == .connecting }
         let response = try await tunnel.send(getRequest("/v1/state"), timeout: .seconds(5))
         XCTAssertEqual(response.status, 200)
         XCTAssertEqual(mac.socketCount, 2)
@@ -141,7 +142,34 @@ final class TunnelConnectionTests: XCTestCase {
         let tunnel = connection(mac, timing: .init(connect: .seconds(1), ping: .milliseconds(100), silence: .milliseconds(400)))
         _ = try await tunnel.send(getRequest("/v1/state"), timeout: .seconds(5))
         try await waitFor { mac.textPings > 0 }
-        try await waitFor { await tunnel.state == .relayUnreachable }
+        try await waitFor { await tunnel.state == .connecting }
+        XCTAssertTrue(mac.socketClosed)
+    }
+
+    func testAHostResetDuringASessionIsARetryableLossNotAnOfflineMac() async throws {
+        let mac = FakeMac()
+        mac.hold = { _ in true }
+        let tunnel = connection(mac)
+        async let poll = tunnel.send(getRequest("/v1/updates?after=0&wait=20"), timeout: .seconds(5))
+        try await waitFor { mac.requests.count == 1 }
+        // Cloudflare resets the Mac's relay socket. The relay sends mac_offline to the open session and closes it.
+        mac.resetHost()
+        do {
+            _ = try await poll
+            XCTFail("A host reset must fail the open streams.")
+        } catch let error as TunnelError {
+            XCTAssertEqual(error, .connectionLost)
+            XCTAssertTrue(error.isRetryable)
+        }
+        let state = await tunnel.state
+        XCTAssertEqual(state, .connecting)
+        XCTAssertEqual(ConnectionState(TunnelError.connectionLost), .connecting)
+        XCTAssertNil(ConnectionState.connecting.notice)
+        // The Mac is back. The next request opens a new session.
+        mac.hold = { _ in false }
+        let response = try await tunnel.send(getRequest("/v1/state"), timeout: .seconds(5))
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(mac.socketCount, 2)
     }
 
     // MARK: States
@@ -231,9 +259,12 @@ final class TunnelConnectionTests: XCTestCase {
 
     func testConnectionStatesMapToTheAppStates() {
         XCTAssertEqual(ConnectionState(TunnelError.needsRepair), .needsRepair)
-        for error in [TunnelError.relayUnreachable, .timedOut, .connectionLost, .protocolViolation] {
+        for error in [TunnelError.relayUnreachable, .timedOut, .protocolViolation] {
             XCTAssertEqual(ConnectionState(error), .relayUnreachable, "\(error)")
         }
+        XCTAssertEqual(ConnectionState(TunnelError.connectionLost), .connecting)
+        XCTAssertEqual(TunnelError.relay(code: "mac_offline", duringHandshake: true), .macOffline)
+        XCTAssertEqual(TunnelError.relay(code: "mac_offline", duringHandshake: false), .connectionLost)
         XCTAssertEqual(TunnelError.relay(code: "revoked", duringHandshake: false), .needsRepair)
         XCTAssertEqual(TunnelError.relay(code: "closed", duringHandshake: false), .connectionLost)
         XCTAssertEqual(TunnelError.relay(code: "host_reconnected", duringHandshake: true), .connectionLost)
@@ -615,6 +646,14 @@ final class FakeMac: @unchecked Sendable {
     }
 
     func dropSocket() { locked { sockets.last?.close() } }
+
+    // The relay lost the Mac's socket: it sends mac_offline to the open session and closes it.
+    func resetHost() {
+        locked {
+            sockets.last?.deliver(.text(#"{"type":"error","code":"mac_offline"}"#))
+            sockets.last?.close()
+        }
+    }
 
     var heldHandshakes: Int { locked { heldHandshake == nil ? 0 : 1 } }
 

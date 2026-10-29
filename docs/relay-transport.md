@@ -62,7 +62,17 @@ python3 scripts/tunnel.py install
 
 The deploy package carries `ios/Tunnel/*.swift`, so the live install can compile the sidecar. No setup step installs the sidecar on a new Mac yet. `scripts/setup_coconut.py` must install it in the same release as the app on the tunnel (R4). Until then, a Mac with the sidecar makes version 2 pairing links, which current app builds cannot read. Use `pairing.py --legacy` for those builds.
 
-The sidecar keeps one WebSocket to the relay. When the socket fails, it connects again after 1 second, then after up to 60 seconds. A network change or a wake from sleep starts a new connection at once. The sidecar sends a text `ping` after 20 silent seconds, and ends a socket that stays silent for 45 seconds.
+The sidecar keeps one WebSocket to the relay. When a socket that was up for more than 60 seconds ends, the sidecar connects again at once. When an attempt fails, it waits 1 second, then up to 60 seconds. A network change or a wake from sleep starts a new connection after 0.2 seconds. The sidecar sends a text `ping` after 20 silent seconds, and ends a socket that stays silent for 45 seconds.
+
+### Host socket resets
+
+Cloudflare resets long-lived WebSockets from time to time. It restarts the servers of its network for releases, and a Durable Object restarts for a runtime update or a deploy of the Worker. The sidecar then sees a reset by the peer without a close frame, for example `network_error` with `posix` 54 (`ECONNRESET`) or 96 (`ENODATA`), after a few minutes to about 45 minutes. The relay's own code closes the host socket only with a close frame, which the sidecar logs as `relay_closed`, for example 1000 `replaced`. The text `ping` every 20 silent seconds keeps the socket inside Cloudflare's idle timeout.
+
+A reset ends the Noise sessions, because their keys live in the sidecar's channels. The phone does not see the gap:
+
+1. The relay sends `mac_offline` to each open phone session. The phone ends that session with `connectionLost`, which it retries once after 0.4 seconds.
+2. The sidecar connects again at once.
+3. A phone socket that arrives while no host is connected waits in the relay for up to 5 seconds. The relay keeps its first messages in the socket attachment, which holds 2,048 bytes, so they survive hibernation. The phone's first Noise message is 96 bytes. A phone that sends more than about 1 KB while it waits gets `mac_offline`. The relay gives the kept messages to the next host after `open`. After 5 seconds without a host, the phone gets `mac_offline`.
 
 The sidecar sends each stream to the backend's plain HTTP listener on `127.0.0.1:8961` as one HTTP request. It sets `X-Coconut-Peer` to the iPhone's static key in lowercase hex. The backend reads this header only on that listener.
 
@@ -217,10 +227,10 @@ The app shows these connection states:
 
 | State | Cause | What the app does |
 | --- | --- | --- |
-| `connecting` | A handshake is in progress. | Shows the cached state. |
+| `connecting` | A handshake is in progress, or an open socket ended (`connectionLost`). | Shows the cached state, and no banner. The next request connects again. |
 | `connected` | The last request succeeded. | Normal use. |
-| `macOffline` | The relay sends `mac_offline`, the Mac does not answer the handshake on an open socket, or the backend is down. | A calm banner. The cached state stays visible, and the phone tries again. |
-| `relayUnreachable` | The phone cannot open a socket, or the socket fails. | A calm banner. The phone tries again. |
+| `macOffline` | The relay sends `mac_offline` during the handshake (no Mac for 5 seconds), the Mac does not answer the handshake on an open socket, or the backend is down. | A calm banner. The cached state stays visible, and the phone tries again. |
+| `relayUnreachable` | The phone cannot open a socket, a request times out, or the Mac sends data that is not valid. | A calm banner. The phone tries again. |
 | `needsRepair` | The relay refuses the token or route (401 or 404, or `revoked`), the Mac refuses the phone key or answers with another Mac key, or the backend answers 401. | A banner with Pair. The phone stops polling until it pairs again. |
 
 The phone's static key and the relay client token live in the Keychain (`local.coconut.tunnel`). Each pairing makes a new key. `pairing.json` holds `{version: 2, relay, route, macKey, deviceId, macName}`. A pending checkout recovery belongs to the route and the Mac key.
@@ -234,7 +244,7 @@ The backend listens with plain HTTP on two loopback ports:
 
 ## Loopback test
 
-`scripts/test_tunnel_loopback.py` runs the test client, a Miniflare relay, the sidecar, and the backend on one Mac. The test client uses the app's `TunnelConnection` to pair and to send its requests. The client pairs, gets `/v1/state`, uploads a 5 MB attachment, and downloads 3.9 MB. It also checks that another iPhone key and a used ticket get no session, and that the sidecar reconnects. It needs the Xcode Command Line Tools and `npm ci` in `relay/`.
+`scripts/test_tunnel_loopback.py` runs the test client, a Miniflare relay, the sidecar, and the backend on one Mac. The test client uses the app's `TunnelConnection` to pair and to send its requests. The client pairs, gets `/v1/state`, uploads a 5 MB attachment, and downloads 3.9 MB. It also checks that another iPhone key and a used ticket get no session, and that the sidecar reconnects. At the end, the test stops the sidecar during a session and starts it again a second later. The phone's next request must succeed on its first attempt. It needs the Xcode Command Line Tools and `npm ci` in `relay/`.
 
 ```bash
 python3 scripts/test_tunnel_loopback.py
