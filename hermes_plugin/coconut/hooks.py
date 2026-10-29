@@ -12,6 +12,10 @@ history.
 Cron runs. A cron run of the gateway in a bot's profile reports to a Coconut turn through the session hooks
 (cron.py).
 
+Cards. A card of coconut_ask ends its turn, and a follow-up on a pending card cannot make a card. `guard_tool`
+(pre_tool_call) blocks those tool calls. The card rules of the worker (card_tools.DECISION_INSTRUCTIONS) go into the
+system prompt of each Coconut session, in parts of at most 4000 characters, as Hermes allows.
+
 Streamed text. The `on_stream_*` hooks receive the text deltas of each model call, also when the gateway streams nothing
 to the platform (`streaming.enabled` off). A hook runs in a Hermes dispatcher thread with the session context of the
 turn, so `get_session_env` names the chat. Only a turn of a Coconut chat that an adapter of this process runs goes to
@@ -39,6 +43,51 @@ def register(ctx):
     ctx.register_hook('on_interim_message', cron_interim)
     ctx.register_hook('post_llm_call', cron_answer)
     ctx.register_hook('on_session_end', cron_end)
+    ctx.register_hook('pre_tool_call', guard_tool)
+    from .tools import cards
+    for number, part in enumerate(prompt_parts(cards().DECISION_INSTRUCTIONS)):
+        ctx.register_system_prompt_section(f'coconut.cards.{number}', _section(part), max_chars=SECTION_CHARS)
+
+
+SECTION_CHARS = 4000
+# Tools that a follow-up on a pending card must not call: it answers a question and leaves the card as it is.
+CARD_TOOLS = ('coconut_ask', 'coconut_suggest', 'clarify', 'coconut_track_pr', 'coconut_message_bot')
+PAUSED_MESSAGE = ('Coconut shows a card and waits for the answer of the person. End this turn now. Coconut continues '
+                  'this conversation with the answer.')
+CONTEXT_MESSAGE = 'Answer the current question. Its pending decision stays open.'
+
+
+def prompt_parts(text, size=SECTION_CHARS):
+    """Split text at sentence ends into parts of at most `size` characters."""
+    parts, part = [], ''
+    for sentence in text.replace('. ', '.\n').split('\n'):
+        piece = sentence if not part else ' ' + sentence
+        if part and len(part) + len(piece) > size:
+            parts.append(part)
+            part, piece = '', sentence
+        part += piece
+    if part:
+        parts.append(part)
+    return parts
+
+
+def _section(text):
+    def render(session_info=None, **_):
+        return text if (session_info or {}).get('platform') == NAME else ''
+    return render
+
+
+def guard_tool(tool_name='', **_):
+    """pre_tool_call: block a tool call of a turn that a card ended, and a card in a follow-up on a pending card."""
+    from .adapter import MODES, PAUSED
+    holder, turn = _turn()
+    if turn is None:
+        return None
+    if turn in PAUSED:
+        return {'action': 'block', 'message': PAUSED_MESSAGE}
+    if MODES.get(turn) == 'context' and tool_name in CARD_TOOLS:
+        return {'action': 'block', 'message': CONTEXT_MESSAGE}
+    return None
 
 
 def join_conversation(event=None, session_store=None, **_):

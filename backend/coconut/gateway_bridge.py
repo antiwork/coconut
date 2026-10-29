@@ -11,7 +11,6 @@ the main listener, with the token of `<data>/gateway/bridge.json`:
 - `POST /v1/gateway/tools` runs a Coconut tool of the `coconut` toolset for the task of a running turn (gateway_chat).
 - `POST /v1/gateway/cron` opens a turn for a cron run of the gateway (gateway_chat.gateway_cron). The plugin reports
   its events like those of a chat turn.
-- `POST /v1/gateway/answers` waits for the answer to one question of a turn. A cron run has no adapter that polls.
 - `POST /v1/gateway/messages` takes a send, an edit or a delete of the gateway outside a Coconut turn
   (gateway_chat.gateway_message).
 
@@ -42,18 +41,17 @@ SILENT_SECONDS = 90
 # A cron run reports no heartbeat between its events, and a tool can run for long. Hermes stops a run that is idle for
 # HERMES_CRON_TIMEOUT (600 s by default), and the plugin then reports its end.
 CRON_SILENT_SECONDS = 3 * 3600
-ANSWER_SECONDS = 25
 ADAPTER_SECONDS = 60
 MAX_TEXT = 200_000
 KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
-QUESTION_KINDS = ('clarify', 'approval', 'ask')
+QUESTION_KINDS = ('clarify', 'approval')
 
-# A chat turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: a card to
-# answer, work items and claims, routines, bot exchanges, GitHub source activity, PR reviews, bot creation and deletion,
-# and the recovery and withdrawal paths. The worker runs it until phase 5 moves it. Attachments and reactions go to
-# the gateway as text of the turn (gateway_chat.gateway_turn_text).
+# A chat turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: work items
+# and claims, routines, bot exchanges, GitHub source activity, PR reviews, bot creation and deletion, and the recovery
+# and withdrawal paths. The worker runs it until phase 5 moves it. Attachments, reactions and pending cards go to the
+# gateway as text of the turn (gateway_chat.gateway_turn_text), and the plugin has the card tools.
 WORKER_INPUTS = (
-    '_pending_decisions', '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
+    '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
     '_work_context_id', '_work_context', '_work_todos', '_work_resume', '_work_dependencies', '_pr_review',
     '_background_completion', '_handoff_assignment', '_is_return', '_bot_messages', '_outgoing_bot_messages',
     '_source_activity', '_source_answer_steps', '_source_audit_prompt', '_technical_lane',
@@ -91,8 +89,8 @@ class _Turn:
         self.cron = False
         # A turn that may end in silence, such as a reaction (TurnEvents).
         self.silent = False
-        # Answers to the questions of this turn, for a waiting tool (wait_answer).
-        self.answers: dict[str, dict] = {}
+        # The context (a follow-up on a pending card) that this turn answers, or None (gateway_chat.run_gateway_context).
+        self.context_id = None
 
 
 class GatewayBridge:
@@ -193,6 +191,12 @@ class GatewayBridge:
             turn = self.turns.get(turn_id)
             return turn.task_id if turn is not None and turn.state == 'active' else None
 
+    def context_of(self, turn_id) -> str | None:
+        """The context that a running turn answers, or None for a turn of its task."""
+        with self.lock:
+            turn = self.turns.get(turn_id)
+            return turn.context_id if turn is not None and turn.state == 'active' else None
+
     def answer(self, turn_id: str, answer: dict) -> bool:
         """Give the answer to a question to the adapter of its turn, with its next poll."""
         with self.lock:
@@ -200,26 +204,8 @@ class GatewayBridge:
             if turn is None or turn.state != 'active':
                 return False
             self.answers.setdefault(turn.home, []).append(answer)
-            turn.answers[str(answer.get('question_id'))] = answer
             self.lock.notify_all()
         return True
-
-    def wait_answer(self, data: dict) -> dict:
-        """POST /v1/gateway/answers: the answer to one question of a running turn, or none after a short wait."""
-        wait = max(0.0, min(float(data.get('wait', ANSWER_SECONDS)), ANSWER_SECONDS))
-        deadline = time.monotonic() + wait
-        with self.lock:
-            while True:
-                turn = self.turns.get(data.get('turn_id'))
-                if turn is None or turn.state != 'active':
-                    return {'ended': True}
-                turn.seen = time.monotonic()
-                answer = turn.answers.pop(str(data.get('question_id')), None)
-                if answer is not None:
-                    return {'answer': answer}
-                if self.closed or time.monotonic() >= deadline:
-                    return {}
-                self.lock.wait(deadline - time.monotonic())
 
     def open_turn(self, task_id: str, home, chat_id: str) -> str:
         """Register a turn that the gateway already runs, for example a cron run. Return its ID for follow()."""
@@ -230,12 +216,16 @@ class GatewayBridge:
         return turn.id
 
     def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut',
-                 session_root: str | None = None, silent: bool = False) -> None:
+                 session_root: str | None = None, silent: bool = False, context_id: str | None = None) -> None:
         """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends.
 
-        With `silent`, the turn may end in silence (TurnEvents)."""
+        With `silent`, the turn may end in silence (TurnEvents). With `context_id`, the turn answers a follow-up on a
+        pending card: the plugin blocks the card tools in it."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, text, chat_name, session_root)
         turn.silent = silent
+        if context_id:
+            turn.context_id = context_id
+            turn.request['mode'] = 'context'
         if silent:
             # The adapter marks the message as one that needs no reply (MessageEvent.reply_expected).
             turn.request['silent'] = True

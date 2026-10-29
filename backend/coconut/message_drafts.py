@@ -1,20 +1,7 @@
 """Exact, editable message drafts use the shared decision record."""
 from __future__ import annotations
 
-DRAFT_SCHEMA = {
-    'type': 'object',
-    'description': 'Exact outbound text for review. Use real addresses or channel/thread URLs. No attachments or hidden recipients. Creating this card never sends it.',
-    'properties': {key: dict(type='string', maxLength=limit, description=description)
-        for key, limit, description in (
-            ('channel', 80, 'Delivery service, such as Gmail, Slack, or GitHub.'),
-            ('recipient', 500, 'Exact recipient address or destination URL. Do not use an ambiguous display name.'),
-            ('sender', 320, 'Sending account. Required when more than one account could send it.'),
-            ('subject', 500, 'Email subject, if applicable.'),
-            ('reply_to', 2000, 'Exact message or thread URL when replying.'),
-            ('body', 20000, 'The complete message as plain text. Preserve all line breaks.'))},
-    'required': ['channel', 'recipient', 'body'],
-    'additionalProperties': False,
-}
+from .card_tools import DRAFT_SCHEMA
 
 
 def message_draft(value):

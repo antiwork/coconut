@@ -76,10 +76,11 @@ def gateway_turn_text(request) -> str | None:
     turn whose input the gateway cannot take yet (WORKER_MESSAGE_FIELDS) or a turn without input.
 
     A quote, a reaction and a bot mention go into the text of each message (native_conversation.message_content). A
-    reaction-only turn may stay silent. Earlier emoji feedback and the attached files follow the messages.
+    reaction-only turn may stay silent. Earlier emoji feedback, the attached files and the pending cards follow the
+    messages.
     """
     from .native_conversation import (REACTION_SILENCE, attachment_context, current_messages, message_content,
-                                      reaction_feedback_context)
+                                      pending_decisions_context, reaction_feedback_context)
     messages = current_messages(request)
     if any(message.get(field) for message in messages for field in WORKER_MESSAGE_FIELDS):
         return None
@@ -89,7 +90,19 @@ def gateway_turn_text(request) -> str | None:
         text += REACTION_SILENCE
     text += reaction_feedback_context(task.get('_reaction_feedback', []))
     text += attachment_context(task.get('attachments', []))
+    if text.strip():
+        text += pending_decisions_context(task)
     return text if text.strip() else None
+
+
+def gateway_resume(task: dict, decision: dict) -> bool:
+    """Whether the gateway continues a task after an answered card.
+
+    The task must be a chat turn that the gateway takes (plain_chat_turn). A command approval of a worker turn stays
+    with the worker: it allows one exact tool call that the worker recorded, and the worker repeats that call.
+    """
+    return (plain_chat_turn(task) and decision.get('action_type') != 'native_approval'
+            and not decision.get('_receipt_id'))
 
 
 def live_gateway_pid(home) -> int | None:
@@ -153,18 +166,65 @@ class GatewayChat:
         """Run a chat turn through the gateway. False: the turn is of another type, and the worker runs it."""
         if not self.gateway_enabled() or not plain_chat_turn(task):
             return False
-        from .native_conversation import session_root
         request = dict(operation='start', task=task, history=history)
         text = gateway_turn_text(request)
         if text is None:
             return False
-        silent = reaction_only_turn(request)
+        return self._run_in_gateway(task, bot, text, emit, silent=reaction_only_turn(request))
+
+    def run_gateway_resume(self, task: dict, bot: dict, history: list, decision: dict, emit) -> bool:
+        """Continue a task after an answered card in the gateway, as the worker resumes it. False: the worker does.
+
+        `decision` is the stored card. The turn text is the worker's text for the same answer."""
+        if not self.gateway_enabled() or not gateway_resume(task, decision):
+            return False
+        from .native_conversation import pending_decisions_context, resume_prompt
+        card = self._public(decision) | {'action': decision.get('_action')}
+        text = resume_prompt(dict(operation='resume', task=task, history=history, decision=card))
+        return self._run_in_gateway(task, bot, text + pending_decisions_context(task), emit)
+
+    def run_gateway_context(self, task: dict, request_task: dict, bot: dict, history: list, context: dict,
+                            emit) -> bool:
+        """Answer a follow-up on a pending card in the gateway. False: the worker answers it.
+
+        The worker answers a check of the card (`_decision_refresh`) and the results of background research, and each
+        follow-up on a task that the gateway does not run. The turn cannot make a card or act for the task: the plugin
+        blocks the card tools, and the service takes only text and coconut_resolve_reply from it.
+        """
+        if (not self.gateway_enabled() or not plain_chat_turn(task) or context.get('_decision_refresh')
+                or context.get('_background_completion')):
+            return False
+        from .native_conversation import attachment_context, context_prompt
+        from .service import ServiceError
+        text = context_prompt(dict(operation='context', task=request_task, history=history,
+                                   question=context['question']))
+        text += attachment_context(request_task.get('attachments', []))
+
+        def follow_up(kind, payload):
+            # The answer is the text of the turn. The worker sends no completion for a follow-up either.
+            if kind in ('phase', 'interim_message', 'interim_seal', 'completed'):
+                return None
+            if kind == 'gateway_question':
+                raise ServiceError(409, 'A follow-up on a card cannot ask the person.')
+            return emit(kind, payload)
+
+        def wanted():
+            return self._get('contexts', context['id'])['status'] == 'working'
+        return self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted)
+
+    def _run_in_gateway(self, task: dict, bot: dict, text: str, emit, *, silent: bool = False,
+                        context_id: str | None = None, wanted=None) -> bool:
+        """Give a turn to the adapter of the bot's profile. Wait for one, at most GATEWAY_WAIT_SECONDS."""
+        from .native_conversation import session_root
         home = self.profiles.home(bot)
         deadline = time.monotonic() + GATEWAY_WAIT_SECONDS
+        if wanted is None:
+            def wanted():
+                return self._get('tasks', task['id'])['status'] == 'working'
         try:
             while True:
                 with self.lock:
-                    if self._get('tasks', task['id'])['status'] != 'working':
+                    if not wanted():
                         # The person cancelled the waiting turn.
                         return True
                 if self.gateway_bridge.connected(home):
@@ -173,7 +233,8 @@ class GatewayChat:
                         # The worker resumes the chat of a bot from this root (native_conversation.NativeConversation).
                         self.gateway_bridge.run_turn(
                             task['id'], home, bot['id'], text, emit, chat_name=bot.get('name') or 'Coconut',
-                            session_root=session_root(bot, epoch=task.get('_conversation_epoch')), silent=silent)
+                            session_root=session_root(bot, epoch=task.get('_conversation_epoch')), silent=silent,
+                            context_id=context_id)
                         return True
                     except GatewayUnavailable:
                         # No adapter took the turn, so nothing ran. Wait for the next adapter.
@@ -191,7 +252,8 @@ class GatewayChat:
                 self.stopping.wait(1)
         finally:
             self._gateway_wait_summary(task['id'], None)
-            self._close_gateway_questions(task['id'])
+            if context_id is None:
+                self._close_gateway_questions(task['id'])
 
     def _gateway_wait_summary(self, task_id: str, text: str | None) -> bool:
         """Show on a working task that it waits for the gateway (text), or that it no longer waits (None). Return
@@ -215,10 +277,15 @@ class GatewayChat:
 
     def gateway_tool(self, data: dict) -> dict:
         """POST /v1/gateway/tools: a tool of the `coconut` toolset, for the task of a running gateway turn."""
+        from .card_tools import PAUSED
         from .service import ServiceError, YieldForDecision
         try:
             return self._gateway_tool(data)
-        except YieldForDecision:
+        except YieldForDecision as pause:
+            if data.get('tool') == 'ask' and pause.decision_id:
+                # The card is durable and the task waits for its answer, as after a card of the worker. The plugin
+                # blocks each further tool call of the turn, and the answer continues the task in a later turn.
+                return {'status': 'waiting', 'decision_id': pause.decision_id, 'paused': True, 'instruction': PAUSED}
             raise ServiceError(409, 'This Coconut turn no longer takes tool calls.') from None
 
     def _gateway_tool(self, data: dict) -> dict:
@@ -227,6 +294,19 @@ class GatewayChat:
         if task_id is None:
             raise ServiceError(409, 'This Coconut turn no longer runs.')
         arguments = data.get('arguments') if isinstance(data.get('arguments'), dict) else {}
+        tool = data.get('tool')
+        context_id = self.gateway_bridge.context_of(data.get('turn_id'))
+        if context_id is not None:
+            # A follow-up on a pending card answers the question and can record a typed answer to that card.
+            if tool == 'resolve_reply':
+                return self.resolve_decision_reply(context_id, arguments)
+            raise ServiceError(409, 'Answer the current question. Its pending decision stays open.')
+        if tool == 'ask':
+            return self.native_event(task_id, 'native_question', arguments)
+        if tool == 'suggest':
+            return self.native_event(task_id, 'native_proposal', arguments)
+        if tool == 'resolve_reply':
+            return self.resolve_chat_decision(task_id, arguments)
         if data.get('tool') == 'track_pr':
             return self.emit(task_id, 'artifact', {'kind': 'pr', 'url': require_text(arguments, 'url', 500)})
         if data.get('tool') == 'message_bot':

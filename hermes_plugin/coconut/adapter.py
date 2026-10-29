@@ -52,8 +52,10 @@ OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # Streamed text goes to the service in pieces of at least this age or size.
 STREAM_SECONDS = 0.2
 STREAM_CHARACTERS = 400
-# coconut_ask waits this long for the person.
-ASK_SECONDS = 6 * 3600
+# The turns whose card ended them (coconut_ask), and the mode of a turn that is not a plain chat turn, for example
+# `context`: a follow-up on a pending card. The pre_tool_call hook reads both (hooks.guard_tool).
+PAUSED: set[str] = set()
+MODES: dict[str, str] = {}
 # The ID of a message outside a Coconut turn starts with this prefix. Its edits and its delete take the same route.
 OUTSIDE = 'outside:'
 # The adapters of this process. The tools and the hooks find the adapter of a chat here.
@@ -206,7 +208,6 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             poller.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await poller
-        self._wake_questions()
         self._mark_disconnected()
 
     async def _request(self, route: str, payload: dict, timeout: float = REQUEST_SECONDS) -> dict:
@@ -275,6 +276,8 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         if turn.get('session_root'):
             # hooks.join_conversation reads it before the gateway runs the turn.
             self._roots[str(turn['chat_id'])] = str(turn['session_root'])
+        if turn.get('mode'):
+            MODES[str(turn['id'])] = str(turn['mode'])
         # A turn that may stay silent, such as a reaction, needs no reply. Hermes then keeps a silence marker silent
         # instead of a notice (gateway.response_filters.silence_allowed).
         return MessageEvent(text=str(turn['text']), message_type=MessageType.TEXT, source=source,
@@ -286,7 +289,6 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         turn = self._turns.get(chat_id)
         if turn is None:
             return
-        self._wake_questions(turn)
         source = self.build_source(chat_id=chat_id, chat_type='dm', user_id='coconut', user_name='Coconut')
         await self.handle_message(MessageEvent(text='/stop', message_type=MessageType.COMMAND, source=source,
                                                message_id=turn + ':stop'))
@@ -311,7 +313,8 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         if self._turns.get(event.source.chat_id) == event.message_id:
             del self._turns[event.source.chat_id]
         self._typing.discard(event.message_id)
-        self._wake_questions(event.message_id)
+        PAUSED.discard(event.message_id)
+        MODES.pop(event.message_id, None)
         self.drop_stream(event.message_id)
         # The turn stays active in the polls until the service has its end. Otherwise the service would fail a
         # finished turn after a short outage.
@@ -433,28 +436,6 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
                                     text=str(prompt.description or 'Allow this command?'), detail=str(prompt.command),
                                     choices=options)
 
-    def ask(self, turn: str, question: str, choices: list, detail: str = ''):
-        """coconut_ask: show a question card and wait for the answer. Runs in the thread of the tool."""
-        holder = {'event': threading.Event(), 'answer': None, 'turn': turn}
-        question_id = str(uuid.uuid4())
-        self._questions[question_id] = ('ask', holder)
-        try:
-            self._bridge.request('/v1/gateway/events', {
-                'turn_id': turn, 'kind': 'question', 'question_id': question_id, 'question_kind': 'ask',
-                'text': question, 'detail': detail,
-                'choices': [dict(id=f'choice-{index}', label=str(choice)) for index, choice in enumerate(choices)]},
-                REQUEST_SECONDS)
-            holder['event'].wait(ASK_SECONDS)
-            return holder['answer']
-        finally:
-            self._questions.pop(question_id, None)
-
-    def _wake_questions(self, turn=None) -> None:
-        """Wake each coconut_ask of a turn that stopped or ended, or of every turn. It returns no answer."""
-        for route in list(self._questions.values()):
-            if route[0] == 'ask' and (turn is None or route[1]['turn'] == turn):
-                route[1]['event'].set()
-
     def _answer(self, item: dict) -> None:
         route = self._questions.pop(str(item.get('question_id')), None)
         if route is None:
@@ -467,9 +448,6 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             elif route[0] == 'approval':
                 from tools.approval import resolve_gateway_approval
                 resolve_gateway_approval(route[1], choice or 'deny', reason=text or None)
-            else:
-                route[1]['answer'] = text
-                route[1]['event'].set()
         except Exception:
             LOG.exception('Coconut: Hermes did not take the answer to a question.')
 

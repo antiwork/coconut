@@ -405,57 +405,8 @@ class NativeBridge:
         raise TurnPaused()
 
 
-QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Create a required decision card in chat and Inbox, then wait for the human answer. Use for choices, permission, confirmation, missing information, and manual-step results. Never ask for these only in prose. The person can choose an option or type a reply. Honor standing preferences. Do not duplicate an existing pending card.',
-                  'parameters': {'type': 'object', 'properties': {
-                      'title': {'type': 'string', 'description': 'A short question naming the specific action and affected thing. Use plain words and the writing style in your native profile. Example: Correct the totals in the monthly report?'},
-                      'explanation': {'type': 'string', 'description': 'Optional supporting detail for chat. Put only facts that change the choice in context or option explanations.'},
-                      'options': {'type': 'array', 'minItems': 1, 'maxItems': 8,
-                                  'items': {'type': 'object', 'properties': {'id': {'type': 'string'}, 'label': {'type': 'string', 'description': 'A specific, neutral action. Prefer Fix the PR or Leave unchanged to Fix or Leave blocked.'},
-                                      'explanation': {'type': 'string', 'maxLength': 200, 'description': 'One short sentence with a result or tradeoff that the label and context do not show. Use an empty string when the label is enough. Never include steps, paths, or repeated context.'}}, 'required': ['id', 'label', 'explanation']}},
-                      'recommended_option_id': {'type': 'string', 'description': 'Optional. Recommend one choice only when evidence and the user goal favor it. State the decisive reason once in context or that option explanation. Omit when no choice has a clear advantage. When revising, omit this field to remove the recommendation; do not send an empty ID.'}, 'predicted_option_id': {'type': 'string'}},
-                  'required': ['title', 'context', 'options']}}
-
-# These fields carry verified facts, not model confidence scores.
-QUESTION_SCHEMA['parameters']['properties'].update({
-    'source_revisions': {'type': 'object', 'additionalProperties': {'type': 'string'}, 'description': 'Required when creating a card with GitHub sources. Read each issue or PR and its latest comments first. Map each canonical source URL (without fragments) to its exact updated_at from GET /repos/OWNER/REPO/issues/NUMBER, also for PRs. This proves the source version, not permission. If the source settles the choice, create no card. In an audit of a work source, record that result with coconut_wait, no_card true, a reason, and next_check_at when needed.'},
-    'sources': {'type': 'array', 'maxItems': 8, 'description': 'Show the exact issues, PRs, emails, or documents behind this decision. Supply a short title and the exact source link when available. Do not invent links. Omit a URL when unavailable. On revision, omit sources to keep them, or replace the list; [] removes them.', 'items': {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['email', 'issue', 'pull_request', 'web']}, 'title': {'type': 'string', 'maxLength': 200}, 'url': {'type': ['string', 'null'], 'description': 'The full HTTP or HTTPS URL of the issue, PR, comment, email thread, or document.'}}, 'required': ['kind', 'title']}},
-    'previews': {'type': 'array', 'maxItems': 6, 'description': 'Attach actual images inside this card for visual review. Supply local absolute PNG or JPEG paths, up to 4 MB each and 12 MB total. Images are copied when saved. On revision, omit to keep images or send a new list to replace them; [] removes them.', 'items': {'type': 'object', 'properties': {'path': {'type': 'string'}, 'caption': {'type': 'string', 'maxLength': 160}}, 'required': ['path', 'caption']}},
-    'previous_decision_id': {'type': 'string', 'description': 'For a follow-up question, the answered card ID from this conversation, including an approved draft or a completed earlier task. This links context only; it does not approve the new card. Explain the check result and why this next choice is needed in context. Coconut links ordinary questions automatically during the immediate continuation. For a draft, always supply previous_decision_id when the draft carries out an answer; unrelated drafts must omit it.'},
-    'merge_pr_url': {'type': ['string', 'null'], 'description': 'Required for a question whose only action is whether to merge one PR. Use its full GitHub URL after coconut_track_pr. Coconut closes this card after a verified external merge. For a new question, omit this for reviews, releases, or other actions. For a revision, omission keeps the link; use null to remove it.'},
-    'context': {'type': 'string', 'maxLength': 400, 'description': 'One to three connected sentences, usually under 300 characters: what is wrong or needed, why it matters, and what approval does. Say whether it prepares local work, updates a PR, merges, deploys, sends a message, or changes a setting directly. Mention a limit only when the person would otherwise expect that effect. Keep steps, commands, and supporting evidence in chat. Do not repeat risk or uncertainty.'},
-    'uncertainty': {'type': 'string', 'maxLength': 200, 'description': 'One short sentence naming an unknown that could change this choice. Resolve allowed checks before asking. Omit it otherwise.'},
-    'risk': {'type': 'string', 'maxLength': 200, 'description': 'One short sentence stating what could go wrong and who or what it affects. It is the reason for risk_level, so set both or neither. A merge card always needs both. On other cards, omit both when there is no material risk. Do not invent reassurance.'},
-})
-QUESTION_SCHEMA['parameters']['properties']['risk_level'] = {
-    'type': 'string', 'enum': ['low', 'medium', 'high', 'not_assessed'],
-    'description': 'Required with risk, and on every merge card (low, medium, or high). Assessment of the proposed action. Low: small verified impact and clear recovery. Medium: meaningful bounded impact. High: broad impact or difficult recovery. Not assessed: evidence is insufficient. Always explain the reason in risk. This does not express confidence or merge readiness.'}
-QUESTION_SCHEMA['parameters']['properties']['needs_attention_now'] = {
-    'type': 'boolean',
-    'description': 'Optional. Set true only when waiting for the person’s next work hours would cause harm or a missed deadline. Coconut decides when to notify for every other card. This is not risk_level and does not change the card or its approval.'}
-QUESTION_SCHEMA['parameters']['properties']['options']['items']['properties'].update({
-    key: QUESTION_SCHEMA['parameters']['properties'][key] for key in ('risk_level', 'risk')})
+# The card tools of the worker. The coconut plugin of the gateway offers the same tools (card_tools).
 try:
-    from .message_drafts import DRAFT_SCHEMA
+    from .card_tools import QUESTION_SCHEMA, REPLY_SCHEMA, SUGGEST_SCHEMA
 except ImportError:
-    from message_drafts import DRAFT_SCHEMA
-
-SUGGEST_SCHEMA = {
-    'name': 'coconut_suggest',
-    'description': 'Create an optional proposal card in chat and Inbox while continuing authorized work. Use for offers such as investigating, fixing, or doing something extra instead of offering only in prose. Do not execute the proposal until authorized. Reuse the same key when retrying. Do not recreate a dismissed proposal.',
-    'parameters': dict(QUESTION_SCHEMA['parameters'],
-                       properties=dict(QUESTION_SCHEMA['parameters']['properties'], key={'type': 'string'}, draft=DRAFT_SCHEMA),
-                       required=['key', 'title'],
-                       anyOf=[{'required': ['options']}, {'required': ['draft']}]),
-}
-REPLY_SCHEMA = {
-    'name': 'coconut_resolve_reply',
-    'description': 'Record an unambiguous human answer to the current decision. Questions and uncertain intent must stay pending. Native tool approvals still require a visible choice.',
-    'parameters': {'type': 'object', 'properties': {
-        'choice': {'type': 'string', 'enum': ['approve', 'reject', 'modify']},
-        'option_id': {'type': 'string', 'description': 'The current option ID for an explicit selection.'},
-        'revision': dict(QUESTION_SCHEMA['parameters'],
-                         properties=dict({k: v for k, v in QUESTION_SCHEMA['parameters']['properties'].items() if k != 'needs_attention_now'}, draft=DRAFT_SCHEMA),
-                         required=[], anyOf=[{'required': ['title', 'options']}, {'required': ['draft']}]),
-        'quote': {'type': 'string', 'description': 'Exact words from this human reply that give the instruction.'},
-    }, 'required': ['choice', 'quote']},
-}
+    from card_tools import QUESTION_SCHEMA, REPLY_SCHEMA, SUGGEST_SCHEMA

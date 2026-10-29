@@ -30,7 +30,7 @@ from .service import TUNNEL_PAIRING_LIFETIME, Service, ServiceError, issue_pairi
 PEER_KEY = re.compile(r'[0-9a-f]{64}')
 # Only the main listener serves these. The tunnel listener carries the phone's requests.
 GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/tools', '/v1/gateway/cron',
-                  '/v1/gateway/answers', '/v1/gateway/messages')
+                  '/v1/gateway/messages')
 
 
 class APIServer(ThreadingHTTPServer):
@@ -165,8 +165,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, self.server.service.gateway_cron(data))
             elif path == '/v1/gateway/messages':
                 self._json(200, self.server.service.gateway_message(data))
-            elif path == '/v1/gateway/answers':
-                self._json(200, bridge.wait_answer(data))
             else:
                 self._json(200, bridge.poll(data) if path == '/v1/gateway/poll' else bridge.event(data))
         except (TypeError, ValueError) as error:

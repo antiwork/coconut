@@ -84,31 +84,23 @@ class GatewayCronTests(unittest.TestCase):
             self.assertFalse([t for t in self.service._all('tasks') if t.get('_gateway_cron')])
             self.assertFalse(self.service._service_busy())
 
-    def test_a_question_of_a_cron_run_is_a_card_and_its_tool_waits_for_the_answer(self):
+    def test_a_card_of_a_cron_run_ends_the_run_and_the_routine_task_waits_for_the_answer(self):
         started = self.start()
         bridge = self.service.gateway_bridge
-        bridge.event({'turn_id': started['turn_id'], 'kind': 'question', 'question_id': 'q1', 'question_kind': 'ask',
-                      'text': 'File these items?', 'choices': [{'id': 'choice-0', 'label': 'Yes'}]})
-        deadline = time.monotonic() + 5
-        card = None
-        while card is None and time.monotonic() < deadline:
-            with self.service.lock:
-                card = next((d for d in self.service._all('decisions') if d['task_id'] == started['task_id']), None)
-            time.sleep(.02)
-        self.assertEqual(bridge.wait_answer({'turn_id': started['turn_id'], 'question_id': 'q1', 'wait': 0}), {})
-        waiting = {}
-        thread = threading.Thread(target=lambda: waiting.update(bridge.wait_answer(
-            {'turn_id': started['turn_id'], 'question_id': 'q1', 'wait': 5})))
-        thread.start()
-        self.service.mutate('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'choice-0', 'revision': 1},
-                            str(uuid4()), 'phone')
-        thread.join(5)
-        self.assertEqual(waiting['answer'], {'question_id': 'q1', 'text': 'Yes', 'choice': 'choice-0'})
+        card = {'title': 'File these items?', 'context': 'Two items wait in the queue.',
+                'options': [{'id': 'file', 'label': 'File them', 'explanation': ''}]}
+        result = self.service.gateway_tool({'turn_id': started['turn_id'], 'tool': 'ask', 'arguments': card})
+        self.assertEqual((result['status'], result['paused']), ('waiting', True))
+        self.assertEqual(self.read('tasks', started['task_id'])['status'], 'needs_you')
+        # The end of the cron run does not complete the waiting task.
         bridge.event({'turn_id': started['turn_id'], 'kind': 'done', 'outcome': 'success'})
         deadline = time.monotonic() + 5
         while bridge.task_of(started['turn_id']) and time.monotonic() < deadline:
             time.sleep(.02)
-        self.assertEqual(bridge.wait_answer({'turn_id': started['turn_id'], 'question_id': 'q1'}), {'ended': True})
+        self.assertEqual(self.read('tasks', started['task_id'])['status'], 'needs_you')
+        with self.service.lock:
+            decision = next(d for d in self.service._all('decisions') if d['task_id'] == started['task_id'])
+        self.assertEqual((decision['title'], decision['status']), ('File these items?', 'pending'))
 
     def test_the_gateway_fires_the_routines_of_a_served_profile_and_coconut_fires_the_others(self):
         due = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()

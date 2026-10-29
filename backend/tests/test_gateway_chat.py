@@ -40,12 +40,11 @@ class RoutingRuleTests(unittest.TestCase):
         plain = {'_chat_session': True, 'attachments': [], '_pending_decisions': [], '_tracked_pr_observations': []}
         self.assertTrue(plain_chat_turn(plain))
         self.assertFalse(plain_chat_turn(dict(plain, _chat_session=False)))
-        for key in ('_pending_decisions', '_native_job', '_work_context_id', '_bot_messages',
-                    '_source_activity', '_direct_reply_message_id'):
+        for key in ('_native_job', '_work_context_id', '_bot_messages', '_source_activity', '_direct_reply_message_id'):
             with self.subTest(key=key):
                 self.assertFalse(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
-        # Attachments and reactions go to the gateway as text of the turn.
-        for key in ('attachments', '_reaction_feedback'):
+        # Attachments, reactions and pending cards go to the gateway as text of the turn.
+        for key in ('attachments', '_reaction_feedback', '_pending_decisions'):
             with self.subTest(key=key):
                 self.assertTrue(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
 
@@ -449,7 +448,7 @@ class ServiceRoutingTests(unittest.TestCase):
             {'kind': 'question', 'question_id': 'q1', 'question_kind': 'approval', 'text': 'Allow rm -rf build?',
              'detail': 'rm -rf build', 'choices': [{'id': 'once', 'label': 'Allow once'},
                                                    {'id': 'deny', 'label': 'Deny', 'deny': True}]},
-            {'kind': 'question', 'question_id': 'q2', 'question_kind': 'ask', 'text': 'Anything else?'}])
+            {'kind': 'question', 'question_id': 'q2', 'question_kind': 'clarify', 'text': 'Anything else?'}])
         adapter.start()
         runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
         runner.start()
@@ -519,6 +518,111 @@ class ServiceRoutingTests(unittest.TestCase):
         runner.join(5)
         with self.assertRaisesRegex(ServiceError, 'no longer runs'):
             self.service.gateway_tool({'turn_id': turn, 'tool': 'message_bot', 'arguments': {'bot': 'Lin', 'text': 'x'}})
+
+    CARD = {'title': 'Ship the release?', 'context': 'The build passed and the notes are ready.',
+            'options': [{'id': 'ship', 'label': 'Ship it', 'explanation': ''},
+                        {'id': 'wait', 'label': 'Wait a day', 'explanation': ''}]}
+
+    def ask_in_gateway(self, text='Can we ship?'):
+        """A gateway turn that shows a card with coconut_ask. Return the task, the card and the turn's tool result."""
+        task = self.send(text)
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        result = self.service.gateway_tool({'turn_id': turn, 'tool': 'ask', 'arguments': self.CARD})
+        # Hermes ends the turn. Its last text comes after the card, and the task no longer takes output.
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': 'I asked.'})
+        runner.join(5)
+        self.assertFalse(runner.is_alive())
+        card = next(d for d in self.decisions() if d['task_id'] == task['id'])
+        return task, card, result
+
+    def test_a_card_ends_the_gateway_turn_and_its_answer_continues_in_the_gateway(self):
+        from coconut.card_tools import PAUSED
+        task, card, result = self.ask_in_gateway()
+        self.assertEqual(result, {'status': 'waiting', 'decision_id': card['id'], 'paused': True, 'instruction': PAUSED})
+        self.assertEqual((card['title'], card['status'], [o['label'] for o in card['options']]),
+                         ('Ship the release?', 'pending', ['Ship it', 'Wait a day']))
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'needs_you')
+        self.assertEqual(self.replies(task), [])
+        # Each further tool call of the ended turn is refused.
+        self.write('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'ship', 'revision': 1})
+        stored = self.read('tasks', task['id'])
+        self.assertEqual((stored['status'], stored['_resume_decision']), ('queued', card['id']))
+        text = self.run_in_gateway(stored, [{'kind': 'send', 'message_id': 'm:1', 'text': 'Shipped.'},
+                                            {'kind': 'done', 'outcome': 'success'}])
+        # The worker's text for the answer continues the conversation.
+        self.assertTrue(text.startswith('Continue the original task using this recorded answer.'))
+        self.assertIn('"selected_option_label": "Ship it"', text)
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.provider.resumes, [])
+        self.assertEqual(self.replies(task), [('Shipped.', False, False)])
+
+    def test_a_typed_answer_in_chat_resolves_a_pending_card_in_the_gateway(self):
+        task, card, _ = self.ask_in_gateway()
+        reply = self.send('Yes, ship it today.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(reply['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        text = adapter.turns[0]['text']
+        self.assertTrue(text.startswith('Yes, ship it today.'))
+        self.assertIn('Pending decisions in this conversation follow.', text)
+        self.assertIn(card['id'], text)
+        source = self.read('tasks', reply['id'])['_turn_message_ids'][0]
+        result = self.service.gateway_tool({'turn_id': adapter.turns[0]['id'], 'tool': 'resolve_reply', 'arguments': {
+            'choice': 'approve', 'option_id': 'ship', 'quote': 'ship it today', 'decision_id': card['id'],
+            'decision_revision': 1, 'source_message_id': source}})
+        self.assertEqual(result['status'], 'recorded')
+        self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        self.assertEqual(self.read('decisions', card['id'])['status'], 'approved')
+        # The answered card continues its own task.
+        self.assertEqual(self.read('tasks', task['id'])['_resume_decision'], card['id'])
+        self.assertEqual(self.provider.starts, [])
+
+    def test_a_follow_up_on_a_card_runs_in_the_gateway_and_makes_no_card(self):
+        task, card, _ = self.ask_in_gateway()
+        self.write('POST', f'/v1/decisions/{card["id"]}/context', {'question': 'What changed since the last release?'})
+        context = next(c for c in self.service._all('contexts') if c['decision_id'] == card['id'])
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        self.service._start_context(context['id'])
+        adapter.join(5)
+        turn = adapter.turns[0]
+        self.assertEqual(turn['mode'], 'context')
+        self.assertTrue(turn['text'].startswith('Respond only to this follow-up.'))
+        self.assertIn('What changed since the last release?', turn['text'])
+        with self.assertRaisesRegex(ServiceError, 'pending decision stays open'):
+            self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'ask', 'arguments': self.CARD})
+        bridge = self.service.gateway_bridge
+        bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'c:1', 'text': 'Only the notes.', 'interim': True})
+        bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'm:1', 'text': 'Two fixes and the notes.'})
+        bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
+        self.service.context_threads[context['id']].join(5)
+        self.assertEqual(self.read('contexts', context['id'])['status'], 'completed')
+        answer = [m for m in self.service._task_messages(task['id'])
+                  if m['role'] == 'assistant' and m.get('decision_id') == card['id'] and m['kind'] == 'text']
+        self.assertEqual([m['text'] for m in answer], ['Two fixes and the notes.'])
+        # The card stays pending, and the task waits for its answer.
+        self.assertEqual((self.read('decisions', card['id'])['status'], self.read('tasks', task['id'])['status']),
+                         ('pending', 'needs_you'))
+        self.assertEqual(self.provider.contexts, [])
+
+    def test_a_command_approval_of_a_worker_turn_resumes_in_the_worker(self):
+        from coconut.gateway_chat import gateway_resume
+        plain = {'_chat_session': True}
+        self.assertTrue(gateway_resume(plain, {'action_type': 'question'}))
+        self.assertTrue(gateway_resume(plain, {'action_type': 'draft_message'}))
+        # The worker recorded the exact tool call that the person allowed, and it repeats that call.
+        self.assertFalse(gateway_resume(plain, {'action_type': 'native_approval'}))
+        self.assertFalse(gateway_resume(plain, {'action_type': 'question', '_receipt_id': 'receipt'}))
+        # A task of a later group stays with the worker.
+        self.assertFalse(gateway_resume(dict(plain, _work_context_id='work'), {'action_type': 'question'}))
 
     def test_a_cancelled_turn_stops_in_the_gateway(self):
         task = self.send('A long answer, please.')
