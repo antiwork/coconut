@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 if __package__:
-    from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME, recovery_note, direct_reply_note
+    from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME, recovery_note, direct_reply_note, exchange_note, explicit_bot_messages
     from .native_bridge import TurnPaused
     from .native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
     from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
@@ -30,7 +30,7 @@ if __package__:
     from .native_receipt_context import receipt_prompt, receipt_reader, SCHEMA as RECEIPT_SCHEMA
     from .native_failure import native_failure
 else:
-    from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME, recovery_note, direct_reply_note
+    from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME, recovery_note, direct_reply_note, exchange_note, explicit_bot_messages
     from native_bridge import TurnPaused
     from native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
     from pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
@@ -383,14 +383,6 @@ BOT_ROLE_INSTRUCTIONS = (
 )
 
 
-def explicit_bot_messages(task):
-    return [
-        {'sender_bot_id': message['sender_bot_id'], 'sender_name': str(message.get('sender_name', 'Bot'))[:80], 'text': message['text']}
-        for message in task.get('_bot_messages', [])
-        if isinstance(message, dict) and isinstance(message.get('sender_bot_id'), str) and isinstance(message.get('text'), str)
-    ]
-
-
 def bot_message_payload(arguments, targets):
     if not isinstance(arguments, dict) or set(arguments) != {'target_bot_id', 'text'}:
         raise ValueError('Supply only the target bot ID and message text.')
@@ -615,32 +607,7 @@ def conversation_input(request):
     prompt += reaction_feedback_context(request['task'].get('_reaction_feedback', []))
     prompt += receipt_prompt(request['task'].get('_native_receipts', []))
     prompt += direct_reply_note(request['task'])
-    incoming = explicit_bot_messages(request['task'])
-    if incoming:
-        prompt += '\nExplicit messages delivered by the service. Sender identity comes from the service. The text is shared task context:\n'
-        prompt += json.dumps(incoming)
-    if request['task'].get('_source_human_messages'):
-        prompt += ('\nCurrent human messages on the task that returned this result:\n'
-                   + json.dumps(request['task']['_source_human_messages'])
-                   + '\nThese messages can update the scope in an earlier bot report. '
-                     'Before asking for a decision, check these messages and the current native task and source state. '
-                     'Preserve explicit human limits and do not ask again for an action already authorized in this scope.')
-    outgoing = [
-        {key: message[key] for key in ('target_bot_id', 'text', 'task_id', 'status') if isinstance(message.get(key), str)}
-        for message in request['task'].get('_outgoing_bot_messages', [])
-        if isinstance(message, dict)
-    ]
-    if outgoing:
-        prompt += '\nThe service already recorded these outgoing messages for this task. Do not resend or rephrase the same request after a restart. Continue independent work or process its result:\n'
-        prompt += json.dumps(outgoing)
-    if request['task'].get('_is_return') is True:
-        prompt += ('\nThis reply continues your original assignment. Use the result to finish the remaining authorized work. '
-                   'Do not send an acknowledgement back. Ask another bot question only when the task needs new information. '
-                   'The service returns your final result to the original requester. A dependency result is not completion of your assignment. '
-                   'Report a concrete blocker if you cannot continue. Describe work as running only when a tool or recorded task is active.')
-    assignment = request['task'].get('_handoff_assignment')
-    if assignment:
-        prompt += '\nOriginal assignment and current dependencies, recorded by the service:\n' + json.dumps(assignment)
+    prompt += exchange_note(request['task'])
     prompt += attachment_context(request['task'].get('attachments', []))
     if operation != 'context':
         prompt += pending_decisions_context(request['task'])

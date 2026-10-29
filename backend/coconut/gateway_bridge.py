@@ -46,16 +46,15 @@ MAX_TEXT = 200_000
 KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
 QUESTION_KINDS = ('clarify', 'approval')
 
-# A chat turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: a work item
-# with its own work session and workspace, claims, routines, bot exchanges, GitHub source activity, PR reviews, the
-# technical lane of a native outcome, and bot creation and deletion. The worker runs it until phase 5 moves it.
-# Attachments, reactions, pending cards, the saved task list of the chat's assignment, its dependencies, a recovery
-# context and a direct reply go to the gateway as text of the turn (gateway_chat.gateway_turn_text). The plugin has
-# the card tools, coconut_wait and coconut_correct_withdrawal.
+# A turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: a work item with
+# its own work session and workspace, claims, routines, GitHub source activity, PR reviews, the technical lane of a
+# native outcome, and bot creation and deletion. The worker runs it until phase 5 moves it. Attachments, reactions,
+# pending cards, the saved task list of an assignment, its dependencies, a recovery context, a direct reply and the
+# bot exchange go to the gateway as text of the turn (gateway_chat.gateway_turn_text). The plugin has the card tools,
+# coconut_wait, coconut_correct_withdrawal and coconut_message_bot.
 WORKER_INPUTS = (
     '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
-    '_work_context_id', '_work_context', '_pr_review',
-    '_background_completion', '_handoff_assignment', '_is_return', '_bot_messages', '_outgoing_bot_messages',
+    '_work_context_id', '_work_context', '_pr_review', '_background_completion',
     '_source_activity', '_source_answer_steps', '_source_audit_prompt', '_technical_lane',
     '_native_receipts', '_bot_creation_receipts', '_bot_deletion_receipts', '_work_status_only')
 
@@ -66,7 +65,12 @@ WORKER_MESSAGE_FIELDS = ('work_context',)
 
 
 def plain_chat_turn(task: dict) -> bool:
-    """Whether a new turn can run in the gateway: a person's message in a bot's own chat without a worker input."""
+    """Whether a turn can run in the gateway: a turn of the bot's conversation (`_chat_session`) without a worker input.
+
+    With the gateway, a message of another bot, the return of a delegated task and the continuation of an accepted
+    proposal are turns of the bot's conversation too (gateway_chat.join_conversation). A task with its own work session
+    (`_execution_session_id`) stays with the worker.
+    """
     return bool(task.get('_chat_session')) and not any(task.get(key) for key in WORKER_INPUTS)
 
 
