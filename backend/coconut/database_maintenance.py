@@ -64,8 +64,12 @@ FINISHED = ('completed', 'failed', 'cancelled')
 UNKNOWN_COMPLETION_KEPT = ("CASE WHEN json_extract(data,'$.action.name')='terminal' AND json_valid(json_extract(data,'$.result')) "
                            "THEN json_extract(json_extract(data,'$.result'),'$.notify_on_complete') IS NOT NULL ELSE 1 END")
 # Lookups read these receipts by content at any age: NativeOutcomes adopts a native task by the idempotency key
-# of its kanban_create receipt, and WorkProgress links a manual routine run by its cronjob_manage receipt.
-KEPT_ACTIONS = ('kanban_create', 'cronjob_manage')
+# of its kanban_create receipt, routine_reports.created_occurrences finds the routines that a task created, and
+# WorkProgress links a manual routine run. Other cronjob_manage calls, such as a list of every job, have no reader.
+KEPT_ROUTINE_CALLS = ('create', 'run', 'run_now', 'trigger')
+KEPT_RECEIPT = ("(json_extract(data,'$.action.name')='kanban_create' OR (json_extract(data,'$.action.name')='cronjob_manage' "
+                "AND lower(trim(COALESCE(json_extract(data,'$.action.arguments.action'),''))) IN "
+                "(SELECT value FROM json_each(:routine_calls))))")
 # A context that ended keeps its question and its recovery text for a pending decision, because a recovery reads them.
 # For a settled decision nothing reads them, and they made up 58 of the 67 MB of the contexts of a live store.
 # The question keeps this many characters, to name the context.
@@ -237,7 +241,7 @@ class DatabaseMaintenance:
           (_wait_process_receipt) names, because _get fails without it;
         - the receipts of a task in the scope of a pending decision, because its freshness fingerprint lists them;
         - the receipts of a task with a queued or working context;
-        - KEPT_ACTIONS.
+        - kanban_create receipts and the cronjob_manage calls in KEPT_ROUTINE_CALLS (KEPT_RECEIPT).
 
         With `retire`, a task that ended HISTORY_DAYS ago loses its completed receipts also when its outcome is not
         idle, for example a chat task of a bot that works every day. The rules above still keep what a lookup reads.
@@ -282,10 +286,9 @@ class DatabaseMaintenance:
             return 0
         with self._read_view() as view, view._read_transaction():
             rows = [row[0] for row in view.db.execute(
-                "SELECT rowid FROM native_receipts WHERE json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?)) "
-                "AND json_extract(data,'$.state')='completed' "
-                "AND COALESCE(json_extract(data,'$.action.name'),'') NOT IN (SELECT value FROM json_each(?)) ORDER BY rowid",
-                (json.dumps(sorted(candidates)), json.dumps(KEPT_ACTIONS)))]
+                "SELECT rowid FROM native_receipts WHERE json_extract(data,'$.task_id') IN (SELECT value FROM json_each(:tasks)) "
+                "AND json_extract(data,'$.state')='completed' AND NOT " + KEPT_RECEIPT + " ORDER BY rowid",
+                dict(tasks=json.dumps(sorted(candidates)), routine_calls=json.dumps(KEPT_ROUTINE_CALLS)))]
         deleted = 0
         for start in range(0, len(rows), BATCH_ROWS):
             if self._maintenance_stopped():

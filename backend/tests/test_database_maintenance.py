@@ -239,9 +239,11 @@ class ReceiptRetentionTests(ServiceCase):
 
     def test_an_idle_outcome_loses_its_receipts_except_the_named_ones(self):
         idle, other = self.task(), self.task()
-        gone = self.receipt(idle)
-        kept = {self.receipt(idle, state='executing', result=None),
-                self.receipt(idle, 'kanban_create'), self.receipt(idle, 'cronjob_manage')}
+        routine = lambda call: dict(action={'name': 'cronjob_manage', 'arguments': {'action': call}})
+        # A list of every job has no reader. A created or run routine does.
+        gone = {self.receipt(idle), self.receipt(idle, **routine('list'))}
+        kept = {self.receipt(idle, state='executing', result=None), self.receipt(idle, 'kanban_create'),
+                self.receipt(idle, **routine('create')), self.receipt(idle, **routine(' Run_Now '))}
         decided, carried, waited = self.receipt(idle), self.receipt(idle), self.receipt(idle)
         kept |= {decided, carried, waited}
         with self.service.transaction():
@@ -251,9 +253,9 @@ class ReceiptRetentionTests(ServiceCase):
         # A pending receipt, here a wait, keeps every receipt of its task. It also names the receipt that it waits for.
         waiter = self.task()
         kept |= {self.receipt(waiter, 'process', _wait_process_receipt=waited), self.receipt(waiter)}
-        self.assertEqual(self.service._prune_receipts(NOW), 1)
+        self.assertEqual(self.service._prune_receipts(NOW), 2)
         self.assertEqual(self.remaining(), kept)
-        self.assertNotIn(gone, self.remaining())
+        self.assertFalse(gone & self.remaining())
 
     def test_an_idle_outcome_loses_its_terminal_results(self):
         # A terminal result without notify_on_complete makes PENDING_COMPLETIONS NULL. Such receipts hold most tool output.
@@ -398,8 +400,8 @@ class HistoryRetentionTests(ServiceCase):
         retired, recent = self.task(), self.task(updated_at=OLD)
         self.task(status='working', updated_at=RECENT)
         gone = self.receipt(retired)
-        kept = {self.receipt(retired, state='executing'), self.receipt(retired, 'kanban_create'),
-                self.receipt(retired, 'cronjob_manage'), self.receipt(recent)}
+        kept = {self.receipt(retired, state='executing'), self.receipt(retired, 'kanban_create'), self.receipt(recent),
+                self.receipt(retired, action={'name': 'cronjob_manage', 'arguments': {'action': 'create'}})}
         named = self.receipt(retired)
         kept.add(named)
         with self.service.transaction():
