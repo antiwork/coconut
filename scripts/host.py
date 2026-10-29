@@ -317,47 +317,64 @@ def process_table() -> dict[int, tuple[int, int, str, str, str]]:
     return table
 
 
-def record_descendants(known: dict[int, tuple[str, str]], roots: set[int], table: dict) -> None:
-    """Add to `known` each process in the table that descends from `roots` or from a known process, or that is in the
-    process group of one of them. Keep its start time and command, which identify it later.
-
-    The service starts its Hermes gateway, its workers, and the Kanban dispatcher in their own sessions. A worker starts
-    the background commands of its turns in further sessions. A signal to the service reaches none of them. Their parent
-    proves that they belong to the service, also after the parent ends. A person-started gateway has no such parent.
-    """
-    parents = roots | set(known)
-    while True:
-        added = {pid for pid, (parent, group, *_) in table.items()
-                 if pid not in parents and (parent in parents or group in parents)}
-        if not added:
-            break
-        parents |= added
-    for pid in parents - roots:
-        if pid not in known and pid in table:
-            known[pid] = (table[pid][3], table[pid][4])
+def identity(table: dict, pid: int) -> tuple[str, str]:
+    return table[pid][3], table[pid][4]
 
 
 def alive_processes(known: dict[int, tuple[str, str]], table: dict) -> dict[int, tuple[str, str]]:
     """The known processes that still run as the same process: same start time and command, not a zombie."""
-    return {pid: identity for pid, identity in known.items()
-            if pid in table and (table[pid][3], table[pid][4]) == identity
-            and not any(letter in table[pid][2] for letter in EXITED)}
+    return {pid: value for pid, value in known.items()
+            if pid in table and identity(table, pid) == value and not any(letter in table[pid][2] for letter in EXITED)}
 
 
-def stop_descendants(known: dict[int, tuple[str, str]]) -> None:
+def record_descendants(known: dict[int, tuple[str, str]], table: dict) -> None:
+    """Add to `known` the processes that provably belong to the service, with their start time and command.
+
+    A process belongs when its parent is a known process that still runs as itself, or when it is in the process group
+    that such a process leads. `known` starts with the service. The service starts its Hermes gateway, its workers, and the
+    Kanban dispatcher in sessions of their own, and a worker starts the background commands of its turns in further
+    sessions, so a signal to the service reaches none of them. A process ID that now runs another process proves nothing,
+    so its children and its group are never added. Only processes of the same session can join a group, so a member of a
+    group whose leader still runs as itself is a process of that leader. A gateway that a person started has no such link.
+    """
+    proven = set(alive_processes(known, table))
+    while True:
+        added = {pid for pid, (parent, group, *_) in table.items()
+                 if pid not in proven and pid not in known and (parent in proven or group in proven)}
+        if not added:
+            return
+        for pid in added:
+            known[pid] = identity(table, pid)
+        proven |= added
+
+
+def log_unproven(known: dict[int, tuple[str, str]], table: dict) -> None:
+    """Name the processes in a group of an ended process of the service. They can be its background commands, but no
+    living process proves it, so they get no signal. deploy.py keeps this output in its log."""
+    ended_leaders = set(known) - set(alive_processes(known, table))
+    for pid, (parent, group, state, _, command) in sorted(table.items()):
+        if group in ended_leaders and pid not in known and not any(letter in state for letter in EXITED):
+            print(f"Coconut did not stop process {pid} ({command[:120]}). It is in the process group of process {group} "
+                  "of the old service, which ended, so nothing proves that it belongs to Coconut.", file=sys.stderr)
+
+
+def stop_descendants(service: int, known: dict[int, tuple[str, str]]) -> None:
     """Stop the processes of an ended service that are still alive: SIGTERM, then SIGKILL. Check each one before each
     signal, and add the processes that they started meanwhile.
 
     A Hermes gateway of the old source that keeps running blocks the gateway of the new source. A worker or a background
     command of the old source can change the files of the new one. So the update waits until each one has ended.
     """
+    def remaining(table):
+        record_descendants(known, table)
+        return {pid: value for pid, value in alive_processes(known, table).items() if pid != service}
     alive = {}
+    table = {}
     for number, seconds in ((signal.SIGTERM, CHILD_STOP_SECONDS), (signal.SIGKILL, KILL_WAIT_SECONDS)):
         table = process_table()
-        record_descendants(known, set(alive_processes(known, table)), table)
-        alive = alive_processes(known, table)
+        alive = remaining(table)
         if not alive:
-            return
+            break
         for pid in alive:
             try:
                 os.kill(pid, number)
@@ -367,12 +384,12 @@ def stop_descendants(known: dict[int, tuple[str, str]]) -> None:
         while alive and time.monotonic() < deadline:
             time.sleep(.1)
             table = process_table()
-            record_descendants(known, set(alive), table)
-            alive = alive_processes(known, table)
+            alive = remaining(table)
     if alive:
         pid, (_, command) = next(iter(alive.items()))
         raise SystemExit(f"The service ended, but its process {pid} ({command[:120]}) did not end after SIGKILL. "
                          "Coconut kept its data unchanged.")
+    log_unproven(known, table)
 
 
 def stop_owned_process() -> None:
@@ -390,8 +407,9 @@ def stop_owned_process() -> None:
     else:
         pid = current[0]
     # {process ID: (start time, command)} of each process that the service started.
-    known: dict[int, tuple[str, str]] = {}
-    record_descendants(known, {pid}, process_table())
+    table = process_table()
+    known: dict[int, tuple[str, str]] = {pid: identity(table, pid)} if pid in table else {}
+    record_descendants(known, table)
     if current is not None:
         try:
             os.kill(pid, signal.SIGTERM)
@@ -409,7 +427,7 @@ def stop_owned_process() -> None:
             break
         # The processes start more processes while they stop. ps lists every process, so the list is read once a second.
         if time.monotonic() - listed >= 1:
-            record_descendants(known, {pid}, process_table())
+            record_descendants(known, process_table())
             listed = time.monotonic()
         if time.monotonic() >= deadline:
             if killed:
@@ -422,7 +440,7 @@ def stop_owned_process() -> None:
             killed = True
             deadline = time.monotonic() + KILL_WAIT_SECONDS
         time.sleep(.1)
-    stop_descendants(known)
+    stop_descendants(pid, known)
 
 
 def wait_for_agent_unloaded(timeout: float = 10) -> None:

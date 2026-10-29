@@ -1,6 +1,7 @@
 import argparse
 import fcntl
 import importlib.util
+import io
 import json
 from pathlib import Path
 import plistlib
@@ -740,34 +741,70 @@ class AppServiceStopTests(unittest.TestCase):
 
 
 class StopDescendantsTests(unittest.TestCase):
+    SERVICE = ('Thu Oct 29 16:08:05 2026', 'python -m coconut --data-dir /data')
     LISTING = (' 1 0 1 Ss Mon Oct 26 09:05:20 2026 /sbin/launchd\n'
+               ' 4242 1 4242 Ss Thu Oct 29 16:08:05 2026 python -m coconut --data-dir /data\n'
                ' 20 4242 20 Ss Thu Oct 29 16:08:06 2026 python -c gateway run\n'
                ' 21 4242 21 Ss Thu Oct 29 16:08:07 2026 python hermes_worker.py\n'
                ' 30 21 30 Ss Thu Oct 29 16:09:00 2026 /bin/zsh -c npm run dev\n'
                ' 31 1 30 S Thu Oct 29 16:09:01 2026 node server.js\n'
-               ' 40 1 40 Ss Thu Oct 29 16:00:00 2026 python -m hermes_cli.main gateway run\n')
+               ' 40 1 40 Ss Thu Oct 29 16:00:00 2026 python -m hermes_cli.main gateway run\n'
+               ' 41 40 40 S Thu Oct 29 16:00:01 2026 python gateway helper\n')
 
-    def test_the_processes_of_the_service_are_its_descendants_and_their_groups(self):
-        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, self.LISTING, '')) as run:
+    def table(self, listing):
+        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, listing, '')) as run:
             table = host.process_table()
         self.assertEqual(run.call_args.args[0], ['ps', '-A', '-ww', '-o', 'pid=,ppid=,pgid=,stat=,lstart=,command='])
-        known = {}
-        host.record_descendants(known, {4242}, table)
-        # 31 lost its parent, but it is in the group of the background command 30. 40 is a gateway that a person started.
-        self.assertEqual(set(known), {20, 21, 30, 31})
+        return table
+
+    def stop(self, listing, known):
+        """Run stop_descendants against a fixed process list. Return the signalled processes and the error output."""
+        errors = io.StringIO()
+        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, listing, '')), \
+             patch.object(host.os, 'kill') as kill, patch.object(host, 'CHILD_STOP_SECONDS', 0), \
+             patch.object(host, 'KILL_WAIT_SECONDS', 0), patch.object(sys, 'stderr', errors):
+            try:
+                host.stop_descendants(4242, known)
+            except SystemExit:
+                pass
+        return {call.args[0] for call in kill.call_args_list}, errors.getvalue()
+
+    def test_the_processes_of_the_service_are_its_descendants_and_the_groups_they_lead(self):
+        known = {4242: self.SERVICE}
+        host.record_descendants(known, self.table(self.LISTING))
+        # 31 lost its parent, but it is in the group that the background command 30 leads, and 30 still runs.
+        # 40 and 41 are a gateway that a person started, and its helper.
+        self.assertEqual(set(known), {4242, 20, 21, 30, 31})
         self.assertEqual(known[21], ('Thu Oct 29 16:08:07 2026', 'python hermes_worker.py'))
 
-    def test_a_reused_process_id_is_not_signalled(self):
-        reused = self.LISTING.replace('16:08:06 2026 python -c gateway run', '16:30:00 2026 /usr/bin/ssh-agent')
-        with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, reused, '')), \
-             patch.object(host.os, 'kill') as kill:
-            host.stop_descendants({20: ('Thu Oct 29 16:08:06 2026', 'python -c gateway run')})
-        kill.assert_not_called()
+    def test_a_reused_process_id_proves_nothing_about_its_children(self):
+        # Worker 21 ended. Another program got its process ID and started a child. Neither gets a signal.
+        reused = (' 21 1 21 Ss Thu Oct 29 16:30:00 2026 /usr/bin/ssh-agent\n'
+                  ' 50 21 21 S Thu Oct 29 16:30:01 2026 /usr/bin/ssh-agent helper\n')
+        known = {4242: self.SERVICE, 21: ('Thu Oct 29 16:08:07 2026', 'python hermes_worker.py')}
+        host.record_descendants(known, self.table(reused))
+        self.assertEqual(set(known), {4242, 21})
+        signalled, _ = self.stop(reused, known)
+        self.assertEqual(signalled, set())
+
+    def test_a_process_in_the_group_of_an_ended_process_is_named_but_not_signalled(self):
+        # The background command 30 ended. 31 is still in its group, but no living process proves that 31 is Coconut's.
+        listing = ' 31 1 30 S Thu Oct 29 16:09:01 2026 node server.js\n'
+        signalled, errors = self.stop(listing, {30: ('Thu Oct 29 16:09:00 2026', '/bin/zsh -c npm run dev')})
+        self.assertEqual(signalled, set())
+        self.assertIn('Coconut did not stop process 31 (node server.js)', errors)
+
+    def test_only_the_processes_of_the_service_get_signals(self):
+        known = {4242: self.SERVICE}
+        host.record_descendants(known, self.table(self.LISTING))
+        # The service itself already ended. The person's gateway 40 and its helper 41 get nothing.
+        signalled, _ = self.stop(self.LISTING.replace(' 4242 1 4242 Ss', ' 4242 1 4242 Z'), known)
+        self.assertEqual(signalled, {20, 21, 30, 31})
 
     def test_a_failed_process_list_signals_nothing(self):
         with patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', 'error')), \
              patch.object(host.os, 'kill') as kill:
-            host.stop_descendants({20: ('Thu Oct 29 16:08:06 2026', 'python -c gateway run')})
+            host.stop_descendants(4242, {20: ('Thu Oct 29 16:08:06 2026', 'python -c gateway run')})
         kill.assert_not_called()
 
 
