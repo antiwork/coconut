@@ -771,6 +771,8 @@ def _write_default(selection, catalog):
 def _write_model(path, selected, effort, previous):
     """Write a model, its provider, its base URL and an effort into one config.yaml.
 
+    With a 'fallback' key in `selected`, the fallback keys of the file become those keys.
+
     `previous` is the route of the file before the write. A new provider or base URL drops the endpoint credentials of
     the old route.
     """
@@ -808,6 +810,12 @@ def _write_model(path, selected, effort, previous):
     else:
         agent['reasoning_effort'] = effort
     raw['agent'] = agent
+    if 'fallback' in selected:
+        for key in FALLBACK_KEYS:
+            if key in selected['fallback']:
+                raw[key] = deepcopy(selected['fallback'][key])
+            else:
+                raw.pop(key, None)
     if (path.read_bytes() if path.exists() else None) != before:
         raise ModelCatalogError('Hermes settings changed. Refresh before saving again.')
     save_yaml(path, raw)
@@ -881,6 +889,14 @@ def _write_profile(home, selection, catalog):
         reset_hermes_home_override(token)
 
 
+# The fallback keys of Hermes. A bot that follows the default takes them as the default profile has them.
+FALLBACK_KEYS = ('fallback_providers', 'fallback_model')
+
+
+def _fallback(config):
+    return {key: deepcopy(config[key]) for key in FALLBACK_KEYS if config.get(key)}
+
+
 def _route(config, model=None):
     """The model keys of a config that a bot which follows the default takes from the default profile."""
     from hermes_cli.config import _normalize_root_model_keys
@@ -891,14 +907,14 @@ def _route(config, model=None):
         section = {'default': section}
     return {'model': section.get('default') or None, 'provider': section.get('provider') or None,
             'base_url': str(section.get('base_url') or '').rstrip('/') or None,
-            'reasoning_effort': _effort(resolve_reasoning_config(normalized, section.get('default') or model))}
+            'reasoning_effort': _effort(resolve_reasoning_config(normalized, section.get('default') or model)),
+            'fallback': _fallback(normalized)}
 
 
 def _follow(home, default, backup=None):
     """Write the model keys of the default profile into the config.yaml of one profile. Return whether it changed.
 
-    The keys are the model, its provider, its base URL and the reasoning effort: the keys of the app's default model
-    setting. The write uses the round-trip writer of Hermes, which replaces the file atomically. With `backup`, a
+    The keys are the model, its provider, its base URL, the reasoning effort and the fallback models. The write uses the round-trip writer of Hermes, which replaces the file atomically. With `backup`, a
     change first copies the file there, once.
     """
     from hermes_cli.config import require_readable_config_before_write
@@ -932,7 +948,7 @@ def _follow_default(request, default_home, config, model, provider, base_url):
     """
     from hermes_constants import resolve_reasoning_config
     default = {'model': model or None, 'provider': provider or None, 'base_url': base_url,
-               'reasoning_effort': _effort(resolve_reasoning_config(config, model))}
+               'reasoning_effort': _effort(resolve_reasoning_config(config, model)), 'fallback': _fallback(config)}
     classify = set(request.get('classify') or ())
     result = {}
     for bot_id, home in request['homes'].items():

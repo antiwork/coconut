@@ -104,6 +104,24 @@ class FollowDefaultTests(unittest.TestCase):
         # The backup keeps the first file only.
         self.assertEqual((self.data / 'backups/model-follow/follower.config.yaml').read_bytes(), before)
 
+    def test_a_following_profile_gets_the_fallback_of_the_default(self):
+        (self.homes['follower'] / 'config.yaml').write_text(FOLLOWER + 'fallback_model:\n  provider: openai\n  model: gpt-5\n')
+        (self.hermes / 'config.yaml').write_text(DEFAULT + 'fallback_providers:\n- provider: anthropic\n'
+                                                 '  model: claude-sonnet-5-5\n')
+        own_before = (self.homes['own'] / 'config.yaml').read_bytes()
+        self.assertEqual(self.follow(['follower', 'own'], classify=['own']),
+                         {'follower': {'changed': True}, 'own': {'follows': False}})
+        follower = self.load('follower')
+        self.assertEqual(follower['fallback_providers'], [{'provider': 'anthropic', 'model': 'claude-sonnet-5-5'}])
+        # The fallback of the default replaces the fallback of the profile.
+        self.assertNotIn('fallback_model', follower)
+        self.assertEqual((self.homes['own'] / 'config.yaml').read_bytes(), own_before)
+        self.assertEqual(self.follow(['follower']), {'follower': {'changed': False}})
+        # A default without a fallback removes it from the profiles that follow it.
+        (self.hermes / 'config.yaml').write_text(DEFAULT)
+        self.assertEqual(self.follow(['follower']), {'follower': {'changed': True}})
+        self.assertNotIn('fallback_providers', self.load('follower'))
+
 
 if __name__ == '__main__':
     unittest.main()
