@@ -51,6 +51,19 @@ def finished_before(item, cutoff):
     return True
 
 
+# The exchange rows that a page can show in the conversation of another bot. The partial index messages_exchange
+# (Service.__init__) has this condition, so a query that repeats it word for word reads only these rows.
+EXCHANGE_MESSAGE = ("(json_extract(data,'$.kind')='bot_exchange' "
+                    "OR json_array_length(data,'$.exchange_recipient_bot_ids')>0)")
+# Service.__init__ creates these partial indexes. They hold only the rows that the state read searches: the exchange
+# rows of _message_page and the messages with a confirmed request. So neither read scans every message.
+READ_INDEXES = f"""
+CREATE INDEX IF NOT EXISTS messages_exchange ON messages (id) WHERE {EXCHANGE_MESSAGE};
+CREATE INDEX IF NOT EXISTS messages_client_request ON messages (json_extract(data,'$.client_request_id'))
+    WHERE json_type(data,'$.client_request_id')='text';
+"""
+
+
 class StateSync:
     @staticmethod
     def _visible(row, visible, task_ids=None):
@@ -62,7 +75,8 @@ class StateSync:
     def _visible_task_ids(self, visible, among=None):
         """Return the IDs of the tasks whose bots exist, from all tasks or from the IDs in `among`."""
         import json
-        query = ("SELECT id FROM tasks WHERE json_extract(data,'$.bot_id') IN (SELECT value FROM json_each(?)) "
+        # The unary plus keeps SQLite from the tasks_bot index, so a list in `among` reads its rows by ID.
+        query = ("SELECT id FROM tasks WHERE +json_extract(data,'$.bot_id') IN (SELECT value FROM json_each(?)) "
                  "AND json_extract(data,'$.conversation_bot_id') IN (SELECT value FROM json_each(?))")
         values = (json.dumps(sorted(visible)),) * 2
         if among is not None:
@@ -144,15 +158,19 @@ class StateSync:
             raise ServiceError(404, 'This bot was removed.')
         # Decision rows stay in their stored conversation. Exchange rows can appear for both bots.
         # Row IDs give pagination a stable boundary when timestamps are equal.
-        row = self.db.execute("SELECT json_group_array(json_array(position,json(data))) FROM (SELECT rowid AS position,data FROM messages WHERE (? IS NULL OR rowid<?) "
+        # The bot's own rows come from the messages_chat index and the exchange rows from the messages_exchange index.
+        # Each part stops at the newest limit + 1 rows, so a quiet bot no longer reads the whole table.
+        visible = "AND NOT COALESCE(json_extract(data,'$._hidden'),0) AND NOT COALESCE(json_extract(data,'$._deleted'),0) "
+        row = self.db.execute("SELECT json_group_array(json_array(position,json(data))) FROM (SELECT rowid AS position,data "
+            "FROM messages WHERE rowid IN (SELECT rowid FROM (SELECT rowid FROM messages WHERE json_extract(data,'$.bot_id')=:bot "
+            "AND (:before IS NULL OR rowid<:before) " + visible + "ORDER BY rowid DESC LIMIT :rows) "
+            "UNION ALL SELECT rowid FROM (SELECT rowid FROM messages INDEXED BY messages_exchange WHERE " + EXCHANGE_MESSAGE + " "
+            "AND (:before IS NULL OR rowid<:before) " + visible +
+            "AND (json_extract(data,'$.sender_bot_id')=:bot OR EXISTS(SELECT 1 FROM json_each(messages.data,'$.recipient_bot_ids') WHERE value=:bot) "
+            "OR EXISTS(SELECT 1 FROM json_each(messages.data,'$.exchange_recipient_bot_ids') WHERE value=:bot)) "
             "AND EXISTS(SELECT 1 FROM bots WHERE id=json_extract(messages.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0)) "
-            "AND NOT COALESCE(json_extract(data,'$._hidden'),0) "
-            "AND NOT COALESCE(json_extract(data,'$._deleted'),0) "
-            "AND (json_extract(data,'$.bot_id')=? OR ((json_extract(data,'$.kind')='bot_exchange' "
-            "OR json_array_length(data,'$.exchange_recipient_bot_ids')>0) AND ("
-            "json_extract(data,'$.sender_bot_id')=? OR EXISTS(SELECT 1 FROM json_each(messages.data,'$.recipient_bot_ids') WHERE value=?) "
-            "OR EXISTS(SELECT 1 FROM json_each(messages.data,'$.exchange_recipient_bot_ids') WHERE value=?)))) "
-            "ORDER BY rowid DESC LIMIT ?)", (before, before, bot_id, bot_id, bot_id, bot_id, limit + 1)).fetchone()
+            "ORDER BY rowid DESC LIMIT :rows)) ORDER BY rowid DESC LIMIT :rows)",
+            dict(bot=bot_id, before=before, rows=limit + 1)).fetchone()
         rows = json.loads(row[0])
         page = rows[:limit]
         return {'messages': [self._public(row[1]) for row in reversed(page)],

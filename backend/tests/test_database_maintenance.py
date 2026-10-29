@@ -255,6 +255,19 @@ class ReceiptRetentionTests(ServiceCase):
         self.assertEqual(self.remaining(), kept)
         self.assertNotIn(gone, self.remaining())
 
+    def test_an_idle_outcome_loses_its_terminal_results(self):
+        # A terminal result without notify_on_complete makes PENDING_COMPLETIONS NULL. Such receipts hold most tool output.
+        idle = self.task()
+        gone = {self.receipt(idle, 'terminal', result='{"output":"long build log"}'),
+                self.receipt(idle, 'terminal', result='not json')}
+        background = self.task()
+        kept = {self.receipt(background, 'terminal', result='{"session_id":"proc","notify_on_complete":true}'),
+                # A withdrawal check reads a delivered process result later.
+                self.receipt(idle, 'terminal', result='{"session_id":"done","notify_on_complete":true}', _process_delivery='check')}
+        self.assertEqual(self.service._prune_receipts(NOW), 2)
+        self.assertEqual(self.remaining(), kept)
+        self.assertFalse(gone & self.remaining())
+
     def test_live_recent_and_pending_work_keeps_its_receipts(self):
         control = self.receipt(self.task())
         shared = self.task()
@@ -317,6 +330,139 @@ class ReceiptRetentionTests(ServiceCase):
         self.between_batches(wait_for_it)
         self.assertEqual(self.remaining(), {waited, 'wait'})
         self.assertNotIn(gone, self.remaining())
+
+
+ANCIENT = '2026-08-01T12:00:00Z'
+
+
+class HistoryRetentionTests(ServiceCase):
+    """A task that ended 30 days ago is retired. Its kept events and its completed receipts go, after one backup."""
+
+    def setUp(self):
+        super().setUp()
+        self.service.db.execute('DELETE FROM events')
+        for name, value in (('EVENT_MINIMUM_ROWS', 2), ('BATCH_ROWS', 3)):
+            patcher = patch.object(database_maintenance, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def task(self, status='completed', updated_at=ANCIENT, **fields):
+        task = dict(id=str(uuid4()), bot_id=self.bot['id'], title='Work', status=status, summary='',
+                    created_at=updated_at, updated_at=updated_at) | fields
+        with self.service.transaction():
+            self.service._put('tasks', task)
+        return task
+
+    def history(self, task):
+        """The events that the lookups keep for a task at any age."""
+        return [self.event('task.created', {'id': task['id']}, task['id']),
+                self.event('routine.triggered', {'task_id': task['id']}, task['id']),
+                self.event('task.updated', {'id': task['id'], 'status': 'completed'}, task['id']),
+                self.event('bot_message.delivered', {'task_id': task['id']}, task['id'])]
+
+    def receipt(self, task, name='terminal', state='completed', **fields):
+        record = dict(id=str(uuid4()), task_id=task['id'], turn_id=str(uuid4()), action={'name': name, 'arguments': {}},
+                      state=state, created_at=ANCIENT, result='{"output":"' + 'x' * 100 + '"}') | fields
+        with self.service.transaction():
+            self.service._put('native_receipts', record)
+        return record['id']
+
+    def receipts(self):
+        return {row[0] for row in self.service.db.execute('SELECT id FROM native_receipts')}
+
+    def backups(self):
+        return sorted((Path(self.temp.name) / 'backups').glob('retention-*.sqlite3'))
+
+    def test_a_retired_task_loses_its_kept_events_and_the_first_pass_keeps_a_copy(self):
+        retired = self.task(routine_id=str(uuid4()))
+        recent = self.task(updated_at=OLD, routine_id=str(uuid4()))
+        active = self.task(status='waiting', routine_id=str(uuid4()))
+        gone = self.history(retired)
+        kept = [self.event('bots.restarted')] + self.history(recent) + self.history(active)
+        # Nothing tells that an unknown task ended, so its events stay.
+        kept.append(self.event('task.created', {'id': 'unknown'}, 'unknown'))
+        kept += [self.event('message.updated', created_at=RECENT) for _ in range(2)]
+        result = self.service.maintain_database(NOW)
+        self.assertTrue(result['retired'])
+        self.assertEqual(self.seqs(), kept)
+        [backup] = self.backups()
+        with sqlite3.connect(backup) as db:
+            self.assertEqual([row[0] for row in db.execute('SELECT seq FROM events ORDER BY seq')], gone)
+            self.assertEqual(db.execute('SELECT data FROM events WHERE seq=?', (gone[0],)).fetchone()[0],
+                             json.dumps({'id': retired['id']}, separators=(',', ':')))
+        self.assertEqual(self.service._setting('retention_backup'), backup.name)
+        self.assertEqual(os.stat(backup).st_mode & 0o777, 0o600)
+
+    def test_a_retired_task_of_a_busy_bot_loses_its_completed_receipts(self):
+        # Chat tasks share the execution session of their bot, so the bot's live task keeps the outcome busy.
+        retired, recent = self.task(), self.task(updated_at=OLD)
+        self.task(status='working', updated_at=RECENT)
+        gone = self.receipt(retired)
+        kept = {self.receipt(retired, state='executing'), self.receipt(retired, 'kanban_create'),
+                self.receipt(retired, 'cronjob_manage'), self.receipt(recent)}
+        named = self.receipt(retired)
+        kept.add(named)
+        with self.service.transaction():
+            self.service._put('decisions', dict(id=str(uuid4()), task_id=recent['id'], bot_id=self.bot['id'],
+                                                status='approved', _receipt_id=named))
+        # Without the retirement the busy outcome keeps every receipt.
+        self.assertEqual(self.service._prune_receipts(NOW), 0)
+        self.assertEqual(self.service._prune_receipts(NOW, retire=True), 1)
+        self.assertEqual(self.receipts(), kept)
+        self.assertNotIn(gone, self.receipts())
+
+    def test_a_retired_task_that_runs_again_between_batches_keeps_its_receipts(self):
+        first, second = self.task(), self.task()
+        self.task(status='working', updated_at=RECENT)
+        gone, kept = self.receipt(first), self.receipt(second)
+        wait = self.service.stopping.wait
+        def resume(timeout):
+            with self.service.transaction():
+                self.service._put('tasks', dict(self.service._get('tasks', second['id']), status='queued'))
+            return wait(timeout)
+        with patch.object(database_maintenance, 'BATCH_ROWS', 1), patch.object(self.service.stopping, 'wait', side_effect=resume):
+            self.service._prune_receipts(NOW, retire=True)
+        self.assertEqual(self.receipts(), {kept})
+        self.assertNotIn(gone, self.receipts())
+
+    def test_later_passes_delete_without_a_new_copy(self):
+        self.history(self.task())
+        self.service.maintain_database(NOW)
+        [backup] = self.backups()
+        later = self.history(self.task())
+        [self.event('message.updated', created_at=RECENT) for _ in range(2)]
+        self.assertTrue(self.service.maintain_database(NOW + database_maintenance.DATABASE_MAINTENANCE_SECONDS)['retired'])
+        self.assertFalse(set(later) & set(self.seqs()))
+        self.assertEqual(self.backups(), [backup])
+        with sqlite3.connect(backup) as db:
+            self.assertFalse(db.execute('SELECT seq FROM events WHERE seq IN (%s)' % ','.join('?' * len(later)), later).fetchall())
+
+    def test_a_disk_without_room_for_the_copy_keeps_the_history(self):
+        kept = self.history(self.task()) + [self.event('message.updated', created_at=RECENT) for _ in range(2)]
+        full = SimpleNamespace(free=database_maintenance.VACUUM_DISK_RESERVE_BYTES)
+        with patch.object(database_maintenance.shutil, 'disk_usage', return_value=full), \
+                self.assertLogs('coconut.database_maintenance', 'WARNING') as logs:
+            self.assertFalse(self.service.maintain_database(NOW)['retired'])
+        self.assertIn('coconut.retention_backup_waits', logs.output[0])
+        self.assertEqual(self.seqs(), kept)
+        self.assertEqual((self.backups(), self.service._setting('retention_backup')), ([], None))
+
+    def test_a_stopped_first_pass_copies_again_in_the_next_pass(self):
+        self.history(self.task())
+        with patch.object(self.service, '_maintenance_stopped', return_value=True):
+            self.service.maintain_database(NOW)
+        self.assertIsNone(self.service._setting('retention_backup'))
+
+    def test_an_old_backup_goes(self):
+        backups = Path(self.temp.name) / 'backups'
+        backups.mkdir()
+        old, new = backups / 'retention-20260601.sqlite3', backups / 'retention-20260920.sqlite3'
+        for path, stamp in ((old, NOW - 31 * 86400), (new, NOW - 8 * 86400)):
+            path.write_bytes(b'')
+            os.utime(path, (stamp, stamp))
+        self.service.maintain_database(NOW)
+        self.assertFalse(old.exists())
+        self.assertTrue(new.exists())
 
 
 class FreePageTests(unittest.TestCase):
