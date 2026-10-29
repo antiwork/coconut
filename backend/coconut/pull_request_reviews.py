@@ -29,6 +29,10 @@ MERGED_PRS = ("SELECT json_extract(data,'$.bot_id','$.url','$.observed_at','$.re
               "WHERE json_extract(data,'$.kind')='pr' AND json_extract(data,'$.pr_state')='merged'")
 # The PR rows, in row order. A PR poll decodes these rows and not the work and file rows.
 PR_ARTIFACTS = "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='pr' ORDER BY rowid"
+# _bot_pr_artifact finds the records of one PR URL through this index. Service.__init__ creates it.
+PR_URL_INDEX = """
+CREATE INDEX IF NOT EXISTS artifacts_pr_url ON artifacts (lower(json_extract(data,'$.url'))) WHERE json_extract(data,'$.kind')='pr';
+"""
 
 PR_REVIEW_INSTRUCTIONS = (
     'Coconut observed new check or review results for a tracked pull request. This is a request to assess merge readiness, not permission to merge. '
@@ -310,6 +314,13 @@ class PullRequestReviews:
             artifact['_review_task_id'] = task['id']
             self._put('artifacts', artifact)
 
+    def _bot_pr_artifact(self, bot_id, url):
+        """The first PR record of this bot for this URL. It reads only the records of the URL, not every artifact."""
+        rows = self.db.execute("SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='pr' "
+                               "AND lower(json_extract(data,'$.url'))=? ORDER BY rowid", (url.lower(),)).fetchall()
+        return next((artifact for artifact in (json.loads(row[0]) for row in rows)
+                     if artifact['bot_id'] == bot_id and artifact['url'].lower() == url.lower()), None)
+
     def _pr_review_source(self, bot_id, task_id, *, tasks=None):
         if not task_id:
             return None
@@ -320,7 +331,8 @@ class PullRequestReviews:
         if task['bot_id'] != bot_id:
             raise ServiceError(400, 'The pull request and its task must belong to the same bot.')
         if tasks is None:
-            tasks = {t['id']: t for t in self._all('tasks')}
+            # Inside _shared_reads this is the kept task map, which a full parse under the service lock would cost.
+            tasks = self._task_map()
         owner = self._work_execution_owner(task, tasks)
         return owner if owner.get('_native_outcome_id') else task
 
@@ -454,23 +466,33 @@ class PullRequestReviews:
 
     def _queue_pr_reviews(self, *, artifact_ids=None):
         from .service import now, uid
-        def tasks_by_id(identities):
-            return {row[0]: json.loads(row[1]) for row in self.db.execute(
-                'SELECT id, data FROM tasks WHERE id IN (SELECT value FROM json_each(?))',
-                (json.dumps(sorted(i for i in identities if isinstance(i, str))),))}
-        with self.transaction():
-            reviewed = [a for a in (json.loads(row[0]) for row in self.db.execute(PR_ARTIFACTS)) if a.get('_review_task_id')]
+        def review_owners(service, reviewed):
+            def tasks_by_id(identities):
+                return {row[0]: json.loads(row[1]) for row in service.db.execute(
+                    'SELECT id, data FROM tasks WHERE id IN (SELECT value FROM json_each(?))',
+                    (json.dumps(sorted(i for i in identities if isinstance(i, str))),))}
             # The owner of a review is its task or that task's execution session. Read only those tasks.
             tasks = tasks_by_id({a['_review_task_id'] for a in reviewed})
             tasks.update(tasks_by_id({t.get('_execution_session_id') for t in tasks.values()} - tasks.keys()))
+            return {a['id']: service._pr_review_source(a['bot_id'], a['_review_task_id'], tasks=tasks)['id'] for a in reviewed}
+        # Every PR record is read without the service lock. Only a record whose owner moved is read again and written.
+        with self._read_view() as view, view._read_transaction():
+            reviewed = [a for a in (json.loads(row[0]) for row in view.db.execute(PR_ARTIFACTS)) if a.get('_review_task_id')]
+            owners = review_owners(view, reviewed)
+            moved = [a['id'] for a in reviewed if owners[a['id']] != a['_review_task_id']]
+            bot_ids = {a['bot_id'] for a in reviewed if artifact_ids is None or a['id'] in artifact_ids}
+        if moved:
             # A retry keeps the native execution and its delegated return route.
             # Repair saved retry bindings before comparing owners across bots.
-            for artifact in reviewed:
-                owner = self._pr_review_source(artifact['bot_id'], artifact['_review_task_id'], tasks=tasks)
-                if owner['id'] != artifact['_review_task_id']:
-                    self._set_review_owner(artifact, owner['id'])
-                    self._put('artifacts', artifact)
-            bot_ids = {a['bot_id'] for a in reviewed if artifact_ids is None or a['id'] in artifact_ids}
+            with self.transaction():
+                for identity in moved:
+                    artifact = self._get('artifacts', identity)
+                    if not artifact.get('_review_task_id'):
+                        continue
+                    owner = review_owners(self, [artifact])[identity]
+                    if owner != artifact['_review_task_id']:
+                        self._set_review_owner(artifact, owner)
+                        self._put('artifacts', artifact)
         for bot_id in bot_ids:
             with self.lock:
                 bot_lock = self.bot_locks.setdefault(bot_id, threading.Lock())

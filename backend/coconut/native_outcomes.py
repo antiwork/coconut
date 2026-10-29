@@ -2073,9 +2073,17 @@ class NativeOutcomes:
                 if root_id in groups:
                     reports.setdefault(root_id, []).append(linked or json.loads(row[2]))
             positions = self._native_queue_positions({row[0] for row in rows}, timestamp.timestamp())
+            # Index the native tasks and the attempts of each outcome once. A search of both lists for each outcome
+            # took 1.2 s of a 1.9 s state read with 3,000 outcomes.
+            natives, owners = {}, {}
+            for native in (self.kanban.tasks.values() if self.kanban else ()):
+                natives.setdefault(native['id'], native)
+            for task in tasks.values():
+                if task.get('_native_outcome_id'):
+                    owners.setdefault(task['_native_outcome_id'], set()).add(task['id'])
             for root, peers in groups.values():
                 outcome = self._native_outcome_projection(root, tasks, [], decisions, timestamp, positions,
-                    peers + reports.get(root['id'], []))
+                    peers + reports.get(root['id'], []), natives=natives, owners=owners)
                 for item in peers:
                     item.update(outcome)
                     if item['kind'] == 'work':
@@ -2117,11 +2125,21 @@ class NativeOutcomes:
                         self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
         self._publish_kanban_changes()
 
-    def _native_outcome_projection(self, item, tasks, records, decisions, timestamp, queue_positions, peers=None):
-        native = next((n for n in self.kanban.tasks.values() if n['id'] == item['_native_outcome_id']), None) if self.kanban else None
+    def _native_outcome_projection(self, item, tasks, records, decisions, timestamp, queue_positions, peers=None, *,
+                                   natives=None, owners=None):
+        """natives maps each native task ID to its task, and owners maps each outcome to the IDs of its tasks.
+
+        A caller that projects many outcomes builds both maps once (see _native_work_view).
+        """
+        identity = item['_native_outcome_id']
+        if natives is None:
+            natives = {n['id']: n for n in reversed(list(self.kanban.tasks.values()))} if self.kanban else {}
+        if owners is None:
+            owners = {identity: {t['id'] for t in tasks.values() if t.get('_native_outcome_id') == identity}}
+        native = natives.get(identity)
         owner = tasks.get(item.get('task_id'), {})
         peers = peers or [item]
-        owners = {t['id'] for t in tasks.values() if t.get('_native_outcome_id') == item['_native_outcome_id']}
+        owners = set(owners.get(identity, ()))
         owners.add(item.get('task_id'))
         pending = [d for d in decisions if d['status'] == 'pending' and (d['task_id'] in owners or any(
             p['kind'] == 'pr' and d.get('merge_pr_url') == p.get('url') for p in peers))]

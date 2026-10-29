@@ -7,14 +7,18 @@ so a phone request or a tool call waits for at most one batch.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import contextlib
 import json
 import logging
+import os
 import shutil
+import sqlite3
 import time
 
 from .background_processes import PENDING_COMPLETIONS
 from .log_rotation import rotate_log
 from .session_maintenance import SESSION_RETENTION_DAYS
+from .state_sync import index_exchange_audience
 from .work_capacity import execution_key
 from .worktree_retirement import NATIVE_IDLE_STATUSES
 
@@ -30,20 +34,44 @@ EVENT_MINIMUM_ROWS = 10000
 # bots.restarted, NativeRoutines.native_routine_completion_input reads the history of a routine task, and
 # PullRequestReviews reads the swipe that dismissed a merge card. The newest task.updated and
 # bot_message.delivered of each task also stay (see _prune_events).
+# The events of a task stay only until the task is retired (see HISTORY_DAYS). The task readers above read the events
+# of a task that runs, waits, or is queued, and a retired task does none of these.
 KEPT_EVENTS = """
-    type IN ('task.created', 'bots.restarted', 'routine.triggered')
-    OR seq IN (SELECT value FROM json_each(:latest))
-    OR (type='task.updated' AND task_id IN (SELECT value FROM json_each(:routines)))
+    type='bots.restarted'
     OR (type='decision.updated' AND COALESCE(json_extract(data, '$.status'), '')='dismissed'
         AND json_extract(data, '$.inbox_swipe_id') IS NOT NULL)
+    OR ((type IN ('task.created', 'routine.triggered')
+         OR seq IN (SELECT value FROM json_each(:latest))
+         OR (type='task.updated' AND task_id IN (SELECT value FROM json_each(:routines))))
+        AND (task_id IS NULL OR task_id NOT IN (SELECT value FROM json_each(:retired))))
+"""
+# A task that ended and did not change for this long is retired. Its kept events and its completed receipts go, also
+# when other tasks of its execution session still run. Hermes prunes an idle native session after a quarter of this
+# time, so no later turn resumes the turns of a retired task.
+HISTORY_DAYS = 30
+# The first pass that retires tasks copies every row that it deletes to <data>/backups/retention-<date>.sqlite3.
+# A backup goes after this many days.
+BACKUP_DAYS = 30
+BACKUP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, type TEXT NOT NULL, bot_id TEXT, task_id TEXT, data TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS native_receipts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 """
 # Hermes prunes the native session of an idle outcome after this time (SessionMaintenance). The completed
 # receipts of its tasks go after the same time. A resumed outcome then continues from its visible conversation.
 RECEIPT_RETENTION_DAYS = SESSION_RETENTION_DAYS
 FINISHED = ('completed', 'failed', 'cancelled')
+# PENDING_COMPLETIONS is NULL, not false, for some receipts, and NOT NULL is NULL, so the deletion kept them. A
+# delivered process result is one of them, and a withdrawal check reads it later, so it stays. A terminal result without
+# notify_on_complete is the other one. It is a plain command output, and most stored tool output is of this kind.
+UNKNOWN_COMPLETION_KEPT = ("CASE WHEN json_extract(data,'$.action.name')='terminal' AND json_valid(json_extract(data,'$.result')) "
+                           "THEN json_extract(json_extract(data,'$.result'),'$.notify_on_complete') IS NOT NULL ELSE 1 END")
 # Lookups read these receipts by content at any age: NativeOutcomes adopts a native task by the idempotency key
-# of its kanban_create receipt, and WorkProgress links a manual routine run by its cronjob_manage receipt.
-KEPT_ACTIONS = ('kanban_create', 'cronjob_manage')
+# of its kanban_create receipt, routine_reports.created_occurrences finds the routines that a task created, and
+# WorkProgress links a manual routine run. Other cronjob_manage calls, such as a list of every job, have no reader.
+KEPT_ROUTINE_CALLS = ('create', 'run', 'run_now', 'trigger')
+KEPT_RECEIPT = ("(json_extract(data,'$.action.name')='kanban_create' OR (json_extract(data,'$.action.name')='cronjob_manage' "
+                "AND lower(trim(COALESCE(json_extract(data,'$.action.arguments.action'),''))) IN "
+                "(SELECT value FROM json_each(:routine_calls))))")
 # A context that ended keeps its question and its recovery text for a pending decision, because a recovery reads them.
 # For a settled decision nothing reads them, and they made up 58 of the 67 MB of the contexts of a live store.
 # The question keeps this many characters, to name the context.
@@ -88,20 +116,93 @@ class DatabaseMaintenance:
         if current < getattr(self, '_next_database_maintenance', 0):
             return {}
         self._next_database_maintenance = current + DATABASE_RETRY_SECONDS
-        result = dict(events=self._prune_events(current), receipts=self._prune_receipts(current),
-                      contexts=self._prune_contexts(), tasks=self._prune_tasks(current))
+        retire = self._open_retention_backup(current)
+        try:
+            result = dict(events=self._prune_events(current, retire), receipts=self._prune_receipts(current, retire),
+                          contexts=self._prune_contexts(), tasks=self._prune_tasks(current))
+            self._close_retention_backup(complete=not self._maintenance_stopped())
+        except BaseException:
+            self._close_retention_backup(complete=False)
+            raise
         result['vacuum'] = self._release_free_pages()
         logs = self.root / 'logs'
         result['rotated'] = [name for fd, name in ((1, 'service.log'), (2, 'error.log')) if rotate_log(fd, logs / name)]
         self._next_database_maintenance = current + DATABASE_MAINTENANCE_SECONDS
+        result['retired'] = retire
         if result['events'] or result['receipts'] or result['contexts'] or result['tasks'] or result['vacuum']:
             logging.getLogger(__name__).warning('coconut.database_maintenance %s', json.dumps(result))
         return result
 
+    def _open_retention_backup(self, current):
+        """Return True when this pass may delete the history of retired tasks.
+
+        The first such pass copies each row that it deletes to a new backup file. It runs only when the disk keeps
+        VACUUM_DISK_RESERVE_BYTES after a copy as large as the store. Later passes delete without a copy. Old backups go.
+        """
+        self._retention_backup = None
+        backups = self.root / 'backups'
+        for path in backups.glob('retention-*.sqlite3'):
+            if path.stat().st_mtime < current - BACKUP_DAYS * 86400:
+                path.unlink()
+        if self._setting('retention_backup'):
+            return True
+        size = (self.root / 'coconut.sqlite3').stat().st_size
+        if shutil.disk_usage(self.root).free < size + VACUUM_DISK_RESERVE_BYTES:
+            logging.getLogger(__name__).warning('coconut.retention_backup_waits %s', json.dumps(dict(store_bytes=size)))
+            return False
+        backups.mkdir(exist_ok=True, mode=0o700)
+        path = backups / f"retention-{datetime.fromtimestamp(current, timezone.utc):%Y%m%d}.sqlite3"
+        backup = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+        os.chmod(path, 0o600)
+        backup.executescript(BACKUP_SCHEMA)
+        self._retention_backup = (path, backup)
+        return True
+
+    def _close_retention_backup(self, complete):
+        backup, self._retention_backup = getattr(self, '_retention_backup', None), None
+        if backup is None:
+            return
+        backup[1].close()
+        with contextlib.closing(sqlite3.connect(backup[0])) as copy:
+            copied = copy.execute('SELECT EXISTS(SELECT 1 FROM events) OR EXISTS(SELECT 1 FROM native_receipts)').fetchone()[0]
+        if not copied:
+            # A pass that deleted nothing copied nothing. The first pass that deletes rows still makes the backup.
+            backup[0].unlink()
+            return
+        if complete:
+            with self.transaction():
+                self.db.execute("INSERT OR REPLACE INTO settings VALUES ('retention_backup', ?)", (json.dumps(backup[0].name),))
+
+    def _delete_rows(self, table, where, arguments):
+        """Delete the rows of table that match where. During the first pass that retires tasks, copy them first."""
+        backup = getattr(self, '_retention_backup', None)
+        if backup is None:
+            return self.db.execute(f'DELETE FROM {table} WHERE {where}', arguments).rowcount
+        columns = 'seq,type,bot_id,task_id,data,created_at' if table == 'events' else 'id,data'
+        key = columns.split(',')[0]
+        rows = self.db.execute(f'SELECT {columns} FROM {table} WHERE {where}', arguments).fetchall()
+        if not rows:
+            return 0
+        # The copy commits before the deletion, in one transaction for the batch. A deletion that rolls back leaves an
+        # extra copy, never a lost row.
+        with backup[1]:
+            backup[1].execute('BEGIN')
+            backup[1].executemany(f"INSERT OR REPLACE INTO {table} VALUES ({','.join('?' * len(rows[0]))})", rows)
+        return self.db.execute(f'DELETE FROM {table} WHERE {key} IN (SELECT value FROM json_each(?))',
+                               (json.dumps([row[0] for row in rows]),)).rowcount
+
+    @staticmethod
+    def _retired_tasks(db, current):
+        """The IDs of the tasks that ended more than HISTORY_DAYS ago and did not change since."""
+        return [row[0] for row in db.execute(
+            "SELECT id FROM tasks WHERE json_extract(data,'$.status') IN ('completed','failed','cancelled') "
+            "AND COALESCE(json_extract(data,'$.updated_at'),json_extract(data,'$.created_at'),'')<?",
+            (stamp(current - HISTORY_DAYS * 86400),))]
+
     def _maintenance_stopped(self):
         return self.stopping.is_set() or self.restart_pending
 
-    def _prune_events(self, current):
+    def _prune_events(self, current, retire=False):
         """Delete events older than EVENT_RETENTION_DAYS outside the newest EVENT_MINIMUM_ROWS, except KEPT_EVENTS.
 
         A later event of the same type replaces the newest one of a task, so a snapshot of the newest ones stays
@@ -115,6 +216,8 @@ class DatabaseMaintenance:
                 'AND task_id IS NOT NULL GROUP BY type, task_id')])
             routines = json.dumps([row[0] for row in view.db.execute(
                 "SELECT id FROM tasks WHERE json_extract(data,'$.routine_id') IS NOT NULL")])
+            # A retired task that runs again changes, so its new events are recent and stay.
+            retired = json.dumps(self._retired_tasks(view.db, current) if retire else [])
         cutoff, ceiling = stamp(current - EVENT_RETENTION_DAYS * 86400), newest - EVENT_MINIMUM_ROWS
         after, deleted = 0, 0
         while after < ceiling and not self._maintenance_stopped():
@@ -127,15 +230,15 @@ class DatabaseMaintenance:
                         break
                     old.append(seq)
                 if old:
-                    deleted += self.db.execute(f'DELETE FROM events WHERE seq>:after AND seq<=:last AND NOT ({KEPT_EVENTS})',
-                        dict(after=after, last=old[-1], latest=latest, routines=routines)).rowcount
+                    deleted += self._delete_rows('events', f'seq>:after AND seq<=:last AND NOT ({KEPT_EVENTS})',
+                        dict(after=after, last=old[-1], latest=latest, routines=routines, retired=retired))
             if len(old) < BATCH_ROWS:
                 break
             after = old[-1]
             self.stopping.wait(BATCH_PAUSE_SECONDS)
         return deleted
 
-    def _prune_receipts(self, current):
+    def _prune_receipts(self, current, retire=False):
         """Delete the completed receipts of outcomes that stayed idle for RECEIPT_RETENTION_DAYS.
 
         All tasks of an idle outcome are finished, and none changed within that time. The rule keeps a receipt that
@@ -146,9 +249,13 @@ class DatabaseMaintenance:
           (_wait_process_receipt) names, because _get fails without it;
         - the receipts of a task in the scope of a pending decision, because its freshness fingerprint lists them;
         - the receipts of a task with a queued or working context;
-        - KEPT_ACTIONS.
+        - kanban_create receipts and the cronjob_manage calls in KEPT_ROUTINE_CALLS (KEPT_RECEIPT).
+
+        With `retire`, a task that ended HISTORY_DAYS ago loses its completed receipts also when its outcome is not
+        idle, for example a chat task of a bot that works every day. The rules above still keep what a lookup reads.
         """
         cutoff = current - RECEIPT_RETENTION_DAYS * 86400
+        history = current - HISTORY_DAYS * 86400
         with self.lock, self._shared_reads():
             tasks = self._task_map()
             pending = self._shared_pending_receipts()
@@ -158,16 +265,13 @@ class DatabaseMaintenance:
             native = dict(self.kanban.tasks) if self.kanban else {}
             by_native_id = {n['id']: n for n in native.values()}
             waiting = {r['task_id'] for r in pending}
-            idle = set()
-            for key, members in groups.items():
-                times = [seconds(t.get('updated_at') or t.get('created_at')) for t in members]
-                if (None in times or max(times) >= cutoff
-                        or any(t['status'] not in FINISHED or t['id'] in waiting
-                               or (self.running.get(t['id']) and self.running[t['id']].is_alive())
-                               or (native.get(t['id']) or by_native_id.get(t.get('_native_outcome_id')) or {}).get('status', 'done')
-                               not in NATIVE_IDLE_STATUSES for t in members)):
-                    continue
-                idle.add(key)
+            def ended(task, before):
+                changed = seconds(task.get('updated_at') or task.get('created_at'))
+                return (changed is not None and changed < before and task['status'] in FINISHED and task['id'] not in waiting
+                        and not (self.running.get(task['id']) and self.running[task['id']].is_alive())
+                        and (native.get(task['id']) or by_native_id.get(task.get('_native_outcome_id')) or {}).get('status', 'done')
+                        in NATIVE_IDLE_STATUSES)
+            idle = {key for key, members in groups.items() if all(ended(t, cutoff) for t in members)}
             decisions = self._all_shared('decisions')
             artifacts = self._all_shared('artifacts')
             held = {c['task_id'] for c in self._all_shared('contexts') if c['status'] in ('queued', 'working')}
@@ -177,7 +281,12 @@ class DatabaseMaintenance:
                     scoped.add(decision['id'])
                     held.add(decision['task_id'])
                     held.update(self._decision_scope(decision, tasks, pending, artifacts)[0])
+            # A candidate of an idle outcome names its outcome. A retired task of a busy outcome names none, so only its
+            # own state keeps it.
             candidates = {t['id']: execution_key(t) for t in tasks.values() if execution_key(t) in idle and t['id'] not in held}
+            if retire:
+                candidates.update({t['id']: None for t in tasks.values()
+                                   if t['id'] not in candidates and t['id'] not in held and ended(t, history)})
             named = ({d['_receipt_id'] for d in decisions if d.get('_receipt_id')}
                      | {i for t in tasks.values() for i in t.get('_continuation_receipt_ids', [])}
                      | {r['_wait_process_receipt'] for r in pending if r.get('_wait_process_receipt')})
@@ -185,10 +294,9 @@ class DatabaseMaintenance:
             return 0
         with self._read_view() as view, view._read_transaction():
             rows = [row[0] for row in view.db.execute(
-                "SELECT rowid FROM native_receipts WHERE json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?)) "
-                "AND json_extract(data,'$.state')='completed' "
-                "AND COALESCE(json_extract(data,'$.action.name'),'') NOT IN (SELECT value FROM json_each(?)) ORDER BY rowid",
-                (json.dumps(sorted(candidates)), json.dumps(KEPT_ACTIONS)))]
+                "SELECT rowid FROM native_receipts WHERE json_extract(data,'$.task_id') IN (SELECT value FROM json_each(:tasks)) "
+                "AND json_extract(data,'$.state')='completed' AND NOT " + KEPT_RECEIPT + " ORDER BY rowid",
+                dict(tasks=json.dumps(sorted(candidates)), routine_calls=json.dumps(KEPT_ROUTINE_CALLS)))]
         deleted = 0
         for start in range(0, len(rows), BATCH_ROWS):
             if self._maintenance_stopped():
@@ -205,7 +313,8 @@ class DatabaseMaintenance:
                     (json.dumps(sorted(self.ACTIVE)),))]
                 pending = self._pending_completion_receipts()
                 keys = {execution_key(t) for t in live}
-                excluded = {identity for identity, key in candidates.items() if key in keys}
+                excluded = {identity for identity, key in candidates.items() if key is not None and key in keys}
+                excluded.update(t['id'] for t in live)
                 excluded.update(row[0] for row in self.db.execute(
                     "SELECT json_extract(data,'$.task_id') FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working')"))
                 excluded.update(task_id for _, task_id, status, _ in decisions if status == 'pending')
@@ -213,13 +322,14 @@ class DatabaseMaintenance:
                 names = (named | {i for t in live for i in t.get('_continuation_receipt_ids', [])}
                          | {receipt for *_, receipt in decisions if receipt}
                          | {r['_wait_process_receipt'] for r in pending if r.get('_wait_process_receipt')})
-                deleted += self.db.execute(
-                    'DELETE FROM native_receipts WHERE rowid IN (SELECT value FROM json_each(?)) '
-                    "AND json_extract(data,'$.state')='completed' AND NOT (" + PENDING_COMPLETIONS + ') '
+                deleted += self._delete_rows('native_receipts',
+                    'rowid IN (SELECT value FROM json_each(?)) '
+                    "AND json_extract(data,'$.state')='completed' AND NOT COALESCE((" + PENDING_COMPLETIONS + '), '
+                    + UNKNOWN_COMPLETION_KEPT + ') '
                     'AND id NOT IN (SELECT value FROM json_each(?)) '
                     "AND json_extract(data,'$.task_id') NOT IN (SELECT value FROM json_each(?))",
                     (json.dumps(rows[start:start + BATCH_ROWS]), json.dumps(sorted(names)),
-                     json.dumps(sorted(excluded - {None})))).rowcount
+                     json.dumps(sorted(excluded - {None}))))
             self.stopping.wait(BATCH_PAUSE_SECONDS)
         return deleted
 
@@ -318,8 +428,11 @@ class DatabaseMaintenance:
                     started = time.monotonic()
                     self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')
                     self.db.execute('VACUUM')
-                    # VACUUM can renumber rowids, so the kept tasks can lose their row order.
+                    # VACUUM can renumber rowids, so the kept tasks can lose their row order, and the exchange
+                    # positions of the message pages can name other rows.
                     self._forget_cached_tasks()
+                    with self.transaction():
+                        index_exchange_audience(self.db, rebuild=True)
                     logging.getLogger(__name__).warning('coconut.database_vacuum %s', json.dumps(dict(
                         pages_before=pages, free_before=free, seconds=round(time.monotonic() - started, 1))))
                     freed += free

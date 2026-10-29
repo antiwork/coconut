@@ -12,6 +12,7 @@ import gzip
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -31,6 +32,29 @@ PEER_KEY = re.compile(r'[0-9a-f]{64}')
 # Only the main listener serves these. The tunnel listener carries the phone's requests.
 GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/tools', '/v1/gateway/cron',
                   '/v1/gateway/answers', '/v1/gateway/messages')
+
+
+# A path segment with a digit and at least 8 characters is an ID. The log keeps the route, not private IDs.
+PATH_ID = re.compile(r'/(?=[^/]*[0-9])[^/]{8,}')
+
+
+def request_timing(method, target, status, seconds, stages=None):
+    """Log how long the service took to answer one request from the phone, as `coconut.request_timing`.
+
+    A long poll (`wait` in the query) waits for new events on purpose, so its line also gives the wait.
+    The line names the route without IDs or query values.
+    """
+    url = urlsplit(target)
+    record = dict(method=method, route=PATH_ID.sub('/:id', url.path), status=status, ms=round(seconds * 1000, 1))
+    wait = parse_qs(url.query).get('wait')
+    if wait:
+        try:
+            record['wait_s'] = float(wait[0])
+        except ValueError:
+            pass
+    if stages:
+        record['stages_ms'] = {name: round(value, 1) for name, value in stages.items()}
+    logging.getLogger(__name__).warning('coconut.request_timing %s', json.dumps(record))
 
 
 class APIServer(ThreadingHTTPServer):
@@ -112,6 +136,7 @@ class Handler(BaseHTTPRequestHandler):
         compressed = len(content) > 1024 and accepts_gzip(self.headers.get('Accept-Encoding', ''))
         if compressed:
             content = gzip.compress(content, compresslevel=5)
+        self.status = status
         self.send_response(status)
         if close:
             # send_header also marks this connection to close after the response.
@@ -173,6 +198,17 @@ class Handler(BaseHTTPRequestHandler):
             raise ServiceError(400, str(error)) from None
 
     def _handle(self, method):
+        """Serve one request. Log the time of each request from the phone (see request_timing)."""
+        started = time.perf_counter()
+        # One connection carries many requests. Each request starts without the status and stages of the one before.
+        self.status = self.timings = None
+        try:
+            self._serve(method)
+        finally:
+            if self.server.tunnel:
+                request_timing(method, self.path, self.status, time.perf_counter() - started, getattr(self, 'timings', None))
+
+    def _serve(self, method):
         self.connection.settimeout(35)
         try:
             url = urlsplit(self.path)
@@ -267,6 +303,7 @@ class Handler(BaseHTTPRequestHandler):
                     if len(parts) != 4:
                         raise ServiceError(404, 'This artifact was not found.')
                     content, filename = service.artifact_content(parts[2])
+                    self.status = 200
                     safe_filename = ''.join(c for c in filename if c.isascii() and c.isalnum() or c in '._- ')[:160] or 'artifact'
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/octet-stream')

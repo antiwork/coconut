@@ -26,7 +26,7 @@ from .pr_tracking import REVIEW_CHECK_NAMES, GitHubPRTracker, PRTrackingError, p
 from .routines import validate_schedule, next_run
 from .native_conversation import reaction_only_turn
 from .profiles import HermesProfiles, ProfileError, profile_id
-from .state_sync import StateSync
+from .state_sync import READ_INDEXES, StateSync, index_exchange_audience
 
 
 class ServiceError(Exception):
@@ -151,7 +151,7 @@ from .work_status import WorkStatus
 from .background_processes import BackgroundProcesses, PENDING_COMPLETIONS
 from .native_execution import NativeExecution
 from .decision_inbox import DecisionInbox, migrate_notification_importance
-from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PullRequestReviews
+from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PR_URL_INDEX, PullRequestReviews
 from .work_progress import WorkProgress, work_enabled
 
 
@@ -297,6 +297,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self.db.execute('CREATE INDEX IF NOT EXISTS tasks_native_job_open ON tasks (id) WHERE ' + OPEN_NATIVE_JOB)
         self.db.execute('CREATE INDEX IF NOT EXISTS tasks_routine_open ON tasks (id) WHERE ' + OPEN_ROUTINE_TASK)
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_source ON tasks (json_extract(data,'$.source_task_id'))")
+        self.db.executescript(READ_INDEXES + PR_URL_INDEX)
         self._request_device_id = None
         self._request_key = None
         self._message_interaction = None
@@ -336,6 +337,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if self.kanban and not getattr(self, '_workspace_recovery_hold', False):
                 self.kanban.call({'op': 'snapshot'})
             self._index_message_audience()
+            with self.transaction():
+                index_exchange_audience(self.db)
             with self.transaction():
                 self._migrate_threads()
                 self._migrate_bot_exchanges()
@@ -999,7 +1002,6 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 data_started = time.perf_counter()
                 bots = [self._bot_view(dict(b, **{key: value for key, value in observed.get(b['id'], {}).items() if key in ('name', 'role', 'instructions', 'approval_override', 'effective_approval', 'worker_limit', 'model_override', '_native_effective_model', '_model_error')}), catalog) for b in self._all('bots') if not b.get('_deleted')]
                 visible = {b['id'] for b in bots}
-                visible_task_ids = self._visible_task_ids(visible)
                 state = {'bots': bots, 'work_capacity': capacity_state(self._setting('work_capacity'))}
                 for table in self.TABLES[1:]:
                     if content_only and table == 'tasks':
@@ -1009,7 +1011,10 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                         state['history_before'] = history
                         continue
                     source = self._page_decisions(state['messages'], pending=True) if content_only and compact_history and table == 'decisions' else self._all(table)
-                    state[table] = [self._public(o) for o in source if self._visible(o, visible, visible_task_ids if table in ('decisions', 'artifacts') else None)]
+                    # Look up only the tasks of these rows. A scan of the whole task table cost 70 ms.
+                    task_ids = (self._visible_task_ids(visible, {o.get('task_id') for o in source} - {None})
+                                if table in ('decisions', 'artifacts') else None)
+                    state[table] = [self._public(o) for o in source if self._visible(o, visible, task_ids)]
                 work_started = time.perf_counter()
                 state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
                 if content_only and recent_work:
@@ -1017,11 +1022,16 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 work_finished = time.perf_counter()
                 if content_only:
                     referenced = {o.get('task_id') for name in ('messages', 'decisions', 'artifacts') for o in state[name]}
+                    # The active tasks come from the tasks_status index and the referenced ones by ID, so the read
+                    # does not scan every task.
                     state['tasks'] = [self._public(task) for task in (json.loads(row[0]) for row in self.db.execute(
-                        "SELECT data FROM tasks WHERE (json_extract(data,'$.status') IN (SELECT value FROM json_each(?)) "
-                        "OR id IN (SELECT value FROM json_each(?))) AND id IN (SELECT value FROM json_each(?)) "
+                        "SELECT data FROM tasks WHERE id IN (SELECT id FROM tasks WHERE json_extract(data,'$.status') IN "
+                        "(SELECT value FROM json_each(:active)) UNION SELECT value FROM json_each(:referenced)) "
+                        "AND +json_extract(data,'$.bot_id') IN (SELECT value FROM json_each(:visible)) "
+                        "AND json_extract(data,'$.conversation_bot_id') IN (SELECT value FROM json_each(:visible)) "
                         "AND NOT coalesce(json_extract(data,'$._hidden'),0) AND NOT coalesce(json_extract(data,'$._deleted'),0) ORDER BY rowid",
-                        (json.dumps(sorted(self.ACTIVE)), json.dumps(sorted(referenced - {None})), json.dumps(sorted(visible_task_ids)))))]
+                        dict(active=json.dumps(sorted(self.ACTIVE)), referenced=json.dumps(sorted(referenced - {None})),
+                             visible=json.dumps(sorted(visible)))))]
                 if routines is not None:
                     previous = {r['id']: r.get('last_task_id') for r in state['routines']}
                     state['routines'] = [dict(self._public(r), last_task_id=previous.get(r['id']))
@@ -2815,9 +2825,10 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
 
     def learning(self) -> dict:
         groups: dict[tuple, dict] = {}
-        with self.lock:
-            for decision in self._all('decisions'):
-                task = self._get('tasks', decision['task_id'])
+        # A read view reads every decision without the service lock.
+        with self._read_view() as view, view._read_transaction():
+            for decision in view._all('decisions'):
+                task = view._get('tasks', decision['task_id'])
                 key = (task['bot_id'], decision['action_type'])
                 for answer in decision.get('_answers', []):
                     prediction = answer.get('prediction')
@@ -2865,7 +2876,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         except PRTrackingError as error:
             raise ServiceError(400, str(error)) from error
         url = f'https://github.com/{owner}/{repo}/pull/{number}'
-        with self.lock:
+        with self.lock, self._shared_reads():
             task = self._get('tasks', task_id) if task_id else dict(bot_id=bot_id, status='working')
             bot = self._get('bots', task['bot_id'])
             if bot.get('_deleted'):
@@ -2873,7 +2884,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if task['status'] != 'working' or self.stopping.is_set():
                 raise YieldForDecision('This task no longer accepts provider output.')
             review_task = self._pr_review_source(bot['id'], task_id or payload.get('review_task_id'))
-            existing = next((a for a in self._all('artifacts') if a['bot_id'] == bot['id'] and a['kind'] == 'pr' and a['url'].lower() == url.lower()), None)
+            existing = self._bot_pr_artifact(bot['id'], url)
             if existing and existing.get('pr_state') not in ('closed', 'merged') and existing['status'] != 'merged':
                 self._bind_pr_review(existing, review_task, transfer=task_id is None and bool(payload.get('review_task_id')))
                 with self.transaction():
@@ -2884,7 +2895,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         observation = self._pr_tracker_for(task['bot_id']).observe(url)
         if not observation.observed:
             raise ServiceError(502, observation.detail)
-        with self.transaction():
+        with self.transaction(), self._shared_reads():
             task = self._get('tasks', task_id) if task_id else dict(bot_id=bot_id, status='working')
             bot = self._get('bots', task['bot_id'])
             if bot.get('_deleted'):
@@ -2892,7 +2903,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if task['status'] != 'working' or self.stopping.is_set():
                 raise YieldForDecision('This task no longer accepts provider output.')
             review_task = self._pr_review_source(bot['id'], task_id or payload.get('review_task_id'))
-            existing = next((a for a in self._all('artifacts') if a['bot_id'] == bot['id'] and a['kind'] == 'pr' and a['url'].lower() == url.lower()), None)
+            existing = self._bot_pr_artifact(bot['id'], url)
             if existing:
                 existing.update(observation.fields(), title=(observation.title or existing['title'])[:200],
                                 preview=observation.detail, checked_at=observation.checked_at,

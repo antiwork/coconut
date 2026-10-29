@@ -118,38 +118,43 @@ class WorkProgress:
 
     def _restore_saved_delegation_results(self):
         """Deliver a saved final result when only an earlier progress reply reached its owner."""
-        from .service import digest, encoded
         with self.transaction():
             if self.stopping.is_set() or self.restart_pending:
                 return
             if time.monotonic() < getattr(self, '_saved_return_check_at', 0):
                 return
             self._saved_return_check_at = time.monotonic() + 60
-            tasks = {t['id']: t for t in self._all('tasks')}
-            returning = {t['_return_dependency_id'] for t in tasks.values()
-                         if t.get('_return_dependency_id') and t.get('_return_pending')}
-            for parent in tasks.values():
-                if parent['status'] != 'waiting' or not self._process_observation_current(parent, self._get('bots', parent['bot_id'])):
+            # The kept task map spares a parse of the whole task table under the service lock. Its objects are shared,
+            # so a changed child is a copy.
+            with self._shared_reads():
+                self._restore_saved_results(dict(self._task_map()))
+
+    def _restore_saved_results(self, tasks):
+        from .service import digest, encoded
+        returning = {t['_return_dependency_id'] for t in tasks.values()
+                     if t.get('_return_dependency_id') and t.get('_return_pending')}
+        for parent in tasks.values():
+            if parent['status'] != 'waiting' or not self._process_observation_current(parent, self._get('bots', parent['bot_id'])):
+                continue
+            for identity in parent.get('_waiting_on', []):
+                child = tasks.get(identity)
+                result = child.get('_native_relay_result') if child else None
+                if (not child or child['status'] not in ('completed', 'failed') or not result or not result.get('text')
+                        or result.get('sender_bot_id') != parent['bot_id'] or child.get('_return_pending') or identity in returning
+                        or bool(result.get('failed')) != (child['status'] == 'failed')
+                        or not self._process_observation_current(child, self._get('bots', child['bot_id']))
+                        or (child['status'] == 'completed' and self._unfinished_work(child))
+                        or self._background_pending(child['id'])):
                     continue
-                for identity in parent.get('_waiting_on', []):
-                    child = tasks.get(identity)
-                    result = child.get('_native_relay_result') if child else None
-                    if (not child or child['status'] not in ('completed', 'failed') or not result or not result.get('text')
-                            or result.get('sender_bot_id') != parent['bot_id'] or child.get('_return_pending') or identity in returning
-                            or bool(result.get('failed')) != (child['status'] == 'failed')
-                            or not self._process_observation_current(child, self._get('bots', child['bot_id']))
-                            or (child['status'] == 'completed' and self._unfinished_work(child))
-                            or self._background_pending(child['id'])):
-                        continue
-                    owner = tasks.get(child.get('_reply_to_task_id') or child.get('source_task_id'), {})
-                    if owner.get('_assignment_task_id', owner.get('id')) != parent['id']:
-                        continue
-                    if any(t.get('_resolved_dependency_id') == child['id'] and t.get('_assignment_task_id') == parent['id']
-                           and t['created_at'] >= child.get('_background_return_after', '') for t in tasks.values()):
-                        continue
-                    child['_return_pending'] = dict(target_bot_id=parent['bot_id'], text=result['text'],
-                        result_status=child['status'], return_id='saved-final:' + digest(encoded(result)))
-                    self._put('tasks', child)
+                owner = tasks.get(child.get('_reply_to_task_id') or child.get('source_task_id'), {})
+                if owner.get('_assignment_task_id', owner.get('id')) != parent['id']:
+                    continue
+                if any(t.get('_resolved_dependency_id') == child['id'] and t.get('_assignment_task_id') == parent['id']
+                       and t['created_at'] >= child.get('_background_return_after', '') for t in tasks.values()):
+                    continue
+                child = tasks[identity] = dict(child, _return_pending=dict(target_bot_id=parent['bot_id'], text=result['text'],
+                    result_status=child['status'], return_id='saved-final:' + digest(encoded(result))))
+                self._put('tasks', child)
 
     def _exchange_peers(self, task):
         """Read tasks in this exchange and the assignment's recorded Work history."""
@@ -203,7 +208,9 @@ class WorkProgress:
         if self.kanban and isinstance(payload.get('task_id'), str):
             # Dispatch callbacks acquire the service lock while holding the adapter lock.
             self.kanban.call({'op': 'snapshot', 'external_ids': [task_id, payload['task_id']]})
-        with self.transaction():
+        # Inside _shared_reads the task map is the kept one, not a parse of the whole table under the service lock. Its
+        # objects are shared and only read here. The writes below read their rows with _get.
+        with self.transaction(), self._shared_reads():
             task = self._get('tasks', task_id)
             if task['status'] != 'working' or self._task_paused(task) or self.stopping.is_set():
                 raise ServiceError(409, 'This task cannot register a wait now.')
@@ -211,7 +218,9 @@ class WorkProgress:
                 return self.record_no_card(task, payload)
             peers = self._exchange_peers(task)
             process_owners = peers | {task_id: task}
-            decisions = {d['id']: d for d in self._all('decisions') if d['task_id'] in process_owners}
+            decisions = {d['id']: d for d in (json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?)) ORDER BY rowid",
+                (json.dumps(sorted(process_owners)),)))}
             if sum(bool(payload.get(key)) for key in ('task_id', 'process_id', 'decision_id')) > 1:
                 raise ServiceError(400, 'Choose one task, process, or decision.')
             if payload.get('decision_id'):
@@ -232,7 +241,7 @@ class WorkProgress:
                 return {'status': 'waiting', 'decision_id': identity, 'reason': reason}
             from .background_processes import subscription
             processes = {}
-            maintenance = {c['id'] for c in self._all('contexts') if c.get('_decision_refresh')}
+            maintenance = {c['id'] for c in self._all_shared('contexts') if c.get('_decision_refresh')}
             for record in (r for identity in process_owners for r in self._native_task_receipts(identity)):
                 process_id = subscription(record)
                 owner = process_owners.get(record['task_id'])
@@ -273,13 +282,14 @@ class WorkProgress:
             if target_id not in peers or '\n' in reason:
                 raise ServiceError(400, 'Choose a task from this exchange and give one short reason.')
             target = peers[target_id]
-            tasks = {t['id']: t for t in self._all('tasks')}
-            records = self._pending_completion_receipts()
+            tasks = self._task_map()
+            records = self._shared_pending_receipts()
             if (task_id in self._work_chain(target, tasks, records, include_continuations=True)
                     or self._native_wait_cycle(task_id, target_id)):
                 raise ServiceError(409, 'This task already depends on your result. Do not create a circular wait.')
             assignment = self._assignment(task)
-            turn_ids = {t['id'] for t in tasks.values() if self._assignment(t)['id'] == assignment['id']}
+            # The assignment of a task is the task that its _assignment_task_id names, else the task itself.
+            turn_ids = {t['id'] for t in tasks.values() if (t.get('_assignment_task_id') or t['id']) == assignment['id']}
             existing_dependency = (target_id in assignment.get('_waiting_on', [])
                 or any(r['task_id'] in turn_ids and target_id in (r.get('_relay_task_id'), r.get('_wait_task_id'))
                        and not r.get('_process_delivery') for r in records))
