@@ -230,7 +230,7 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             try:
                 starting = self._starting()
             except RuntimeError as error:
-                # Coconut then shows no connected adapter, and chats use the worker.
+                # Coconut then shows no connected adapter, and chats wait for one.
                 LOG.error('Coconut: %s', error)
                 await asyncio.sleep(60)
                 continue

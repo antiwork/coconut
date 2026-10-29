@@ -125,8 +125,8 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 
 1. Phase 2: plain chat turns run in the gateway, behind a setting.
 2. Phase 3: Coconut tools and cards become tools of the `coconut` plugin, and both runtimes share one conversation.
-3. Phase 4: routines run in the gateway as Coconut turns, and each profile keeps its model keys the Hermes way. This version. Kanban stays with Coconut for now.
-4. Phase 5: Coconut deletes its worker runtime.
+3. Phase 4: routines run in the gateway as Coconut turns, and each profile keeps its model keys the Hermes way. Kanban stays with Coconut for now.
+4. Phase 5: the gateway is always on (this version). Then the other turn types move to the gateway, one group at a time, and Coconut deletes the worker code that served them.
 
 ### Rules for the phases
 
@@ -135,15 +135,15 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 
 ### Phase 2: plain chat turns
 
-- The setting `chat_runtime` is `worker` (the default) or `gateway`. `PUT /v1/settings/chat-runtime {"chat_runtime": "gateway"}` sets it. The iPhone has no control for it yet.
+- Phase 2 put these turns behind a setting, `chat_runtime`. Phase 5 removed the setting: the gateway is always on.
 - Coconut ships the `coconut` gateway platform in `hermes_plugin/coconut`. Setup links it into `<home>/plugins/coconut` of each profile and enables the plugin and its platform there. See [the coconut skill](install-and-update.md#the-coconut-skill-for-hermes).
 - The adapter connects to the main listener on loopback. It long-polls `POST /v1/gateway/poll` for the turns of its profile and reports `typing`, `send`, `edit`, `delete` and `done` to `POST /v1/gateway/events`. It sends the token of `<data>/gateway/bridge.json` (mode 0600), which the service writes at each start. The tunnel listener does not serve these routes.
 - One chat is one bot: the chat ID is the bot ID. A multiplexing gateway has one adapter for each served profile, and Coconut matches the adapter to the bot by the Hermes home.
 - `gateway_bridge.plain_chat_turn` is the routing rule. Phase 3 widens it (see below).
 - The adapter takes turns only after the gateway restored its sessions after a start. Before that, the gateway queues each message and ends its processing without a reply.
-- A turn that no adapter takes in 30 seconds runs in the worker. A taken turn fails when the adapter stops listing it for 90 seconds.
+- A turn that no adapter takes in 30 seconds goes back to the service, which waits for an adapter (phase 5). A taken turn fails when the adapter stops listing it for 90 seconds.
 - `TurnEvents` maps the gateway events onto the worker's provider events, so the phone sees the same messages. Each `send` starts a segment, and `edit` replaces its text. A new segment keeps the earlier one as a complete interim message (`interim_seal`). A send that the gateway marks as interim, such as commentary, is an interim message. `done` completes or fails the task.
-- With `gateway`, the service supervises one `hermes gateway run` process for the person's Hermes home, which Hermes multiplexes across the profiles. The process starts and stops with the service and with the setting. Its output goes to `<data>/gateway/gateway.log`. After an exit, the service waits 30 seconds before it starts the process again.
+- The service supervises one `hermes gateway run` process for the person's Hermes home, which Hermes multiplexes across the profiles. The process starts and stops with the service. Its output goes to `<data>/gateway/gateway.log`. After an exit, the service waits 30 seconds before it starts the process again.
 - When a gateway that the service did not start already runs for that home, the service starts no second one. It uses that gateway when the gateway loaded the platform. `GET /v1/setup` returns `gateway` with the state, the process, the reason and the connected profiles.
 - A cancelled task sends `/stop` to the gateway session of the chat. An action that already runs can finish.
 
@@ -153,7 +153,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - Coconut tools. The plugin registers the `coconut` toolset: `coconut_ask`, `coconut_track_pr` and `coconut_message_bot`. A tool finds its chat from the gateway session context (`gateway.session_context.get_session_env`), and the adapter of the process names the running turn. `coconut_ask` shows a card and waits for the answer. The other tools call `POST /v1/gateway/tools`, which acts for the task of that turn. A `check_fn` that reads the session context hid the tools also in Coconut chats, so the tools show on each platform of the gateway, behind its tool search, and refuse to act outside a Coconut chat turn. A Coconut worker does not load these tools: it has its own.
 - Cards. A clarify question (`send_clarify`), a command approval (`_send_exec_approval_prompt`) and `coconut_ask` report a `question` event. The service shows it as a decision card, and the task stays working while the gateway turn waits. The answer goes to the adapter with its next poll. The adapter gives it to Hermes with `resolve_gateway_clarify` or `resolve_gateway_approval`, or returns it to the waiting tool. A typed reply to a command approval declines the command and gives Hermes the reason. A card that is still open when the turn ends closes as failed.
 - Streaming. The plugin's `on_stream_*` hooks receive the text of each model call, also when the gateway streams nothing to platforms. The adapter sends the text in pieces (`delta`), and the phone sees the reply while the model writes. The person's `streaming` setting stays as it is. The first reply send of the gateway takes over from the streamed text.
-- Routing. With `gateway`, each turn of a person's message in a bot's own chat goes to the gateway, also with a quote or a bot mention (they go into the message text). These turns stay in the worker: attachments, open cards that the bot answers, reactions, work items and claims, routines, bot exchanges and returns, GitHub source activity, PR reviews, bot creation and deletion confirmations, recovery and withdrawal turns, and each turn that continues an answered card.
+- Routing. Each turn of a person's message in a bot's own chat goes to the gateway, also with a quote or a bot mention (they go into the message text). These turns stay in the worker: attachments, open cards that the bot answers, reactions, work items and claims, routines, bot exchanges and returns, GitHub source activity, PR reviews, bot creation and deletion confirmations, recovery and withdrawal turns, and each turn that continues an answered card.
 - The startup restore of the runner has no public signal. The adapter reads `GatewayRunner._startup_restore_in_progress`, and the Coconut contract check (`hermes_contract.verify_gateway_contract`) requires it, with the other gateway interfaces that the plugin uses. A Hermes that changes them fails the contract check.
 
 ### Known gaps after phase 3
@@ -164,15 +164,14 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - Tool progress is off, so the phone shows only the phases "thinking" and "writing".
 - The adapter refused messages outside a Coconut turn, for example cron deliveries. Phase 4 delivers them (see [Messages outside a Coconut turn](#messages-outside-a-coconut-turn)).
 - Gateway notices, such as "No home channel is set", stay in the gateway log. They name gateway commands, and Coconut sends chat text without gateway commands.
-- A profile without a connected adapter uses the worker. This happens when the gateway does not multiplex, or when the person created the profile outside Coconut after the last setup. A gateway that already runs loads the platform after its next restart.
+- A profile without a connected adapter has no chat runtime, and its chat turns wait (phase 5). This happens when the gateway does not multiplex, or when the person created the profile outside Coconut after the last setup. A gateway that already runs loads the platform after its next restart.
 - Steering during a turn waits for the next turn.
 
 ### Phase 4: routines in the gateway
 
 - Evidence. Every Hermes gateway ticks the cron store of each profile that it serves, also with one profile only (`gateway/run_bootstrap.py`, `_start_gateway_start_cron_and_housekeeping` and `_cron_tick_profile_homes`). Hermes has no setting that keeps a served profile or a job out of these ticks. A `cron.provider` of a plugin cannot replace the ticker of a multiplexing gateway (`cron/scheduler_provider.py`, `scheduler_for_profile_mode`). A cron run executes in a Hermes cron session, often in a separate worker process, never as an inbound turn of a platform. So the gateway cannot deliver a cron run "as a Coconut turn" through `deliver=coconut`: delivery carries only the final text.
-- One firing owner. When a gateway ticks a bot's profile, the gateway fires the bot's routines, and Coconut claims none of them (`gateway_chat.gateway_ticked_bots`). A host gateway of the Hermes home ticks each profile except a parked one. A profile with its own gateway is ticked by that gateway. Without a gateway, Coconut claims the routines as before, with the native fire claims. The native fire claim decides a race at a change, so a routine never fires twice.
+- One firing owner. A gateway that serves a bot's profile fires the bot's routines. Since phase 5, the evidence is the connected coconut adapter of the profile (`gateway_chat.gateway_served_bots`), not the config. Coconut fires the routines of a bot whose profile no gateway serves, and a routine that the person runs now. The native fire claim decides a race at a switch, so a routine never fires twice.
 - A cron run is a Coconut turn. The plugin's session hooks see a cron run through `cron.execution_identity.current_cron_execution`. At its start (`on_session_start`) the plugin opens a turn with `POST /v1/gateway/cron`, and the service makes a routine task in the bot's chat. The run reports to that turn: streamed text, commentary (`on_interim_message`), the answer (`post_llm_call`) and the end (`on_session_end`). The coconut tools act for that task. `coconut_ask` shows a card and waits for its answer with `POST /v1/gateway/answers`, because a cron worker process has no adapter that polls.
-- `chat_runtime: worker`. Coconut starts no gateway, so Coconut fires the routines. A gateway that the person runs still ticks every profile that it serves: Hermes gives no way to stop that. Coconut then leaves those routines to that gateway, and its runs come to Coconut as turns through the plugin, as in `gateway` mode.
 - Model keys. Each profile reads its provider keys from its own `.env`, as Hermes keeps them. The Hermes entries of each update and start copy the provider keys of the default profile to each bot profile that does not have them (#284).
 
 ### Messages outside a Coconut turn
@@ -191,10 +190,20 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - Evidence. The idle check (`gateway/run_idle_exit.py`, `busy_reason`, the same in 0.22.4, 0.22.5 and main) keeps the gateway up while a messaging platform other than `local` is enabled in the config or has an adapter, connected or not (`_messaging_busy`). The check does not look at the traffic of an adapter. Only the clients of the gateway's own API and WebSocket stamp activity (`note_client_activity` in `gateway/run_api.py`). A running agent turn counts separately (`_active_work_count`).
 - Coconut enables `gateway.platforms.coconut` in each profile. On a Hermes without the change below, a gateway that a client starts for a Coconut home never reaches its idle exit. The long poll of the adapter is not the cause: an adapter that never reaches the service also keeps the gateway up. On 2026-10-28 a gateway that `hermes -p desk chat` started on the Mac mini ran for about four hours.
 - The change: NousResearch/hermes-agent#146209 (open) adds the class attribute `keeps_gateway_up` (default `True`) to `BasePlatformAdapter`. `_messaging_busy` skips a platform when each of its adapters sets the attribute to `False`. A running turn of the platform still counts through `_active_work_count`.
-- The coconut adapter sets `keeps_gateway_up = False`, because Coconut starts its own gateway or uses its worker when no gateway runs. The attribute takes effect when Hermes ships that change. An earlier Hermes ignores it.
+- The coconut adapter sets `keeps_gateway_up = False`, because Coconut starts its own gateway when no gateway runs. The attribute takes effect when Hermes ships that change. An earlier Hermes ignores it.
 - A runnable cron job of a served profile still keeps an auto-started gateway up (`_cron_busy`), as Hermes intends for each gateway that ticks a cron store. The routines of the bots are such jobs.
 - Coconut's own gateway runs without `--idle-exit`, so the idle check does not apply to it. When Coconut uses a gateway that a client started and that gateway exits, Coconut starts its own gateway.
 - `test_native_gateway_idle_exit.py` runs client-started gateways on each tested Hermes, with a short idle time and no cron jobs. A gateway without the platform exits. A gateway with the platform and an idle Coconut service exits on a Hermes that has `keeps_gateway_up`, and stays up on an earlier Hermes. A running Coconut turn holds the gateway up on each Hermes.
+
+### Phase 5: the gateway is always on
+
+- The `chat_runtime` setting and its route are gone. A service on the person's Hermes always supervises the gateway, or uses a gateway that already runs for the Hermes home. The service removes a stored `chat_runtime` row at its start.
+- A chat turn goes only to the gateway. The service no longer gives a chat turn to the worker when no adapter is connected or no adapter takes the turn.
+- When no adapter of the bot's profile is connected, the turn waits, at most 5 minutes (`GATEWAY_WAIT_SECONDS`). The task stays working, and its summary says that it waits for the Hermes gateway. `GET /v1/setup` shows the state of the gateway, the reason and the connected profiles. When the wait ends without an adapter, the task fails with a reason that names the gateway log.
+- While the supervised gateway starts again, the chat turns wait. The service starts it again 30 seconds after an exit, and the adapters connect after the gateway restored its sessions. The waiting turns then run. A turn that the gateway ran when it stopped fails, because the adapter stops listing it.
+- The gateway fires the routines of each profile that it serves (phase 4). Coconut fires the routines of a profile that no gateway serves: a profile that the person parked in Hermes (`gateway.parked`), or any profile while the gateway starts again. Coconut does not remove a parked file, because that is the person's setting. `GET /v1/setup` lists these profiles in `gateway.unserved_profiles`. A chat turn of a parked profile fails at once and says why.
+- Turns of the other types still run in the worker: attachments, open cards, reactions, work items and claims, bot exchanges and returns, GitHub source activity, PR reviews, bot creation and deletion confirmations, and recovery and withdrawal turns. The next phase 5 changes move them, one group at a time.
+- A service without a Hermes home (fixture mode and tests) has no gateway. Its provider runs every turn.
 
 ### Kanban: not yet
 
@@ -202,14 +211,10 @@ Coconut keeps its private board in `<data>/kanban/kanban.db` and dispatches it i
 
 ### What phase 5 deletes
 
-Phase 5 deletes the worker runtime when `gateway` is the only chat runtime:
-
-- `hermes_worker.py`, `worker_protocol.py`, `worker_transport.py`, `worker_cli.py`, `worker_activity.py` and the worker parts of `providers.py`.
-- The native bridge of the worker: `native_bridge.py`, `native_conversation.py` (the gateway joins the same session), `native_execution.py`, `native_relay.py`, `native_mcp.py` and the other `native_*` modules that serve worker turns.
-- Coconut's routine claims: `native_routine_execution.py`, `native_routine_receipts.py` and the claim and finish code of `routine_coordinator.py`, after the gateway is the only firing owner.
+- The worker turn types, one group at a time, after the gateway runs them: attachments and reactions; card answers, work items and claims, and recovery turns; bot exchanges and returns; GitHub source activity and PR reviews, and bot creation and deletion confirmations.
+- Then the worker runtime: `hermes_worker.py`, `worker_protocol.py`, `worker_transport.py`, `worker_cli.py`, `worker_activity.py`, the worker parts of `providers.py`, and the `native_*` modules that serve worker turns.
+- Coconut's claims of routines that the person runs now, when the gateway runs those too.
 - `kanban_scheduler.py` and `kanban_runtime.py` only after Hermes gives its dispatcher a spawn hook. Until then they stay.
-
-While `worker` stays the default, both paths stay.
 
 ## Transport and future providers
 

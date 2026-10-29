@@ -226,7 +226,8 @@ class GatewayAdapterTests(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .1}, daemon=True).start()
         self.service.gateway_bridge.publish(f'http://127.0.0.1:{self.server.server_address[1]}')
         self.bot = self.write('POST', '/v1/bots', {'name': 'Ada'})
-        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
+        # As on the person's Hermes. The adapter of the test connects through the bridge.
+        self.service.gateway_enabled = lambda: True
         self.home = self.service.profiles.home(self.bot)
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()

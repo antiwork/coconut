@@ -44,7 +44,7 @@ def scheduler_result(result, status):
         row['scheduler_active'] = bool(running and not error and job and job.get('enabled', True) and not job.get('paused_at'))
     if not running:
         value['warning'] = 'Coconut has not confirmed a healthy scheduler tick. The saved jobs remain available; check Coconut before claiming they are active.'
-    value['scheduler_note'] = 'Coconut runs supported jobs in this bot. No standalone Hermes gateway is required. Check each job\'s scheduler_active and scheduler_error.'
+    value['scheduler_note'] = 'The Hermes gateway runs the jobs of this bot while it serves the bot\'s profile, and Coconut runs them otherwise. Each run is a Coconut turn in the chat of the bot. Check each job\'s scheduler_active and scheduler_error.'
     return json.dumps(value) if isinstance(result, str) else value
 
 

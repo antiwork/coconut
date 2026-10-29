@@ -61,7 +61,7 @@ launchctl kickstart -k gui/$(id -u)/com.gumroad.coconut.service
 
 ## A gateway that the person started
 
-When `chat_runtime` is `gateway`, Coconut runs one Hermes gateway for the Hermes home. A `hermes chat` or `hermes gateway run` command can also start a gateway. When a gateway already runs for the Hermes home, Coconut uses it and does not start its own.
+Coconut runs one Hermes gateway for the Hermes home. A `hermes chat` or `hermes gateway run` command can also start a gateway. When a gateway already runs for the Hermes home, Coconut uses it and does not start its own.
 
 A gateway loads the `coconut` plugin when it starts. After a Coconut update, a gateway that the person started keeps the earlier plugin until it restarts. Coconut restarts only the gateway that it started.
 

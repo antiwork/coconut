@@ -1503,8 +1503,6 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                             ('work_capacity', encoded(data['limit'])))
             self._event('settings.updated', {'work_capacity': result})
             return result
-        if parts == ['v1', 'settings', 'chat-runtime'] and method == 'PUT':
-            return self.set_chat_runtime(data)
         if parts == ['v1', 'device', 'push']:
             if method == 'PUT':
                 return self.push.registration(device, data)

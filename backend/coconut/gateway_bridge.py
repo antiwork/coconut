@@ -47,7 +47,7 @@ QUESTION_KINDS = ('clarify', 'approval', 'ask')
 
 # A chat turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: an
 # attachment, a card to answer, a reaction, work items and claims, routines, bot exchanges, GitHub source activity,
-# PR reviews, bot creation and deletion, and the recovery and withdrawal paths. The worker runs it.
+# PR reviews, bot creation and deletion, and the recovery and withdrawal paths. The worker runs it until phase 5 moves it.
 WORKER_INPUTS = (
     'attachments', '_pending_decisions', '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
     '_work_context_id', '_work_context', '_work_todos', '_work_resume', '_work_dependencies', '_pr_review',
@@ -68,7 +68,7 @@ def plain_chat_turn(task: dict) -> bool:
 
 
 class GatewayUnavailable(RuntimeError):
-    """No adapter took the turn. Nothing ran, so the worker can run it."""
+    """No adapter took the turn. Nothing ran, so the turn can wait for another adapter."""
 
 
 class _Turn:

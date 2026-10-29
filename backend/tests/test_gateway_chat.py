@@ -1,5 +1,5 @@
-"""Plain chat turns through the Hermes gateway: the routing rule, the event translation, the setting, the gateway
-process, and the profile edit. test_gateway_adapter.py checks the adapter, test_native_gateway_chat.py a real gateway."""
+"""Plain chat turns through the Hermes gateway: the routing rule, the event translation, the wait for the gateway, the
+gateway process, and the profile edit. test_gateway_adapter.py checks the adapter, test_native_gateway_chat.py a real gateway."""
 import os
 from pathlib import Path
 import subprocess
@@ -164,6 +164,8 @@ class ServiceRoutingTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.provider = Provider()
         self.service = Service(self.temp.name, self.provider, start_workers=False)
+        # As on the person's Hermes. The bridge of the test stands in for the gateway.
+        self.service.gateway_enabled = lambda: True
         self.bot = self.write('POST', '/v1/bots', {'name': 'Ada'})
         self.home = self.service.profiles.home(self.bot)
 
@@ -190,20 +192,24 @@ class ServiceRoutingTests(unittest.TestCase):
         return [(m['text'], m['streaming'], bool(m.get('_interim'))) for m in self.service._task_messages(task['id'])
                 if m['role'] == 'assistant' and m['kind'] == 'text']
 
-    def test_the_setting_accepts_only_the_two_runtimes(self):
-        self.assertEqual(self.service.chat_runtime(), 'worker')
-        self.assertNotIn('gateway', self.service.hermes_setup())
-        with self.assertRaises(ServiceError):
-            self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'cloud'})
-        self.assertEqual(self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'}),
-                         {'chat_runtime': 'gateway'})
-        self.assertEqual(self.service.chat_runtime(), 'gateway')
-        # Without a Hermes home, no gateway runs, and the phone can read that.
+    def test_the_gateway_is_the_only_chat_runtime_and_the_old_setting_goes_at_start(self):
         self.assertEqual(self.service.hermes_setup()['gateway'],
-                         {'state': 'off', 'pid': None, 'reason': None, 'chat_runtime': 'gateway', 'connected_profiles': []})
+                         {'state': 'off', 'pid': None, 'reason': None, 'connected_profiles': [],
+                          'unserved_profiles': [self.service.profiles.row(self.bot)['name']]})
+        with self.assertRaises(ServiceError):
+            self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'worker'})
+        # An install of an earlier version has the setting. The next start removes it.
+        self.service.db.execute("INSERT INTO settings VALUES ('chat_runtime', '\"worker\"')")
+        self.service.close()
+        self.service = Service(self.temp.name, self.provider, start_workers=False)
+        self.assertIsNone(self.service._setting('chat_runtime'))
+        # Fixture mode has no Hermes and so no gateway: its provider runs the chat turn.
+        self.assertNotIn('gateway', self.service.hermes_setup())
+        task = self.send('Fixture mode.')
+        self.service._run_task(task['id'])
+        self.assertEqual(len(self.provider.starts), 1)
 
-    def test_a_plain_chat_turn_runs_in_the_gateway_with_the_gateway_setting(self):
-        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
+    def test_a_plain_chat_turn_runs_in_the_gateway(self):
         task = self.send('How are you?')
         adapter = Adapter(self.service.gateway_bridge, self.home, [
             {'kind': 'typing'},
@@ -222,21 +228,57 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(self.read('bots', self.bot['id'])['last_message'], 'I am well.')
         self.assertEqual(self.service.gateway_status()['connected_profiles'], [self.service.profiles.row(self.bot)['name']])
 
-    def test_the_worker_runs_the_turn_with_the_worker_setting_or_without_an_adapter(self):
-        task = self.send('Worker, please.')
-        Adapter(self.service.gateway_bridge, self.home, [])
-        self.service._run_task(task['id'])
-        self.assertEqual(len(self.provider.starts), 1)
-        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
-        # No adapter of this profile polled within ADAPTER_SECONDS.
-        with patch.object(gateway_bridge, 'ADAPTER_SECONDS', 0):
-            task = self.send('Still the worker.')
-            self.service._run_task(task['id'])
-        self.assertEqual(len(self.provider.starts), 2)
+    def test_a_chat_turn_waits_for_the_gateway_and_runs_when_an_adapter_connects(self):
+        task = self.send('Wait for the gateway.')
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        deadline = time.monotonic() + 5
+        while self.read('tasks', task['id'])['summary'] != gateway_chat.WAITING and time.monotonic() < deadline:
+            time.sleep(.02)
+        # No adapter is connected, for example while the supervised gateway starts again. The task says so.
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'working')
+        self.assertEqual(self.read('tasks', task['id'])['summary'], gateway_chat.WAITING)
+        adapter = Adapter(self.service.gateway_bridge, self.home, [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'Here now.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        runner.join(10)
+        adapter.join(5)
+        self.assertEqual(self.provider.starts, [])
         self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.replies(task), [('Here now.', False, False)])
 
-    def test_a_turn_with_coconut_inputs_or_one_that_no_adapter_takes_runs_in_the_worker(self):
-        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
+    def test_a_chat_turn_fails_with_the_reason_when_no_gateway_connects_and_never_uses_the_worker(self):
+        with patch.object(gateway_chat, 'GATEWAY_WAIT_SECONDS', 1):
+            task = self.send('Nobody is there.')
+            self.service._run_task(task['id'])
+            stored = self.read('tasks', task['id'])
+            self.assertEqual(stored['status'], 'failed')
+            self.assertIn('The Hermes gateway did not connect for this bot', stored['summary'])
+            self.assertNotIn('_gateway_waiting', stored)
+            # An adapter that is connected but takes no turn: nothing ran, so the turn waits and then fails too.
+            Adapter(self.service.gateway_bridge, self.home, [])
+            with patch.object(gateway_bridge, 'TAKE_SECONDS', 0.2):
+                task = self.send('Nobody takes this one.')
+                self.service._run_task(task['id'])
+            self.assertEqual(self.read('tasks', task['id'])['status'], 'failed')
+        self.assertEqual(self.provider.starts, [])
+
+    def test_a_cancel_ends_the_wait_for_the_gateway(self):
+        task = self.send('Never mind.')
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        deadline = time.monotonic() + 5
+        while self.read('tasks', task['id'])['summary'] != gateway_chat.WAITING and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.write('POST', f'/v1/tasks/{task["id"]}/cancel')
+        runner.join(5)
+        self.assertFalse(runner.is_alive())
+        stored = self.read('tasks', task['id'])
+        self.assertEqual(stored['status'], 'cancelled')
+        self.assertNotIn('_gateway_waiting', stored)
+        self.assertEqual(self.provider.starts, [])
+
+    def test_a_turn_with_coconut_inputs_still_runs_in_the_worker(self):
         Adapter(self.service.gateway_bridge, self.home, [])
         task = self.send('A reaction is Coconut context.')
         with self.service.transaction():
@@ -245,14 +287,8 @@ class ServiceRoutingTests(unittest.TestCase):
             self.service._put('tasks', stored)
         self.service._run_task(task['id'])
         self.assertEqual(len(self.provider.starts), 1)
-        task = self.send('Nobody takes this one.')
-        with patch.object(gateway_bridge, 'TAKE_SECONDS', 0.2):
-            self.service._run_task(task['id'])
-        self.assertEqual(len(self.provider.starts), 2)
-        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
 
     def test_a_quoted_reply_carries_its_quote_and_the_turn_names_the_native_conversation(self):
-        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
         first = self.send('First.')
         adapter = Adapter(self.service.gateway_bridge, self.home, [{'kind': 'done', 'outcome': 'success'}])
         adapter.start()
@@ -275,7 +311,6 @@ class ServiceRoutingTests(unittest.TestCase):
                          session_root(self.read('bots', self.bot['id']), epoch=stored.get('_conversation_epoch')))
 
     def test_a_question_of_the_gateway_is_a_card_and_its_answer_returns_to_the_turn(self):
-        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
         task = self.send('Deploy it.')
         bridge = self.service.gateway_bridge
         adapter = Adapter(bridge, self.home, [{'kind': 'question', 'question_id': 'q1', 'question_kind': 'clarify',
@@ -305,7 +340,6 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(self.replies(task), [('Deployed in America.', False, False)])
 
     def test_an_open_question_closes_when_the_turn_ends_and_a_typed_answer_declines_a_command(self):
-        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
         task = self.send('Clean up.')
         bridge = self.service.gateway_bridge
         adapter = Adapter(bridge, self.home, [
@@ -335,7 +369,6 @@ class ServiceRoutingTests(unittest.TestCase):
             self.write('POST', f'/v1/decisions/{ask["id"]}/answer', {'choice': 'reply', 'correction': 'No.', 'revision': 1})
 
     def test_a_dismissed_card_returns_its_rejection_to_the_waiting_turn(self):
-        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
         task = self.send('Clean up.')
         bridge = self.service.gateway_bridge
         adapter = Adapter(bridge, self.home, [{'kind': 'question', 'question_id': 'q1', 'question_kind': 'approval',
@@ -361,7 +394,6 @@ class ServiceRoutingTests(unittest.TestCase):
         runner.join(5)
 
     def test_a_coconut_tool_of_the_gateway_acts_for_the_task_of_its_turn(self):
-        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
         other = self.write('POST', '/v1/bots', {'name': 'Lin'})
         task = self.send('Ask Lin.')
         bridge = self.service.gateway_bridge
@@ -386,7 +418,6 @@ class ServiceRoutingTests(unittest.TestCase):
             self.service.gateway_tool({'turn_id': turn, 'tool': 'message_bot', 'arguments': {'bot': 'Lin', 'text': 'x'}})
 
     def test_a_cancelled_turn_stops_in_the_gateway(self):
-        self.write('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'})
         task = self.send('A long answer, please.')
         adapter = Adapter(self.service.gateway_bridge, self.home, [{'kind': 'send', 'message_id': 'm:1', 'text': 'First'}])
         adapter.start()
@@ -546,11 +577,8 @@ class GatewayProcessTests(unittest.TestCase):
         self.service.close()
         self.temp.cleanup()
 
-    def test_the_service_runs_one_gateway_for_the_hermes_home_only_with_the_gateway_setting(self):
-        self.service._check_gateway()
-        self.assertIsNone(self.service.gateway_process)
-        with self.service.transaction():
-            self.service.set_chat_runtime({'chat_runtime': 'gateway'})
+    def test_the_service_runs_one_gateway_for_the_hermes_home_and_starts_it_again(self):
+        self.assertTrue(self.service.gateway_enabled())
         self.service._check_gateway()
         process = self.service.gateway_process
         self.assertEqual(self.service.gateway_state, {'state': 'running', 'pid': process.pid, 'reason': None})
@@ -562,20 +590,24 @@ class GatewayProcessTests(unittest.TestCase):
         self.assertEqual(os.stat(log).st_mode & 0o777, 0o600)
         self.service._check_gateway()
         self.assertIs(self.service.gateway_process, process)
-        with self.service.transaction():
-            self.service.set_chat_runtime({'chat_runtime': 'worker'})
+        self.assertIn('fake gateway runs', log.read_text())
+        # A gateway that stops starts again after RESTART_SECONDS. Until then, the setup says why none runs.
+        process.kill()
+        process.wait()
         self.service._check_gateway()
         self.assertIsNone(self.service.gateway_process)
-        self.assertIsNotNone(process.poll())
-        self.assertIn('fake gateway runs', log.read_text())
+        self.assertEqual(self.service.gateway_state['state'], 'stopped')
+        with patch.object(gateway_chat.time, 'monotonic', return_value=time.monotonic() + gateway_chat.RESTART_SECONDS + 1):
+            self.service._check_gateway()
+        self.assertIsNot(self.service.gateway_process, None)
+        self.assertEqual(self.service.gateway_state['state'], 'running')
+        self.service._stop_gateway()
 
     def test_a_gateway_that_the_person_runs_is_used_and_no_second_one_starts(self):
         other = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
         self.addCleanup(other.wait)
         self.addCleanup(other.kill)
         (self.home / 'gateway.pid').write_text('{"pid": %d}' % other.pid)
-        with self.service.transaction():
-            self.service.set_chat_runtime({'chat_runtime': 'gateway'})
         with patch.object(gateway_chat, 'live_gateway_pid', return_value=other.pid):
             self.service._check_gateway()
             self.assertIsNone(self.service.gateway_process)
