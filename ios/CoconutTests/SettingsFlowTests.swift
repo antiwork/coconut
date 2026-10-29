@@ -157,6 +157,44 @@ final class SettingsFlowTests: XCTestCase {
         XCTAssertNil(HermesRuntimeStatus(version: nil, tested: nil).untestedWarning)
     }
 
+    // MARK: Routine groups
+
+    func testOneTimeJobsThatStillRunAreScheduledChecksInTimeOrder() throws {
+        let now = try XCTUnwrap("2026-10-29T12:00:00Z".apiDate)
+        let routines = [
+            routine("daily", cron: "0 8 * * *", state: "scheduled"),
+            routine("old-server", cron: "every 1h"),
+            routine("later", oneTime: true, state: "scheduled", nextRunAt: "2026-10-29T14:00:00Z"),
+            routine("sooner", oneTime: true, state: "scheduled", nextRunAt: "2026-10-29T12:15:00Z"),
+            routine("paused-future", oneTime: true, state: "paused", enabled: false, runAt: "2026-10-30T09:00:00Z"),
+            routine("done", oneTime: true, state: "completed", enabled: false),
+            routine("failed", oneTime: true, state: "error", enabled: false),
+            routine("paused-past", oneTime: true, state: "paused", enabled: false, nextRunAt: "2026-10-01T09:00:00Z"),
+            routine("paused-no-time", oneTime: true, state: "paused", enabled: false),
+        ]
+        let groups = RoutineGroups(routines, now: now)
+        XCTAssertEqual(groups.recurring.map(\.id), ["daily", "old-server"])
+        XCTAssertEqual(groups.scheduledChecks.map(\.id), ["sooner", "later", "paused-future"])
+    }
+
+    func testARoutineFromAnOlderMacDecodesAsRecurring() throws {
+        let json = """
+        {"id": "r", "bot_id": "bot", "name": "Daily", "prompt": "", "cron": "0 8 * * *", "timezone": "UTC",
+         "enabled": true, "next_run_at": null, "last_run_at": null, "last_task_id": null,
+         "created_at": "2026-10-29T12:00:00Z", "updated_at": "2026-10-29T12:00:00Z"}
+        """
+        let decoded = try APIJSON.decoder().decode(Routine.self, from: Data(json.utf8))
+        XCTAssertNil(decoded.oneTime)
+        XCTAssertEqual(RoutineGroups([decoded]).recurring.map(\.id), ["r"])
+    }
+
+    private func routine(_ id: String, cron: String = "once in 15m", oneTime: Bool? = nil, state: String? = nil,
+                         enabled: Bool = true, nextRunAt: String? = nil, runAt: String? = nil) -> Routine {
+        Routine(id: id, botId: "bot", name: id, prompt: "", cron: cron, timezone: "UTC", enabled: enabled,
+                nextRunAt: nextRunAt, lastRunAt: nil, lastTaskId: nil, createdAt: "", updatedAt: "",
+                oneTime: oneTime, state: state, runAt: runAt)
+    }
+
     private func decodedBot() throws -> Bot {
         let json = """
         {

@@ -32,16 +32,19 @@ struct BotSettingsView: View {
                         .tint(BoardStyle.green)
                         .accessibilityIdentifier("bot-notifications")
                 } footer: { Text("Get notified when this bot needs a decision, finishes work, or fails.") }
+                let groups = RoutineGroups(store.routines.filter { $0.botId == botId })
                 Section("Routines") {
-                    ForEach(store.routines.filter { $0.botId == botId }) { routine in
-                        NavigationLink { RoutineEditorView(botId: botId, routine: routine) } label: {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(routine.name)
-                                Text(routine.error ?? routine.scheduleLabel).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
-                            }.padding(.vertical, 3)
-                        }
+                    ForEach(groups.recurring) { routine in
+                        routineLink(routine, detail: routine.error ?? routine.scheduleLabel)
                     }
                     Button("Add routine", systemImage: "plus") { routineOpen = true }.accessibilityIdentifier("add-routine")
+                }
+                if !groups.scheduledChecks.isEmpty {
+                    Section("Scheduled checks") {
+                        ForEach(groups.scheduledChecks) { routine in
+                            routineLink(routine, detail: routine.error ?? checkLabel(routine))
+                        }
+                    }
                 }
             }
             if let error = store.error { Section { InlineError(error) } }
@@ -78,6 +81,22 @@ struct BotSettingsView: View {
         } message: {
             Text("The Mac cancels this bot's work and removes its conversation. The audit record remains on your Mac.")
         }
+    }
+
+    private func routineLink(_ routine: Routine, detail: String) -> some View {
+        NavigationLink { RoutineEditorView(botId: botId, routine: routine) } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(routine.name)
+                Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+            }.padding(.vertical, 3)
+        }
+    }
+
+    // A one-time check shows its run time. A paused check that still has a future time says that it is paused.
+    private func checkLabel(_ routine: Routine) -> String {
+        guard let date = (routine.nextRunAt ?? routine.runAt)?.apiDate else { return routine.scheduleLabel }
+        let time = date.formatted(date: .abbreviated, time: .shortened)
+        return routine.enabled && routine.state != "paused" ? "Next run " + time : "Paused · " + time
     }
 
     private func modelSummary(_ bot: Bot) -> String {

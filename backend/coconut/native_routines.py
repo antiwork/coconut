@@ -37,6 +37,9 @@ def view(bot_id, job):
     receipt = receipts.read(home, job['id'])
     schedule = job.get('schedule') or {}
     identity = str(uuid5(UUID(bot_id), 'cron:' + job['id']))
+    # A one-time job runs once at run_at. Hermes keeps it for some days in state 'completed'. The phone uses
+    # one_time, state, and run_at to show only the one-time jobs that still run. Old phones ignore these fields.
+    one_time = schedule.get('kind') == 'once'
     return dict(id=identity, bot_id=bot_id, name=job.get('name') or 'Routine', prompt=job.get('prompt') or '',
                 script=job.get('script') if job.get('no_agent') else None,
                 cron=schedule.get('expr') or schedule.get('display') or '',
@@ -45,7 +48,8 @@ def view(bot_id, job):
                 next_run_at=job.get('next_run_at'), last_run_at=job.get('last_run_at'), last_task_id=None,
                 created_at=job.get('created_at') or '', updated_at=job.get('updated_at') or job.get('created_at') or '',
                 _native_id=job['id'], _job=job, error=unsupported(job, config) or receipts.issue(home, job),
-                _recover_claim=receipt.get('phase') == 'claimed')
+                _recover_claim=receipt.get('phase') == 'claimed', one_time=one_time, state=job.get('state'),
+                run_at=schedule.get('run_at') if one_time else None)
 
 
 def worker(operation, request, homes):

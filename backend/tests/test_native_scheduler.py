@@ -219,3 +219,34 @@ class NativeRoutineAdapterTests(unittest.TestCase):
     def test_failed_native_result_stays_unchanged(self):
         value = json.dumps({'success': False, 'error': 'Invalid schedule'})
         self.assertEqual(scheduler_result(value, {}), value)
+
+    def test_view_tells_a_one_time_job_and_its_state(self):
+        bot = str(uuid4())
+        once = dict(self.job, schedule={'kind': 'once', 'run_at': '2026-10-29T12:15:00+00:00', 'display': 'once in 15m'},
+                    state='completed', enabled=False, next_run_at=None)
+        routine = native_routines.view(bot, once)
+        self.assertTrue(routine['one_time'])
+        self.assertEqual(routine['state'], 'completed')
+        self.assertEqual(routine['run_at'], '2026-10-29T12:15:00+00:00')
+        self.assertEqual(routine['cron'], 'once in 15m')
+
+    def test_view_tells_a_recurring_job(self):
+        daily = dict(self.job, schedule={'kind': 'cron', 'expr': '0 8 * * *', 'display': '0 8 * * *'},
+                     state='scheduled', next_run_at='2026-10-30T08:00:00+00:00')
+        routine = native_routines.view(str(uuid4()), daily)
+        self.assertFalse(routine['one_time'])
+        self.assertEqual(routine['state'], 'scheduled')
+        self.assertIsNone(routine['run_at'])
+        self.assertEqual(routine['next_run_at'], '2026-10-30T08:00:00+00:00')
+
+    def test_routines_read_still_sends_every_one_time_job(self):
+        # Other code reads finished one-time jobs, so the server keeps them. The phone hides them.
+        jobs = [dict(self.job, id=identity, schedule={'kind': 'once', 'run_at': '2026-10-01T00:00:00+00:00'}, state=state)
+                for identity, state in (('done', 'completed'), ('waiting', 'scheduled'), ('stopped', 'paused'))]
+        cron = SimpleNamespace(jobs=SimpleNamespace(list_jobs=lambda include_disabled: jobs))
+        constants = SimpleNamespace(get_hermes_home=lambda: self.tmp.name, set_hermes_home_override=lambda home: None,
+                                    reset_hermes_home_override=lambda token: None)
+        with patch.dict('sys.modules', {'cron': cron, 'hermes_constants': constants}):
+            result = native_routines.worker('routines_read', {}, {str(uuid4()): self.tmp.name})
+        self.assertEqual([(r['_native_id'], r['one_time'], r['state']) for r in result['routines']],
+                         [('done', True, 'completed'), ('waiting', True, 'scheduled'), ('stopped', True, 'paused')])

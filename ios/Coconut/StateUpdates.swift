@@ -105,6 +105,9 @@ struct StateUpdates: Decodable, Sendable {
         update(\.lastTaskId)
         update(\.updatedAt)
         update(\.error)
+        update(\.oneTime)
+        update(\.state)
+        update(\.runAt)
         return result
     }
 
