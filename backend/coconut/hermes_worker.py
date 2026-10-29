@@ -1363,6 +1363,10 @@ def run_turn(request, emit, request_receipt):
             registry.register(name=CONTINUE_SCHEMA['name'], toolset='coconut', schema=CONTINUE_SCHEMA,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('work_continue', arguments)))
             allowed.add(CONTINUE_SCHEMA['name'])
+            from service_yield import SCHEMA as YIELD_SCHEMA
+            registry.register(name=YIELD_SCHEMA['name'], toolset='coconut', schema=YIELD_SCHEMA,
+                              handler=lambda arguments, **kwargs: json.dumps(request_receipt('service_yield', arguments)))
+            allowed.add(YIELD_SCHEMA['name'])
             registry.register(name=RESTART_SCHEMA['name'], toolset='coconut', schema=RESTART_SCHEMA,
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('service_restart', arguments)))
             allowed.add(RESTART_SCHEMA['name'])

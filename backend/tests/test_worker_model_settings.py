@@ -300,7 +300,8 @@ class WorkerModelProcessTests(unittest.TestCase):
                     self.assertFalse(record['skip_memory'])
                 expected = {'coconut_ask', 'coconut_read_receipts'}
                 if operation != 'context':
-                    expected.update({'coconut_restart_service', 'coconut_suggest', 'coconut_track_pr', 'coconut_track_work', 'coconut_wait', 'coconut_continue_work', 'coconut_unlink_dependency'})
+                    expected.update({'coconut_restart_service', 'coconut_suggest', 'coconut_track_pr', 'coconut_track_work', 'coconut_wait', 'coconut_continue_work', 'coconut_unlink_dependency',
+                                     'coconut_yield_test_services'})
                 if operation == 'start' or status == 'modified':
                     expected.add('coconut_propose_file')
                 self.assertEqual(set(records[0]['allowed_tools']), expected)
