@@ -141,7 +141,6 @@ class NativeGatewayChatTests(unittest.TestCase):
             return '\n'.join(parts)
         try:
             service.gateway_bridge.publish(f'http://127.0.0.1:{server.server_address[1]}')
-            service.mutate('PUT', '/v1/settings/chat-runtime', {'chat_runtime': 'gateway'}, str(uuid4()), 'phone')
             service._check_gateway()
             self.assertEqual(service.gateway_state['state'], 'running', service.gateway_state)
             deadline = time.monotonic() + 180
@@ -204,10 +203,10 @@ class NativeGatewayChatTests(unittest.TestCase):
                                   'name="Routine check", deliver="local")["id"]))', SOURCE],
                                  env=environment, capture_output=True, text=True, timeout=120)
             self.assertEqual(job.returncode, 0, job.stderr[-4000:])
-            # The gateway ticks this profile, so Coconut claims none of its routines.
-            from coconut.gateway_chat import live_gateway_pid
-            self.assertIn(bot['id'], service.gateway_ticked_bots(),
-                          f'Hermes gateway pid: {live_gateway_pid(home)}, rows: {list(service.profiles.rows.values())}')
+            # The gateway fires the routine, so a pass of Coconut claims none.
+            service._native_cron_next = 0
+            service.tick_native_routines()
+            self.assertFalse(service._native_cron_error)
             deadline = time.monotonic() + 240
             routine_task = None
             while time.monotonic() < deadline:

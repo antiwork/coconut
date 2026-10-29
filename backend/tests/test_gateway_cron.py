@@ -1,11 +1,6 @@
-"""Routines in the gateway: a cron run of the gateway is a Coconut turn, and Coconut claims no routine that a gateway
-ticks. test_gateway_adapter.py checks the plugin side, test_native_gateway_chat.py a real gateway."""
+"""Routines in the gateway: a cron run of the gateway is a Coconut turn, and Coconut claims no scheduled routine.
+test_gateway_adapter.py checks the plugin side, test_native_gateway_chat.py a real gateway."""
 from datetime import datetime, timedelta, timezone
-import json
-import os
-from pathlib import Path
-import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -13,7 +8,7 @@ import unittest
 from unittest.mock import patch
 from uuid import UUID, uuid4, uuid5
 
-from coconut.service import Service, ServiceError
+from coconut.service import Service
 from test_service import ControlledProvider
 
 
@@ -113,72 +108,24 @@ class GatewayCronTests(unittest.TestCase):
             time.sleep(.02)
         self.assertEqual(bridge.wait_answer({'turn_id': started['turn_id'], 'question_id': 'q1'}), {'ended': True})
 
-    def test_coconut_claims_no_routine_that_a_gateway_ticks(self):
+    def test_coconut_claims_no_scheduled_routine_and_recovers_only_its_own_claim(self):
+        due = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         routine = dict(id=str(uuid5(UUID(self.bot['id']), 'cron:intake')), bot_id=self.bot['id'], name='Intake',
-                       enabled=True, error=None, next_run_at=(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat())
+                       enabled=True, error=None, next_run_at=due)
         with self.service.transaction():
             self.service._put('routines', routine)
         with patch.object(self.service, 'refresh_native_routines'), \
                 patch.object(self.service, 'claim_native_routine') as claim:
-            with patch.object(self.service, 'gateway_ticked_bots', return_value={self.bot['id']}):
-                self.service._native_cron_next = 0
-                self.service.tick_native_routines()
+            # The gateway fires a due routine. Coconut does not.
+            self.service._native_cron_next = 0
+            self.service.tick_native_routines()
             claim.assert_not_called()
-            # Without a gateway that ticks the profile, Coconut fires the routine, as before.
-            with patch.object(self.service, 'gateway_ticked_bots', return_value=set()):
-                self.service._native_cron_next = 0
-                self.service.tick_native_routines()
+            # A claim that Coconut made before it stopped, for a run that the person started, comes back.
+            with self.service.transaction():
+                self.service._put('routines', dict(routine, _recover_claim=True))
+            self.service._native_cron_next = 0
+            self.service.tick_native_routines()
             self.assertEqual(claim.call_args.args[0]['id'], routine['id'])
-
-
-class TickedProfileTests(unittest.TestCase):
-    def setUp(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name)
-        self.home = root / 'hermes'
-        for name in ('desk', 'care'):
-            (self.home / 'profiles' / name).mkdir(parents=True)
-            (self.home / 'profiles' / name / 'config.yaml').write_text('{}\n')
-        (self.home / 'config.yaml').write_text('{}\n')
-        self.service = Service(root / 'data', ControlledProvider(), start_workers=False, hermes_home=self.home)
-        self.addCleanup(self.service.close)
-        self.bots = {row['name']: row['bot_id'] for row in self.service.profiles.rows.values()}
-
-    def gateway(self, home):
-        home.mkdir(parents=True, exist_ok=True)
-        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
-        self.addCleanup(process.wait)
-        self.addCleanup(process.kill)
-        (home / 'gateway.pid').write_text(json.dumps({'pid': process.pid}))
-        return process
-
-    def test_a_host_gateway_ticks_every_profile_but_a_parked_one_and_a_profile_gateway_ticks_its_own(self):
-        from coconut import gateway_chat
-        with patch.object(gateway_chat, 'live_gateway_pid', wraps=lambda home: _pid_file(home)):
-            self.assertEqual(self.service.gateway_ticked_bots(), set())
-            self.gateway(self.home / 'profiles/care')
-            self.assertEqual(self.service.gateway_ticked_bots(), {self.bots['care']})
-            self.gateway(self.home)
-            (self.home / 'profiles/desk/gateway.parked').write_text('')
-            self.assertEqual(self.service.gateway_ticked_bots(), {self.bots['default'], self.bots['care']})
-        # The gateway that Coconut started ticks the profiles too, also before Hermes can prove its identity.
-        (self.home / 'gateway.pid').unlink()
-        with patch.object(gateway_chat, 'live_gateway_pid', return_value=None):
-            self.assertEqual(self.service.gateway_ticked_bots(), set())
-            self.service.gateway_process = self.gateway(self.home / 'unused')
-            self.assertEqual(self.service.gateway_ticked_bots(), {self.bots['default'], self.bots['care']})
-            self.service.gateway_process = None
-
-
-def _pid_file(home):
-    """The pid-file evidence of gateway_chat.live_gateway_pid, without the Hermes modules."""
-    try:
-        pid = json.loads((Path(home) / 'gateway.pid').read_text())['pid']
-        os.kill(pid, 0)
-        return pid
-    except (OSError, ValueError, KeyError):
-        return None
 
 
 if __name__ == '__main__':

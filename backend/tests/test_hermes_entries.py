@@ -147,8 +147,6 @@ class HermesEntryTests(unittest.TestCase):
         release = threading.Event()
         self.service.hermes_entries = threading.Thread(target=release.wait, daemon=True)
         self.service.hermes_entries.start()
-        with self.service.transaction():
-            self.service.set_chat_runtime({'chat_runtime': 'gateway'})
         with patch.object(gateway_chat, 'live_gateway_pid', return_value=None), \
                 patch.object(self.service, '_start_gateway') as start:
             self.service._check_gateway()
