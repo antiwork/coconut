@@ -1010,6 +1010,26 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(stored['status'], 'failed')
         self.assertIn('Kanban claim', stored['summary'])
 
+    def test_a_work_turn_that_waits_for_the_gateway_does_not_start_after_hermes_ends_its_kanban_claim(self):
+        task = self.audit()
+        with self.service.transaction():
+            self.service._ensure_execution_session(self.service._get('tasks', task['id']))
+        self.service.start_gateway_holder(task['id'])
+        holder = self.service.gateway_holders[task['id']]
+        # No adapter is connected, so the turn waits for the gateway. Hermes ends the claim during the wait.
+        self.service._dispatch_pending()
+        holder.kill()
+        self.service.running[task['id']].join(15)
+        self.assertFalse(self.service.running[task['id']].is_alive())
+        stored = self.read('tasks', task['id'])
+        self.assertEqual(stored['status'], 'failed')
+        self.assertIn('Kanban claim', stored['summary'])
+        # An adapter that connects later gets no turn of this work.
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        adapter.join(3)
+        self.assertEqual(adapter.turns, [])
+
     def test_a_status_question_runs_in_the_gateway_without_tools(self):
         task = self.send('How far is the docs work?')
         with self.service.transaction():
@@ -1191,8 +1211,8 @@ class OutsideTurnTests(unittest.TestCase):
         self.home = str(self.service.profiles.home(self.bot))
 
     def message(self, kind='send', message_id='outside:1', text='The build finished.', **fields):
-        return self.service.gateway_message(dict(fields, home=self.home, chat_id=self.bot['id'], kind=kind,
-                                                 message_id=message_id, text=text))
+        return self.service.gateway_message(dict(dict(home=self.home, chat_id=self.bot['id'], kind=kind,
+                                                      message_id=message_id, text=text), **fields))
 
     def chat(self):
         with self.service.lock:
@@ -1218,6 +1238,13 @@ class OutsideTurnTests(unittest.TestCase):
         # A second send of the same message, for example after a lost answer, shows nothing new.
         self.assertEqual(self.message(), {'recorded': True, 'task_id': task['id']})
         self.assertEqual(len(self.chat()), 1)
+
+    def test_a_send_from_a_work_chat_of_the_bot_is_a_message_of_the_bot(self):
+        answer = self.message(chat_id=self.bot['id'] + ':work:session-1', text='The work is done.')
+        self.assertTrue(answer['recorded'])
+        self.assertEqual(self.chat(), [('The work is done.', answer['task_id'], False)])
+        self.assertEqual(self.message(chat_id=self.bot['id'] + ':work:session-1', text='The work is done.'),
+                         {'recorded': True, 'task_id': answer['task_id']})
 
     def test_sends_close_together_share_a_task_and_a_streamed_reply_is_edited_and_deleted(self):
         first = self.message(text='Task t_1 is done.')

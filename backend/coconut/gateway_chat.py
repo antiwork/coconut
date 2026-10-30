@@ -277,17 +277,25 @@ class GatewayChat:
         holder = self.gateway_holders.get(task['id'])
         ended, lost = threading.Event(), threading.Event()
         def watch():
-            while holder is not None and not ended.wait(2):
+            while holder is not None and not ended.wait(.5 if lost.is_set() else 2):
                 if holder.poll() is not None:
-                    LOG.warning('The Kanban claim of work turn %s ended. The turn stops.', task['id'])
+                    if not lost.is_set():
+                        LOG.warning('The Kanban claim of work turn %s ended. The turn stops.', task['id'])
                     lost.set()
+                    # Until the run ends: a turn that registers after an earlier cancel stops too.
                     self.gateway_bridge.cancel(task['id'])
-                    return
         threading.Thread(target=watch, daemon=True, name='coconut-work-claim').start()
+
+        def wanted():
+            # A lost claim also ends the wait for an adapter, so the work never starts later.
+            return (holder is None or holder.poll() is None) and self._get('tasks', task['id'])['status'] == 'working'
         try:
-            self._run_in_gateway(task, bot, text, emit, session=root, chat=chat)
+            self._run_in_gateway(task, bot, text, emit, session=root, chat=chat, wanted=wanted)
         finally:
             ended.set()
+            # A claim that ended before the watcher saw it is lost too. The turn's own stop below is not.
+            if holder is not None and holder.poll() is not None:
+                lost.set()
             self.stop_gateway_holder(task['id'])
         if lost.is_set():
             raise RuntimeError('Hermes ended the Kanban claim of this work before the turn finished.')
@@ -547,7 +555,9 @@ class GatewayChat:
             raise ServiceError(400, 'Send a send, an edit or a delete with a text.')
         home = os.path.realpath(require_text(data, 'home', 4096))
         chat_id, message_id = require_text(data, 'chat_id', 200), require_text(data, 'message_id', 200)
-        if (self._gateway_profile(home) or {}).get('bot_id') != chat_bot(chat_id):
+        # The chat of a work session or of a status question belongs to its bot. The message goes to the bot's chat.
+        chat_id = chat_bot(chat_id)
+        if (self._gateway_profile(home) or {}).get('bot_id') != chat_id:
             raise ServiceError(404, 'This chat is not the bot of this Hermes profile.')
         with self.transaction():
             bot = self._get('bots', chat_id)
