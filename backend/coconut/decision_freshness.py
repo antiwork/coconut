@@ -1,9 +1,13 @@
 """Refresh pending cards through existing Hermes context turns."""
 from datetime import datetime, timezone
+import contextlib
+import copy
 import json
 import logging
 
 
+# The condition of the partial index messages_human: a message that a person sent from a paired device.
+HUMAN_MESSAGE = "json_extract(data,'$._human_device_id') IS NOT NULL"
 RETRY_SECONDS = 300
 # A check that ends without recording a result is tried again with a doubling wait (5, 10, 20 and 40 minutes), and it stops after
 # this many failures against the same external evidence. On the mini, one card had 1,383 failed checks in five days: one model
@@ -53,6 +57,81 @@ def age(value, current):
         return (current - datetime.fromisoformat(value.replace('Z', '+00:00'))).total_seconds()
     except (ValueError, TypeError, AttributeError):
         return float('inf')
+
+
+# A card pass plans its writes on a snapshot without the service lock. When the service writes during the plan, the
+# pass plans again. After this many tries, it plans and writes under the lock.
+PLAN_ATTEMPTS = 3
+
+
+class _DirectWrites:
+    """Write each change of a card pass at once. The caller holds the service lock."""
+
+    def __init__(self, service):
+        self.service = service
+
+    def put(self, table, obj):
+        self.service._put(table, obj)
+
+    def event(self, *args):
+        self.service._event(*args)
+
+    def cancel_context(self, task_id, context_id):
+        if hasattr(self.service.provider, 'cancel_context'):
+            self.service.provider.cancel_context(task_id, context_id)
+
+    def refresh_bot(self, bot_id):
+        self.service._refresh_bot(bot_id)
+
+    def check(self, condition):
+        # The direct pass reads the current rows, so it has nothing to check again.
+        pass
+
+
+class _PlannedWrites:
+    """Keep the changes of a card pass that reads a snapshot. Write them later, only while the snapshot is current.
+
+    The snapshot is current while the service connection has changed no row since the view opened, and while each
+    check still holds. Otherwise the changes are dropped and the pass plans again on a new snapshot. The count of
+    changed rows covers every table that a card's evidence reads, such as a PR that gets a new commit.
+    """
+
+    def __init__(self, view):
+        self.view = view
+        self.steps = []
+        self.checks = []
+
+    def put(self, table, obj):
+        self.steps.append(('put', table, copy.deepcopy(obj)))
+
+    def event(self, *args):
+        self.steps.append(('event', copy.deepcopy(args)))
+
+    def cancel_context(self, task_id, context_id):
+        self.steps.append(('cancel_context', task_id, context_id))
+
+    def refresh_bot(self, bot_id):
+        self.steps.append(('refresh_bot', bot_id))
+
+    def check(self, condition):
+        self.checks.append(condition)
+
+    def current(self, service):
+        # Each service write goes through this connection, and the writer holds the lock. See _card_pass_view.
+        return (service.db.total_changes == self.view._card_pass_changes
+                and all(condition(service) for condition in self.checks))
+
+    def apply(self, service):
+        writes = _DirectWrites(service)
+        for step in self.steps:
+            if step[0] == 'put':
+                writes.put(step[1], step[2])
+            elif step[0] == 'event':
+                writes.event(*step[1])
+            elif step[0] == 'cancel_context':
+                writes.cancel_context(step[1], step[2])
+            else:
+                writes.refresh_bot(step[1])
 
 
 class DecisionFreshness:
@@ -182,8 +261,10 @@ class DecisionFreshness:
         """
         assignment = self._assignment(task)
         ids, threads = self._decision_outcome(task)
-        messages = self._all_shared('messages')
-        by_id = None
+        # Only messages with a device can count. A partial index finds them, so the check does not parse every message.
+        with self.lock:
+            rows = self.db.execute('SELECT rowid, data FROM messages INDEXED BY messages_human WHERE ' + HUMAN_MESSAGE).fetchall()
+        messages = [json.loads(row[1]) for row in sorted(rows)]
 
         def own(message):
             return message.get('task_id') in ids or message.get('thread_id') in threads
@@ -200,9 +281,9 @@ class DecisionFreshness:
                 continue
             else:
                 if quoted:
-                    if by_id is None:
-                        by_id = {message['id']: message for message in messages}
-                    replied = by_id.get(quoted)
+                    with self.lock:
+                        row = self._read_one('SELECT data FROM messages WHERE id=?', (quoted,))
+                    replied = json.loads(row[0]) if row else None
                     # A chosen quote of another outcome or card is not direction for this card.
                     if replied is None or not own(replied) or replied.get('decision_id') not in (None, decision['id']):
                         continue
@@ -369,49 +450,140 @@ class DecisionFreshness:
                     for identity, thread in self.running.items())
                 or self._refresh_has_queued_owner(task))
 
+    def _has_human_message(self, task_id):
+        """True when a person sent a message in this task. The message index by task finds its rows."""
+        with self.lock:
+            rows = self.db.execute("SELECT data FROM messages WHERE json_extract(data,'$.task_id')=? AND " + HUMAN_MESSAGE,
+                                   (task_id,)).fetchall()
+        return any(json.loads(row[0]).get('_human_device_id') for row in rows)
+
     def _human_reply_pending(self, task, contexts):
         from .background_processes import subscription
-        human_tasks = {m.get('task_id') for m in self._all_shared('messages') if m.get('_human_device_id')}
-        if any(t['bot_id'] == task['bot_id'] and (
-                (t['status'] == 'queued' and set(t.get('_preference_source_ids', [])) - set(t.get('_turn_preference_source_ids', [])))
-                or ((t.get('_turn_preference_source_ids') or self._assignment(t)['id'] in human_tasks)
-                    and (t['status'] == 'working' or (t['status'] == 'waiting' and self._background_pending(t['id'])))))
-               for t in self._task_map().values()):
+        # Only a queued, working or waiting task of the bot can hold a reply. An index finds these few tasks, so the check
+        # reads neither the whole task table nor every message.
+        with self.lock:
+            active = [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM tasks WHERE json_extract(data,'$.bot_id')=? "
+                "AND json_extract(data,'$.status') IN ('queued','working','waiting')", (task['bot_id'],))]
+        if any((t['status'] == 'queued' and set(t.get('_preference_source_ids', [])) - set(t.get('_turn_preference_source_ids', [])))
+               or ((t['status'] == 'working' or (t['status'] == 'waiting' and self._background_pending(t['id'])))
+                   and (t.get('_turn_preference_source_ids') or self._has_human_message(self._assignment(t)['id'])))
+               for t in active):
             return True
         pending = {r.get('turn_id') for r in self._shared_pending_receipts()
                    if not r.get('_process_delivery') and (subscription(r) or r.get('_relay_task_id'))}
         return any(not c.get('_decision_refresh') and (c['status'] in ('queued', 'working') or c['id'] in pending)
                    and self._decision_visible_to_task(self._get('decisions', c['decision_id']), task) for c in contexts)
 
+    @contextlib.contextmanager
+    def _card_pass_view(self):
+        """Open a read view of the committed rows for one card pass.
+
+        The service lock is held only while the view opens. Writers hold the lock, so the copies of the kept state
+        below match the snapshot.
+        """
+        with contextlib.ExitStack() as stack:
+            with self.lock:
+                view = stack.enter_context(self._read_view())
+                stack.enter_context(view._read_transaction())
+                # The first read fixes the snapshot. The count of changed rows tells later whether it is still current.
+                view.db.execute('SELECT 1 FROM settings LIMIT 1').fetchone()
+                view._card_pass_changes = self.db.total_changes
+                # Other threads change these objects in place. The view reads its own copies.
+                view.running = dict(self.running)
+                view._store_hold = set(self._store_hold)
+                view._pending_decision_sources = set(self._pending_decision_sources)
+                ready = self._ready_decision_sources
+                view._ready_decision_sources = None if ready is None else dict(ready)
+                # Card passes keep their own parsed tasks, apart from the writer's. The view reads only the changed rows.
+                # A pass takes them, so a second pass at the same time reads the whole table.
+                view._task_rows, self._card_pass_task_rows = getattr(self, '_card_pass_task_rows', None), None
+            stack.enter_context(view._shared_reads())
+            yield view
+            self._card_pass_task_rows = view._task_rows
+
+    def _run_card_pass(self, plan, *, transaction):
+        """Run plan(service, writes) on a snapshot without the service lock, then write its changes under the lock.
+
+        A card pass reads every task, message and receipt. On the Mac mini, it held the lock for about 1.5 s.
+        Now the lock is held only to open the snapshot and to write. A caller that holds the lock gets the direct
+        pass, because it can have its own reads and writes in progress. The direct pass opens a transaction only
+        when `transaction` is true. The dispatcher checks the card checks under its lock without one.
+        """
+        if self.lock._is_owned():
+            with contextlib.ExitStack() as stack:
+                if transaction:
+                    stack.enter_context(self.transaction())
+                stack.enter_context(self._shared_reads())
+                plan(self, _DirectWrites(self))
+            return
+        for _ in range(PLAN_ATTEMPTS):
+            with self._card_pass_view() as view:
+                writes = _PlannedWrites(view)
+                plan(view, writes)
+            if not writes.steps:
+                return
+            with self.transaction():
+                if writes.current(self):
+                    writes.apply(self)
+                    return
+        logging.getLogger(__name__).warning('Card rows changed during %d card passes. This pass writes under the lock.',
+                                            PLAN_ATTEMPTS)
+        with self.transaction(), self._shared_reads():
+            plan(self, _DirectWrites(self))
+
+    def _profile_revisions_current(self, revisions):
+        """True when each bot profile still has the revision that a card pass read. None stands for a failed read."""
+        from .profiles import ProfileError
+        for bot_id, revision in revisions.items():
+            try:
+                current = self.profiles.prompt_revision(self._get('bots', bot_id))
+            except (OSError, ProfileError):
+                current = None
+            if current != revision:
+                return False
+        return True
+
+    def _refresh_admission_current(self, decision_id, admission):
+        """True while the sources of a card are not being read again. The service keeps this state in memory."""
+        return (decision_id not in self._pending_decision_sources
+                and (self._ready_decision_sources is None
+                     or self._ready_decision_sources.get(decision_id) == admission))
+
     def _cancel_stale_decision_refreshes(self):
         with self.lock:
-            active = {row[0] for row in self.db.execute(
-                "SELECT id FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working') "
-                "AND json_extract(data,'$._decision_refresh')")}
+            active = self.db.execute(
+                "SELECT 1 FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working') "
+                "AND json_extract(data,'$._decision_refresh') LIMIT 1").fetchone()
+        if active:
+            self._run_card_pass(lambda service, writes: service._plan_stale_refresh_cancels(writes), transaction=False)
+
+    def _plan_stale_refresh_cancels(self, writes):
+        active = {row[0] for row in self.db.execute(
+            "SELECT id FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working') "
+            "AND json_extract(data,'$._decision_refresh')")}
         if not active:
             return
-        with self._shared_reads():
-            # Later checks read the contexts that this loop has already cancelled.
-            contexts = self._all('contexts')
-            for context in contexts:
-                if context['id'] not in active:
-                    continue
-                task = self._get('tasks', context['task_id'])
-                decision = self._get('decisions', context['decision_id'])
-                if (decision['status'] == 'pending' and decision['revision'] == context['_decision_revision']
-                        and task['status'] != 'cancelled' and not self._task_paused(task)
-                        and not self._human_reply_pending(task, contexts)
-                        and not self._refresh_has_queued_owner(task)
-                        and not (context['status'] == 'queued' and self._refresh_session_busy(task))
-                        and context.get('_human_input_ids') == [m['id'] for m in self._decision_human_messages(task, decision)]
-                        and context.get('_conversation_epoch') == task.get('_conversation_epoch')):
-                    continue
-                context['status'] = 'cancelled'
-                self._put('contexts', context)
-                if hasattr(self.provider, 'cancel_context'):
-                    self.provider.cancel_context(task['id'], context['id'])
-                self._refresh_bot(task['bot_id'])
-                self._event('context.cancelled', {'id': context['id'], 'decision_id': decision['id']}, task['bot_id'], task['id'])
+        # Later checks read the contexts that this loop has already cancelled.
+        contexts = self._all('contexts')
+        for context in contexts:
+            if context['id'] not in active:
+                continue
+            task = self._get('tasks', context['task_id'])
+            decision = self._get('decisions', context['decision_id'])
+            if (decision['status'] == 'pending' and decision['revision'] == context['_decision_revision']
+                    and task['status'] != 'cancelled' and not self._task_paused(task)
+                    and not self._human_reply_pending(task, contexts)
+                    and not self._refresh_has_queued_owner(task)
+                    and not (context['status'] == 'queued' and self._refresh_session_busy(task))
+                    and context.get('_human_input_ids') == [m['id'] for m in self._decision_human_messages(task, decision)]
+                    and context.get('_conversation_epoch') == task.get('_conversation_epoch')):
+                continue
+            context['status'] = 'cancelled'
+            writes.put('contexts', context)
+            writes.cancel_context(task['id'], context['id'])
+            writes.refresh_bot(task['bot_id'])
+            writes.event('context.cancelled', {'id': context['id'], 'decision_id': decision['id']}, task['bot_id'], task['id'])
 
     def _refresh_recovery_records(self, source, contexts, records):
         from .background_processes import subscription
@@ -460,10 +632,11 @@ class DecisionFreshness:
         return failed
 
     def _queue_decision_refreshes(self):
-        from .service import now, uid
-        from .decision_sources import github_links
-        from .profiles import ProfileError
-        with self.transaction(), self._shared_reads():
+        """Mark changed card assessments as stale, and queue at most one card check.
+
+        The pass reads a snapshot without the service lock and holds the lock only to write. See _run_card_pass.
+        """
+        with self.lock:
             if self.stopping.is_set() or self.restart_pending:
                 return
             pending = self.db.execute("SELECT 1 FROM decisions WHERE json_extract(data,'$.status')='pending' LIMIT 1").fetchone()
@@ -471,140 +644,155 @@ class DecisionFreshness:
                 "AND json_extract(data,'$.status') IN ('queued','working') LIMIT 1").fetchone()
             if not pending and not refresh:
                 return
-            decisions = self._all('decisions')
-            self._cancel_stale_decision_refreshes()
-            # These objects are shared and only read. The decisions above are changed and written.
-            tasks, contexts, artifacts = self._task_map(), self._all_shared('contexts'), self._all_shared('artifacts')
-            from .decision_inbox import has_assessment, invalidate_assessment
-            profile_revisions = {}
+        self._cancel_stale_decision_refreshes()
+        self._run_card_pass(lambda service, writes: service._plan_decision_refreshes(writes), transaction=True)
 
-            def read_profile(bot_id):
-                if bot_id not in profile_revisions:
-                    try:
-                        profile_revisions[bot_id] = self.profiles.prompt_revision(self._get('bots', bot_id))
-                    except (OSError, ProfileError):
-                        logging.getLogger(__name__).exception('Could not read the native profile for card checks of bot %s.', bot_id)
-                        profile_revisions[bot_id] = None
-                return profile_revisions[bot_id]
+    def _plan_decision_refreshes(self, writes):
+        from .service import now, uid
+        from .decision_sources import github_links
+        from .profiles import ProfileError
+        if self.stopping.is_set() or self.restart_pending:
+            return
+        decisions = self._all('decisions')
+        # These objects are shared and only read. The decisions above are changed and written.
+        tasks, contexts, artifacts = self._task_map(), self._all_shared('contexts'), self._all_shared('artifacts')
+        from .decision_inbox import has_assessment, invalidate_assessment
+        profile_revisions = {}
+        writes.check(lambda service: not service.stopping.is_set() and not service.restart_pending
+                     and service._profile_revisions_current(profile_revisions))
 
-            assessed = {}
-            for decision in decisions:
-                if (decision['status'] != 'pending' or not decision.get('_native')
-                        or decision.get('action_type') not in ('question', 'draft_message')
-                        or decision.get('assessment_stale') or not has_assessment(decision)):
-                    continue
+        def read_profile(bot_id):
+            if bot_id not in profile_revisions:
+                try:
+                    profile_revisions[bot_id] = self.profiles.prompt_revision(self._get('bots', bot_id))
+                except (OSError, ProfileError):
+                    logging.getLogger(__name__).exception('Could not read the native profile for card checks of bot %s.', bot_id)
+                    profile_revisions[bot_id] = None
+            return profile_revisions[bot_id]
+
+        assessed = {}
+        for decision in decisions:
+            if (decision['status'] != 'pending' or not decision.get('_native')
+                    or decision.get('action_type') not in ('question', 'draft_message')
+                    or decision.get('assessment_stale') or not has_assessment(decision)):
+                continue
+            records = self._decision_records(decision, tasks, artifacts)
+            profile_revision = read_profile(decision['bot_id'])
+            if profile_revision is None:
+                if invalidate_assessment(decision):
+                    writes.put('decisions', decision)
+                    writes.event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
+                continue
+            fingerprint, work = self._decision_evidence(decision, tasks, records, artifacts, profile_revision=profile_revision)
+            assessed[decision['id']] = (records, fingerprint, work, profile_revision)
+            if (decision.get('_freshness', {}).get('fingerprint') != fingerprint
+                    or decision.get('_profile_revision') != profile_revision):
+                invalidate_assessment(decision)
+                writes.put('decisions', decision)
+                writes.event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
+        if any(c.get('_decision_refresh') and c['status'] in ('queued', 'working') for c in contexts):
+            return
+        current = datetime.now(timezone.utc)
+        for decision in sorted(decisions, key=lambda d: d.get('_freshness', {}).get('queued_at', d['created_at'])):
+            task = tasks[decision['task_id']]
+            if (decision['status'] != 'pending' or decision['action_type'] not in ('question', 'draft_message')
+                    or decision['id'] in self._pending_decision_sources
+                    or (self._ready_decision_sources is not None
+                        and self._ready_decision_sources.get(decision['id'])
+                        != (decision['revision'], github_links(decision)))
+                    or not decision.get('_native') or self._task_paused(task) or task['status'] == 'cancelled'
+                    or not self._process_observation_current(task, self._get('bots', task['bot_id']))
+                    or self._human_reply_pending(task, contexts) or self._refresh_session_busy(task)
+                    or any(c['decision_id'] == decision['id'] and c['status'] in ('queued', 'working') for c in contexts)):
+                continue
+            if decision['id'] in assessed:
+                records, fingerprint, work, profile_revision = assessed[decision['id']]
+            else:
                 records = self._decision_records(decision, tasks, artifacts)
                 profile_revision = read_profile(decision['bot_id'])
                 if profile_revision is None:
-                    if invalidate_assessment(decision):
-                        self._put('decisions', decision)
-                        self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
                     continue
                 fingerprint, work = self._decision_evidence(decision, tasks, records, artifacts, profile_revision=profile_revision)
-                assessed[decision['id']] = (records, fingerprint, work, profile_revision)
-                if (decision.get('_freshness', {}).get('fingerprint') != fingerprint
-                        or decision.get('_profile_revision') != profile_revision):
-                    invalidate_assessment(decision)
-                    self._put('decisions', decision)
-                    self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
-            if any(c.get('_decision_refresh') and c['status'] in ('queued', 'working') for c in contexts):
-                return
-            current = datetime.now(timezone.utc)
-            for decision in sorted(decisions, key=lambda d: d.get('_freshness', {}).get('queued_at', d['created_at'])):
-                task = tasks[decision['task_id']]
-                if (decision['status'] != 'pending' or decision['action_type'] not in ('question', 'draft_message')
-                        or decision['id'] in self._pending_decision_sources
-                        or (self._ready_decision_sources is not None
-                            and self._ready_decision_sources.get(decision['id'])
-                            != (decision['revision'], github_links(decision)))
-                        or not decision.get('_native') or self._task_paused(task) or task['status'] == 'cancelled'
-                        or not self._process_observation_current(task, self._get('bots', task['bot_id']))
-                        or self._human_reply_pending(task, contexts) or self._refresh_session_busy(task)
-                        or any(c['decision_id'] == decision['id'] and c['status'] in ('queued', 'working') for c in contexts)):
+            previous = decision.get('_freshness', {})
+            profile_changed = decision.get('_profile_revision') != profile_revision
+            if not profile_changed and age(previous.get('queued_at'), current) < RETRY_SECONDS:
+                continue
+            changed = previous.get('fingerprint') != fingerprint or profile_changed
+            prior = next((c for c in contexts if c['id'] == previous.get('context_id')), {})
+            unfinished = prior and not prior.get('_refresh_recorded') and prior.get('status') in ('failed', 'cancelled', 'completed')
+            if not changed and not unfinished and not decision.get('assessment_stale'):
+                continue
+            from .background_processes import subscription
+            origin = prior.get('_refresh_origin_id', prior.get('id'))
+            chain_contexts = [c for c in contexts if c.get('_decision_refresh') and c.get('_refresh_origin_id', c['id']) == origin]
+            chain = {c['id'] for c in chain_contexts}
+            external = None
+            failed = self._unrecorded_refresh_failures(chain_contexts)
+            if failed:
+                # Count the failures against the external evidence, without the receipts of the checks themselves.
+                # A check that starts a background process changes the full fingerprint, and that must not restart the count.
+                external = self._decision_evidence(decision, tasks, records, artifacts, own_receipts=False,
+                                                   profile_revision=profile_revision)[0]
+                failures = 0
+                for context in failed:
+                    if context.get('_external_fingerprint') != external:
+                        break
+                    failures += 1
+                waited = age(failed[0].get('_failed_at') or previous.get('queued_at'), current)
+                if failures and (failures >= REFRESH_MAX_FAILURES
+                                 or waited < RETRY_SECONDS * 2 ** (failures - 1)):
+                    # New external evidence starts the count and the wait again. The card stays open for a person meanwhile.
                     continue
-                if decision['id'] in assessed:
-                    records, fingerprint, work, profile_revision = assessed[decision['id']]
-                else:
-                    records = self._decision_records(decision, tasks, artifacts)
-                    profile_revision = read_profile(decision['bot_id'])
-                    if profile_revision is None:
-                        continue
-                    fingerprint, work = self._decision_evidence(decision, tasks, records, artifacts, profile_revision=profile_revision)
-                previous = decision.get('_freshness', {})
-                profile_changed = decision.get('_profile_revision') != profile_revision
-                if not profile_changed and age(previous.get('queued_at'), current) < RETRY_SECONDS:
-                    continue
-                changed = previous.get('fingerprint') != fingerprint or profile_changed
-                prior = next((c for c in contexts if c['id'] == previous.get('context_id')), {})
-                unfinished = prior and not prior.get('_refresh_recorded') and prior.get('status') in ('failed', 'cancelled', 'completed')
-                if not changed and not unfinished and not decision.get('assessment_stale'):
-                    continue
-                from .background_processes import subscription
-                origin = prior.get('_refresh_origin_id', prior.get('id'))
-                chain_contexts = [c for c in contexts if c.get('_decision_refresh') and c.get('_refresh_origin_id', c['id']) == origin]
-                chain = {c['id'] for c in chain_contexts}
-                external = None
-                failed = self._unrecorded_refresh_failures(chain_contexts)
-                if failed:
-                    # Count the failures against the external evidence, without the receipts of the checks themselves.
-                    # A check that starts a background process changes the full fingerprint, and that must not restart the count.
-                    external = self._decision_evidence(decision, tasks, records, artifacts, own_receipts=False,
-                                                       profile_revision=profile_revision)[0]
-                    failures = 0
-                    for context in failed:
-                        if context.get('_external_fingerprint') != external:
-                            break
-                        failures += 1
-                    waited = age(failed[0].get('_failed_at') or previous.get('queued_at'), current)
-                    if failures and (failures >= REFRESH_MAX_FAILURES
-                                     or waited < RETRY_SECONDS * 2 ** (failures - 1)):
-                        # New external evidence starts the count and the wait again. The card stays open for a person meanwhile.
-                        continue
-                prior_records = [r for r in records if r.get('turn_id') in chain]
-                outstanding = [r for r in prior_records if (subscription(r) or r.get('_relay_task_id')) and not r.get('_process_delivery')]
-                if any(self._can_resume_completion(task, self._get('bots', task['bot_id']), r) for r in outstanding):
-                    continue
-                question = self._decision_refresh_prompt(decision, task, work, decisions)
-                context = dict(id=uid(), bot_id=task['bot_id'], task_id=task['id'], decision_id=decision['id'],
-                    question=question, status='queued', _decision_refresh=True, _evidence_fingerprint=fingerprint,
-                    _external_fingerprint=(external if external is not None
-                                           else self._decision_evidence(decision, tasks, records, artifacts, own_receipts=False,
-                                                                         profile_revision=profile_revision)[0]),
-                    _decision_revision=decision['revision'], _conversation_epoch=task.get('_conversation_epoch'),
-                    _preference_source_ids=[], _human_input_ids=[m['id'] for m in self._decision_human_messages(task, decision)])
-                if origin:
-                    context['_refresh_origin_id'] = origin
-                self._set_refresh_recovery(context, prior, contexts, records)
-                self._put('contexts', context)
-                decision['_freshness'] = dict(previous, queued_at=now(), context_id=context['id'])
-                self._put('decisions', decision)
-                self._event('context.queued', {'id': context['id'], 'decision_id': decision['id']}, task['bot_id'], task['id'])
-                return
+            prior_records = [r for r in records if r.get('turn_id') in chain]
+            outstanding = [r for r in prior_records if (subscription(r) or r.get('_relay_task_id')) and not r.get('_process_delivery')]
+            if any(self._can_resume_completion(task, self._get('bots', task['bot_id']), r) for r in outstanding):
+                continue
+            question = self._decision_refresh_prompt(decision, task, work, decisions)
+            context = dict(id=uid(), bot_id=task['bot_id'], task_id=task['id'], decision_id=decision['id'],
+                question=question, status='queued', _decision_refresh=True, _evidence_fingerprint=fingerprint,
+                _external_fingerprint=(external if external is not None
+                                       else self._decision_evidence(decision, tasks, records, artifacts, own_receipts=False,
+                                                                     profile_revision=profile_revision)[0]),
+                _decision_revision=decision['revision'], _conversation_epoch=task.get('_conversation_epoch'),
+                _preference_source_ids=[], _human_input_ids=[m['id'] for m in self._decision_human_messages(task, decision)])
+            if origin:
+                context['_refresh_origin_id'] = origin
+            self._set_refresh_recovery(context, prior, contexts, records)
+            admission = (decision['revision'], github_links(decision))
+            writes.check(lambda service, identity=decision['id']: service._refresh_admission_current(identity, admission))
+            writes.put('contexts', context)
+            decision['_freshness'] = dict(previous, queued_at=now(), context_id=context['id'])
+            writes.put('decisions', decision)
+            writes.event('context.queued', {'id': context['id'], 'decision_id': decision['id']}, task['bot_id'], task['id'])
+            return
 
     def refresh_decision(self, context_id, payload):
         from .service import ServiceError, now, require_text, encoded
         with self.transaction():
-            context = self._get('contexts', context_id)
-            decision = self._get('decisions', context['decision_id'])
-            task = self._get('tasks', context['task_id'])
-            if (not context.get('_decision_refresh') or context['status'] != 'working'
-                    or decision['status'] != 'pending' or decision['action_type'] not in ('question', 'draft_message')
-                    or decision['revision'] != context['_decision_revision'] or task['status'] == 'cancelled'
-                    or self._task_paused(task) or self._human_reply_pending(task, self._all('contexts'))
-                    or self._refresh_has_queued_owner(task)
-                    or context.get('_conversation_epoch') != task.get('_conversation_epoch')
-                    or not self._process_observation_current(task, self._get('bots', task['bot_id']))):
-                raise ServiceError(409, 'This check no longer matches the pending question.')
-            tasks = {t['id']: t for t in self._all('tasks')}
-            artifacts = self._all('artifacts')
-            records = self._decision_records(decision, tasks, artifacts)
-            profile_revision = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
-            if payload.get('_worker_profile_revision', profile_revision) != profile_revision:
-                raise ServiceError(409, 'The native worker used different bot instructions. Stop this check; Coconut must check the current profile.')
-            fingerprint, _ = self._decision_evidence(decision, tasks, records, artifacts, ignore_context_id=context_id,
-                                                   profile_revision=profile_revision)
-            if context['_evidence_fingerprint'] != fingerprint:
-                raise ServiceError(409, 'The work changed during this check. Stop this check; a later check will read the current evidence.')
+            # The checks read the kept tasks and parse each table once. Before, each check parsed the task table
+            # again and built its work graph again. The lock hold was p50 16 s on the Mac mini.
+            with self._shared_reads():
+                context = self._get('contexts', context_id)
+                decision = self._get('decisions', context['decision_id'])
+                task = self._get('tasks', context['task_id'])
+                if (not context.get('_decision_refresh') or context['status'] != 'working'
+                        or decision['status'] != 'pending' or decision['action_type'] not in ('question', 'draft_message')
+                        or decision['revision'] != context['_decision_revision'] or task['status'] == 'cancelled'
+                        or self._task_paused(task) or self._human_reply_pending(task, self._all('contexts'))
+                        or self._refresh_has_queued_owner(task)
+                        or context.get('_conversation_epoch') != task.get('_conversation_epoch')
+                        or not self._process_observation_current(task, self._get('bots', task['bot_id']))):
+                    raise ServiceError(409, 'This check no longer matches the pending question.')
+                tasks = self._task_map()
+                artifacts = self._all('artifacts')
+                records = self._decision_records(decision, tasks, artifacts)
+                profile_revision = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
+                if payload.get('_worker_profile_revision', profile_revision) != profile_revision:
+                    raise ServiceError(409, 'The native worker used different bot instructions. Stop this check; Coconut must check the current profile.')
+                fingerprint, _ = self._decision_evidence(decision, tasks, records, artifacts, ignore_context_id=context_id,
+                                                       profile_revision=profile_revision)
+                if context['_evidence_fingerprint'] != fingerprint:
+                    raise ServiceError(409, 'The work changed during this check. Stop this check; a later check will read the current evidence.')
             evidence = require_text(payload, 'evidence', 8000)
             status = payload.get('status')
             if status == 'revise':
@@ -664,8 +852,9 @@ class DecisionFreshness:
                     self._event('task.updated', self._public(task), task['bot_id'], task['id'])
             elif status != 'current':
                 raise ServiceError(400, 'Choose current, revise, or withdraw. This check cannot grant approval.')
-            fingerprint, _ = self._decision_evidence(decision, {t['id']: t for t in self._all('tasks')}, records, artifacts,
-                                                   profile_revision=profile_revision)
+            with self._shared_reads():
+                fingerprint, _ = self._decision_evidence(decision, self._task_map(), records, artifacts,
+                                                       profile_revision=profile_revision)
             decision.pop('_source_recheck', None)
             decision['assessment_stale'] = False
             # Observed facts (including pre-upgrade terminal facts) are not a

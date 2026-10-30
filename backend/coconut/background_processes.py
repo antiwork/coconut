@@ -523,8 +523,10 @@ class BackgroundProcesses:
             pending = any(self._get('tasks', identity).get('_requester_reply_task_id') == owner_id
                           for identity in waiting)
             # The continuation that finishes this assignment is saved after its return. Use its final state.
-            turns = [finishing if finishing and t['id'] == finishing['id'] else t for t in self._all('tasks')
-                     if t['id'] == owner_id or t.get('_relay_callback_owner') == owner_id]
+            # Indexes find the owner and its callback turns. A parse of the whole task table took about 0.3 s here.
+            turns = [finishing if finishing and t['id'] == finishing['id'] else t for t in (json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM tasks WHERE id=? OR json_extract(data,'$._relay_callback_owner')=? ORDER BY rowid",
+                (owner_id, owner_id)))]
             # Creation finishes before the scheduler adopts the native task.
             adopted = {t['id'] for t in turns if t.get('_native_outcome_id')}
             for record in self._native_task_receipts(owner_id):
