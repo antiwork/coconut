@@ -445,6 +445,11 @@ class HermesProvider(FixtureProvider):
                    HERMES_KANBAN_WORKSPACES_ROOT=str(self.data_dir / 'kanban/kanban/workspaces'))
         return env, root / 'workspace'
 
+    def has_prepared_worker(self, identity):
+        """Whether the Kanban claim of a task has a prepared worker that a turn can take."""
+        with self._lock:
+            return identity in self._prepared
+
     def prepare_kanban_worker(self, identity, bot, workspace, execution_id, worker_id=None):
         """Start a dedicated process before Hermes records its claim PID."""
         cache_key = worker_id or execution_id

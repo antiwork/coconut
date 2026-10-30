@@ -74,6 +74,10 @@ class WorkTurnRuleTests(unittest.TestCase):
         self.assertTrue(gateway_work_turn(dict(audit, _work_context_id='work', _work_context={'id': 'work'})))
         # The audit of a work source runs in the gateway too. Coconut runs its board tools (gateway_kanban_tool).
         self.assertTrue(gateway_work_turn(dict(audit, _source_audit_prompt='Reconcile.', _source_answer_steps={'url': 'x'})))
+        # The receipts of the board tools that the gateway runs are no worker input. A receipt of a worker's tool is one.
+        board = [{'action': {'name': 'kanban_comment', 'arguments': {}}}]
+        self.assertTrue(gateway_work_turn(dict(audit, _source_audit_prompt='Reconcile.', _native_receipts=board)))
+        self.assertFalse(gateway_work_turn(dict(audit, _native_receipts=board + [{'action': {'name': 'terminal'}}])))
         for key in ('_native_outcome_id', '_native_job', '_work_status_only', '_technical_lane',
                     '_background_completion', '_native_receipts'):
             with self.subTest(key=key):

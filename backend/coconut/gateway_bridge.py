@@ -70,6 +70,19 @@ WORK_SESSION_INPUTS = ('_execution_session_id', '_kanban_claim', '_work_context_
 WORKER_MESSAGE_FIELDS = ('work_context',)
 
 
+# The receipts of the board tools that the gateway runs on Coconut's board (gateway_chat.gateway_kanban_tool). The
+# gateway continues a turn with them, so they are no worker input. A receipt of another tool is one.
+GATEWAY_RECEIPTS = ('kanban_create', 'kanban_comment')
+
+
+def worker_input(task: dict, key: str) -> bool:
+    """Whether the task has the worker input `key`. The receipts of the turn count only when a worker made them."""
+    if key == '_native_receipts' and isinstance(task.get(key), list):
+        return any(not isinstance(receipt, dict) or (receipt.get('action') or {}).get('name') not in GATEWAY_RECEIPTS
+                   for receipt in task[key])
+    return bool(task.get(key))
+
+
 def gateway_work_turn(task: dict) -> bool:
     """Whether a task with its own work session runs in the gateway, in a separate chat (gateway_chat.work_chat).
 
@@ -79,7 +92,7 @@ def gateway_work_turn(task: dict) -> bool:
     status question runs in the gateway on its own path (gateway_chat.run_gateway_status).
     """
     return (bool(task.get('_execution_session_id')) and not task.get('_chat_session')
-            and not any(task.get(key) for key in WORKER_INPUTS if key not in WORK_SESSION_INPUTS))
+            and not any(worker_input(task, key) for key in WORKER_INPUTS if key not in WORK_SESSION_INPUTS))
 
 
 def plain_chat_turn(task: dict) -> bool:
@@ -89,7 +102,7 @@ def plain_chat_turn(task: dict) -> bool:
     proposal are turns of the bot's conversation too (gateway_chat.join_conversation). A task with its own work session
     (`_execution_session_id`) stays with the worker.
     """
-    return bool(task.get('_chat_session')) and not any(task.get(key) for key in WORKER_INPUTS)
+    return bool(task.get('_chat_session')) and not any(worker_input(task, key) for key in WORKER_INPUTS)
 
 
 class GatewayUnavailable(RuntimeError):

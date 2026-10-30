@@ -10,6 +10,7 @@ import queue
 import time
 from pathlib import Path
 import subprocess
+from uuid import uuid4
 import threading
 
 from .kanban_runtime import IDLE_STATUSES
@@ -150,6 +151,11 @@ def native_state(status):
     return {'queued': 'ready', 'scheduled': 'scheduled', 'waiting': 'scheduled', 'paused': 'scheduled', 'working': 'running',
             'completed': 'done', 'cancelled': 'archived', 'needs_you': 'review'}.get(status, 'blocked')
 
+
+# The error of the worker for a claim without a prepared worker (providers.py), and the summary of a task that waits for
+# a claim with a worker (await_prepared_worker).
+UNPREPARED_WORKER = 'The native claim has no prepared worker.'
+WAITING_FOR_WORKER = 'Waiting for a worker for this work.'
 
 # A respawn guard that holds this long is shown in the task and its Work item (_note_respawn_guards).
 RESPAWN_GUARD_NOTICE_SECONDS = 3600
@@ -431,6 +437,8 @@ class NativeKanban(NativeOutcomes):
                 table = 'contexts' if context else 'tasks'
                 item = self._get(table, row['id'])
                 item['_kanban_claim'] = dict(claim, pid=pid, input=row['input'], generation=self.generation)
+                # The claim now has a prepared worker (await_prepared_worker).
+                item.pop('_needs_worker', None)
                 self._put(table, item)
             return pid
         try:
@@ -498,6 +506,61 @@ class NativeKanban(NativeOutcomes):
                 affected.update(t['id'] for t in self.kanban.tasks.values() if t['status'] == 'ready')
                 self._kanban_visible = visible
                 self._event('work.updated', {'native_task_ids': sorted(affected)})
+
+    def await_prepared_worker(self, task):
+        """Put a claimed task that the worker must run, but whose claim has no prepared worker, back in the queue.
+
+        The claim of a task that the gateway runs holds a placeholder process, not a worker (kanban_worker_pid). When the
+        turn still goes to the worker, the worker refuses it (`The native claim has no prepared worker`), before the
+        turn has any effect. Then the claim ends, the task waits, and its next claim prepares a worker (`_needs_worker`).
+        Return whether the task waits. The caller is _run_task, before the worker gets the turn.
+        """
+        from .service import now
+        check = getattr(self.provider, 'has_prepared_worker', None)
+        identity = task.get('_kanban_external_id')
+        if not identity or check is None or check(identity):
+            return False
+        logging.getLogger(__name__).warning('Task %s goes to the worker, but its claim has no prepared worker. '
+                                            'It waits for a claim with a worker.', task['id'])
+        with self.transaction():
+            stored = self._get('tasks', task['id'])
+            if stored['status'] != 'working':
+                return True
+            stored.update(status='queued', summary=WAITING_FOR_WORKER, updated_at=now(), _needs_worker=True)
+            self._put('tasks', stored)
+            self._event('task.updated', self._public(stored), stored['bot_id'], stored['id'])
+        # The placeholder ends the claim's run. The next pass claims the task again with a worker.
+        self.stop_gateway_holder(identity)
+        return True
+
+    def _recover_unprepared_workers(self):
+        """Once: put back in the queue each task that failed because its claim had no prepared worker.
+
+        From build 569 the continuation of a gateway audit after a card answer went to the worker, whose claim had no
+        worker, and the task failed before the turn had any effect. The person's answer then stayed unused. The task now
+        runs again with a new input, and a card answer that failed with it is the person's answer again.
+        """
+        from .service import now
+        key = 'recovered.unprepared_workers'
+        if self._setting(key):
+            return
+        failed = 'Work stopped: ' + UNPREPARED_WORKER
+        for task in (json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM tasks WHERE json_extract(data,'$.status')='failed' AND json_extract(data,'$.summary')=?",
+                (failed,))):
+            decision = self._get('decisions', task['_resume_decision']) if task.get('_resume_decision') else None
+            if decision and decision['status'] == 'failed' and decision.get('outcome') == failed:
+                decision.update(status='approved')
+                decision.pop('outcome', None)
+                self._put('decisions', decision)
+                self._event('decision.updated', self._public(decision), decision['bot_id'], task['id'])
+            # A new input: the claim of the failed run ended, so the next claim is a new run.
+            task.update(status='queued', summary='Running again after a failed start.', updated_at=now(),
+                        _native_turn_id=str(uuid4()))
+            self._put('tasks', task)
+            self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+            logging.getLogger(__name__).warning('Task %s failed without a prepared worker. It runs again.', task['id'])
+        self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(True)))
 
     def _note_respawn_guards(self, current=None):
         """Show a native outcome that Hermes has not started for an hour because of a respawn guard.

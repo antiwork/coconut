@@ -38,6 +38,7 @@ import time
 
 from . import hermes_runtime
 from .gateway_bridge import (WORKER_INPUTS, WORKER_MESSAGE_FIELDS, GatewayBridge, GatewayUnavailable, gateway_work_turn,
+                             worker_input,
                              plain_chat_turn)
 from .native_conversation import reaction_only_turn
 
@@ -157,7 +158,7 @@ def gateway_resume(task: dict, decision: dict, cron_session: str = '') -> bool:
     worker recorded, and the worker repeats that call.
     """
     chat = (plain_chat_turn(task) or gateway_work_turn(task)
-            or (bool(cron_session) and not any(task.get(key) for key in WORKER_INPUTS)))
+            or (bool(cron_session) and not any(worker_input(task, key) for key in WORKER_INPUTS)))
     return chat and decision.get('action_type') != 'native_approval' and not decision.get('_receipt_id')
 
 
@@ -397,7 +398,7 @@ class GatewayChat:
         """The process of a Kanban claim. A task that the gateway runs holds a placeholder process instead of a
         prepared worker, because Hermes records a process for each claim and can end it. The provider prepares a
         worker for each other task."""
-        if self.gateway_enabled() and gateway_work_turn(task):
+        if self.gateway_enabled() and gateway_work_turn(task) and not task.get('_needs_worker'):
             return self.start_gateway_holder(identity, execution)
         return self.provider.prepare_kanban_worker(identity, bot, workspace, execution, native_id)
 
