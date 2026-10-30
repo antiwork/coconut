@@ -16,6 +16,10 @@ keeps the task waiting for the answer, and the pre_tool_call hook blocks each fu
 Worktrees. coconut_workspace gives a turn of a work session the Git worktree of that session, and Hermes then runs the
 terminal commands of the agent in it.
 
+Audits. coconut_kanban_list, coconut_kanban_show, coconut_kanban_create and coconut_kanban_comment use Coconut's board in
+an audit of a work source. The service runs them there and records each write as a receipt of the turn. The gateway's own board tools write to another
+board, so the hooks block them in an audit turn (mode `audit`).
+
 Card checks. coconut_refresh_decision records the result of an automatic check of a pending card. Only a check turn
 (mode `refresh`) can call it, and a check turn can call no other Coconut tool (hooks.guard_tool).
 """
@@ -148,5 +152,9 @@ def register(ctx):
                             (module.BOT_CREATION_SCHEMA, _service_tool('create_bot')),
                             (module.BOT_DELETION_SCHEMA, _service_tool('delete_bot')),
                             (module.WORKSPACE_SCHEMA, _workspace),
+                            (module.KANBAN_CREATE_SCHEMA, _service_tool('kanban_create')),
+                            (module.KANBAN_COMMENT_SCHEMA, _service_tool('kanban_comment')),
+                            (module.KANBAN_LIST_SCHEMA, _service_tool('kanban_list')),
+                            (module.KANBAN_SHOW_SCHEMA, _service_tool('kanban_show')),
                             (TRACK_PR, _service_tool('track_pr')), (MESSAGE_BOT, _service_tool('message_bot'))):
         ctx.register_tool(name=schema['name'], toolset=TOOLSET, schema=schema, handler=handler, emoji='🥥')

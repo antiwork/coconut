@@ -69,6 +69,8 @@ CONTEXT_MESSAGE = 'Answer the current question. Its pending decision stays open.
 REFRESH_TOOL = 'coconut_refresh_decision'
 REFRESH_MESSAGE = 'Record this check with coconut_refresh_decision. The check does not change the card in other ways.'
 NOT_A_CHECK_MESSAGE = 'Only an automatic check of a card records a check result.'
+AUDIT_BOARD_MESSAGE = ('This board is not the board of Coconut. Use coconut_kanban_list, coconut_kanban_show, '
+                       'coconut_kanban_create and coconut_kanban_comment, which use the board of Coconut.')
 STATUS_MESSAGE = 'Answer from the saved context in the message. This answer uses no tools.'
 
 
@@ -139,6 +141,9 @@ def guard_tool(tool_name='', **_):
         return None
     if tool_name == REFRESH_TOOL:
         return {'action': 'block', 'message': NOT_A_CHECK_MESSAGE}
+    if MODES.get(turn) == 'audit' and tool_name.startswith('kanban_'):
+        # The board tools of the gateway write to its own board, not to Coconut's (gateway_chat.gateway_kanban_tool).
+        return {'action': 'block', 'message': AUDIT_BOARD_MESSAGE}
     return None
 
 
