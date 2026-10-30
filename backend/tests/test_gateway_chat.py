@@ -872,8 +872,14 @@ class ServiceRoutingTests(unittest.TestCase):
         exchange = self.exchange(other, 'Check the logs.')
         person = self.send('Are you there?')
         started = []
-        with patch.object(self.service, '_run_task', side_effect=started.append), self.service.lock:
-            self.service._dispatch_chat(1)
+        before = set(self.service.running)
+        with patch.object(self.service, '_run_task', side_effect=started.append):
+            with self.service.lock:
+                self.service._dispatch_chat(1)
+            # Each started thread calls the stand-in of _run_task.
+            for identity, worker in list(self.service.running.items()):
+                if identity not in before:
+                    worker.join(5)
         # The person's turn starts. The bot exchange waits for capacity.
         self.assertEqual(started, [person['id']])
         self.assertEqual(self.read('tasks', exchange)['status'], 'queued')
@@ -923,8 +929,14 @@ class ServiceRoutingTests(unittest.TestCase):
         people = [self.write('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Hello.'})['id'] for bot in (lin, mo)]
         exchanges = [self.exchange(lin, 'Check the logs.'), self.exchange(mo, 'Check the notes.')]
         started = []
-        with patch.object(self.service, '_run_task', side_effect=started.append), self.service.lock:
-            self.service._dispatch_chat(1)
+        before = set(self.service.running)
+        with patch.object(self.service, '_run_task', side_effect=started.append):
+            with self.service.lock:
+                self.service._dispatch_chat(1)
+            # Each started thread calls the stand-in of _run_task.
+            for identity, worker in list(self.service.running.items()):
+                if identity not in before:
+                    worker.join(5)
         # Capacity 1 and its reserved slot: the two people start, and the bot exchanges wait.
         self.assertEqual(sorted(started), sorted(people))
         self.assertTrue(all(self.read('tasks', identity)['status'] == 'queued' for identity in exchanges))
