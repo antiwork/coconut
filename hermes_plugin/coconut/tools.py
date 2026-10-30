@@ -100,7 +100,7 @@ def register(ctx):
     for schema, handler in ((module.QUESTION_SCHEMA, _service_tool('ask')),
                             (module.SUGGEST_SCHEMA, _service_tool('suggest')),
                             (reply_schema(), _service_tool('resolve_reply')),
-                            (module.REFRESH_SCHEMA, _service_tool('refresh_decision')),
+                            (module.refresh_schema(), _service_tool('refresh_decision')),
                             (module.GATEWAY_WAIT_SCHEMA, _service_tool('wait')),
                             (module.CORRECTION_SCHEMA, _service_tool('correct_withdrawal')),
                             (module.BOT_CREATION_SCHEMA, _service_tool('create_bot')),

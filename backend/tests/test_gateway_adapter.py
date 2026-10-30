@@ -776,9 +776,13 @@ class GatewayAdapterTests(unittest.TestCase):
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
         self.assertEqual(len(tool_names), 10)
-        # The check tool has the schema of the worker's check tool.
-        from coconut.card_tools import REFRESH_SCHEMA
-        self.assertEqual(schemas['coconut_refresh_decision'], REFRESH_SCHEMA)
+        # The check tool has the revision fields of the worker's check tool: of a question and of a draft.
+        from coconut.card_tools import refresh_schema
+        revision = schemas['coconut_refresh_decision']['parameters']['properties']['revision']
+        self.assertEqual(revision['anyOf'], [
+            refresh_schema('question')['parameters']['properties']['revision'],
+            refresh_schema('draft_message')['parameters']['properties']['revision']])
+        self.assertIn('required', revision['anyOf'][0])
         # A gateway turn waits for its processes with the process tool of Hermes, not with coconut_wait.
         self.assertNotIn('process_id', schemas['coconut_wait']['parameters']['properties'])
         options = calls[0]

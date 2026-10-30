@@ -139,6 +139,30 @@ REFRESH_SCHEMA = {
     }, 'required': ['status', 'evidence']},
 }
 
+
+def refresh_schema(action_type=None):
+    """coconut_refresh_decision with the fields of `revision` that the service takes for a card of `action_type`.
+
+    The worker names the action type of the card that it checks. The plugin of the gateway registers one tool for each
+    card, so it passes None: `revision` is then a revised question or a revised draft assessment."""
+    question = QUESTION_SCHEMA['parameters']
+    draft = {'type': 'object', 'additionalProperties': False, 'minProperties': 1,
+             'description': ('Update risk_level and risk together, or uncertainty, or all three. Omitted fields are '
+                             'preserved. Never change draft content.'),
+             'allOf': [{'if': {'required': [key]}, 'then': {'required': [other]}}
+                       for key, other in (('risk_level', 'risk'), ('risk', 'risk_level'))],
+             'properties': {key: question['properties'][key] for key in ('risk_level', 'risk', 'uncertainty')}}
+    if action_type == 'draft_message':
+        revision = draft
+    elif action_type is not None:
+        revision = question
+    else:
+        revision = {'description': ('For revise. A question card: the complete revised question. A draft_message card: '
+                                    'only risk_level, risk and uncertainty.'), 'anyOf': [question, draft]}
+    parameters = REFRESH_SCHEMA['parameters']
+    return dict(REFRESH_SCHEMA, parameters=dict(parameters, properties=dict(parameters['properties'], revision=revision)))
+
+
 # A typed answer from chat names its card and the human message (decision_inbox.resolve_chat_decision).
 CHAT_REPLY_SCHEMA = dict(REPLY_SCHEMA, parameters=dict(
     REPLY_SCHEMA['parameters'],
