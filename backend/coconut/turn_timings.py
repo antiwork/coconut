@@ -88,30 +88,43 @@ class HoldSampler:
         return token
 
     def stop(self, token):
+        """End a hold and return its summary. The sampler updates the counts under the same guard."""
         with self.guard:
-            return self.holds.pop(token)
+            return _sample_summary(self.holds.pop(token))
 
     def _run(self):
         while True:
             time.sleep(SAMPLE_EVERY)
-            now = time.perf_counter()
-            with self.guard:
-                due = [hold for hold in self.holds.values()
-                       if now - hold['started'] >= SAMPLE_AFTER and hold['samples'] < SAMPLE_LIMIT]
-            if not due:
-                continue
-            frames = sys._current_frames()
+            self.sample()
+
+    def sample(self):
+        """Take one sample for each hold that passed SAMPLE_AFTER."""
+        now = time.perf_counter()
+        with self.guard:
+            due = [token for token, hold in self.holds.items()
+                   if now - hold['started'] >= SAMPLE_AFTER and hold['samples'] < SAMPLE_LIMIT]
+        if not due:
+            return
+        frames = sys._current_frames()
+        try:
             names = {thread.ident: thread.name for thread in threading.enumerate()}
             me = threading.get_ident()
-            for hold in due:
+            stacks = {ident: (os.path.basename(frame.f_code.co_filename), frame.f_code.co_name, _stack_text(frame))
+                      for ident, frame in frames.items() if ident != me}
+        finally:
+            # Frames keep the locals of running calls. Drop them before the sleep.
+            del frames
+        with self.guard:
+            for token in due:
+                hold = self.holds.get(token)
+                if hold is None:
+                    continue
                 hold['samples'] += 1
-                for ident, frame in frames.items():
-                    if ident == me:
-                        continue
+                for ident, (file, function, stack) in stacks.items():
                     if ident == hold['ident']:
-                        hold['holder'][_stack_text(frame)] += 1
-                    elif (os.path.basename(frame.f_code.co_filename), frame.f_code.co_name) not in IDLE_FRAMES:
-                        hold['others'][names.get(ident, str(ident)) + ': ' + _stack_text(frame)] += 1
+                        hold['holder'][stack] += 1
+                    elif (file, function) not in IDLE_FRAMES:
+                        hold['others'][names.get(ident, str(ident)) + ': ' + stack] += 1
 
 
 _sampler = HoldSampler()
@@ -142,16 +155,16 @@ def timed_lock(lock, operation):
                 yield
             finally:
                 cpu_ms = round((time.thread_time() - cpu) * 1000, 1)
-                hold = _sampler.stop(token)
                 held = time.perf_counter()
+                hold = _sampler.stop(token)
     finally:
         ended = time.perf_counter()
         if ended - started >= LOG_AFTER:
             data = dict(operation=operation, thread=threading.current_thread().name,
                         wait_ms=round((acquired - started) * 1000, 1),
-                        hold_ms=round(((held if hold is not None else ended) - acquired) * 1000, 1), cpu_ms=cpu_ms)
-            if hold is not None:
-                data.update(_sample_summary(hold))
+                        hold_ms=round(((held if cpu_ms is not None else ended) - acquired) * 1000, 1), cpu_ms=cpu_ms)
+            if hold:
+                data.update(hold)
             logging.getLogger(__name__).warning('coconut.transaction_timing %s', json.dumps(data))
 
 

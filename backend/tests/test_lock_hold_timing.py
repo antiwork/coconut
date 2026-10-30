@@ -75,6 +75,19 @@ class LockHoldTimingTests(unittest.TestCase):
         [data] = logged(logs.records)
         self.assertFalse(any(stack.startswith('idle-worker: ') for stack, _ in data['others']))
 
+    def test_a_sample_after_the_hold_ended_changes_nothing(self):
+        sampler = turn_timings.HoldSampler()
+        token = sampler.start('ended')
+        sampler.holds[token]['started'] -= 10
+        sampler.sample()
+        summary = sampler.stop(token)
+        self.assertEqual(summary['samples'], 1)
+        # The summary holds plain lists. A later sample cannot change it or fail on the ended hold.
+        before = json.dumps(summary)
+        sampler.sample()
+        self.assertEqual(json.dumps(summary), before)
+        self.assertEqual(sampler.holds, {})
+
     def test_an_error_in_the_hold_still_logs_and_raises(self):
         with patch.object(turn_timings, 'LOG_AFTER', 0.0):
             with self.assertLogs('coconut.turn_timings', level='WARNING') as logs, self.assertRaises(ValueError):
