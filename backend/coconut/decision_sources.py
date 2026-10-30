@@ -262,7 +262,7 @@ class ThreadRecords:
     def refresh(self):
         """Read each thread that a turn used lately, at its latest revision. Drop the others."""
         import time
-        from .pr_tracking import budget_stopped, request_budget, spent_requests
+        from .pr_tracking import budget_stopped, own_responses, request_budget, spent_requests
         now = time.monotonic()
         with self.guard:
             for key in [key for key, (used, _, _) in self.used.items() if now - used > THREAD_KEEP_SECONDS]:
@@ -294,7 +294,8 @@ class ThreadRecords:
                         previous = self.records.get(key)
                     since = json.loads(previous[1])['updated_at'] if previous else _LATEST
                     # Each request counts against the rest of the hour's budget before it goes out.
-                    with request_budget(left):
+                    # Its own response cache keeps its conditional requests free: the PR poll cannot push them out.
+                    with request_budget(left), own_responses('thread-refresh'):
                         for _ in range(2):
                             current = tracker.observe_issue_activity(url, since, started + SOURCE_READ_SECONDS,
                                                                      **options)

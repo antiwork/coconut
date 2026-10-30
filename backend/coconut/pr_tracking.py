@@ -69,14 +69,43 @@ _CACHE_LOCK = threading.Lock()
 _CACHE_BYTES = 8 * 1024 * 1024
 
 
+# A reader that reads the same few paths again and again keeps their answers apart (see own_responses). The PR poll
+# reads many paths, and in the shared cache it pushed out the paths of the GitHub thread refresher, whose conditional
+# requests then counted against the rate limit.
+_OWN_CACHES = {}
+_OWN_CACHE_ENTRIES = 64
+_OWN_CACHE_BYTES = 4 * 1024 * 1024
+_SCOPE = threading.local()
+
+
+@contextlib.contextmanager
+def own_responses(name):
+    """Keep the answers of the calling thread's cached requests in their own cache, apart from the shared one."""
+    previous = getattr(_SCOPE, 'name', None)
+    _SCOPE.name = name
+    try:
+        yield
+    finally:
+        _SCOPE.name = previous
+
+
+def _responses():
+    """The response cache and its limits for the calling thread."""
+    name = getattr(_SCOPE, 'name', None)
+    if name is None:
+        return _RESPONSE_CACHE, 256, _CACHE_BYTES
+    # dict.setdefault is atomic. Callers may hold _CACHE_LOCK, so this takes no lock.
+    return _OWN_CACHES.setdefault(name, OrderedDict()), _OWN_CACHE_ENTRIES, _OWN_CACHE_BYTES
+
+
 def _remember_response(key, etag, body, link=None):
+    cache, entries, size = _responses()
     with _CACHE_LOCK:
-        _RESPONSE_CACHE.pop(key, None)
+        cache.pop(key, None)
         if etag:
-            _RESPONSE_CACHE[key] = (etag, bytes(body), link)
-        while (len(_RESPONSE_CACHE) > 256
-               or sum(len(value[1]) for value in _RESPONSE_CACHE.values()) > _CACHE_BYTES):
-            _RESPONSE_CACHE.popitem(last=False)
+            cache[key] = (etag, bytes(body), link)
+        while len(cache) > entries or sum(len(value[1]) for value in cache.values()) > size:
+            cache.popitem(last=False)
 
 
 # The latest rate limit that GitHub reported for each token: {scope: (remaining, reset time)}.
@@ -355,9 +384,10 @@ class GitHubPRTracker:
         with _CACHE_LOCK:
             if _RETRY_AFTER.get(scope, 0) > time.time():
                 raise PRTrackingError("GitHub rate limit reached. Refresh resumes after its reset time.")
-            cached = _RESPONSE_CACHE.get(key) if self._token and cache else None
+            responses = _responses()[0] if self._token and cache else None
+            cached = responses.get(key) if responses is not None else None
             if cached:
-                _RESPONSE_CACHE.move_to_end(key)
+                responses.move_to_end(key)
         if cached:
             headers['If-None-Match'] = cached[0]
         request = Request(_API + path, headers=headers, method="GET")
