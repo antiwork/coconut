@@ -1280,7 +1280,10 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
 
     def test_retained_pr_ambiguity_and_live_requester_writers_still_refuse(self):
         cases = {
-            'two open delegated PRs': ('Choose one retained Work item', dict(merged=dict(pr_state='open', status='open'))),
+            # Two open delegated PRs continue together (see the next test). A finished one among them stays ambiguous.
+            'two open delegated PRs and a finished one': ('Choose one retained Work item', dict(
+                merged=dict(pr_state='open', status='open'),
+                open=dict(id='finished-pr', url=URL[:-1] + '2', pr_state='merged', status='merged'))),
             'two finished delegated PRs': ('Choose one retained Work item', dict(open=dict(pr_state='merged', status='merged'))),
             'an open requester PR of the Work': ('another execution', dict(requester_pr=dict(pr_state='open', status='open'))),
             'a finished PR of another Work': ('Choose one retained Work item', dict(merged=dict(work_outcome_id='other-work')))}
@@ -1295,6 +1298,21 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
                 self.assertEqual(self.service._all('artifacts'), before)
                 self.tearDown()
                 self.setUp()
+
+    def test_two_open_delegated_prs_continue_together_under_the_lane(self):
+        owner, source, items = self.retained_pr_owner()
+        self.service._put('artifacts', dict(items['merged'], pr_state='open', status='open'))
+        before = {a['id']: a for a in self.service._all('artifacts')}
+        self.assertEqual(self.lane(source)['task_id'], owner['id'])
+        queued = self.service._get('tasks', owner['id'])
+        self.assertEqual((queued.get('_work_context_id'), queued['_native_outcome_id']), (None, 't_existing'))
+        after = {a['id']: a for a in self.service._all('artifacts')}
+        self.assertEqual(set(after), set(before), 'No duplicate Work item')
+        for identity in ('merged-pr', 'open-pr'):
+            self.assertEqual(after[identity], dict(before[identity], _native_outcome_id='t_existing'))
+        for identity in ('requester-work', 'requester-pr'):
+            self.assertEqual(after[identity], before[identity])
+        self.assertEqual(self.service._get('decisions', 'gate'), self.gate)
 
 
 DECLINED_PR = 'https://github.com/antiwork/gumroad/pull/8661'

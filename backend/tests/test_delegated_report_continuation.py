@@ -219,11 +219,16 @@ class DelegatedReportContinuationTests(unittest.TestCase):
         self.service._put('artifacts', dict(pr, id='second-delegated-pr', url=URL[:-1] + '2'))
         self.assert_rejected(owner, source, 'Choose one retained Work item')
 
-    def test_a_second_pr_without_the_report_stays_ambiguous(self):
+    def test_a_second_open_pr_without_the_report_continues_with_both_prs(self):
+        # GroupedOpenDelegatedPrTests covers this shape and its guards.
         owner, source, work, pr, report, requester_pr = self.saved_linkage()
         self.service.db.execute('DELETE FROM artifacts WHERE id=?', (report['id'],))
-        self.service._put('artifacts', dict(pr, id='second-delegated-pr', url=URL[:-1] + '2'))
-        self.assert_rejected(owner, source, 'Choose one retained Work item')
+        second = dict(pr, id='second-delegated-pr', url=URL[:-1] + '2')
+        self.service._put('artifacts', second)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+        self.assertIsNone(self.service._get('tasks', owner['id']).get('_work_context_id'))
+        for item in (pr, second):
+            self.assertEqual(self.service._get('artifacts', item['id']), dict(item, _native_outcome_id='t_existing'))
 
     def test_a_report_of_an_unrelated_work_stays_ambiguous(self):
         owner, source, work, pr, report, requester_pr = self.saved_linkage()
@@ -1451,6 +1456,241 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._all('artifacts'), before)
         self.assertEqual(len(saved), 5)
         self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'done')
+
+
+class GroupedOpenDelegatedPrTests(unittest.TestCase):
+    """Two open delegated PRs of one Work, as Gumroad 8740 and Gumroad Mobile 393 of one Dev execution.
+
+    Dev's owner queued again after a restart on its ready card. It owns both PRs, and both link to Desk's Work. Neither
+    PR is the outcome by itself, and Coconut chooses neither. The same execution continues for the same Work and retains
+    both PRs. Every other shape and guard keeps its refusal, and a refusal writes nothing.
+    """
+    setUp = fixtures.NativeWorkContinuationTests.setUp
+    tearDown = fixtures.NativeWorkContinuationTests.tearDown
+    write = fixtures.NativeWorkContinuationTests.write
+    prepare = fixtures.NativeWorkContinuationTests.prepare
+    snapshot_result = fixtures.NativeWorkContinuationTests.snapshot_result
+    scheduled_native = fixtures.NativeWorkContinuationTests.scheduled_native
+    ready_native = fixtures.NativeWorkContinuationTests.ready_native
+    resume = fixtures.NativeWorkContinuationTests.resume
+    audited_requester_pr = fixtures.NativeWorkContinuationTests.audited_requester_pr
+    state = SelectedFinishedPrTests.state
+    assert_no_writes = SelectedFinishedPrTests.assert_no_writes
+    each = LinkedRequesterActivityTests.each
+
+    SECOND_URL = 'https://github.com/example/mobile/pull/393'
+
+    def grouped(self, reported=(URL,), order=(0, 1)):
+        """The saved shape: the queued owner on its ready card, its two open PRs, and Desk's own report of each URL in
+        reported, which reviews it."""
+        owner, requester = self.ready_native()
+        work = dict(id='requester-work', task_id=requester['id'], bot_id=requester['bot_id'], kind='work',
+                    title='The request', status='waiting', _native_outcome_id='t_requester')
+        prs = [dict(id='delegated-pr', task_id=owner['id'], bot_id=owner['bot_id'], kind='pr', title='Web change',
+                    status='failed', pr_state='open', url=URL, work_outcome_id=work['id'],
+                    _review_task_id=owner['id'], _activity_task_id=owner['id']),
+               dict(id='second-delegated-pr', task_id=owner['id'], bot_id=owner['bot_id'], kind='pr',
+                    title='Mobile change', status='failed', pr_state='open', url=self.SECOND_URL,
+                    work_outcome_id=work['id'], _review_task_id=owner['id'], _activity_task_id=owner['id'])]
+        reports = [dict(id='requester-pr-' + str(index), task_id=requester['id'], bot_id=requester['bot_id'], kind='pr',
+                        title='The delegated PR', status='failed', pr_state='open', url=url, work_outcome_id=work['id'],
+                        _review_task_id=requester['id']) for index, url in enumerate(reported)]
+        # The saved order of the PRs cannot choose either of them.
+        for item in (work, *(prs[index] for index in order), *reports):
+            self.service._put('artifacts', item)
+        return owner, requester, work, prs
+
+    def assert_grouped(self, owner, prs, receipt, before, cards):
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
+        continued = self.service._get('tasks', owner['id'])
+        for key in ('id', '_execution_session_id', 'thread_id', 'session_id', 'exchange_id', 'source_task_id',
+                    'source_bot_id', '_reply_to_task_id', '_kanban_claim', 'parent_task_id', 'conversation_bot_id'):
+            self.assertEqual(continued.get(key), owner.get(key), key)
+        self.assertEqual((continued['status'], continued['_native_outcome_id']), ('queued', 't_existing'))
+        # Neither PR becomes the owner's single Work item.
+        self.assertIsNone(continued.get('_work_context_id'))
+        after = {a['id']: a for a in self.service._all('artifacts')}
+        self.assertEqual(set(after), set(before), 'No new Work item')
+        for pr in prs:
+            self.assertEqual(after[pr['id']], dict(pr, _native_outcome_id='t_existing'))
+        for identity in set(before) - {pr['id'] for pr in prs}:
+            self.assertEqual(after[identity], before[identity])
+        # The same native card, and so the same Hermes workspace, continues.
+        self.assertEqual(self.service.kanban.tasks, cards)
+        return continued
+
+    def test_the_requester_continues_one_execution_with_both_open_prs(self):
+        cases = {(reported, order): (reported, order) for reported in ((URL,), (self.SECOND_URL,), (URL, self.SECOND_URL), ())
+                 for order in ((0, 1), (1, 0))}
+
+        def check(case):
+            owner, requester, work, prs = self.grouped(*case)
+            before = {a['id']: a for a in self.service._all('artifacts')}
+            tasks = {t['id']: t for t in self.service._all('tasks') if t['id'] != owner['id']}
+            cards = copy.deepcopy(self.service.kanban.tasks)
+            events = self.service.db.execute('SELECT max(seq) FROM events').fetchone()[0]
+            receipt = self.resume(requester)
+            continued = self.assert_grouped(owner, prs, receipt, before, cards)
+            self.assertEqual({t['id']: t for t in self.service._all('tasks') if t['id'] != owner['id']}, tasks)
+            self.assertEqual(self.service.db.execute(
+                "SELECT count(*) FROM events WHERE seq>? AND type='artifact.created'", (events,)).fetchone()[0], 0)
+            # A repeated call gets the saved receipt and changes nothing.
+            self.assertEqual(self.resume(requester), receipt)
+            self.assertEqual(self.service._get('tasks', owner['id']), continued)
+            self.assertEqual(len([d for d in self.service._all('deliveries') if d.get('receipt') == receipt]), 1)
+        self.each(cases, check)
+
+    def test_the_owner_continues_one_execution_with_both_open_prs(self):
+        owner, requester, work, prs = self.grouped()
+        caller = self.write(f'/v1/bots/{owner["bot_id"]}/messages', {'text': 'Continue both PRs.'})
+        caller = dict(self.service._get('tasks', caller['id']), status='working')
+        self.service._put('tasks', caller)
+        before = {a['id']: a for a in self.service._all('artifacts')}
+        cards = copy.deepcopy(self.service.kanban.tasks)
+        self.assert_grouped(owner, prs, self.resume(caller), before, cards)
+
+    def test_an_audited_delegation_continues_both_open_prs(self):
+        # Each PR's activity is the owner's report to the coordinator. Each PR is checked as a single retained PR.
+        owner, coordinator, work, pr = self.audited_requester_pr()
+        prs = [pr, dict(pr, id='second-delegated-pr', url=self.SECOND_URL)]
+        self.service._put('artifacts', prs[1])
+        before = {a['id']: a for a in self.service._all('artifacts')}
+        cards = copy.deepcopy(self.service.kanban.tasks)
+        self.assert_grouped(owner, prs, self.resume(coordinator), before, dict(cards))
+        self.assertEqual(self.service._get('tasks', coordinator['id'])['status'], 'working')
+
+    def test_the_original_requester_receives_the_result_once(self):
+        owner, requester, work, prs = self.grouped()
+        self.resume(requester)
+        earlier = {d['id'] for d in self.service._all('deliveries')}
+        continued = dict(self.service._get('tasks', owner['id']), status='completed')
+        self.service.kanban.tasks[owner['id']].update(status='done', input_id=continued['_native_turn_id'])
+        self.service._prepare_return(continued, 'Both PRs are verified.', 'completed')
+        self.service._put('tasks', continued)
+        self.service._put('tasks', dict(self.service._get('tasks', requester['id']), status='completed'))
+        self.service._drain_returns()
+        self.service._drain_returns()
+        returned = [d for d in self.service._all('deliveries') if d['id'] not in earlier and d['source_task_id'] == owner['id']]
+        self.assertEqual([(d['target_bot_id'], d['text']) for d in returned], [(requester['bot_id'], 'Both PRs are verified.')])
+        finished = self.service._get('tasks', owner['id'])
+        self.assertEqual((finished['_reply_to_task_id'], finished['_execution_session_id'], finished.get('_work_context_id')),
+                         (owner['_reply_to_task_id'], owner['_execution_session_id'], None))
+        self.assertFalse(finished.get('_return_pending'))
+        for pr in prs:
+            self.assertEqual(self.service._get('artifacts', pr['id']), dict(pr, _native_outcome_id='t_existing'))
+        self.assertEqual(self.service._get('artifacts', work['id']), work)
+
+    def test_a_reply_to_the_finished_owner_moves_neither_pr(self):
+        # A reply to a finished owner moves its one Work item to a follow-up. Grouped PRs have no single item to move.
+        owner, requester, work, prs = self.grouped()
+        self.resume(requester)
+        self.service._put('tasks', dict(self.service._get('tasks', owner['id']), status='completed'))
+        self.service.kanban.tasks[owner['id']].update(status='done')
+        self.assert_no_writes(lambda: self.write(f'/v1/tasks/{owner["id"]}/replies', {'text': 'Also fix the copy.'}),
+                              'one unambiguous retained Work or PR owner')
+        for pr in prs:
+            self.assertEqual(self.service._get('artifacts', pr['id']), dict(pr, _native_outcome_id='t_existing'))
+
+    def test_every_other_shape_and_guard_still_refuses_with_no_write(self):
+        def put(index, **changes):
+            return lambda owner, requester, work, prs: self.service._put('artifacts', dict(prs[index], **changes))
+
+        def other_work(owner, requester, work, prs):
+            self.service._put('artifacts', dict(work, id='other-work', _native_outcome_id='t_other'))
+            put(1, work_outcome_id='other-work')(owner, requester, work, prs)
+
+        def finished_pr(owner, requester, work, prs):
+            self.service._put('artifacts', dict(prs[1], id='earlier-pr', url=URL[:-1] + '0', status='merged',
+                                                pr_state='merged'))
+
+        def hidden_report(owner, requester, work, prs):
+            self.service._put('artifacts', saved_report(owner, work))
+
+        def owner_work(owner, requester, work, prs):
+            self.service._put('artifacts', dict(id='owner-work', task_id=owner['id'], bot_id=owner['bot_id'], kind='work',
+                                                title='Other work', status='waiting'))
+
+        def pause(owner, requester, work, prs):
+            self.service._put('artifacts', dict(work, paused_by_decision_id='held'))
+            self.service._put('decisions', dict(id='held', task_id=requester['id'], status='rejected', decided_by='human'))
+
+        def cancel(owner, requester, work, prs):
+            self.service.db.execute("INSERT INTO settings(key,value) VALUES(?,?)",
+                                    ('work.cancelled.work:' + work['id'], json.dumps('cancelled')))
+
+        def owner_change(**changes):
+            return lambda owner, requester, work, prs: self.service._put('tasks', dict(owner, **changes))
+
+        def owner_decision(owner, requester, work, prs):
+            self.service._put('decisions', dict(id='pending', task_id=owner['id'], bot_id=owner['bot_id'],
+                                                status='pending', title='Publish?'))
+
+        def owner_worker(owner, requester, work, prs):
+            self.service.running[owner['id']] = Mock(is_alive=Mock(return_value=True))
+
+        def owner_run(owner, requester, work, prs):
+            self.service.kanban.tasks[owner['id']].update(current_run_id=91, worker_pid=191)
+
+        def dispatching(owner, requester, work, prs):
+            self.service._kanban_claiming = 1
+
+        def owner_branch(owner, requester, work, prs):
+            self.service._put('tasks', dict(owner, id='owner-branch', status='working', _native_outcome_id=None,
+                                            _kanban_claim=None))
+
+        def second_pr_writer(owner, requester, work, prs):
+            # Another active task of Desk works on the second PR. Only the first PR's own report is Desk's review.
+            writer = dict(requester, id='other-requester-writer', status='working',
+                          _execution_session_id='other-requester-writer')
+            self.service._put('tasks', writer)
+            self.service._put('artifacts', dict(id='writer-pr', task_id=requester['id'], bot_id=requester['bot_id'],
+                kind='pr', title='Writer PR', status='open', pr_state='open', url=self.SECOND_URL,
+                work_outcome_id=work['id'], _review_task_id=requester['id'], _activity_task_id=writer['id']))
+
+        def second_pr_unknown_tool(owner, requester, work, prs):
+            reporter = dict(requester, id='requester-reporter', status='failed', _execution_session_id='requester-reporter')
+            self.service._put('tasks', reporter)
+            self.service._put('native_receipts', dict(id=str(uuid4()), task_id=reporter['id'], turn_id='turn',
+                state='executing', action=dict(name='browser_navigate', arguments={}), created_at=reporter['created_at']))
+            self.service._put('artifacts', dict(id='reporter-pr', task_id=requester['id'], bot_id=requester['bot_id'],
+                kind='pr', title='Reporter PR', status='open', pr_state='open', url=self.SECOND_URL,
+                work_outcome_id=work['id'], _review_task_id=requester['id'], _activity_task_id=reporter['id']))
+
+        ambiguous = 'Choose one retained Work item'
+        cases = {
+            'a finished PR of the same Work': (ambiguous, finished_pr),
+            'a PR of an unrelated Work': (ambiguous, other_work),
+            "the delegate's hidden report": (ambiguous, hidden_report),
+            'another Work of the owner': (ambiguous, owner_work),
+            'a PR of another bot': (ambiguous, put(1, bot_id='someone-else')),
+            'two artifacts of one PR': (ambiguous, put(1, url=URL.upper())),
+            'a PR of another native outcome': ('belongs to another native outcome', put(1, _native_outcome_id='t_other')),
+            'a named PR': ('^' + re.escape(native_outcomes.SELECTION_REFUSED) + '$', 'named'),
+            'a paused Work': ('paused', pause),
+            'a cancelled Work': ('paused or cancelled', cancel),
+            'a pending owner decision': ('existing decision', owner_decision),
+            'an undelivered owner result': ('previous result', owner_change(_return_pending={'text': 'x'})),
+            'an owner wait': ('existing dependencies', owner_change(_waiting_on=['helper'])),
+            'a live owner worker': ('active work', owner_worker),
+            'a native run of the owner': ('active work', owner_run),
+            'native dispatch in progress': ('Native dispatch is in progress', dispatching),
+            'an active owner branch': ('active work', owner_branch),
+            'another writer of the second PR': ('another execution', second_pr_writer),
+            'an unknown tool of a peer of the second PR': ('another execution', second_pr_unknown_tool),
+        }
+
+        def check(case):
+            message, change = case
+            owner, requester, work, prs = self.grouped()
+            requester = self.service._get('tasks', requester['id'])
+            if change == 'named':
+                call = lambda: self.service.emit(requester['id'], 'work_continue', dict(
+                    task_id='t_existing', message='Continue.', retained_pr_url=URL))
+            else:
+                change(owner, requester, work, prs)
+                call = lambda: self.resume(self.service._get('tasks', requester['id']))
+            self.assert_no_writes(call, message)
+        self.each(cases, check)
 
 
 if __name__ == '__main__':

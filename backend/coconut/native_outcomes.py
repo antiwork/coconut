@@ -778,13 +778,20 @@ class NativeOutcomes:
                      and a.get('work_outcome_id') == linked_parent['id']}
         retained.extend(root for root in reports if not (len(delegated) == 1 and root['id'] == linked_parent['id']))
         items = list({a['id']: a for a in retained}.values())
-        if len(items) > 1:
+        # Two or more open delegated PRs of the same authenticated Work, with distinct URLs and nothing else: this one
+        # execution works on all of them for that Work. No PR is the outcome by itself, and Coconut chooses none. The
+        # owner retains every PR and keeps no single Work item. A finished PR, a report, or another item stays ambiguous.
+        members = {a['url'].lower(): a for a in items if a['kind'] == 'pr' and a.get('url')}
+        grouped = (len(items) > 1 and len(members) == len(items) and not reports
+                   and all(a['id'] in delegated and a.get('pr_state') not in ('merged', 'closed') for a in items))
+        if len(items) > 1 and not grouped:
             raise ServiceError(409, FINISHED_PRS_AMBIGUOUS if all_finished else 'Choose one retained Work item for this native outcome.')
         if items:
-            item = items[0]
-            if (item['kind'] not in ('work', 'pr') or item['bot_id'] != owner['bot_id']
-                    or item.get('_native_outcome_id') not in (None, native['id'])):
+            if any(a['kind'] not in ('work', 'pr') or a['bot_id'] != owner['bot_id']
+                   or a.get('_native_outcome_id') not in (None, native['id']) for a in items):
                 raise ServiceError(409, 'The retained Work item belongs to another native outcome.')
+            # Grouped PRs all link to the same Work, so they share its peers, pause, and cancellation.
+            item = items[0]
             peers = self._work_pause_peers(item)
             pause = self._work_pause(item, peers=peers)
             # Only a held-merge lane passes, and only under the exact hold that its own gate checked as the sole pause.
@@ -793,7 +800,10 @@ class NativeOutcomes:
             tasks = {t['id']: t for t in self._all('tasks')}
             records = self._pending_completion_receipts()
             from . import routine_reports
-            routine_scopes = routine_reports.scopes(self, owner, item, peers, tasks, get_deliveries())
+            routine_scopes = {}
+            for member in items:
+                # Each scope belongs to one PR and its URL, so the scopes of grouped PRs do not overlap.
+                routine_scopes.update(routine_reports.scopes(self, owner, member, peers, tasks, get_deliveries()))
             report_changes = {}
             peer_chains = []
             finished_roots = {}
@@ -833,6 +843,9 @@ class NativeOutcomes:
                     # The coordinating Work may remain active while its delegated PR resumes.
                     # Other PRs linked to it remain independent writer/review peers.
                     continue
+                # A peer of a grouped PR's URL is checked against that PR, exactly as for a single retained PR. A peer of
+                # any other URL matches no grouped PR, so it stays a writer for every one of them.
+                item = members.get((peer.get('url') or '').lower(), items[0])
                 requester_report = (item['kind'] == 'pr' and not item.get('work_outcome_id')
                     and peer['kind'] == 'pr' and peer['bot_id'] == owner.get('source_bot_id')
                     and peer['task_id'] == owner.get('source_task_id')
@@ -1044,7 +1057,8 @@ class NativeOutcomes:
                 if changed != tasks[identity]:
                     self._put('tasks', changed)
                     self._event('task.updated', self._public(changed), changed['bot_id'], identity)
-            item['_native_outcome_id'] = native['id']
+            for member in items:
+                member['_native_outcome_id'] = native['id']
         else:
             title = native.get('title') or owner['title']
             item = dict(id=str(uuid5(UUID(owner['id']), 'work')), bot_id=owner['bot_id'],
@@ -1052,9 +1066,13 @@ class NativeOutcomes:
                 preview='', url=None, created_at=now(), observed_at=now(),
                 _work_key='native-' + native['id'], _native_outcome_id=native['id'],
                 completion_condition=title)
-        owner['_work_context_id'] = item['id']
-        self._put('artifacts', item)
-        self._event('artifact.updated' if items else 'artifact.created', self._public(item), owner['bot_id'], owner['id'])
+        # Grouped PRs keep their own task links. Messages about them reach their Work, and a reply to the finished owner
+        # finds no single item to move, so it refuses rather than splitting them (_native_continuation_item).
+        if not grouped:
+            owner['_work_context_id'] = item['id']
+        for member in items or [item]:
+            self._put('artifacts', member)
+            self._event('artifact.updated' if items else 'artifact.created', self._public(member), owner['bot_id'], owner['id'])
 
     def _native_continuation_owner(self, identity, snapshot_missing=None, snapshots=None):
         """Resolve the caller's native ID through Coconut's durable owner mapping."""
