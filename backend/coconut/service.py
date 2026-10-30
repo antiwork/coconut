@@ -3483,6 +3483,13 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                         return
                     if self._task_paused(task) or self._continuation_blocked(task) or self._automatic_work_is_paused(task):
                         return
+                    if task.get('_native_outcome_id') and task.get('_kanban_claim') is None and self.kanban is not None:
+                        # The turn of a native outcome needs the claim of the outcome's card (`_native_outcome` below).
+                        # Without it the turn fails, and its retry fails again. The task stays queued, and the Kanban
+                        # scheduler starts it from its claim (work_capacity.chat_turn).
+                        logging.getLogger(__name__).warning(
+                            'Native outcome task %s has no Kanban claim. It waits for the Kanban scheduler.', task_id)
+                        return
                     if self._has_uncertain_receipt(task_id, task.get('_native_turn_id')):
                         task.update(status='failed', summary='A previous tool has no receipt. Check its result before starting new work.')
                         self._finish_assignment_turn(task, 'Task failed: ' + task['summary'], 'failed')

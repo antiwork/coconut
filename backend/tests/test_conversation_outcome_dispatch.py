@@ -8,7 +8,6 @@ from uuid import uuid4
 
 from coconut.providers import FixtureProvider
 from coconut.service import Service
-from coconut.work_capacity import chat_turn
 
 
 class Kanban:
@@ -43,6 +42,7 @@ class ConversationOutcomeDispatchTests(unittest.TestCase):
         return task
 
     def test_only_a_conversation_turn_without_an_outcome_is_a_chat_turn(self):
+        from coconut.work_capacity import chat_turn
         self.assertTrue(chat_turn({'_chat_session': True}))
         self.assertFalse(chat_turn({'_chat_session': True, '_native_outcome_id': 't_review'}))
         self.assertFalse(chat_turn({'_native_outcome_id': 't_review'}))
@@ -100,6 +100,31 @@ class ConversationOutcomeDispatchTests(unittest.TestCase):
             self.service._run_task(review['id'])
         self.assertEqual(outcomes, [claim])
         self.assertEqual(self.service._get('tasks', review['id'])['status'], 'completed')
+
+    def test_an_outcome_turn_without_its_claim_waits_queued_and_does_not_fail(self):
+        # The live loop: the chat dispatcher started the turn without the claim, the turn failed on the missing claim,
+        # and its retry failed the same way. Now a start without the claim leaves the task queued for its claim.
+        review = self.turn(self.dev, 'Check the saved review result', _native_outcome_id='t_review')
+        with patch.object(self.provider, 'start_task', side_effect=AssertionError('No turn starts without its claim.')), \
+             self.assertLogs('coconut.service', 'WARNING') as logs:
+            self.service._run_task(review['id'])
+        self.assertIn('has no Kanban claim', logs.output[0])
+        stored = self.service._get('tasks', review['id'])
+        self.assertEqual(stored['status'], 'queued')
+        self.assertNotIn('Work stopped', stored['summary'])
+        self.assertEqual([m for m in self.service._task_messages(review['id']) if m['role'] == 'assistant'], [])
+
+    def test_the_dispatchers_never_start_an_outcome_turn_without_its_claim(self):
+        # Through the real dispatch pass: the chat dispatcher leaves the turn, and no turn of it runs without a claim.
+        review = self.turn(self.dev, 'Check the saved review result', _native_outcome_id='t_review')
+        starts = []
+        self.provider.start_task = lambda task, *args: starts.append((task['id'], task.get('_kanban_claim')))
+        with self.service.lock:
+            self.service._dispatch_chat(4)
+        for worker in list(self.service.running.values()):
+            worker.join(5)
+        self.assertEqual([start for start in starts if start[0] == review['id']], [])
+        self.assertEqual(self.service._get('tasks', review['id'])['status'], 'queued')
 
     def test_no_chat_turn_starts_on_an_execution_that_a_native_pass_is_claiming(self):
         dev_chat = self.turn(self.dev, 'A direct question for Dev')
