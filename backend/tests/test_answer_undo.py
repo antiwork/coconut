@@ -180,6 +180,47 @@ class AnswerUndoTests(unittest.TestCase):
             self.assertEqual(raised.exception.status, status)
         self.assertNotIn('_held_answer', self.stored(decision))
 
+    def test_a_reply_that_finishes_in_the_window_does_not_replace_the_held_answer(self):
+        decision = self.question()
+        self.write('POST', f"/v1/decisions/{decision['id']}/reply", {'text': 'Wait for the review.', 'revision': decision['revision']})
+        context = self.service._all('contexts')[-1]
+        with self.service.transaction():
+            context['status'] = 'working'
+            self.service._put('contexts', context)
+        self.answer(decision)
+        with self.assertRaises(ServiceError) as raised:
+            self.service.resolve_decision_reply(context['id'], dict(choice='reject', quote='Wait for the review.'))
+        self.assertEqual(raised.exception.status, 409)
+        stored = self.stored(decision)
+        self.assertIn('_held_answer', stored)
+        self.assertEqual(stored['_answers'], [])
+        self.assertEqual(self.task_status(), 'needs_you')
+        self.service.finish_held_answers(later())
+        self.assertEqual(self.stored(decision)['selected_option_id'], 'publish')
+
+    def test_a_revision_of_the_card_waits_for_the_held_answer(self):
+        decision = self.question()
+        self.answer(decision)
+        task = self.service._get('tasks', self.task['id'])
+        with self.service.transaction(), self.assertRaises(ServiceError):
+            self.service._revise_question(self.stored(decision), task, dict(
+                title='Publish later?', options=[dict(id='later', label='Later')]), 'A check changed the question.')
+        self.assertEqual(self.stored(decision)['revision'], decision['revision'])
+
+    def test_an_archived_bot_wins_and_keeps_the_held_answer_as_superseded(self):
+        decision = self.question()
+        held = self.answer(decision)
+        with self.service.transaction():
+            stored = self.stored(decision)
+            stored['status'] = 'rejected'
+            self.service._put('decisions', stored)
+        with self.assertRaises(ServiceError):
+            self.undo(held)
+        self.service.finish_held_answers(later())
+        stored = self.stored(decision)
+        self.assertEqual(stored['status'], 'rejected')
+        self.assertEqual(stored['_superseded_answers'][0]['data']['option_id'], 'publish')
+
     def test_undo_replays_as_a_card_change(self):
         decision = self.question()
         cursor = self.service._cursor()

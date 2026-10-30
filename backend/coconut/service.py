@@ -150,7 +150,7 @@ from .work_sources import WorkSources, card_answer_steps
 from .work_status import PROPOSAL_EXECUTION, WorkStatus
 from .background_processes import BackgroundProcesses, PENDING_COMPLETIONS
 from .native_execution import NativeExecution
-from .answer_undo import AnswerUndo, public_status
+from .answer_undo import AnswerUndo, public_status, require_not_held
 from .decision_inbox import DecisionInbox, migrate_notification_importance
 from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PR_URL_INDEX, PullRequestReviews
 from .work_progress import WorkProgress, work_enabled
@@ -2728,6 +2728,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         return message['id']
 
     def _answer(self, decision: dict, task: dict, data: dict, device: str) -> dict:
+        require_not_held(decision)
         if decision.get('_gateway_question'):
             # The answer or a reply goes to the waiting gateway turn. A dismissal goes there too (dismiss_gateway_question).
             return self.answer_gateway_question(decision, task, data, device)

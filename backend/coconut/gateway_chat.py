@@ -882,6 +882,8 @@ class GatewayChat:
     def answer_gateway_question(self, decision: dict, task: dict, data: dict, device: str) -> dict:
         """POST /v1/decisions/<id>/answer for a question of a gateway turn. The caller holds the transaction."""
         from .service import ServiceError, decision_correction, now
+        from .answer_undo import require_not_held
+        require_not_held(decision)
         if data.get('revision') != decision['revision']:
             raise ServiceError(409, 'This decision changed. Review it before answering.')
         option = next((item for item in decision['options'] if item['id'] == data.get('option_id')), None)

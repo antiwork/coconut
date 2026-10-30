@@ -34,6 +34,17 @@ def _deadline_passed(text, current=None):
     return not text or datetime.fromisoformat(text.replace('Z', '+00:00')) <= current
 
 
+HELD_CHANGE = ('The person answered this card. The answer waits for its Undo window, '
+               'so this result does not change the card.')
+
+
+def require_not_held(decision):
+    """Refuse an answer, a revision or a resolution of a card while the Mac holds the person's answer: it wins."""
+    if decision.get('_held_answer'):
+        from .service import ServiceError
+        raise ServiceError(409, HELD_CHANGE)
+
+
 def public_status(decision):
     """The status that apps see. A held answer shows as `held`; the stored card stays `pending`."""
     return HELD if decision.get('_held_answer') and decision.get('status') == 'pending' else decision.get('status')
@@ -108,7 +119,8 @@ class AnswerUndo:
     def undo_answer(self, decision, task, data, device):
         """Remove the held answer of a card, so it is pending again with the same revision. The caller holds the transaction."""
         from .service import ServiceError, now
-        if not decision.get('_held_answer') or not data.get('undo_id') or data['undo_id'] != decision.get('answer_undo_id'):
+        if (not decision.get('_held_answer') or decision['status'] != 'pending' or not data.get('undo_id')
+                or data['undo_id'] != decision.get('answer_undo_id')):
             raise ServiceError(409, 'This answer is no longer waiting. The bot already has it.')
         if _deadline_passed(decision.get('answer_undo_until')):
             raise ServiceError(409, 'The Undo window ended. The bot already has your answer.')
@@ -134,7 +146,9 @@ class AnswerUndo:
                 decision.update(HOLD_FIELDS)
                 task = self._get('tasks', decision['task_id'])
                 if decision['status'] != 'pending' or task['status'] == 'cancelled':
-                    # Something else closed the card in the window. That change wins.
+                    # The person closed the card in another way in the window, for example a cancelled task or an archived
+                    # bot. That change wins, and the held answer is kept as superseded.
+                    decision.setdefault('_superseded_answers', []).append(held)
                     self._put('decisions', decision)
                     self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
                     continue

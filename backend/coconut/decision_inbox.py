@@ -119,6 +119,8 @@ def require_recommended_first(options, recommended_id):
 class DecisionInbox:
     def edit_message_draft(self, decision, task, data, device):
         from .service import ServiceError, now, digest, encoded
+        from .answer_undo import require_not_held
+        require_not_held(decision)
         from .message_drafts import message_draft
         if (decision.get('action_type') != 'draft_message' or decision['status'] != 'pending'
                 or type(data.get('revision')) is not int or data['revision'] != decision['revision']
@@ -369,6 +371,9 @@ class DecisionInbox:
                 or decision['status'] != 'pending' or task['status'] == 'cancelled'
                 or decision['revision'] != context['_decision_revision']):
             raise ServiceError(409, 'The reply no longer matches a pending decision.')
+        # An answer that the person gave on the card while this reply ran wins (answer_undo.py).
+        from .answer_undo import require_not_held
+        require_not_held(decision)
         if context.get('_background_completion') and payload.get('choice') != 'modify':
             return {'status': 'pending', 'error': 'Background results can update the card but cannot answer it for the person.'}
         quote = payload.get('quote')
@@ -414,6 +419,8 @@ class DecisionInbox:
 
     def _revise_question(self, decision, task, revision, reason, actor=None):
         from .service import ServiceError
+        from .answer_undo import require_not_held
+        require_not_held(decision)
         options = decision_options(revision.get('options'))
         assessment = decision_risk(revision)
         title = revision.get('title')
