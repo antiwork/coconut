@@ -3,6 +3,9 @@ import unittest
 from coconut.service import Service, ServiceError
 import test_work_progress as fixtures
 from test_work_progress import progress
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 
 class WorkDecisionWaitTests(unittest.TestCase):

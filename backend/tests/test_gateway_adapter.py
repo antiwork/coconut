@@ -21,6 +21,9 @@ from uuid import uuid4
 from coconut.server import APIServer
 from coconut.service import Service
 from test_gateway_chat import Provider
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 PLUGIN = Path(__file__).resolve().parents[2] / 'hermes_plugin/coconut'
 STUBS = {

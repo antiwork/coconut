@@ -18,6 +18,10 @@ final class AppStore {
     var reactionOverrides: [String: [String]] = [:]
     var decisions: [Decision] = []
     var answeringDecisionIds: Set<String> = []
+    /// The latest answer that the Mac holds for its Undo window. Each card has its own window; Inbox offers the latest.
+    var answerUndo: Decision?
+    /// After Undo, Inbox shows this card first.
+    var restoredDecisionId: String?
     var decisionReplyDrafts: [String: String] = [:]
     var artifacts: [Artifact] = [] {
         didSet { assign(\.transcriptArtifacts, artifacts.filter { $0.kind == "task" }) }
@@ -345,7 +349,7 @@ final class AppStore {
     // The new pairing starts without the outgoing items and the cursor of the earlier one.
     private func adopt(_ configuration: PairingConfiguration) async {
         resetDelivery()
-        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []
+        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; answerUndo = nil; restoredDecisionId = nil
         ProtectedCache.remove("outgoing.json")
         workVisibility = [:]; workUndo = []; workMutationIds = [:]
         pairing = configuration
@@ -442,7 +446,7 @@ final class AppStore {
         client = nil
         uncertainWriteKeys = [:]
         resetDelivery()
-        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []
+        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; answerUndo = nil; restoredDecisionId = nil
         pairing = nil
         repairRequired = false
         if !isDemo {
@@ -1167,6 +1171,7 @@ final class AppStore {
                 if let index = self.cachedState?.decisions.firstIndex(where: { $0.id == receipt.id }) {
                     self.cachedState?.decisions[index] = receipt
                 }
+                self.offerAnswerUndo(receipt)
             })
         guard identity == deliveryID else { return false }
         if recorded != nil || rejected {
@@ -1179,6 +1184,34 @@ final class AppStore {
             return true
         }
         return false
+    }
+
+    /// Offer Undo for an answer that the Mac holds, until its deadline.
+    func offerAnswerUndo(_ receipt: Decision, now: Date = Date()) {
+        guard receipt.offersAnswerUndo(at: now), let deadline = receipt.answerUndoUntil?.apiDate else { return }
+        answerUndo = receipt
+        let undoId = receipt.answerUndoId
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
+            if self?.answerUndo?.answerUndoId == undoId { self?.answerUndo = nil }
+        }
+    }
+
+    /// Ask the Mac to return the held answer's card to pending. The Mac refuses after the window, with a reason.
+    @discardableResult
+    func undoAnswer() async -> Bool {
+        guard let held = answerUndo, let undoId = held.answerUndoId else { return false }
+        answerUndo = nil
+        let restored: Decision? = await write("decisions/\(held.id)/inbox",
+            payload: AnswerUndoRequest(action: "undo_answer", revision: held.revision, undoId: undoId), as: Decision.self,
+            refreshInBackground: true, idempotencyKey: UUID().uuidString, onSuccess: { receipt in
+                self.snapshotEpoch = UUID()
+                self.snapshotRequest = nil
+                if let index = self.decisions.firstIndex(where: { $0.id == receipt.id }) { self.decisions[index] = receipt }
+                self.cachedState?.decisions = self.decisions
+                self.restoredDecisionId = receipt.id
+            })
+        return restored != nil
     }
 
     func editDraft(_ decision: Decision, draft: MessageDraft) async -> Bool {
@@ -2344,6 +2377,7 @@ struct OutgoingAnswer: Codable, Identifiable, Equatable {
 struct AnswerRequest: Codable, Equatable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
 private struct DraftEditRequest: Encodable { let revision: Int; let draft: MessageDraft }
 private struct InboxRequest: Encodable { let action: String; let revision: Int; let swipeId: String? }
+struct AnswerUndoRequest: Encodable, Equatable { let action: String; let revision: Int; let undoId: String }
 private struct ReplyRequest: Encodable { let text: String; let attachmentIds: [String]; let decisionId: String?; let mentionedBotIds: [String] }
 private struct ContextRequest: Encodable { let question: String }
 

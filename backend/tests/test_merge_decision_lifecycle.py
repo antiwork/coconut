@@ -9,6 +9,9 @@ from uuid import uuid4
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError, YieldForDecision
 from coconut.pr_tracking import PRObservation
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 URL = 'https://github.com/example/project/pull/42'
 SOURCE_REVISION = '2026-09-23T11:46:31Z'

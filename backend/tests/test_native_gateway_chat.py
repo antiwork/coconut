@@ -22,6 +22,9 @@ import unittest
 from uuid import uuid4
 
 from hermes_env import needs_hermes, PYTHON, SOURCE
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 ROOT = Path(__file__).resolve().parents[2]
 REPLY = 'Hello from the stub model.'

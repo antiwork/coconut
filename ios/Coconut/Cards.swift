@@ -26,6 +26,7 @@ struct DecisionCard: View {
         if decision.draft != nil {
             return decision.status == "rejected" ? "Discarded" : decision.status == "failed" ? "Could not finish" : "Approved for sending"
         }
+        if decision.isHeld { return decision.heldAnswerLabel ?? decision.selectedOptionLabel ?? "Answered" }
         if let id = submittingOptionId, let option = decision.options.first(where: { $0.id == id }) {
             return option.label
         }

@@ -5,6 +5,9 @@ import test_automatic_work as automatic
 import test_tracked_work as tracked
 import test_decision_inbox as inbox
 import legacy_work_sync
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 

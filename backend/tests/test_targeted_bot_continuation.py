@@ -14,6 +14,9 @@ import test_work_progress as fixtures
 from test_work_progress import progress
 import legacy_work_sync
 from hermes_env import needs_hermes, SOURCE
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 

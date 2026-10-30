@@ -17,6 +17,9 @@ from coconut.hermes_worker import (BOT_CREATION_SCHEMA, PROPOSAL_SCHEMA, bot_cre
                                    file_proposal, model_configuration)
 from coconut.providers import FixtureProvider, HermesProvider
 from coconut.service import ServiceError
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 
 class FakeNativeCatalog:

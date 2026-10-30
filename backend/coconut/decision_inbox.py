@@ -183,10 +183,14 @@ class DecisionInbox:
             task = self._get('tasks', parent) if parent else None
         return {}
 
-    def update_inbox(self, decision, task, data):
+    def update_inbox(self, decision, task, data, device=None):
         from datetime import datetime, timedelta, timezone
         from .service import ServiceError, now, uid
         action = data.get('action')
+        if action == 'undo_answer':
+            if type(data.get('revision')) is not int or data['revision'] != decision['revision']:
+                raise ServiceError(409, 'This decision changed. Refresh it first.')
+            return self.undo_answer(decision, task, data, device)
         if (type(data.get('revision')) is not int or data['revision'] != decision['revision']
                 or task['status'] == 'cancelled'):
             raise ServiceError(409, 'This decision changed. Refresh it first.')
@@ -241,6 +245,8 @@ class DecisionInbox:
                         self._close_dismissed_card(decision, task)
                 self._put('decisions', decision)
                 self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
+        # Answers wait for their own Undo window (answer_undo.py). The dispatch loop runs both on each pass.
+        self.finish_held_answers()
 
     def _close_dismissed_card(self, decision, task):
         """Close a required card that the person dismissed. The caller holds the transaction and saves the card.

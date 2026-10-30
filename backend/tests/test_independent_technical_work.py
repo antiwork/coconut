@@ -15,6 +15,9 @@ import test_native_work_continuation as continuation
 import test_provider as provider_fixtures
 from test_work_progress import progress
 from hermes_env import needs_hermes
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 SCOPE = ['diagnosis', 'tests', 'local_fixes']
 RESUMED_RESULT = 'Marked ready after the checks.'

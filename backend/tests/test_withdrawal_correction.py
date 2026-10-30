@@ -13,6 +13,9 @@ from unittest.mock import patch
 import test_automatic_work as fixtures
 import legacy_work_sync
 from coconut.service import Service, ServiceError, digest, encoded
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 

@@ -9,6 +9,9 @@ from coconut.service import Service, ServiceError, YieldForDecision, digest
 from coconut.hermes_worker import conversation_input
 from test_push import pair_phone
 from test_service import ControlledProvider
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 
 class TeamServiceTests(unittest.TestCase):

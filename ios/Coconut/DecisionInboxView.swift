@@ -93,6 +93,14 @@ struct DecisionInboxView: View {
                 selectedId = nil
             }
         }
+        .onChange(of: store.restoredDecisionId) { _, id in
+            guard let id, pending.contains(where: { $0.id == id }) else { return }
+            store.restoredDecisionId = nil
+            clearUndo()
+            queue.reconcile(pending, sort: sorting)
+            queue.restoreFirst(id)
+            selectedId = id
+        }
         .onChange(of: sort) { _, _ in queue.reconcile(pending, sort: sorting, reset: true) }
         .sheet(isPresented: $overviewOpen) { overview }
     }
@@ -135,6 +143,12 @@ struct DecisionInboxView: View {
                 Button("Undo", action: undo)
                     .disabled(exiting)
                     .accessibilityIdentifier("undo-inbox-dismiss")
+            } else if let held = store.answerUndo {
+                // The Mac holds the latest answer for a few seconds. Undo returns its card to the top of Inbox.
+                Button("Undo") { Task { await store.undoAnswer() } }
+                    .disabled(exiting)
+                    .accessibilityLabel("Undo the answer \(held.heldAnswerLabel ?? held.title)")
+                    .accessibilityIdentifier("undo-inbox-answer")
             } else {
                 Color.clear.accessibilityHidden(true)
             }

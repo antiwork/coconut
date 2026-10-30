@@ -4,6 +4,9 @@ from unittest.mock import patch
 
 import test_decision_inbox as inbox_tests
 from coconut.hermes_worker import conversation_input
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 
 class ContextCompletionTests(unittest.TestCase):

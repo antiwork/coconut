@@ -11,6 +11,9 @@ import test_decision_freshness as questions
 import test_draft_freshness as drafts
 import test_provider as workers
 from coconut.service import Service, ServiceError
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 
 # Lightweight local discovery can omit Hermes dependencies; the native CI job

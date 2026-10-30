@@ -8,6 +8,9 @@ from coconut.hermes_worker import conversation_input
 from coconut.native_conversation import NativeConversation, current_message, seed_messages, missing_prefix
 from coconut.service import Service
 from test_service import ControlledProvider
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 
 class NativeStore:

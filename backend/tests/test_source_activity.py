@@ -14,6 +14,9 @@ from coconut.hermes_worker import conversation_input
 from coconut.pr_tracking import GitHubPRTracker, PRTrackingError
 from coconut.service import YieldForDecision
 import test_decision_sources as source_tests
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 
 URL = 'https://github.com/example/project/issues/42'

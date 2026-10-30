@@ -150,6 +150,7 @@ from .work_sources import WorkSources, card_answer_steps
 from .work_status import PROPOSAL_EXECUTION, WorkStatus
 from .background_processes import BackgroundProcesses, PENDING_COMPLETIONS
 from .native_execution import NativeExecution
+from .answer_undo import AnswerUndo
 from .decision_inbox import DecisionInbox, migrate_notification_importance
 from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PR_URL_INDEX, PullRequestReviews
 from .work_progress import WorkProgress, work_enabled
@@ -205,7 +206,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat):
+class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, AnswerUndo, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -1617,7 +1618,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             decision = self._get('decisions', parts[2])
             task = self._get('tasks', decision['task_id'])
             if parts[3] == 'inbox':
-                return self.update_inbox(decision, task, data)
+                return self.update_inbox(decision, task, data, device)
+            if decision['status'] == 'held':
+                raise ServiceError(409, 'This card has an answer that waits for its Undo window. Undo it or wait a few seconds.')
             if decision['status'] != 'pending' or task['status'] == 'cancelled':
                 raise ServiceError(409, 'This decision is no longer pending.')
             if parts[3] == 'draft':
@@ -1630,9 +1633,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 question = require_text(data, 'question', 4000)
                 return self._request_context(decision, task, question, [])
             if parts[3] == 'answer':
-                if decision.get('_native'):
-                    return self.answer_native(decision, task, data, device, callbacks)
-                return self._answer(decision, task, data, device)
+                # The bot gets the answer after the Undo window (answer_undo.finish_held_answers).
+                return self.hold_answer(decision, task, data, device, callbacks)
         if parts == ['v1', 'settings', 'approvals'] and method == 'PUT':
             if not hasattr(self.provider, 'native_settings'):
                 raise ServiceError(503, 'Hermes is not available.')

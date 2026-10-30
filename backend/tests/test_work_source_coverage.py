@@ -10,6 +10,9 @@ from coconut.hermes_worker import conversation_input
 from coconut.providers import FixtureProvider
 from coconut.service import Service
 from coconut.work_sources import answered_decisions, coverage
+from coconut.answer_undo import AnswerUndo
+# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
+AnswerUndo.answer_undo_seconds = 0
 
 
 class WorkSourceTests(unittest.TestCase):
