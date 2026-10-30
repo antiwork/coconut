@@ -1245,6 +1245,19 @@ class OutsideTurnTests(unittest.TestCase):
         self.assertEqual(self.chat(), [('The work is done.', answer['task_id'], False)])
         self.assertEqual(self.message(chat_id=self.bot['id'] + ':work:session-1', text='The work is done.'),
                          {'recorded': True, 'task_id': answer['task_id']})
+        # A send of another chat of the bot does not end a reply that the work chat still streams.
+        work = self.bot['id'] + ':work:session-2'
+        self.message(message_id='work:1', text='The', chat_id=work, streaming=True)
+        self.message(message_id='main:1', text='Hello.')
+        with self.service.lock:
+            streamed = [m for m in self.service._all('messages') if m.get('_gateway_message_id') == 'work:1']
+        self.assertTrue(streamed[0]['streaming'])
+        # The same message ID in another chat is another message.
+        self.assertTrue(self.message('edit', 'main:1', 'Hello again.', chat_id=work).get('recorded') is False)
+        self.message(message_id='work:2', text='Done.', chat_id=work)
+        with self.service.lock:
+            streamed = [m for m in self.service._all('messages') if m.get('_gateway_message_id') == 'work:1']
+        self.assertFalse(streamed[0]['streaming'])
 
     def test_sends_close_together_share_a_task_and_a_streamed_reply_is_edited_and_deleted(self):
         first = self.message(text='Task t_1 is done.')

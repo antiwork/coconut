@@ -556,7 +556,8 @@ class GatewayChat:
         home = os.path.realpath(require_text(data, 'home', 4096))
         chat_id, message_id = require_text(data, 'chat_id', 200), require_text(data, 'message_id', 200)
         # The chat of a work session or of a status question belongs to its bot. The message goes to the bot's chat.
-        chat_id = chat_bot(chat_id)
+        # The Hermes chat stays on the message, so a message ID and a streamed reply belong to one Hermes chat.
+        hermes_chat, chat_id = chat_id, chat_bot(chat_id)
         if (self._gateway_profile(home) or {}).get('bot_id') != chat_id:
             raise ServiceError(404, 'This chat is not the bot of this Hermes profile.')
         with self.transaction():
@@ -565,8 +566,10 @@ class GatewayChat:
                 return {'recorded': False, 'reason': 'The bot is archived or deleted.'}
             row = self.db.execute(
                 "SELECT data FROM messages WHERE json_extract(data,'$.bot_id')=? "
-                "AND json_extract(data,'$._gateway_message_id')=? ORDER BY rowid DESC LIMIT 1",
-                (chat_id, message_id)).fetchone()
+                "AND json_extract(data,'$._gateway_message_id')=? "
+                "AND coalesce(json_extract(data,'$._gateway_chat_id'), json_extract(data,'$.bot_id'))=? "
+                "ORDER BY rowid DESC LIMIT 1",
+                (chat_id, message_id, hermes_chat)).fetchone()
             message = json.loads(row[0]) if row else None
             if kind != 'send':
                 if message is None:
@@ -579,16 +582,17 @@ class GatewayChat:
             job_id = data.get('job_id')
             if isinstance(job_id, str) and job_id and self._gateway_cron_shown(chat_id, job_id):
                 return {'recorded': False, 'reason': 'A routine task in the chat shows this cron run.'}
-            # A streamed reply whose last edit never came ends with the next message.
+            # A streamed reply whose last edit never came ends with the next message of its Hermes chat.
             for (raw,) in self.db.execute(
                     "SELECT data FROM messages WHERE json_extract(data,'$.bot_id')=? "
                     "AND json_extract(data,'$._gateway_message_id') IS NOT NULL "
-                    "AND json_extract(data,'$.streaming') IN (1, 'true')", (chat_id,)).fetchall():
+                    "AND coalesce(json_extract(data,'$._gateway_chat_id'), json_extract(data,'$.bot_id'))=? "
+                    "AND json_extract(data,'$.streaming') IN (1, 'true')", (chat_id, hermes_chat)).fetchall():
                 self._change_gateway_message(bot, json.loads(raw), 'edit', json.loads(raw)['text'], True)
             task = self._gateway_outside_task(bot, text)
             # A reply that Hermes streams arrives as a first piece and then edits. It pushes when the last edit ends it.
             message = self._message(bot['id'], text, task_id=task['id'], streaming=data.get('streaming') is True)
-            message['_gateway_message_id'] = message_id
+            message['_gateway_message_id'], message['_gateway_chat_id'] = message_id, hermes_chat
             self._put('messages', message)
             self._refresh_bot(bot['id'])
         LOG.info('The Hermes gateway sent a message to bot %s outside a Coconut turn (task %s).', chat_id, task['id'])
