@@ -1,6 +1,7 @@
 import AppKit
 import CoconutKit
 import CoreImage.CIFilterBuiltins
+import ServiceManagement
 import SwiftUI
 
 @main
@@ -49,6 +50,12 @@ struct MenuContent: View {
         if let error = model.loginError {
             Text(error)
         }
+        if model.startAtLogin && model.legacyAgents.isEmpty && model.status.service != .notInstalled {
+            // The status of each login item that does not run at login yet: the app and its two agents.
+            ForEach(LoginItem.allCases.filter { model.loginItems[$0].map { $0 != .enabled } ?? false }, id: \.self) { item in
+                Text("Login item \(item.name): \(Self.describe(model.loginItems[item] ?? .notFound))")
+            }
+        }
         if model.needsApproval {
             Button("Allow Coconut in Login Items…") { model.openLoginItemsSettings() }
         }
@@ -79,6 +86,16 @@ struct MenuContent: View {
         case .stopped: return "stopped"
         case .starting: return "starting"
         case .running: return "running"
+        }
+    }
+
+    static func describe(_ status: SMAppService.Status) -> String {
+        switch status {
+        case .enabled: return "on"
+        case .requiresApproval: return "waits for approval"
+        case .notRegistered: return "off"
+        case .notFound: return "not found"
+        @unknown default: return "unknown"
         }
     }
 

@@ -9,7 +9,7 @@ final class AppModel: ObservableObject {
     static let startAtLoginKey = "startAtLogin"
 
     @Published private(set) var status: Status
-    @Published private(set) var loginItems: [Agent: SMAppService.Status] = [:]
+    @Published private(set) var loginItems: [LoginItem: SMAppService.Status] = [:]
     @Published private(set) var legacyAgents: [String] = []
     @Published private(set) var loginError: String?
     @Published private(set) var pairing: PairingLink?
@@ -76,25 +76,17 @@ final class AppModel: ObservableObject {
         let canRegister = legacyAgents.isEmpty && status.service != .notInstalled
         if canRegister && !couldRegister { registerIfNeeded() }
         couldRegister = canRegister
-        let loginItems = Dictionary(uniqueKeysWithValues: Agent.allCases.map { ($0, SMAppService.agent(plistName: $0.plistName).status) })
+        let loginItems = LoginItems().statuses()
         if loginItems != self.loginItems { self.loginItems = loginItems }
     }
 
-    /// Register both login items when the person wants them, Coconut is installed and no old LaunchAgent runs it.
-    /// A first install registers them before the source exists: their tool waits, and the install starts it.
+    /// Register the login items (the app and its two agents) when the person wants them, Coconut is installed and no
+    /// old LaunchAgent runs it. Each launch registers them again when one is missing.
+    /// A first install registers them before the source exists: the tool of the agents waits, and the install starts it.
     func registerIfNeeded(beforeInstall: Bool = false) {
         legacyAgents = LegacyAgents.present()
         guard startAtLogin, legacyAgents.isEmpty, beforeInstall || install.isInstalled() else { return }
-        loginError = nil
-        for agent in Agent.allCases {
-            let service = SMAppService.agent(plistName: agent.plistName)
-            guard service.status != .enabled else { continue }
-            do {
-                try service.register()
-            } catch {
-                loginError = "Coconut could not add its login item \(agent.rawValue): \(error.localizedDescription)"
-            }
-        }
+        loginError = LoginItems().register()
     }
 
     func setStartAtLogin(_ value: Bool) {
@@ -102,15 +94,8 @@ final class AppModel: ObservableObject {
         if value {
             registerIfNeeded()
         } else {
-            loginError = nil
-            // A login item that waits for approval is registered too. Approval would start it later.
-            for agent in Agent.allCases where [.enabled, .requiresApproval].contains(SMAppService.agent(plistName: agent.plistName).status) {
-                do {
-                    try SMAppService.agent(plistName: agent.plistName).unregister()
-                } catch {
-                    loginError = "Coconut could not remove its login item \(agent.rawValue): \(error.localizedDescription)"
-                }
-            }
+            // The app and its agents go together. A login item that waits for approval is registered too.
+            loginError = LoginItems().unregister()
         }
         Task { await refresh() }
     }
@@ -131,7 +116,7 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(true, forKey: Self.startAtLoginKey)
         registerIfNeeded(beforeInstall: true)
         await refresh()
-        guard loginItems[.service] == .enabled else {
+        guard loginItems[.agent(.service)] == .enabled else {
             updateError = needsApproval
                 ? "Allow Coconut in Login Items, then choose Set Up Coconut again."
                 : loginError ?? "Coconut could not add its login items."
