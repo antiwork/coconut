@@ -1631,7 +1631,12 @@ class NativeOutcomes:
             foreground = sum(bool(chat_turn(task) or task.get('_work_status_only')) for task in running.values())
             slots = min(slots, max(0, 1 - foreground))
         # The person's turns share the capacity only with each other, never with bot traffic.
-        person_slots = max(0, capacity + 1 - sum(1 for task in running.values() if person_turn(task)))
+        people = sum(1 for task in running.values() if person_turn(task))
+        person_slots = max(0, capacity + 1 - people)
+        if self._kanban_dispatching:
+            # A native pass admits its claims meanwhile. One person's turn may start, and the next one starts when the
+            # pass ends, a moment later.
+            person_slots = min(person_slots, max(0, 1 - people))
         candidates = [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM tasks WHERE json_extract(data,'$._chat_session') "
             "AND json_extract(data,'$.status') IN ('queued','scheduled') ORDER BY rowid")]
