@@ -51,7 +51,12 @@ class AnswerUndoTests(unittest.TestCase):
         self.assertAlmostEqual((deadline - datetime.now(timezone.utc)).total_seconds(), ANSWER_UNDO_SECONDS, delta=2)
         self.assertNotIn('_held_answer', held)
         self.assertEqual(self.task_status(), 'needs_you')
-        self.assertEqual(self.stored(decision)['_answers'], [])
+        stored = self.stored(decision)
+        self.assertEqual(stored['_answers'], [])
+        # The stored card stays pending, so every part of the Mac that waits for it still waits.
+        self.assertEqual(stored['status'], 'pending')
+        self.assertTrue(self.service._decision_wait_pending(stored))
+        self.assertEqual([d['status'] for d in self.service.snapshot()['decisions']], ['held'])
         # Nothing else can act on the card in the window: no second answer, no reply, no dismissal.
         for path, data in (('answer', dict(option_id='wait', revision=decision['revision'])),
                            ('reply', dict(text='Wait', revision=decision['revision'])),
@@ -61,7 +66,7 @@ class AnswerUndoTests(unittest.TestCase):
             self.assertEqual(raised.exception.status, 409)
         # The window has not ended, so the sweep changes nothing.
         self.service.finish_held_answers()
-        self.assertEqual(self.stored(decision)['status'], 'held')
+        self.assertIn('_held_answer', self.stored(decision))
 
     def test_undo_returns_the_card_to_pending_with_the_same_revision_and_records_it(self):
         decision = self.question()
@@ -94,7 +99,7 @@ class AnswerUndoTests(unittest.TestCase):
         with self.assertRaises(ServiceError) as raised:
             self.undo(held)
         self.assertIn('The Undo window ended', str(raised.exception))
-        self.assertEqual(self.stored(decision)['status'], 'held')
+        self.assertIn('_held_answer', self.stored(decision))
 
     def test_the_window_end_applies_the_answer_and_a_later_undo_is_refused(self):
         decision = self.question()
@@ -124,9 +129,9 @@ class AnswerUndoTests(unittest.TestCase):
         decision = self.question()
         self.answer(decision)
         self.restart()
-        self.assertEqual(self.stored(decision)['status'], 'held')
+        self.assertIn('_held_answer', self.stored(decision))
         self.service.finish_held_answers()
-        self.assertEqual(self.stored(decision)['status'], 'held')
+        self.assertIn('_held_answer', self.stored(decision))
         self.service.finish_held_answers(later())
         self.assertEqual(self.stored(decision)['status'], 'approved')
         self.assertEqual(self.task_status(), 'queued')
@@ -156,16 +161,31 @@ class AnswerUndoTests(unittest.TestCase):
         self.assertEqual(stored['_answers'], [])
         self.assertEqual(self.task_status(), 'needs_you')
 
-    def test_a_task_cancelled_in_the_window_cancels_the_card(self):
+    def test_a_task_cancelled_in_the_window_keeps_its_cancellation(self):
         decision = self.question()
         self.answer(decision)
-        with self.service.transaction():
-            task = self.service._get('tasks', self.task['id'])
-            task['status'] = 'cancelled'
-            self.service._put('tasks', task)
+        self.write('POST', f"/v1/tasks/{self.task['id']}/cancel", {})
         self.service.finish_held_answers(later())
-        self.assertEqual(self.stored(decision)['status'], 'cancelled')
-        self.assertEqual(self.stored(decision)['_answers'], [])
+        stored = self.stored(decision)
+        self.assertNotIn('_held_answer', stored)
+        self.assertEqual(stored['_answers'], [])
+        self.assertEqual(self.task_status(), 'cancelled')
+
+    def test_a_wrong_answer_fails_at_once(self):
+        decision = self.question()
+        for data, status in ((dict(option_id='missing'), 400), (dict(option_id=None, choice='reply', correction=' '), 400),
+                             (dict(revision=decision['revision'] + 1), 409), (dict(option='publish'), 400)):
+            with self.subTest(data=data), self.assertRaises(ServiceError) as raised:
+                self.answer(decision, **data)
+            self.assertEqual(raised.exception.status, status)
+        self.assertNotIn('_held_answer', self.stored(decision))
+
+    def test_undo_replays_as_a_card_change(self):
+        decision = self.question()
+        cursor = self.service._cursor()
+        self.undo(self.answer(decision))
+        changes = self.service._replay_changes(cursor, collection_deltas=True)
+        self.assertIsNotNone(changes)
 
     def test_a_retried_answer_request_returns_the_same_hold(self):
         decision = self.question()

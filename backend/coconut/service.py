@@ -150,7 +150,7 @@ from .work_sources import WorkSources, card_answer_steps
 from .work_status import PROPOSAL_EXECUTION, WorkStatus
 from .background_processes import BackgroundProcesses, PENDING_COMPLETIONS
 from .native_execution import NativeExecution
-from .answer_undo import AnswerUndo
+from .answer_undo import AnswerUndo, public_status
 from .decision_inbox import DecisionInbox, migrate_notification_importance
 from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PR_URL_INDEX, PullRequestReviews
 from .work_progress import WorkProgress, work_enabled
@@ -294,6 +294,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         CREATE INDEX IF NOT EXISTS contexts_status ON contexts (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS decisions_status ON decisions (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS decisions_undo ON decisions (id) WHERE json_extract(data,'$.inbox_undo_until') IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS decisions_held ON decisions (id) WHERE json_extract(data,'$._held_answer') IS NOT NULL;
         CREATE INDEX IF NOT EXISTS decisions_merge_url ON decisions (lower(json_extract(data,'$.merge_pr_url')));
         CREATE INDEX IF NOT EXISTS tasks_assignment ON tasks (json_extract(data, '$._assignment_task_id'));
         CREATE INDEX IF NOT EXISTS tasks_blocked ON tasks (id)
@@ -893,6 +894,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     @staticmethod
     def _public(obj: dict) -> dict:
         result = {key: value for key, value in obj.items() if not key.startswith('_')}
+        if obj.get('_held_answer') and obj.get('status') == 'pending':
+            result['status'] = public_status(obj)
         if obj.get('_source_recheck') and obj.get('status') == 'pending':
             # Older clients render unknown statuses as approved draft receipts.
             # Keep their pending presentation; answers remain fenced server-side.
@@ -1617,10 +1620,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if len(parts) == 4 and parts[1] == 'decisions' and method == 'POST':
             decision = self._get('decisions', parts[2])
             task = self._get('tasks', decision['task_id'])
+            if decision.get('_held_answer') and not (parts[3] == 'inbox' and data.get('action') == 'undo_answer'):
+                raise ServiceError(409, 'This card has an answer that waits for its Undo window. Undo it or wait a few seconds.')
             if parts[3] == 'inbox':
                 return self.update_inbox(decision, task, data, device)
-            if decision['status'] == 'held':
-                raise ServiceError(409, 'This card has an answer that waits for its Undo window. Undo it or wait a few seconds.')
             if decision['status'] != 'pending' or task['status'] == 'cancelled':
                 raise ServiceError(409, 'This decision is no longer pending.')
             if parts[3] == 'draft':

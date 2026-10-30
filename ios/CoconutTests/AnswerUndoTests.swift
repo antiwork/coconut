@@ -30,23 +30,24 @@ final class AnswerUndoTests: XCTestCase {
         XCTAssertFalse(try receipt(seconds: -1).offersAnswerUndo())
     }
 
-    func testTheStoreOffersTheLatestHeldAnswerAndIgnoresAnOldMac() throws {
+    func testTheOfferComesFromConfirmedStateAndShowsTheLatestAnswer() throws {
         let store = AppStore(demo: true)
-        let first = try receipt(), second = try receipt()
-        store.offerAnswerUndo(first)
-        XCTAssertEqual(store.answerUndo?.id, first.id)
-        store.offerAnswerUndo(second)
-        XCTAssertEqual(store.answerUndo?.id, second.id)
-        store.offerAnswerUndo(try receipt(status: "approved", seconds: nil, undoId: nil))
-        XCTAssertEqual(store.answerUndo?.id, second.id)
+        let first = try receipt(seconds: 5), second = try receipt(seconds: 9)
+        // A snapshot or a live update brings held cards, so no receipt callback is needed.
+        store.decisions = [first, second, try receipt(status: "approved", seconds: nil, undoId: nil)]
+        XCTAssertEqual(store.answerUndoOffer()?.id, second.id)
+        XCTAssertEqual(store.answerUndoOffer(at: Date().addingTimeInterval(6))?.id, second.id)
+        XCTAssertNil(store.answerUndoOffer(at: Date().addingTimeInterval(11)))
+        // An older Mac sends no deadline, so its answered cards offer nothing.
+        store.decisions = [try receipt(status: "approved", seconds: nil, undoId: nil)]
+        XCTAssertNil(store.answerUndoOffer())
     }
 
-    func testTheOfferEndsAtTheDeadline() async throws {
+    func testARetriedUndoUsesTheSameRequestKey() {
         let store = AppStore(demo: true)
-        store.offerAnswerUndo(try receipt(seconds: 2))
-        XCTAssertNotNil(store.answerUndo)
-        try await Task.sleep(for: .milliseconds(2500))
-        XCTAssertNil(store.answerUndo)
+        let key = store.answerUndoKey(for: "u1")
+        XCTAssertEqual(store.answerUndoKey(for: "u1"), key)
+        XCTAssertNotEqual(store.answerUndoKey(for: "u2"), key)
     }
 
     func testUndoSendsTheUndoIdAndTheSameRevision() throws {
@@ -57,9 +58,9 @@ final class AnswerUndoTests: XCTestCase {
         XCTAssertEqual(body?["undo_id"] as? String, "u1")
     }
 
-    func testUndoWithoutAHeldAnswerDoesNothing() async {
+    func testUndoOfAnAnswerWithoutAnUndoIdDoesNothing() async throws {
         let store = AppStore(demo: true)
-        let undone = await store.undoAnswer()
+        let undone = await store.undoAnswer(try receipt(undoId: nil))
         XCTAssertFalse(undone)
     }
 }

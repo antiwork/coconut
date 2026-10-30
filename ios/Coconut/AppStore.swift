@@ -18,8 +18,12 @@ final class AppStore {
     var reactionOverrides: [String: [String]] = [:]
     var decisions: [Decision] = []
     var answeringDecisionIds: Set<String> = []
-    /// The latest answer that the Mac holds for its Undo window. Each card has its own window; Inbox offers the latest.
-    var answerUndo: Decision?
+    /// Undo requests in flight, by answer_undo_id. Inbox hides their offer until the Mac answers.
+    var undoingAnswerIds: Set<String> = []
+    /// Undo offers that the Mac refused. They do not come back.
+    @ObservationIgnored private var refusedAnswerUndoIds: Set<String> = []
+    /// The request key of each Undo, so a retry after a lost response repeats the same request.
+    @ObservationIgnored private var answerUndoKeys: [String: String] = [:]
     /// After Undo, Inbox shows this card first.
     var restoredDecisionId: String?
     var decisionReplyDrafts: [String: String] = [:]
@@ -349,7 +353,7 @@ final class AppStore {
     // The new pairing starts without the outgoing items and the cursor of the earlier one.
     private func adopt(_ configuration: PairingConfiguration) async {
         resetDelivery()
-        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; answerUndo = nil; restoredDecisionId = nil
+        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; undoingAnswerIds = []; restoredDecisionId = nil
         ProtectedCache.remove("outgoing.json")
         workVisibility = [:]; workUndo = []; workMutationIds = [:]
         pairing = configuration
@@ -446,7 +450,7 @@ final class AppStore {
         client = nil
         uncertainWriteKeys = [:]
         resetDelivery()
-        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; answerUndo = nil; restoredDecisionId = nil
+        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; undoingAnswerIds = []; restoredDecisionId = nil
         pairing = nil
         repairRequired = false
         if !isDemo {
@@ -1171,7 +1175,6 @@ final class AppStore {
                 if let index = self.cachedState?.decisions.firstIndex(where: { $0.id == receipt.id }) {
                     self.cachedState?.decisions[index] = receipt
                 }
-                self.offerAnswerUndo(receipt)
             })
         guard identity == deliveryID else { return false }
         if recorded != nil || rejected {
@@ -1186,31 +1189,45 @@ final class AppStore {
         return false
     }
 
-    /// Offer Undo for an answer that the Mac holds, until its deadline.
-    func offerAnswerUndo(_ receipt: Decision, now: Date = Date()) {
-        guard receipt.offersAnswerUndo(at: now), let deadline = receipt.answerUndoUntil?.apiDate else { return }
-        answerUndo = receipt
-        let undoId = receipt.answerUndoId
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow)))
-            if self?.answerUndo?.answerUndoId == undoId { self?.answerUndo = nil }
-        }
+    /// The latest answer that the Mac holds for its Undo window, from the confirmed state. Each card has its own
+    /// window; Inbox offers the latest. A snapshot or a live update brings the offer too.
+    func answerUndoOffer(at now: Date = Date()) -> Decision? {
+        decisions.filter { decision in
+            guard decision.offersAnswerUndo(at: now), let id = decision.answerUndoId else { return false }
+            return !undoingAnswerIds.contains(id) && !refusedAnswerUndoIds.contains(id)
+        }.max { ($0.answerUndoUntil?.apiDate ?? .distantPast) < ($1.answerUndoUntil?.apiDate ?? .distantPast) }
     }
 
-    /// Ask the Mac to return the held answer's card to pending. The Mac refuses after the window, with a reason.
+    /// The request key of the Undo of this held answer. A retry uses the same key.
+    func answerUndoKey(for undoId: String) -> String {
+        if let key = answerUndoKeys[undoId] { return key }
+        let key = UUID().uuidString
+        answerUndoKeys[undoId] = key
+        return key
+    }
+
+    /// Ask the Mac to return the held answer's card to pending. The offer stays until the Mac confirms. After a lost
+    /// response, the offer comes back while the window is open, and Undo repeats the same request.
     @discardableResult
-    func undoAnswer() async -> Bool {
-        guard let held = answerUndo, let undoId = held.answerUndoId else { return false }
-        answerUndo = nil
+    func undoAnswer(_ held: Decision) async -> Bool {
+        guard let undoId = held.answerUndoId, !undoingAnswerIds.contains(undoId) else { return false }
+        undoingAnswerIds.insert(undoId)
+        defer { undoingAnswerIds.remove(undoId) }
+        var refused = false
         let restored: Decision? = await write("decisions/\(held.id)/inbox",
             payload: AnswerUndoRequest(action: "undo_answer", revision: held.revision, undoId: undoId), as: Decision.self,
-            refreshInBackground: true, idempotencyKey: UUID().uuidString, onSuccess: { receipt in
+            refreshInBackground: true, idempotencyKey: answerUndoKey(for: undoId), onFailure: { failure in
+                if let serviceError = failure as? ServiceError, case .response(let status, _) = serviceError,
+                   (400..<500).contains(status), ![408, 429].contains(status) { refused = true }
+            }, onSuccess: { receipt in
                 self.snapshotEpoch = UUID()
                 self.snapshotRequest = nil
                 if let index = self.decisions.firstIndex(where: { $0.id == receipt.id }) { self.decisions[index] = receipt }
                 self.cachedState?.decisions = self.decisions
                 self.restoredDecisionId = receipt.id
             })
+        if refused { refusedAnswerUndoIds.insert(undoId) }
+        if restored != nil || refused { answerUndoKeys[undoId] = nil }
         return restored != nil
     }
 

@@ -19,6 +19,8 @@ struct DecisionInboxView: View {
     @AppStorage("inboxSort") private var sort = InboxSort.recommended.rawValue
     @State private var queue = DecisionQueue()
     @State private var lastSkipped: InboxUndoOperation?
+    /// The time that decides which answer offers Undo. It moves on when the shown offer ends.
+    @State private var undoClock = Date()
     @State private var restoringDecision: Decision?
     @State private var confirmingChoice: (decision: Decision, optionId: String?)?
     @State private var updatingIds: Set<String> = []
@@ -65,6 +67,13 @@ struct DecisionInboxView: View {
             do { try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow))) }
             catch { return }
             clearUndo()
+        }
+        .task(id: store.answerUndoOffer(at: undoClock)?.answerUndoId) {
+            undoClock = Date()
+            guard let deadline = store.answerUndoOffer(at: undoClock)?.answerUndoUntil?.apiDate else { return }
+            do { try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow))) }
+            catch { return }
+            undoClock = Date()
         }
         .onDisappear { clearUndo() }
         .onChange(of: dragging) { _, active in
@@ -143,9 +152,9 @@ struct DecisionInboxView: View {
                 Button("Undo", action: undo)
                     .disabled(exiting)
                     .accessibilityIdentifier("undo-inbox-dismiss")
-            } else if let held = store.answerUndo {
+            } else if let held = store.answerUndoOffer(at: undoClock) {
                 // The Mac holds the latest answer for a few seconds. Undo returns its card to the top of Inbox.
-                Button("Undo") { Task { await store.undoAnswer() } }
+                Button("Undo") { Task { await store.undoAnswer(held) } }
                     .disabled(exiting)
                     .accessibilityLabel("Undo the answer \(held.heldAnswerLabel ?? held.title)")
                     .accessibilityIdentifier("undo-inbox-answer")

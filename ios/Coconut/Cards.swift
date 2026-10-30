@@ -23,10 +23,11 @@ struct DecisionCard: View {
     private var isDismissed: Bool { dismissing || decision.status == "dismissed" }
     private var selectionLabel: String {
         if isDismissed { return "Dismissed" }
+        // A held answer shows the actual choice, also for a draft: Discard must not look like Send.
+        if decision.isHeld { return decision.heldAnswerLabel ?? decision.selectedOptionLabel ?? "Answered" }
         if decision.draft != nil {
             return decision.status == "rejected" ? "Discarded" : decision.status == "failed" ? "Could not finish" : "Approved for sending"
         }
-        if decision.isHeld { return decision.heldAnswerLabel ?? decision.selectedOptionLabel ?? "Answered" }
         if let id = submittingOptionId, let option = decision.options.first(where: { $0.id == id }) {
             return option.label
         }

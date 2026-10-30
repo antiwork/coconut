@@ -348,7 +348,7 @@ class StateSync:
         rows = self.db.execute('SELECT seq,type,task_id,data FROM events WHERE seq>? AND seq<=? ORDER BY seq LIMIT 1001',
                                (after, cursor)).fetchall()
         known = set("""message.created message.updated task.created task.updated task.cancelled task.recovered task.steered
-            decision.created decision.updated decision.answered artifact.created artifact.updated artifact.observed context.queued context.cancelled
+            decision.created decision.updated decision.answered decision.answer_undone artifact.created artifact.updated artifact.observed context.queued context.cancelled
             context.completed context.failed execution.started execution.completed execution.uncertain work.updated work.recovery_queued
             bot.read bot.updated bot.settings_pending bot_message.delivered bots.addressed settings.updated settings.pending
             settings.update_unconfirmed model_catalog.updated routine.created routine.updated routine.deleted routine.triggered

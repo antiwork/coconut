@@ -277,8 +277,7 @@ class DatabaseMaintenance:
             held = {c['task_id'] for c in self._all_shared('contexts') if c['status'] in ('queued', 'working')}
             scoped = set()
             for decision in decisions:
-                # A held answer (answer_undo.py) is still open: Undo can return its card to pending.
-                if decision['status'] in ('pending', 'held') and decision['task_id'] in tasks:
+                if decision['status'] == 'pending' and decision['task_id'] in tasks:
                     scoped.add(decision['id'])
                     held.add(decision['task_id'])
                     held.update(self._decision_scope(decision, tasks, pending, artifacts)[0])
@@ -306,7 +305,7 @@ class DatabaseMaintenance:
                 # A turn, a context, a wait, or a decision can start between batches. Indexes find them quickly.
                 decisions = self.db.execute("SELECT id, json_extract(data,'$.task_id'), json_extract(data,'$.status'), "
                                             "json_extract(data,'$._receipt_id') FROM decisions").fetchall()
-                if any(status in ('pending', 'held') and identity not in scoped for identity, _, status, _ in decisions):
+                if any(status == 'pending' and identity not in scoped for identity, _, status, _ in decisions):
                     # A new pending decision has a scope that this pass did not compute. The next pass computes it.
                     break
                 live = [json.loads(row[0]) for row in self.db.execute(
@@ -318,7 +317,7 @@ class DatabaseMaintenance:
                 excluded.update(t['id'] for t in live)
                 excluded.update(row[0] for row in self.db.execute(
                     "SELECT json_extract(data,'$.task_id') FROM contexts WHERE json_extract(data,'$.status') IN ('queued','working')"))
-                excluded.update(task_id for _, task_id, status, _ in decisions if status in ('pending', 'held'))
+                excluded.update(task_id for _, task_id, status, _ in decisions if status == 'pending')
                 excluded.update(r['task_id'] for r in pending)
                 names = (named | {i for t in live for i in t.get('_continuation_receipt_ids', [])}
                          | {receipt for *_, receipt in decisions if receipt}
