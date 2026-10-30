@@ -779,27 +779,30 @@ class DecisionFreshness:
     def refresh_decision(self, context_id, payload):
         from .service import ServiceError, now, require_text, encoded
         with self.transaction():
-            context = self._get('contexts', context_id)
-            decision = self._get('decisions', context['decision_id'])
-            task = self._get('tasks', context['task_id'])
-            if (not context.get('_decision_refresh') or context['status'] != 'working'
-                    or decision['status'] != 'pending' or decision['action_type'] not in ('question', 'draft_message')
-                    or decision['revision'] != context['_decision_revision'] or task['status'] == 'cancelled'
-                    or self._task_paused(task) or self._human_reply_pending(task, self._all('contexts'))
-                    or self._refresh_has_queued_owner(task)
-                    or context.get('_conversation_epoch') != task.get('_conversation_epoch')
-                    or not self._process_observation_current(task, self._get('bots', task['bot_id']))):
-                raise ServiceError(409, 'This check no longer matches the pending question.')
-            tasks = {t['id']: t for t in self._all('tasks')}
-            artifacts = self._all('artifacts')
-            records = self._decision_records(decision, tasks, artifacts)
-            profile_revision = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
-            if payload.get('_worker_profile_revision', profile_revision) != profile_revision:
-                raise ServiceError(409, 'The native worker used different bot instructions. Stop this check; Coconut must check the current profile.')
-            fingerprint, _ = self._decision_evidence(decision, tasks, records, artifacts, ignore_context_id=context_id,
-                                                   profile_revision=profile_revision)
-            if context['_evidence_fingerprint'] != fingerprint:
-                raise ServiceError(409, 'The work changed during this check. Stop this check; a later check will read the current evidence.')
+            # The checks read the kept tasks and parse each table once. Before, each check parsed the task table
+            # again and built its work graph again. The lock hold was p50 16 s on the Mac mini.
+            with self._shared_reads():
+                context = self._get('contexts', context_id)
+                decision = self._get('decisions', context['decision_id'])
+                task = self._get('tasks', context['task_id'])
+                if (not context.get('_decision_refresh') or context['status'] != 'working'
+                        or decision['status'] != 'pending' or decision['action_type'] not in ('question', 'draft_message')
+                        or decision['revision'] != context['_decision_revision'] or task['status'] == 'cancelled'
+                        or self._task_paused(task) or self._human_reply_pending(task, self._all('contexts'))
+                        or self._refresh_has_queued_owner(task)
+                        or context.get('_conversation_epoch') != task.get('_conversation_epoch')
+                        or not self._process_observation_current(task, self._get('bots', task['bot_id']))):
+                    raise ServiceError(409, 'This check no longer matches the pending question.')
+                tasks = self._task_map()
+                artifacts = self._all('artifacts')
+                records = self._decision_records(decision, tasks, artifacts)
+                profile_revision = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
+                if payload.get('_worker_profile_revision', profile_revision) != profile_revision:
+                    raise ServiceError(409, 'The native worker used different bot instructions. Stop this check; Coconut must check the current profile.')
+                fingerprint, _ = self._decision_evidence(decision, tasks, records, artifacts, ignore_context_id=context_id,
+                                                       profile_revision=profile_revision)
+                if context['_evidence_fingerprint'] != fingerprint:
+                    raise ServiceError(409, 'The work changed during this check. Stop this check; a later check will read the current evidence.')
             evidence = require_text(payload, 'evidence', 8000)
             status = payload.get('status')
             if status == 'revise':
@@ -859,8 +862,9 @@ class DecisionFreshness:
                     self._event('task.updated', self._public(task), task['bot_id'], task['id'])
             elif status != 'current':
                 raise ServiceError(400, 'Choose current, revise, or withdraw. This check cannot grant approval.')
-            fingerprint, _ = self._decision_evidence(decision, {t['id']: t for t in self._all('tasks')}, records, artifacts,
-                                                   profile_revision=profile_revision)
+            with self._shared_reads():
+                fingerprint, _ = self._decision_evidence(decision, self._task_map(), records, artifacts,
+                                                       profile_revision=profile_revision)
             decision.pop('_source_recheck', None)
             decision['assessment_stale'] = False
             # Observed facts (including pre-upgrade terminal facts) are not a
