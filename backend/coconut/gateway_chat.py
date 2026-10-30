@@ -292,16 +292,24 @@ class GatewayChat:
         (work_capacity.person_turn is False). Hermes stops it like a stop of the person, and the turn goes back to the
         queue (_requeue_if_preempted), so it runs again after the person's turn. One Hermes session still runs one turn
         at a time. Return whether a turn stops.
+
+        The task is `working` while the service builds its context, before the gateway registers its turn. A stop then
+        reaches nothing, so the task keeps no mark, and each later dispatch pass tries again until the stop reaches the
+        turn.
         """
         from .work_capacity import person_turn
         task = self._get('tasks', task_id)
         if (not self.gateway_enabled() or task['status'] != 'working' or person_turn(task) or not plain_chat_turn(task)
                 or task.get('_preempted_by')):
             return False
+        # The mark goes first: the turn can end at once after the stop, and its end reads the mark.
         task['_preempted_by'] = person_task_id
         self._put('tasks', task)
+        if not self.gateway_bridge.cancel(task_id):
+            task.pop('_preempted_by', None)
+            self._put('tasks', task)
+            return False
         LOG.info('Turn %s stops for the message of the person in task %s. It runs again after it.', task_id, person_task_id)
-        self.gateway_bridge.cancel(task_id)
         return True
 
     def _requeue_if_preempted(self, task_id: str, emit) -> None:

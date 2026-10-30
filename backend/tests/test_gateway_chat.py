@@ -878,6 +878,57 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(started, [person['id']])
         self.assertEqual(self.read('tasks', exchange)['status'], 'queued')
 
+    def test_a_stop_before_the_gateway_has_the_turn_is_tried_again(self):
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        exchange = self.exchange(other, 'Please check the release notes.')
+        person = self.send('Are you there?')
+        with self.service.transaction():
+            stored = self.service._get('tasks', exchange)
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+        # The service still builds the context of the turn, so the gateway has no turn to stop. No mark stays.
+        with self.service.lock:
+            self.assertFalse(self.service.preempt_for_person(exchange, person['id']))
+        self.assertNotIn('_preempted_by', self.read('tasks', exchange))
+        # A later pass reaches the turn once the gateway has it.
+        bridge = self.service.gateway_bridge
+        runner = threading.Thread(target=bridge.run_turn, args=(exchange, self.home, self.bot['id'], 'Check.',
+                                                                lambda kind, payload: None), daemon=True)
+        runner.start()
+        deadline = time.monotonic() + 5
+        while not any(turn.task_id == exchange for turn in bridge.turns.values()) and time.monotonic() < deadline:
+            time.sleep(.02)
+        with self.service.lock:
+            self.assertTrue(self.service.preempt_for_person(exchange, person['id']))
+        runner.join(5)
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(self.read('tasks', exchange)['_preempted_by'], person['id'])
+
+    def test_an_answer_of_the_person_to_a_card_of_a_bot_exchange_is_a_person_turn(self):
+        from coconut.work_capacity import person_turn
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        exchange = self.read('tasks', self.exchange(other, 'Please check the release notes.'))
+        self.assertFalse(person_turn(exchange))
+        answered = dict(exchange, _resume_decision='card-1')
+        self.assertTrue(person_turn(answered))
+        # Another message of the person does not stop it.
+        with self.service.transaction():
+            self.service._put('tasks', dict(answered, status='working'))
+        with self.service.lock:
+            self.assertFalse(self.service.preempt_for_person(exchange['id'], 'other-person-task'))
+
+    def test_one_pass_starts_no_more_bot_traffic_than_the_capacity(self):
+        lin = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        mo = self.write('POST', '/v1/bots', {'name': 'Mo'})
+        people = [self.write('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Hello.'})['id'] for bot in (lin, mo)]
+        exchanges = [self.exchange(lin, 'Check the logs.'), self.exchange(mo, 'Check the notes.')]
+        started = []
+        with patch.object(self.service, '_run_task', side_effect=started.append), self.service.lock:
+            self.service._dispatch_chat(1)
+        # Capacity 1 and its reserved slot: the two people start, and the bot exchanges wait.
+        self.assertEqual(sorted(started), sorted(people))
+        self.assertTrue(all(self.read('tasks', identity)['status'] == 'queued' for identity in exchanges))
+
     def test_a_message_of_another_bot_and_its_return_run_in_the_gateway(self):
         other = self.write('POST', '/v1/bots', {'name': 'Lin'})
         other_home = self.service.profiles.home(other)

@@ -1660,10 +1660,10 @@ class NativeOutcomes:
             self.running[task['id']] = worker
             active.add(key)
             worker.start()
+            # Each start uses host capacity. The person's slots count only the person's turns.
             if person:
                 person_slots -= 1
-            else:
-                slots -= 1
+            slots = max(0, slots - 1)
 
     def _adopt_native_outcomes(self):
         from .service import now

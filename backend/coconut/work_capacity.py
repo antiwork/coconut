@@ -28,7 +28,12 @@ def person_turn(task):
 
     A turn of a bot exchange (`source_task_id`, `_bot_messages`), the return of delegated work (`_is_return`) and the
     result of a background process (`_background_completion`) are turns of the bot's conversation too, but no person
-    waits on them. A person's turn goes first in dispatch and in capacity (native_outcomes._dispatch_chat).
+    waits on them. An answer of the person to a card (`_resume_decision`) is a person's turn, also when a bot
+    exchange asked the card: it keeps the task and its reply route. A person's turn goes first in dispatch and in
+    capacity (native_outcomes._dispatch_chat).
     """
-    return (chat_turn(task) and not task.get('source_task_id') and not task.get('_bot_messages')
-            and not task.get('_is_return') and not task.get('_background_completion'))
+    if not chat_turn(task):
+        return False
+    return bool(task.get('_resume_decision')) or not (
+        task.get('source_task_id') or task.get('_bot_messages') or task.get('_is_return')
+        or task.get('_background_completion'))
