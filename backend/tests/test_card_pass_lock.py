@@ -72,6 +72,28 @@ class CardPassLockTests(unittest.TestCase):
         self.assertEqual(saved['_freshness']['context_id'], check['id'])
         self.assertIn('Install the new test dependencies?', check['question'])
 
+    def test_evidence_that_changes_during_the_plan_is_planned_again(self):
+        decision = self.question()
+
+        def change_task(number):
+            if number == 1:
+                with self.service.transaction():
+                    task = self.service._get('tasks', decision['task_id'])
+                    task['summary'] = 'The pull request got a new commit.'
+                    self.service._put('tasks', task)
+
+        calls = self.plans(change_task)
+        self.assertEqual(len(calls), 2)
+        [check] = self.queued_checks()
+        with self.service.lock, self.service._shared_reads():
+            tasks = self.service._task_map()
+            artifacts = self.service._all('artifacts')
+            current = self.service._get('decisions', decision['id'])
+            records = self.service._decision_records(current, tasks, artifacts)
+            fingerprint, _ = self.service._decision_evidence(current, tasks, records, artifacts,
+                                                             profile_revision=current['_profile_revision'])
+        self.assertEqual(check['_evidence_fingerprint'], fingerprint, 'A check must start with the current evidence.')
+
     def test_a_card_that_keeps_changing_is_planned_and_written_under_the_lock(self):
         decision = self.question()
 
@@ -126,8 +148,6 @@ class CardPassLockTests(unittest.TestCase):
             "SELECT data FROM tasks WHERE json_extract(data,'$.bot_id')=? "
             "AND json_extract(data,'$.status') IN ('queued','working','waiting')": 'tasks_bot_status',
             "SELECT data FROM messages WHERE json_extract(data,'$.task_id')=? AND " + HUMAN_MESSAGE: 'messages_task',
-            "SELECT 1 FROM contexts WHERE json_extract(data,'$.decision_id')=? "
-            "AND json_extract(data,'$.status') IN ('queued','working') LIMIT 1": 'contexts_status',
         }
         for statement, index in plans.items():
             with self.subTest(index=index):

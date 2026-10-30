@@ -59,8 +59,8 @@ def age(value, current):
         return float('inf')
 
 
-# A card pass plans its writes on a snapshot without the service lock. When rows that it read keep changing, it plans
-# again. After this many tries, it plans and writes under the lock.
+# A card pass plans its writes on a snapshot without the service lock. When the service writes during the plan, the
+# pass plans again. After this many tries, it plans and writes under the lock.
 PLAN_ATTEMPTS = 3
 
 
@@ -91,21 +91,17 @@ class _DirectWrites:
 class _PlannedWrites:
     """Keep the changes of a card pass that reads a snapshot. Write them later, only while the snapshot is current.
 
-    Each written row must still have its stored text from the snapshot, and each check must still hold. Otherwise
-    the changes are dropped and the pass plans again on a new snapshot.
+    The snapshot is current while the service connection has changed no row since the view opened, and while each
+    check still holds. Otherwise the changes are dropped and the pass plans again on a new snapshot. The count of
+    changed rows covers every table that a card's evidence reads, such as a PR that gets a new commit.
     """
 
     def __init__(self, view):
         self.view = view
         self.steps = []
-        self.rows = {}
         self.checks = []
 
     def put(self, table, obj):
-        key = (table, obj['id'])
-        if key not in self.rows:
-            row = self.view.db.execute(f'SELECT data FROM {table} WHERE id=?', (obj['id'],)).fetchone()
-            self.rows[key] = row[0] if row else None
         self.steps.append(('put', table, copy.deepcopy(obj)))
 
     def event(self, *args):
@@ -121,11 +117,9 @@ class _PlannedWrites:
         self.checks.append(condition)
 
     def current(self, service):
-        for (table, identity), text in self.rows.items():
-            row = service.db.execute(f'SELECT data FROM {table} WHERE id=?', (identity,)).fetchone()
-            if (row[0] if row else None) != text:
-                return False
-        return all(condition(service) for condition in self.checks)
+        # Each service write goes through this connection, and the writer holds the lock. See _card_pass_view.
+        return (service.db.total_changes == self.view._card_pass_changes
+                and all(condition(service) for condition in self.checks))
 
     def apply(self, service):
         writes = _DirectWrites(service)
@@ -492,8 +486,9 @@ class DecisionFreshness:
             with self.lock:
                 view = stack.enter_context(self._read_view())
                 stack.enter_context(view._read_transaction())
-                # The first read fixes the snapshot.
+                # The first read fixes the snapshot. The count of changed rows tells later whether it is still current.
                 view.db.execute('SELECT 1 FROM settings LIMIT 1').fetchone()
+                view._card_pass_changes = self.db.total_changes
                 # Other threads change these objects in place. The view reads its own copies.
                 view.running = dict(self.running)
                 view._store_hold = set(self._store_hold)
@@ -550,13 +545,8 @@ class DecisionFreshness:
         return True
 
     def _refresh_admission_current(self, decision_id, admission):
-        """True while a card can still get a new check: no check runs, and its sources are not being read again."""
-        return (not self.db.execute("SELECT 1 FROM contexts WHERE json_extract(data,'$._decision_refresh') "
-                                    "AND json_extract(data,'$.status') IN ('queued','working') LIMIT 1").fetchone()
-                and not self.db.execute("SELECT 1 FROM contexts WHERE json_extract(data,'$.decision_id')=? "
-                                        "AND json_extract(data,'$.status') IN ('queued','working') LIMIT 1",
-                                        (decision_id,)).fetchone()
-                and decision_id not in self._pending_decision_sources
+        """True while the sources of a card are not being read again. The service keeps this state in memory."""
+        return (decision_id not in self._pending_decision_sources
                 and (self._ready_decision_sources is None
                      or self._ready_decision_sources.get(decision_id) == admission))
 
