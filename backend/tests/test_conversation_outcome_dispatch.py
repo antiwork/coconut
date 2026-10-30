@@ -126,6 +126,28 @@ class ConversationOutcomeDispatchTests(unittest.TestCase):
         self.assertEqual([start for start in starts if start[0] == review['id']], [])
         self.assertEqual(self.service._get('tasks', review['id'])['status'], 'queued')
 
+    def test_an_outcome_that_stays_respawn_guarded_for_an_hour_is_shown(self):
+        from coconut.kanban_scheduler import RESPAWN_GUARD_NOTICE_SECONDS
+        review = self.turn(self.dev, 'Check the saved review result', _native_outcome_id='t_review')
+        self.service.kanban.tasks[review['id']] = dict(id='t_review', status='ready', dispatch_blocker='recent_success')
+        start = 1_000_000.0
+        self.service._note_respawn_guards(start)
+        self.assertEqual(self.service._get('tasks', review['id'])['_respawn_guard'],
+                         dict(reason='recent_success', since=start))
+        # Before an hour nothing shows.
+        self.service._note_respawn_guards(start + RESPAWN_GUARD_NOTICE_SECONDS - 1)
+        self.assertNotIn('respawn guard', self.service._get('tasks', review['id'])['summary'])
+        with self.assertLogs('coconut.kanban_scheduler', 'WARNING') as logs:
+            self.service._note_respawn_guards(start + RESPAWN_GUARD_NOTICE_SECONDS + 1)
+        self.assertIn('t_review', logs.output[0])
+        self.assertIn('its respawn guard is recent_success', self.service._get('tasks', review['id'])['summary'])
+        # The warning comes once. The record goes when the guard ends.
+        with self.assertNoLogs('coconut.kanban_scheduler', 'WARNING'):
+            self.service._note_respawn_guards(start + 2 * RESPAWN_GUARD_NOTICE_SECONDS)
+        self.service.kanban.tasks[review['id']]['dispatch_blocker'] = None
+        self.service._note_respawn_guards(start + 3 * RESPAWN_GUARD_NOTICE_SECONDS)
+        self.assertNotIn('_respawn_guard', self.service._get('tasks', review['id']))
+
     def test_no_chat_turn_starts_on_an_execution_that_a_native_pass_is_claiming(self):
         dev_chat = self.turn(self.dev, 'A direct question for Dev')
         desk_chat = self.turn(self.desk, 'A direct question for Desk')

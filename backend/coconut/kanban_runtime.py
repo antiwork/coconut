@@ -198,9 +198,11 @@ class Board:
         """Record why a ready task does not spawn, unless its newest event already says so.
 
         The dispatcher passes about once a second. Hermes writes one event per pass for each guarded task, which was
-        288,000 of 404,000 events in 13 days, and each event is a write transaction.
+        288,000 of 404,000 events in 13 days, and each event is a write transaction. A comment or a heartbeat does not
+        change the guard, so a guarded task that gets comments, for example from audits, keeps one event too.
         """
-        last = self.conn.execute('SELECT kind,payload FROM task_events WHERE task_id=? ORDER BY id DESC LIMIT 1', (identity,)).fetchone()
+        last = self.conn.execute("SELECT kind,payload FROM task_events WHERE task_id=? AND kind NOT IN ('commented','heartbeat') "
+                                 'ORDER BY id DESC LIMIT 1', (identity,)).fetchone()
         if last and last[0] == 'respawn_guarded' and json.loads(last[1] or '{}').get('reason') == reason:
             return
         with self.kb.write_txn(self.conn):

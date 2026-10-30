@@ -157,6 +157,103 @@ print(board.kb.create_task(board.conn, title='Other bot work', body='x', assigne
             with self.assertRaisesRegex(ServiceError, 'another bot'):
                 self.service.gateway_kanban_tool(later['id'], 'kanban_show', {'task_id': other})
 
+    PR = 'https://github.com/example/mobile/pull/393'
+
+    def outcome(self, title):
+        """A native outcome of the bot and its Coconut task, adopted from the board."""
+        origin = self.task(title)
+        identity = self.native_program("""
+print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', assignee='default',
+    tenant=sys.argv[3], session_id=sys.argv[4], initial_status='blocked'))
+""", title, self.bot['id'], origin['id'])
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        return identity, owner
+
+    def comment(self, identity, body):
+        self.native_program("board.kb.add_comment(board.conn, sys.argv[2], author='default', body=sys.argv[3])",
+                            identity, body)
+
+    def runs(self, identity):
+        return int(self.native_program(
+            "print(board.conn.execute('SELECT count(*) FROM task_runs WHERE task_id=?', (sys.argv[2],)).fetchone()[0])",
+            identity))
+
+    def test_a_restart_that_leaves_a_dead_run_on_an_outcome_with_a_pr_respawns_it_once(self):
+        identity, owner = self.outcome('Ship the mobile fix')
+        # The first pass claims the outcome and starts its worker. The turn runs no further: the service stops.
+        with patch.object(self.service, '_run_task'):
+            self.settle(lambda: (self.service._get('tasks', owner['id']).get('_kanban_claim') or {}).get('run_id'))
+        stale = self.service._get('tasks', owner['id'])['_kanban_claim']
+        # The worker opened the PR and said so on the board. Then the service restarted, and the worker is gone.
+        self.comment(identity, 'Opened ' + self.PR + ' for review.')
+        for process in self.provider.processes:
+            process.kill()
+            process.wait()
+        with self.service.transaction():
+            stored = self.service._get('tasks', owner['id'])
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+            self.service._recover()
+        self.assertEqual(self.service._get('tasks', owner['id'])['summary'], 'Resuming after the Mac service restarted.')
+        starts = []
+        def run(task, bot, history, emit):
+            if task['id'] != owner['id']:
+                emit('completed', {'summary': 'Done.'})
+                return
+            starts.append(task.get('_native_outcome'))
+            self.native_program("assert board.kb.complete_task(board.conn, sys.argv[2], summary='Merged', "
+                                "expected_run_id=int(sys.argv[3]))", identity, str(task['_native_outcome']['run_id']))
+            emit('completed', {'summary': 'Done.'})
+        self.provider.start_task = run
+        # Hermes reaps the dead run. Coconut sees the ended run of its claim and respawns the outcome once, past the
+        # PR guard, with a new claim.
+        self.settle(lambda: starts and self.service.kanban.tasks[owner['id']]['status'] == 'done')
+        for _ in range(3):
+            self.tick()
+        self.assertEqual(len(starts), 1)
+        self.assertNotEqual(starts[0]['run_id'], stale['run_id'])
+        self.assertEqual(self.runs(identity), 2)
+        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
+
+    def test_a_run_that_is_alive_keeps_the_pr_guard(self):
+        from coconut.kanban_scheduler import interrupted_claim
+        process = subprocess.Popen(['sleep', '30'])
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        claim = dict(run_id=7, pid=process.pid)
+        # No duplicate run while the worker of the claim still runs, or while the board runs the claim's run.
+        self.assertFalse(interrupted_claim(claim, dict(status='ready', current_run_id=None)))
+        self.assertFalse(interrupted_claim(dict(claim, pid=None), dict(status='running', current_run_id=7)))
+        self.assertFalse(interrupted_claim({}, dict(status='ready', current_run_id=None)))
+        process.kill()
+        process.wait()
+        self.assertTrue(interrupted_claim(claim, dict(status='ready', current_run_id=None)))
+
+    def test_a_guarded_outcome_with_comments_keeps_one_guard_event_and_shows_its_guard(self):
+        # A task that never ran waits for new input while a comment names its PR. The guard holds. Audits comment on
+        # the task again and again, and the board keeps one guard event. After an hour Coconut shows the guard.
+        identity, owner = self.outcome('Desk fast work intake')
+        self.comment(identity, 'Source revision 3: see ' + self.PR + '.')
+        starts = []
+        self.provider.start_task = lambda task, *args: starts.append(task['id'])
+        for revision in range(4, 8):
+            self.tick()
+            self.comment(identity, f'Source revision {revision}: see {self.PR}.')
+        self.tick()
+        self.assertNotIn(owner['id'], starts)
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['dispatch_blocker'], 'active_pr')
+        self.assertEqual(self.native_program(
+            "print(board.conn.execute(\"SELECT count(*) FROM task_events WHERE task_id=? AND kind='respawn_guarded'\", "
+            "(sys.argv[2],)).fetchone()[0])", identity), '1')
+        from coconut.kanban_scheduler import RESPAWN_GUARD_NOTICE_SECONDS
+        saved = self.service._get('tasks', owner['id'])['_respawn_guard']
+        self.assertEqual(saved['reason'], 'active_pr')
+        with self.assertLogs('coconut.kanban_scheduler', 'WARNING'):
+            self.service._note_respawn_guards(saved['since'] + RESPAWN_GUARD_NOTICE_SECONDS + 1)
+        self.assertIn('its respawn guard is active_pr', self.service._get('tasks', owner['id'])['summary'])
+
     def test_source_urgency_orders_audits_without_lowering_returned_work(self):
         expected = {}
         # The source's label_priority sets the label scheme. A label outside it has the base priority.
