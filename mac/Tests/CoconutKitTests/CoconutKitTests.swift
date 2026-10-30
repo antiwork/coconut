@@ -1,5 +1,6 @@
 import CryptoKit
 @testable import CoconutKit
+import ServiceManagement
 import XCTest
 
 final class CoconutKitTests: XCTestCase {
@@ -170,6 +171,42 @@ final class CoconutKitTests: XCTestCase {
             XCTAssertEqual(plist["KeepAlive"] as? Bool, true)
             XCTAssertEqual(plist["RunAtLoad"] as? Bool, true)
         }
+    }
+
+    func testTheAppOpensAtLoginWithItsTwoAgents() {
+        // After a restart of the Mac, the app shows its menu bar icon and Sparkle checks for updates.
+        XCTAssertEqual(LoginItem.allCases, [.app, .agent(.service), .agent(.relay)])
+        XCTAssertEqual(LoginItem.app.name, "Coconut.app")
+        XCTAssertEqual(LoginItem.agent(.relay).name, "com.gumroad.coconut.relay")
+        XCTAssertTrue((LoginItem.app.service as? SMAppService) === SMAppService.mainApp)
+    }
+
+    func testSetUpRegistersEachLoginItemThatIsNotOnAndKeepsOneThatWaitsForApproval() {
+        let services = FakeLoginItems([.app: .notRegistered, .agent(.service): .enabled, .agent(.relay): .requiresApproval])
+        XCTAssertNil(services.items.register())
+        // An item that is on stays as it is. One that waits for approval registers again, as the agents did before.
+        XCTAssertEqual(services.calls, ["register Coconut.app", "register com.gumroad.coconut.relay"])
+        XCTAssertEqual(services.items.statuses()[.app], .enabled)
+        XCTAssertEqual(services.items.statuses()[.agent(.relay)], .requiresApproval)
+        // A later launch registers nothing more while each item is registered.
+        services.calls = []
+        services.statuses[.agent(.relay)] = .enabled
+        XCTAssertNil(services.items.register())
+        XCTAssertEqual(services.calls, [])
+    }
+
+    func testStartAtLoginOffRemovesTheAppWithItsAgents() {
+        let services = FakeLoginItems([.app: .enabled, .agent(.service): .requiresApproval, .agent(.relay): .notRegistered])
+        XCTAssertNil(services.items.unregister())
+        XCTAssertEqual(services.calls, ["unregister Coconut.app", "unregister com.gumroad.coconut.service"])
+    }
+
+    func testAFailedLoginItemNamesTheItem() {
+        let services = FakeLoginItems([.app: .notRegistered, .agent(.service): .enabled, .agent(.relay): .enabled])
+        services.failing = [.app]
+        XCTAssertEqual(services.items.register()?.hasPrefix("Coconut could not add its login item Coconut.app:"), true)
+        services.statuses[.app] = .enabled
+        XCTAssertEqual(services.items.unregister()?.hasPrefix("Coconut could not remove its login item Coconut.app:"), true)
     }
 
     func testAnEarlierLaunchAgentIsFound() throws {
@@ -514,5 +551,43 @@ final class CoconutKitTests: XCTestCase {
         let fields = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         XCTAssertEqual(fields["relay"] as? String, "https://relay.example.com")
         XCTAssertEqual(fields["expires"] as? Int, 5)
+    }
+}
+
+
+/// Stand-ins for the ServiceManagement services of the login items. Each records its calls.
+final class FakeLoginItems {
+    var statuses: [LoginItem: SMAppService.Status]
+    var calls: [String] = []
+    var failing: Set<LoginItem> = []
+
+    init(_ statuses: [LoginItem: SMAppService.Status]) {
+        self.statuses = statuses
+    }
+
+    var items: LoginItems { LoginItems { item in Service(owner: self, item: item) } }
+
+    struct Failure: LocalizedError {
+        var errorDescription: String? { "Operation not permitted" }
+    }
+
+    struct Service: LoginItemService {
+        let owner: FakeLoginItems
+        let item: LoginItem
+
+        var status: SMAppService.Status { owner.statuses[item] ?? .notFound }
+
+        func register() throws {
+            owner.calls.append("register \(item.name)")
+            if owner.failing.contains(item) { throw Failure() }
+            // Approval stays pending until the person allows the item.
+            if owner.statuses[item] != .requiresApproval { owner.statuses[item] = .enabled }
+        }
+
+        func unregister() throws {
+            owner.calls.append("unregister \(item.name)")
+            if owner.failing.contains(item) { throw Failure() }
+            owner.statuses[item] = .notRegistered
+        }
     }
 }

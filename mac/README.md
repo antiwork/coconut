@@ -1,7 +1,8 @@
 # Coconut.app
 
-Coconut.app runs Coconut on the person's Mac. It is a menu bar app with two login items.
+Coconut.app runs Coconut on the person's Mac. It is a menu bar app with three login items: the app itself and two agents.
 
+- The app (`SMAppService.mainApp`) opens at login. Then the menu bar icon shows, and Sparkle, which runs in the app, checks for updates after a restart of the Mac.
 - `com.gumroad.coconut.service` runs `coconut service`. The tool finds a Python 3.11 or later and starts `host.py serve` from the install folder. host.py then finds the person's Hermes and runs the service under its Python.
 - `com.gumroad.coconut.relay` runs `coconut sidecar`. The tool starts the bundled relay sidecar when the Mac has a relay route.
 
@@ -13,13 +14,14 @@ defaults write com.gumroad.coconut.mac InstallDirectory /path/to/folder
 
 `COCONUT_INSTALL_DIR` changes the folder for one `coconut` command in Terminal. The folder must be inside the home folder.
 The app does not register its login items while the LaunchAgent of `host.py install-service` or `tunnel.py install` exists.
+Each launch registers a login item that is missing. **Start at Login** off removes all three. The menu shows each login item that is not on, and **Allow Coconut in Login Items…** when one waits for approval in System Settings.
 
 ## Install and update
 
 The app carries the Coconut source: `Contents/Resources/coconut-source.tar.gz`, its package ID, and `scripts/deploy.py`.
 `coconut install-source` installs that source with `deploy.py receive`, the same installer that `remote.py` and the Mac mini updater use.
 
-- **Set Up Coconut** in the menu registers the login items, then installs the source. The service tool waits until the source exists, and the install starts it.
+- **Set Up Coconut** in the menu (and `Coconut.app --set-up`) registers the three login items, then installs the source. The service tool waits until the source exists, and the install starts it.
 - At each start, the app runs `coconut install-source --if-needed`. After an update of the app, the new source goes in at once.
 - An update lets the running turns finish first, for up to ten minutes (`host.drain_for_update`). Then `host.py` writes `.runtime/host/update-hold` and stops the service. The service gets two minutes to stop its Hermes gateway and its workers. Then it gets SIGKILL, and `host.py` stops the child processes that remain. `deploy.py` uses the `host.py` of the new source for this stop, so a fix to the stop also stops the service of an older source. launchd starts the tool again, and the tool waits while the hold lasts. After the source changes, the hold goes away, the service starts, and `deploy.py` checks Hermes and health. A failed check restores the earlier source. `deploy.py` adds the output of each run, with the traceback of a failure, to `.runtime/host/logs/install-source.log`.
 - The hold ends after 30 minutes, also when an update stops halfway.

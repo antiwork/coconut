@@ -190,7 +190,7 @@ A developer with a checkout of this repository runs `python3 ~/Coconut/scripts/s
 5. It installs Coconut.app when it is missing. It downloads the newest build from the update feed. It accepts the app only when `codesign` and Gatekeeper accept it. The app goes in `/Applications`, or in `~/Applications` when `/Applications` is not writable.
 6. It makes the app run this checkout (the preference `InstallDirectory` of `com.gumroad.coconut.mac`). It keeps the Hermes settings `COCONUT_HERMES_PYTHON`, `COCONUT_HERMES_ROOT` and `HERMES_HOME` of the shell or of the earlier LaunchAgent in the preference `ServiceEnvironment`. If the app ran another folder, that service finishes its running turns, and the login items start again with this checkout.
 7. It moves a service of the earlier LaunchAgents to the app with `host.py migrate-to-app`. The running bot turns finish first. The data stays in place.
-8. It opens the app. The app registers its login items, and Coconut starts again after a restart. The command waits for the local health check.
+8. It opens the app. The app registers its login items (the app itself, the service and the relay), and Coconut and its menu bar app start again after a restart. The command waits for the local health check.
 9. It registers the relay route with the sidecar of the app, and restarts the relay login item.
 10. It runs `python3 scripts/pairing.py --share`. It prints the setup link and the path of a QR image that holds the same link last.
 
