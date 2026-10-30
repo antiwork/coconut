@@ -453,14 +453,7 @@ class PushDelivery:
         return [dict(zip(names, row)) for row in cursor.fetchall()]
 
     def _queue(self, device_id, key, items, current):
-        """Write one notification for `items`. The same key always gives the same notification ID.
-
-        A notification that work hours took back (QuietHours) keeps its ID, so a new one for the same items gets a new key."""
-        base, count = key, 0
-        while self.service.db.execute("SELECT 1 FROM push_outbox WHERE device_id=? AND event_key=? AND reason='QuietHours'",
-                                      (device_id, key)).fetchone():
-            count += 1
-            key = f'{base}#{count}'
+        """Write one notification for `items`. The same key always gives the same notification ID."""
         notification_id = str(uuid5(NAMESPACE_URL, device_id + ':' + key))
         self.service.db.execute('''INSERT OR IGNORE INTO push_outbox (id,device_id,event_key,status,created,not_before,expires)
             VALUES (?,?,?,'queued',?,?,?)''', (notification_id, device_id, key, current, current, current + 86400))
@@ -555,11 +548,12 @@ class PushDelivery:
             device = service.db.execute('SELECT token,environment,enabled,updated FROM push_devices WHERE device_id=?', (job['device_id'],)).fetchone()
             route_row = service.db.execute('SELECT data FROM push_routes WHERE device_id=?', (job['device_id'],)).fetchone()
             route = json.loads(route_row[0]) if route_row else None
-            # With Nothing outside work hours, nothing sends while they are closed, also not a retry or a card queued
-            # just before they closed. Its items wait again, so the next plan applies the current choice and queues them
-            # with a new expiry.
-            if holds_urgent(self.schedule(job['device_id']), time.time()):
-                service.db.execute("UPDATE push_outbox SET status='discarded',reason='QuietHours' WHERE id=?", (job['id'],))
+            # With Nothing outside work hours, a notification that work hours closed on before its first send goes back to
+            # Inbox. Its items wait again, so the next plan applies the current choice and queues them with a new expiry.
+            # It never reached the relay, so the same ID is safe. A notification that already tried to send keeps its ID
+            # and retries: the relay may have delivered it, and it sends each ID only once.
+            if job['attempts'] == 0 and holds_urgent(self.schedule(job['device_id']), time.time()):
+                service.db.execute('DELETE FROM push_outbox WHERE id=?', (job['id'],))
                 service.db.execute("UPDATE push_items SET status='waiting',delivery_id=NULL WHERE delivery_id=?", (job['id'],))
                 return True
             items = self._items('delivery_id=?', (job['id'],))

@@ -348,37 +348,51 @@ class DeliveryTimingTests(unittest.TestCase):
         self.deliver(self.MORNING)
         self.assertEqual(len(self.sent()), 1)
 
-    def test_nothing_outside_work_hours_holds_a_retry_until_the_opening(self):
+    def queue_before_close(self, ts):
+        # The plan queues the card while work hours are open. The first send comes after they closed.
+        with self.at(ts):
+            with self.service.transaction():
+                self.service.push.plan(ts)
+        self.assertEqual(self.service.db.execute("SELECT count(*) FROM push_outbox WHERE status='queued'").fetchone()[0], 1)
+
+    def test_a_card_queued_before_closing_goes_back_to_inbox_and_keeps_its_id(self):
+        self.register(outside_work_hours='nothing')
+        self.decision(urgent=True, ts=self.CLOSE - 60)
+        self.queue_before_close(self.CLOSE - 60)
+        queued = self.service.db.execute('SELECT id FROM push_outbox').fetchone()[0]
+        self.deliver(self.CLOSE + 5)
+        self.assertEqual(self.sent(), [])
+        self.assertEqual(self.items(), [('decision', 1, 'waiting')])
+        self.deliver(self.MORNING)
+        self.assertEqual(len(self.sent()), 1)
+        # It never reached the relay, so the notification of the opening can use the same ID.
+        self.assertEqual(self.transport.calls[0][3], queued)
+
+    def test_a_retry_keeps_its_id_after_closing_so_the_relay_sends_it_only_once(self):
         self.register(outside_work_hours='nothing')
         self.decision(urgent=True, ts=self.CLOSE - 60)
         self.transport.result = (503, 'Unavailable')
         self.deliver(self.CLOSE - 60)
-        self.assertEqual(len(self.sent()), 1)
         self.transport.result = (200, 'Accepted')
         self.service.db.execute('UPDATE push_outbox SET not_before=0')
         self.deliver(self.CLOSE + 600)
-        self.assertEqual(len(self.sent()), 1)
-        self.assertEqual(self.items(), [('decision', 1, 'waiting')])
+        first, retry = (call[3] for call in self.transport.calls)
+        self.assertEqual(first, retry)
+        self.assertEqual(self.items(), [('decision', 1, 'sent')])
         self.deliver(self.MORNING)
         self.assertEqual(len(self.sent()), 2)
-        # The new notification has its own ID, so the relay does not take it for the retry of the first one.
-        first, second = (call[3] for call in self.transport.calls)
-        self.assertNotEqual(first, second)
 
     def test_a_card_held_over_a_weekend_does_not_expire(self):
         self.register(outside_work_hours='nothing', schedule=dict(weekdays=[1, 2, 3, 4, 5]))
         friday_close = instant(2026, 7, 17, 18)
         self.decision(urgent=True, ts=friday_close - 60)
-        self.transport.result = (503, 'Unavailable')
-        self.deliver(friday_close - 60)
-        self.transport.result = (200, 'Accepted')
-        self.service.db.execute('UPDATE push_outbox SET not_before=0')
+        self.queue_before_close(friday_close - 60)
         self.deliver(friday_close + 60)
         monday = instant(2026, 7, 20, 9)
         self.deliver(monday - 1)
-        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.sent(), [])
         self.deliver(monday)
-        self.assertEqual(len(self.sent()), 2)
+        self.assertEqual(len(self.sent()), 1)
         self.assertGreater(self.service.db.execute("SELECT expires FROM push_outbox WHERE status='accepted'").fetchone()[0], monday)
 
     def test_a_held_card_sends_at_once_when_quiet_hours_end(self):
