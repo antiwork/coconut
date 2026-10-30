@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 from urllib.error import URLError
 from urllib.parse import parse_qs
 
-from coconut import decision_sources
+from coconut import decision_sources, pr_tracking
 from coconut.work_sources import source_fingerprint
 from coconut.hermes_worker import conversation_input
 from coconut.pr_tracking import GitHubPRTracker, PRTrackingError
@@ -62,6 +62,9 @@ class ThreadTracker(GitHubPRTracker):
         self.threads[42].add(*comments)
 
     def _request(self, path, deadline, cache=True):
+        # As the real _request does: the budget of the reader counts each request before it goes out.
+        pr_tracking._charge()
+        pr_tracking._SPENT.count = pr_tracking.spent_requests() + 1
         self.read_started.append(time.monotonic())
         self.cached[path] = cache
         if self.service is not None:
@@ -260,7 +263,7 @@ class SourceActivityTests(unittest.TestCase):
         self.turn()
         records = self.records()
         now = time.monotonic()
-        records.spent = [(now - 10, decision_sources.THREAD_REFRESH_BUDGET - decision_sources.THREAD_READ_COST + 1)]
+        records.spent = [(now - 10, decision_sources.THREAD_REFRESH_BUDGET)]
         reads = len(self.tracker.paths)
         records.refresh()
         self.assertEqual(len(self.tracker.paths), reads, 'A spent budget must stop the refresh.')
@@ -269,6 +272,34 @@ class SourceActivityTests(unittest.TestCase):
         records.refresh()
         self.assertGreater(len(self.tracker.paths), reads)
         self.assertTrue(records.records)
+
+    def test_a_read_with_many_pages_never_passes_the_budget(self):
+        self.approve_card(urls=(PR_URL,))
+        self.turn()
+        records = self.records()
+        records.refresh()
+        kept = dict(records.records)
+        self.assertTrue(kept)
+        # Many items at a new revision second fill several pages of each list.
+        thread = self.tracker.threads[43]
+        stamp = '2026-09-23T13:00:00Z'
+        thread.comments = [comment(1000 + index, 'reviewer', stamp, f'Item {index}') for index in range(350)]
+        thread.reviews = [dict(comment(2000 + index, 'reviewer', stamp, 'Review'), submitted_at=stamp) for index in range(350)]
+        thread.review_comments = [comment(3000 + index, 'reviewer', stamp, 'Inline') for index in range(350)]
+        thread.updated_at = stamp
+        now = time.monotonic()
+        for left in (1, 3, 7):
+            with self.subTest(left=left):
+                records.spent = [(now - 10, decision_sources.THREAD_REFRESH_BUDGET - left)]
+                reads = len(self.tracker.paths)
+                records.refresh()
+                self.assertLessEqual(len(self.tracker.paths) - reads, left, 'The refresh sent more requests than its budget.')
+                self.assertLessEqual(records.budget_left(time.monotonic()), left)
+                self.assertGreaterEqual(records.budget_left(time.monotonic()), 0)
+                # The stopped read keeps the last good kept read.
+                self.assertEqual(records.records, kept)
+        # The budget ends with the refresh. A later reader of this thread has no limit.
+        self.assertIsNone(pr_tracking._SPENT.limit)
 
     def test_the_refresher_stops_while_the_login_has_few_requests_left(self):
         from coconut import pr_tracking
@@ -286,11 +317,7 @@ class SourceActivityTests(unittest.TestCase):
         self.records().refresh()
         self.assertGreater(len(self.tracker.paths), reads)
 
-    def test_the_refresh_cost_stays_under_the_hourly_cap(self):
-        # The constants bound the worst case: every kept thread changes at every pass.
-        passes = 3600 / decision_sources.THREAD_REFRESH_SECONDS
-        worst = passes * decision_sources.THREAD_KEEP_COUNT * decision_sources.THREAD_READ_COST
-        self.assertGreater(worst, decision_sources.THREAD_REFRESH_BUDGET, 'The budget must be the limit.')
+    def test_the_refresh_limits_stay_under_the_cap(self):
         self.assertLessEqual(decision_sources.THREAD_REFRESH_BUDGET, 300)
         self.assertGreaterEqual(decision_sources.THREAD_QUOTA_FLOOR, 1000)
 

@@ -327,6 +327,20 @@ class ConditionalReadTests(unittest.TestCase):
             self.assertEqual(self.get(tracker), {'state': 'open'})
         self.assertEqual(pr_tracking.spent_requests(), before + 1)
 
+    def test_a_request_budget_stops_the_request_before_it_goes_out(self):
+        from coconut import pr_tracking
+        tracker = GitHubPRTracker(token='budget-token')
+        with patch.object(tracker._opener, 'open', return_value=self.response({'state': 'open'})) as request:
+            with pr_tracking.request_budget(1):
+                self.get(tracker, '/first')
+                with self.assertRaises(PRTrackingError):
+                    self.get(tracker, '/second')
+                self.assertTrue(pr_tracking.budget_stopped())
+        self.assertEqual(request.call_count, 1)
+        # Without a budget, the requests go out.
+        with patch.object(tracker._opener, 'open', return_value=self.response({'state': 'open'})):
+            self.get(tracker, '/third')
+
     def test_new_profile_tracker_revalidates_cached_data_and_does_not_share_mutations(self):
         first, second = GitHubPRTracker(token='a'), GitHubPRTracker(token='a')
         with patch.object(first._opener, 'open', return_value=self.response({'state': 'open'})):

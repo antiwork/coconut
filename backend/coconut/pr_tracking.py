@@ -6,6 +6,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPException
+import contextlib
 import json
 import hashlib
 import os
@@ -93,6 +94,37 @@ def quota(token):
 def spent_requests():
     """The requests of the calling thread that GitHub counted against the rate limit so far."""
     return getattr(_SPENT, 'count', 0)
+
+
+@contextlib.contextmanager
+def request_budget(limit):
+    """Let the calling thread send at most `limit` more requests that GitHub can count.
+
+    Each request counts against the budget before it goes out, because only GitHub's answer tells whether it counted.
+    A request beyond the budget raises PRTrackingError and sets budget_stopped(). The budget ends with the block.
+    """
+    _SPENT.limit, _SPENT.stopped = spent_requests() + limit, False
+    _SPENT.sent = spent_requests()
+    try:
+        yield
+    finally:
+        _SPENT.limit = None
+
+
+def budget_stopped():
+    """True when the budget of the calling thread stopped a request (see request_budget)."""
+    return getattr(_SPENT, 'stopped', False)
+
+
+def _charge():
+    """Stop a request that the budget of the calling thread cannot hold."""
+    limit = getattr(_SPENT, 'limit', None)
+    if limit is None:
+        return
+    if _SPENT.sent + 1 > limit:
+        _SPENT.stopped = True
+        raise PRTrackingError('The GitHub request budget of this reader is spent.')
+    _SPENT.sent += 1
 
 
 def _remember_quota(scope, headers):
@@ -279,6 +311,7 @@ class GitHubPRTracker:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise PRTrackingError("GitHub refresh exceeded its time limit.")
+        _charge()
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2026-03-10",

@@ -158,18 +158,16 @@ SOURCE_READ_SECONDS = 6
 # the turn, as before. A change after the kept read shows at the next turn, because a turn records only what it saw.
 #
 # All bots share one GitHub login with 5,000 requests an hour. The refresher reads with conditional requests, and GitHub
-# does not count a 304 answer against the limit, so an unchanged thread costs nothing. The refresher spends at most
-# THREAD_REFRESH_BUDGET counted requests in any hour, and it stops while GitHub reports fewer than THREAD_QUOTA_FLOOR
-# remaining requests for the login. Then turns read their threads themselves, as before.
+# does not count a 304 answer against the limit, so an unchanged thread costs nothing. The refresher sends at most
+# THREAD_REFRESH_BUDGET requests that GitHub can count in any hour: each request counts against the budget before it
+# goes out, and a request beyond the budget stops the read. It also stops while GitHub reports fewer than
+# THREAD_QUOTA_FLOOR remaining requests for the login. Then turns read their threads themselves, as before.
 THREAD_RECORD_SECONDS = 150
 THREAD_REFRESH_SECONDS = 60
 THREAD_KEEP_SECONDS = 900
 THREAD_KEEP_COUNT = 6
 THREAD_REFRESH_BUDGET = 300
 THREAD_QUOTA_FLOOR = 1000
-# The most requests that one refresh of a thread can count, so a refresh starts only when the budget holds all of it:
-# two reads (the second one at a new revision), each with the issue, the PR and three lists of up to four pages.
-THREAD_READ_COST = 2 * (2 + 3 * 4)
 # A read with this `since` returns the thread facts without activity.
 _LATEST = '9999-12-31T23:59:59Z'
 _NO_ACTIVITY = dict(new_activity=[], omitted_items=0, incomplete=False)
@@ -232,7 +230,7 @@ class ThreadRecords:
     def refresh(self):
         """Read each thread that a turn used lately, at its latest revision. Drop the others."""
         import time
-        from .pr_tracking import spent_requests
+        from .pr_tracking import budget_stopped, request_budget, spent_requests
         now = time.monotonic()
         with self.guard:
             for key in [key for key, (used, _, _) in self.used.items() if now - used > THREAD_KEEP_SECONDS]:
@@ -243,11 +241,13 @@ class ThreadRecords:
             if self.service.stopping.is_set():
                 return
             started = time.monotonic()
-            if self.budget_left(started) < THREAD_READ_COST:
+            left = self.budget_left(started)
+            if left <= 0:
                 # The hour's budget is spent. The kept reads age out, and turns read their threads themselves.
                 return
             current = None
             before = spent_requests()
+            stopped = False
             try:
                 tracker = self.service._pr_tracker_for(bot_id)
                 if self.quota_low(tracker):
@@ -261,18 +261,25 @@ class ThreadRecords:
                     with self.guard:
                         previous = self.records.get(key)
                     since = json.loads(previous[1])['updated_at'] if previous else _LATEST
-                    for _ in range(2):
-                        current = tracker.observe_issue_activity(url, since, started + SOURCE_READ_SECONDS, **options)
-                        if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):
-                            current = None
-                            break
-                        if current['updated_at'] == since:
-                            break
-                        # The thread changed. Read it again at its new revision second.
-                        since, current = current['updated_at'], None
+                    # Each request counts against the rest of the hour's budget before it goes out.
+                    with request_budget(left):
+                        for _ in range(2):
+                            current = tracker.observe_issue_activity(url, since, started + SOURCE_READ_SECONDS,
+                                                                     **options)
+                            if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):
+                                current = None
+                                break
+                            if current['updated_at'] == since:
+                                break
+                            # The thread changed. Read it again at its new revision second.
+                            since, current = current['updated_at'], None
+                        stopped = budget_stopped()
             except Exception:
                 current = None
             self.spent.append((started, spent_requests() - before))
+            if stopped:
+                # The budget stopped this read. Keep the last good kept read, and end this pass.
+                return
             with self.guard:
                 if current is not None:
                     self.records[key] = (started, json.dumps(current))
