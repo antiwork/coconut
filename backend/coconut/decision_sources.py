@@ -148,6 +148,120 @@ def _issue_url(url):
 
 
 SOURCE_READ_SECONDS = 6
+# A turn reads each linked GitHub thread before it starts: about 0.6 s per read on the Mac mini, and 1.2 s per turn at
+# p50. Most threads did not change since the revision that Coconut recorded. A background refresher keeps the read of
+# each thread that a turn used in the last THREAD_KEEP_SECONDS: the thread at its latest revision, with the items of that
+# second, as a turn reads it. It reads each thread again every THREAD_REFRESH_SECONDS, at most THREAD_KEEP_COUNT threads.
+# A turn uses a kept read that is at most THREAD_RECORD_SECONDS old only when it shows nothing new for that turn: the
+# thread did not change after the recorded revision, and each item of the revision second was delivered. Then the
+# activity and the recorded revision are the ones that a read at the turn returns. Any new activity reads the thread at
+# the turn, as before. A change after the kept read shows at the next turn, because a turn records only what it saw.
+THREAD_RECORD_SECONDS = 90
+THREAD_REFRESH_SECONDS = 45
+THREAD_KEEP_SECONDS = 900
+THREAD_KEEP_COUNT = 8
+# A read with this `since` returns the thread facts without activity.
+_LATEST = '9999-12-31T23:59:59Z'
+_NO_ACTIVITY = dict(new_activity=[], omitted_items=0, incomplete=False)
+
+
+class ThreadRecords:
+    """The kept reads of the GitHub threads that turns used, by token, thread and trust."""
+
+    def __init__(self, service):
+        import threading
+        self.service = service
+        self.guard = threading.Lock()
+        self.records = {}
+        self.used = {}
+        self.thread = None
+
+    @staticmethod
+    def key(tracker, url, operator):
+        return hashlib.sha256((getattr(tracker, '_token', '') or '').encode()).hexdigest(), _issue_url(url).lower(), operator
+
+    def kept(self, tracker, bot_id, url, operator, since, delivered):
+        """What a read at the turn returns when the kept read shows nothing new for this turn, else None.
+
+        The refresher keeps the bot, not its tracker, so a token stays in memory no longer than the service keeps it.
+        """
+        import time
+        key = self.key(tracker, url, operator)
+        with self.guard:
+            self.used[key] = (time.monotonic(), url, bot_id)
+            kept = self.records.get(key)
+            self._start()
+        if kept is None or since is None or time.monotonic() - kept[0] > THREAD_RECORD_SECONDS:
+            return None
+        current = json.loads(kept[1])
+        if current['updated_at'] < since:
+            # A read of a thread that did not change after `since` returns its facts and no activity.
+            current.pop('changed_without_new_activity', None)
+            return dict(current, **_NO_ACTIVITY, observed_at=current['updated_at'])
+        if (current['updated_at'] == since and not current.get('incomplete')
+                and all(activity_signature(item) in delivered for item in current.get('new_activity', []))):
+            # The items of the revision second were all delivered. The turn shows nothing for this thread.
+            return current
+        return None
+
+    def refresh(self):
+        """Read each thread that a turn used lately, at its latest revision. Drop the others."""
+        import time
+        now = time.monotonic()
+        with self.guard:
+            for key in [key for key, (used, _, _) in self.used.items() if now - used > THREAD_KEEP_SECONDS]:
+                self.used.pop(key)
+                self.records.pop(key, None)
+            due = sorted(self.used.items(), key=lambda item: item[1][0], reverse=True)[:THREAD_KEEP_COUNT]
+        for key, (_, url, bot_id) in due:
+            if self.service.stopping.is_set():
+                return
+            started = time.monotonic()
+            current = None
+            try:
+                tracker = self.service._pr_tracker_for(bot_id)
+                if self.key(tracker, url, key[2]) == key:
+                    from .pr_tracking import GitHubPRTracker
+                    # The same options as a read at the turn (see read_source_activity).
+                    options = dict(operator=key[2])
+                    if isinstance(tracker, GitHubPRTracker):
+                        options['include_same_second'] = True
+                    with self.guard:
+                        previous = self.records.get(key)
+                    since = json.loads(previous[1])['updated_at'] if previous else _LATEST
+                    for _ in range(2):
+                        current = tracker.observe_issue_activity(url, since, started + SOURCE_READ_SECONDS, **options)
+                        if not isinstance(current, dict) or not isinstance(current.get('updated_at'), str):
+                            current = None
+                            break
+                        if current['updated_at'] == since:
+                            break
+                        # The thread changed. Read it again at its new revision second.
+                        since, current = current['updated_at'], None
+            except Exception:
+                current = None
+            with self.guard:
+                if current is not None:
+                    self.records[key] = (started, json.dumps(current))
+                else:
+                    # A failed read or another login keeps no old read: the next turn reads the thread itself.
+                    self.records.pop(key, None)
+
+    def _start(self):
+        import threading
+        if self.thread is None:
+            self.thread = threading.Thread(target=self._run, name='source-refresh', daemon=True)
+            self.thread.start()
+
+    def _run(self):
+        import logging
+        while not self.service.stopping.wait(THREAD_REFRESH_SECONDS):
+            try:
+                self.refresh()
+            except Exception:
+                logging.getLogger(__name__).exception('The refresh of GitHub thread reads failed. The next pass retries.')
+
+
 # The decisions_task index uses the same expression. Keep the two the same.
 # The reader stops once it has enough links, so the newest decisions come first.
 TASK_DECISIONS = ("SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN ({}) "
@@ -287,12 +401,22 @@ def read_source_activity(service, task_id, limit=3):
     if isinstance(tracker, GitHubPRTracker) and not tracker._token:
         # Without a gh login, GitHub allows 60 requests an hour for all readers. Keep them for card checks and PR refresh.
         tracker = None
+    records = service.__dict__.get('_thread_records')
+    if records is None:
+        records = service.__dict__.setdefault('_thread_records', ThreadRecords(service))
+
     def read(key, url):
         since = max((value for value in known[key] if value), default=None)
         if tracker is None or time.monotonic() >= deadline:
             return since, None
+        operator = operator_repository(url, operators)
+        delivered_signatures = {sig for state in delivered.get(key, []) for sig in state.get('signatures', [])
+                                if isinstance(sig, str)}
+        kept = records.kept(tracker, task['bot_id'], url, operator, since, delivered_signatures)
+        if kept is not None:
+            return since, kept
         try:
-            options = dict(operator=operator_repository(url, operators))
+            options = dict(operator=operator)
             if isinstance(tracker, GitHubPRTracker):
                 options['include_same_second'] = True
             return since, tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline, **options)

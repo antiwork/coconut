@@ -199,6 +199,64 @@ class SourceActivityTests(unittest.TestCase):
         self.assertEqual([c.get('body') for c in task['_source_activity'][0]['new_activity']], ['Also keep the old export.'])
         self.assertNotIn('10x the current volume', prompt)
 
+    def records(self):
+        return self.service.__dict__['_thread_records']
+
+    def test_an_unchanged_thread_comes_from_the_kept_read(self):
+        self.approve_card()
+        self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'This must handle 10x the current volume.'))
+        self.turn()
+        seen = self.service._get('tasks', self.task['id'])['_source_activity_seen']
+        # Without a kept read, the next turn reads the thread at the turn.
+        self.requeue()
+        reads = len(self.tracker.paths)
+        live, live_prompt = self.turn()
+        self.assertGreater(len(self.tracker.paths), reads)
+        self.records().refresh()
+        self.requeue()
+        reads = len(self.tracker.paths)
+        kept, kept_prompt = self.turn()
+        self.assertEqual(self.tracker.paths[reads:], [], 'The kept read must spare the GitHub reads at the turn.')
+        self.assertEqual(kept_prompt, live_prompt)
+        self.assertEqual(kept.get('_source_activity'), live.get('_source_activity'))
+        self.assertEqual(self.service._get('tasks', self.task['id'])['_source_activity_seen'], seen)
+
+    def test_new_activity_is_read_at_the_turn(self):
+        self.approve_card()
+        self.turn()
+        self.records().refresh()
+        self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'New requirement.'))
+        # The kept read is older than the comment. It shows at the next turn after the refresh sees it.
+        self.records().refresh()
+        self.requeue()
+        reads = len(self.tracker.paths)
+        task, prompt = self.turn()
+        self.assertGreater(len(self.tracker.paths), reads)
+        self.assertIn('New requirement.', prompt)
+
+    def test_an_old_kept_read_is_not_used(self):
+        self.approve_card()
+        self.turn()
+        self.records().refresh()
+        key = next(iter(self.records().records))
+        started, record = self.records().records[key]
+        self.records().records[key] = (started - decision_sources.THREAD_RECORD_SECONDS - 1, record)
+        self.requeue()
+        reads = len(self.tracker.paths)
+        self.turn()
+        self.assertGreater(len(self.tracker.paths), reads)
+
+    def test_another_login_drops_the_kept_read(self):
+        self.approve_card()
+        self.turn()
+        self.records().refresh()
+        self.assertTrue(self.records().records)
+        other = ThreadTracker(self.service)
+        other._token = 'another-token'
+        with patch.object(self.service, '_pr_tracker_for', return_value=other):
+            self.records().refresh()
+        self.assertEqual(self.records().records, {})
+
     def test_comment_while_the_card_waits_reaches_the_resumed_turn(self):
         def comment_and_refresh():
             self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'This must handle 10x the current volume.'))
