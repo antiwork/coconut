@@ -44,6 +44,9 @@ LIST = 'Track the docs work in a list.'
 LISTED = 'The list is ready.'
 CONTINUE = 'Continue the unfinished assignment from its saved task list.'
 FINISHED_LIST = 'The docs work is done.'
+# A task with its own work session, which runs in the chat of that work session.
+AUDIT = 'Reconcile these open assignments against the original sources.'
+AUDITED = 'The audit found nothing new.'
 CARD = dict(title='Ship the release?', context='The build passed and the notes are ready.',
             options=[dict(id='ship', label='Ship it', explanation=''), dict(id='wait', label='Wait a day', explanation='')])
 
@@ -60,6 +63,8 @@ def answer(request):
         return dict(role='assistant', content=READ)
     if REACTION in last:
         return dict(role='assistant', content='[SILENT]')
+    if AUDIT in last:
+        return dict(role='assistant', content=AUDITED)
     if RESUMED in last:
         return dict(role='assistant', content=SHIPPED)
     if (LIST in last or CONTINUE in last) and request.get('tools'):
@@ -261,6 +266,20 @@ class NativeGatewayChatTests(unittest.TestCase):
             replies = [m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
             self.assertEqual((service._get('tasks', task['id'])['status'], replies[-1:]), ('completed', [FINISHED_LIST]),
                              diagnostics())
+
+            # A task outside the bot's conversation has its own work session. It runs in the gateway in a chat of its own,
+            # beside the bot's chat.
+            with service.transaction():
+                audit = service._send(service._get('bots', bot['id']), {'text': AUDIT, 'mode': 'queue'},
+                                      human_authored=False)
+                service._ensure_execution_session(service._get('tasks', audit['id']))
+            service._run_task(audit['id'])
+            replies = [m['text'] for m in service._task_messages(audit['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
+            self.assertEqual((service._get('tasks', audit['id'])['status'], replies), ('completed', [AUDITED]), diagnostics())
+            # The bot's own conversation does not hold that work.
+            task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Say hello.'}, str(uuid4()), 'phone')
+            service._run_task(task['id'])
+            self.assertNotIn(AUDIT, json.dumps(Model.requests[-1]['messages']), diagnostics())
 
             # A background process of a chat turn. Hermes runs its own turn for the completion, outside a Coconut
             # turn, and its reply reaches the bot's chat as a message of the bot.

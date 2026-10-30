@@ -47,9 +47,9 @@ KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
 QUESTION_KINDS = ('clarify', 'approval')
 
 # A turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: a work item with
-# its own work session and workspace, claims, routines, the audit of a work source, the results of a worker's
-# background process, the receipts of a worker's tool calls and the technical lane of a native outcome. The worker
-# runs it. Attachments, reactions, pending cards, the saved task list of an assignment, its dependencies, a recovery
+# its context and workspace, native outcomes, routines, the audit of a work source, the results of a worker's
+# background process, the receipts of a worker's tool calls and the technical lane of a native outcome. The worker runs
+# it. An audit uses the Kanban tools of Coconut's own board (work_sources), which the gateway does not have. Attachments, reactions, pending cards, the saved task list of an assignment, its dependencies, a recovery
 # context, a direct reply, the bot exchange, GitHub source activity, a PR review and the bot changes of a chat go to
 # the gateway as text of the turn (gateway_chat.gateway_turn_text). The plugin has the card tools, coconut_wait,
 # coconut_correct_withdrawal, coconut_message_bot, coconut_create_bot and coconut_delete_bot.
@@ -57,11 +57,25 @@ WORKER_INPUTS = (
     '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
     '_work_context_id', '_work_context', '_background_completion', '_source_answer_steps', '_source_audit_prompt',
     '_technical_lane', '_native_receipts', '_work_status_only')
+# A task with its own work session runs in the gateway, in a chat of its own (gateway_work_turn), when it has no other
+# worker input. The dispatchers give it the work session and the Kanban claim.
+WORK_SESSION_INPUTS = ('_execution_session_id', '_kanban_claim')
 
 
 # A message with one of these fields carries Coconut context that a gateway message does not: a work item. A quote, a
 # reaction and a bot mention go into the text of the gateway message (native_conversation.message_content).
 WORKER_MESSAGE_FIELDS = ('work_context',)
+
+
+def gateway_work_turn(task: dict) -> bool:
+    """Whether a task with its own work session runs in the gateway, in a separate chat (gateway_chat.work_chat).
+
+    Such a task is not a turn of the bot's conversation (`_chat_session`) and has no worker input but its work session
+    and its Kanban claim, for example a scheduled message. A Work item with its context, a native outcome, the audit of
+    a work source and a status question stay with the worker.
+    """
+    return (bool(task.get('_execution_session_id')) and not task.get('_chat_session')
+            and not any(task.get(key) for key in WORKER_INPUTS if key not in WORK_SESSION_INPUTS))
 
 
 def plain_chat_turn(task: dict) -> bool:
@@ -221,7 +235,8 @@ class GatewayBridge:
         return turn.id
 
     def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut',
-                 session_root: str | None = None, silent: bool = False, context_id: str | None = None) -> None:
+                 session_root: str | None = None, silent: bool = False, context_id: str | None = None,
+                 mode: str | None = None) -> None:
         """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends.
 
         With `silent`, the turn may end in silence (TurnEvents). With `context_id`, the turn answers a follow-up on a
@@ -231,6 +246,9 @@ class GatewayBridge:
         if context_id:
             turn.context_id = context_id
             turn.request['mode'] = 'context'
+        elif mode:
+            # For example `status`: the plugin blocks every tool call of the turn (hooks.guard_tool).
+            turn.request['mode'] = mode
         if silent:
             # The adapter marks the message as one that needs no reply (MessageEvent.reply_expected).
             turn.request['silent'] = True
