@@ -4135,13 +4135,21 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             + " AND json_type(m.data,'$.exchange_recipient_bot_ids') IS NOT NULL) "
             "OR (" + truthy.format("json_extract(t.data,'$.source_bot_id')")
             + " AND json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.kind')='text' "
-            "AND json_type(m.data,'$.exchange_recipient_bot_ids') IS NULL) "
+            "AND json_type(m.data,'$.exchange_recipient_bot_ids') IS NULL "
+            "AND NOT " + truthy.format("json_extract(t.data,'$._is_return')")
+            + " AND NOT " + truthy.format("json_extract(m.data,'$.decision_id')")
+            + " AND NOT " + truthy.format("json_extract(m.data,'$._direct_reply_message_id')") + ") "
             "OR (json_extract(m.data,'$.kind')='text' AND " + truthy.format("json_extract(m.data,'$.sender_bot_id')")
-            + " AND " + truthy.format("json_extract(m.data,'$.recipient_bot_ids')") + ") "
+            # An empty list is false in Python but the text '[]' in SQLite. Most replies have one.
+            + " AND CASE json_type(m.data,'$.recipient_bot_ids') WHEN 'array' "
+            "THEN json_array_length(m.data,'$.recipient_bot_ids') > 0 ELSE "
+            + truthy.format("json_extract(m.data,'$.recipient_bot_ids')") + " END) "
             "OR (json_extract(m.data,'$.kind')='bot_exchange' "
             "AND json_extract(m.data,'$.bot_id') IS NOT json_extract(m.data,'$.sender_bot_id')) "
+            # An exchange message takes its sender as its bot (above), and a direct reply keeps its bot.
             "OR (" + truthy.format("json_extract(t.data,'$.source_bot_id')")
-            + " AND json_extract(m.data,'$.role') IS NOT 'user' "
+            + " AND json_extract(m.data,'$.role') IS NOT 'user' AND json_extract(m.data,'$.kind') IS NOT 'bot_exchange' "
+            "AND NOT " + truthy.format("json_extract(m.data,'$._direct_reply_message_id')") + " "
             "AND json_extract(m.data,'$.bot_id') IS NOT json_extract(t.data,'$.bot_id'))").fetchall()
         changed = False
         for message in (json.loads(row[1]) for row in sorted(rows)):
