@@ -1253,6 +1253,18 @@ class NativeOutcomes:
         from .service import ServiceError
         raise ServiceError(409, 'The native work changed while checking it. Read its current activity and retry.')
 
+    def _execution_tasks(self, key):
+        """Return the tasks with this execution key (see execution_key), in row order.
+
+        A key is an execution session, a bot, or a status task. Indexes find the candidates, so a continuation does not
+        parse the whole task table under the service lock.
+        """
+        from .work_capacity import execution_key
+        rows = self.db.execute(
+            "SELECT data FROM tasks WHERE json_extract(data,'$._execution_session_id')=? OR json_extract(data,'$.bot_id')=? "
+            "OR id=? ORDER BY rowid", (key, key, key))
+        return [task for task in (json.loads(row[0]) for row in rows) if execution_key(task) == key]
+
     def _continue_native_work(self, source_id, payload, snapshot_missing, snapshots, invocation, completion):
         from .service import ServiceError, now, uid, digest, encoded, require_text
         from .work_capacity import execution_key
@@ -1330,7 +1342,7 @@ class NativeOutcomes:
                 snapshot_missing([owner['id']])
             if queued and native.get('dispatch_blocker') not in (None, 'active_pr'):
                 raise ServiceError(409, 'This native outcome is guarded. Wait for its current activity.')
-            related = [t for t in self._all('tasks') if execution_key(t) == execution_key(owner)]
+            related = self._execution_tasks(execution_key(owner))
             related_ids = {t['id'] for t in related}
             # Only an explicit lane may leave one exact question pending, or work under one declined or held merge.
             # See technical_lane.py.

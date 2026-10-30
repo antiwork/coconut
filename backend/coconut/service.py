@@ -297,6 +297,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self.db.execute('CREATE INDEX IF NOT EXISTS tasks_native_job_open ON tasks (id) WHERE ' + OPEN_NATIVE_JOB)
         self.db.execute('CREATE INDEX IF NOT EXISTS tasks_routine_open ON tasks (id) WHERE ' + OPEN_ROUTINE_TASK)
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_source ON tasks (json_extract(data,'$.source_task_id'))")
+        self.db.execute("CREATE INDEX IF NOT EXISTS tasks_relay_callback_owner ON tasks (json_extract(data,'$._relay_callback_owner'))")
         self.db.execute('CREATE INDEX IF NOT EXISTS messages_human ON messages (id) WHERE ' + HUMAN_MESSAGE)
         self.db.executescript(READ_INDEXES + PR_URL_INDEX)
         self._request_device_id = None
@@ -2075,8 +2076,14 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             task['_native_return_prepared'] = list(result_key)
         if not task.get('source_bot_id') or task.get('_is_return'):
             return
-        turn_ids = {t['id'] for t in self._all('tasks') if t['id'] == task['id'] or t.get('_assignment_task_id') == task['id']}
-        already_sent = any(not delivery.get('_progress_only') and delivery['source_task_id'] in turn_ids and delivery['target_bot_id'] == task['source_bot_id'] and delivery['created_at'] >= task.get('_background_return_after', '') and delivery['receipt']['task_id'] for delivery in self._all('deliveries'))
+        # Indexes find the turns of this assignment and their deliveries. A parse of the whole task table took about
+        # 0.6 s of each finished turn under the service lock on the Mac mini copy.
+        turn_ids = {row[0] for row in self.db.execute(
+            "SELECT id FROM tasks WHERE id=? OR json_extract(data, '$._assignment_task_id')=?", (task['id'], task['id']))}
+        deliveries = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM deliveries WHERE json_extract(data,'$.source_task_id') IN (SELECT value FROM json_each(?))",
+            (json.dumps(sorted(turn_ids)),))]
+        already_sent = any(not delivery.get('_progress_only') and delivery['source_task_id'] in turn_ids and delivery['target_bot_id'] == task['source_bot_id'] and delivery['created_at'] >= task.get('_background_return_after', '') and delivery['receipt']['task_id'] for delivery in deliveries)
         if not already_sent:
             task['_return_pending'] = {'target_bot_id': task['source_bot_id'], 'text': text, 'result_status': result_status,
                                        'return_id': task.get('_background_return_id')}
