@@ -49,10 +49,13 @@ class NativeExecution:
     def recover_native_relays(self):
         if not hasattr(self.provider, 'native_settings'):
             return
-        # Startup runs this in its transaction. Select the few executing relays, not the whole receipt journal.
-        for record in [json.loads(row[0]) for row in self.db.execute(
-                "SELECT data FROM native_receipts WHERE json_extract(data, '$.state')='executing' "
-                "AND json_extract(data, '$.action.name')='message_agent' ORDER BY rowid")]:
+        # Startup runs this in its transaction. Select the few executing relays, not the whole receipt journal. Without
+        # INDEXED BY, SQLite scanned all receipts (940 MB on the Mac mini): 2.9 s on a laptop, most of a slow start on
+        # the mini. No ORDER BY: it makes SQLite scan the table. The few rows sort here.
+        rows = self.db.execute(
+            "SELECT rowid, data FROM native_receipts INDEXED BY native_receipts_executing "
+            "WHERE json_extract(data, '$.state')='executing' AND json_extract(data, '$.action.name')='message_agent'").fetchall()
+        for record in [json.loads(row[1]) for row in sorted(rows)]:
             task = self._get('tasks', record['task_id'])
             if task['status'] != 'working':
                 continue

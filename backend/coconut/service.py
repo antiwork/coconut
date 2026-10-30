@@ -192,6 +192,10 @@ BOT_WORKING_CONTEXT = ("SELECT 1 FROM contexts WHERE json_extract(data,'$.status
 MARKS = ('_return_pending', '_native_reply_pending', '_work_status_only')
 
 
+# The condition of the partial index messages_streaming: a reply that a turn still writes. The start ends each one.
+STREAMING_MESSAGE = "json_extract(data,'$.streaming') NOT IN (0, '')"
+
+
 def marked(field):
     """The SQL condition of a task that has a marker in the field. It is the condition of the index of the same field."""
     if field not in MARKS:
@@ -301,6 +305,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_source ON tasks (json_extract(data,'$.source_task_id'))")
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_relay_callback_owner ON tasks (json_extract(data,'$._relay_callback_owner'))")
         self.db.execute('CREATE INDEX IF NOT EXISTS messages_human ON messages (id) WHERE ' + HUMAN_MESSAGE)
+        self.db.execute('CREATE INDEX IF NOT EXISTS messages_streaming ON messages (id) WHERE ' + STREAMING_MESSAGE)
         self.db.execute('CREATE INDEX IF NOT EXISTS decisions_proposal_execution ON decisions (id) WHERE ' + PROPOSAL_EXECUTION)
         self.db.executescript(READ_INDEXES + PR_URL_INDEX)
         self._request_device_id = None
@@ -4064,7 +4069,14 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             bot['profile_id'] = profile_id(bot)
             self._sync_profile(bot)
             self._put('bots', bot)
-        tasks = self._all('tasks')
+        # Only these tasks can change below. SQLite finds them, so the start parses no other task (110 MB of JSON on the
+        # Mac mini). The conditions are wider than the checks below, which decide each change as before.
+        rows = self.db.execute(
+            "SELECT rowid, data FROM tasks WHERE json_type(data,'$.workflow') IS NOT NULL "
+            "OR json_type(data,'$._permission_ancestors') IS NOT NULL OR json_extract(data,'$.status')='paused' "
+            "OR json_type(data,'$.thread_id') IS NOT 'text' OR json_extract(data,'$.thread_id')='' "
+            "OR json_type(data,'$.conversation_bot_id') IS NULL OR json_type(data,'$.exchange_id') IS NULL").fetchall()
+        tasks = [json.loads(row[1]) for row in sorted(rows)]
         for task in tasks:
             before = dict(task)
             task.pop('workflow', None)
@@ -4086,13 +4098,18 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                 task.setdefault('source_task_id', None)
                 self._put('tasks', task)
                 changed = True
-        threads = {task['id']: task['thread_id'] for task in tasks}
-        task_map = {task['id']: task for task in tasks}
-        for message in self._all('messages'):
-            thread_id = threads.get(message.get('task_id'))
+        # A message changes only without its thread, sender or recipients, or when its thread differs from its task's.
+        # The join reads the tasks as written above.
+        rows = self.db.execute(
+            "SELECT m.rowid, m.data FROM messages m LEFT JOIN tasks t ON t.id = json_extract(m.data,'$.task_id') "
+            "WHERE json_type(m.data,'$.thread_id') IS NULL OR json_type(m.data,'$.sender_bot_id') IS NULL "
+            "OR json_type(m.data,'$.recipient_bot_ids') IS NULL "
+            "OR json_extract(m.data,'$.thread_id') IS NOT json_extract(t.data,'$.thread_id')").fetchall()
+        for message in (json.loads(row[1]) for row in sorted(rows)):
+            task = self._stored_task(message.get('task_id'))
+            thread_id = task['thread_id'] if task else None
             if 'thread_id' not in message or message['thread_id'] != thread_id or 'sender_bot_id' not in message or 'recipient_bot_ids' not in message:
                 message['thread_id'] = thread_id
-                task = task_map.get(message.get('task_id'))
                 message.setdefault('sender_bot_id', task['bot_id'] if task and message['role'] != 'user' else None)
                 message.setdefault('recipient_bot_ids', [task['bot_id']] if task and message['role'] == 'user' else [])
                 self._put('messages', message)
@@ -4100,13 +4117,35 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         if changed:
             self._event('threads.migrated', {})
 
+    def _stored_task(self, task_id):
+        """The stored task with this ID, or None."""
+        row = self.db.execute('SELECT data FROM tasks WHERE id=?', (task_id,)).fetchone() if task_id is not None else None
+        return json.loads(row[0]) if row else None
+
     def _migrate_bot_exchanges(self):
-        """Reclassify stored messages without changing native conversation history."""
-        tasks = {task['id']: task for task in self._all('tasks')}
-        messages = self._all('messages')
+        """Reclassify stored messages without changing native conversation history.
+
+        SQLite selects the messages and deliveries that can change, so the start parses neither table nor the tasks.
+        The selections are wider than the checks below, which decide each change as before.
+        """
+        truthy = "coalesce({},'') NOT IN ('', 0)"
+        rows = self.db.execute(
+            "SELECT m.rowid, m.data FROM messages m LEFT JOIN tasks t ON t.id = json_extract(m.data,'$.task_id') WHERE "
+            + "(" + truthy.format("json_extract(m.data,'$._direct_reply_message_id')")
+            + " AND json_type(m.data,'$.exchange_recipient_bot_ids') IS NOT NULL) "
+            "OR (" + truthy.format("json_extract(t.data,'$.source_bot_id')")
+            + " AND json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.kind')='text' "
+            "AND json_type(m.data,'$.exchange_recipient_bot_ids') IS NULL) "
+            "OR (json_extract(m.data,'$.kind')='text' AND " + truthy.format("json_extract(m.data,'$.sender_bot_id')")
+            + " AND " + truthy.format("json_extract(m.data,'$.recipient_bot_ids')") + ") "
+            "OR (json_extract(m.data,'$.kind')='bot_exchange' "
+            "AND json_extract(m.data,'$.bot_id') IS NOT json_extract(m.data,'$.sender_bot_id')) "
+            "OR (" + truthy.format("json_extract(t.data,'$.source_bot_id')")
+            + " AND json_extract(m.data,'$.role') IS NOT 'user' "
+            "AND json_extract(m.data,'$.bot_id') IS NOT json_extract(t.data,'$.bot_id'))").fetchall()
         changed = False
-        for message in messages:
-            task = tasks.get(message.get('task_id'), {})
+        for message in (json.loads(row[1]) for row in sorted(rows)):
+            task = self._stored_task(message.get('task_id')) or {}
             before = dict(message)
             if message.get('_direct_reply_message_id'):
                 message.pop('exchange_recipient_bot_ids', None)
@@ -4121,20 +4160,28 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             if message != before:
                 self._put('messages', message)
                 changed = True
-        # Index the messages once. A scan of every message for each delivery grew with both tables at every start.
-        exchanges = {(m.get('task_id'), m.get('sender_bot_id')) for m in messages if m['kind'] == 'bot_exchange'}
-        texts = {}
-        for m in messages:
-            if m['kind'] == 'text':
-                texts.setdefault(m.get('task_id'), []).append(m)
-        for delivery in self._all('deliveries'):
-            task = tasks.get(delivery['receipt'].get('task_id'))
-            source = tasks.get(delivery['source_task_id'])
+        # Only a delivery without an exchange message of its sender in its task can change. The message index by task
+        # answers each check.
+        # The subquery compares two expressions: against the id column, SQLite could not use messages_task and scanned
+        # every message for each delivery. A delivery without its task or source task changes nothing below.
+        deliveries = self.db.execute(
+            "SELECT d.data FROM deliveries d WHERE NOT EXISTS (SELECT 1 FROM messages m "
+            "WHERE json_extract(m.data, '$.task_id') = json_extract(d.data,'$.receipt.task_id') "
+            "AND json_extract(m.data,'$.kind')='bot_exchange' AND json_extract(m.data,'$.sender_bot_id') IS "
+            "(SELECT json_extract(data,'$.bot_id') FROM tasks WHERE id = json_extract(d.data,'$.source_task_id'))) "
+            "ORDER BY d.rowid").fetchall()
+        exchanges = set()
+        for delivery in (json.loads(row[0]) for row in deliveries):
+            task = self._stored_task(delivery['receipt'].get('task_id'))
+            source = self._stored_task(delivery['source_task_id'])
             if not task or not source:
                 continue
             if (task['id'], source['bot_id']) in exchanges:
                 continue
-            result = next((m for m in reversed(texts.get(source.get('_result_task_id', source['id']), []))
+            texts = [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM messages WHERE json_extract(data,'$.task_id') IS ? AND json_extract(data,'$.kind')='text' "
+                "ORDER BY rowid", (source.get('_result_task_id', source['id']),))]
+            result = next((m for m in reversed(texts)
                            if m['kind'] == 'text' and m.get('sender_bot_id') == source['bot_id']
                            and m['text'] == delivery['text'] and not m.get('_direct_reply_message_id')
                            and not m.get('_hidden') and not m.get('_deleted')), None)
@@ -4150,7 +4197,6 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                            text=delivery['text'], created_at=delivery['created_at'], streaming=False,
                            decision_id=None, artifact_id=None)
             self._put('messages', message)
-            messages.append(message)
             exchanges.add((message['task_id'], message['sender_bot_id']))
             changed = True
         if changed:
@@ -4158,11 +4204,13 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
 
     def _recover(self):
         self.recover_native_relays()
-        for context in self._all('contexts'):
+        # The status indexes find the working contexts and tasks, and a partial index the streaming messages. The start
+        # parses no whole table here. No ORDER BY: it makes SQLite scan the table. The rows sort here.
+        for context in self._rows_in_order("SELECT rowid, data FROM contexts WHERE json_extract(data,'$.status')='working'"):
             if context['status'] == 'working' and not self._block_uncertain_context(context):
                 context['status'] = 'queued'
                 self._put('contexts', context)
-        for task in self._all('tasks'):
+        for task in self._rows_in_order("SELECT rowid, data FROM tasks WHERE json_extract(data,'$.status')='working'"):
             if task['status'] == 'working':
                 self._withdraw_stream(task['id'])
                 uncertain = self._has_uncertain_receipt(task['id'], task.get('_native_turn_id'))
@@ -4181,7 +4229,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
                         self._message(task['bot_id'], 'Coconut’s service restarted before a tool returned its result. I stopped to avoid repeating an action. Reply to continue.', task_id=task['id'])
                 self._put('tasks', task)
                 self._event('task.recovered', self._public(task), task['bot_id'], task['id'])
-        for message in self._all('messages'):
+        for message in self._rows_in_order('SELECT rowid, data FROM messages INDEXED BY messages_streaming WHERE ' + STREAMING_MESSAGE):
             if message['streaming']:
                 message['streaming'] = False
                 self._put('messages', message)
@@ -4205,6 +4253,10 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             # An absent private file can safely retry with O_EXCL and the same ID.
         for bot in self._all('bots'):
             self._refresh_bot(bot['id'])
+
+    def _rows_in_order(self, statement, parameters=()):
+        """The parsed rows of a query that selects rowid and data, in row order."""
+        return [json.loads(row[1]) for row in sorted(self.db.execute(statement, parameters).fetchall())]
 
     def _block_uncertain_context(self, context):
         if not self._has_uncertain_receipt(context['task_id'], context['id']):

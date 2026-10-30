@@ -746,10 +746,15 @@ class NativeRoutines:
             self._event('routine.reconciliation_required', {'routine_id': task['routine_id'], 'message': 'Hermes no longer holds this routine claim, and did not confirm its completion.'}, task['bot_id'], task['id'])
 
     def _migrate_native_routine_prompts(self):
-        tasks = {task['id']: task for task in self._all('tasks')
-                 if task.get('routine_id') and task.get('_native_job')}
-        for message in self._all('messages'):
-            task = tasks.get(message.get('task_id'))
+        # Only a visible user text of a routine task with a native job can change. SQLite joins them, so the start
+        # parses neither whole table. The selection is wider than the check below, which decides as before.
+        rows = self.db.execute(
+            "SELECT m.rowid, m.data, t.data FROM messages m JOIN tasks t ON t.id = json_extract(m.data,'$.task_id') "
+            "WHERE json_extract(m.data,'$.role')='user' AND json_extract(m.data,'$.kind')='text' "
+            "AND coalesce(json_extract(t.data,'$.routine_id'),'') NOT IN ('', 0) "
+            "AND coalesce(json_extract(t.data,'$._native_job'),'') NOT IN ('', 0)").fetchall()
+        for message, task in ((json.loads(data), json.loads(task)) for _, data, task in sorted(rows)):
+            task = task if task.get('routine_id') and task.get('_native_job') else None
             if (task and message['role'] == 'user' and message['kind'] == 'text'
                     and not message.get('_human_device_id') and not message.get('_hidden')
                     and message['text'] == task['_native_job'].get('prompt')):
