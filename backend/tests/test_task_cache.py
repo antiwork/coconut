@@ -109,10 +109,17 @@ class TaskCacheTests(unittest.TestCase):
             self.service._put('tasks', dict(id='task-2', status='working', title='Task 2'))
         self.assertEqual(self.cached(), self.stored())
 
-    def test_numbers_that_go_back_read_the_table_again(self):
+    def test_numbers_that_go_back_start_again_from_a_committed_state(self):
         self.cached()
         seq, tasks, rowids, last = self.service._task_rows
         self.service._task_rows = (seq + 10, tasks, rowids, last)
+        # The shared committed state replaces the writer's state. It needs no full read.
+        with self.full_reads() as full:
+            self.assertEqual(self.cached(), self.stored())
+        self.assertEqual(full.call_count, 0)
+        # Without a shared state, the writer reads the table again.
+        self.service._task_rows = (seq + 10, tasks, rowids, last)
+        self.service._task_states.clear()
         with self.full_reads() as full:
             self.assertEqual(self.cached(), self.stored())
         self.assertEqual(full.call_count, 1)
@@ -137,6 +144,64 @@ class TaskCacheTests(unittest.TestCase):
             with view._shared_reads():
                 self.assertEqual(list(view._task_map()), [i for i, _ in self.stored()])
         self.assertIsNotNone(self.service._task_rows)
+
+    def view_tasks(self):
+        with self.service._read_view() as view, view._read_transaction(), view._shared_reads():
+            return view._task_map(), view._task_rows
+
+    def test_a_read_view_starts_from_the_shared_state_and_shares_its_tasks(self):
+        self.cached()
+        writer = self.service._task_rows
+        with patch.object(Service, '_read_all_tasks', side_effect=AssertionError('A view must not read every task.')):
+            tasks, state = self.view_tasks()
+        self.assertEqual(list(tasks.items()), self.stored())
+        # The view holds the same task objects as the writer, not a second parse.
+        self.assertTrue(all(tasks[identity] is writer[1][identity] for identity in tasks))
+        with self.service.transaction():
+            self.service._put('tasks', dict(id='task-1', status='working', title='Changed'))
+        tasks, later = self.view_tasks()
+        self.assertEqual(list(tasks.items()), self.stored())
+        self.assertIsNot(tasks['task-1'], writer[1]['task-1'])
+        self.assertIs(tasks['task-2'], writer[1]['task-2'])
+        # The older states did not change.
+        self.assertEqual(state[1]['task-1']['status'], 'completed')
+        self.assertEqual(writer[1]['task-1']['status'], 'completed')
+
+    def test_a_state_with_uncommitted_rows_is_not_shared(self):
+        self.cached()
+        with self.service.transaction(), self.service._shared_reads():
+            self.service._put('tasks', dict(id='task-uncommitted', status='queued', title='Not yet'))
+            self.assertIn('task-uncommitted', self.service._task_map())
+            tasks, _ = self.view_tasks()
+            self.assertNotIn('task-uncommitted', tasks)
+            self.assertTrue(all(state[0] < self.service._latest_task_change() for state in self.service._task_states.states))
+        tasks, _ = self.view_tasks()
+        self.assertIn('task-uncommitted', tasks)
+
+    def test_a_rolled_back_state_never_reaches_a_view(self):
+        self.cached()
+        with self.assertRaises(RuntimeError):
+            with self.service.transaction(), self.service._shared_reads():
+                self.service._put('tasks', dict(id='task-ghost', status='queued', title='Ghost'))
+                self.service._task_map()
+                raise RuntimeError('stop')
+        tasks, _ = self.view_tasks()
+        self.assertNotIn('task-ghost', tasks)
+        self.assertEqual(self.cached(), self.stored())
+
+    def test_a_renumbering_vacuum_starts_a_new_generation(self):
+        self.cached()
+        with self.service._read_view() as view, view._read_transaction():
+            self.service._forget_cached_tasks(renumbered=True)
+            self.assertEqual(self.service._task_states.states, [])
+            with self.full_reads(), patch.object(Service, '_read_all_tasks', wraps=view._read_all_tasks) as full:
+                with view._shared_reads():
+                    view._task_map()
+            # The view started before the new generation, so it neither uses nor adds a state.
+            self.assertEqual(full.call_count, 1)
+            self.assertEqual(self.service._task_states.states, [])
+        self.cached()
+        self.assertEqual(len(self.service._task_states.states), 1)
 
 
 if __name__ == '__main__':

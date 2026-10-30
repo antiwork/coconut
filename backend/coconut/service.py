@@ -160,7 +160,7 @@ from .routine_coordinator import (CHILD_TASKS, NativeRoutines, OPEN_NATIVE_JOB, 
 from .approval_updates import ApprovalUpdates
 from .parallel_work_updates import ParallelWorkUpdates
 from .native_fallback_updates import NativeFallbackUpdates
-from .task_cache import SCHEMA as TASK_CHANGES_SCHEMA, TaskCache
+from .task_cache import SCHEMA as TASK_CHANGES_SCHEMA, TaskCache, TaskStates
 from .work_capacity import execution_key, state as capacity_state
 from .kanban_scheduler import NativeKanban
 
@@ -244,6 +244,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         for table in self.TABLES:
             self.db.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
         self.db.executescript(TASK_CHANGES_SCHEMA)
+        # The committed task states that the writer and the read views share. See task_cache.py.
+        self._task_states = TaskStates()
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, bot_id TEXT, task_id TEXT, data TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS requests (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response TEXT NOT NULL);
@@ -946,7 +948,10 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             view._read_cache = None
             # A read view has its own connection. It must not use the writer's shared objects.
             view._shared_state = None
+            # The view starts from a shared committed task state and reads only the rows changed since. The generation
+            # is read before the view's snapshot starts, so a state from before a VACUUM is never used after it.
             view._task_rows = None
+            view._task_generation = self._task_states.generation
             yield view
 
     @contextlib.contextmanager

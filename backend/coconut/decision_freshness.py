@@ -491,12 +491,8 @@ class DecisionFreshness:
                 view._pending_decision_sources = set(self._pending_decision_sources)
                 ready = self._ready_decision_sources
                 view._ready_decision_sources = None if ready is None else dict(ready)
-                # Card passes keep their own parsed tasks, apart from the writer's. The view reads only the changed rows.
-                # A pass takes them, so a second pass at the same time reads the whole table.
-                view._task_rows, self._card_pass_task_rows = getattr(self, '_card_pass_task_rows', None), None
             stack.enter_context(view._shared_reads())
             yield view
-            self._card_pass_task_rows = view._task_rows
 
     def _run_card_pass(self, plan, *, transaction):
         """Run plan(service, writes) on a snapshot without the service lock, then write its changes under the lock.
