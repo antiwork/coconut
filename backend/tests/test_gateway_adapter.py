@@ -717,6 +717,10 @@ class GatewayAdapterTests(unittest.TestCase):
             self.assertIsNone(hooks.guard_tool(tool_name='read_file'))
             adapter.PAUSED.add('turn-a')
             self.assertEqual(hooks.guard_tool(tool_name='read_file'), {'action': 'block', 'message': hooks.PAUSED_MESSAGE})
+            adapter.PAUSED.discard('turn-a')
+            # A status question uses no tools at all.
+            adapter.MODES['turn-a'] = 'status'
+            self.assertEqual(hooks.guard_tool(tool_name='read_file'), {'action': 'block', 'message': hooks.STATUS_MESSAGE})
         # Outside a Coconut turn the hook does nothing.
         with patch.object(hooks, '_turn', return_value=(None, None)):
             self.assertIsNone(hooks.guard_tool(tool_name='terminal'))

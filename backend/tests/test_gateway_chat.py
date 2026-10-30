@@ -41,7 +41,7 @@ class RoutingRuleTests(unittest.TestCase):
         self.assertTrue(plain_chat_turn(plain))
         # A task outside the bot's conversation gets its own work session from the dispatchers, which only the worker has.
         self.assertFalse(plain_chat_turn(dict(plain, _chat_session=False)))
-        for key in ('_native_job', '_work_context_id', '_source_audit_prompt', '_technical_lane',
+        for key in ('_native_job', '_work_context_id', '_technical_lane',
                     '_execution_session_id', '_work_status_only'):
             with self.subTest(key=key):
                 self.assertFalse(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
@@ -61,6 +61,20 @@ class RoutingRuleTests(unittest.TestCase):
         for text in ('Thanks!', 'I stay [SILENT] here.', 'First.\n[SILENT]\nLast.'):
             with self.subTest(text=text):
                 self.assertFalse(is_silence_reply(text))
+
+
+class WorkTurnRuleTests(unittest.TestCase):
+    def test_a_task_with_its_own_work_session_runs_in_the_gateway_without_other_worker_inputs(self):
+        from coconut.gateway_bridge import gateway_work_turn
+        audit = {'_execution_session_id': 'work-1', '_kanban_claim': {'run_id': 1}}
+        self.assertTrue(gateway_work_turn(audit))
+        self.assertFalse(gateway_work_turn(dict(audit, _execution_session_id=None)))
+        self.assertFalse(gateway_work_turn(dict(audit, _chat_session=True)))
+        # The audit of a work source uses the Kanban tools of Coconut's board.
+        for key in ('_work_context_id', '_native_outcome_id', '_native_job', '_work_status_only', '_technical_lane',
+                    '_background_completion', '_native_receipts', '_source_audit_prompt', '_source_answer_steps'):
+            with self.subTest(key=key):
+                self.assertFalse(gateway_work_turn(dict(audit, **{key: 'x'})))
 
 
 class TurnEventTests(unittest.TestCase):
@@ -329,10 +343,10 @@ class ServiceRoutingTests(unittest.TestCase):
 
     def test_a_turn_with_coconut_inputs_still_runs_in_the_worker(self):
         Adapter(self.service.gateway_bridge, self.home, [])
-        task = self.send('A GitHub audit is Coconut context.')
+        task = self.send('The result of a worker process is Coconut context.')
         with self.service.transaction():
             stored = self.read('tasks', task['id'])
-            stored['_source_audit_prompt'] = 'Check the linked issue.'
+            stored['_background_completion'] = ['The build finished.']
             self.service._put('tasks', stored)
         self.service._run_task(task['id'])
         self.assertEqual(len(self.provider.starts), 1)
@@ -934,6 +948,109 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual((stored['status'], stored.get('_chat_session'), stored['bot_id']), ('queued', True, other['id']))
         self.assertNotIn('_execution_session_id', stored)
 
+    def audit(self):
+        """A task outside the bot's conversation, which the dispatchers give its own work session."""
+        with self.service.transaction():
+            task = self.service._send(self.read('bots', self.bot['id']),
+                                      {'text': 'Reconcile these open assignments against the original sources.', 'mode': 'queue'},
+                                      human_authored=False)
+        return self.read('tasks', task['id'])
+
+    def test_a_task_with_its_own_work_session_runs_in_the_gateway_in_the_chat_of_that_session(self):
+        from coconut.native_conversation import session_root
+        task = self.audit()
+        adapter = Adapter(self.service.gateway_bridge, self.home, [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'No card is needed.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.dispatch(task['id'])
+        adapter.join(5)
+        stored = self.read('tasks', task['id'])
+        execution = stored['_execution_session_id']
+        turn = adapter.turns[0]
+        # The work session has a chat of its own, beside the bot's conversation, with the worker's session root.
+        self.assertEqual(turn['chat_id'], self.bot['id'] + ':work:' + execution)
+        self.assertEqual(turn['session_root'], session_root(self.read('bots', self.bot['id']), execution=execution,
+                                                            epoch=stored.get('_conversation_epoch')))
+        self.assertTrue(turn['text'].startswith('Reconcile these open assignments against the original sources.'))
+        self.assertEqual(stored['status'], 'completed')
+        self.assertEqual(self.provider.starts, [])
+
+    def test_a_kanban_claim_of_a_gateway_turn_holds_a_placeholder_process(self):
+        task = self.audit()
+        with self.service.transaction():
+            self.service._ensure_execution_session(self.service._get('tasks', task['id']))
+        stored = self.read('tasks', task['id'])
+        bot = self.read('bots', self.bot['id'])
+        with patch.object(self.provider, 'prepare_kanban_worker', create=True, return_value=4321) as prepare:
+            pid = self.service.kanban_worker_pid(task['id'], stored, bot, self.temp.name, 'work-1', 'native-1')
+            holder = self.service.gateway_holders[task['id']]
+            self.assertEqual((pid, holder.poll()), (holder.pid, None))
+            prepare.assert_not_called()
+            # A task that the worker runs gets a prepared worker, as before.
+            other = dict(stored, _native_outcome_id='native-2')
+            self.assertEqual(self.service.kanban_worker_pid('other', other, bot, self.temp.name, 'work-2', 'native-2'), 4321)
+        self.service.stop_gateway_holder(task['id'])
+        self.assertIsNotNone(holder.poll())
+
+    def test_a_work_turn_stops_when_hermes_ends_its_kanban_claim(self):
+        task = self.audit()
+        with self.service.transaction():
+            self.service._ensure_execution_session(self.service._get('tasks', task['id']))
+        holder_pid = self.service.start_gateway_holder(task['id'])
+        holder = self.service.gateway_holders[task['id']]
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        self.service._dispatch_pending()
+        adapter.join(5)
+        self.assertEqual(holder.pid, holder_pid)
+        # Hermes ends the claim, for example after its run limit.
+        holder.kill()
+        self.service.running[task['id']].join(15)
+        stored = self.read('tasks', task['id'])
+        self.assertEqual(stored['status'], 'failed')
+        self.assertIn('Kanban claim', stored['summary'])
+
+    def test_a_work_turn_that_waits_for_the_gateway_does_not_start_after_hermes_ends_its_kanban_claim(self):
+        task = self.audit()
+        with self.service.transaction():
+            self.service._ensure_execution_session(self.service._get('tasks', task['id']))
+        self.service.start_gateway_holder(task['id'])
+        holder = self.service.gateway_holders[task['id']]
+        # No adapter is connected, so the turn waits for the gateway. Hermes ends the claim during the wait.
+        self.service._dispatch_pending()
+        holder.kill()
+        self.service.running[task['id']].join(15)
+        self.assertFalse(self.service.running[task['id']].is_alive())
+        stored = self.read('tasks', task['id'])
+        self.assertEqual(stored['status'], 'failed')
+        self.assertIn('Kanban claim', stored['summary'])
+        # An adapter that connects later gets no turn of this work.
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        adapter.join(3)
+        self.assertEqual(adapter.turns, [])
+
+    def test_a_status_question_runs_in_the_gateway_without_tools(self):
+        task = self.send('How far is the docs work?')
+        with self.service.transaction():
+            working = self.service._get('tasks', task['id'])
+            working['status'] = 'working'
+            self.service._put('tasks', working)
+        stored = dict(self.read('tasks', task['id']), _work_status_only=True,
+                      _work_context={'id': 'work-1', 'title': 'Docs', 'activity': 'Writing the README.'})
+        adapter = Adapter(self.service.gateway_bridge, self.home, [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'The README is half done.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        emitted = []
+        self.assertTrue(self.service.run_gateway_chat(stored, self.read('bots', self.bot['id']), [],
+                                                      lambda kind, payload: emitted.append(kind)))
+        adapter.join(5)
+        turn = adapter.turns[0]
+        self.assertEqual((turn['chat_id'], turn['mode']), (self.bot['id'] + ':status:' + task['id'], 'status'))
+        self.assertIn('Writing the README.', turn['text'])
+        self.assertIn('Do not call tools.', turn['text'])
+        self.assertIn('completed', emitted)
+
     def test_a_command_approval_of_a_worker_turn_resumes_in_the_worker(self):
         from coconut.gateway_chat import gateway_resume
         plain = {'_chat_session': True}
@@ -1094,8 +1211,8 @@ class OutsideTurnTests(unittest.TestCase):
         self.home = str(self.service.profiles.home(self.bot))
 
     def message(self, kind='send', message_id='outside:1', text='The build finished.', **fields):
-        return self.service.gateway_message(dict(fields, home=self.home, chat_id=self.bot['id'], kind=kind,
-                                                 message_id=message_id, text=text))
+        return self.service.gateway_message(dict(dict(home=self.home, chat_id=self.bot['id'], kind=kind,
+                                                      message_id=message_id, text=text), **fields))
 
     def chat(self):
         with self.service.lock:
@@ -1121,6 +1238,26 @@ class OutsideTurnTests(unittest.TestCase):
         # A second send of the same message, for example after a lost answer, shows nothing new.
         self.assertEqual(self.message(), {'recorded': True, 'task_id': task['id']})
         self.assertEqual(len(self.chat()), 1)
+
+    def test_a_send_from_a_work_chat_of_the_bot_is_a_message_of_the_bot(self):
+        answer = self.message(chat_id=self.bot['id'] + ':work:session-1', text='The work is done.')
+        self.assertTrue(answer['recorded'])
+        self.assertEqual(self.chat(), [('The work is done.', answer['task_id'], False)])
+        self.assertEqual(self.message(chat_id=self.bot['id'] + ':work:session-1', text='The work is done.'),
+                         {'recorded': True, 'task_id': answer['task_id']})
+        # A send of another chat of the bot does not end a reply that the work chat still streams.
+        work = self.bot['id'] + ':work:session-2'
+        self.message(message_id='work:1', text='The', chat_id=work, streaming=True)
+        self.message(message_id='main:1', text='Hello.')
+        with self.service.lock:
+            streamed = [m for m in self.service._all('messages') if m.get('_gateway_message_id') == 'work:1']
+        self.assertTrue(streamed[0]['streaming'])
+        # The same message ID in another chat is another message.
+        self.assertTrue(self.message('edit', 'main:1', 'Hello again.', chat_id=work).get('recorded') is False)
+        self.message(message_id='work:2', text='Done.', chat_id=work)
+        with self.service.lock:
+            streamed = [m for m in self.service._all('messages') if m.get('_gateway_message_id') == 'work:1']
+        self.assertFalse(streamed[0]['streaming'])
 
     def test_sends_close_together_share_a_task_and_a_streamed_reply_is_edited_and_deleted(self):
         first = self.message(text='Task t_1 is done.')

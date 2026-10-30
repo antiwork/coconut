@@ -126,7 +126,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 1. Phase 2: plain chat turns run in the gateway, behind a setting.
 2. Phase 3: Coconut tools and cards become tools of the `coconut` plugin, and both runtimes share one conversation.
 3. Phase 4: routines run in the gateway as Coconut turns, and each profile keeps its model keys the Hermes way. Kanban stays with Coconut for now.
-4. Phase 5: the gateway is always on. Then the other turn types move to the gateway, one group at a time, and Coconut deletes the worker code that served them. Group 1 moved attachments and reactions, group 2a card answers, and group 2b the work of a chat, group 2c recovery turns, and group 3 bot exchanges. Group 4, GitHub activity, PR reviews and bot changes, is this version.
+4. Phase 5: the gateway is always on. Then the other turn types move to the gateway, one group at a time, and Coconut deletes the worker code that served them. Group 1 moved attachments and reactions, group 2a card answers, and group 2b the work of a chat, group 2c recovery turns, and group 3 bot exchanges. Group 4 moved GitHub activity, PR reviews and bot changes. Work sessions in the gateway, part 1, is this version.
 
 ### Rules for the phases
 
@@ -202,7 +202,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - When no adapter of the bot's profile is connected, the turn waits, at most 5 minutes (`GATEWAY_WAIT_SECONDS`). The task stays working, and its summary says that it waits for the Hermes gateway. `GET /v1/setup` shows the state of the gateway, the reason and the connected profiles. When the wait ends without an adapter, the task fails with a reason that names the gateway log.
 - While the supervised gateway starts again, the chat turns wait. The service starts it again 30 seconds after an exit, and the adapters connect after the gateway restored its sessions. The waiting turns then run. A turn that the gateway ran when it stopped fails, because the adapter stops listing it.
 - The gateway fires the routines of each profile that it serves (phase 4). Coconut fires the routines of a profile that no gateway serves: a profile that the person parked in Hermes (`gateway.parked`), or any profile while the gateway starts again. Coconut does not remove a parked file, because that is the person's setting. `GET /v1/setup` lists these profiles in `gateway.unserved_profiles`. A chat turn of a parked profile fails at once and says why.
-- Turns of the other types still run in the worker: work items with their own work session, claims, the technical lane of a native outcome, and the audits of work sources. See the group sections below.
+- Turns of the other types still run in the worker: questions about a Work item, native outcomes and their technical lane. See the sections below.
 - A service without a Hermes home (fixture mode and tests) has no gateway. Its provider runs every turn.
 
 ### Phase 5, group 1: attachments and reactions
@@ -254,6 +254,15 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - Bot changes. `coconut_create_bot` and `coconut_delete_bot` are tools of the plugin, with the worker's schemas and rules (`card_tools`). A chat turn lists the person's messages that can ask for a change, and the bots that the turn can delete (`bot_creation_context`, `bot_deletion_context`). The service checks each request against those messages (`_create_bot_from_chat`, `_delete_bot_from_chat`).
 - A coordinator that names a failed gateway task in `continuation_task_id` no longer gets "Use the native workflow". That task has no work session to continue, so the message joins the target bot's gateway conversation as a new turn (`_bot_continuation_owner`).
 - Still in the worker: the audit of a work source (`_source_audit_prompt`, `_source_answer_steps`). Coconut gives each audit its own work session, and the dispatchers run it as a Kanban claim beside the person's chats. The gateway has no separate session for each audit, and the dispatch of a chat turn keeps one place for the person's chats. A PR review of a task with its own work session stays with the worker too. The results of a worker's background process (`_background_completion`) and the receipts of a worker's tool calls (`_native_receipts`) stay with the worker that made them.
+
+### Phase 5: work sessions in the gateway, part 1
+
+- A task with its own work session (`_execution_session_id`) and no other worker input now runs in the gateway (`gateway_bridge.gateway_work_turn`). Examples: a scheduled message, a message that is not a person's chat message, the continuation of a proposal of such a task, its PR review, and the answer to its card.
+- Such a turn runs in a chat of its own, `<bot ID>:work:<work session ID>` (`gateway_chat.work_chat`). Hermes gives each chat its own session, so the turn runs beside the bot's conversation, and later turns of the same work continue its session. The session root is the worker's root of that work session. A message that Hermes sends to such a chat outside a turn reaches the bot's chat.
+- The dispatch stays the same: the Kanban dispatcher of Coconut claims the task, with its capacity and priorities. Hermes records a process for each claim and can end that process, for example after its run limit. For a task that the gateway runs, the claim holds a small placeholder process instead of a prepared worker (`kanban_worker_pid`). When Hermes ends that process, the gateway turn stops and the task fails with the reason. The turn ends the process when it finishes.
+- A status question about a Work item (`_work_status_only`) runs in the gateway in a chat of its own, `<bot ID>:status:<task ID>`, with the worker's text and the saved Work context (`run_gateway_status`). The plugin blocks every tool call of the turn (mode `status`), as the worker answers without tools.
+- Still in the worker: the audit of a work source. With native outcomes, its text tells the bot to record each accepted outcome with `kanban_comment` and `kanban_create` on Coconut's own board (`work_sources`). The worker binds these tools to that board (`HERMES_KANBAN_DB`), and the gateway's Kanban tools use the board of the Hermes home. So the audits stay with Coconut's Kanban path until Hermes can bind a gateway turn to another board, or until the Kanban spawn hook moves the claims.
+- Also still in the worker: a question about a Work item (`_work_context_id`), which uses its own checkout of the repository (`coconut_workspace`), native outcomes and their technical lane, card checks (`_decision_refresh`), background research results, the results of a worker's background process and the receipts of a worker's tool calls.
 
 ### Kanban: not yet
 

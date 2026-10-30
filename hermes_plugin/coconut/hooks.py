@@ -66,6 +66,7 @@ CARD_TOOLS = ('coconut_ask', 'coconut_suggest', 'clarify', 'coconut_track_pr', '
 PAUSED_MESSAGE = ('Coconut shows a card and waits for the answer of the person. End this turn now. Coconut continues '
                   'this conversation with the answer.')
 CONTEXT_MESSAGE = 'Answer the current question. Its pending decision stays open.'
+STATUS_MESSAGE = 'Answer from the saved context in the message. This answer uses no tools.'
 
 
 def prompt_parts(text, size=SECTION_CHARS):
@@ -122,6 +123,9 @@ def guard_tool(tool_name='', **_):
         return None
     if turn in PAUSED:
         return {'action': 'block', 'message': PAUSED_MESSAGE}
+    if MODES.get(turn) == 'status':
+        # A status question is answered from its saved context, without tools, as the worker answers it.
+        return {'action': 'block', 'message': STATUS_MESSAGE}
     if MODES.get(turn) == 'context' and tool_name in CARD_TOOLS:
         return {'action': 'block', 'message': CONTEXT_MESSAGE}
     return None

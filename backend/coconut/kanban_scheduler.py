@@ -387,8 +387,11 @@ class NativeKanban(NativeOutcomes):
                         or row['id'] in self.running or row['id'] in self.context_threads):
                     raise ValueError('This request stopped before dispatch.')
                 bot = self._get('bots', task['bot_id'])
-            pid = self.provider.prepare_kanban_worker(row['id'], bot, claim['workspace'],
-                                                      execution_key(task), claim['native_id'])
+            # A task that the gateway runs holds a placeholder process instead of a prepared worker.
+            pid = (self.provider.prepare_kanban_worker(row['id'], bot, claim['workspace'], execution_key(task),
+                                                       claim['native_id']) if context else
+                   self.kanban_worker_pid(row['id'], task, bot, claim['workspace'], execution_key(task),
+                                          claim['native_id']))
             with self.transaction():
                 table = 'contexts' if context else 'tasks'
                 item = self._get(table, row['id'])
@@ -534,6 +537,7 @@ class NativeKanban(NativeOutcomes):
                         # No turn starts before the native PID commit. Reclaim an interrupted preparation.
                         if hasattr(self.provider, 'release_kanban_preparation'):
                             self.provider.release_kanban_preparation(identity)
+                        self.stop_gateway_holder(identity)
                         finishes.append(dict(op='finish', id=native['id'], run_id=native['current_run_id'],
                                              state=self._technical_native_state(item) or native_state(item['status']),
                                              summary='Worker preparation stopped before dispatch.'))
@@ -564,6 +568,7 @@ class NativeKanban(NativeOutcomes):
                     else:
                         if hasattr(self.provider, 'release_kanban_preparation'):
                             self.provider.release_kanban_preparation(identity)
+                        self.stop_gateway_holder(identity)
                         # A finished declined-merge lane turn parks its card. See technical_lane.py.
                         state = self._technical_native_state(item) or native_state(status)
                         if state == 'running':
