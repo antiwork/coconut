@@ -202,8 +202,13 @@ def exits_without_arguments(pid: int, command: str, verified: tuple[int, str] | 
     process can show a bracketed name, so this counts only for the process that this stop already checked: the same
     process ID and the same start time.
     """
-    return (command.startswith("[") and command.endswith("]") and verified is not None and verified[0] == pid
-            and verified[1] is not None and start_time(pid) == verified[1])
+    if not (command.startswith("[") and command.endswith("]") and verified is not None and verified[0] == pid
+            and verified[1] is not None):
+        return False
+    started = start_time(pid)
+    # A process that is gone when ps reads its start time has ended: it was the exiting service. A process with another
+    # start time is another process.
+    return started is None or started == verified[1]
 
 
 def recorded_pid() -> int | None:

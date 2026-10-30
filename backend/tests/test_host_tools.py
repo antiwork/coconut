@@ -300,6 +300,19 @@ class HostLifecycleTests(unittest.TestCase):
                 host.stop_owned_process()
         kill.assert_called_once_with(4242, host.signal.SIGTERM)
 
+    def test_a_service_that_is_gone_before_its_start_time_is_read_has_ended(self):
+        # ps reads the bracketed name, then the service ends before ps reads its start time.
+        self.write_process()
+        calls, run, table = self.linux_stop(['R    [python3]', None, None], '')
+        def gone(arguments, **kwargs):
+            if arguments[-1] == 'lstart=':
+                return subprocess.CompletedProcess(arguments, 1, '', '')
+            return run(arguments, **kwargs)
+        with patch.object(host.subprocess, 'run', side_effect=gone), patch.object(host.os, 'kill') as kill, \
+             patch.object(host.time, 'sleep'), patch.object(host, 'process_table', return_value=table):
+            host.stop_owned_process()
+        kill.assert_called_once_with(4242, host.signal.SIGTERM)
+
     def test_a_bracketed_name_needs_a_checked_service(self):
         self.write_process()
         lstart = subprocess.CompletedProcess([], 0, self.LINUX_START + '\n', '')
