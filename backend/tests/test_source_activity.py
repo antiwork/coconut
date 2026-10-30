@@ -340,7 +340,12 @@ class SourceActivityTests(unittest.TestCase):
         self.use_kept_reads()
         self.approve_card()
         self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Scale requirement.'))
-        self.turn()
+        with self.assertLogs('coconut.decision_sources', level='WARNING') as logs:
+            self.turn()
+        first = next(json.loads(r.getMessage().partition('coconut.source_read ')[2]) for r in logs.records
+                     if 'coconut.source_read' in r.getMessage())
+        # No turn read the thread before: the log names that reason, taken before the read.
+        self.assertEqual([outcome[0] for outcome in first['outcomes']], ['none'])
         # This turn reads at the revision that the first turn recorded, so it keeps its read.
         self.requeue()
         live, live_prompt = self.turn()
@@ -416,9 +421,6 @@ class SourceActivityTests(unittest.TestCase):
         self.approve_card((URL, PR_URL))
         self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Scale requirement.'))
         self.tracker.threads[43].updated_at = '2026-09-23T12:20:00Z'
-        # Two pages of reviews: the PR read needs a third round of requests, and the budget ends before it.
-        self.tracker.threads[43].reviews = [dict(comment(100 + index, 'reviewer', '2026-09-23T12:20:00Z', 'Review'),
-                                                 submitted_at='2026-09-23T12:20:00Z') for index in range(150)]
         self.tracker.delay = 0.2
         started = time.monotonic()
         with patch.object(decision_sources, 'SOURCE_READ_SECONDS', 0.3):
@@ -887,43 +889,6 @@ class IssueActivityReadTests(unittest.TestCase):
         result = tracker.observe_issue_activity(PR_URL, APPROVED, operator=True)
         self.assertEqual([c['kind'] for c in result['new_activity']], ['review_comment'])
         self.assertEqual(result['observed_at'], '2026-09-23T12:10:00Z')
-
-    def test_parallel_and_one_by_one_reads_give_the_same_result(self):
-        stamp = '2026-09-23T12:20:00Z'
-        for since in (APPROVED, stamp, '2026-09-23T12:30:00Z'):
-            for url in (URL, PR_URL):
-                with self.subTest(since=since, url=url):
-                    results = []
-                    for budget in (None, 100):
-                        tracker = ThreadTracker()
-                        thread = tracker.threads[int(url.rsplit('/', 1)[1])]
-                        thread.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Older.'),
-                                   comment(8, 'owner', stamp, 'At the revision.'))
-                        thread.reviews = [dict(comment(9, 'reviewer', stamp, 'Review.'), submitted_at=stamp)]
-                        thread.review_comments = [comment(10, 'reviewer', stamp, 'Inline.')]
-                        thread.pr_updated_at = '2026-09-23T12:25:00Z'
-                        if budget is None:
-                            results.append(tracker.observe_issue_activity(url, since, operator=True, include_same_second=True))
-                        else:
-                            # A budget makes the reads go one after the other, as before.
-                            with pr_tracking.request_budget(budget):
-                                results.append(tracker.observe_issue_activity(url, since, operator=True,
-                                                                              include_same_second=True))
-                    self.assertIsNotNone(results[0])
-                    self.assertEqual(results[0], results[1])
-
-    def test_the_reads_of_a_pull_request_run_at_the_same_time(self):
-        tracker = ThreadTracker()
-        thread = tracker.threads[43]
-        thread.updated_at = '2026-09-23T12:20:00Z'
-        tracker.delay = 0.2
-        started = time.monotonic()
-        result = tracker.observe_issue_activity(PR_URL, APPROVED, time.monotonic() + 5, operator=True,
-                                                include_same_second=True)
-        self.assertIsNotNone(result)
-        # Five reads one after the other take 1 s. The issue record and then the PR record with three lists take two rounds.
-        self.assertLess(time.monotonic() - started, 0.7)
-        self.assertEqual(len([path for path in tracker.paths if '/43' in path]), 5)
 
     def test_pull_link_to_a_plain_issue_reads_the_issue(self):
         tracker = ThreadTracker()

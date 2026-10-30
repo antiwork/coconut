@@ -485,6 +485,8 @@ def read_source_activity(service, task_id, limit=3):
         operator = operator_repository(url, operators)
         delivered_signatures = {sig for state in delivered.get(key, []) for sig in state.get('signatures', [])
                                 if isinstance(sig, str)}
+        # The reason comes before the read: the refresher can change the kept read meanwhile.
+        reason = records.miss_reason(tracker, url, operator, since)
         kept = records.kept(tracker, task['bot_id'], url, operator, since, delivered_signatures)
         if kept is not None:
             outcomes[key] = ('kept', 0)
@@ -497,7 +499,7 @@ def read_source_activity(service, task_id, limit=3):
             current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline, **options)
         except Exception:
             current = None
-        outcomes[key] = (records.miss_reason(tracker, url, operator, since), round((time.monotonic() - started) * 1000))
+        outcomes[key] = (reason, round((time.monotonic() - started) * 1000))
         if since is not None and isinstance(current, dict) and current.get('updated_at') == since:
             # A read at the revision second is the read that the refresher keeps. A later turn of this thread can use it.
             records.keep(tracker, task['bot_id'], url, operator, current, started)
