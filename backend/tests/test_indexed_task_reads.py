@@ -73,8 +73,9 @@ class IndexedTaskReadTests(unittest.TestCase):
             self.service._put('decisions', dict(decision, id='unstarted', _execution_task_id=None))
         statement = 'SELECT id FROM decisions INDEXED BY decisions_proposal_execution WHERE ' + PROPOSAL_EXECUTION
         self.assertEqual([row[0] for row in self.service.db.execute(statement)], ['proposal'])
-        self.assertIn('decisions_proposal_execution', self.plan(statement, ()))
-        self.assertNotIn('SCAN decisions\n', self.plan(statement, ()))
+        details = [row[-1] for row in self.service.db.execute('EXPLAIN QUERY PLAN ' + statement)]
+        # SQLite scans the small partial index, never the whole card table.
+        self.assertEqual(details, ['SCAN decisions USING INDEX decisions_proposal_execution'])
 
 
 if __name__ == '__main__':
