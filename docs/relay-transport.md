@@ -44,8 +44,31 @@ One ciphertext holds one `TunnelFrame`: `type u8 | stream u32 (big-endian) | fla
 | REKEY | 8 | Empty. The sender rekeys its send key after this frame. |
 | WINDOW | 9 | `u32` bytes that the receiver may now send on the stream |
 | ERROR | 10 | JSON `{code}`: `mac_offline`, `backend_down`, or `too_large` |
+| UPDATE_HINT | 11 | `u64` (big-endian): the backend's new event cursor. Mac to iPhone only, on stream 0. |
 
 The iPhone opens odd stream numbers. Each stream starts with a window of 1 MB, so a large state download, file transfers, and long polls share one socket.
+
+Each side ignores a frame of an unknown type, and the session continues. Apps and sidecars from before UPDATE_HINT do not: they end the session on an unknown type. So the sidecar sends UPDATE_HINT only on a session whose iPhone asked for it (see [Update hints](#update-hints)).
+
+## Update hints
+
+The sidecar tells the iPhone when the backend's event cursor moves, so the phone fetches the change at once.
+
+1. The iPhone sends `X-Coconut-Hints: 1` with each `updates` read. The first such request on a paired session turns on hints for that session.
+2. While a session wants hints, the sidecar long-polls `GET /v1/tunnel/cursor?after=<cursor>&wait=25` on the backend's tunnel listener. The first poll has `wait=0` and only reads the cursor.
+3. When the cursor changes, the sidecar sends one UPDATE_HINT frame with the new cursor on each session that wants hints.
+4. The first change after a quiet period goes out at once. A change within 250 ms of the last hint waits until the 250 ms end, and one hint then carries all changes since.
+5. The iPhone compares the cursor with its own. A long poll in flight returns by itself when the cursor moves, so the iPhone uses the hint only in the pause after a failed read: the hint ends the pause, and the poll loop reads the updates at once. A hint ends a pause no sooner than 250 ms after the pause starts.
+
+The backend answers `GET /v1/tunnel/cursor` only on the tunnel listener, and only without `X-Coconut-Peer`. The sidecar sets that header on each request from a phone, so a phone cannot reach the route. The answer is `{cursor}` and nothing else. The backend reads the cursor every 100 ms while it waits.
+
+The hint carries no content, and the relay sees only its ciphertext. The relay can see the time of a hint, as it can see the time of a long-poll answer.
+
+The long poll stays the fallback:
+
+- An older sidecar forwards `X-Coconut-Hints` to the backend, which ignores it. The phone long-polls as before.
+- An older backend answers 404 for the cursor route. The sidecar then sends no hints, and tries again after 1 second, then up to once a minute.
+- An older app does not ask for hints, so it never gets UPDATE_HINT.
 
 ## Mac tunnel sidecar
 
@@ -218,6 +241,7 @@ The relay sees only the box ID and the ciphertext, so it cannot read the setup o
 
 - The app keeps one socket while it is in the foreground. Each request is one stream, with a 1 MB window in each direction. The phone extends the Mac's window after it reads 256 KB.
 - A short foreground read has 6 seconds, including the connection. Writes, long polls (`updates?wait=20`), and full downloads have 45 seconds. A timeout sends CANCEL and keeps the socket.
+- An UPDATE_HINT frame ends the poll loop's pause after a failed read, so the phone reads the change at once. See [Update hints](#update-hints).
 - The phone sends a text `ping` after 20 silent seconds, and ends a socket that stays silent for 45 seconds.
 - The phone asks for gzip and removes it itself, because URLSession is not in the path.
 - A failed socket fails its streams. The next request opens a new socket with a new handshake.
@@ -240,11 +264,11 @@ The phone's static key and the relay client token live in the Keychain (`local.c
 The backend listens with plain HTTP on two loopback ports:
 
 - `127.0.0.1:8960` for the tools on this Mac. A tool pairs there with a code from `host.py pair`.
-- `127.0.0.1:8961` for the sidecar. Only this listener reads `X-Coconut-Peer`. The deploy checks `/health` here.
+- `127.0.0.1:8961` for the sidecar. Only this listener reads `X-Coconut-Peer`. The deploy checks `/health` here. Only this listener serves `GET /v1/tunnel/cursor`, for the update hints.
 
 ## Loopback test
 
-`scripts/test_tunnel_loopback.py` runs the test client, a Miniflare relay, the sidecar, and the backend on one Mac. The test client uses the app's `TunnelConnection` to pair and to send its requests. The client pairs, gets `/v1/state`, uploads a 5 MB attachment, and downloads 3.9 MB. It also checks that another iPhone key and a used ticket get no session, and that the sidecar reconnects. At the end, the test stops the sidecar during a session and starts it again a second later. The phone's next request must succeed on its first attempt. It needs the Xcode Command Line Tools and `npm ci` in `relay/`.
+`scripts/test_tunnel_loopback.py` runs the test client, a Miniflare relay, the sidecar, and the backend on one Mac. The test client uses the app's `TunnelConnection` to pair and to send its requests. The client pairs, gets `/v1/state`, uploads a 5 MB attachment, and downloads 3.9 MB. It also checks that another iPhone key and a used ticket get no session, and that the sidecar reconnects. Then the client makes a change without a long poll. An update hint must bring the change to the client in less than 1 second, from the start of the write to the end of the fetch. On a Mac this takes about 10 to 125 ms. A session without `X-Coconut-Hints` must get no hint. At the end, the test stops the sidecar during a session and starts it again a second later. The phone's next request must succeed on its first attempt. It needs the Xcode Command Line Tools and `npm ci` in `relay/`.
 
 ```bash
 python3 scripts/test_tunnel_loopback.py

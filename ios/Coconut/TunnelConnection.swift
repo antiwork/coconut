@@ -264,6 +264,8 @@ actor TunnelConnection {
     private let credential: TunnelCredential
     private let makeSocket: TunnelSocketFactory
     private let timing: Timing
+    // Gets the cursor of each UPDATE_HINT frame from the Mac. See docs/relay-transport.md.
+    private let onUpdateHint: (@Sendable (UInt64) -> Void)?
 
     private(set) var state: State = .idle
     private(set) var handshakeHash: Data?
@@ -284,12 +286,14 @@ actor TunnelConnection {
     private var idleWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(endpoint: TunnelEndpoint, phoneKey: Curve25519.KeyAgreement.PrivateKey, credential: TunnelCredential,
-         timing: Timing = Timing(), makeSocket: @escaping TunnelSocketFactory = URLSessionTunnelSocket.factory) {
+         timing: Timing = Timing(), makeSocket: @escaping TunnelSocketFactory = URLSessionTunnelSocket.factory,
+         onUpdateHint: (@Sendable (UInt64) -> Void)? = nil) {
         self.endpoint = endpoint
         self.phoneKey = phoneKey
         self.credential = credential
         self.timing = timing
         self.makeSocket = makeSocket
+        self.onUpdateHint = onUpdateHint
     }
 
     private final class Link {
@@ -596,6 +600,9 @@ actor TunnelConnection {
             switch frame.type {
             case .ping: try? send(TunnelFrame(type: .pong, stream: 0), on: generation)
             case .pong, .rekey: break
+            case .updateHint:
+                guard let cursor = frame.hintCursor else { return fail(generation, .protocolViolation) }
+                onUpdateHint?(cursor)
             // The Mac never opens a stream.
             case .requestHead: fail(generation, .protocolViolation)
             default:

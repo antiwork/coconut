@@ -10,6 +10,10 @@ import Network
 // Each stream in a session is one HTTP request, which the sidecar sends to the backend's plain HTTP listener on
 // loopback with X-Coconut-Peer set to the iPhone's static key. The backend checks that key against the device token.
 //
+// When a paired iPhone asks for update hints (X-Coconut-Hints: 1 on a request), the sidecar long-polls the backend's
+// event cursor on loopback, and sends an UPDATE_HINT frame on that session when the cursor moves. The iPhone then
+// fetches the updates at once. Older iPhones never ask, so they never get the frame type that they do not know.
+//
 // Files in <data>/tunnel, all private to this user:
 // - identity.key: the raw Curve25519 private key of this Mac (mode 0600).
 // - route.json: {relay, route, host_token, mac_key} from the registration with the relay (mode 0600).
@@ -33,6 +37,8 @@ let heartbeatInterval: TimeInterval = 60
 let pingInterval: TimeInterval = 20
 let silenceLimit: TimeInterval = 45
 let maxBackoff: TimeInterval = 60
+// One long poll of the backend's event cursor waits this long. The backend allows at most 25 seconds.
+let cursorWait = 25
 
 enum Derive {
     // HKDF-SHA256 with an empty salt. scripts/pairing.py and the iPhone use the same labels.
@@ -250,6 +256,8 @@ final class Channel {
     // The pre-shared key of a ticket channel, from the ticket file that the sidecar removes at once.
     var psk: Data?
     var streams: [UInt32: Stream] = [:]
+    // The iPhone asked for UPDATE_HINT frames. An older iPhone ends the session on an unknown frame type.
+    var hints = false
 
     init(id: UInt32, ticket: Bool, tokenHash: String) {
         self.id = id
@@ -299,6 +307,11 @@ final class Sidecar {
     var ticketWatch: DispatchSourceFileSystemObject?
     let pathMonitor = NWPathMonitor()
     var network: String?
+    // The backend's event cursor, while a channel wants update hints. nil until the first answer.
+    var cursor: UInt64?
+    var cursorPoll: NWConnection?
+    var cursorFailures = 0
+    var hintPacer = UpdateHintPacer()
 
     init(store: Store, route: Route, backend: String) throws {
         self.store = store
@@ -643,6 +656,10 @@ final class Sidecar {
             stream.path = path
             stream.headers = headers
             channel.streams[frame.stream] = stream
+            if channel.paired, !channel.hints, headers.contains(where: { $0.key.lowercased() == "x-coconut-hints" && $0.value == "1" }) {
+                channel.hints = true
+                watchCursor()
+            }
         case .body:
             guard let stream = channel.streams[frame.stream], stream.backend == nil else { throw TunnelFrameError.truncated }
             if stream.refused { return }
@@ -669,7 +686,7 @@ final class Sidecar {
                 stream.window += bytes
                 pump(stream, on: channel)
             }
-        case .responseHead, .rekey:
+        case .responseHead, .rekey, .updateHint:
             throw TunnelFrameError.truncated
         }
     }
@@ -870,6 +887,79 @@ final class Sidecar {
         for old in removed { control(["type": "remove_client", "hash": old.token_hash]) }
         control(["type": "add_client", "hash": hash])
         return true
+    }
+
+    // MARK: Update hints
+
+    // Long-polls the backend's event cursor while a channel wants hints. The first poll only reads the cursor.
+    func watchCursor() {
+        guard cursorPoll == nil else { return }
+        guard channels.values.contains(where: { $0.hints && $0.session != nil }) else {
+            // Without a listener, the cursor gets stale. The next watch reads it again before it sends a hint.
+            cursor = nil
+            return
+        }
+        let after = cursor
+        var head = "GET /v1/tunnel/cursor?after=\(after ?? 0)&wait=\(after == nil ? 0 : cursorWait) HTTP/1.1\r\n"
+        head += "Host: 127.0.0.1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        let connection = NWConnection(host: backendHost, port: backendPort, using: .tcp)
+        cursorPoll = connection
+        var response = Data()
+        let timeout = DispatchWorkItem { [weak connection] in connection?.cancel() }
+        queue.asyncAfter(deadline: .now() + .seconds(cursorWait + 10), execute: timeout)
+        func finish(_ value: UInt64?) {
+            guard cursorPoll === connection else { return }
+            timeout.cancel()
+            connection.stateUpdateHandler = nil
+            connection.cancel()
+            cursorPoll = nil
+            cursorAnswered(value, after: after)
+        }
+        func read() {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { data, _, done, error in
+                if let data { response.append(data) }
+                if done || error != nil || response.count > 4096 { return finish(tunnelCursor(fromResponse: response)) }
+                read()
+            }
+        }
+        connection.stateUpdateHandler = { update in
+            switch update {
+            case .ready:
+                connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
+                read()
+            case .waiting, .failed, .cancelled:
+                finish(nil)
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
+    }
+
+    func cursorAnswered(_ value: UInt64?, after: UInt64?) {
+        guard let value else {
+            // An older backend answers 404, and a stopped one does not answer. Try again later, up to once a minute.
+            cursorFailures += 1
+            cursor = nil
+            let delay = min(60, 1 << min(cursorFailures - 1, 6))
+            queue.asyncAfter(deadline: .now() + .seconds(delay)) { [weak self] in self?.watchCursor() }
+            return
+        }
+        cursorFailures = 0
+        cursor = value
+        if let after, value != after, let delay = hintPacer.changed(at: Date()) {
+            queue.asyncAfter(deadline: .now() + delay) { [weak self] in self?.sendHints() }
+        }
+        watchCursor()
+    }
+
+    // One hint carries every change since the last one. The iPhone compares the cursor with its own.
+    func sendHints() {
+        hintPacer.sent(at: Date())
+        guard let cursor else { return }
+        for channel in channels.values where channel.hints && channel.session != nil {
+            seal(.updateHint(cursor: cursor), on: channel)
+        }
     }
 
     // MARK: Status

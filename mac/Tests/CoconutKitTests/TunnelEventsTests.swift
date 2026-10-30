@@ -176,4 +176,30 @@ final class TunnelEventsTests: XCTestCase {
         XCTAssertEqual(ReconnectDelay.next(immediately: true, uptime: 5, backoff: 32, maxBackoff: 60, jitter: 1),
                        ReconnectDelay(delay: 0.2, backoff: 1))
     }
+
+    func testUpdateHintsAfterAQuietPeriodGoAtOnceAndLaterOnesCoalesce() {
+        var pacer = UpdateHintPacer()
+        let start = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(pacer.changed(at: start), 0, "The first change goes out at once.")
+        XCTAssertNil(pacer.changed(at: start), "A change before the hint goes out joins it.")
+        pacer.sent(at: start)
+        // A burst within the interval gives one hint at its end.
+        XCTAssertEqual(pacer.changed(at: start.addingTimeInterval(0.1)) ?? -1, 0.15, accuracy: 0.0001)
+        for step in 2...9 { XCTAssertNil(pacer.changed(at: start.addingTimeInterval(Double(step) / 50))) }
+        pacer.sent(at: start.addingTimeInterval(0.25))
+        XCTAssertFalse(pacer.pending)
+        // A change long after the last hint goes out at once again.
+        XCTAssertEqual(pacer.changed(at: start.addingTimeInterval(5)), 0)
+    }
+
+    func testTheCursorAnswerOfTheBackendParsesOnlyA200WithACursor() {
+        func response(_ status: String, _ body: String) -> Data {
+            Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(body.utf8.count)\r\n\r\n\(body)".utf8)
+        }
+        XCTAssertEqual(tunnelCursor(fromResponse: response("200 OK", #"{"cursor":4242}"#)), 4242)
+        XCTAssertNil(tunnelCursor(fromResponse: response("404 Not Found", #"{"error":"This route was not found."}"#)))
+        XCTAssertNil(tunnelCursor(fromResponse: response("200 OK", #"{"other":1}"#)))
+        XCTAssertNil(tunnelCursor(fromResponse: response("200 OK", #"{"cursor":-1}"#)))
+        XCTAssertNil(tunnelCursor(fromResponse: Data("HTTP/1.1 200 OK\r\n".utf8)), "A head without its end is incomplete.")
+    }
 }

@@ -66,6 +66,8 @@ final class AppStore {
     @ObservationIgnored private(set) var repairRequired = false
     @ObservationIgnored var tunnelSocketFactory: TunnelSocketFactory = URLSessionTunnelSocket.factory
     @ObservationIgnored private var pollTask: Task<Void, Never>?
+    // An update hint from the Mac ends the poll loop's pause after a failure. See UpdateHintWake.
+    @ObservationIgnored private let hintWake = UpdateHintWake()
     @ObservationIgnored private var foreground = false
     @ObservationIgnored private var cursor = 0
     @ObservationIgnored private var connectionGeneration = UUID()
@@ -298,7 +300,9 @@ final class AppStore {
         guard let endpoint = pairing.tunnelEndpoint, let credentials = TunnelCredentials.read(),
               let phoneKey = credentials.phoneKey else { throw TunnelError.needsRepair }
         let connection = TunnelConnection(endpoint: endpoint, phoneKey: phoneKey, credential: .token(credentials.clientToken),
-                                          makeSocket: tunnelSocketFactory)
+                                          makeSocket: tunnelSocketFactory) { [weak self] cursor in
+            Task { @MainActor [weak self] in self?.updateHint(cursor: cursor) }
+        }
         if let previous = tunnel { Task { await previous.close() } }
         tunnel = connection
         return APIClient(tunnel: connection, token: token)
@@ -1668,6 +1672,12 @@ final class AppStore {
         }
     }
 
+    // The Mac's event cursor moved. A long poll in flight returns by itself, so only a paused poll loop needs the hint.
+    func updateHint(cursor hinted: UInt64) {
+        guard foreground, pollTask != nil, hinted > UInt64(max(cursor, 0)) else { return }
+        hintWake.hint()
+    }
+
     private func beginPolling(refreshImmediately: Bool = true) {
         guard foreground, !isDemo, pairing != nil, pollTask == nil, !repairRequired else { return }
         let generation = connectionGeneration
@@ -1676,6 +1686,8 @@ final class AppStore {
             var failures = 0
             var needsSnapshot = refreshImmediately
             while !Task.isCancelled, self.foreground, self.connectionGeneration == generation {
+                // A hint before this request is part of what the request reads.
+                self.hintWake.clear()
                 do {
                     if self.client == nil {
                         guard let pairing = self.pairing, let token = PairingToken.read() else { self.connection = .unconfigured; break }
@@ -1728,8 +1740,9 @@ final class AppStore {
                     if error is URLError { self.client = nil }
                     needsSnapshot = true
                     failures += 1
-                    do { try await Task.sleep(for: .milliseconds(min(10_000, 500 * (1 << min(failures - 1, 5))))) }
-                    catch { break }
+                    // An update hint ends the pause early, so a change reaches the phone without the whole backoff.
+                    await self.hintWake.pause(for: .milliseconds(min(10_000, 500 * (1 << min(failures - 1, 5)))))
+                    if Task.isCancelled { break }
                 }
             }
             if self.connectionGeneration == generation { self.pollTask = nil }

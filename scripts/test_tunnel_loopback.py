@@ -2,7 +2,7 @@
 """Loopback test of the relay transport: test client, Miniflare relay, tunnel sidecar, and backend on this Mac.
 
 The test client (scripts/tunnel-test-client.swift) pairs with a version 2 link, then runs a real GET /v1/state, a
-5 MB attachment upload, and a 3.9 MB download. It needs macOS, the Xcode Command Line Tools, and `npm ci` in relay/.
+5 MB attachment upload, and a 3.9 MB download. It also measures how fast an update hint brings a change to the client. It needs macOS, the Xcode Command Line Tools, and `npm ci` in relay/.
 
     python3 scripts/test_tunnel_loopback.py
 """
@@ -164,6 +164,9 @@ class TunnelLoopbackTests(unittest.TestCase):
         self.assertIn('closed', steps['other key']['result'])
         self.assertIn('closed', steps['header injection']['result'])
         self.assertEqual(steps['spent ticket']['result'], 'refused')
+        # A change reaches a phone that asked for hints in well under a second, from the write to the fetched change.
+        self.assertLess(steps['update hint']['seconds'], 1)
+        self.assertEqual(steps['update hint']['older_app'], 'no hint')
         self.assertEqual(list((self.data / 'tunnel/tickets').glob('*.json')), [])
         self.assertEqual(len(self.peers()), 1)
         print(json.dumps(steps, indent=1), file=sys.stderr)

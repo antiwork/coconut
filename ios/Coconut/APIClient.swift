@@ -169,6 +169,9 @@ final class APIClient: @unchecked Sendable {
         }
         var headers = headers(path, method: method, body: body, idempotencyKey: idempotencyKey, fullState: fullState)
         headers["Accept-Encoding"] = "gzip"
+        // The sidecar then sends UPDATE_HINT frames on this session. An older sidecar forwards the header, and the
+        // backend ignores it.
+        if path.hasPrefix("updates?") { headers["X-Coconut-Hints"] = "1" }
         return TunnelRequest(method: method, path: "/v1/" + path, headers: headers, body: body ?? Data())
     }
 

@@ -319,6 +319,23 @@ class StateSync:
         from .service import ServiceError
         raise ServiceError(503, 'Settings changed during this request. Try again.')
 
+    def tunnel_cursor(self, after, wait=0):
+        """Return the event cursor when it differs from `after`, or after `wait` seconds (at most 25).
+
+        The tunnel sidecar long-polls this on loopback, and sends an update hint to the phone when the cursor moves.
+        The answer holds only the cursor, so the hint carries no content.
+        """
+        deadline = time.monotonic() + min(max(wait, 0), 25)
+        with self._read_view() as view:
+            cursor = view._cursor()
+            while cursor == after and not self.stopping.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.stopping.wait(min(remaining, .1))
+                cursor = view._cursor()
+        return dict(cursor=cursor)
+
     def updates(self, after, wait=0, *, collection_deltas=False, native_events=False, compact_history=False, recent_work=False):
         from .service import ServiceError
         if after < 0:

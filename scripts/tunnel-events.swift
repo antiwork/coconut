@@ -1,8 +1,8 @@
 import Foundation
 import Network
 
-// The connection events of the relay sidecar (scripts/tunnel-sidecar.swift), in <data>/tunnel/events.log.
-// scripts/tunnel.py compiles this file into the sidecar. mac/Tests/CoconutKitTests/TunnelEvents.swift is a symbolic link
+// The connection events of the relay sidecar (scripts/tunnel-sidecar.swift), in <data>/tunnel/events.log, and the
+// timing of its update hints. scripts/tunnel.py compiles this file into the sidecar. mac/Tests/CoconutKitTests/TunnelEvents.swift is a symbolic link
 // to this file, so `swift test --package-path mac` tests it.
 
 /// Why the relay socket ended, or why a connection attempt failed.
@@ -117,6 +117,41 @@ struct ReconnectDelay: Equatable {
         if let uptime, uptime > healthyUptime { return ReconnectDelay(delay: 0, backoff: 1) }
         return ReconnectDelay(delay: backoff * jitter, backoff: min(backoff * 2, maxBackoff))
     }
+}
+
+/// Spaces the UPDATE_HINT frames of the sidecar. The first change after a quiet period goes out at once. A change
+/// within `interval` of the last hint waits until the interval ends, and one hint then carries every change since.
+struct UpdateHintPacer: Equatable {
+    static let interval: TimeInterval = 0.25
+
+    var interval = UpdateHintPacer.interval
+    private(set) var lastSent: Date?
+    private(set) var pending = false
+
+    /// The backend cursor moved at `now`. Returns the wait before the next hint, or nil when a hint already waits.
+    mutating func changed(at now: Date) -> TimeInterval? {
+        guard !pending else { return nil }
+        pending = true
+        guard let lastSent else { return 0 }
+        return max(0, interval - now.timeIntervalSince(lastSent))
+    }
+
+    /// The waiting hint went out at `now`.
+    mutating func sent(at now: Date) {
+        pending = false
+        lastSent = now
+    }
+}
+
+/// The answer of `GET /v1/tunnel/cursor` on the backend's tunnel listener: `{"cursor": n}` in an HTTP/1.1 response.
+/// Returns nil for any other status or body.
+func tunnelCursor(fromResponse data: Data) -> UInt64? {
+    guard let end = data.range(of: Data("\r\n\r\n".utf8)) else { return nil }
+    let statusLine = String(decoding: data[data.startIndex..<end.lowerBound], as: UTF8.self).prefix { $0 != "\r" }
+    guard statusLine.split(separator: " ").dropFirst().first == "200",
+          let value = try? JSONSerialization.jsonObject(with: data[end.upperBound...]) as? [String: Any],
+          let cursor = value["cursor"] as? NSNumber, cursor.int64Value >= 0 else { return nil }
+    return cursor.uint64Value
 }
 
 /// A bounded log of JSON lines. The file rotates at `maxBytes` and keeps one previous file, `<name>.1`, both mode 0600.

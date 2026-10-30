@@ -118,6 +118,24 @@ final class Connection {
     func close() { socket.cancel(with: .normalClosure, reason: nil) }
 }
 
+// The UPDATE_HINT frames of one session, with the time of each.
+final class HintLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hints: [(cursor: UInt64, at: Date)] = []
+
+    func add(_ cursor: UInt64) { lock.withLock { hints.append((cursor, Date())) } }
+
+    // The first hint for a cursor after `cursor`.
+    func first(after cursor: UInt64, timeout: TimeInterval) async throws -> (cursor: UInt64, at: Date) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let hint = lock.withLock({ hints.first { $0.cursor > cursor } }) { return hint }
+            try check(Date() < deadline, "no update hint after cursor \(cursor) within \(timeout) seconds")
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+}
+
 func json(_ data: Data) throws -> [String: Any] {
     guard let value = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw Failure(description: "not JSON") }
     return value
@@ -227,7 +245,42 @@ struct TunnelTestClient {
             report(["step": "spent ticket", "result": "refused"])
         }
 
-        // 7. With COCONUT_TEST_HOST_RESET=1, the test stops the sidecar during a session and starts it again a second
+        // 7. Update hints. An older app does not ask for them, so its session never gets the new frame type. A session that
+        // asks gets an UPDATE_HINT frame when the backend's cursor moves, and fetches the change at once. Nothing here
+        // long-polls, so only the hint tells the phone about the change.
+        let updates = auth.merging(["X-Coconut-Updates": "4"]) { $1 }
+        let older = Connection(url: url, authorization: "Bearer \(clientToken)")
+        try await older.handshake(pattern: .ik, key: phone, macKey: macKey, psk: nil)
+        let olderRead = try await older.request("GET", "/v1/updates?after=0", headers: updates)
+        try check(olderRead.status == 200, "the older app's update read answered \(olderRead.status)")
+        let hints = HintLog()
+        let hinted = TunnelConnection(endpoint: endpoint, phoneKey: phone, credential: .token(clientToken)) { hints.add($0) }
+        let asking = updates.merging(["X-Coconut-Hints": "1"]) { $1 }
+        let first = try await send(hinted, "GET", "/v1/updates?after=0", headers: asking)
+        let cursor = UInt64(try json(first.body)["cursor"] as! Int)
+        // The sidecar's first cursor poll only reads the cursor. Then its long poll waits for a change.
+        try await Task.sleep(for: .milliseconds(500))
+        started = Date()
+        let change = try await send(hinted, "POST", "/v1/bots", headers: write.merging(["Idempotency-Key": UUID().uuidString]) { $1 },
+                                    body: try JSONSerialization.data(withJSONObject: ["name": "Hinted"]))
+        try check(change.status == 200, "the change answered \(change.status)")
+        let written = Date()
+        let hint = try await hints.first(after: cursor, timeout: 5)
+        let fetched = try await send(hinted, "GET", "/v1/updates?after=\(cursor)", headers: asking)
+        let fetchedCursor = UInt64(try json(fetched.body)["cursor"] as! Int)
+        try check(fetchedCursor > cursor, "the fetch after the hint did not see the change")
+        let done = Date()
+        // A hint on the older session would end its next request with an unexpected frame.
+        try await Task.sleep(for: .milliseconds(300))
+        let olderNext = try await older.request("GET", "/health")
+        try check(olderNext.status == 200, "the older app's session failed after the change")
+        older.close()
+        await hinted.close()
+        report(["step": "update hint", "cursor": fetchedCursor, "write_seconds": written.timeIntervalSince(started),
+                "hint_seconds": hint.at.timeIntervalSince(started), "seconds": done.timeIntervalSince(started),
+                "older_app": "no hint"])
+
+        // 8. With COCONUT_TEST_HOST_RESET=1, the test stops the sidecar during a session and starts it again a second
         // later, as when Cloudflare resets the Mac's relay socket. The next request waits in the relay for the new
         // sidecar, so it succeeds on its first attempt, within the app's short budget.
         guard ProcessInfo.processInfo.environment["COCONUT_TEST_HOST_RESET"] == "1" else { return }

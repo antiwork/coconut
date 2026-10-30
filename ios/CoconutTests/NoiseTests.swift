@@ -201,6 +201,35 @@ final class NoiseTests: XCTestCase {
         XCTAssertThrowsError(try RelayFrame.decode(Data(count: RelayFrame.maxSize + 1)))
     }
 
+    func testAnUpdateHintCarriesOnlyTheCursor() throws {
+        let hint = TunnelFrame.updateHint(cursor: 0x0102_0304_0506_0708)
+        let encoded = try hint.encoded()
+        XCTAssertEqual([UInt8](encoded), [11, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8])
+        let decoded = try TunnelFrame.decode(encoded)
+        XCTAssertEqual(decoded, hint)
+        XCTAssertEqual(decoded.hintCursor, 0x0102_0304_0506_0708)
+        XCTAssertNil(TunnelFrame(type: .updateHint, stream: 0, payload: Data(count: 4)).hintCursor)
+        XCTAssertNil(TunnelFrame(type: .updateHint, stream: 1, payload: Data(count: 8)).hintCursor)
+        XCTAssertNil(TunnelFrame(type: .window, stream: 0, payload: Data(count: 8)).hintCursor)
+
+        let (iPhone, mac, _) = try pair()
+        let sender = TunnelSession(transport: mac), receiver = TunnelSession(transport: iPhone)
+        let ciphertexts = try sender.seal(hint)
+        XCTAssertEqual(ciphertexts.count, 1)
+        XCTAssertFalse(ciphertexts[0].contains(encoded), "The relay sees only ciphertext.")
+        XCTAssertEqual(try receiver.open(ciphertexts[0])?.hintCursor, 0x0102_0304_0506_0708)
+    }
+
+    func testAnUnknownFrameTypeIsIgnoredAndTheSessionContinues() throws {
+        var (iPhone, mac, _) = try pair()
+        let receiver = TunnelSession(transport: mac)
+        let unknown = try iPhone.send.encrypt(Data([200, 0, 0, 0, 0, 0, 1, 2]), ad: Data())
+        XCTAssertNil(try receiver.open(unknown))
+        XCTAssertFalse(receiver.closed)
+        let ping = TunnelFrame(type: .ping, stream: 0)
+        XCTAssertEqual(try receiver.open(try iPhone.send.encrypt(try ping.encoded(), ad: Data())), ping)
+    }
+
     func testALargeBodySplitsIntoFramesThatFitOneNoiseMessage() throws {
         let body = Data((0..<(3 * 1024 * 1024 + 17)).map { UInt8(truncatingIfNeeded: $0) })
         let frames = TunnelFrame.bodyFrames(body, stream: 3)

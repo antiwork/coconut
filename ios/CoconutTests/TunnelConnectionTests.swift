@@ -8,9 +8,10 @@ final class TunnelConnectionTests: XCTestCase {
 
     private func connection(_ mac: FakeMac, credential: TunnelCredential = .token(String(repeating: "c", count: 64)),
                             phoneKey: Curve25519.KeyAgreement.PrivateKey = .init(),
-                            timing: TunnelConnection.Timing? = nil) -> TunnelConnection {
+                            timing: TunnelConnection.Timing? = nil,
+                            onUpdateHint: (@Sendable (UInt64) -> Void)? = nil) -> TunnelConnection {
         TunnelConnection(endpoint: mac.endpoint, phoneKey: phoneKey, credential: credential, timing: timing ?? fast,
-                         makeSocket: mac.factory)
+                         makeSocket: mac.factory, onUpdateHint: onUpdateHint)
     }
 
     // MARK: Streams
@@ -393,6 +394,30 @@ final class TunnelConnectionTests: XCTestCase {
         XCTAssertEqual(mac.authorizations, ["Bearer abc"])
     }
 
+    // MARK: Update hints
+
+    func testAnUpdateHintReachesTheAppAndKeepsTheSession() async throws {
+        let mac = FakeMac()
+        let hints = HintLog()
+        let tunnel = connection(mac) { hints.add($0) }
+        _ = try await tunnel.send(getRequest("/v1/updates?after=1"), timeout: .seconds(5))
+        mac.sendHint(cursor: 42)
+        mac.sendHint(cursor: 43)
+        try await waitFor { hints.values == [42, 43] }
+        let response = try await tunnel.send(getRequest("/health"), timeout: .seconds(5))
+        XCTAssertEqual(response.status, 200)
+        XCTAssertEqual(mac.socketCount, 1, "A hint keeps the socket.")
+    }
+
+    func testAPIClientAsksForHintsOnlyWithUpdateReads() async throws {
+        let mac = FakeMac()
+        mac.reply = { _ in FakeMac.Reply(body: Data(#"{"ok":true}"#.utf8)) }
+        let client = APIClient(tunnel: connection(mac), token: "t")
+        let _: [String: Bool] = try await client.request("updates?after=3")
+        let _: [String: Bool] = try await client.request("state")
+        XCTAssertEqual(mac.allRequests.map { $0.headers["X-Coconut-Hints"] }, ["1", nil])
+    }
+
     // MARK: APIClient
 
     func testAPIClientDecodesGzipAndSendsItsHeaders() async throws {
@@ -674,6 +699,8 @@ final class FakeMac: @unchecked Sendable {
         locked { send(.window(UInt32(bytes), stream: stream)) }
     }
 
+    func sendHint(cursor: UInt64) { locked { send(.updateHint(cursor: cursor)) } }
+
     private var current: MemorySocket? { sockets.last }
 
     private func receive(_ message: TunnelSocketMessage, from socket: MemorySocket) {
@@ -796,4 +823,11 @@ final class FakeMac: @unchecked Sendable {
         guard let session, let socket = current else { return }
         for ciphertext in try! session.seal(frame) { socket.deliver(.data(ciphertext)) }
     }
+}
+
+final class HintLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _values: [UInt64] = []
+    var values: [UInt64] { lock.withLock { _values } }
+    func add(_ value: UInt64) { lock.withLock { _values.append(value) } }
 }

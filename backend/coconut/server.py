@@ -30,6 +30,8 @@ from .service import TUNNEL_PAIRING_LIFETIME, Service, ServiceError, issue_pairi
 
 PEER_KEY = re.compile(r'[0-9a-f]{64}')
 # Only the main listener serves these. The tunnel listener carries the phone's requests.
+# The tunnel listener serves this route only to the sidecar, for its update hints (docs/relay-transport.md).
+TUNNEL_CURSOR_ROUTE = '/v1/tunnel/cursor'
 GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/tools', '/v1/gateway/cron',
                   '/v1/gateway/messages')
 
@@ -178,6 +180,19 @@ class Handler(BaseHTTPRequestHandler):
         more than 7 days ago."""
         return self.headers.get('X-Coconut-Work') == 'recent'
 
+    @staticmethod
+    def _tunnel_cursor(service, query):
+        """The event cursor for the update hints of the tunnel sidecar. See StateSync.tunnel_cursor."""
+        if not hasattr(service, 'tunnel_cursor'):
+            raise ServiceError(503, 'Coconut is not ready on this Mac.')
+        values = parse_qs(query)
+        try:
+            after = int(values.get('after', ['0'])[0])
+            wait = float(values.get('wait', ['0'])[0])
+        except ValueError:
+            raise ServiceError(400, 'after and wait must contain numbers.')
+        return service.tunnel_cursor(after, wait)
+
     def _gateway(self, bridge, path):
         """The routes of the `coconut` adapter of the Hermes gateway on this Mac. See gateway_bridge."""
         if not bridge.authorized(self.headers.get('Authorization', '')):
@@ -203,7 +218,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._serve(method)
         finally:
-            if self.server.tunnel:
+            # The sidecar's cursor polls wait on purpose, and come from no phone.
+            if self.server.tunnel and urlsplit(self.path).path != TUNNEL_CURSOR_ROUTE:
                 request_timing(method, self.path, self.status, time.perf_counter() - started, getattr(self, 'timings', None))
 
     def _serve(self, method):
@@ -216,6 +232,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ServiceError(400, 'Send GET requests without a body.')
             if method == 'GET' and url.path == '/health':
                 self._json(200, {'ok': True, 'api_version': 1})
+                return
+            if method == 'GET' and url.path == TUNNEL_CURSOR_ROUTE and self.server.tunnel and 'X-Coconut-Peer' not in self.headers:
+                # Only the sidecar asks without a phone key: it sets X-Coconut-Peer on every request from a phone.
+                self._json(200, self._tunnel_cursor(service, url.query))
                 return
             if method == 'POST' and url.path in GATEWAY_ROUTES and not self.server.tunnel and hasattr(service, 'gateway_bridge'):
                 self._gateway(service.gateway_bridge, url.path)

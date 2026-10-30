@@ -13,6 +13,10 @@ enum TunnelFrameType: UInt8, Sendable {
     case rekey = 8         // The sender rekeys its send key after this frame
     case window = 9        // payload: u32 bytes that the receiver may now send on this stream
     case error = 10        // JSON {code}; see TunnelErrorCode
+    // Mac to iPhone only, on stream 0. payload: u64 event cursor of the backend. It carries no content.
+    // The Mac sends it only on a session whose iPhone asked for hints (`X-Coconut-Hints: 1`), because older apps
+    // end the session on an unknown frame type.
+    case updateHint = 11
 }
 
 enum TunnelErrorCode: String, Codable, Sendable {
@@ -71,6 +75,19 @@ struct TunnelFrame: Equatable, Sendable {
         var payload = Data()
         withUnsafeBytes(of: bytes.bigEndian) { payload.append(contentsOf: $0) }
         return TunnelFrame(type: .window, stream: stream, payload: payload)
+    }
+
+    // The backend's event cursor moved to `cursor`. The iPhone fetches the updates after its own cursor.
+    static func updateHint(cursor: UInt64) -> TunnelFrame {
+        var payload = Data()
+        withUnsafeBytes(of: cursor.bigEndian) { payload.append(contentsOf: $0) }
+        return TunnelFrame(type: .updateHint, stream: 0, payload: payload)
+    }
+
+    // The cursor of a valid UPDATE_HINT frame, or nil.
+    var hintCursor: UInt64? {
+        guard type == .updateHint, stream == 0, flags == 0, payload.count == 8 else { return nil }
+        return payload.reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
     }
 }
 
@@ -150,11 +167,14 @@ final class TunnelSession {
         }
     }
 
-    // Returns nil for a REKEY frame, which only changes the receive key.
+    // Returns nil for a REKEY frame, which only changes the receive key, and for a frame of an unknown type.
+    // A later version can add frame types: this side ignores them, and the session continues.
     func open(_ ciphertext: Data) throws -> TunnelFrame? {
         guard !closed else { throw NoiseError.wrongState }
         do {
-            let frame = try TunnelFrame.decode(try transport.receive.decrypt(ciphertext, ad: Data()))
+            let plaintext = try transport.receive.decrypt(ciphertext, ad: Data())
+            let frame: TunnelFrame
+            do { frame = try TunnelFrame.decode(plaintext) } catch TunnelFrameError.unknownType { return nil }
             if frame.type == .rekey {
                 guard frame.stream == 0, frame.flags == 0, frame.payload.isEmpty else { throw TunnelFrameError.invalidRekey }
                 transport.receive.rekey()
