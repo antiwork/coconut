@@ -411,30 +411,48 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
         with self.service.transaction():
             task = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Review open assignment',
                                       'mode': 'queue'}, human_authored=False)
-            card = dict(id=str(uuid4()), task_id=task['id'], bot_id=self.bot['id'], status='failed', outcome=failed,
-                        title='Refund the buyer?', action_type='question', revision=2, _native=True,
-                        created_at=task['created_at'])
-            self.service._put('decisions', card)
-            stored = self.service._get('tasks', task['id'])
-            stored.update(status='failed', summary=failed, _resume_decision=card['id'], _native_turn_id='old-input')
-            self.service._put('tasks', stored)
             other = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Other work',
                                        'mode': 'queue'}, human_authored=False)
-            self.service._put('tasks', dict(self.service._get('tasks', other['id']), status='failed',
-                                            summary='Work stopped: another error.'))
+        # The scheduler claims both tasks, and the worker refuses them, as before the fix.
+        def refuse(started, bot, history, emit):
+            if started['id'] == task['id']:
+                raise RuntimeError('The native claim has no prepared worker.')
+            raise RuntimeError('another error.')
+        self.provider.start_task = refuse
+        self.settle(lambda: all(self.service._get('tasks', t['id'])['status'] == 'failed' for t in (task, other)))
+        self.assertEqual(self.service._get('tasks', task['id'])['summary'], failed)
+        # The person had answered a card of the task, and the failure failed the answer too.
+        with self.service.transaction():
+            card = dict(id=str(uuid4()), task_id=task['id'], bot_id=self.bot['id'], status='failed', outcome=failed,
+                        title='Refund the buyer?', action_type='question', revision=2, _native=True,
+                        created_at=task['created_at'], options=[dict(id='refund', label='Verify and refund')])
+            self.service._put('decisions', card)
+            self.service._put('tasks', dict(self.service._get('tasks', task['id']), _resume_decision=card['id']))
             # The first start after the update runs the recovery. This service started before the failure.
             self.service.db.execute("DELETE FROM settings WHERE key='recovered.unprepared_workers'")
-            self.service._recover_unprepared_workers()
-        stored = self.service._get('tasks', task['id'])
-        self.assertEqual((stored['status'], stored['_resume_decision']), ('queued', card['id']))
-        self.assertNotEqual(stored['_native_turn_id'], 'old-input')
-        # The person's answer is the answer of the card again.
+        self.service.close()
+        self.provider.close()
+        self.provider = Provider(self.tmp.name)
+        self.service = Service(self.tmp.name, self.provider, start_workers=False)
         self.assertEqual(self.service._get('decisions', card['id'])['status'], 'approved')
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'queued')
         self.assertEqual(self.service._get('tasks', other['id'])['status'], 'failed')
-        # It runs once.
-        with self.service.transaction():
-            self.service._put('tasks', dict(stored, status='failed', summary=failed))
-            self.service._recover_unprepared_workers()
+        # The scheduler claims the task again, and its turn continues with the person's answer, once.
+        resumed = []
+        def resume(started, bot, history, decision, emit):
+            resumed.append((started['id'], decision['id'], decision['status'], started.get('_kanban_external_id')))
+            emit('text_delta', {'text': 'Refunded the buyer.'})
+            emit('completed', {'summary': 'Refunded.'})
+        self.provider.resume_task = resume
+        self.settle(lambda: self.service._get('tasks', task['id'])['status'] == 'completed')
+        for _ in range(3):
+            self.tick()
+        self.assertEqual(resumed, [(task['id'], card['id'], 'approved', task['id'])])
+        self.assertEqual(self.service._get('tasks', task['id'])['summary'], 'Refunded.')
+        self.assertEqual(self.service._get('tasks', other['id'])['status'], 'failed')
+        # The recovery runs once: a later start leaves a new failure alone.
+        self.service._put('tasks', dict(self.service._get('tasks', task['id']), status='failed', summary=failed))
+        self.service._recover_unprepared_workers()
         self.assertEqual(self.service._get('tasks', task['id'])['status'], 'failed')
 
     def test_source_urgency_orders_audits_without_lowering_returned_work(self):
