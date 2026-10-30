@@ -236,14 +236,66 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
         process = subprocess.Popen(['sleep', '30'])
         self.addCleanup(process.wait)
         self.addCleanup(process.kill)
-        claim = dict(run_id=7, pid=process.pid)
+        claim = dict(run_id=7, pid=process.pid, native_id='t_one')
+        ready = dict(id='t_one', status='ready', current_run_id=None)
         # No duplicate run while the worker of the claim still runs, or while the board runs the claim's run.
-        self.assertFalse(interrupted_claim(claim, dict(status='ready', current_run_id=None)))
-        self.assertFalse(interrupted_claim(dict(claim, pid=None), dict(status='running', current_run_id=7)))
-        self.assertFalse(interrupted_claim({}, dict(status='ready', current_run_id=None)))
+        self.assertFalse(interrupted_claim(claim, ready))
+        self.assertFalse(interrupted_claim(dict(claim, pid=None), dict(ready, status='running', current_run_id=7)))
+        self.assertFalse(interrupted_claim({}, ready))
+        # A claim without a process proves no cut-off run.
+        self.assertFalse(interrupted_claim(dict(claim, pid=None), ready))
         process.kill()
         process.wait()
-        self.assertTrue(interrupted_claim(claim, dict(status='ready', current_run_id=None)))
+        self.assertTrue(interrupted_claim(claim, ready))
+        # The claim of another board task, for example before a successor card, does not recover this one.
+        self.assertFalse(interrupted_claim(claim, dict(ready, id='t_two')))
+
+    def test_a_restart_that_leaves_a_dead_run_on_a_board_task_with_a_pr_respawns_it_once(self):
+        # The live state of Dev's task 3b3718b1: a task that Coconut put on the board (a binding, not an adopted
+        # outcome, so no _native_outcome_id), claimed, with a PR on the board and a dead run after a restart.
+        with self.service.transaction():
+            task = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Fix the mobile export.',
+                                      'mode': 'queue'}, human_authored=False)
+            # An earlier turn gave the task its turn ID, so its claim and its next run have the same input.
+            stored = self.service._get('tasks', task['id'])
+            stored['_native_turn_id'] = str(uuid4())
+            self.service._put('tasks', stored)
+        entered, release = threading.Event(), threading.Event()
+        def hold(started, bot, history, emit):
+            if started['id'] != task['id']:
+                emit('completed', {'summary': 'Done.'})
+                return
+            entered.set()
+            release.wait(30)
+            raise RuntimeError('The service stopped.')
+        self.provider.start_task = hold
+        self.settle(entered.is_set)
+        stale = self.service._get('tasks', task['id'])['_kanban_claim']
+        identity = stale['native_id']
+        self.assertNotIn('_native_outcome_id', self.service._get('tasks', task['id']))
+        self.assertEqual(stale['input'], stored['_native_turn_id'])
+        self.comment(identity, 'Opened ' + self.PR + ' for review.')
+        self.service.stopping.set()
+        release.set()
+        self.service.running[task['id']].join(10)
+        self.service.close()
+        self.provider.close()
+        self.provider = Provider(self.tmp.name)
+        self.service = Service(self.tmp.name, self.provider, start_workers=False)
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'queued')
+        starts = []
+        def run(started, bot, history, emit):
+            if started['id'] == task['id']:
+                starts.append(started.get('_kanban_claim'))
+            emit('completed', {'summary': 'Done.'})
+        self.provider.start_task = run
+        self.settle(lambda: starts and self.service._get('tasks', task['id'])['status'] == 'completed')
+        for _ in range(3):
+            self.tick()
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['native_id'], identity)
+        self.assertNotEqual(starts[0]['run_id'], stale['run_id'])
+        self.assertEqual(self.runs(identity), 2)
 
     def test_a_guarded_outcome_with_comments_keeps_one_guard_event_and_shows_its_guard(self):
         # A task that never ran waits for new input while a comment names its PR. The guard holds. Audits comment on

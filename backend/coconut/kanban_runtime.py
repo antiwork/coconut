@@ -194,6 +194,14 @@ class Board:
                                   'DO UPDATE SET native_id=excluded.native_id,intent=excluded.intent',
                                   (row['id'], identity, intent))
 
+    def run_cut_off(self, identity, run_id):
+        """Whether a run of the task ended without a result: it exists, it ended, and it did not complete. A claim
+        whose run completed has its result, so the same input does not run again."""
+        if not isinstance(run_id, int):
+            return False
+        run = self.conn.execute('SELECT outcome,ended_at FROM task_runs WHERE id=? AND task_id=?', (run_id, identity)).fetchone()
+        return bool(run and run[1] is not None and run[0] != 'completed')
+
     def _note_respawn_guard(self, identity, reason):
         """Record why a ready task does not spawn, unless its newest event already says so.
 
@@ -638,7 +646,8 @@ class Board:
                     continue
                 continuing = task['followup_input'] == row['input']
                 new_input = row.get('previous_input') and row['previous_input'] != row['input']
-                recovering = (row.get('recovering') and row.get('native_id') == task['id']
+                recovering = ((row.get('recovering') and row.get('native_id') == task['id']
+                               or row.get('interrupted') == task['id'] and self.run_cut_off(task['id'], row.get('interrupted_run')))
                               and row.get('previous_input') == row['input'])
                 guard = self.dispatch.check_respawn_guard(self.conn, task['id'])
                 if guard is not None and not (continuing or (new_input or recovering) and guard == 'active_pr'):

@@ -157,16 +157,19 @@ RESPAWN_GUARD_NOTICE_SECONDS = 3600
 
 def interrupted_claim(claim, native):
     """Whether the run of a claim ended without a result and its process is gone, for example after a restart of the
-    service. The outcome then recovers: its next run continues the same input, also past the `active_pr` guard.
+    service. The task then recovers: its next run continues the same input, also past the `active_pr` guard. This holds
+    for each task on the board: an adopted outcome, and a task that Coconut put on the board (its binding).
 
-    The board task is `ready` and runs nothing now, or runs another run, so no run of the claim is alive. The process
-    of the claim is gone too, so no worker of it still writes. Then a new run is no duplicate.
+    The board task of the claim is `ready` and runs nothing now, or runs another run, so no run of the claim is alive.
+    The process of the claim is gone too, so no worker of it still writes. Then a new run is no duplicate.
     """
-    if not claim.get('run_id') or native.get('status') != 'ready' or native.get('current_run_id') == claim['run_id']:
+    if (not claim.get('run_id') or native.get('status') != 'ready' or native.get('current_run_id') == claim['run_id']
+            or claim.get('native_id') != native.get('id')):
         return False
     pid = claim.get('pid')
     if not isinstance(pid, int) or pid <= 0:
-        return True
+        # Each spawn records the process of its claim. Without one, nothing proves that the run was cut off.
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -352,6 +355,10 @@ class NativeKanban(NativeOutcomes):
                     previous_input=claim.get('input'),
                     recovering=bool(source['id'] == task['id'] and task.get('_native_outcome_id')
                                     and (task.get('_self_recovery') or interrupted_claim(claim, native))),
+                    # The board task of a claim whose run ended without a result, for each task that the board runs:
+                    # an adopted outcome or a task that Coconut put on the board. Its next run recovers the same input.
+                    interrupted=claim.get('native_id') if source['id'] == task['id'] and interrupted_claim(claim, native) else None,
+                    interrupted_run=claim.get('run_id'),
                     workspace=str(workspace), workspace_changed=changed, priority=priority, summary=source.get('summary', ''),
                     execution_id=execution_key(task), native_id=task.get('_native_outcome_id') if source['id'] == task['id'] else None,
                     created_at=source.get('created_at', task.get('created_at', '')))
