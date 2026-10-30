@@ -65,6 +65,22 @@ class GatewayCronTests(unittest.TestCase):
         self.assertEqual(self.service.gateway_cron({'event': 'start', 'home': self.temp.name, 'job_id': 'x',
                                                     'execution_id': 'other'}), {'skip': True})
 
+    def test_a_cron_start_finds_its_run_through_an_index(self):
+        started = self.start()
+        original = type(self.service)._all
+
+        def guarded(service, table):
+            if table == 'tasks':
+                raise AssertionError('A cron start must not parse every task.')
+            return original(service, table)
+
+        with patch.object(type(self.service), '_all', guarded):
+            self.assertEqual(self.start()['turn_id'], started['turn_id'])
+        plan = ' '.join(row[-1] for row in self.service.db.execute(
+            "EXPLAIN QUERY PLAN SELECT rowid, data FROM tasks INDEXED BY tasks_gateway_cron "
+            "WHERE json_extract(data,'$._gateway_cron.execution_id')=?", ('run-1',)))
+        self.assertIn('SEARCH tasks USING INDEX tasks_gateway_cron', plan)
+
     def test_an_update_waits_for_a_cron_run_and_its_cancel_stops_no_chat_turn(self):
         started = self.start()
         with self.service.lock:

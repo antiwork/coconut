@@ -306,6 +306,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_relay_callback_owner ON tasks (json_extract(data,'$._relay_callback_owner'))")
         self.db.execute('CREATE INDEX IF NOT EXISTS messages_human ON messages (id) WHERE ' + HUMAN_MESSAGE)
         self.db.execute('CREATE INDEX IF NOT EXISTS messages_streaming ON messages (id) WHERE ' + STREAMING_MESSAGE)
+        self.db.execute("CREATE INDEX IF NOT EXISTS tasks_gateway_cron ON tasks (json_extract(data,'$._gateway_cron.execution_id')) "
+                        "WHERE json_extract(data,'$._gateway_cron.execution_id') IS NOT NULL")
         self.db.execute('CREATE INDEX IF NOT EXISTS decisions_proposal_execution ON decisions (id) WHERE ' + PROPOSAL_EXECUTION)
         self.db.executescript(READ_INDEXES + PR_URL_INDEX)
         self._request_device_id = None

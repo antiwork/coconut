@@ -884,8 +884,11 @@ class GatewayChat:
         if row is None:
             return {'skip': True}
         with self.transaction():
-            previous = next((task for task in self._all('tasks')
-                             if (task.get('_gateway_cron') or {}).get('execution_id') == execution_id), None)
+            # The index tasks_gateway_cron finds the task of this execution. A parse of every task took about 2 s
+            # under the service lock on the Mac mini. No ORDER BY: it makes SQLite scan the table.
+            rows = self.db.execute("SELECT rowid, data FROM tasks INDEXED BY tasks_gateway_cron "
+                                   "WHERE json_extract(data,'$._gateway_cron.execution_id')=?", (execution_id,)).fetchall()
+            previous = json.loads(min(rows)[1]) if rows else None
             if previous is not None:
                 turn = previous['_gateway_cron']['turn_id']
                 if self.gateway_bridge.task_of(turn) == previous['id']:
