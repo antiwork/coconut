@@ -180,8 +180,11 @@ EXITED = "ZX"
 EXITING = "E" + EXITED
 
 
-def exiting(state: str) -> bool:
-    return any(letter in state for letter in EXITING)
+def exiting(state: str, command: str = "") -> bool:
+    """True when the process exits. Linux has no state letter for it: a process that exits releases its memory, and
+    with it its argument list, before it becomes a zombie. ps then shows its name in brackets, such as "[python3]",
+    with a live state such as R or D."""
+    return any(letter in state for letter in EXITING) or (command.startswith("[") and command.endswith("]"))
 
 
 def recorded_pid() -> int | None:
@@ -214,7 +217,7 @@ def owned_process() -> tuple[int, dict] | None:
     except (OSError, ValueError, KeyError, TypeError):
         raise SystemExit("The process record does not identify this Coconut installation. No process was stopped.") from None
     state = process_state(pid)
-    if state is None or exiting(state[0]):
+    if state is None or exiting(*state):
         # An exiting process serves nothing. stop_owned_process waits until it is gone.
         return None
     pattern = (

@@ -261,6 +261,35 @@ class HostLifecycleTests(unittest.TestCase):
         # The stop waits for the zombie, which no longer holds service.lock. It does not need the PID to vanish.
         self.assertEqual(len(calls), 6)
 
+    def test_a_linux_service_that_exits_after_the_signal_is_stopped_and_not_foreign(self):
+        # On Linux, a process that exits releases its memory before it becomes a zombie. In between, ps shows a live
+        # state and the name in brackets, not the launch command. The CI runner saw this under load.
+        self.write_process()
+        command = f'Sl   /usr/bin/python3 -m coconut --data-dir {self.data} --port 8960 --provider hermes --tunnel-port 8961'
+        outputs = iter([command, 'R    [python3]', 'D    [python3]', 'Z    [python3] <defunct>', 'Z    [python3] <defunct>'])
+        calls = []
+        def run(arguments, **kwargs):
+            calls.append(arguments)
+            output = next(outputs)
+            return subprocess.CompletedProcess(arguments, 1 if output is None else 0, output or '', '')
+        with patch.object(host.subprocess, 'run', side_effect=run), patch.object(host.os, 'kill') as kill, \
+             patch.object(host.time, 'sleep'), patch.object(host, 'process_table', return_value={}):
+            host.stop_owned_process()
+        kill.assert_called_once_with(4242, host.signal.SIGTERM)
+        self.assertEqual(len(calls), 5)
+
+    def test_a_bracketed_name_is_exiting_but_another_command_still_does_not_match(self):
+        self.write_process()
+        for output, owned in (('R    [python3]', None), ('S    [kworker/0:1]', None)):
+            with self.subTest(output=output), \
+                    patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, output, '')):
+                self.assertEqual(host.owned_process(), owned)
+        for output in ('S    /usr/bin/python3 [python3]', 'S    python3 -m coconut [x]'):
+            with self.subTest(output=output), \
+                    patch.object(host.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, output, '')):
+                with self.assertRaisesRegex(SystemExit, 'does not match'):
+                    host.owned_process()
+
     def test_an_exiting_service_is_not_running_and_the_stop_waits_for_its_end(self):
         self.write_process()
         outputs = iter(['?Es  (Python)', '?Es  (Python)', '?Es  (Python)', None, None])
