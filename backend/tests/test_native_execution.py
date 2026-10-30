@@ -248,6 +248,29 @@ class NativeExecutionTests(unittest.TestCase):
         self.assertEqual(self.service._all('decisions'), [])
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'working')
 
+    def test_a_card_must_list_its_recommended_choice_first(self):
+        options = [{'id': 'a-retain', 'label': 'A: Keep the position'}, {'id': 'b-release', 'label': 'B: Release the position'}]
+        with self.assertRaises(ServiceError) as refused:
+            self.event('native_question', {'title': 'Release the position?', 'options': options,
+                                           'recommended_option_id': 'b-release'})
+        self.assertEqual(refused.exception.status, 400)
+        self.assertIn('List the recommended choice first', str(refused.exception))
+        self.assertIn('"b-release"', str(refused.exception))
+        self.assertIn('letter them again in the new order', str(refused.exception))
+        self.assertEqual(self.service._all('decisions'), [])
+        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'working')
+        # A card that lists the recommended choice first, or that recommends no choice, is created.
+        with self.assertRaises(YieldForDecision):
+            self.event('native_question', {'title': 'Release the position?', 'options': options[::-1],
+                                           'recommended_option_id': 'b-release'})
+        self.assertEqual([o['id'] for o in self.service._all('decisions')[0]['options']], ['b-release', 'a-retain'])
+
+    def test_a_card_without_a_recommendation_keeps_any_order(self):
+        with self.assertRaises(YieldForDecision):
+            self.event('native_question', {'title': 'Which route?', 'options': [
+                {'id': 'a', 'label': 'A: Long route'}, {'id': 'b', 'label': 'B: Short route'}]})
+        self.assertIsNone(self.service._all('decisions')[0]['recommended_option_id'])
+
     def test_receipt_cannot_complete_another_task(self):
         call = self.event('native_call', {'name': 'terminal', 'arguments': {}})
         other = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Second', 'mode': 'queue'})

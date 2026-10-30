@@ -139,6 +139,25 @@ final class DecisionInboxTests: XCTestCase {
         XCTAssertTrue(decision.cardOptions.isEmpty)
     }
 
+    func testCardShowsTheRecommendedChoiceFirst() throws {
+        var decision = try XCTUnwrap(PreviewStateFixture.load().decisions.first)
+        decision.actionType = "question"
+        decision.options = ["a-retain", "b-release-position", "c-ask"].map {
+            DecisionOption(id: $0, label: $0, explanation: "", answer: "approve")
+        }
+        decision.recommendedOptionId = "b-release-position"
+        XCTAssertEqual(decision.cardOptions.map(\.id), ["b-release-position", "a-retain", "c-ask"])
+        // Only the display order changes. The stored choices keep their order, IDs and answers.
+        XCTAssertEqual(decision.options.map(\.id), ["a-retain", "b-release-position", "c-ask"])
+        XCTAssertEqual(Set(decision.cardOptions.map(\.answer)), ["approve"])
+        decision.recommendedOptionId = "a-retain"
+        XCTAssertEqual(decision.cardOptions, decision.options)
+        decision.recommendedOptionId = nil
+        XCTAssertEqual(decision.cardOptions, decision.options)
+        decision.recommendedOptionId = "missing"
+        XCTAssertEqual(decision.cardOptions, decision.options)
+    }
+
     @MainActor
     func testInboxBadgeIncludesLaterAndExcludesResolvedOrAnswering() throws {
         let store = AppStore(demo: true)

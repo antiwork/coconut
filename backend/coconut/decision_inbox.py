@@ -108,6 +108,14 @@ def decision_options(options):
                  explanation=option.get('explanation', ''), **decision_risk(option)) for option in options]
 
 
+def require_recommended_first(options, recommended_id):
+    """A card lists its recommended choice first. The bot must put it there: Coconut does not reorder the choices,
+    because a bot often letters them and quotes the letter in the text that a choice posts."""
+    from .service import ServiceError
+    if recommended_id is not None and options and options[0]['id'] != recommended_id:
+        raise ServiceError(400, RECOMMENDED_FIRST.format(recommended=recommended_id))
+
+
 class DecisionInbox:
     def edit_message_draft(self, decision, task, data, device):
         from .service import ServiceError, now, digest, encoded
@@ -412,6 +420,7 @@ class DecisionInbox:
         recommended = revision.get('recommended_option_id')
         if recommended is not None and recommended not in {o['id'] for o in options}:
             raise ServiceError(400, 'Recommend a current choice.')
+        require_recommended_first(options, recommended)
         if 'previous_decision_id' in revision:
             decision.update(self.decision_followup(task, revision))
         merge_url = self._merge_decision_url({'merge_pr_url': revision.get('merge_pr_url', decision.get('merge_pr_url'))}, task)
@@ -438,6 +447,6 @@ class DecisionInbox:
 
 # The card rules of every bot turn. The coconut plugin of the gateway gives them to its sessions too.
 try:
-    from .card_tools import DECISION_INSTRUCTIONS  # noqa: E402
+    from .card_tools import DECISION_INSTRUCTIONS, RECOMMENDED_FIRST  # noqa: E402
 except ImportError:  # The worker imports this module from its folder.
-    from card_tools import DECISION_INSTRUCTIONS  # noqa: E402
+    from card_tools import DECISION_INSTRUCTIONS, RECOMMENDED_FIRST  # noqa: E402
