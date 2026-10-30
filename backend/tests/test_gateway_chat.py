@@ -656,6 +656,62 @@ class ServiceRoutingTests(unittest.TestCase):
                          ('pending', 'needs_you'))
         self.assertEqual(self.provider.contexts, [])
 
+    def test_an_automatic_check_of_a_card_runs_in_the_gateway_and_records_only_its_result(self):
+        from datetime import datetime, timedelta, timezone
+        task, card, _ = self.ask_in_gateway()
+        with self.service.transaction():
+            # The card is old, and its work changed since the last check.
+            decision = self.service._get('decisions', card['id'])
+            decision['created_at'] = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
+            decision['_freshness']['checked_at'] = decision['created_at']
+            self.service._put('decisions', decision)
+            stored = self.service._get('tasks', task['id'])
+            stored['summary'] = 'The release notes changed.'
+            self.service._put('tasks', stored)
+        self.service._queue_decision_refreshes()
+        context = next(c for c in self.service._all('contexts') if c['decision_id'] == card['id'])
+        self.assertTrue(context.get('_decision_refresh'))
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        self.service._start_context(context['id'])
+        adapter.join(5)
+        turn = adapter.turns[0]
+        self.assertEqual((turn['mode'], turn.get('silent')), ('refresh', True))
+        self.assertTrue(turn['text'].startswith('Check the current evidence for this pending question.'))
+        self.assertIn('coconut_refresh_decision', turn['text'])
+        # The check records only its result. It answers for nobody.
+        with self.assertRaisesRegex(ServiceError, 'Record the check'):
+            self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'resolve_reply', 'arguments': {
+                'choice': 'approve', 'option_id': 'ship', 'quote': 'ship'}})
+        result = self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'refresh_decision', 'arguments': {
+            'status': 'current', 'evidence': 'The release notes still need a decision.'}})
+        self.assertEqual(result.get('status'), 'recorded')
+        self.service.gateway_bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
+        self.service.context_threads[context['id']].join(5)
+        self.assertEqual(self.read('contexts', context['id'])['status'], 'completed')
+        self.assertEqual((self.read('decisions', card['id'])['status'], self.read('tasks', task['id'])['status']),
+                         ('pending', 'needs_you'))
+        # The check sends no message to the chat, and the worker did not run it.
+        self.assertEqual([m for m in self.service._task_messages(task['id'])
+                          if m['role'] == 'assistant' and m.get('decision_id') == card['id'] and m['kind'] == 'text'], [])
+        self.assertEqual(self.provider.contexts, [])
+
+    def test_a_follow_up_on_a_card_cannot_record_a_check_result(self):
+        task, card, _ = self.ask_in_gateway()
+        self.write('POST', f'/v1/decisions/{card["id"]}/context', {'question': 'Why now?'})
+        context = next(c for c in self.service._all('contexts') if c['decision_id'] == card['id'])
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        self.service._start_context(context['id'])
+        adapter.join(5)
+        turn = adapter.turns[0]
+        with self.assertRaisesRegex(ServiceError, 'pending decision stays open'):
+            self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'refresh_decision', 'arguments': {
+                'status': 'withdraw', 'evidence': 'Obsolete.'}})
+        self.service.gateway_bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
+        self.service.context_threads[context['id']].join(5)
+        self.assertEqual(self.read('decisions', card['id'])['status'], 'pending')
+
     def test_a_typed_reply_to_a_card_continues_in_the_gateway(self):
         task, card, _ = self.ask_in_gateway()
         self.write('POST', f'/v1/decisions/{card["id"]}/answer',

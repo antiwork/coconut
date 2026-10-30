@@ -245,7 +245,8 @@ class GatewayBridge:
         turn.silent = silent
         if context_id:
             turn.context_id = context_id
-            turn.request['mode'] = 'context'
+            # `refresh` for an automatic check of the card: the plugin then allows only its check tool of Coconut.
+            turn.request['mode'] = mode or 'context'
         elif mode:
             # For example `status`: the plugin blocks every tool call of the turn (hooks.guard_tool).
             turn.request['mode'] = mode

@@ -41,15 +41,11 @@ WITHDRAWAL_RESPONSE = ('Coconut withdrew an obsolete card after checking current
                        'No option was selected and no new approval was given. Continue only within the existing request. '
                        'Reuse an existing owner or pending question instead of duplicating work.\n')
 
-REFRESH_SCHEMA = {
-    'name': 'coconut_refresh_decision',
-    'description': 'Record this automatic card check. This cannot approve an action or answer for the person.',
-    'parameters': {'type': 'object', 'additionalProperties': False, 'properties': {
-        'status': {'type': 'string', 'enum': ['current', 'revise', 'withdraw']},
-        'evidence': {'type': 'string', 'description': 'Verified facts and source references that support this result.'},
-        'revision': {'type': 'object', 'description': 'For revise: the complete current question, context, options, and risk. For a draft_message: only risk_level, risk, and uncertainty; never draft content.'},
-    }, 'required': ['status', 'evidence']},
-}
+# The schema of the check tool. The worker and the coconut plugin of the gateway offer it (card_tools).
+try:
+    from .card_tools import REFRESH_SCHEMA  # noqa: F401
+except ImportError:  # The worker imports this module from its folder.
+    from card_tools import REFRESH_SCHEMA  # noqa: F401
 
 
 def age(value, current):

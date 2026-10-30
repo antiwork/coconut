@@ -12,6 +12,9 @@ Cards. coconut_ask, coconut_suggest and coconut_resolve_reply have the schemas o
 (backend/coconut/card_tools.py, loaded by its path). A card of coconut_ask ends the turn, as in the worker: the service
 keeps the task waiting for the answer, and the pre_tool_call hook blocks each further tool call of the turn
 (hooks.guard_tool). The answer continues the work in a later turn.
+
+Card checks. coconut_refresh_decision records the result of an automatic check of a pending card. Only a check turn
+(mode `refresh`) can call it, and a check turn can call no other Coconut tool (hooks.guard_tool).
 """
 from __future__ import annotations
 
@@ -97,6 +100,7 @@ def register(ctx):
     for schema, handler in ((module.QUESTION_SCHEMA, _service_tool('ask')),
                             (module.SUGGEST_SCHEMA, _service_tool('suggest')),
                             (reply_schema(), _service_tool('resolve_reply')),
+                            (module.refresh_schema(), _service_tool('refresh_decision')),
                             (module.GATEWAY_WAIT_SCHEMA, _service_tool('wait')),
                             (module.CORRECTION_SCHEMA, _service_tool('correct_withdrawal')),
                             (module.BOT_CREATION_SCHEMA, _service_tool('create_bot')),
