@@ -338,12 +338,19 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     }
 
     var cardOptions: [DecisionOption] {
-        guard options.isEmpty, actionType == "create_file" else { return options }
-        // File decisions without named choices use the service's direct answer contract.
-        return [
-            DecisionOption(id: "save-file", label: "Save file", explanation: "Create \(resource) on the Mac.", answer: "approve"),
-            DecisionOption(id: "do-not-save", label: "Do not save", explanation: "Create no file.", answer: "reject")
-        ]
+        if options.isEmpty, actionType == "create_file" {
+            // File decisions without named choices use the service's direct answer contract.
+            return [
+                DecisionOption(id: "save-file", label: "Save file", explanation: "Create \(resource) on the Mac.", answer: "approve"),
+                DecisionOption(id: "do-not-save", label: "Do not save", explanation: "Create no file.", answer: "reject")
+            ]
+        }
+        // A card shows its recommended choice first. The service refuses a new card in another order, but older
+        // cards can list it later. Only the display order changes: each choice keeps its ID and its answer.
+        guard let index = options.firstIndex(where: { $0.id == recommendedOptionId }), index > 0 else { return options }
+        var ordered = options
+        ordered.insert(ordered.remove(at: index), at: 0)
+        return ordered
     }
 
     var cardContext: String? {

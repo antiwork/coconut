@@ -584,6 +584,27 @@ class ServiceRoutingTests(unittest.TestCase):
         card = next(d for d in self.decisions() if d['task_id'] == task['id'])
         return task, card, result
 
+    def test_a_gateway_card_must_list_its_recommended_choice_first(self):
+        task = self.send('Can we ship?')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        card = dict(self.CARD, recommended_option_id='wait')
+        with self.assertRaisesRegex(ServiceError, 'List the recommended choice first. Move the option with id "wait"'):
+            self.service.gateway_tool({'turn_id': turn, 'tool': 'ask', 'arguments': card})
+        self.assertEqual([d for d in self.decisions() if d['task_id'] == task['id']], [])
+        # The turn continues, and the same card with the recommended choice first is created.
+        card['options'] = card['options'][::-1]
+        result = self.service.gateway_tool({'turn_id': turn, 'tool': 'ask', 'arguments': card})
+        self.assertTrue(result['paused'])
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': 'I asked.'})
+        runner.join(5)
+        saved = next(d for d in self.decisions() if d['task_id'] == task['id'])
+        self.assertEqual(([o['id'] for o in saved['options']], saved['recommended_option_id']), (['wait', 'ship'], 'wait'))
+
     def test_a_card_ends_the_gateway_turn_and_its_answer_continues_in_the_gateway(self):
         from coconut.card_tools import PAUSED
         task, card, result = self.ask_in_gateway()

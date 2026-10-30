@@ -30,10 +30,10 @@ QUESTION_SCHEMA = {'name': 'coconut_ask', 'description': 'Create a required deci
                   'parameters': {'type': 'object', 'properties': {
                       'title': {'type': 'string', 'description': 'A short question naming the specific action and affected thing. Use plain words and the writing style in your native profile. Example: Correct the totals in the monthly report?'},
                       'explanation': {'type': 'string', 'description': 'Optional supporting detail for chat. Put only facts that change the choice in context or option explanations.'},
-                      'options': {'type': 'array', 'minItems': 1, 'maxItems': 8,
+                      'options': {'type': 'array', 'minItems': 1, 'maxItems': 8, 'description': 'The choices in display order. When you set recommended_option_id, list the recommended choice first.',
                                   'items': {'type': 'object', 'properties': {'id': {'type': 'string'}, 'label': {'type': 'string', 'description': 'A specific, neutral action. Prefer Fix the PR or Leave unchanged to Fix or Leave blocked.'},
                                       'explanation': {'type': 'string', 'maxLength': 200, 'description': 'One short sentence with a result or tradeoff that the label and context do not show. Use an empty string when the label is enough. Never include steps, paths, or repeated context.'}}, 'required': ['id', 'label', 'explanation']}},
-                      'recommended_option_id': {'type': 'string', 'description': 'Optional. Recommend one choice only when evidence and the user goal favor it. State the decisive reason once in context or that option explanation. Omit when no choice has a clear advantage. When revising, omit this field to remove the recommendation; do not send an empty ID.'}, 'predicted_option_id': {'type': 'string'}},
+                      'recommended_option_id': {'type': 'string', 'description': 'Optional. Recommend one choice only when evidence and the user goal favor it. The recommended choice must be the first item of options; Coconut refuses a card that lists it later. If you letter or number the choices, letter them in that order, also in the text a choice posts. State the decisive reason once in context or that option explanation. Omit when no choice has a clear advantage. When revising, omit this field to remove the recommendation; do not send an empty ID.'}, 'predicted_option_id': {'type': 'string'}},
                   'required': ['title', 'context', 'options']}}
 
 # These fields carry verified facts, not model confidence scores.
@@ -327,7 +327,7 @@ DECISION_INSTRUCTIONS = (
     'Set recommended_option_id when evidence and the user goal give you a clear reason to prefer one choice. '
     'The card adds the Recommended badge. Do not repeat the badge or a reason already stated in context. '
     'Omit recommended_option_id when the choice depends on an unknown preference or the options have no clear advantage. '
-    'Do not mark an option just because it comes first. A recommendation is not permission to act. '
+    'Do not mark an option just because it comes first, but list a recommended choice first. A recommendation is not permission to act. '
     'Mention uncertainty when it could change the choice. Offer a useful way to resolve it when needed. '
     'Use specific action labels. Respect standing preferences when generating options. '
     'Use coconut_ask for a required answer. Use coconut_suggest for a useful optional proposal while continuing the current work. '
@@ -337,6 +337,12 @@ DECISION_INSTRUCTIONS = (
     'A proposal is not authorization to perform it. '
     'A response received is not an action completed. Report outcomes only after verification. '
 )
+
+# The refusal of a card whose recommended choice is not first (decision_inbox.require_recommended_first). Bots often
+# letter their choices and quote the letter in the text that a choice posts, so Coconut does not reorder the choices.
+RECOMMENDED_FIRST = ('List the recommended choice first. Move the option with id "{recommended}" to the start of options '
+                     'and send the card again. If you letter or number the choices, letter them again in the new order, '
+                     'also in the labels, explanations and any text that a choice posts.')
 
 # The result of coconut_ask in the gateway. The plugin then blocks each further tool call of the turn.
 PAUSED = ('Coconut shows this card in chat and Inbox. End this turn now: do not call other tools and do not write more. '

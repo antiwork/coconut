@@ -772,6 +772,9 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
                                       'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
                                       'pre_tool_call', 'post_tool_call'])
+        # The card tool states the order rule, as the worker's tool does.
+        self.assertIn('must be the first item of options',
+                      schemas['coconut_ask']['parameters']['properties']['recommended_option_id']['description'])
         # The card rules of the worker go into each Coconut session, in parts that Hermes allows.
         from coconut.card_tools import DECISION_INSTRUCTIONS
         self.assertEqual(sorted(sections), ['coconut.cards.0', 'coconut.cards.1', 'coconut.cards.2', 'coconut.rules.0'])

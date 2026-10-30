@@ -354,6 +354,15 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertFalse(saved['assessment_stale'])
         self.assertEqual(saved['uncertainty'], '')
 
+    def test_a_revision_must_list_its_recommended_choice_first(self):
+        decision = self.question()
+        context = self.refresh()
+        with self.assertRaisesRegex(ServiceError, 'List the recommended choice first'):
+            self.service.refresh_decision(context['id'], dict(status='revise', evidence='Leaving is now safer.',
+                revision=dict(title=decision['title'], options=decision['options'], recommended_option_id='leave')))
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual((saved['revision'], saved['recommended_option_id']), (decision['revision'], None))
+
     def test_no_pending_cards_or_refreshes_skip_historical_collections(self):
         with patch.object(self.service, '_all', side_effect=AssertionError('No card needs observation')):
             self.service._queue_decision_refreshes()

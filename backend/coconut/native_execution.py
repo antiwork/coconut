@@ -185,12 +185,14 @@ class NativeExecution:
                     record['state'] = 'awaiting_answer'
                     self._put('native_receipts', record)
                     action = record['action']
-                from .decision_inbox import decision_options
+                from .decision_inbox import decision_options, require_recommended_first
                 from .message_drafts import draft_options
                 options = draft_options() if draft is not None else decision_options(payload.get('options'))
                 for field in ('recommended_option_id', 'predicted_option_id'):
                     if payload.get(field) is not None and payload[field] not in {o['id'] for o in options}:
                         raise ServiceError(400, 'Recommendations must refer to a current choice.')
+                if draft is None:
+                    require_recommended_first(options, payload.get('recommended_option_id'))
             from .decision_inbox import card_text, decision_risk, needs_attention_now
             assessment = dict(decision_risk(payload), **needs_attention_now(payload))
             text = card_text(payload)
