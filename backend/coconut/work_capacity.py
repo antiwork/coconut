@@ -21,3 +21,14 @@ def chat_turn(task):
     (service._run_task), so the Kanban scheduler dispatches it, as every turn of an outcome.
     """
     return bool(task.get('_chat_session')) and not task.get('_native_outcome_id')
+
+
+def person_turn(task):
+    """Whether a chat turn answers the person: a message, a reaction or a card answer of the person.
+
+    A turn of a bot exchange (`source_task_id`, `_bot_messages`), the return of delegated work (`_is_return`) and the
+    result of a background process (`_background_completion`) are turns of the bot's conversation too, but no person
+    waits on them. A person's turn goes first in dispatch and in capacity (native_outcomes._dispatch_chat).
+    """
+    return (chat_turn(task) and not task.get('source_task_id') and not task.get('_bot_messages')
+            and not task.get('_is_return') and not task.get('_background_completion'))

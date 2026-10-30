@@ -764,6 +764,120 @@ class ServiceRoutingTests(unittest.TestCase):
         self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
         runner.join(5)
 
+    def exchange(self, other, text):
+        """A message of the bot `other` to Ada from a working task of `other`: a bot exchange in Ada's conversation."""
+        with self.service.transaction():
+            requester = self.service._send(self.read('bots', other['id']), {'text': 'Ask Ada.', 'mode': 'queue'},
+                                           human_authored=False)
+            stored = self.service._get('tasks', requester['id'])
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+        return self.service._deliver_bot_message(requester['id'], dict(target_bot_id=self.bot['id'], text=text,
+                                                                       require_response=True))['task_id']
+
+    def test_a_message_of_the_person_never_waits_behind_bot_traffic(self):
+        from coconut.work_capacity import person_turn
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        turns, stops, done = [], [], set()
+        lock = threading.Lock()
+        bridge = self.service.gateway_bridge
+        stop_adapter = threading.Event()
+        self.addCleanup(stop_adapter.set)
+
+        def adapter():
+            # Each bot turn runs until Coconut stops it, as a long bot-to-bot turn. A turn of the person, and a bot turn
+            # that runs again, ends at once.
+            while not stop_adapter.is_set():
+                with lock:
+                    active = [turn['id'] for turn in turns if turn['id'] not in done]
+                result = bridge.poll({'home': str(self.home), 'wait': .1, 'active': active})
+                with lock:
+                    turns.extend(dict(turn, at=time.monotonic()) for turn in result['turns'])
+                    stops.extend(result['stop'])
+                for turn in result['turns']:
+                    quick = 'Are you there?' in turn['text'] or turn['text'].startswith(gateway_chat.PREEMPTED)
+                    if quick:
+                        bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'm:' + turn['id'],
+                                      'text': 'Here.'})
+                        bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
+                        with lock:
+                            done.add(turn['id'])
+        threading.Thread(target=adapter, daemon=True).start()
+        # The conversation dispatcher of the service runs as in a running service.
+        dispatcher = threading.Thread(target=self.service._dispatch_conversations, daemon=True)
+        dispatcher.start()
+        self.addCleanup(self.service.stopping.set)
+
+        def wait(predicate, seconds=10):
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                with lock:
+                    if predicate():
+                        return True
+                time.sleep(.05)
+            return False
+
+        # A background turn runs beside the conversation: the audit of a work source, in the chat of its work session.
+        audit = self.source_audit()
+        threading.Thread(target=self.dispatch, args=(audit['id'],), daemon=True).start()
+        self.assertTrue(wait(lambda: any(':work:' in turn['chat_id'] for turn in turns)))
+        # A bot exchange runs in Ada's conversation, and a second one waits in the queue.
+        running = self.exchange(other, 'Please check the release notes in detail.')
+        self.assertTrue(wait(lambda: any('release notes' in turn['text'] for turn in turns)))
+        queued = self.exchange(other, 'Then check the changelog too.')
+        self.assertFalse(person_turn(self.read('tasks', queued)))
+        # The person writes. The running exchange stops, and the person's turn starts before the queued exchange.
+        sent = time.monotonic()
+        person = self.send('Are you there?')
+        self.assertTrue(person_turn(self.read('tasks', person['id'])))
+        self.assertTrue(wait(lambda: any('Are you there?' in turn['text'] for turn in turns)))
+        with lock:
+            started = next(turn for turn in turns if 'Are you there?' in turn['text'])
+            order = [turn['text'] for turn in turns if turn['chat_id'] == self.bot['id']]
+        self.assertLess(started['at'] - sent, 3)
+        self.assertEqual(stops, [self.bot['id']])
+        self.assertTrue(wait(lambda: self.read('tasks', person['id'])['status'] == 'completed'))
+        # Then the stopped exchange runs again, with its input and a note, and then the queued one.
+        self.assertTrue(wait(lambda: self.read('tasks', running)['status'] == 'completed'
+                             and len([t for t in turns if t['chat_id'] == self.bot['id']]) >= 3))
+        with lock:
+            order = [turn['text'] for turn in turns if turn['chat_id'] == self.bot['id']]
+        self.assertIn('release notes', order[0])
+        self.assertIn('Are you there?', order[1])
+        self.assertTrue(order[2].startswith(gateway_chat.PREEMPTED))
+        self.assertIn('release notes', order[2])
+        self.assertNotIn('_preempted', self.read('tasks', running))
+        # The stopped turn kept no part of its streamed reply, and it did not fail.
+        self.assertNotIn('failed', [self.read('tasks', identity)['status'] for identity in (running, person['id'])])
+        # The audit still runs in its own chat. It did not stop.
+        self.assertEqual(self.read('tasks', audit['id'])['status'], 'working')
+        self.assertIn(queued, [t['id'] for t in self.service._all('tasks') if t['status'] in ('queued', 'working')])
+
+    def test_the_person_gets_a_slot_when_bot_traffic_fills_the_capacity(self):
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        third = self.write('POST', '/v1/bots', {'name': 'Mo'})
+        hold = threading.Event()
+        self.addCleanup(hold.set)
+        # Capacity 1: two bot exchanges of other bots run, and fill it.
+        for bot in (other, third):
+            with self.service.transaction():
+                task = self.service._send(self.read('bots', bot['id']), {'text': 'Bot work', 'mode': 'queue'},
+                                          human_authored=False)
+                stored = self.service._get('tasks', task['id'])
+                stored.update(status='working', _chat_session=True, _bot_messages=[{'text': 'x'}])
+                self.service._put('tasks', stored)
+                worker = threading.Thread(target=hold.wait, daemon=True)
+                worker.start()
+                self.service.running[task['id']] = worker
+        exchange = self.exchange(other, 'Check the logs.')
+        person = self.send('Are you there?')
+        started = []
+        with patch.object(self.service, '_run_task', side_effect=started.append), self.service.lock:
+            self.service._dispatch_chat(1)
+        # The person's turn starts. The bot exchange waits for capacity.
+        self.assertEqual(started, [person['id']])
+        self.assertEqual(self.read('tasks', exchange)['status'], 'queued')
+
     def test_a_message_of_another_bot_and_its_return_run_in_the_gateway(self):
         other = self.write('POST', '/v1/bots', {'name': 'Lin'})
         other_home = self.service.profiles.home(other)

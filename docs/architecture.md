@@ -286,6 +286,14 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - The plugin offers `coconut_kanban_list` and `coconut_kanban_show`, which read only the tasks of the bot, so an audit finds the existing task of an outcome before it acts. It also offers `coconut_kanban_create` and `coconut_kanban_comment`. The service records each write as a receipt of the turn, the Kanban runtime runs the Hermes tool on Coconut's board for the bot's profile (`kanban_runtime.board_tool`), and the service records the result (`gateway_chat.gateway_kanban_tool`). `kanban_create` gets the worker's arguments (`native_bridge.kanban_arguments`): the bot's tenant, a blocked task and an idempotency key of the turn's input. The receipts then adopt a created task as an outcome and record a comment, as for a worker turn.
 - Audits have their own capacity. The Kanban pass bounds them, and an audit that the gateway runs does not take a slot of the person's chats (`native_outcomes._dispatch_chat`).
 
+### A message of the person goes first
+
+- A bot's conversation runs one turn at a time, because each turn writes the same Hermes session. A person's turn (a message, a reaction or a card answer, `work_capacity.person_turn`) does not wait for bot traffic in that queue.
+- In dispatch, a person's turn goes before bot exchanges, returns of delegated work, background results and audits (`Service._dispatch_order`).
+- In capacity, a person's turn counts only the person's running turns. Bot traffic cannot fill its slots (`native_outcomes._dispatch_chat`).
+- When the bot's conversation runs a bot-originated turn in the gateway, the person's message stops that turn, as a stop of the person does (`gateway_chat.preempt_for_person`). The stopped turn goes back to the queue with the same input, and its streamed reply goes. It runs again after the person's turn, with a note that tells the bot to continue it and not to repeat finished steps.
+- A turn that ended before the stop reached it keeps its result. Work sessions and audits run in chats of their own, so they never block the person's chat. A card check that runs in the conversation still finishes first.
+
 ### Kanban: not yet
 
 Coconut keeps its private board in `<data>/kanban/kanban.db` and dispatches it itself (`kanban_scheduler`, `kanban_runtime`). Its spawn function makes a Coconut task for each claim, so the work has Coconut cards, receipts and workspaces. The embedded dispatcher of the gateway calls `dispatch_once` with the default spawn of Hermes (`gateway/kanban_watchers_dispatcher.py`, `tick_once_for_board`), which starts a plain `hermes -p <assignee>` worker, and a plugin cannot give it another spawn function. It dispatches the boards of the Hermes home, not `<data>/kanban`. So the gateway does not serve Coconut's board, and the two dispatchers never share one. Upstream ask: a spawn hook for the embedded dispatcher.

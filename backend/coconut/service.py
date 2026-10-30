@@ -3322,9 +3322,12 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         return task['bot_id'] in self._store_hold
 
     def _dispatch_order(self, tasks):
-        # Consume results and decisions before starting more work.
+        # A person's turn goes first. Then consume results and decisions before starting more work.
+        from .work_capacity import person_turn
         by_id = {task['id']: task for task in tasks}
         def priority(task):
+            if person_turn(task):
+                return -1
             if task.get('_is_return') or task.get('_background_completion') or task.get('_resume_decision'):
                 return 0
             return 2 if by_id.get(task.get('_assignment_task_id'), task).get('_source_audit_prompt') else 1
