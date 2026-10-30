@@ -113,6 +113,24 @@ class ArchiveTests(unittest.TestCase):
         signed = [call.args[0][-1] for call in run.call_args_list if '--sign' in call.args[0]]
         self.assertEqual(signed, [str(self.extension), str(self.app)])
 
+    def test_both_bundles_get_the_keychain_group_of_their_entitlements(self):
+        # An archive without a signature has the group without the team prefix, as in TestFlight builds 2026-10-27.
+        for bundle in (self.app, self.extension):
+            info = plistlib.loads((bundle / 'Info.plist').read_bytes())
+            info['CoconutPushKeychainGroup'] = 'com.gumroad.coconut.push'
+            (bundle / 'Info.plist').write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
+        with mock.patch.object(testflight.subprocess, 'run'):
+            testflight.sign(self.archive, 42)
+        for bundle in (self.app, self.extension):
+            data = (bundle / 'Info.plist').read_bytes()
+            self.assertTrue(data.startswith(b'bplist'))
+            self.assertEqual(plistlib.loads(data)['CoconutPushKeychainGroup'], '66LJACJ2U7.com.gumroad.coconut.push')
+            self.assertEqual(plistlib.loads(data)['CFBundleVersion'], '42')
+
+    def test_entitlements_without_the_keychain_group_are_refused(self):
+        with self.assertRaises(SystemExit):
+            testflight.set_keychain_group(self.extension, plistlib.dumps({'keychain-access-groups': ['66LJACJ2U7.other']}))
+
     def test_a_development_archive_is_refused(self):
         self.write(self.app, CFBundleIdentifier='com.gumroad.coconut', CoconutPushEnvironment='development',
                    ITSAppUsesNonExemptEncryption=False, CFBundleVersion='42')

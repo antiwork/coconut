@@ -1,6 +1,7 @@
 import base64
 import json
 import tempfile
+from pathlib import Path
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -188,6 +189,58 @@ class RelayPushTests(unittest.TestCase):
     def test_snapshot_excludes_delivery_credentials(self):
         self.assertNotIn(self.route['send_token'], json.dumps(self.service.snapshot()))
 
+
+class PreviewReportTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.service = Service(self.directory.name, ControlledProvider(), start_workers=False)
+        self.device = pair_phone(self.service)
+        self.file = Path(self.directory.name) / 'push-previews.json'
+
+    def tearDown(self):
+        self.service.close()
+        self.directory.cleanup()
+
+    def report(self, data):
+        return self.service.mutate('PUT', '/v1/device/push/previews', data, str(uuid4()), self.device)
+
+    def test_a_failing_extension_reaches_the_status_file_and_the_log(self):
+        with self.assertLogs('coconut.push', 'WARNING') as logs:
+            self.assertEqual(self.report({'extension': {'reason': 'keychain read -34018', 'failing_since': '2026-10-27T14:21:00Z',
+                                                        'failed_at': '2026-10-30T18:07:00Z', 'worked_at': '2026-10-27T14:16:00Z'}}),
+                             {'recorded': True})
+        self.assertIn('failing since 2026-10-27T14:21:00Z: keychain read -34018', logs.output[0])
+        phone = json.loads(self.file.read_text())['phones'][0]
+        self.assertEqual(phone['device_id'], self.device)
+        self.assertEqual(phone['line'], 'failing since 2026-10-27T14:21:00Z: keychain read -34018')
+        self.assertIsNone(phone['app'])
+        self.assertEqual(self.file.stat().st_mode & 0o777, 0o600)
+
+    def test_an_app_failure_comes_first_and_a_working_preview_says_when(self):
+        self.report({'app': {'reason': 'keychain add -34018', 'failing_since': '2026-10-30T10:00:00Z'},
+                     'extension': {'worked_at': '2026-10-30T09:00:00Z'}})
+        self.assertEqual(json.loads(self.file.read_text())['phones'][0]['line'],
+                         'failing since 2026-10-30T10:00:00Z: the app: keychain add -34018')
+        self.report({'extension': {'worked_at': '2026-10-30T11:00:00Z'}})
+        self.assertEqual(json.loads(self.file.read_text())['phones'][0]['line'], 'working (last preview 2026-10-30T11:00:00Z)')
+
+    def test_an_invalid_report_is_refused_and_content_cannot_pass(self):
+        from coconut.service import ServiceError
+        for data in ({'extension': {'reason': 'Body: {"secret": 1}'}}, {'extension': {'body': 'text'}},
+                     {'other': None}, {'extension': {'worked_at': 'yesterday'}}, {'extension': {'worked_at': 5}}):
+            with self.assertRaises(ServiceError):
+                self.report(data)
+        self.assertFalse(self.file.exists())
+
+    def test_turning_notifications_off_keeps_the_report_and_unpairing_removes_it(self):
+        self.report({'extension': {'worked_at': '2026-10-30T11:00:00Z'}})
+        # The phone sends a report again only when it changes, so turning notifications off and on must keep it.
+        self.service.mutate('DELETE', '/v1/device/push', {}, str(uuid4()), self.device)
+        self.assertEqual(json.loads(self.file.read_text())['phones'][0]['line'], 'working (last preview 2026-10-30T11:00:00Z)')
+        with self.service.transaction():
+            self.service.db.execute('DELETE FROM devices WHERE id=?', (self.device,))
+            self.service.push.remove_stale(__import__('time').time())
+        self.assertEqual(json.loads(self.file.read_text()), {'phones': []})
 
 if __name__ == '__main__':
     unittest.main()

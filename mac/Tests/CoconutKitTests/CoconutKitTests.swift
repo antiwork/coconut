@@ -256,6 +256,13 @@ final class CoconutKitTests: XCTestCase {
         let lines = StatusText.lines(version: "1", preferences: UpdatePreferences(store: MemoryPreferences()), status: status)
         XCTAssertTrue(lines.contains("Last relay disconnect: 2026-10-28T17:36:05Z, relay_closed (code 1011: internal error); "
             + "3 reconnects since the sidecar started"))
+
+        XCTAssertNil(status.previews)
+        try write(#"{"phones": [{"name": "iPhone", "line": "failing since 2026-10-30T18:07:00Z: keychain read -34018", "extension": {}}]}"#,
+                  to: "Coconut/.runtime/host/push-previews.json")
+        status = reader.read(isAlive: { _ in true }, healthy: true)
+        XCTAssertEqual(StatusText.lines(version: "1", preferences: UpdatePreferences(store: MemoryPreferences()), status: status).last,
+                       "Notification previews (iPhone): failing since 2026-10-30T18:07:00Z: keychain read -34018")
     }
 
     func testTheStatusJSONUsesSnakeCaseKeys() throws {

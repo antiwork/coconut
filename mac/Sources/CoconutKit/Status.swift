@@ -24,6 +24,14 @@ public struct Status: Codable, Equatable {
     public var relayLastDisconnect: RelayDisconnect? = nil
     /// The connected relay sockets after the first one, since the sidecar started.
     public var relayReconnects: Int? = nil
+    /// The notification previews of each phone that reported them, from push-previews.json (backend/coconut/push.py).
+    public var previews: [Previews]? = nil
+
+    public struct Previews: Codable, Equatable {
+        public var name: String
+        /// For example "failing since 2026-10-30T18:07:00Z: keychain read -34018".
+        public var line: String
+    }
 
     /// `cause` is one of the causes in scripts/tunnel-events.swift, for example "ping_timeout". `detail` holds the close
     /// code and reason of the relay, or the domain and code of a network error.
@@ -39,6 +47,7 @@ public struct Status: Codable, Equatable {
         case hermesReason = "hermes_reason"
         case relayLastDisconnect = "relay_last_disconnect"
         case relayReconnects = "relay_reconnects"
+        case previews
     }
 }
 
@@ -67,6 +76,12 @@ public struct StatusReader {
             if let last = tunnel["last_disconnect"] as? [String: Any], let at = last["at"] as? String,
                let cause = last["cause"] as? String {
                 status.relayLastDisconnect = .init(at: at, cause: cause, detail: last["detail"] as? String)
+            }
+        }
+        if let phones = object(at: install.data.appendingPathComponent("push-previews.json"))?["phones"] as? [[String: Any]] {
+            status.previews = phones.compactMap { phone in
+                guard let name = phone["name"] as? String, let line = phone["line"] as? String else { return nil }
+                return .init(name: name, line: line)
             }
         }
         return status

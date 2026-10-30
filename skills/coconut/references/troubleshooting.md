@@ -41,6 +41,19 @@ When the iPhone showed "Relay unreachable", find out why the connection ended:
 
 Read `tunnel.log` and `tunnel-error.log` for more details.
 
+## Notification previews
+
+A notification shows "Open Coconut to read this update." when the iPhone cannot decrypt its preview. The iPhone app reports the last preview result when it connects. `coconut status` then shows one `Notification previews (<iPhone>)` line for each iPhone:
+
+| Line | Meaning |
+|---|---|
+| `working (last preview <time>)` | The notification extension decrypted a preview at that time. |
+| `failing since <time>: <reason>` | Each notification after that time showed the fallback text. |
+| `failing since <time>: the app: <reason>` | The app could not save the keys of the previews. |
+| `no report from the notification extension yet` | The app saved its keys, but the extension has not run for an encrypted notification. If the Mac sent notifications after that, iOS did not start the extension. |
+
+A reason such as `keychain read -34018` means that the build has the wrong keychain group. Install a new build. The service log has the same lines. An iPhone app or a Mac from before this report shows no line.
+
 ## Hermes is unavailable
 
 The `Hermes` line shows the Hermes version when Hermes works. Otherwise it shows the reason.

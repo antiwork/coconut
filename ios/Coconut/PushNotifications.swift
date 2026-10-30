@@ -464,6 +464,16 @@ struct PushRegistration: Encodable {
     }
 }
 
+/// The last preview results of the notification extension and of the app (PreviewDiagnostics).
+struct PreviewReports: Encodable, Equatable, Sendable {
+    let `extension`: PreviewReport?
+    let app: PreviewReport?
+}
+
+struct PreviewReportsResponse: Decodable, Sendable {
+    let recorded: Bool
+}
+
 struct PushRegistrationResponse: Decodable, Sendable {
     let registered: Bool
     let configured: Bool

@@ -40,6 +40,11 @@ ENTITLEMENTS = {
 }
 # The build settings that the entitlements use, for a Release build of the Gumroad team.
 SETTINGS = {'APS_ENVIRONMENT': 'production', 'AppIdentifierPrefix': TEAM + '.'}
+# The Info.plist key that names the keychain group of the app and the notification extension, and its value in
+# ios/project.yml. An archive without a signature has no team, so Xcode writes the value without the team prefix.
+# Each bundle then asks the keychain for a group that its entitlements do not have, and iOS refuses the request.
+KEYCHAIN_GROUP_KEY = 'CoconutPushKeychainGroup'
+KEYCHAIN_GROUP = '$(AppIdentifierPrefix)com.gumroad.coconut.push'
 
 
 def base64url(data: bytes) -> str:
@@ -100,11 +105,27 @@ def next_build(bearer: str) -> int:
     return max(build_numbers(bearer), default=0) + 1
 
 
+def expand_text(text: str) -> str:
+    return re.sub(r'\$\((\w+)\)', lambda match: SETTINGS[match.group(1)], text)
+
+
 def expand(entitlements: Path) -> bytes:
-    text = entitlements.read_text()
-    expanded = re.sub(r'\$\((\w+)\)', lambda match: SETTINGS[match.group(1)], text)
+    expanded = expand_text(entitlements.read_text())
     plistlib.loads(expanded.encode())
     return expanded.encode()
+
+
+def set_keychain_group(bundle: Path, entitlements: bytes) -> None:
+    """Write the keychain group with the team prefix into the Info.plist of the bundle, before its signature seals it."""
+    group = expand_text(KEYCHAIN_GROUP)
+    if group not in plistlib.loads(entitlements).get('keychain-access-groups', []):
+        raise SystemExit(f'The entitlements of {bundle.name} do not have the keychain group {group}.')
+    path = bundle / 'Info.plist'
+    data = path.read_bytes()
+    info = plistlib.loads(data)
+    if info.get(KEYCHAIN_GROUP_KEY) != group:
+        info[KEYCHAIN_GROUP_KEY] = group
+        path.write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY if data.startswith(b'bplist') else plistlib.FMT_XML))
 
 
 def sign(archive: Path, build: int) -> None:
@@ -124,9 +145,11 @@ def sign(archive: Path, build: int) -> None:
         bundle_info = plistlib.loads((bundle / 'Info.plist').read_bytes())
         if bundle_info.get('CFBundleVersion') != str(build):
             raise SystemExit(f'{name} has build {bundle_info.get("CFBundleVersion")}, not {build}.')
+        expanded = expand(entitlements)
+        set_keychain_group(bundle, expanded)
         # The extension comes first: the signature of the app seals the signature of each extension.
         with tempfile.NamedTemporaryFile(suffix='.entitlements') as file:
-            file.write(expand(entitlements))
+            file.write(expanded)
             file.flush()
             subprocess.run(['codesign', '--force', '--sign', '-', '--generate-entitlement-der',
                             '--entitlements', file.name, str(bundle)], check=True)

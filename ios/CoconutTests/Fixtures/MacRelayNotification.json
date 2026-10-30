@@ -1,0 +1,13 @@
+{
+  "deviceId": "6f0d3a52-5d1e-4a8e-9a63-2a64a1f0c001",
+  "privateKey": "eP21yxJOYNC8LkvGQuBojKSVHg2F4Z/JQ0uvucWBr0E=",
+  "senderKey": "Zdzv1vNL0uIBQEIpJ1HibolBD3ahr/jSgQyfh2ZINzw=",
+  "envelope": {
+    "keyId": "e7a8e2d40b9b0b83707b81d3e9ed512087a9a2c33ef955e81017fcd75ddcde21",
+    "encapsulatedKey": "lbMSs88Mpwy0b4sRp1wOGjAHoor10zxlFYETij30+Ww=",
+    "expires": 4102444800,
+    "id": "bcd3e340-1da2-42b1-a059-19bcfad20e47",
+    "version": 1,
+    "ciphertext": "g9F6KupLTVvTK0OQFdZb/vBLxBWLbU/WTJwfK3JJO/mhcoGkC1cemRJWXMJbZoLCdQoV9fEFjN07W5VkS2IIq4k15DCqte6YF+3dM9C03pRvbBEcQDprIx6InSsHeWc84YaiWWx5nI2DQ4/7a6t6rx4SZ1t3Vn3R47nD2jV9R8jLxnJoJ0HtFvL7IfBaBWujQR1wjTVsOCIY1NJTWMvHCFxxL2mKkfv3AHWY9UVFuMUYoFqnCE/XhOxlAIMqVLR8FoeY8qMkhvE1hVZbI582icuuRWmH0lNpnzvrqG2Q3D0e4flPd4mryXcNzQyFF/bVaqAI5XjKjO97H8D5A7JvIILgT+4UZ7EotgZoZGrp/KSfcTbFAEhVSdocpFjdX6rCgBWoUcWEawbh6+jwBsDbeWoL2Ul8YfMhWgvrdYeW7C600ky8CI5/NVJWrCmDEi9bRHWbQGifIcrlYIYLI+KLlay1/k31+xbnmAjnicKt5C4u/mwLESK8WXU3u/zUZ8utcmhjIvs/6JA+GGWTTUajI8SAOw=="
+  }
+}
