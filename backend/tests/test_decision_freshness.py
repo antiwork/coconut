@@ -158,7 +158,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         def read(table):
             reads.append(table)
             return original(table)
-        # The service lock is held for the whole pass, so each whole-table read blocks every other thread.
+        # Each whole-table read costs time on every pass, so the pass reads each table at most once.
         with patch.object(self.service, '_all', side_effect=read), \
                 patch.object(self.service, '_read_all_tasks', wraps=self.service._read_all_tasks) as full:
             self.service._queue_decision_refreshes()
@@ -180,9 +180,10 @@ class DecisionFreshnessTests(unittest.TestCase):
             return original(table)
         with patch.object(self.service, '_all', side_effect=read):
             self.service._queue_decision_refreshes()
-        # The pass rewrote the changed cards. Messages and artifacts are still parsed once.
+        # The pass rewrote the changed cards. Artifacts are still parsed once. The pass reads only the messages
+        # from a device, through the index messages_human, so it parses no whole message table.
         self.assertTrue(all(self.service._get('decisions', f'extra-{i}')['assessment_stale'] for i in range(4)))
-        self.assertEqual(reads.count('messages'), 1)
+        self.assertEqual(reads.count('messages'), 0)
         self.assertEqual(reads.count('artifacts'), 1)
 
     def test_shared_reads_see_each_write(self):

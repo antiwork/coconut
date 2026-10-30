@@ -172,7 +172,7 @@ from .session_maintenance import SessionMaintenance
 from .database_maintenance import DatabaseMaintenance
 from .tracked_work import TrackedWork
 from .work_recovery import WorkRecovery
-from .decision_freshness import DecisionFreshness
+from .decision_freshness import HUMAN_MESSAGE, DecisionFreshness
 from .withdrawal_corrections import WithdrawalCorrections
 from .silent_responses import SilentResponses, is_silent_message, is_silent_response
 from .technical_lane import TechnicalLane
@@ -297,6 +297,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self.db.execute('CREATE INDEX IF NOT EXISTS tasks_native_job_open ON tasks (id) WHERE ' + OPEN_NATIVE_JOB)
         self.db.execute('CREATE INDEX IF NOT EXISTS tasks_routine_open ON tasks (id) WHERE ' + OPEN_ROUTINE_TASK)
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_source ON tasks (json_extract(data,'$.source_task_id'))")
+        self.db.execute('CREATE INDEX IF NOT EXISTS messages_human ON messages (id) WHERE ' + HUMAN_MESSAGE)
         self.db.executescript(READ_INDEXES + PR_URL_INDEX)
         self._request_device_id = None
         self._request_key = None
