@@ -2355,6 +2355,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 raise ServiceError(409, 'Choose an active task from this conversation.')
             if task['status'] == 'needs_you':
                 decisions = [decision for decision in self._all('decisions') if decision['task_id'] == task['id'] and decision['status'] == 'pending']
+                # A held answer (answer_undo.py) starts no context request in its window.
+                for decision in decisions:
+                    require_not_held(decision)
                 if len(decisions) != 1:
                     raise ServiceError(409, 'Choose a pending decision before asking for context.')
                 self._request_context(decisions[0], task, text, attachments)
@@ -2552,6 +2555,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             decision = self._get('decisions', data['decision_id'])
             if decision['task_id'] not in thread_tasks or decision['status'] != 'pending':
                 raise ServiceError(409, 'Choose a pending decision from this thread.')
+            require_not_held(decision)
             pending_task = self._get('tasks', decision['task_id'])
             self._request_context(decision, pending_task, text, attachments)
             result = self._public(pending_task)
@@ -4325,6 +4329,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     if context.get('_decision_refresh'):
                         decision = self._get('decisions', context['decision_id'])
                         if (decision['status'] != 'pending' or decision['revision'] != context['_decision_revision']
+                                or decision.get('_held_answer')
                                 or context.get('_conversation_epoch') != task.get('_conversation_epoch')):
                             context['status'] = 'cancelled'
                             self._put('contexts', context)
@@ -4333,7 +4338,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                             return
                     if context.get('_background_completion'):
                         decision = self._get('decisions', context['decision_id'])
-                        if (decision['status'] != 'pending'
+                        if (decision['status'] != 'pending' or decision.get('_held_answer')
                                 or not self._process_observation_current(task, bot)
                                 or context.get('_conversation_epoch') != task.get('_conversation_epoch')):
                             context['status'] = 'cancelled'

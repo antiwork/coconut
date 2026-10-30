@@ -137,7 +137,8 @@ class DecisionFreshness:
             return
         for decision in self._all('decisions'):
             if (not decision.get('_native') or decision.get('action_type') not in ('question', 'draft_message')
-                    or decision['bot_id'] != bot_id or decision['status'] != 'pending' or decision.get('_held_answer')
+                    # A held answer (answer_undo.py) does not stop this: the end of its window finds the change.
+                    or decision['bot_id'] != bot_id or decision['status'] != 'pending'
                     or observation.url.lower() not in {url.lower() for url in github_links(decision)}):
                 continue
             url = next(url for url in github_links(decision) if url.lower() == observation.url.lower())
@@ -690,7 +691,8 @@ class DecisionFreshness:
         current = datetime.now(timezone.utc)
         for decision in sorted(decisions, key=lambda d: d.get('_freshness', {}).get('queued_at', d['created_at'])):
             task = tasks[decision['task_id']]
-            if (decision['status'] != 'pending' or decision['action_type'] not in ('question', 'draft_message')
+            if (decision['status'] != 'pending' or decision.get('_held_answer')
+                    or decision['action_type'] not in ('question', 'draft_message')
                     or decision['id'] in self._pending_decision_sources
                     or (self._ready_decision_sources is not None
                         and self._ready_decision_sources.get(decision['id'])

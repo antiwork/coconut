@@ -221,6 +221,52 @@ class AnswerUndoTests(unittest.TestCase):
         self.assertEqual(stored['status'], 'rejected')
         self.assertEqual(stored['_superseded_answers'][0]['data']['option_id'], 'publish')
 
+    def test_a_source_change_in_the_window_stops_the_answer_and_tells_the_person(self):
+        decision = self.question()
+        self.answer(decision)
+        # A linked pull request closed in the window. The source check records it as it would without the hold.
+        with self.service.transaction():
+            stored = self.stored(decision)
+            stored['_source_recheck'] = True
+            stored['revision'] += 1
+            self.service._put('decisions', stored)
+        with self.assertLogs('coconut.answer_undo', 'WARNING'):
+            self.service.finish_held_answers(later())
+        stored = self.stored(decision)
+        self.assertEqual(stored['status'], 'pending')
+        self.assertTrue(stored['_source_recheck'])
+        self.assertEqual(stored['revision'], decision['revision'] + 1)
+        self.assertEqual(stored['_answers'], [])
+        self.assertNotIn('_held_answer', stored)
+        self.assertIsNone(stored['selected_option_id'])
+        self.assertTrue(stored['answer_notice'].startswith('Your answer was not sent. The source changed'))
+        self.assertEqual(stored['_dropped_answers'][0]['data']['option_id'], 'publish')
+        self.assertEqual(self.task_status(), 'needs_you')
+
+    def test_a_pull_request_that_merged_in_the_window_stops_the_merge_answer(self):
+        decision = self.question()
+        url = 'https://github.com/antiwork/coconut/pull/1'
+        with self.service.transaction():
+            stored = self.stored(decision)
+            stored['merge_pr_url'] = url
+            self.service._put('decisions', stored)
+        self.answer(decision)
+        with self.service.transaction():
+            self.service._put('artifacts', dict(id='pr-1', bot_id=decision['bot_id'], task_id=decision['task_id'], kind='pr',
+                                                title='PR', status='merged', pr_state='merged', url=url, preview='',
+                                                observed_at='2026-10-30T12:00:00Z', refresh_error=None,
+                                                created_at='2026-10-30T12:00:00Z'))
+        # The merge resolver waits for the held answer.
+        self.service._resolve_merged_pr_decisions()
+        self.assertIn('_held_answer', self.stored(decision))
+        with self.assertLogs('coconut.answer_undo', 'WARNING'):
+            self.service.finish_held_answers(later())
+        self.assertEqual(self.stored(decision)['_answers'], [])
+        self.assertIn('merged', self.stored(decision)['answer_notice'])
+        # Then the resolver closes the card, as it does without a hold.
+        self.service._resolve_merged_pr_decisions()
+        self.assertEqual(self.stored(decision)['status'], 'resolved')
+
     def test_undo_replays_as_a_card_change(self):
         decision = self.question()
         cursor = self.service._cursor()

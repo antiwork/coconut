@@ -319,6 +319,8 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var answerUndoUntil: String? = nil
     var answerUndoId: String? = nil
     var heldAnswerLabel: String? = nil
+    /// Why the Mac did not send the last held answer, for example a source change in the Undo window.
+    var answerNotice: String? = nil
     var uncertainty: String? = nil
     var risk: String? = nil
     var riskLevel: String? = nil

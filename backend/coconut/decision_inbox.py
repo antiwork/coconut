@@ -299,7 +299,7 @@ class DecisionInbox:
             sources.append(dict(id=source['id'], text=source['text']))
         decisions = [self._public(d) for row in self.db.execute(
             "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending' ORDER BY rowid")
-            for d in [json.loads(row[0])] if self._decision_visible_to_task(d, task)]
+            for d in [json.loads(row[0])] if not d.get('_held_answer') and self._decision_visible_to_task(d, task)]
         return dict(_pending_decisions=decisions, _decision_reply_sources=sources)
 
     def _decision_visible_to_task(self, decision, task):

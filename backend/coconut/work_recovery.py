@@ -84,7 +84,8 @@ class WorkRecovery:
                 bot = self._get('bots', task['bot_id'])
                 decision = self._get('decisions', old['decision_id'])
                 if (not self._process_observation_current(task, bot) or self._task_paused(task)
-                        or decision['status'] != 'pending' or old.get('_decision_revision') != decision['revision']
+                        or decision['status'] != 'pending' or decision.get('_held_answer')
+                        or old.get('_decision_revision') != decision['revision']
                         or old.get('_conversation_epoch') != task.get('_conversation_epoch')
                         or any(c['decision_id'] == old['decision_id'] and c['id'] != old['id']
                                and not c.get('_decision_refresh')

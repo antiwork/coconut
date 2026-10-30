@@ -43,6 +43,15 @@ final class AnswerUndoTests: XCTestCase {
         XCTAssertNil(store.answerUndoOffer())
     }
 
+    func testACardBackFromADroppedAnswerHasItsNotice() throws {
+        let json = #"{"id": "d", "bot_id": "b", "task_id": "t", "title": "Merge?", "explanation": "", "action_type": "question","#
+            + #" "resource": "", "consequences": "", "recommended": "approve", "options": [], "status": "pending", "urgency": "normal","#
+            + #" "created_at": "2026-10-30T12:00:00Z", "revision": 4, "answer_notice": "Your answer was not sent. The source changed."}"#
+        let decision = try APIJSON.decoder().decode(Decision.self, from: Data(json.utf8))
+        XCTAssertTrue(decision.isPending)
+        XCTAssertEqual(decision.answerNotice, "Your answer was not sent. The source changed.")
+    }
+
     func testARetriedUndoUsesTheSameRequestKey() {
         let store = AppStore(demo: true)
         let key = store.answerUndoKey(for: "u1")

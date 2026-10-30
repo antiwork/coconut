@@ -25,6 +25,7 @@ ANSWER_UNDO_SECONDS = 10
 HELD = 'held'
 # The cards with a held answer. The partial index decisions_held holds them.
 HELD_DECISIONS = "SELECT rowid, data FROM decisions WHERE json_extract(data,'$._held_answer') IS NOT NULL"
+ANSWER_NOT_SENT = 'Your answer was not sent. '
 HOLD_FIELDS = dict(answer_undo_until=None, answer_undo_id=None, held_answer_label=None,
                    selected_option_id=None, selected_option_label=None)
 
@@ -107,6 +108,7 @@ class AnswerUndo:
         option = self.check_answer(decision, task, data)
         deadline = datetime.now(timezone.utc) + timedelta(seconds=self.answer_undo_seconds)
         decision['_held_answer'] = dict(data=data, device=device, key=self._request_key, held_at=now())
+        decision['answer_notice'] = None
         # An app before the window shows a card with an unknown status as answered, with the selected label.
         decision.update(answer_undo_until=deadline.isoformat().replace('+00:00', 'Z'), answer_undo_id=uid(),
                         held_answer_label=(option['label'] if option else str(data.get('correction') or data.get('choice')))[:200],
@@ -133,6 +135,15 @@ class AnswerUndo:
                     task['bot_id'], task['id'])
         return self._public(decision)
 
+    def _merged_in_window(self, decision):
+        """Whether the pull request of a merge card merged, as pull_request_reviews._resolve_merged_pr_decisions reads it."""
+        from .pull_request_reviews import MERGED_PRS
+        url = (decision.get('merge_pr_url') or '').lower()
+        if not url or decision['action_type'] != 'question':
+            return False
+        return any(observed and not error and bot_id == decision['bot_id'] and (pr_url or '').lower() == url
+                   for bot_id, pr_url, observed, error in (json.loads(row[0]) for row in self.db.execute(MERGED_PRS)))
+
     def finish_held_answers(self, current=None):
         """Apply each held answer whose Undo window ended, as the answer request did before this window existed."""
         from .service import ServiceError
@@ -155,18 +166,23 @@ class AnswerUndo:
                 self._request_device_id, self._request_key = held.get('device'), held.get('key')
                 self.db.execute('SAVEPOINT held_answer')
                 try:
+                    if self._merged_in_window(decision):
+                        # The merge card resolver waits for a held answer. Without the hold it would close the card.
+                        raise ServiceError(409, 'The pull request merged before the Undo window ended.')
+                    # The answer checks the source changes of the window: a source recheck or a new revision stops it.
                     self.apply_answer(decision, task, held['data'], held['device'], callbacks)
                     self.db.execute('RELEASE held_answer')
                 except ServiceError as error:
-                    # The card changed in the window, for example a new revision. It stays in Inbox.
                     self.db.execute('ROLLBACK TO held_answer')
                     self.db.execute('RELEASE held_answer')
                     # The kept tasks can hold changes that the rollback removed.
                     self._forget_cached_tasks()
                     logging.getLogger(__name__).warning('A held answer to decision %s did not apply: %s', decision['id'], error)
+                    # The card stays as the changes of the window left it, and the person learns why the answer stopped.
                     decision = self._get('decisions', decision['id'])
-                    decision.pop('_held_answer', None)
-                    decision.update(HOLD_FIELDS)
+                    decision.setdefault('_dropped_answers', []).append(dict(decision.pop('_held_answer', None) or held,
+                                                                             reason=str(error)))
+                    decision.update(HOLD_FIELDS, answer_notice=ANSWER_NOT_SENT + str(error))
                     self._put('decisions', decision)
                     self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
                 finally:

@@ -66,6 +66,10 @@ struct DecisionCard: View {
 
     private var cardContent: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if decision.isPending, let notice = decision.answerNotice {
+                // The Mac did not send a held answer, because the card changed in its Undo window.
+                InlineError(notice).accessibilityIdentifier("decision-answer-notice")
+            }
             if let previousId = decision.previousDecisionId,
                store.decisions.first(where: { $0.id == previousId })?.status != "replied" {
                 let previous = store.decisions.first { $0.id == previousId }
