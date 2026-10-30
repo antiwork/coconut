@@ -17,7 +17,8 @@ task. An unfinished list continues in a later turn, as with the worker.
 
 Cards. A card of coconut_ask ends its turn, and a follow-up on a pending card cannot make a card. `guard_tool`
 (pre_tool_call) blocks those tool calls. The card rules of the worker (card_tools.DECISION_INSTRUCTIONS) go into the
-system prompt of each Coconut session, in parts of at most 4000 characters, as Hermes allows.
+system prompt of each Coconut session, in parts of at most 4000 characters, as Hermes allows. So do the worker's
+rules for a merge card and for bot changes.
 
 Streamed text. The `on_stream_*` hooks receive the text deltas of each model call, also when the gateway streams nothing
 to the platform (`streaming.enabled` off). A hook runs in a Hermes dispatcher thread with the session context of the
@@ -49,14 +50,19 @@ def register(ctx):
     ctx.register_hook('pre_tool_call', guard_tool)
     ctx.register_hook('post_tool_call', save_todos)
     from .tools import cards
-    for number, part in enumerate(prompt_parts(cards().DECISION_INSTRUCTIONS)):
+    module = cards()
+    for number, part in enumerate(prompt_parts(module.DECISION_INSTRUCTIONS)):
         ctx.register_system_prompt_section(f'coconut.cards.{number}', _section(part), max_chars=SECTION_CHARS)
+    # The worker's rules for a merge card and for bot changes (card_tools).
+    rules = module.PR_MERGE_INSTRUCTIONS + module.BOT_CREATION_INSTRUCTIONS + module.BOT_DELETION_INSTRUCTIONS
+    for number, part in enumerate(prompt_parts(rules)):
+        ctx.register_system_prompt_section(f'coconut.rules.{number}', _section(part), max_chars=SECTION_CHARS)
 
 
 SECTION_CHARS = 4000
 # Tools that a follow-up on a pending card must not call: it answers a question and leaves the card as it is.
 CARD_TOOLS = ('coconut_ask', 'coconut_suggest', 'clarify', 'coconut_track_pr', 'coconut_message_bot',
-              'coconut_wait', 'coconut_correct_withdrawal')
+              'coconut_wait', 'coconut_correct_withdrawal', 'coconut_create_bot', 'coconut_delete_bot')
 PAUSED_MESSAGE = ('Coconut shows a card and waits for the answer of the person. End this turn now. Coconut continues '
                   'this conversation with the answer.')
 CONTEXT_MESSAGE = 'Answer the current question. Its pending decision stays open.'

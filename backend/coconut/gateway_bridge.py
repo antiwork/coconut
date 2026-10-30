@@ -47,16 +47,16 @@ KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
 QUESTION_KINDS = ('clarify', 'approval')
 
 # A turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: a work item with
-# its own work session and workspace, claims, routines, GitHub source activity, PR reviews, the technical lane of a
-# native outcome, and bot creation and deletion. The worker runs it until phase 5 moves it. Attachments, reactions,
-# pending cards, the saved task list of an assignment, its dependencies, a recovery context, a direct reply and the
-# bot exchange go to the gateway as text of the turn (gateway_chat.gateway_turn_text). The plugin has the card tools,
-# coconut_wait, coconut_correct_withdrawal and coconut_message_bot.
+# its own work session and workspace, claims, routines, the audit of a work source, the results of a worker's
+# background process, the receipts of a worker's tool calls and the technical lane of a native outcome. The worker
+# runs it. Attachments, reactions, pending cards, the saved task list of an assignment, its dependencies, a recovery
+# context, a direct reply, the bot exchange, GitHub source activity, a PR review and the bot changes of a chat go to
+# the gateway as text of the turn (gateway_chat.gateway_turn_text). The plugin has the card tools, coconut_wait,
+# coconut_correct_withdrawal, coconut_message_bot, coconut_create_bot and coconut_delete_bot.
 WORKER_INPUTS = (
     '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
-    '_work_context_id', '_work_context', '_pr_review', '_background_completion',
-    '_source_activity', '_source_answer_steps', '_source_audit_prompt', '_technical_lane',
-    '_native_receipts', '_bot_creation_receipts', '_bot_deletion_receipts', '_work_status_only')
+    '_work_context_id', '_work_context', '_background_completion', '_source_answer_steps', '_source_audit_prompt',
+    '_technical_lane', '_native_receipts', '_work_status_only')
 
 
 # A message with one of these fields carries Coconut context that a gateway message does not: a work item. A quote, a

@@ -1784,6 +1784,13 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         owners = (previous, self._assignment(previous), tasks.get(execution_key(previous), previous))
         native = any(owner.get(key) for owner in owners
                      for key in ('_chat_session', '_native_outcome_id', '_native_job', 'routine_id'))
+        # A failed turn of the bot's gateway conversation has no work session to continue. After the same checks as
+        # for a worker task, the message joins that conversation as a new turn (join_conversation), which has the
+        # earlier turns in its history.
+        gateway_task = (self.gateway_enabled() and previous.get('_chat_session') and not previous.get('_execution_session_id')
+                        and not any(owner.get(key) for owner in owners for key in ('_native_outcome_id', '_native_job', 'routine_id')))
+        if gateway_task:
+            native = False
         if (previous['status'] != 'failed' or native
                 or previous['bot_id'] != target_id
                 or previous['session_id'] != self._get('bots', target_id)['session_id']
@@ -1802,6 +1809,8 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         if previous.get('_waiting_on'):
             identity = previous['_waiting_on'][0]
             raise ServiceError(409, f'Wait for the result of delegated task {identity} before continuing its owner.')
+        if gateway_task:
+            return None
         self._ensure_execution_session(previous)
         for peer in tasks.values():
             if execution_key(peer) != execution_key(previous):

@@ -92,31 +92,43 @@ def gateway_turn_text(request) -> str | None:
         text = task['title']
     if reaction_only_turn(request):
         text += REACTION_SILENCE
+    if not text.strip() and task.get('_pr_review'):
+        text = task['title']
     text += reaction_feedback_context(task.get('_reaction_feedback', []))
     text += attachment_context(task.get('attachments', []))
     if not text.strip():
         return None
     if task.get('_work_resume'):
         text = WORK_RESUME + text
+    if task.get('_pr_review'):
+        # The worker's text for a PR review (pull_request_reviews.PR_REVIEW_INSTRUCTIONS).
+        from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS
+        text = (PR_REVIEW_INSTRUCTIONS + '\nObserved GitHub facts:\n' + json.dumps(task['_pr_review'])
+                + '\nOriginal task context:\n' + text)
     return text + work_notes(request)
 
 
 def work_notes(request) -> str:
     """The work context of a gateway turn, as the worker gives it: a recovery context, the recent work updates of the
-    chat, the note of a direct reply, the bot exchange, the other work of the exchange that the turn can wait for, the
-    rules of a tracked assignment with its saved task list, and the pending cards.
+    chat, the note of a direct reply, the bot exchange, GitHub source activity, the other work of the exchange that the
+    turn can wait for, the tracked PRs and their observations, the bot changes that the turn can make, the rules of a
+    tracked assignment with its saved task list, and the pending cards.
 
     Hermes restores the task list of a session from its history (`todo_list` results). The text repeats the saved list
     because Coconut keeps the list of an assignment across its tasks.
     """
     import json
     from .native_conversation import (dependencies_note, direct_reply_note, exchange_note, pending_decisions_context,
-                                      recent_work_note, recovery_note)
+                                      recent_work_note, recovery_note, source_activity_note, tracked_note)
     from .work_progress import WORK_INSTRUCTIONS, work_enabled
     task = request['task']
     # A check of a blocked native task stays with the worker (`_native_outcome_id`), so this is never one.
     text = (recovery_note(task) + recent_work_note(task) + direct_reply_note(task) + exchange_note(task)
-            + dependencies_note(task))
+            + source_activity_note(task) + dependencies_note(task) + tracked_note(task))
+    if request.get('bot') and request['operation'] in ('start', 'resume'):
+        # The bot changes that the person's messages in this turn can request, as the worker gives them.
+        from .hermes_worker import bot_creation_context, bot_deletion_context
+        text += bot_creation_context(request) + bot_deletion_context(request)
     if work_enabled(request['operation'], task):
         text += '\n' + WORK_INSTRUCTIONS
         if task.get('_work_todos'):
@@ -209,7 +221,7 @@ class GatewayChat:
         """Run a chat turn through the gateway. False: the turn is of another type, and the worker runs it."""
         if not self.gateway_enabled() or not plain_chat_turn(task):
             return False
-        request = dict(operation='start', task=task, history=history)
+        request = dict(operation='start', task=task, history=history, bot=self._public(bot))
         text = gateway_turn_text(request)
         if text is None:
             return False
@@ -228,7 +240,7 @@ class GatewayChat:
             return False
         from .native_conversation import resume_prompt
         card = self._public(decision) | {'action': decision.get('_action')}
-        request = dict(operation='resume', task=task, history=history, decision=card)
+        request = dict(operation='resume', task=task, history=history, decision=card, bot=self._public(bot))
         return self._run_in_gateway(task, bot, resume_prompt(request) + work_notes(request), emit,
                                     session=cron_session or None)
 
@@ -371,6 +383,11 @@ class GatewayChat:
             return self.wait_for_task(task_id, arguments)
         if tool == 'todos':
             return self.gateway_todos(task_id, arguments)
+        if tool == 'create_bot':
+            # The service checks the human message that asks for the bot (service._create_bot_from_chat).
+            return self._create_bot_from_chat(task_id, arguments)
+        if tool == 'delete_bot':
+            return self._delete_bot_from_chat(task_id, arguments)
         if tool == 'correct_withdrawal':
             # The service refuses a card outside the turn's execution, and a card that a person handled.
             return self.correct_withdrawal(task_id, arguments)
