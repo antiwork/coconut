@@ -70,8 +70,10 @@ class WorkTurnRuleTests(unittest.TestCase):
         self.assertTrue(gateway_work_turn(audit))
         self.assertFalse(gateway_work_turn(dict(audit, _execution_session_id=None)))
         self.assertFalse(gateway_work_turn(dict(audit, _chat_session=True)))
+        # A question about a Work item without a native outcome runs in the gateway too.
+        self.assertTrue(gateway_work_turn(dict(audit, _work_context_id='work', _work_context={'id': 'work'})))
         # The audit of a work source uses the Kanban tools of Coconut's board.
-        for key in ('_work_context_id', '_native_outcome_id', '_native_job', '_work_status_only', '_technical_lane',
+        for key in ('_native_outcome_id', '_native_job', '_work_status_only', '_technical_lane',
                     '_background_completion', '_native_receipts', '_source_audit_prompt', '_source_answer_steps'):
             with self.subTest(key=key):
                 self.assertFalse(gateway_work_turn(dict(audit, **{key: 'x'})))
@@ -1031,6 +1033,73 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(stored['status'], 'completed')
         self.assertEqual(self.provider.starts, [])
 
+    def work_question(self, text='Is the export ready?'):
+        """A Work item without a native outcome, and a question of the person about it."""
+        owner = self.audit()
+        with self.service.transaction():
+            stored = self.service._get('tasks', owner['id'])
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+        item = self.service._register_work(owner['id'], dict(key='account-export', title='Export account data',
+                                                             activity='Preparing the export', status='working'))
+        with self.service.transaction():
+            stored = self.service._get('tasks', owner['id'])
+            stored['status'] = 'completed'
+            self.service._put('tasks', stored)
+        question = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages',
+                              dict(text=text, mode='queue', work_artifact_id=item['id']))
+        return item, self.read('tasks', question['id'])
+
+    def test_a_question_about_a_work_item_runs_in_the_gateway_in_its_work_chat(self):
+        from coconut.card_tools import WORKSPACE_INSTRUCTIONS
+        item, question = self.work_question()
+        self.assertTrue(question['_work_context_id'] and question['_execution_session_id'])
+        self.assertTrue(gateway_chat.gateway_work_turn(question))
+        adapter = Adapter(self.service.gateway_bridge, self.home, [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'The export is half done.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.dispatch(question['id'])
+        adapter.join(5)
+        turn = adapter.turns[0]
+        stored = self.read('tasks', question['id'])
+        self.assertEqual(turn['chat_id'], self.bot['id'] + ':work:' + stored['_execution_session_id'])
+        # The worker's text for a question about a Work item, and its rule for the worktree of a work session.
+        self.assertTrue(turn['text'].startswith('Is the export ready?'))
+        self.assertIn('Attached work context, refreshed for this question.', turn['text'])
+        self.assertIn('Export account data', turn['text'])
+        self.assertIn(WORKSPACE_INSTRUCTIONS.strip(), turn['text'])
+        self.assertEqual(stored['status'], 'completed')
+        self.assertEqual(self.provider.starts, [])
+        # A Work item with a native outcome stays with the worker.
+        self.assertFalse(gateway_chat.gateway_work_turn(dict(question, _native_outcome_id='native-1')))
+
+    def test_a_turn_of_a_work_session_gets_the_place_of_its_worktree(self):
+        from coconut.work_capacity import execution_key
+        item, question = self.work_question('Fix the export.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.dispatch, args=(question['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        # The registry and the outcome that a prepared worker gets (COCONUT_WORKSPACE_ROOT, COCONUT_WORKSPACE_OUTCOME).
+        self.assertEqual(self.service.gateway_tool({'turn_id': turn, 'tool': 'workspace', 'arguments': {}}),
+                         {'root': str(Path(self.service.root) / 'workspaces'),
+                          'outcome': execution_key(self.read('tasks', question['id']))})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        # A turn of the bot's conversation has no work session, so it has no worktree.
+        chat = self.send('Hello.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(chat['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        with self.assertRaisesRegex(ServiceError, 'only in a turn of a work session'):
+            self.service.gateway_tool({'turn_id': adapter.turns[0]['id'], 'tool': 'workspace', 'arguments': {}})
+        self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+
     def test_a_kanban_claim_of_a_gateway_turn_holds_a_placeholder_process(self):
         task = self.audit()
         with self.service.transaction():
@@ -1042,6 +1111,9 @@ class ServiceRoutingTests(unittest.TestCase):
             holder = self.service.gateway_holders[task['id']]
             self.assertEqual((pid, holder.poll()), (holder.pid, None))
             prepare.assert_not_called()
+            # The placeholder carries the outcome of the work session, as a prepared worker does.
+            from coconut.work_workspace import process_outcomes
+            self.assertIn('work-1', process_outcomes())
             # A task that the worker runs gets a prepared worker, as before.
             other = dict(stored, _native_outcome_id='native-2')
             self.assertEqual(self.service.kanban_worker_pid('other', other, bot, self.temp.name, 'work-2', 'native-2'), 4321)

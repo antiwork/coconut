@@ -1,4 +1,9 @@
-"""Keep one native Hermes worktree per outcome and repository."""
+"""Keep one native Hermes worktree per outcome and repository.
+
+The worker and the coconut plugin of the Hermes gateway call acquire for coconut_workspace (its schema is
+card_tools.WORKSPACE_SCHEMA). The plugin loads this file by its path, so it imports only the standard library, and
+Hermes inside acquire.
+"""
 import contextlib
 import errno
 from datetime import datetime, timedelta, timezone
@@ -2548,20 +2553,6 @@ def acquire(root, outcome, repository, existing_worktree=None, *, successor=None
         save_bindings(manifest, saved)
         return binding
 
-
-SCHEMA = {'name': 'coconut_workspace', 'description':
-    'Get this work item\'s persistent Git worktree before editing code or running repository tests. '
-    'Hermes creates it and reuses it for replies and recovery. Supply the local repository path. '
-    'When continuing earlier changes, pass their existing_worktree to retain their branch and files. '
-    'Use the returned path as cwd for all commands. '
-    'To name a PR branch, rename the worktree branch with git branch -m <name>. Do not create or switch branches '
-    'in the worktree with git checkout -b, git checkout <branch>, or git switch, and do not check out a commit '
-    'without a branch: Coconut then stops this work item until a person recovers the checkout. To test another '
-    'commit, add a separate worktree on its own branch inside this worktree, for example '
-    'git worktree add -b <name> tmp/<name> <commit>, so retirement can archive and remove it. '
-    'This routine setup does not require a decision card. It does not push, merge, or deploy.',
-    'parameters': {'type': 'object', 'properties': {
-        'repository': {'type': 'string'}, 'existing_worktree': {'type': 'string'}}, 'required': ['repository']}}
 
 
 def chosen(root, outcome, bindings):

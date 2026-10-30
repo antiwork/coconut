@@ -7,7 +7,8 @@ offer the same tools with these schemas. The plugin loads this file by its path,
 coconut_wait records that the work of a turn waits for another task, a background process or a card
 (work_progress.wait_for_task). A card that needs an answer (coconut_ask) ends the turn. The answer resumes the work in a later turn. An optional
 proposal (coconut_suggest) does not end the turn. coconut_resolve_reply records a typed answer to a pending card.
-coconut_refresh_decision records the result of an automatic check of a pending card.
+coconut_refresh_decision records the result of an automatic check of a pending card. coconut_workspace gives a turn of
+a work session its Git worktree.
 """
 
 DRAFT_SCHEMA = {
@@ -162,6 +163,25 @@ def refresh_schema(action_type=None):
     parameters = REFRESH_SCHEMA['parameters']
     return dict(REFRESH_SCHEMA, parameters=dict(parameters, properties=dict(parameters['properties'], revision=revision)))
 
+
+# The persistent Git worktree of a work session (work_workspace.acquire). A turn of a work session can get it.
+WORKSPACE_SCHEMA = {'name': 'coconut_workspace', 'description':
+    'Get this work item\'s persistent Git worktree before editing code or running repository tests. '
+    'Hermes creates it and reuses it for replies and recovery. Supply the local repository path. '
+    'When continuing earlier changes, pass their existing_worktree to retain their branch and files. '
+    'Use the returned path as cwd for all commands. '
+    'To name a PR branch, rename the worktree branch with git branch -m <name>. Do not create or switch branches '
+    'in the worktree with git checkout -b, git checkout <branch>, or git switch, and do not check out a commit '
+    'without a branch: Coconut then stops this work item until a person recovers the checkout. To test another '
+    'commit, add a separate worktree on its own branch inside this worktree, for example '
+    'git worktree add -b <name> tmp/<name> <commit>, so retirement can archive and remove it. '
+    'This routine setup does not require a decision card. It does not push, merge, or deploy.',
+    'parameters': {'type': 'object', 'properties': {
+        'repository': {'type': 'string'}, 'existing_worktree': {'type': 'string'}}, 'required': ['repository']}}
+WORKSPACE_INSTRUCTIONS = (
+    ' When coconut_workspace is available, call it with the local repository before editing code. Otherwise use a '
+    'separate Git worktree. For existing changes, supply existing_worktree to retain the files and branch. Reuse its '
+    'returned path for commands, replies, reviews, and recovery. Keep other work items and their files unchanged. ')
 
 # A typed answer from chat names its card and the human message (decision_inbox.resolve_chat_decision).
 CHAT_REPLY_SCHEMA = dict(REPLY_SCHEMA, parameters=dict(
