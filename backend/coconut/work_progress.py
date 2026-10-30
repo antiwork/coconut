@@ -347,11 +347,13 @@ class WorkProgress:
             tasks = self._task_map()
             records = self._shared_work_receipts()
             dependencies = []
+            # The peers whose chain holds this task, found once (see _work_reach).
+            reach = self._work_reach(task['id'], tasks, records, include_continuations=True)
             for target in self._exchange_peers(task).values():
                 pending = self._background_pending(target['id'])
                 if target['status'] not in self.ACTIVE and not pending:
                     continue
-                if task['id'] in self._work_chain(target, tasks, records, include_continuations=True):
+                if target['id'] in reach:
                     continue
                 dependencies.append({key: target.get(key) for key in ('id', 'bot_id', 'title')}
                                     | {'status': 'waiting' if pending and target['status'] == 'completed' else target['status']})

@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 from urllib.error import URLError
 from urllib.parse import parse_qs
 
-from coconut import decision_sources
+from coconut import decision_sources, pr_tracking
 from coconut.work_sources import source_fingerprint
 from coconut.hermes_worker import conversation_input
 from coconut.pr_tracking import GitHubPRTracker, PRTrackingError
@@ -62,6 +62,9 @@ class ThreadTracker(GitHubPRTracker):
         self.threads[42].add(*comments)
 
     def _request(self, path, deadline, cache=True):
+        # As the real _request does: the budget of the reader counts each request before it goes out.
+        pr_tracking._charge()
+        pr_tracking._SPENT.count = pr_tracking.spent_requests() + 1
         self.read_started.append(time.monotonic())
         self.cached[path] = cache
         if self.service is not None:
@@ -198,6 +201,136 @@ class SourceActivityTests(unittest.TestCase):
         # The item at the recorded second can repeat. Its author is not trusted, so Coconut withholds its text.
         self.assertEqual([c.get('body') for c in task['_source_activity'][0]['new_activity']], ['Also keep the old export.'])
         self.assertNotIn('10x the current volume', prompt)
+
+    def records(self):
+        return self.service.__dict__['_thread_records']
+
+    def test_an_unchanged_thread_comes_from_the_kept_read(self):
+        self.approve_card()
+        self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'This must handle 10x the current volume.'))
+        self.turn()
+        seen = self.service._get('tasks', self.task['id'])['_source_activity_seen']
+        # Without a kept read, the next turn reads the thread at the turn.
+        self.requeue()
+        reads = len(self.tracker.paths)
+        live, live_prompt = self.turn()
+        self.assertGreater(len(self.tracker.paths), reads)
+        self.records().refresh()
+        self.requeue()
+        reads = len(self.tracker.paths)
+        kept, kept_prompt = self.turn()
+        self.assertEqual(self.tracker.paths[reads:], [], 'The kept read must spare the GitHub reads at the turn.')
+        self.assertEqual(kept_prompt, live_prompt)
+        self.assertEqual(kept.get('_source_activity'), live.get('_source_activity'))
+        self.assertEqual(self.service._get('tasks', self.task['id'])['_source_activity_seen'], seen)
+
+    def test_new_activity_is_read_at_the_turn(self):
+        self.approve_card()
+        self.turn()
+        self.records().refresh()
+        self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'New requirement.'))
+        # The kept read is older than the comment. It shows at the next turn after the refresh sees it.
+        self.records().refresh()
+        self.requeue()
+        reads = len(self.tracker.paths)
+        task, prompt = self.turn()
+        self.assertGreater(len(self.tracker.paths), reads)
+        self.assertIn('New requirement.', prompt)
+
+    def test_an_old_kept_read_is_not_used(self):
+        self.approve_card()
+        self.turn()
+        self.records().refresh()
+        key = next(iter(self.records().records))
+        started, record = self.records().records[key]
+        self.records().records[key] = (started - decision_sources.THREAD_RECORD_SECONDS - 1, record)
+        self.requeue()
+        reads = len(self.tracker.paths)
+        self.turn()
+        self.assertGreater(len(self.tracker.paths), reads)
+
+    def test_the_refresher_reads_lists_with_conditional_requests(self):
+        self.approve_card()
+        self.turn()
+        self.tracker.cached.clear()
+        self.records().refresh()
+        lists = [path for path in self.tracker.cached if '/comments' in path]
+        self.assertTrue(lists)
+        self.assertTrue(all(self.tracker.cached[path] for path in lists))
+
+    def test_the_refresher_spends_at_most_its_hourly_budget(self):
+        self.approve_card()
+        self.turn()
+        records = self.records()
+        now = time.monotonic()
+        records.spent = [(now - 10, decision_sources.THREAD_REFRESH_BUDGET)]
+        reads = len(self.tracker.paths)
+        records.refresh()
+        self.assertEqual(len(self.tracker.paths), reads, 'A spent budget must stop the refresh.')
+        # The budget counts only the last hour.
+        records.spent = [(now - 3601, decision_sources.THREAD_REFRESH_BUDGET)]
+        records.refresh()
+        self.assertGreater(len(self.tracker.paths), reads)
+        self.assertTrue(records.records)
+
+    def test_a_read_with_many_pages_never_passes_the_budget(self):
+        self.approve_card(urls=(PR_URL,))
+        self.turn()
+        records = self.records()
+        records.refresh()
+        kept = dict(records.records)
+        self.assertTrue(kept)
+        # Many items at a new revision second fill several pages of each list.
+        thread = self.tracker.threads[43]
+        stamp = '2026-09-23T13:00:00Z'
+        thread.comments = [comment(1000 + index, 'reviewer', stamp, f'Item {index}') for index in range(350)]
+        thread.reviews = [dict(comment(2000 + index, 'reviewer', stamp, 'Review'), submitted_at=stamp) for index in range(350)]
+        thread.review_comments = [comment(3000 + index, 'reviewer', stamp, 'Inline') for index in range(350)]
+        thread.updated_at = stamp
+        now = time.monotonic()
+        for left in (1, 3, 7):
+            with self.subTest(left=left):
+                records.spent = [(now - 10, decision_sources.THREAD_REFRESH_BUDGET - left)]
+                reads = len(self.tracker.paths)
+                records.refresh()
+                self.assertLessEqual(len(self.tracker.paths) - reads, left, 'The refresh sent more requests than its budget.')
+                self.assertLessEqual(records.budget_left(time.monotonic()), left)
+                self.assertGreaterEqual(records.budget_left(time.monotonic()), 0)
+                # The stopped read keeps the last good kept read.
+                self.assertEqual(records.records, kept)
+        # The budget ends with the refresh. A later reader of this thread has no limit.
+        self.assertIsNone(pr_tracking._SPENT.limit)
+
+    def test_the_refresher_stops_while_the_login_has_few_requests_left(self):
+        from coconut import pr_tracking
+        self.approve_card()
+        self.turn()
+        scope = __import__('hashlib').sha256(self.tracker._token.encode()).digest()
+        pr_tracking._remember_quota(scope, {'X-RateLimit-Remaining': str(decision_sources.THREAD_QUOTA_FLOOR - 1),
+                                            'X-RateLimit-Reset': str(time.time() + 600)})
+        self.addCleanup(pr_tracking._QUOTA.pop, scope, None)
+        reads = len(self.tracker.paths)
+        self.records().refresh()
+        self.assertEqual(len(self.tracker.paths), reads, 'A low quota must stop the refresh.')
+        # After the reset time, the refresh reads again.
+        pr_tracking._remember_quota(scope, {'X-RateLimit-Remaining': '10', 'X-RateLimit-Reset': str(time.time() - 1)})
+        self.records().refresh()
+        self.assertGreater(len(self.tracker.paths), reads)
+
+    def test_the_refresh_limits_stay_under_the_cap(self):
+        self.assertLessEqual(decision_sources.THREAD_REFRESH_BUDGET, 300)
+        self.assertGreaterEqual(decision_sources.THREAD_QUOTA_FLOOR, 1000)
+
+    def test_another_login_drops_the_kept_read(self):
+        self.approve_card()
+        self.turn()
+        self.records().refresh()
+        self.assertTrue(self.records().records)
+        other = ThreadTracker(self.service)
+        other._token = 'another-token'
+        with patch.object(self.service, '_pr_tracker_for', return_value=other):
+            self.records().refresh()
+        self.assertEqual(self.records().records, {})
 
     def test_comment_while_the_card_waits_reaches_the_resumed_turn(self):
         def comment_and_refresh():

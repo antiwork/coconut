@@ -161,6 +161,7 @@ from .approval_updates import ApprovalUpdates
 from .parallel_work_updates import ParallelWorkUpdates
 from .native_fallback_updates import NativeFallbackUpdates
 from .task_cache import SCHEMA as TASK_CHANGES_SCHEMA, TaskCache, TaskStates
+from .history_cache import SCHEMA as MESSAGE_CHANGES_SCHEMA, HistoryCache, HistoryStates
 from .work_capacity import execution_key, state as capacity_state
 from .kanban_scheduler import NativeKanban
 
@@ -204,7 +205,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat):
+class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -250,6 +251,9 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self.db.executescript(TASK_CHANGES_SCHEMA)
         # The committed task states that the writer and the read views share. See task_cache.py.
         self._task_states = TaskStates()
+        # The kept history of each bot, with the message changes that update it. See history_cache.py.
+        self.db.executescript(MESSAGE_CHANGES_SCHEMA)
+        self._history_states = HistoryStates()
         self.db.executescript('''
         CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, type TEXT NOT NULL, bot_id TEXT, task_id TEXT, data TEXT NOT NULL, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS requests (key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, response TEXT NOT NULL);
@@ -306,6 +310,12 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_relay_callback_owner ON tasks (json_extract(data,'$._relay_callback_owner'))")
         self.db.execute('CREATE INDEX IF NOT EXISTS messages_human ON messages (id) WHERE ' + HUMAN_MESSAGE)
         self.db.execute('CREATE INDEX IF NOT EXISTS messages_streaming ON messages (id) WHERE ' + STREAMING_MESSAGE)
+        # The turn context reads the newest turn start of a bot session and the status tasks of a session.
+        self.db.execute("CREATE INDEX IF NOT EXISTS tasks_turn_started ON tasks (json_extract(data,'$.bot_id'), "
+                        "json_extract(data,'$.session_id'), json_extract(data,'$._turn_started_at')) "
+                        "WHERE NOT coalesce(json_extract(data,'$._work_status_only'),0)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS tasks_status_only ON tasks (json_extract(data,'$.bot_id'), "
+                        "json_extract(data,'$.session_id')) WHERE json_extract(data,'$._work_status_only')=1")
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_gateway_cron ON tasks (json_extract(data,'$._gateway_cron.execution_id')) "
                         "WHERE json_extract(data,'$._gateway_cron.execution_id') IS NOT NULL")
         self.db.execute('CREATE INDEX IF NOT EXISTS decisions_proposal_execution ON decisions (id) WHERE ' + PROPOSAL_EXECUTION)
@@ -959,6 +969,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
             # is read before the view's snapshot starts, so a state from before a VACUUM is never used after it.
             view._task_rows = None
             view._task_generation = self._task_states.generation
+            view._history_generation = self._history_states.generation
             yield view
 
     @contextlib.contextmanager
@@ -3376,6 +3387,11 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
 
     def _history(self, bot_id: str, *, task_id=None, shared_message_ids=()) -> list[dict]:
         # Threads organize Inbox decisions. They never restrict a bot's own recall.
+        if task_id is None:
+            # Each turn reads the whole history of its bot. The kept history reads only the changed messages.
+            kept = self._kept_history(bot_id)
+            if kept is not None:
+                return kept
         selection, values = '', [bot_id]
         if task_id is not None:
             selection = ("AND m.id IN (SELECT id FROM messages WHERE json_extract(data, '$.task_id')=? "

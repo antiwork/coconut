@@ -6,6 +6,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPException
+import contextlib
 import json
 import hashlib
 import os
@@ -76,6 +77,65 @@ def _remember_response(key, etag, body, link=None):
         while (len(_RESPONSE_CACHE) > 256
                or sum(len(value[1]) for value in _RESPONSE_CACHE.values()) > _CACHE_BYTES):
             _RESPONSE_CACHE.popitem(last=False)
+
+
+# The latest rate limit that GitHub reported for each token: {scope: (remaining, reset time)}.
+_QUOTA = {}
+# The requests of this thread that GitHub counted against the rate limit. A 304 answer to a conditional request is free.
+_SPENT = threading.local()
+
+
+def quota(token):
+    """The remaining requests and the reset time that GitHub last reported for this token, or None."""
+    with _CACHE_LOCK:
+        return _QUOTA.get(hashlib.sha256((token or '').encode()).digest())
+
+
+def spent_requests():
+    """The requests of the calling thread that GitHub counted against the rate limit so far."""
+    return getattr(_SPENT, 'count', 0)
+
+
+@contextlib.contextmanager
+def request_budget(limit):
+    """Let the calling thread send at most `limit` more requests that GitHub can count.
+
+    Each request counts against the budget before it goes out, because only GitHub's answer tells whether it counted.
+    A request beyond the budget raises PRTrackingError and sets budget_stopped(). The budget ends with the block.
+    """
+    _SPENT.limit, _SPENT.stopped = spent_requests() + limit, False
+    _SPENT.sent = spent_requests()
+    try:
+        yield
+    finally:
+        _SPENT.limit = None
+
+
+def budget_stopped():
+    """True when the budget of the calling thread stopped a request (see request_budget)."""
+    return getattr(_SPENT, 'stopped', False)
+
+
+def _charge():
+    """Stop a request that the budget of the calling thread cannot hold."""
+    limit = getattr(_SPENT, 'limit', None)
+    if limit is None:
+        return
+    if _SPENT.sent + 1 > limit:
+        _SPENT.stopped = True
+        raise PRTrackingError('The GitHub request budget of this reader is spent.')
+    _SPENT.sent += 1
+
+
+def _remember_quota(scope, headers):
+    try:
+        remaining, reset = int(headers.get('X-RateLimit-Remaining')), float(headers.get('X-RateLimit-Reset', 0))
+    except (TypeError, ValueError):
+        return
+    with _CACHE_LOCK:
+        _QUOTA[scope] = (remaining, reset)
+        while len(_QUOTA) > 256:
+            _QUOTA.pop(next(iter(_QUOTA)))
 
 
 def _rate_limit(scope, headers, status, *, secondary=False):
@@ -251,6 +311,7 @@ class GitHubPRTracker:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise PRTrackingError("GitHub refresh exceeded its time limit.")
+        _charge()
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2026-03-10",
@@ -273,6 +334,9 @@ class GitHubPRTracker:
             response = self._opener.open(request, timeout=min(self._timeout, remaining))
         except HTTPError as error:
             try:
+                _remember_quota(scope, error.headers or {})
+                if error.code != 304:
+                    _SPENT.count = spent_requests() + 1
                 secondary = False
                 if error.code == 403:
                     message = error.read(4096).lower()
@@ -285,6 +349,8 @@ class GitHubPRTracker:
             raise
         with response:
             response_headers = getattr(response, 'headers', {})
+            _remember_quota(scope, response_headers)
+            _SPENT.count = spent_requests() + 1
             _rate_limit(scope, response_headers, response.status)
             if response.status != 200:
                 raise PRTrackingError("GitHub did not return a complete response.")
@@ -463,14 +529,14 @@ class GitHubPRTracker:
             pass
         return None
 
-    def _list(self, path: str, deadline: float) -> list:
-        # Per-turn list pages change often. Keep them out of the shared cache.
-        values = self._get(path, deadline, cache=False)
+    def _list(self, path: str, deadline: float, *, cache: bool = False) -> list:
+        # Per-turn list pages change often. Keep them out of the shared cache, unless the caller reads them again soon.
+        values = self._get(path, deadline, cache=cache)
         if not isinstance(values, list) or any(not isinstance(value, dict) for value in values):
             raise PRTrackingError('GitHub returned an incomplete list.')
         return values
 
-    def _newest_pages(self, path: str, deadline: float, older) -> tuple[list, bool]:
+    def _newest_pages(self, path: str, deadline: float, older, *, cache: bool = False) -> tuple[list, bool]:
         """Read a list from its last page back, at most three pages.
 
         GitHub lists these items by ID. Read the first page and use its Link
@@ -479,22 +545,26 @@ class GitHubPRTracker:
         the items and whether unread pages remain. The ID order does not
         follow the time that `older` checks, so unread pages can hold new items.
         """
-        probe, link = self._request(path + 'per_page=100&page=1', deadline, cache=False)
+        probe, link = self._request(path + 'per_page=100&page=1', deadline, cache=cache)
         if not isinstance(probe, list) or any(not isinstance(value, dict) for value in probe):
             raise PRTrackingError('GitHub returned an incomplete list.')
         match = re.search(r'<[^>]*[?&]page=([1-9][0-9]{0,6})[^>]*>;\s*rel="last"', link or '')
         last = int(match[1]) if match else 1
         values = []
         for page in range(last, max(0, last - 3), -1):
-            batch = probe if page == 1 else self._list(f'{path}per_page=100&page={page}', deadline)
+            batch = probe if page == 1 else self._list(f'{path}per_page=100&page={page}', deadline, cache=cache)
             values += batch
             if any(older(value) for value in batch):
                 return values, page > 1
         return values, last > 3
 
     def observe_issue_activity(self, url: str, since: str, deadline: float | None = None, *,
-                               operator: bool = False, include_same_second: bool = False) -> dict | None:
+                               operator: bool = False, include_same_second: bool = False,
+                               cache_lists: bool = False) -> dict | None:
         """Read the thread record and its activity after `since`. Failure returns None.
+
+        With `cache_lists`, the activity lists use conditional requests too. A reader that reads the same lists again
+        soon passes it: GitHub does not count a 304 answer against the rate limit.
 
         `operator` is true when an operator owns the repository. Only then do
         repository roles make an author trusted.
@@ -539,7 +609,7 @@ class GitHubPRTracker:
                                 - timedelta(seconds=1)).astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
                 values, more = self._newest_pages(
                     f'{prefix}/issues/{number}/comments?since={quote(review_since)}&', deadline,
-                    lambda v: False)
+                    lambda v: False, cache=cache_lists)
                 items += [_activity('comment', v, v.get('updated_at'), operator) for v in values
                           if isinstance(v.get('updated_at'), str) and v['updated_at'] >= since]
                 incomplete = more
@@ -549,7 +619,7 @@ class GitHubPRTracker:
                     for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
                                                (f'pulls/{number}/comments?since={quote(review_since)}&', 'review_comment', 'updated_at')):
                         values, more = self._newest_pages(f'{prefix}/{route}', deadline,
-                            lambda v: isinstance(v.get(stamp), str) and v[stamp] < since)
+                            lambda v: isinstance(v.get(stamp), str) and v[stamp] < since, cache=cache_lists)
                         items += [_activity(name, v, v.get(stamp), operator) for v in values
                                   if isinstance(v.get(stamp), str) and v[stamp] >= since]
                         incomplete = incomplete or more

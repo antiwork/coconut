@@ -312,6 +312,35 @@ class ConditionalReadTests(unittest.TestCase):
     def get(self, tracker, path='/one'):
         return tracker._get(path, time.monotonic() + 20)
 
+    def test_counted_requests_and_the_reported_quota(self):
+        from coconut import pr_tracking
+        tracker = GitHubPRTracker(token='quota-token')
+        before = pr_tracking.spent_requests()
+        reset = str(int(time.time()) + 600)
+        with patch.object(tracker._opener, 'open', return_value=self.response(
+                {'state': 'open'}, **{'X-RateLimit-Remaining': '4321', 'X-RateLimit-Reset': reset})):
+            self.get(tracker)
+        self.assertEqual(pr_tracking.spent_requests(), before + 1)
+        self.assertEqual(pr_tracking.quota('quota-token'), (4321, float(reset)))
+        # A 304 answer to a conditional request does not count against the limit.
+        with patch.object(tracker._opener, 'open', side_effect=HTTPError(URL, 304, '', {'X-RateLimit-Remaining': '4321'}, None)):
+            self.assertEqual(self.get(tracker), {'state': 'open'})
+        self.assertEqual(pr_tracking.spent_requests(), before + 1)
+
+    def test_a_request_budget_stops_the_request_before_it_goes_out(self):
+        from coconut import pr_tracking
+        tracker = GitHubPRTracker(token='budget-token')
+        with patch.object(tracker._opener, 'open', return_value=self.response({'state': 'open'})) as request:
+            with pr_tracking.request_budget(1):
+                self.get(tracker, '/first')
+                with self.assertRaises(PRTrackingError):
+                    self.get(tracker, '/second')
+                self.assertTrue(pr_tracking.budget_stopped())
+        self.assertEqual(request.call_count, 1)
+        # Without a budget, the requests go out.
+        with patch.object(tracker._opener, 'open', return_value=self.response({'state': 'open'})):
+            self.get(tracker, '/third')
+
     def test_new_profile_tracker_revalidates_cached_data_and_does_not_share_mutations(self):
         first, second = GitHubPRTracker(token='a'), GitHubPRTracker(token='a')
         with patch.object(first._opener, 'open', return_value=self.response({'state': 'open'})):

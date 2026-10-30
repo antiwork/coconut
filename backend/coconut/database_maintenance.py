@@ -431,6 +431,7 @@ class DatabaseMaintenance:
                     # VACUUM can renumber rowids, so the kept tasks can lose their row order, and the exchange
                     # positions of the message pages can name other rows.
                     self._forget_cached_tasks(renumbered=True)
+                    self._forget_kept_history()
                     with self.transaction():
                         index_exchange_audience(self.db, rebuild=True)
                     logging.getLogger(__name__).warning('coconut.database_vacuum %s', json.dumps(dict(

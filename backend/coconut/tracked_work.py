@@ -201,14 +201,21 @@ class TrackedWork:
                                for d in self._all('decisions') if d['task_id'] in linked and d['status'] == 'pending'])
 
     def recent_work_updates(self, task):
-        before = self.db.execute(
-            "SELECT coalesce(max(json_extract(data,'$._turn_started_at')),'') FROM tasks "
-            "WHERE json_extract(data,'$.bot_id')=? AND json_extract(data,'$.session_id')=? "
-            "AND id!=? AND NOT coalesce(json_extract(data,'$._work_status_only'),0)",
-            (task['bot_id'], task['session_id'], task['id'])).fetchone()[0]
+        # Two partial indexes answer both reads. Before, they read every task of the bot and every message, about 0.25 s
+        # of each turn context on a copy of the Mac mini data. The newest turn start comes first, and NULL comes last.
         rows = self.db.execute(
-            "SELECT m.data,json_extract(t.data,'$._work_context_id') FROM tasks t "
-            "JOIN messages m ON json_extract(m.data,'$.task_id')=t.id "
+            "SELECT id, json_extract(data,'$._turn_started_at') FROM tasks INDEXED BY tasks_turn_started "
+            "WHERE json_extract(data,'$.bot_id')=? AND json_extract(data,'$.session_id')=? "
+            "AND NOT coalesce(json_extract(data,'$._work_status_only'),0) "
+            "AND json_extract(data,'$._turn_started_at') IS NOT NULL "
+            "ORDER BY json_extract(data,'$._turn_started_at') DESC LIMIT 2",
+            (task['bot_id'], task['session_id'])).fetchall()
+        before = next((started for identity, started in rows if identity != task['id']), '')
+        # The status tasks come first, then their messages through the message index by task. The unary plus lets
+        # SQLite compare the message expression with the task ID through that index.
+        rows = self.db.execute(
+            "SELECT m.data,json_extract(t.data,'$._work_context_id') FROM tasks t INDEXED BY tasks_status_only "
+            "CROSS JOIN messages m ON json_extract(m.data, '$.task_id')=+t.id "
             "WHERE json_extract(t.data,'$.bot_id')=? AND json_extract(t.data,'$.session_id')=? "
             "AND json_extract(t.data,'$._work_status_only')=1 "
             "AND json_extract(m.data,'$.role')='assistant' AND json_extract(m.data,'$.kind')='text' "
@@ -436,8 +443,10 @@ class TrackedWork:
                  and (not a.get('_hidden') or a.get('_work_parent_id'))]
         tasks = self._task_map()
         records = self._shared_work_receipts()
+        # The roots whose chain holds this task, found once (see _work_reach), instead of a chain for each item.
+        reach = self._work_reach(task['id'], tasks, records, include_continuations=True)
         owned = {a['id'] for a in items if a.get('task_id') in tasks
-                 and task['id'] in self._work_report_chain(a, tasks, records)}
+                 and any(identity in reach for identity in self._work_report_roots(a, tasks) if identity in tasks)}
         items = [a for a in items if a['bot_id'] == task['bot_id']
                  or (a['id'] in owned and not task.get('_native_job') and not self._assignment(task).get('_native_job'))]
         job_id = (tasks.get(task.get('_assignment_task_id'), task).get('_native_job') or {}).get('id')

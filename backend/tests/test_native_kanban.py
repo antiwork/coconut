@@ -498,7 +498,7 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
         self.provider.supports_native_outcomes = True
         with patch.object(self.service, '_all', wraps=self.service._all) as reads, \
                 patch.object(self.service, '_read_all_tasks', wraps=self.service._read_all_tasks) as full, \
-                patch.object(self.service, '_work_links', wraps=self.service._work_links) as graphs:
+                patch.object(self.service, '_work_task_link_pairs', wraps=self.service._work_task_link_pairs) as graphs:
             self.service._migrate_native_work()
         self.assertEqual(graphs.call_count, 1)
         # The service keeps the parsed tasks and reads only the changed rows (TaskCache).
