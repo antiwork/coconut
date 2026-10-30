@@ -116,6 +116,16 @@ class SourceActivityTests(unittest.TestCase):
         environment = patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS='Example')
         environment.start()
         self.addCleanup(environment.stop)
+        # A turn keeps its own read for the next turn. The tests here change a thread between turns without waiting,
+        # so a kept read counts as old, unless a test uses kept reads.
+        age = patch.object(decision_sources, 'THREAD_RECORD_SECONDS', -1)
+        age.start()
+        self.addCleanup(age.stop)
+
+    def use_kept_reads(self):
+        age = patch.object(decision_sources, 'THREAD_RECORD_SECONDS', 75)
+        age.start()
+        self.addCleanup(age.stop)
 
     tearDown = source_tests.DecisionSourceTests.tearDown
     event = source_tests.DecisionSourceTests.event
@@ -206,11 +216,13 @@ class SourceActivityTests(unittest.TestCase):
         return self.service.__dict__['_thread_records']
 
     def test_an_unchanged_thread_comes_from_the_kept_read(self):
+        self.use_kept_reads()
         self.approve_card()
         self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'This must handle 10x the current volume.'))
         self.turn()
         seen = self.service._get('tasks', self.task['id'])['_source_activity_seen']
         # Without a kept read, the next turn reads the thread at the turn.
+        self.records().records.clear()
         self.requeue()
         reads = len(self.tracker.paths)
         live, live_prompt = self.turn()
@@ -225,6 +237,7 @@ class SourceActivityTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', self.task['id'])['_source_activity_seen'], seen)
 
     def test_new_activity_is_read_at_the_turn(self):
+        self.use_kept_reads()
         self.approve_card()
         self.turn()
         self.records().refresh()
@@ -238,6 +251,7 @@ class SourceActivityTests(unittest.TestCase):
         self.assertIn('New requirement.', prompt)
 
     def test_an_old_kept_read_is_not_used(self):
+        self.use_kept_reads()
         self.approve_card()
         self.turn()
         self.records().refresh()
@@ -274,6 +288,7 @@ class SourceActivityTests(unittest.TestCase):
         self.assertTrue(records.records)
 
     def test_a_read_with_many_pages_never_passes_the_budget(self):
+        self.use_kept_reads()
         self.approve_card(urls=(PR_URL,))
         self.turn()
         records = self.records()
@@ -320,6 +335,29 @@ class SourceActivityTests(unittest.TestCase):
     def test_the_refresh_limits_stay_under_the_cap(self):
         self.assertLessEqual(decision_sources.THREAD_REFRESH_BUDGET, 300)
         self.assertGreaterEqual(decision_sources.THREAD_QUOTA_FLOOR, 1000)
+
+    def test_a_turn_keeps_its_read_at_the_revision_second_for_the_next_turn(self):
+        self.use_kept_reads()
+        self.approve_card()
+        self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Scale requirement.'))
+        with self.assertLogs('coconut.decision_sources', level='WARNING') as logs:
+            self.turn()
+        first = next(json.loads(r.getMessage().partition('coconut.source_read ')[2]) for r in logs.records
+                     if 'coconut.source_read' in r.getMessage())
+        # No turn read the thread before: the log names that reason, taken before the read.
+        self.assertEqual([outcome[0] for outcome in first['outcomes']], ['none'])
+        # This turn reads at the revision that the first turn recorded, so it keeps its read.
+        self.requeue()
+        live, live_prompt = self.turn()
+        self.requeue()
+        reads = len(self.tracker.paths)
+        with self.assertLogs('coconut.decision_sources', level='WARNING') as logs:
+            kept, kept_prompt = self.turn()
+        self.assertEqual(self.tracker.paths[reads:], [])
+        self.assertEqual((kept.get('_source_activity'), kept_prompt), (live.get('_source_activity'), live_prompt))
+        line = next(json.loads(r.getMessage().partition('coconut.source_read ')[2]) for r in logs.records
+                    if 'coconut.source_read' in r.getMessage())
+        self.assertEqual((line['threads'], line['outcomes']), (1, [['kept', 0]]))
 
     def test_another_login_drops_the_kept_read(self):
         self.approve_card()

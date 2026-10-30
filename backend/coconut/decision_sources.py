@@ -151,7 +151,8 @@ SOURCE_READ_SECONDS = 6
 # A turn reads each linked GitHub thread before it starts: about 0.6 s per read on the Mac mini, and 1.2 s per turn at
 # p50. Most threads did not change since the revision that Coconut recorded. A background refresher keeps the read of
 # each thread that a turn used in the last THREAD_KEEP_SECONDS: the thread at its latest revision, with the items of that
-# second, as a turn reads it. It reads at most THREAD_KEEP_COUNT threads again every THREAD_REFRESH_SECONDS.
+# second, as a turn reads it. It reads at most THREAD_KEEP_COUNT threads again every THREAD_REFRESH_SECONDS. A turn
+# that reads a thread at its revision second keeps its read too, so the next turn of the thread can use it.
 # A turn uses a kept read that is at most THREAD_RECORD_SECONDS old only when it shows nothing new for that turn: the
 # thread did not change after the recorded revision, and each item of the revision second was delivered. Then the
 # activity and the recorded revision are the ones that a read at the turn returns. Any new activity reads the thread at
@@ -162,7 +163,7 @@ SOURCE_READ_SECONDS = 6
 # THREAD_REFRESH_BUDGET requests that GitHub can count in any hour: each request counts against the budget before it
 # goes out, and a request beyond the budget stops the read. It also stops while GitHub reports fewer than
 # THREAD_QUOTA_FLOOR remaining requests for the login. Then turns read their threads themselves, as before.
-THREAD_RECORD_SECONDS = 150
+THREAD_RECORD_SECONDS = 75
 THREAD_REFRESH_SECONDS = 60
 THREAD_KEEP_SECONDS = 900
 THREAD_KEEP_COUNT = 6
@@ -227,10 +228,41 @@ class ThreadRecords:
         reported = quota(getattr(tracker, '_token', ''))
         return reported is not None and reported[0] < THREAD_QUOTA_FLOOR and reported[1] > time.time()
 
+    def keep(self, tracker, bot_id, url, operator, current, started):
+        """Keep a turn's read at the revision second, as the refresher keeps its reads."""
+        import time
+        key = self.key(tracker, url, operator)
+        with self.guard:
+            self.used[key] = (time.monotonic(), url, bot_id)
+            previous = self.records.get(key)
+            if previous is None or previous[0] < started:
+                self.records[key] = (started, json.dumps(current))
+
+    def miss_reason(self, tracker, url, operator, since):
+        """Why a turn read this thread itself: no kept read, an old one, no revision, a change, or an undelivered item."""
+        import time
+        with self.guard:
+            kept = self.records.get(self.key(tracker, url, operator))
+        if kept is None:
+            return 'none'
+        if since is None:
+            return 'no_revision'
+        if time.monotonic() - kept[0] > THREAD_RECORD_SECONDS:
+            return 'old'
+        return 'changed' if json.loads(kept[1])['updated_at'] > since else 'undelivered'
+
+    def state(self):
+        """The refresher counts for the log: kept reads, threads in use, and the counted requests of the last hour."""
+        import time
+        with self.guard:
+            return dict(kept=len(self.records), used=len(self.used),
+                        budget_left=THREAD_REFRESH_BUDGET - sum(cost for at, cost in self.spent
+                                                                if time.monotonic() - at < 3600))
+
     def refresh(self):
         """Read each thread that a turn used lately, at its latest revision. Drop the others."""
         import time
-        from .pr_tracking import budget_stopped, request_budget, spent_requests
+        from .pr_tracking import budget_stopped, own_responses, request_budget, spent_requests
         now = time.monotonic()
         with self.guard:
             for key in [key for key, (used, _, _) in self.used.items() if now - used > THREAD_KEEP_SECONDS]:
@@ -262,7 +294,8 @@ class ThreadRecords:
                         previous = self.records.get(key)
                     since = json.loads(previous[1])['updated_at'] if previous else _LATEST
                     # Each request counts against the rest of the hour's budget before it goes out.
-                    with request_budget(left):
+                    # Its own response cache keeps its conditional requests free: the PR poll cannot push them out.
+                    with request_budget(left), own_responses('thread-refresh'):
                         for _ in range(2):
                             current = tracker.observe_issue_activity(url, since, started + SOURCE_READ_SECONDS,
                                                                      **options)
@@ -452,16 +485,27 @@ def read_source_activity(service, task_id, limit=3):
         operator = operator_repository(url, operators)
         delivered_signatures = {sig for state in delivered.get(key, []) for sig in state.get('signatures', [])
                                 if isinstance(sig, str)}
+        # The reason comes before the read: the refresher can change the kept read meanwhile.
+        reason = records.miss_reason(tracker, url, operator, since)
         kept = records.kept(tracker, task['bot_id'], url, operator, since, delivered_signatures)
         if kept is not None:
+            outcomes[key] = ('kept', 0)
             return since, kept
+        started = time.monotonic()
         try:
             options = dict(operator=operator)
             if isinstance(tracker, GitHubPRTracker):
                 options['include_same_second'] = True
-            return since, tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline, **options)
+            current = tracker.observe_issue_activity(url, since or '1970-01-01T00:00:00Z', deadline, **options)
         except Exception:
-            return since, None
+            current = None
+        outcomes[key] = (reason, round((time.monotonic() - started) * 1000))
+        if since is not None and isinstance(current, dict) and current.get('updated_at') == since:
+            # A read at the revision second is the read that the refresher keeps. A later turn of this thread can use it.
+            records.keep(tracker, task['bot_id'], url, operator, current, started)
+        return since, current
+
+    outcomes = {}
     # Each read takes about 0.6 s on the Mac mini, and the turn waits for all of them. Read the threads at once.
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(max_workers=len(links), thread_name_prefix='source-read') as pool:
@@ -485,4 +529,8 @@ def read_source_activity(service, task_id, limit=3):
                 'changed_without_new_activity') if k in current}))
     if selection_limited:
         activity.append(dict(selection_limited=True))
+    # How each thread was read, without its address or its content: kept, or the reason a kept read did not apply.
+    import logging
+    logging.getLogger(__name__).warning('coconut.source_read %s', json.dumps(dict(
+        task_id=task_id, threads=len(links), outcomes=sorted(outcomes.values()), **records.state())))
     return activity, seen

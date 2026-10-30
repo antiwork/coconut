@@ -327,6 +327,23 @@ class ConditionalReadTests(unittest.TestCase):
             self.assertEqual(self.get(tracker), {'state': 'open'})
         self.assertEqual(pr_tracking.spent_requests(), before + 1)
 
+    def test_own_responses_stay_when_the_shared_cache_fills(self):
+        from coconut import pr_tracking
+        tracker = GitHubPRTracker(token='own-cache-token')
+        with pr_tracking.own_responses('thread-refresh'):
+            with patch.object(tracker._opener, 'open', return_value=self.response({'state': 'open'}, '"own"')):
+                self.get(tracker, '/own')
+        # The PR poll reads many paths into the shared cache.
+        for index in range(300):
+            with patch.object(tracker._opener, 'open', return_value=self.response({'index': index}, f'"{index}"')):
+                self.get(tracker, f'/shared/{index}')
+        before = pr_tracking.spent_requests()
+        with pr_tracking.own_responses('thread-refresh'):
+            with patch.object(tracker._opener, 'open', side_effect=HTTPError(URL, 304, '', {}, None)) as request:
+                self.assertEqual(self.get(tracker, '/own'), {'state': 'open'})
+        self.assertEqual(request.call_args.args[0].get_header('If-none-match'), '"own"')
+        self.assertEqual(pr_tracking.spent_requests(), before, 'A 304 answer must not count.')
+
     def test_a_request_budget_stops_the_request_before_it_goes_out(self):
         from coconut import pr_tracking
         tracker = GitHubPRTracker(token='budget-token')
