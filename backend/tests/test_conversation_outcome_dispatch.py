@@ -14,6 +14,7 @@ class Kanban:
     """The native board as the scheduler reads it: the cards by Coconut task ID."""
     def __init__(self):
         self.tasks = {}
+        self.observed_at = None
 
     def close(self):
         pass
@@ -125,6 +126,53 @@ class ConversationOutcomeDispatchTests(unittest.TestCase):
             worker.join(5)
         self.assertEqual([start for start in starts if start[0] == review['id']], [])
         self.assertEqual(self.service._get('tasks', review['id'])['status'], 'queued')
+
+    def test_an_outcome_that_stays_respawn_guarded_for_an_hour_is_shown(self):
+        from coconut.kanban_scheduler import RESPAWN_GUARD_NOTICE_SECONDS
+        review = self.turn(self.dev, 'Check the saved review result', _native_outcome_id='t_review', summary='Queued')
+        native = dict(id='t_review', status='ready', dispatch_blocker='recent_success', title='Review')
+        self.service.kanban.tasks[review['id']] = native
+        hour = RESPAWN_GUARD_NOTICE_SECONDS
+        start = 1_000_000.0
+        def task():
+            return self.service._get('tasks', review['id'])
+        def work_activity():
+            item = dict(id='work-1', kind='work', key='review', task_id=review['id'], bot_id=self.dev['id'],
+                        title='Review', _native_outcome_id='t_review')
+            return self.service._native_outcome_projection(item, {review['id']: task()}, [], [], start, {})['activity']
+        self.service._note_respawn_guards(start)
+        self.assertEqual(task()['_respawn_guard'], dict(reason='recent_success', since=start))
+        # Before an hour nothing shows.
+        self.service._note_respawn_guards(start + hour - 1)
+        self.assertEqual((task()['summary'], work_activity()), ('Queued', 'Queued'))
+        with self.assertLogs('coconut.kanban_scheduler', 'WARNING') as logs:
+            self.service._note_respawn_guards(start + hour + 1)
+        self.assertIn('t_review', logs.output[0])
+        # The task and its Work item show the guard.
+        self.assertIn('its respawn guard is recent_success', task()['summary'])
+        self.assertIn('its respawn guard is recent_success', work_activity())
+        # The warning comes once.
+        with self.assertNoLogs('coconut.kanban_scheduler', 'WARNING'):
+            self.service._note_respawn_guards(start + 2 * hour)
+        # Another guard starts its own hour, and the old notice goes.
+        native['dispatch_blocker'] = 'active_pr'
+        self.service._note_respawn_guards(start + 3 * hour)
+        self.assertEqual((task()['summary'], task()['_respawn_guard']), ('Queued', dict(reason='active_pr', since=start + 3 * hour)))
+        self.assertEqual(work_activity(), 'Queued')
+        # The record goes when the guard ends. Newer progress keeps its text.
+        self.service._note_respawn_guards(start + 5 * hour)
+        self.assertIn('its respawn guard is active_pr', task()['summary'])
+        self.service._put('tasks', dict(task(), summary='Starting the review.'))
+        native['dispatch_blocker'] = None
+        self.service._note_respawn_guards(start + 6 * hour)
+        self.assertNotIn('_respawn_guard', task())
+        self.assertEqual(task()['summary'], 'Starting the review.')
+
+    def test_the_saved_respawn_guards_are_found_by_an_index(self):
+        from coconut.service import marked
+        plan = ' '.join(str(row) for row in self.service.db.execute(
+            'EXPLAIN QUERY PLAN SELECT rowid, data FROM tasks WHERE ' + marked('_respawn_guard')))
+        self.assertIn('tasks_respawn_guard', plan)
 
     def test_no_chat_turn_starts_on_an_execution_that_a_native_pass_is_claiming(self):
         dev_chat = self.turn(self.dev, 'A direct question for Dev')

@@ -298,6 +298,17 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 
 Coconut keeps its private board in `<data>/kanban/kanban.db` and dispatches it itself (`kanban_scheduler`, `kanban_runtime`). Its spawn function makes a Coconut task for each claim, so the work has Coconut cards, receipts and workspaces. The embedded dispatcher of the gateway calls `dispatch_once` with the default spawn of Hermes (`gateway/kanban_watchers_dispatcher.py`, `tick_once_for_board`), which starts a plain `hermes -p <assignee>` worker, and a plugin cannot give it another spawn function. It dispatches the boards of the Hermes home, not `<data>/kanban`. So the gateway does not serve Coconut's board, and the two dispatchers never share one. Upstream ask: a spawn hook for the embedded dispatcher.
 
+#### Respawn guards of Hermes
+
+Hermes refuses to start a ready task again for some reasons (`check_respawn_guard`). One is `active_pr`: a recent comment names a PR, so a new run could open a second PR. Coconut lets a run pass `active_pr` in two cases, and only when no run of the task is alive:
+
+- The task continues accepted input on the same PR (`coconut_pr_followups`), or the input is new.
+- The task recovers. Either the bot recovers it (`_self_recovery`), or its claim was interrupted (`kanban_scheduler.interrupted_claim`): the board task is ready, its current run is not the run of the claim, and the process of the claim is gone. A restart of the service leaves this state, and before this rule the outcome never started again.
+
+A task without a run keeps the guard: its creator may have opened the PR, and the task waits for new input. Comments and heartbeats do not repeat its guard event, so audits that comment on it leave one event (`_note_respawn_guard`).
+
+A task that a guard holds for more than an hour shows: Coconut logs a warning once and puts the guard in the status of the task and of its Work item (`_note_respawn_guards`).
+
 ### What phase 5 deletes
 
 - The worker turn types, one group at a time, after the gateway runs them: attachments and reactions; card answers, work items and claims, and recovery turns; bot exchanges and returns; GitHub source activity and PR reviews, and bot creation and deletion confirmations.

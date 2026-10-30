@@ -75,8 +75,13 @@ class ProviderFailureRetryTests(unittest.TestCase):
             board._note_respawn_guard(identity, 'active_pr')
             board._note_respawn_guard(identity, 'active_pr')
             assert events() == 2, events()
-            # Another event in between makes the same reason news again.
+            # A comment or a heartbeat in between does not change the guard, for example the comments of audits.
             kb._append_event(conn, identity, 'commented', {'author': 'default'})
+            kb._append_event(conn, identity, 'heartbeat', {})
+            board._note_respawn_guard(identity, 'active_pr')
+            assert events() == 2, events()
+            # Another event in between makes the same reason news again.
+            kb._append_event(conn, identity, 'reprioritized', {'priority': 1})
             board._note_respawn_guard(identity, 'active_pr')
             assert events() == 3, events()
         ''')

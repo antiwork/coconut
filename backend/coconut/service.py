@@ -190,7 +190,7 @@ BOT_WORKING_CONTEXT = ("SELECT 1 FROM contexts WHERE json_extract(data,'$.status
                        "AND json_extract(data,'$.bot_id')=? LIMIT 1")
 # Task fields that the dispatcher looks for on every pass. Each has a partial index, so a pass reads only the tasks
 # that carry the field and not the whole table.
-MARKS = ('_return_pending', '_native_reply_pending', '_work_status_only')
+MARKS = ('_return_pending', '_native_reply_pending', '_work_status_only', '_respawn_guard')
 
 
 # The condition of the partial index messages_streaming: a reply that a turn still writes. The start ends each one.
