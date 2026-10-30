@@ -497,46 +497,46 @@ class NativeKanban(NativeOutcomes):
 
         Hermes refuses to start a ready task again, for example while a recent comment names a PR (`active_pr`). Coconut
         saves when each guard began. After RESPAWN_GUARD_NOTICE_SECONDS it logs a warning once and shows the guard in the
-        status of the task and of its Work item, so a task that never starts does not stay silent. The record goes when
-        the guard ends.
+        status of the task and of its Work item (guard_notice), so a task that never starts does not stay silent. The
+        record and its notice go when the guard ends or changes.
+
+        The guarded tasks come by their IDs and the saved records by a partial index (service.MARKS), so a pass with no
+        guard reads no task.
         """
         from .service import now
         current = time.time() if current is None else current
         guarded = {identity: native['dispatch_blocker'] for identity, native in self.kanban.tasks.items()
                    if native.get('status') == 'ready' and native.get('dispatch_blocker')}
         with self.transaction():
-            records = [json.loads(row[0]) for row in self.db.execute(
-                "SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?)) "
-                "OR json_type(data,'$._respawn_guard') IS NOT NULL", (json.dumps(sorted(guarded)),))]
-            for task in records:
+            records = {task['id']: task for task in self._marked_tasks('_respawn_guard')}
+            records.update((task['id'], task) for task in (json.loads(row[0]) for row in self.db.execute(
+                'SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?))', (json.dumps(sorted(guarded)),)))
+                if task['id'] not in records)
+            for task in records.values():
                 reason = guarded.get(task['id'])
                 saved = task.get('_respawn_guard')
-                if reason is None:
-                    if saved:
-                        task.pop('_respawn_guard')
-                        self._put('tasks', task)
+                if saved and saved.get('reason') == reason:
+                    if saved.get('notice') or current - saved['since'] < RESPAWN_GUARD_NOTICE_SECONDS:
+                        continue
+                    since = datetime.fromtimestamp(saved['since'], timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+                    notice = f'Hermes has not started this work since {since}: its respawn guard is {reason}.'
+                    logging.getLogger(__name__).warning('Native outcome %s of task %s is respawn-guarded (%s) since %s.',
+                                                        self.kanban.tasks[task['id']].get('id'), task['id'], reason, since)
+                    task['_respawn_guard'] = dict(saved, notice=notice, summary=task.get('summary'))
+                    task.update(summary=notice, updated_at=now())
+                elif saved or reason:
+                    # The guard ended or changed. Its notice goes, unless newer progress replaced it.
+                    if saved and saved.get('notice') and task.get('summary') == saved['notice']:
+                        task.update(summary=saved.get('summary') or 'Queued', updated_at=now())
+                    task.pop('_respawn_guard', None)
+                    if reason:
+                        task['_respawn_guard'] = dict(reason=reason, since=current)
+                else:
                     continue
-                if not saved or saved.get('reason') != reason:
-                    task['_respawn_guard'] = dict(reason=reason, since=current)
-                    self._put('tasks', task)
-                    continue
-                if saved.get('noticed') or current - saved['since'] < RESPAWN_GUARD_NOTICE_SECONDS:
-                    continue
-                since = datetime.fromtimestamp(saved['since'], timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
-                text = f'Hermes has not started this work since {since}: its respawn guard is {reason}.'
-                logging.getLogger(__name__).warning('Native outcome %s of task %s is respawn-guarded (%s) since %s.',
-                                                    self.kanban.tasks[task['id']].get('id'), task['id'], reason, since)
-                task['_respawn_guard'] = dict(saved, noticed=True)
-                task.update(summary=text, updated_at=now())
                 self._put('tasks', task)
                 self._event('task.updated', self._public(task), task['bot_id'], task['id'])
-                for item in (json.loads(row[0]) for row in self.db.execute(
-                        "SELECT data FROM artifacts WHERE json_extract(data,'$.kind')='work' "
-                        "AND json_extract(data,'$.task_id')=?", (task['id'],))):
-                    if not item.get('_hidden'):
-                        item['activity'] = text[:160]
-                        self._put('artifacts', item)
-                        self._event('artifact.updated', self._public(item), item['bot_id'], task['id'])
+                # The Work item shows the notice too (native_outcomes._native_outcome_projection).
+                self._event('work.updated', {'native_task_ids': [task['id']]})
 
     def _reconcile_kanban(self):
         from .service import now

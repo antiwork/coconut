@@ -169,6 +169,11 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
         self.service.kanban.call({'op': 'snapshot'})
         self.service._adopt_native_outcomes()
         owner = next(t for t in self.service._all('tasks') if t.get('_native_outcome_id') == identity)
+        # The message that asked for the outcome has its answer. Only the outcome waits for a run.
+        with self.service.transaction():
+            stored = self.service._get('tasks', origin['id'])
+            stored['status'] = 'completed'
+            self.service._put('tasks', stored)
         return identity, owner
 
     def comment(self, identity, body):
@@ -182,21 +187,30 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
 
     def test_a_restart_that_leaves_a_dead_run_on_an_outcome_with_a_pr_respawns_it_once(self):
         identity, owner = self.outcome('Ship the mobile fix')
-        # The first pass claims the outcome and starts its worker. The turn runs no further: the service stops.
-        with patch.object(self.service, '_run_task'):
-            self.settle(lambda: (self.service._get('tasks', owner['id']).get('_kanban_claim') or {}).get('run_id'))
+        entered, release = threading.Event(), threading.Event()
+        def hold(task, bot, history, emit):
+            if task['id'] != owner['id']:
+                emit('completed', {'summary': 'Done.'})
+                return
+            # The worker runs the outcome until the service stops.
+            entered.set()
+            release.wait(30)
+            raise RuntimeError('The service stopped.')
+        self.provider.start_task = hold
+        self.settle(entered.is_set)
         stale = self.service._get('tasks', owner['id'])['_kanban_claim']
-        # The worker opened the PR and said so on the board. Then the service restarted, and the worker is gone.
+        # The worker opened the PR and said so on the board. Then the service restarts, and the worker is gone.
         self.comment(identity, 'Opened ' + self.PR + ' for review.')
-        for process in self.provider.processes:
-            process.kill()
-            process.wait()
-        with self.service.transaction():
-            stored = self.service._get('tasks', owner['id'])
-            stored['status'] = 'working'
-            self.service._put('tasks', stored)
-            self.service._recover()
-        self.assertEqual(self.service._get('tasks', owner['id'])['summary'], 'Resuming after the Mac service restarted.')
+        self.service.stopping.set()
+        release.set()
+        self.service.running[owner['id']].join(10)
+        self.service.close()
+        self.provider.close()
+        self.provider = Provider(self.tmp.name)
+        self.service = Service(self.tmp.name, self.provider, start_workers=False)
+        recovered = self.service._get('tasks', owner['id'])
+        self.assertEqual((recovered['status'], recovered['summary']), ('queued', 'Resuming after the Mac service restarted.'))
+        self.assertEqual(recovered['_kanban_claim']['run_id'], stale['run_id'])
         starts = []
         def run(task, bot, history, emit):
             if task['id'] != owner['id']:

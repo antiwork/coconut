@@ -2239,6 +2239,9 @@ class NativeOutcomes:
                         'transient': 'Waiting to retry'}.get(native.get('block_kind'), activity)
         if native and state == 'working':
             activity = native.get('progress_note') or 'Waiting for worker output'
+        if state == 'queued' and (owner.get('_respawn_guard') or {}).get('notice'):
+            # Hermes has held this ready work for an hour (kanban_scheduler._note_respawn_guards).
+            activity = owner['_respawn_guard']['notice']
         return dict(title=native['title'] if native else item['title'], native_task_id=item['_native_outcome_id'],
             native_status=status, native_block_kind=native.get('block_kind') if native else None,
             progress_observed_at=native.get('progress_at') if native else None,
