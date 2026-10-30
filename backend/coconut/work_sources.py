@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import copy
 import hashlib
 import json
 import logging
@@ -143,9 +144,19 @@ def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, 
             if task.get(field):
                 children.setdefault(task[field], []).append(task['id'])
     current_ids = {item['id'] for item in items}
-    origins = {task['id']: audit_item(task) for task in tasks.values()
-               if task.get('bot_id') == source['bot_id'] and (audit_item(task).get('source_id') == source['id']
-                   or (sole_source and not audit_item(task).get('source_id')))}
+    origins = {}
+    for task in tasks.values():
+        if task.get('bot_id') != source['bot_id']:
+            continue
+        origin = audit_item(task)
+        if origin.get('source_id') == source['id'] or (sole_source and not origin.get('source_id')):
+            origins[task['id']] = origin
+    # Each item reads only its own origins and the pending cards. A scan of all origins and all cards for each of
+    # about 1,000 items took 4 s under the service lock on the Mac mini copy.
+    origins_by_item = {}
+    for identity, origin in origins.items():
+        origins_by_item.setdefault(origin.get('id'), []).append((identity, origin))
+    pending_decisions = [decision for decision in decisions.values() if decision.get('status') == 'pending']
     saved = {}
     for item in [*origins.values(),
                  *(dict(id=identity, updated_at=value.get('updated_at')) for identity, value in bindings.items())]:
@@ -154,9 +165,8 @@ def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, 
     retained = [item for identity, item in saved.items() if identity and identity not in current_ids]
     for item in [*items, *retained]:
         revision = (item['id'], item['updated_at'])
-        roots = [identity for identity, origin in origins.items()
-                 if origin.get('id') == item['id']
-                 and (item['id'] not in current_ids or origin.get('updated_at') == revision[1])]
+        roots = [identity for identity, origin in origins_by_item.get(item['id'], [])
+                 if item['id'] not in current_ids or origin.get('updated_at') == revision[1]]
         binding = bindings.get(item['id'], {})
         if item['id'] not in current_ids or binding.get('updated_at') == item['updated_at']:
             roots.extend(binding.get('task_ids', []))
@@ -174,12 +184,11 @@ def native_bindings(items, bindings, tasks, native_tasks, decisions, source, *, 
                 linked.add(native_id)
             linked.update(key for key in task.get('_source_native_ids', []) if native_ids is None or key in native_ids)
             pending.extend(children.get(identity, []))
-        decision_ids = {decision['id'] for decision in decisions.values()
-                        if decision.get('status') == 'pending' and (
-                            decision.get('task_id') in seen
-                            or tasks.get(decision.get('task_id'), {}).get('_native_outcome_id') in linked
-                            or (decision['id'] in binding.get('decision_ids', [])
-                                and (item['id'] not in current_ids or binding.get('updated_at') == item['updated_at'])))}
+        decision_ids = {decision['id'] for decision in pending_decisions
+                        if decision.get('task_id') in seen
+                        or tasks.get(decision.get('task_id'), {}).get('_native_outcome_id') in linked
+                        or (decision['id'] in binding.get('decision_ids', [])
+                            and (item['id'] not in current_ids or binding.get('updated_at') == item['updated_at']))}
         if linked or decision_ids:
             bindings[item['id']] = dict(binding if binding.get('updated_at') == item['updated_at'] else {},
                 updated_at=item['updated_at'], task_ids=sorted(linked), decision_ids=sorted(decision_ids))
@@ -701,8 +710,10 @@ class WorkSources:
                         bindings[identity] = binding
                 native = None
                 if self.kanban and getattr(self.provider, 'supports_native_outcomes', False):
-                    with self.lock:
-                        lookup_tasks = {task['id']: task for task in self._all('tasks')}
+                    # The kept task map spares a parse of the whole task table (110 MB on the Mac mini) under the
+                    # service lock. Its task objects are shared, so this pass only reads them.
+                    with self.lock, self._shared_reads():
+                        lookup_tasks = self._task_map()
                         pending = {d['id']: d for d in (json.loads(row[0]) for row in self.db.execute(
                             "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending'"))}
                     requested = {identity: dict(binding) for identity, binding in bindings.items()}
@@ -721,7 +732,9 @@ class WorkSources:
                 with self.transaction():
                     if self.stopping.is_set() or self.restart_pending:
                         return
-                    tasks, decisions = ({r['id']: r for r in self._all(table)} for table in ('tasks', 'decisions'))
+                    with self._shared_reads():
+                        tasks = self._task_map()
+                    decisions = {r['id']: r for r in self._all('decisions')}
                     receipts = {r['id']: r for r in self._pending_completion_receipts()}
                     audit_owners = {}
                     epoch = self._setting('conversation_epoch')
@@ -898,7 +911,8 @@ class WorkSources:
                                     and task['id'] not in self.running and task['id'] not in asked
                                     and not any(decisions.get(key, {}).get('status') == 'pending'
                                                 for key in binding.get('decision_ids', []))):
-                                self._cancel_one(task, callbacks, summary=STALE_NOTE)
+                                # The task object is shared. The cancellation changes a copy.
+                                self._cancel_one(copy.deepcopy(task), callbacks, summary=STALE_NOTE)
                     # Only repositories in the current complete source snapshot confer role-based text trust.
                     from .decision_sources import github_source
                     state['trusted_repositories_source'] = source_fingerprint(source)
