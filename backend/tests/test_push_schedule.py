@@ -88,7 +88,7 @@ class ScheduleTests(unittest.TestCase):
 
     def test_default_is_every_day_nine_to_six_new_york(self):
         self.assertEqual(DEFAULT_SCHEDULE, dict(enabled=True, start='09:00', end='18:00', timezone='America/New_York',
-                                                weekdays=[1, 2, 3, 4, 5, 6, 7]))
+                                                weekdays=[1, 2, 3, 4, 5, 6, 7], outside='urgent'))
 
     def test_fall_back_repeated_hour_counts_both_times_inside_the_window(self):
         schedule = dict(DEFAULT_SCHEDULE, start='01:00', end='02:00')
@@ -305,6 +305,171 @@ class DeliveryTimingTests(unittest.TestCase):
         self.deliver(self.NIGHT)
         self.assertEqual([payload['coconut'].get('decision_id') for payload in self.sent()], [urgent['id']])
         self.assertEqual(self.items(), [('decision', 0, 'waiting'), ('decision', 1, 'sent')])
+
+    def test_nothing_outside_work_hours_holds_an_urgent_card_until_the_opening_count(self):
+        self.register(outside_work_hours='nothing')
+        self.assertEqual(self.service.push.schedule(self.device)['outside'], 'nothing')
+        self.decision()
+        self.decision(urgent=True)
+        self.deliver(self.NIGHT + 60)
+        self.deliver(self.MORNING - 1)
+        self.assertEqual(self.sent(), [])
+        self.deliver(self.MORNING)
+        self.deliver(self.MORNING + 3600)
+        self.assertEqual([payload['aps']['alert']['body'] for payload in self.sent()], ['2 decisions are waiting'])
+        self.assertEqual(self.items(), [('decision', 0, 'sent'), ('decision', 1, 'sent')])
+
+    def test_nothing_outside_work_hours_still_sends_an_urgent_card_inside_them_at_once(self):
+        for level in ('grouped', 'urgent_only'):
+            self.service.db.execute('DELETE FROM push_items')
+            self.transport.calls.clear()
+            self.register(level=level, outside_work_hours='nothing')
+            urgent = self.decision(urgent=True, ts=self.NOON)
+            self.deliver(self.NOON)
+            self.assertEqual([payload['coconut'].get('decision_id') for payload in self.sent()], [urgent['id']], level)
+
+    def test_nothing_outside_work_hours_with_only_urgent_sends_the_held_card_at_the_opening(self):
+        self.register(level='urgent_only', outside_work_hours='nothing')
+        self.decision(urgent=True)
+        self.deliver(self.NIGHT + 60)
+        self.assertEqual(self.sent(), [])
+        self.deliver(self.MORNING)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.items(), [('decision', 1, 'sent')])
+
+    CLOSE = instant(2026, 7, 15, 18)
+
+    def test_nothing_outside_work_hours_checks_the_window_when_it_sends_not_when_the_card_arrived(self):
+        self.register(outside_work_hours='nothing')
+        self.decision(urgent=True, ts=self.CLOSE - 1)
+        self.deliver(self.CLOSE + 5)
+        self.assertEqual(self.sent(), [])
+        self.assertEqual(self.items(), [('decision', 1, 'waiting')])
+        self.deliver(self.MORNING)
+        self.assertEqual(len(self.sent()), 1)
+
+    def queue_before_close(self, ts):
+        # The plan queues the card while work hours are open. The first send comes after they closed.
+        with self.at(ts):
+            with self.service.transaction():
+                self.service.push.plan(ts)
+        self.assertEqual(self.service.db.execute("SELECT count(*) FROM push_outbox WHERE status='queued'").fetchone()[0], 1)
+
+    def test_a_card_queued_before_closing_goes_back_to_inbox_and_keeps_its_id(self):
+        self.register(outside_work_hours='nothing')
+        self.decision(urgent=True, ts=self.CLOSE - 60)
+        self.queue_before_close(self.CLOSE - 60)
+        queued = self.service.db.execute('SELECT id FROM push_outbox').fetchone()[0]
+        self.deliver(self.CLOSE + 5)
+        self.assertEqual(self.sent(), [])
+        self.assertEqual(self.items(), [('decision', 1, 'waiting')])
+        self.deliver(self.MORNING)
+        self.assertEqual(len(self.sent()), 1)
+        # It never reached the relay, so the notification of the opening can use the same ID.
+        self.assertEqual(self.transport.calls[0][3], queued)
+
+    def test_a_retry_keeps_its_id_after_closing_so_the_relay_sends_it_only_once(self):
+        self.register(outside_work_hours='nothing')
+        self.decision(urgent=True, ts=self.CLOSE - 60)
+        self.transport.result = (503, 'Unavailable')
+        self.deliver(self.CLOSE - 60)
+        self.transport.result = (200, 'Accepted')
+        self.service.db.execute('UPDATE push_outbox SET not_before=0')
+        self.deliver(self.CLOSE + 600)
+        first, retry = (call[3] for call in self.transport.calls)
+        self.assertEqual(first, retry)
+        self.assertEqual(self.items(), [('decision', 1, 'sent')])
+        self.deliver(self.MORNING)
+        self.assertEqual(len(self.sent()), 2)
+
+    def test_a_card_held_over_a_weekend_does_not_expire(self):
+        self.register(outside_work_hours='nothing', schedule=dict(weekdays=[1, 2, 3, 4, 5]))
+        friday_close = instant(2026, 7, 17, 18)
+        self.decision(urgent=True, ts=friday_close - 60)
+        self.queue_before_close(friday_close - 60)
+        self.deliver(friday_close + 60)
+        monday = instant(2026, 7, 20, 9)
+        self.deliver(monday - 1)
+        self.assertEqual(self.sent(), [])
+        self.deliver(monday)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertGreater(self.service.db.execute("SELECT expires FROM push_outbox WHERE status='accepted'").fetchone()[0], monday)
+
+    def test_a_held_card_sends_at_once_when_quiet_hours_end(self):
+        for choice in (dict(outside_work_hours='urgent'), dict(schedule=dict(enabled=False))):
+            self.service.db.execute('DELETE FROM push_items')
+            self.transport.calls.clear()
+            self.register(outside_work_hours='nothing', schedule=dict(enabled=True))
+            self.decision(urgent=True, ts=self.CLOSE - 60)
+            self.deliver(self.CLOSE + 5)
+            self.assertEqual(self.sent(), [], choice)
+            self.register(**choice)
+            self.deliver(self.CLOSE + 10)
+            self.assertEqual(len(self.sent()), 1, choice)
+
+    def test_held_urgent_cards_wait_for_a_retrying_group_and_the_ten_minute_gap(self):
+        self.register(outside_work_hours='nothing')
+        self.decision(ts=self.CLOSE - 120)
+        self.transport.result = (503, 'Unavailable')
+        self.deliver(self.CLOSE - 60)
+        self.assertEqual(len(self.sent()), 1)
+        self.decision(urgent=True)
+        self.transport.result = (200, 'Accepted')
+        self.service.db.execute('UPDATE push_outbox SET not_before=0')
+        # At the opening, the group of yesterday sends first. The held urgent card does not form a second group with it.
+        self.deliver(self.MORNING)
+        self.assertEqual(len(self.sent()), 2)
+        self.assertEqual(self.items()[-1], ('decision', 1, 'waiting'))
+        self.deliver(self.MORNING + 599)
+        self.assertEqual(len(self.sent()), 2)
+        self.deliver(self.MORNING + 600)
+        self.assertEqual(len(self.sent()), 3)
+
+    def test_the_urgent_summary_reads_only_indexes(self):
+        db = self.service.db
+        current = __import__('time').time()
+        for query, index in [("SELECT COUNT(*) FROM decisions WHERE json_extract(data,'$.created_at')>=?", 'decisions_created'),
+                             ("SELECT COUNT(*) FROM decisions WHERE json_extract(data,'$.needs_attention_now') IS 1 "
+                              "AND json_extract(data,'$.created_at')>=?", 'decisions_urgent')]:
+            plan = ' '.join(row[-1] for row in db.execute('EXPLAIN QUERY PLAN ' + query, ('x',)))
+            self.assertIn(index, plan)
+        statements = []
+        db.set_trace_callback(statements.append)
+        try:
+            self.service.push.urgent_summary(current)
+        finally:
+            db.set_trace_callback(None)
+        self.assertEqual(len(statements), 3)
+        for statement in statements:
+            plan = ' '.join(row[-1] for row in db.execute('EXPLAIN QUERY PLAN ' + statement))
+            self.assertRegex(plan, r'USING (COVERING )?INDEX decisions_(created|urgent)', statement)
+            self.assertNotRegex(plan, r'SCAN (d|decisions)(?! USING)', statement)
+
+    def test_outside_work_hours_keeps_its_value_until_an_app_changes_it(self):
+        self.register(outside_work_hours='nothing')
+        # An app before the choice does not send it.
+        self.register(schedule=dict(start='08:00'))
+        self.assertEqual(self.service.push.schedule(self.device)['outside'], 'nothing')
+        self.register(outside_work_hours='urgent')
+        self.assertEqual(self.service.push.schedule(self.device)['outside'], 'urgent')
+        with self.assertRaises(ServiceError):
+            self.register(outside_work_hours='same')
+        with self.assertRaises(ServiceError):
+            self.register(schedule=dict(outside='later'))
+
+    def test_the_urgent_summary_counts_the_last_week_and_shows_the_last_urgent_cards(self):
+        old = self.decision(urgent=True)
+        old['created_at'] = '2020-01-01T00:00:00Z'
+        self.service._put('decisions', old)
+        self.decision()
+        first, second = self.decision(urgent=True), self.decision(urgent=True)
+        summary = self.service.push_status(self.device)['urgent']
+        self.assertEqual((summary['week_urgent'], summary['week_total']), (2, 3))
+        self.assertEqual([example['created_at'] for example in summary['examples']],
+                         [second['created_at'], first['created_at'], '2020-01-01T00:00:00Z'])
+        self.assertEqual(summary['examples'][0]['title'], second['title'])
+        self.assertEqual(summary['examples'][0]['bot_name'], 'Desk')
+        self.assertEqual(len(self.service.push.urgent_summary(__import__('time').time(), examples=1)['examples']), 1)
 
     def test_only_a_card_can_need_attention_now(self):
         self.failure()
@@ -536,6 +701,8 @@ class DeliveryTimingTests(unittest.TestCase):
         old = dict(enabled=True, start='08:00', end='17:00', timezone='Europe/Paris')
         self.service.db.execute('UPDATE push_schedules SET data=? WHERE device_id=?', (__import__('json').dumps(old), self.device))
         self.assertEqual(self.service.push.schedule(self.device), dict(DEFAULT_SCHEDULE, **old))
+        # A row from before Outside work hours keeps only urgent cards outside them, as before.
+        self.assertEqual(self.service.push.schedule(self.device)['outside'], 'urgent')
         self.service.db.execute('UPDATE push_schedules SET data=? WHERE device_id=?', ('{"weekdays": []}', self.device))
         self.assertEqual(self.service.push.schedule(self.device), LEGACY_SCHEDULE)
 

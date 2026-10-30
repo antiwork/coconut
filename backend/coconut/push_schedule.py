@@ -6,8 +6,11 @@ import re
 from zoneinfo import ZoneInfo
 
 # The window is [start, end) in the zone's local time, on the chosen ISO weekdays (1 Monday ... 7 Sunday).
+# `outside` says what notifies outside the window: 'urgent' cards at once, or 'nothing' until the window opens. A schedule
+# that is not enabled has no outside: every time is work hours. Rows from before `outside` mean 'urgent'.
 DEFAULT_SCHEDULE = {'enabled': True, 'start': '09:00', 'end': '18:00', 'timezone': 'America/New_York',
-                    'weekdays': [1, 2, 3, 4, 5, 6, 7]}
+                    'weekdays': [1, 2, 3, 4, 5, 6, 7], 'outside': 'urgent'}
+OUTSIDE = ('urgent', 'nothing')
 # Older apps still send this field. It no longer has an effect.
 RETIRED_FIELDS = ('honor_routine',)
 # Inside work hours, the first item after a quiet period waits SETTLE seconds, so a burst from one bot run becomes one
@@ -49,7 +52,7 @@ def validate(data):
     if set(data) - set(DEFAULT_SCHEDULE):
         return None
     schedule = dict(DEFAULT_SCHEDULE, **data)
-    if type(schedule['enabled']) is not bool or _zone(schedule['timezone']) is None:
+    if type(schedule['enabled']) is not bool or _zone(schedule['timezone']) is None or schedule['outside'] not in OUTSIDE:
         return None
     schedule['weekdays'] = _weekdays(schedule['weekdays'])
     start, end = _minutes(schedule['start']), _minutes(schedule['end'])
@@ -77,6 +80,11 @@ def stored(data):
 
 def _local(schedule, at):
     return datetime.fromtimestamp(at, _zone(schedule['timezone']))
+
+
+def holds_urgent(schedule, at):
+    """Whether an urgent card that arrives at `at` waits for the window, because nothing notifies outside it."""
+    return schedule['enabled'] and schedule['outside'] == 'nothing' and not in_window(schedule, at)
 
 
 def in_window(schedule, at):

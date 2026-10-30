@@ -22,10 +22,7 @@ struct CoconutApp: App {
                 .onChange(of: PushNotifications.shared.deviceToken) { _, _ in
                     Task { await store.syncPushRegistration() }
                 }
-                .onChange(of: PushNotifications.shared.preferences) { _, _ in
-                    Task { await store.syncPushRegistration() }
-                }
-                .onChange(of: PushNotifications.shared.schedule) { _, _ in
+                .onChange(of: PushNotifications.shared.choices) { _, _ in
                     Task { await store.syncPushRegistration() }
                 }
                 .onChange(of: scenePhase) { _, phase in

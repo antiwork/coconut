@@ -1916,7 +1916,8 @@ final class AppStore {
         // An invalid enabled edit is not sent; the Mac keeps the last valid schedule. Turning it off always is.
         let schedule = push.schedule.registrable
         let signature = PushRegistration.signature(deviceId: pairing.deviceId, environment: push.environment, token: push.deviceToken,
-                                                   allowed: push.allowed, preferences: preferences, schedule: schedule)
+                                                   allowed: push.allowed, preferences: preferences, schedule: schedule,
+                                                   outside: push.outsideWorkHours)
         // The Mac removes a registration that is not refreshed for 30 days, so a running app refreshes it twice a day.
         guard registeredPushSignature != signature || Date().timeIntervalSince(registeredPushAt) > 12 * 3600 else { return }
         do {
@@ -1939,7 +1940,8 @@ final class AppStore {
                     return
                 }
                 response = try await client.request("device/push", method: "PUT",
-                    body: APIJSON.encode(PushRegistration(token: token, environment: push.environment, enabled: true, relay: relay, preferences: preferences, schedule: schedule)),
+                    body: APIJSON.encode(PushRegistration(token: token, environment: push.environment, enabled: true, relay: relay, preferences: preferences, schedule: schedule,
+                                                      outsideWorkHours: push.outsideWorkHours.registrable)),
                     idempotencyKey: UUID().uuidString)
             } else {
                 PushRelayClient.shared.disable(deviceId: pairing.deviceId)
