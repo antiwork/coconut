@@ -151,15 +151,24 @@ SOURCE_READ_SECONDS = 6
 # A turn reads each linked GitHub thread before it starts: about 0.6 s per read on the Mac mini, and 1.2 s per turn at
 # p50. Most threads did not change since the revision that Coconut recorded. A background refresher keeps the read of
 # each thread that a turn used in the last THREAD_KEEP_SECONDS: the thread at its latest revision, with the items of that
-# second, as a turn reads it. It reads each thread again every THREAD_REFRESH_SECONDS, at most THREAD_KEEP_COUNT threads.
+# second, as a turn reads it. It reads at most THREAD_KEEP_COUNT threads again every THREAD_REFRESH_SECONDS.
 # A turn uses a kept read that is at most THREAD_RECORD_SECONDS old only when it shows nothing new for that turn: the
 # thread did not change after the recorded revision, and each item of the revision second was delivered. Then the
 # activity and the recorded revision are the ones that a read at the turn returns. Any new activity reads the thread at
 # the turn, as before. A change after the kept read shows at the next turn, because a turn records only what it saw.
-THREAD_RECORD_SECONDS = 90
-THREAD_REFRESH_SECONDS = 45
+#
+# All bots share one GitHub login with 5,000 requests an hour. The refresher reads with conditional requests, and GitHub
+# does not count a 304 answer against the limit, so an unchanged thread costs nothing. The refresher spends at most
+# THREAD_REFRESH_BUDGET counted requests in any hour, and it stops while GitHub reports fewer than THREAD_QUOTA_FLOOR
+# remaining requests for the login. Then turns read their threads themselves, as before.
+THREAD_RECORD_SECONDS = 150
+THREAD_REFRESH_SECONDS = 60
 THREAD_KEEP_SECONDS = 900
-THREAD_KEEP_COUNT = 8
+THREAD_KEEP_COUNT = 6
+THREAD_REFRESH_BUDGET = 300
+THREAD_QUOTA_FLOOR = 1000
+# The most requests that one thread read can count: the issue, the PR and three lists of one page each.
+THREAD_READ_COST = 5
 # A read with this `since` returns the thread facts without activity.
 _LATEST = '9999-12-31T23:59:59Z'
 _NO_ACTIVITY = dict(new_activity=[], omitted_items=0, incomplete=False)
@@ -175,6 +184,8 @@ class ThreadRecords:
         self.records = {}
         self.used = {}
         self.thread = None
+        # (time, counted requests) of each refresh read in the last hour.
+        self.spent = []
 
     @staticmethod
     def key(tracker, url, operator):
@@ -204,9 +215,23 @@ class ThreadRecords:
             return current
         return None
 
+    def budget_left(self, now):
+        """The counted requests that the refresher may still spend in the current hour."""
+        self.spent = [(at, cost) for at, cost in self.spent if now - at < 3600]
+        return THREAD_REFRESH_BUDGET - sum(cost for _, cost in self.spent)
+
+    @staticmethod
+    def quota_low(tracker):
+        """True while GitHub reports fewer than THREAD_QUOTA_FLOOR remaining requests for the tracker's login."""
+        import time
+        from .pr_tracking import quota
+        reported = quota(getattr(tracker, '_token', ''))
+        return reported is not None and reported[0] < THREAD_QUOTA_FLOOR and reported[1] > time.time()
+
     def refresh(self):
         """Read each thread that a turn used lately, at its latest revision. Drop the others."""
         import time
+        from .pr_tracking import spent_requests
         now = time.monotonic()
         with self.guard:
             for key in [key for key, (used, _, _) in self.used.items() if now - used > THREAD_KEEP_SECONDS]:
@@ -217,15 +242,21 @@ class ThreadRecords:
             if self.service.stopping.is_set():
                 return
             started = time.monotonic()
+            if self.budget_left(started) < THREAD_READ_COST:
+                # The hour's budget is spent. The kept reads age out, and turns read their threads themselves.
+                return
             current = None
+            before = spent_requests()
             try:
                 tracker = self.service._pr_tracker_for(bot_id)
+                if self.quota_low(tracker):
+                    return
                 if self.key(tracker, url, key[2]) == key:
                     from .pr_tracking import GitHubPRTracker
-                    # The same options as a read at the turn (see read_source_activity).
+                    # The same options as a read at the turn (see read_source_activity), with conditional lists.
                     options = dict(operator=key[2])
                     if isinstance(tracker, GitHubPRTracker):
-                        options['include_same_second'] = True
+                        options.update(include_same_second=True, cache_lists=True)
                     with self.guard:
                         previous = self.records.get(key)
                     since = json.loads(previous[1])['updated_at'] if previous else _LATEST
@@ -240,6 +271,7 @@ class ThreadRecords:
                         since, current = current['updated_at'], None
             except Exception:
                 current = None
+            self.spent.append((started, spent_requests() - before))
             with self.guard:
                 if current is not None:
                     self.records[key] = (started, json.dumps(current))

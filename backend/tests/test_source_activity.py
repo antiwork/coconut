@@ -246,6 +246,54 @@ class SourceActivityTests(unittest.TestCase):
         self.turn()
         self.assertGreater(len(self.tracker.paths), reads)
 
+    def test_the_refresher_reads_lists_with_conditional_requests(self):
+        self.approve_card()
+        self.turn()
+        self.tracker.cached.clear()
+        self.records().refresh()
+        lists = [path for path in self.tracker.cached if '/comments' in path]
+        self.assertTrue(lists)
+        self.assertTrue(all(self.tracker.cached[path] for path in lists))
+
+    def test_the_refresher_spends_at_most_its_hourly_budget(self):
+        self.approve_card()
+        self.turn()
+        records = self.records()
+        now = time.monotonic()
+        records.spent = [(now - 10, decision_sources.THREAD_REFRESH_BUDGET - decision_sources.THREAD_READ_COST + 1)]
+        reads = len(self.tracker.paths)
+        records.refresh()
+        self.assertEqual(len(self.tracker.paths), reads, 'A spent budget must stop the refresh.')
+        # The budget counts only the last hour.
+        records.spent = [(now - 3601, decision_sources.THREAD_REFRESH_BUDGET)]
+        records.refresh()
+        self.assertGreater(len(self.tracker.paths), reads)
+        self.assertTrue(records.records)
+
+    def test_the_refresher_stops_while_the_login_has_few_requests_left(self):
+        from coconut import pr_tracking
+        self.approve_card()
+        self.turn()
+        scope = __import__('hashlib').sha256(self.tracker._token.encode()).digest()
+        pr_tracking._remember_quota(scope, {'X-RateLimit-Remaining': str(decision_sources.THREAD_QUOTA_FLOOR - 1),
+                                            'X-RateLimit-Reset': str(time.time() + 600)})
+        self.addCleanup(pr_tracking._QUOTA.pop, scope, None)
+        reads = len(self.tracker.paths)
+        self.records().refresh()
+        self.assertEqual(len(self.tracker.paths), reads, 'A low quota must stop the refresh.')
+        # After the reset time, the refresh reads again.
+        pr_tracking._remember_quota(scope, {'X-RateLimit-Remaining': '10', 'X-RateLimit-Reset': str(time.time() - 1)})
+        self.records().refresh()
+        self.assertGreater(len(self.tracker.paths), reads)
+
+    def test_the_refresh_cost_stays_under_the_hourly_cap(self):
+        # The constants bound the worst case: every kept thread changes at every pass.
+        passes = 3600 / decision_sources.THREAD_REFRESH_SECONDS
+        worst = passes * decision_sources.THREAD_KEEP_COUNT * decision_sources.THREAD_READ_COST
+        self.assertGreater(worst, decision_sources.THREAD_REFRESH_BUDGET, 'The budget must be the limit.')
+        self.assertLessEqual(decision_sources.THREAD_REFRESH_BUDGET, 300)
+        self.assertGreaterEqual(decision_sources.THREAD_QUOTA_FLOOR, 1000)
+
     def test_another_login_drops_the_kept_read(self):
         self.approve_card()
         self.turn()
