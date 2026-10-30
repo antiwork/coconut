@@ -1,6 +1,7 @@
 import unittest
 
 from coconut.work_capacity import execution_key
+from coconut.work_status import PROPOSAL_EXECUTION
 import test_decision_freshness as fixtures
 
 
@@ -62,6 +63,18 @@ class IndexedTaskReadTests(unittest.TestCase):
         rows = self.service.db.execute(
             "SELECT id FROM tasks WHERE id=? OR json_extract(data,'$._relay_callback_owner')=? ORDER BY rowid", ('owner', 'owner'))
         self.assertEqual([row[0] for row in rows], ['owner', 'callback-a', 'callback-b'])
+
+    def test_executed_proposals_come_from_their_partial_index(self):
+        decision = dict(id='proposal', bot_id=self.task['bot_id'], task_id=self.task['id'], status='executed',
+                        inbox_kind='proposal', _execution_task_id='execution')
+        with self.service.transaction():
+            self.service._put('decisions', decision)
+            self.service._put('decisions', dict(decision, id='question', inbox_kind=None))
+            self.service._put('decisions', dict(decision, id='unstarted', _execution_task_id=None))
+        statement = 'SELECT id FROM decisions INDEXED BY decisions_proposal_execution WHERE ' + PROPOSAL_EXECUTION
+        self.assertEqual([row[0] for row in self.service.db.execute(statement)], ['proposal'])
+        self.assertIn('decisions_proposal_execution', self.plan(statement, ()))
+        self.assertNotIn('SCAN decisions\n', self.plan(statement, ()))
 
 
 if __name__ == '__main__':

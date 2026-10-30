@@ -7,6 +7,11 @@ from uuid import uuid4
 PAUSE_DECISION_STATES = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
 
 
+# The condition of the partial index decisions_proposal_execution: a proposal that started an execution task.
+PROPOSAL_EXECUTION = ("json_extract(data, '$.inbox_kind')='proposal' "
+                      "AND json_extract(data, '$._execution_task_id') IS NOT NULL")
+
+
 class WorkStatus:
     def _work_pause_peers(self, item, *, shared=False):
         # shared=True is for a caller that only reads the peers. _save_work_pause changes them, so it asks for copies.
@@ -331,8 +336,9 @@ class WorkStatus:
         if graphs is not None and key in graphs:
             return graphs[key][1]
         direct = {}
-        rows = self.db.execute("SELECT data FROM decisions WHERE json_extract(data, '$.inbox_kind')='proposal' "
-                               "AND json_extract(data, '$._execution_task_id') IS NOT NULL")
+        # The Kanban pass builds this graph on each pass. The partial index reads the few executed proposals, not every
+        # card. On the Mac mini, under memory pressure, the scan of every card read the disk under the service lock.
+        rows = self.db.execute('SELECT data FROM decisions INDEXED BY decisions_proposal_execution WHERE ' + PROPOSAL_EXECUTION)
         for row in rows:
             decision = json.loads(row[0])
             source = tasks.get(decision.get('task_id'))

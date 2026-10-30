@@ -147,7 +147,7 @@ def decision_correction(data: dict) -> str:
 
 
 from .work_sources import WorkSources, card_answer_steps
-from .work_status import WorkStatus
+from .work_status import PROPOSAL_EXECUTION, WorkStatus
 from .background_processes import BackgroundProcesses, PENDING_COMPLETIONS
 from .native_execution import NativeExecution
 from .decision_inbox import DecisionInbox, migrate_notification_importance
@@ -299,6 +299,7 @@ class Service(TaskCache, NativeFallbackUpdates, NativeKanban, StateSync, Decisio
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_source ON tasks (json_extract(data,'$.source_task_id'))")
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_relay_callback_owner ON tasks (json_extract(data,'$._relay_callback_owner'))")
         self.db.execute('CREATE INDEX IF NOT EXISTS messages_human ON messages (id) WHERE ' + HUMAN_MESSAGE)
+        self.db.execute('CREATE INDEX IF NOT EXISTS decisions_proposal_execution ON decisions (id) WHERE ' + PROPOSAL_EXECUTION)
         self.db.executescript(READ_INDEXES + PR_URL_INDEX)
         self._request_device_id = None
         self._request_key = None
