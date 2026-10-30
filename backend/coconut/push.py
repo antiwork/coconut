@@ -18,7 +18,7 @@ import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
 from .push_relay import RelayTransport, validate_route, notification_alert, group_text
-from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, in_window, merge as merge_schedule, next_opening,
+from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, in_window, merge as merge_schedule,
                             stored as stored_schedule)
 
 LEVELS = ('every', 'grouped', 'urgent_only')
@@ -453,7 +453,14 @@ class PushDelivery:
         return [dict(zip(names, row)) for row in cursor.fetchall()]
 
     def _queue(self, device_id, key, items, current):
-        """Write one notification for `items`. The same key always gives the same notification ID."""
+        """Write one notification for `items`. The same key always gives the same notification ID.
+
+        A notification that work hours took back (QuietHours) keeps its ID, so a new one for the same items gets a new key."""
+        base, count = key, 0
+        while self.service.db.execute("SELECT 1 FROM push_outbox WHERE device_id=? AND event_key=? AND reason='QuietHours'",
+                                      (device_id, key)).fetchone():
+            count += 1
+            key = f'{base}#{count}'
         notification_id = str(uuid5(NAMESPACE_URL, device_id + ':' + key))
         self.service.db.execute('''INSERT OR IGNORE INTO push_outbox (id,device_id,event_key,status,created,not_before,expires)
             VALUES (?,?,?,'queued',?,?,?)''', (notification_id, device_id, key, current, current, current + 86400))
@@ -549,11 +556,11 @@ class PushDelivery:
             route_row = service.db.execute('SELECT data FROM push_routes WHERE device_id=?', (job['device_id'],)).fetchone()
             route = json.loads(route_row[0]) if route_row else None
             # With Nothing outside work hours, nothing sends while they are closed, also not a retry or a card queued
-            # just before they closed. It waits for the opening.
-            schedule = self.schedule(job['device_id'])
-            if holds_urgent(schedule, time.time()):
-                service.db.execute('UPDATE push_outbox SET not_before=? WHERE id=?',
-                                   (next_opening(schedule, time.time()), job['id']))
+            # just before they closed. Its items wait again, so the next plan applies the current choice and queues them
+            # with a new expiry.
+            if holds_urgent(self.schedule(job['device_id']), time.time()):
+                service.db.execute("UPDATE push_outbox SET status='discarded',reason='QuietHours' WHERE id=?", (job['id'],))
+                service.db.execute("UPDATE push_items SET status='waiting',delivery_id=NULL WHERE delivery_id=?", (job['id'],))
                 return True
             items = self._items('delivery_id=?', (job['id'],))
             live = [item for item in items if self.relevant(item)]

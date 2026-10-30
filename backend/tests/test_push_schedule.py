@@ -358,9 +358,40 @@ class DeliveryTimingTests(unittest.TestCase):
         self.service.db.execute('UPDATE push_outbox SET not_before=0')
         self.deliver(self.CLOSE + 600)
         self.assertEqual(len(self.sent()), 1)
-        self.assertEqual(self.service.db.execute('SELECT not_before FROM push_outbox').fetchone()[0], self.MORNING)
+        self.assertEqual(self.items(), [('decision', 1, 'waiting')])
         self.deliver(self.MORNING)
         self.assertEqual(len(self.sent()), 2)
+        # The new notification has its own ID, so the relay does not take it for the retry of the first one.
+        first, second = (call[3] for call in self.transport.calls)
+        self.assertNotEqual(first, second)
+
+    def test_a_card_held_over_a_weekend_does_not_expire(self):
+        self.register(outside_work_hours='nothing', schedule=dict(weekdays=[1, 2, 3, 4, 5]))
+        friday_close = instant(2026, 7, 17, 18)
+        self.decision(urgent=True, ts=friday_close - 60)
+        self.transport.result = (503, 'Unavailable')
+        self.deliver(friday_close - 60)
+        self.transport.result = (200, 'Accepted')
+        self.service.db.execute('UPDATE push_outbox SET not_before=0')
+        self.deliver(friday_close + 60)
+        monday = instant(2026, 7, 20, 9)
+        self.deliver(monday - 1)
+        self.assertEqual(len(self.sent()), 1)
+        self.deliver(monday)
+        self.assertEqual(len(self.sent()), 2)
+        self.assertGreater(self.service.db.execute("SELECT expires FROM push_outbox WHERE status='accepted'").fetchone()[0], monday)
+
+    def test_a_held_card_sends_at_once_when_quiet_hours_end(self):
+        for choice in (dict(outside_work_hours='urgent'), dict(schedule=dict(enabled=False))):
+            self.service.db.execute('DELETE FROM push_items')
+            self.transport.calls.clear()
+            self.register(outside_work_hours='nothing', schedule=dict(enabled=True))
+            self.decision(urgent=True, ts=self.CLOSE - 60)
+            self.deliver(self.CLOSE + 5)
+            self.assertEqual(self.sent(), [], choice)
+            self.register(**choice)
+            self.deliver(self.CLOSE + 10)
+            self.assertEqual(len(self.sent()), 1, choice)
 
     def test_held_urgent_cards_wait_for_a_retrying_group_and_the_ten_minute_gap(self):
         self.register(outside_work_hours='nothing')
