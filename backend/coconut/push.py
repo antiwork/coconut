@@ -18,7 +18,8 @@ import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
 from .push_relay import RelayTransport, validate_route, notification_alert, group_text
-from .push_schedule import LEGACY_SCHEDULE, due, in_window, merge as merge_schedule, stored as stored_schedule
+from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, in_window, merge as merge_schedule, next_opening,
+                            stored as stored_schedule)
 
 LEVELS = ('every', 'grouped', 'urgent_only')
 # A phone that never sent its preferences keeps the old categories: cards, failed and finished tasks, no messages.
@@ -195,6 +196,12 @@ class PushDelivery:
             schedule = merge_schedule(self.schedule(device_id), schedule)
             if schedule is None:
                 raise ServiceError(400, 'Supply start before end as HH:MM, an IANA timezone, at least one weekday from 1 to 7, and true or false for enabled.')
+        # Apps before the Outside work hours choice do not send it, and Macs before it ignore it, so it is not in the schedule.
+        outside = data.get('outside_work_hours')
+        if outside is not None:
+            if outside not in OUTSIDE:
+                raise ServiceError(400, 'Supply urgent or nothing for outside_work_hours.')
+            schedule = dict(schedule or self.schedule(device_id), outside=outside)
         token = token.lower()
         route = data.get('relay')
         if route is not None:
@@ -300,7 +307,20 @@ class PushDelivery:
                                       (device_id,)).fetchone() or (None, None, None)
         return {'registered': bool(device and device[0]), 'configured': self.configured,
                 'preferences': self.preferences(device_id), 'schedule': self.schedule(device_id),
-                'last_delivered_at': iso(row[0]), 'last_error': row[1], 'last_error_at': iso(row[2])}
+                'last_delivered_at': iso(row[0]), 'last_error': row[1], 'last_error_at': iso(row[2]),
+                'urgent': self.urgent_summary(time.time())}
+
+    def urgent_summary(self, current, examples=3):
+        """How many cards of the last week were urgent, and the last urgent cards, for "What counts as urgent?"."""
+        db = self.service.db
+        week = iso(current - 7 * 86400)
+        urgent, total = db.execute('''SELECT COALESCE(SUM(json_extract(data,'$.needs_attention_now') IS 1),0),COUNT(*)
+            FROM decisions WHERE json_extract(data,'$.created_at')>=?''', (week,)).fetchone()
+        rows = db.execute('''SELECT json_extract(d.data,'$.title'),json_extract(b.data,'$.name'),json_extract(d.data,'$.created_at')
+            FROM decisions d LEFT JOIN bots b ON b.id=json_extract(d.data,'$.bot_id')
+            WHERE json_extract(d.data,'$.needs_attention_now') IS 1 ORDER BY d.rowid DESC LIMIT ?''', (examples,)).fetchall()
+        return {'week_urgent': urgent, 'week_total': total,
+                'examples': [{'title': title, 'bot_name': bot, 'created_at': created} for title, bot, created in rows]}
 
     def remove_stale(self, current):
         """Remove registrations of devices that are not paired phones, or that did not refresh for a long time."""
@@ -445,8 +465,12 @@ class PushDelivery:
         for (device_id,) in db.execute("SELECT DISTINCT device_id FROM push_items WHERE status='waiting'").fetchall():
             device = db.execute('SELECT enabled FROM push_devices WHERE device_id=?', (device_id,)).fetchone()
             items = self._items("device_id=? AND status='waiting'", (device_id,))
-            waiting = [item for item in items if not item['urgent']]
             schedule, level = self.schedule(device_id), self.preferences(device_id)['level']
+            # With Nothing outside work hours, an urgent card from outside them waits, and then joins the count.
+            for item in items:
+                item['held'] = bool(item['urgent']) and holds_urgent(schedule, item['created'])
+            alone = lambda item: item['urgent'] and not item['held']
+            waiting = [item for item in items if not item['urgent']]
             # The gap counts from the last delivered notification. With Grouped, new items also wait while a group retries.
             # Every card has no gap, so a retrying group does not hold its new items.
             last = db.execute("SELECT MAX(sent) FROM push_outbox WHERE device_id=? AND status='accepted'", (device_id,)).fetchone()[0]
@@ -454,16 +478,18 @@ class PushDelivery:
                 "SELECT 1 FROM push_outbox WHERE device_id=? AND status='queued' AND event_key LIKE 'group:%'", (device_id,)).fetchone()
             opens = due(schedule, level, waiting[0]['created'], last or 0, current) if waiting and not pending else None
             # Items are checked only when they would notify, so a long wait outside work hours costs no reads.
-            ready = [item for item in items if item['urgent'] or (opens is not None and opens <= current)]
+            held_ready = next_opening(schedule, current) <= current
+            ready = [item for item in items if alone(item) or (item['held'] and held_ready)
+                     or (not item['urgent'] and opens is not None and opens <= current)]
             for item in ready:
                 if not device or not device[0] or not self.relevant(item):
                     db.execute("UPDATE push_items SET status='dropped',reason='NoLongerRelevant' WHERE device_id=? AND event_key=?",
                                (device_id, item['event_key']))
                     item['dropped'] = True
             for item in ready:
-                if item['urgent'] and not item.get('dropped'):
+                if alone(item) and not item.get('dropped'):
                     self._queue(device_id, 'item:' + item['event_key'], [item], current)
-            group = [item for item in ready if not item['urgent'] and not item.get('dropped')]
+            group = [item for item in ready if not alone(item) and not item.get('dropped')]
             if level == 'every':
                 # Every card: an item that arrived inside work hours notifies alone. Items held from outside them notify as one group.
                 for item in [item for item in group if in_window(schedule, item['created']) or not schedule['enabled']]:

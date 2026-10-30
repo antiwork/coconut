@@ -14,80 +14,74 @@ struct NotificationSettingsRow: View {
 struct NotificationSettingsView: View {
     @Environment(AppStore.self) private var store
     @Bindable private var push = PushNotifications.shared
-    @State private var daysExpanded = false
 
     var body: some View {
         Form {
             Section {
-                Picker("Notify me", selection: $push.notificationLevel) {
+                Text(NotificationSentence.text(level: push.notificationLevel, outside: push.outsideWorkHours,
+                                               replies: push.messageNotifications, schedule: push.schedule))
+                    .accessibilityIdentifier("notification-summary")
+            }
+            Section {
+                NavigationLink {
+                    WorkHoursView()
+                } label: {
+                    LabeledContent("Work hours", value: NotificationSentence.workHours(push.schedule))
+                }
+                .disabled(push.outsideWorkHours == .same)
+                .accessibilityIdentifier("work-hours")
+            }
+            Section {
+                Picker("During work hours", selection: $push.notificationLevel) {
                     ForEach(NotificationLevel.allCases, id: \.self) { level in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(level.title)
-                            Text(level.detail).font(.caption).foregroundStyle(.secondary)
-                        }
-                        .tag(level)
-                        .accessibilityIdentifier("notification-level-" + level.rawValue)
+                        Text(level.title).tag(level).accessibilityIdentifier("notification-level-" + level.rawValue)
                     }
                 }
                 .pickerStyle(.inline)
                 .labelsHidden()
                 .accessibilityIdentifier("notification-level")
-                Toggle(isOn: $push.messageNotifications) {
-                    Text("Messages and failed tasks").frame(maxWidth: .infinity, alignment: .leading)
-                        .contentShape(Rectangle()).onTapGesture { push.messageNotifications.toggle() }
-                }.accessibilityIdentifier("message-notifications")
             } header: {
-                Text("Notify me")
+                Text(push.outsideWorkHours == .same ? "At any time" : "During work hours")
             } footer: {
-                Text("A card that needs your attention now always notifies at once. A group opens Inbox.")
+                Text(push.notificationLevel.detail).accessibilityIdentifier("notification-level-footer")
             }
             Section {
-                Toggle("Use work hours", isOn: $push.afterHoursImportantOnly)
-                    .accessibilityIdentifier("after-hours-toggle")
-                if push.afterHoursImportantOnly {
-                    DatePicker("Start", selection: minutes($push.workStartMinutes), displayedComponents: .hourAndMinute)
-                        .accessibilityLabel("Work hours start")
-                        .accessibilityIdentifier("work-hours-start")
-                    DatePicker("End", selection: minutes($push.workEndMinutes), displayedComponents: .hourAndMinute)
-                        .accessibilityLabel("Work hours end")
-                        .accessibilityIdentifier("work-hours-end")
-                    Picker("Time zone", selection: $push.workTimeZone) {
-                        ForEach(TimeZone.knownTimeZoneIdentifiers, id: \.self) { Text($0.replacingOccurrences(of: "_", with: " ")).tag($0) }
-                    }
-                    .pickerStyle(.navigationLink)
-                    .accessibilityIdentifier("work-hours-timezone")
-                    DisclosureGroup(isExpanded: $daysExpanded) {
-                        ForEach(NotificationSchedule.weekdayNames, id: \.number) { day in
-                            Toggle(day.name, isOn: weekday(day.number))
-                                .accessibilityIdentifier("work-day-" + day.name.lowercased())
-                        }
-                    } label: {
-                        HStack {
-                            Text("Work days")
-                            Spacer()
-                            Text(NotificationSchedule.summary(of: push.workWeekdays)).foregroundStyle(.secondary)
-                        }
-                        .accessibilityElement(children: .combine)
-                        .accessibilityIdentifier("work-days-disclosure")
-                    }
-                    if push.workWeekdays.isEmpty {
-                        InlineError("Choose at least one work day.")
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Work days are not valid. Choose at least one day.")
-                            .accessibilityIdentifier("work-days-error")
-                    }
-                    if push.workStartMinutes >= push.workEndMinutes {
-                        InlineError("Start must be before end.")
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Work hours are not valid. Start must be before end.")
-                            .accessibilityIdentifier("work-hours-error")
+                Picker("Outside work hours", selection: $push.outsideWorkHours) {
+                    ForEach(OutsideWorkHours.allCases, id: \.self) { choice in
+                        Text(choice.title).tag(choice).accessibilityIdentifier("outside-work-hours-" + choice.rawValue)
                     }
                 }
+                .pickerStyle(.inline)
+                .labelsHidden()
+                .accessibilityIdentifier("outside-work-hours")
             } header: {
-                Text("Work hours")
+                Text("Outside work hours")
+            }
+            Section {
+                Toggle(isOn: $push.messageNotifications) {
+                    Text("Also notify me when a bot replies").frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle()).onTapGesture { push.messageNotifications.toggle() }
+                }
+                .disabled(push.notificationLevel == .urgentOnly)
+                .accessibilityIdentifier("message-notifications")
+            } header: {
+                Text("Bot replies")
             } footer: {
-                Text("Outside work hours, cards wait in Inbox. When work hours start, one notification counts them.")
-                    .accessibilityIdentifier("after-hours-footer")
+                Text(push.notificationLevel == .urgentOnly ? "With Only urgent, bot replies do not notify you."
+                                                           : "This includes a task that a bot could not finish.")
+            }
+            Section {
+                NavigationLink {
+                    UrgentCardsView(summary: store.pushStatus?.urgent)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("What counts as urgent?")
+                        if let summary = store.pushStatus?.urgent {
+                            Text(summary.weekText).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .accessibilityIdentifier("urgent-cards")
             }
             Section("Delivery") {
                 LabeledContent("Last notification", value: store.pushStatus == nil ? "Not available"
@@ -122,11 +116,67 @@ struct NotificationSettingsView: View {
         }
         .tint(BoardStyle.green)
         .settingsBackground()
-        .environment(\.timeZone, TimeZone(identifier: "UTC") ?? .gmt)
         .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)
         // Read again when the connection returns, so the screen does not keep an unavailable status.
         .task(id: store.connection) { await store.refreshPushStatus() }
+    }
+}
+
+/// The editor of the work hours: start, end, time zone and days.
+struct WorkHoursView: View {
+    @Bindable private var push = PushNotifications.shared
+    @State private var daysExpanded = true
+
+    var body: some View {
+        Form {
+            Section {
+                DatePicker("Start", selection: minutes($push.workStartMinutes), displayedComponents: .hourAndMinute)
+                    .accessibilityLabel("Work hours start")
+                    .accessibilityIdentifier("work-hours-start")
+                DatePicker("End", selection: minutes($push.workEndMinutes), displayedComponents: .hourAndMinute)
+                    .accessibilityLabel("Work hours end")
+                    .accessibilityIdentifier("work-hours-end")
+                Picker("Time zone", selection: $push.workTimeZone) {
+                    ForEach(TimeZone.knownTimeZoneIdentifiers, id: \.self) { Text($0.replacingOccurrences(of: "_", with: " ")).tag($0) }
+                }
+                .pickerStyle(.navigationLink)
+                .accessibilityIdentifier("work-hours-timezone")
+                if push.workStartMinutes >= push.workEndMinutes {
+                    InlineError("Start must be before end.")
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Work hours are not valid. Start must be before end.")
+                        .accessibilityIdentifier("work-hours-error")
+                }
+            }
+            Section {
+                DisclosureGroup(isExpanded: $daysExpanded) {
+                    ForEach(NotificationSchedule.weekdayNames, id: \.number) { day in
+                        Toggle(day.name, isOn: weekday(day.number))
+                            .accessibilityIdentifier("work-day-" + day.name.lowercased())
+                    }
+                } label: {
+                    HStack {
+                        Text("Work days")
+                        Spacer()
+                        Text(NotificationSchedule.summary(of: push.workWeekdays)).foregroundStyle(.secondary)
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityIdentifier("work-days-disclosure")
+                }
+                if push.workWeekdays.isEmpty {
+                    InlineError("Choose at least one work day.")
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel("Work days are not valid. Choose at least one day.")
+                        .accessibilityIdentifier("work-days-error")
+                }
+            }
+        }
+        .tint(BoardStyle.green)
+        .settingsBackground()
+        .environment(\.timeZone, TimeZone(identifier: "UTC") ?? .gmt)
+        .navigationTitle("Work hours")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func weekday(_ number: Int) -> Binding<Bool> {
@@ -145,6 +195,38 @@ struct NotificationSettingsView: View {
     }
 }
 
+/// What makes a card urgent, with the last urgent cards as examples.
+struct UrgentCardsView: View {
+    let summary: UrgentSummary?
+
+    var body: some View {
+        Form {
+            Section {
+                Text(NotificationSentence.urgentExplanation)
+                if let summary {
+                    Text(summary.weekText).foregroundStyle(.secondary).accessibilityIdentifier("urgent-week")
+                }
+            }
+            if let examples = summary?.examples, !examples.isEmpty {
+                Section("Last urgent cards") {
+                    ForEach(Array(examples.enumerated()), id: \.offset) { _, example in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(example.title ?? "Untitled card")
+                            let detail = [example.botName, PushStatus.describe(example.createdAt)].compactMap { $0 }
+                            if !detail.isEmpty {
+                                Text(detail.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .settingsBackground()
+        .navigationTitle("Urgent cards")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
 /// How often non-urgent items notify. The Mac applies it; see `push_schedule.py`.
 enum NotificationLevel: String, Codable, CaseIterable, Sendable {
     case every
@@ -154,16 +236,19 @@ enum NotificationLevel: String, Codable, CaseIterable, Sendable {
     var title: String {
         switch self {
         case .every: "Every card"
-        case .grouped: "Grouped"
+        case .grouped: "One summary at a time"
         case .urgentOnly: "Only urgent"
         }
     }
 
+    /// The footer of the chosen level. It says exactly what the Mac does (push_schedule.SETTLE and INTERVAL).
     var detail: String {
         switch self {
-        case .every: "One notification for each card during work hours."
-        case .grouped: "At most one notification every 10 minutes."
-        case .urgentOnly: "Only cards that need your attention now."
+        case .every: "Each card notifies you at once, in its own notification."
+        case .grouped: "After a new card, Coconut waits 30 seconds, so that cards from the same bot run come together. "
+            + "Then one notification shows the card, or counts the cards. The next notification waits at least 10 minutes. "
+            + "Urgent cards do not wait."
+        case .urgentOnly: "Only urgent cards notify you. Other cards wait in Inbox without a notification."
         }
     }
 
@@ -182,6 +267,7 @@ struct NotificationPreferences: Encodable, Equatable, Sendable {
 /// What the Mac last did for this iPhone. Times are ISO 8601 text from the Mac.
 struct PushStatus: Decodable, Equatable, Sendable {
     let registered: Bool
+    var urgent: UrgentSummary? = nil
     let lastDeliveredAt: String?
     let lastError: String?
     let lastErrorAt: String?
@@ -269,7 +355,7 @@ struct NotificationSchedule: Codable, Equatable, Sendable {
 
     /// The schedule saved in `defaults`. Anything missing or unreadable takes its default.
     static func load(from defaults: UserDefaults = .standard) -> NotificationSchedule {
-        NotificationSchedule(enabled: defaults.object(forKey: "afterHoursImportantOnly") as? Bool ?? true,
+        NotificationSchedule(enabled: OutsideWorkHours.load(from: defaults) != .same,
                              start: clock(defaults.object(forKey: "workStartMinutes") as? Int ?? 9 * 60),
                              end: clock(defaults.object(forKey: "workEndMinutes") as? Int ?? 18 * 60),
                              timezone: defaults.string(forKey: "workTimeZone") ?? defaultTimeZone,
@@ -350,8 +436,8 @@ final class PushNotifications {
         NotificationPreferences(level: notificationLevel, messages: messageNotifications)
     }
     private static let saved = NotificationSchedule.load()
-    var afterHoursImportantOnly = saved.enabled {
-        didSet { UserDefaults.standard.set(afterHoursImportantOnly, forKey: "afterHoursImportantOnly") }
+    var outsideWorkHours = OutsideWorkHours.load() {
+        didSet { UserDefaults.standard.set(outsideWorkHours.rawValue, forKey: OutsideWorkHours.key) }
     }
     var workStartMinutes = NotificationSchedule.minutes(fromClock: saved.start) ?? 9 * 60 {
         didSet { UserDefaults.standard.set(workStartMinutes, forKey: "workStartMinutes") }
@@ -367,7 +453,7 @@ final class PushNotifications {
         didSet { UserDefaults.standard.set(workWeekdays, forKey: "workWeekdays") }
     }
     var schedule: NotificationSchedule {
-        NotificationSchedule(enabled: afterHoursImportantOnly, start: NotificationSchedule.clock(workStartMinutes),
+        NotificationSchedule(enabled: outsideWorkHours != .same, start: NotificationSchedule.clock(workStartMinutes),
                              end: NotificationSchedule.clock(workEndMinutes), timezone: workTimeZone,
                              weekdays: Array(Set(workWeekdays)).sorted())
     }
@@ -454,13 +540,17 @@ struct PushRegistration: Encodable {
     var relay: PushRelayGrant? = nil
     var preferences: NotificationPreferences? = nil
     var schedule: NotificationSchedule? = nil
+    /// "urgent" or "nothing". It is not in the schedule, because a Mac before this choice refuses unknown schedule fields.
+    var outsideWorkHours: String? = nil
 
     /// Changes whenever something the Mac must hear about changes. An invalid enabled schedule is not
     /// sent, so it adds nothing; turning the schedule off always changes it.
     static func signature(deviceId: String, environment: String, token: String?, allowed: Bool,
-                          preferences: NotificationPreferences, schedule: NotificationSchedule?) -> String {
+                          preferences: NotificationPreferences, schedule: NotificationSchedule?,
+                          outside: OutsideWorkHours = .urgent) -> String {
         let window = schedule.map { [String($0.enabled), $0.start, $0.end, $0.timezone, $0.weekdays.map(String.init).joined()].joined(separator: ",") } ?? ""
-        return [deviceId, environment, token ?? "", String(allowed), preferences.level.rawValue, String(preferences.messages), window].joined(separator: ":")
+        return [deviceId, environment, token ?? "", String(allowed), preferences.level.rawValue, String(preferences.messages), window,
+                outside.rawValue].joined(separator: ":")
     }
 }
 

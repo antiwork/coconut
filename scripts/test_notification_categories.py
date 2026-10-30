@@ -23,7 +23,7 @@ def main():
     parser.add_argument('--result', type=Path, required=True)
     parser.add_argument('--slow-open', action='store_true')
     parser.add_argument('--work-navigation', action='store_true')
-    parser.add_argument('--settings-only', action='store_true', help='run only the off-hours Settings UI test')
+    parser.add_argument('--settings-only', action='store_true', help='run only the work hours Settings UI test')
     args = parser.parse_args()
     state = json.loads((ROOT / 'ios/Coconut/Fixtures/PreviewState.json').read_text())
     bot, task, decision = state['bots'][0], state['tasks'][0], state['decisions'][0]
@@ -77,7 +77,12 @@ def main():
                 self.respond(dict(device_id=device, token='notification-fixture-token', snapshot=state))
 
         def do_GET(self):
-            if urlsplit(self.path).path == '/v1/events':
+            if urlsplit(self.path).path == '/v1/device/push':
+                self.respond(dict(registered=True, configured=False, last_delivered_at=None, last_error=None, last_error_at=None,
+                                  urgent=dict(week_urgent=4, week_total=358, examples=[
+                                      dict(title='Approve the hotfix before the 17:00 release', bot_name=bot['name'],
+                                           created_at=state['server_time'])])))
+            elif urlsplit(self.path).path == '/v1/events':
                 time.sleep(1)
                 self.respond(dict(events=[], cursor=50, server_time=state['server_time']))
             else:
@@ -107,7 +112,7 @@ def main():
             runfile.write_bytes(plistlib.dumps(document))
             result = subprocess.run(['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                 '-destination', 'platform=iOS Simulator,id=' + args.simulator,
-                '-only-testing:CoconutUITests/' + ('WorkTabReturnTests' if args.work_navigation else 'NotificationOpenPerformanceTests' if args.slow_open else 'NotificationCategoryFlowTests' + ('/testOffHoursSettings' if args.settings_only else '')), '-parallel-testing-enabled', 'NO',
+                '-only-testing:CoconutUITests/' + ('WorkTabReturnTests' if args.work_navigation else 'NotificationOpenPerformanceTests' if args.slow_open else 'NotificationCategoryFlowTests' + ('/testWorkHoursSettings' if args.settings_only else '')), '-parallel-testing-enabled', 'NO',
                 '-resultBundlePath', str(args.result)])
             raise SystemExit(result.returncode)
     finally:

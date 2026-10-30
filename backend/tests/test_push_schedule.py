@@ -88,7 +88,7 @@ class ScheduleTests(unittest.TestCase):
 
     def test_default_is_every_day_nine_to_six_new_york(self):
         self.assertEqual(DEFAULT_SCHEDULE, dict(enabled=True, start='09:00', end='18:00', timezone='America/New_York',
-                                                weekdays=[1, 2, 3, 4, 5, 6, 7]))
+                                                weekdays=[1, 2, 3, 4, 5, 6, 7], outside='urgent'))
 
     def test_fall_back_repeated_hour_counts_both_times_inside_the_window(self):
         schedule = dict(DEFAULT_SCHEDULE, start='01:00', end='02:00')
@@ -305,6 +305,63 @@ class DeliveryTimingTests(unittest.TestCase):
         self.deliver(self.NIGHT)
         self.assertEqual([payload['coconut'].get('decision_id') for payload in self.sent()], [urgent['id']])
         self.assertEqual(self.items(), [('decision', 0, 'waiting'), ('decision', 1, 'sent')])
+
+    def test_nothing_outside_work_hours_holds_an_urgent_card_until_the_opening_count(self):
+        self.register(outside_work_hours='nothing')
+        self.assertEqual(self.service.push.schedule(self.device)['outside'], 'nothing')
+        self.decision()
+        self.decision(urgent=True)
+        self.deliver(self.NIGHT + 60)
+        self.deliver(self.MORNING - 1)
+        self.assertEqual(self.sent(), [])
+        self.deliver(self.MORNING)
+        self.deliver(self.MORNING + 3600)
+        self.assertEqual([payload['aps']['alert']['body'] for payload in self.sent()], ['2 decisions are waiting'])
+        self.assertEqual(self.items(), [('decision', 0, 'sent'), ('decision', 1, 'sent')])
+
+    def test_nothing_outside_work_hours_still_sends_an_urgent_card_inside_them_at_once(self):
+        for level in ('grouped', 'urgent_only'):
+            self.service.db.execute('DELETE FROM push_items')
+            self.transport.calls.clear()
+            self.register(level=level, outside_work_hours='nothing')
+            urgent = self.decision(urgent=True, ts=self.NOON)
+            self.deliver(self.NOON)
+            self.assertEqual([payload['coconut'].get('decision_id') for payload in self.sent()], [urgent['id']], level)
+
+    def test_nothing_outside_work_hours_with_only_urgent_sends_the_held_card_at_the_opening(self):
+        self.register(level='urgent_only', outside_work_hours='nothing')
+        self.decision(urgent=True)
+        self.deliver(self.NIGHT + 60)
+        self.assertEqual(self.sent(), [])
+        self.deliver(self.MORNING)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.items(), [('decision', 1, 'sent')])
+
+    def test_outside_work_hours_keeps_its_value_until_an_app_changes_it(self):
+        self.register(outside_work_hours='nothing')
+        # An app before the choice does not send it.
+        self.register(schedule=dict(start='08:00'))
+        self.assertEqual(self.service.push.schedule(self.device)['outside'], 'nothing')
+        self.register(outside_work_hours='urgent')
+        self.assertEqual(self.service.push.schedule(self.device)['outside'], 'urgent')
+        with self.assertRaises(ServiceError):
+            self.register(outside_work_hours='same')
+        with self.assertRaises(ServiceError):
+            self.register(schedule=dict(outside='later'))
+
+    def test_the_urgent_summary_counts_the_last_week_and_shows_the_last_urgent_cards(self):
+        old = self.decision(urgent=True)
+        old['created_at'] = '2020-01-01T00:00:00Z'
+        self.service._put('decisions', old)
+        self.decision()
+        first, second = self.decision(urgent=True), self.decision(urgent=True)
+        summary = self.service.push_status(self.device)['urgent']
+        self.assertEqual((summary['week_urgent'], summary['week_total']), (2, 3))
+        self.assertEqual([example['created_at'] for example in summary['examples']],
+                         [second['created_at'], first['created_at'], '2020-01-01T00:00:00Z'])
+        self.assertEqual(summary['examples'][0]['title'], second['title'])
+        self.assertEqual(summary['examples'][0]['bot_name'], 'Desk')
+        self.assertEqual(len(self.service.push.urgent_summary(__import__('time').time(), examples=1)['examples']), 1)
 
     def test_only_a_card_can_need_attention_now(self):
         self.failure()
@@ -536,6 +593,8 @@ class DeliveryTimingTests(unittest.TestCase):
         old = dict(enabled=True, start='08:00', end='17:00', timezone='Europe/Paris')
         self.service.db.execute('UPDATE push_schedules SET data=? WHERE device_id=?', (__import__('json').dumps(old), self.device))
         self.assertEqual(self.service.push.schedule(self.device), dict(DEFAULT_SCHEDULE, **old))
+        # A row from before Outside work hours keeps only urgent cards outside them, as before.
+        self.assertEqual(self.service.push.schedule(self.device)['outside'], 'urgent')
         self.service.db.execute('UPDATE push_schedules SET data=? WHERE device_id=?', ('{"weekdays": []}', self.device))
         self.assertEqual(self.service.push.schedule(self.device), LEGACY_SCHEDULE)
 
