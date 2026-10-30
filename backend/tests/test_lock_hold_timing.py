@@ -88,6 +88,20 @@ class LockHoldTimingTests(unittest.TestCase):
         self.assertEqual(json.dumps(summary), before)
         self.assertEqual(sampler.holds, {})
 
+    def test_a_failing_diagnostic_never_fails_the_hold(self):
+        ran = []
+        with patch.object(turn_timings, 'LOG_AFTER', 0.0), \
+                patch.object(turn_timings._sampler, 'stop', side_effect=RuntimeError('dictionary changed size')):
+            with self.assertLogs('coconut.turn_timings', level='WARNING') as logs:
+                with timed_lock(threading.RLock(), 'committed'):
+                    ran.append(True)
+        self.assertEqual(ran, [True])
+        self.assertTrue(any('A lock hold diagnostic failed.' in record.getMessage() for record in logs.records))
+        [data] = [json.loads(r.getMessage().partition('coconut.transaction_timing ')[2]) for r in logs.records
+                  if 'transaction_timing' in r.getMessage()]
+        self.assertEqual(data['operation'], 'committed')
+        self.assertNotIn('samples', data)
+
     def test_an_error_in_the_hold_still_logs_and_raises(self):
         with patch.object(turn_timings, 'LOG_AFTER', 0.0):
             with self.assertLogs('coconut.turn_timings', level='WARNING') as logs, self.assertRaises(ValueError):

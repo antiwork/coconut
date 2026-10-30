@@ -150,22 +150,36 @@ def timed_lock(lock, operation):
         with lock:
             acquired = time.perf_counter()
             cpu = time.thread_time()
-            token = _sampler.start(operation)
+            token = _diagnose(_sampler.start, operation)
             try:
                 yield
             finally:
                 cpu_ms = round((time.thread_time() - cpu) * 1000, 1)
                 held = time.perf_counter()
-                hold = _sampler.stop(token)
+                if token is not None:
+                    hold = _diagnose(_sampler.stop, token)
     finally:
         ended = time.perf_counter()
         if ended - started >= LOG_AFTER:
-            data = dict(operation=operation, thread=threading.current_thread().name,
-                        wait_ms=round((acquired - started) * 1000, 1),
-                        hold_ms=round(((held if cpu_ms is not None else ended) - acquired) * 1000, 1), cpu_ms=cpu_ms)
-            if hold:
-                data.update(hold)
-            logging.getLogger(__name__).warning('coconut.transaction_timing %s', json.dumps(data))
+            _diagnose(_log_hold, operation, started, acquired, held if cpu_ms is not None else ended, cpu_ms, hold)
+
+
+def _diagnose(function, *args):
+    """Run a diagnostic step. Its error must never fail the operation that holds the lock: the operation may have
+    committed already."""
+    try:
+        return function(*args)
+    except Exception:
+        logging.getLogger(__name__).exception('A lock hold diagnostic failed.')
+        return None
+
+
+def _log_hold(operation, started, acquired, held, cpu_ms, hold):
+    data = dict(operation=operation, thread=threading.current_thread().name,
+                wait_ms=round((acquired - started) * 1000, 1), hold_ms=round((held - acquired) * 1000, 1), cpu_ms=cpu_ms)
+    if hold:
+        data.update(hold)
+    logging.getLogger(__name__).warning('coconut.transaction_timing %s', json.dumps(data))
 
 
 class TurnTrace:
