@@ -852,6 +852,54 @@ class ServiceRoutingTests(unittest.TestCase):
         runner.join(5)
         self.assertEqual(self.provider.starts, [])
 
+    def failed_exchange(self):
+        """Ada asks Lin through the gateway, Lin's turn fails, and its failure returns to Ada. Ada's return turn runs.
+        Return Lin's bot, the failed task and the running return task."""
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        other_home = self.service.profiles.home(other)
+        task = self.send('Ask Lin to check the logs.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        sent = self.service.gateway_tool({'turn_id': adapter.turns[0]['id'], 'tool': 'message_bot',
+                                          'arguments': {'bot': 'Lin', 'text': 'Please check the logs.'}})
+        self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        adapter = Adapter(self.service.gateway_bridge, other_home, [{'kind': 'done', 'outcome': 'failure'}])
+        adapter.start()
+        self.dispatch(sent['task_id'])
+        adapter.join(5)
+        self.service._drain_returns()
+        with self.service.lock:
+            returned = next(t for t in self.service._all('tasks') if t['bot_id'] == self.bot['id']
+                            and t.get('_is_return') and t['status'] == 'queued')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        self.service._dispatch_pending()
+        adapter.join(5)
+        return other, self.read('tasks', sent['task_id']), returned, adapter.turns[0]['id']
+
+    def test_a_coordinator_cannot_continue_a_failed_gateway_task_that_the_person_stopped(self):
+        other, failed, returned, turn = self.failed_exchange()
+        # The person stopped the exchange of the failed task. The coordinator works in a later, active exchange.
+        with self.service.transaction():
+            exchange = self.service._get('exchanges', failed['exchange_id'])
+            exchange['cancelled'] = True
+            self.service._put('exchanges', exchange)
+            stored = self.service._get('tasks', returned['id'])
+            stored['exchange_id'] = self.service._new_exchange()
+            self.service._put('tasks', stored)
+        tasks = len(self.service._all('tasks'))
+        with self.assertRaisesRegex(ServiceError, 'paused or cancelled'):
+            self.service.emit(returned['id'], 'bot_message', {
+                'target_bot_id': other['id'], 'text': 'Please continue the log check.', 'continuation_task_id': failed['id']})
+        # Nothing starts the stopped work again.
+        self.assertEqual(len(self.service._all('tasks')), tasks)
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        self.service.running[returned['id']].join(10)
+
     def test_a_coordinator_continues_a_failed_gateway_task_in_its_conversation(self):
         other = self.write('POST', '/v1/bots', {'name': 'Lin'})
         other_home = self.service.profiles.home(other)
