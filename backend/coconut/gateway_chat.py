@@ -360,12 +360,13 @@ class GatewayChat:
                             emit) -> bool:
         """Answer a follow-up on a pending card in the gateway. False: the worker answers it.
 
-        The worker answers a check of the card (`_decision_refresh`) and the results of background research, and each
-        follow-up on a task that the gateway does not run. The turn cannot make a card or act for the task: the plugin
-        blocks the card tools, and the service takes only text and coconut_resolve_reply from it.
+        An automatic check of the card (`_decision_refresh`) runs in mode `refresh`, and the service takes only
+        coconut_refresh_decision from it (decision_freshness.refresh_decision). It sends no message to the chat.
+        The worker answers the results of background research that a worker turn started, and each follow-up on a task
+        that the gateway does not run. The turn cannot make a card or act for the task: the plugin blocks the card
+        tools, and the service takes only text and coconut_resolve_reply from a follow-up.
         """
-        if (not self.gateway_enabled() or not plain_chat_turn(task) or context.get('_decision_refresh')
-                or context.get('_background_completion')):
+        if not self.gateway_enabled() or not plain_chat_turn(task) or context.get('_background_completion'):
             return False
         from .native_conversation import attachment_context, context_prompt
         from .service import ServiceError
@@ -386,7 +387,10 @@ class GatewayChat:
 
         def wanted():
             return self._get('contexts', context['id'])['status'] == 'working'
-        return self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted)
+        # A check that finds nothing to change ends without a reply, as REFRESH_INSTRUCTIONS asks.
+        check = bool(context.get('_decision_refresh'))
+        return self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted,
+                                    mode='refresh' if check else None, silent=check)
 
     def _run_in_gateway(self, task: dict, bot: dict, text: str, emit, *, silent: bool = False,
                         context_id: str | None = None, wanted=None, session: str | None = None,
@@ -477,9 +481,16 @@ class GatewayChat:
         tool = data.get('tool')
         context_id = self.gateway_bridge.context_of(data.get('turn_id'))
         if context_id is not None:
-            # A follow-up on a pending card answers the question and can record a typed answer to that card.
-            if tool == 'resolve_reply':
+            # A follow-up on a pending card answers the question and can record a typed answer to that card. An
+            # automatic check of the card records only its result.
+            with self.lock:
+                check = bool(self._get('contexts', context_id).get('_decision_refresh'))
+            if check and tool == 'refresh_decision':
+                return self.refresh_decision(context_id, arguments)
+            if not check and tool == 'resolve_reply':
                 return self.resolve_decision_reply(context_id, arguments)
+            if check:
+                raise ServiceError(409, 'Record the check with coconut_refresh_decision. The card stays as it is.')
             raise ServiceError(409, 'Answer the current question. Its pending decision stays open.')
         if tool == 'ask':
             return self.native_event(task_id, 'native_question', arguments)

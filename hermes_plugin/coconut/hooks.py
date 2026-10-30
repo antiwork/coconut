@@ -66,6 +66,9 @@ CARD_TOOLS = ('coconut_ask', 'coconut_suggest', 'clarify', 'coconut_track_pr', '
 PAUSED_MESSAGE = ('Coconut shows a card and waits for the answer of the person. End this turn now. Coconut continues '
                   'this conversation with the answer.')
 CONTEXT_MESSAGE = 'Answer the current question. Its pending decision stays open.'
+REFRESH_TOOL = 'coconut_refresh_decision'
+REFRESH_MESSAGE = 'Record this check with coconut_refresh_decision. The check does not change the card in other ways.'
+NOT_A_CHECK_MESSAGE = 'Only an automatic check of a card records a check result.'
 STATUS_MESSAGE = 'Answer from the saved context in the message. This answer uses no tools.'
 
 
@@ -99,8 +102,8 @@ def save_todos(tool_name='', result=None, **_):
         return None
     from .adapter import MODES
     holder, turn = _turn()
-    if turn is None or MODES.get(turn) == 'context':
-        # A follow-up on a pending card does not change the work of its task.
+    if turn is None or MODES.get(turn) in ('context', 'refresh'):
+        # A follow-up on a pending card and a check of the card do not change the work of its task.
         return None
     try:
         import json
@@ -128,6 +131,14 @@ def guard_tool(tool_name='', **_):
         return {'action': 'block', 'message': STATUS_MESSAGE}
     if MODES.get(turn) == 'context' and tool_name in CARD_TOOLS:
         return {'action': 'block', 'message': CONTEXT_MESSAGE}
+    if MODES.get(turn) == 'refresh':
+        # An automatic check of a card reads the evidence and records its result. It makes no card and answers for
+        # nobody, as in the worker.
+        if tool_name in CARD_TOOLS or tool_name == 'coconut_resolve_reply':
+            return {'action': 'block', 'message': REFRESH_MESSAGE}
+        return None
+    if tool_name == REFRESH_TOOL:
+        return {'action': 'block', 'message': NOT_A_CHECK_MESSAGE}
     return None
 
 

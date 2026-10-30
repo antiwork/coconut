@@ -7,6 +7,7 @@ offer the same tools with these schemas. The plugin loads this file by its path,
 coconut_wait records that the work of a turn waits for another task, a background process or a card
 (work_progress.wait_for_task). A card that needs an answer (coconut_ask) ends the turn. The answer resumes the work in a later turn. An optional
 proposal (coconut_suggest) does not end the turn. coconut_resolve_reply records a typed answer to a pending card.
+coconut_refresh_decision records the result of an automatic check of a pending card.
 """
 
 DRAFT_SCHEMA = {
@@ -125,6 +126,17 @@ CORRECTION_SCHEMA = {
                              'description': 'Map each linked GitHub issue or PR URL to the exact updated_at you just read from the GitHub issues API.'},
         'reason': {'type': 'string', 'maxLength': 1000, 'description': 'The verified facts that show the withdrawal was wrong.'},
     }, 'required': ['decision_id', 'expected_revision', 'withdrawal_context_id', 'reason']},
+}
+
+# An automatic card check records its result (decision_freshness.refresh_decision).
+REFRESH_SCHEMA = {
+    'name': 'coconut_refresh_decision',
+    'description': 'Record this automatic card check. This cannot approve an action or answer for the person.',
+    'parameters': {'type': 'object', 'additionalProperties': False, 'properties': {
+        'status': {'type': 'string', 'enum': ['current', 'revise', 'withdraw']},
+        'evidence': {'type': 'string', 'description': 'Verified facts and source references that support this result.'},
+        'revision': {'type': 'object', 'description': 'For revise: the complete current question, context, options, and risk. For a draft_message: only risk_level, risk, and uncertainty; never draft content.'},
+    }, 'required': ['status', 'evidence']},
 }
 
 # A typed answer from chat names its card and the human message (decision_inbox.resolve_chat_decision).

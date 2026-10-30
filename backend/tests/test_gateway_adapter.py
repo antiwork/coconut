@@ -719,8 +719,18 @@ class GatewayAdapterTests(unittest.TestCase):
             self.assertEqual(hooks.guard_tool(tool_name='read_file'), {'action': 'block', 'message': hooks.PAUSED_MESSAGE})
             adapter.PAUSED.discard('turn-a')
             # A status question uses no tools at all.
+            # Only an automatic check of a card records a check result.
+            self.assertEqual(hooks.guard_tool(tool_name='coconut_refresh_decision'),
+                             {'action': 'block', 'message': hooks.NOT_A_CHECK_MESSAGE})
             adapter.MODES['turn-a'] = 'status'
             self.assertEqual(hooks.guard_tool(tool_name='read_file'), {'action': 'block', 'message': hooks.STATUS_MESSAGE})
+            # An automatic check of a card reads the evidence and records its result. It makes no card and answers
+            # for nobody.
+            adapter.MODES['turn-a'] = 'refresh'
+            self.assertIsNone(hooks.guard_tool(tool_name='coconut_refresh_decision'))
+            self.assertIsNone(hooks.guard_tool(tool_name='read_file'))
+            for tool in ('coconut_ask', 'coconut_suggest', 'coconut_resolve_reply', 'clarify', 'coconut_message_bot'):
+                self.assertEqual(hooks.guard_tool(tool_name=tool), {'action': 'block', 'message': hooks.REFRESH_MESSAGE})
         # Outside a Coconut turn the hook does nothing.
         with patch.object(hooks, '_turn', return_value=(None, None)):
             self.assertIsNone(hooks.guard_tool(tool_name='terminal'))
@@ -745,6 +755,7 @@ class GatewayAdapterTests(unittest.TestCase):
                 sections[id] = (text, content({'platform': 'telegram'}), len(text) <= max_chars)
         self.plugin.register(Context())
         self.assertEqual([name for name, _ in tool_names], ['coconut_ask', 'coconut_suggest', 'coconut_resolve_reply',
+                                                             'coconut_refresh_decision',
                                                              'coconut_wait', 'coconut_correct_withdrawal',
                                                              'coconut_create_bot', 'coconut_delete_bot',
                                                              'coconut_track_pr', 'coconut_message_bot'])
@@ -764,7 +775,10 @@ class GatewayAdapterTests(unittest.TestCase):
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
-        self.assertEqual(len(tool_names), 9)
+        self.assertEqual(len(tool_names), 10)
+        # The check tool has the schema of the worker's check tool.
+        from coconut.card_tools import REFRESH_SCHEMA
+        self.assertEqual(schemas['coconut_refresh_decision'], REFRESH_SCHEMA)
         # A gateway turn waits for its processes with the process tool of Hermes, not with coconut_wait.
         self.assertNotIn('process_id', schemas['coconut_wait']['parameters']['properties'])
         options = calls[0]

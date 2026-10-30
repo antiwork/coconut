@@ -1152,7 +1152,7 @@ def run_turn(request, emit, request_receipt):
                               handler=lambda arguments, **kwargs: json.dumps(request_receipt('native_proposal', arguments)))
             allowed.add(SUGGEST_SCHEMA['name'])
         if operation == 'context' and request['task'].get('_decision_refresh'):
-            from decision_freshness import REFRESH_SCHEMA
+            from card_tools import REFRESH_SCHEMA
             revision_schema = QUESTION_SCHEMA['parameters']
             if request['task'].get('pending_decision', {}).get('action_type') == 'draft_message':
                 revision_schema = {'type': 'object', 'additionalProperties': False, 'minProperties': 1,
