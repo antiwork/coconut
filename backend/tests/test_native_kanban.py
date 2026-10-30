@@ -102,7 +102,15 @@ class NativeKanbanTests(unittest.TestCase):
             self.assertEqual(again['task_id'], created['task_id'])
             commented = self.service.gateway_kanban_tool(audit['id'], 'kanban_comment',
                                                          {'task_id': created['task_id'], 'body': 'Source revision 3.'})
+            # A later audit finds the task of the outcome and its comments before it records new facts.
+            listed = self.service.gateway_kanban_tool(audit['id'], 'kanban_list', {})
+            shown = self.service.gateway_kanban_tool(audit['id'], 'kanban_show', {'task_id': created['task_id']})
         self.assertTrue(commented.get('ok'), commented)
+        self.assertIn(created['task_id'], [task['id'] for task in listed['tasks']], listed)
+        self.assertEqual([comment['body'] for comment in shown['comments']], ['Source revision 3.'], shown)
+        # A read has no receipt. The two writes and the repeated create do.
+        receipts = [r['action']['name'] for r in self.service._all('native_receipts') if r['task_id'] == audit['id']]
+        self.assertEqual(sorted(receipts), ['kanban_comment', 'kanban_create', 'kanban_create'])
         # The task is on Coconut's board for this bot, and Coconut adopts it as an outcome of the audit.
         self.assertEqual(self.native_program(
             "task = board.kb.get_task(board.conn, sys.argv[2]); print(task.tenant, task.status)", created['task_id']),
@@ -115,6 +123,39 @@ class NativeKanbanTests(unittest.TestCase):
         owners = [t for t in self.service._all('tasks') if t.get('_native_outcome_id') == created['task_id']]
         self.assertEqual(len(owners), 1)
         self.assertEqual(self.service._get('tasks', audit['id'])['_source_native_ids'], [created['task_id']])
+
+        # The source changes while its outcome exists. The next audit finds the task of the outcome, records the new
+        # revision on it, and creates no second task.
+        with self.service.transaction():
+            later = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Review open assignment',
+                                       'mode': 'queue'}, record_message=False, human_authored=False)
+            later = self.service._get('tasks', later['id'])
+            self.service._ensure_execution_session(later)
+            later.update(status='working', _source_audit_prompt='Reconcile revision 4.', _native_turn_id='turn-2')
+            self.service._put('tasks', later)
+        with patch.object(self.service, 'gateway_enabled', return_value=True):
+            found = [task['id'] for task in self.service.gateway_kanban_tool(later['id'], 'kanban_list', {})['tasks']
+                     if task['title'] == 'Fix the export']
+            self.assertEqual(found, [created['task_id']])
+            self.service.gateway_kanban_tool(later['id'], 'kanban_comment',
+                                             {'task_id': found[0], 'body': 'Source revision 4.'})
+        self.assertEqual(self.native_program(
+            "print(len([t for t in board.kb.list_tasks(board.conn, tenant=sys.argv[2])]))", self.bot['id']), '1')
+        self.assertEqual(self.native_program(
+            "print([c.body for c in board.kb.list_comments(board.conn, sys.argv[2])])", created['task_id']),
+            "['Source revision 3.', 'Source revision 4.']")
+        self.assertEqual(self.service._get('tasks', later['id'])['_source_native_ids'], [created['task_id']])
+        # A read shows only the tasks of the bot.
+        other = self.native_program("""
+print(board.kb.create_task(board.conn, title='Other bot work', body='x', assignee='default', tenant='other-bot',
+    initial_status='blocked'))
+""")
+        from coconut.service import ServiceError
+        with patch.object(self.service, 'gateway_enabled', return_value=True):
+            self.assertNotIn(other, [task['id'] for task in
+                                     self.service.gateway_kanban_tool(later['id'], 'kanban_list', {})['tasks']])
+            with self.assertRaisesRegex(ServiceError, 'another bot'):
+                self.service.gateway_kanban_tool(later['id'], 'kanban_show', {'task_id': other})
 
     def test_source_urgency_orders_audits_without_lowering_returned_work(self):
         expected = {}

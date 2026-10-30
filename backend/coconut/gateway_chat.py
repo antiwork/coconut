@@ -171,8 +171,10 @@ STATUS_TEXT = ('Answer a work status question from saved evidence. Report verifi
                'Do not call tools. The saved context follows:\n')
 HOLDER = 'import time\nwhile True:\n    time.sleep(3600)\n'
 # The audit text names the board tools of a worker. In the gateway, Coconut runs them on its own board.
-AUDIT_BOARD_TOOLS = ('\nIn this chat, call coconut_kanban_create for kanban_create and coconut_kanban_comment for '
-                     'kanban_comment. They write to the board of Coconut, where the Hermes tasks of this bot are.')
+AUDIT_BOARD_TOOLS = ('\nIn this chat, call coconut_kanban_list, coconut_kanban_show, coconut_kanban_create and '
+                     'coconut_kanban_comment for kanban_list, kanban_show, kanban_create and kanban_comment. They use '
+                     'the board of Coconut, where the Hermes tasks of this bot are. Find the existing task of an outcome '
+                     'before you create one.')
 
 
 def chat_bot(chat_id: str) -> str:
@@ -529,7 +531,7 @@ class GatewayChat:
             return self.gateway_todos(task_id, arguments)
         if tool == 'workspace':
             return self.gateway_workspace(task_id)
-        if tool in ('kanban_create', 'kanban_comment'):
+        if tool in ('kanban_create', 'kanban_comment', 'kanban_list', 'kanban_show'):
             return self.gateway_kanban_tool(task_id, tool, arguments)
         if tool == 'create_bot':
             # The service checks the human message that asks for the bot (service._create_bot_from_chat).
@@ -574,7 +576,7 @@ class GatewayChat:
             return {'root': str(self.root / 'workspaces'), 'outcome': execution_key(task)}
 
     def gateway_kanban_tool(self, task_id: str, name: str, arguments: dict) -> dict:
-        """coconut_kanban_create and coconut_kanban_comment of a gateway audit turn: kanban_create and kanban_comment on
+        """The board tools of a gateway audit turn: kanban_list, kanban_show, kanban_create and kanban_comment on
         Coconut's own board, as the worker of the audit runs them.
 
         The worker binds the board tools of Hermes to Coconut's board (HERMES_KANBAN_DB). The gateway's own board tools
@@ -582,6 +584,7 @@ class GatewayChat:
         receipt of the turn, the Kanban runtime runs the Hermes tool on Coconut's board, and the service records its
         result. The receipts then adopt a created task and record a comment, as for a worker turn (native_execution).
         A runtime that stops during the call leaves the receipt executing, so the effect stays unknown, as in a worker.
+        A read (kanban_list, kanban_show) changes nothing, so it has no receipt. A read shows only the tasks of the bot.
         """
         from .native_bridge import kanban_arguments
         from .service import ServiceError
@@ -594,6 +597,19 @@ class GatewayChat:
             bot = self._get('bots', task['bot_id'])
             profile = (self.profiles.row(bot) or {}).get('name')
         arguments = dict(arguments or {})
+        if name in ('kanban_list', 'kanban_show'):
+            if name == 'kanban_list':
+                arguments['tenant'] = bot['id']
+            result = self.kanban.call({'op': 'tool', 'name': name, 'arguments': arguments, 'profile': profile})['result']
+            try:
+                value = json.loads(result)
+            except ValueError:
+                return {'result': result}
+            if not isinstance(value, dict):
+                return {'result': value}
+            if name == 'kanban_show' and (value.get('task') or {}).get('tenant') not in (None, bot['id']):
+                raise ServiceError(403, 'This Hermes task belongs to another bot.')
+            return value
         if name == 'kanban_create':
             arguments = kanban_arguments(arguments, task_id, task.get('_native_turn_id'), bot['id'],
                                          workspaces=self.root / 'kanban' / 'kanban' / 'workspaces')

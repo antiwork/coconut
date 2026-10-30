@@ -733,9 +733,10 @@ class GatewayAdapterTests(unittest.TestCase):
                 self.assertEqual(hooks.guard_tool(tool_name=tool), {'action': 'block', 'message': hooks.REFRESH_MESSAGE})
             # An audit of a work source writes to the board of Coconut, never to the gateway's own board.
             adapter.MODES['turn-a'] = 'audit'
-            for tool in ('kanban_create', 'kanban_comment', 'kanban_complete'):
+            for tool in ('kanban_create', 'kanban_comment', 'kanban_list', 'kanban_show', 'kanban_complete'):
                 self.assertEqual(hooks.guard_tool(tool_name=tool), {'action': 'block', 'message': hooks.AUDIT_BOARD_MESSAGE})
-            for tool in ('coconut_kanban_create', 'coconut_kanban_comment', 'coconut_ask', 'read_file'):
+            for tool in ('coconut_kanban_create', 'coconut_kanban_comment', 'coconut_kanban_list', 'coconut_kanban_show',
+                         'coconut_ask', 'read_file'):
                 self.assertIsNone(hooks.guard_tool(tool_name=tool))
         # Outside a Coconut turn the hook does nothing.
         with patch.object(hooks, '_turn', return_value=(None, None)):
@@ -765,7 +766,8 @@ class GatewayAdapterTests(unittest.TestCase):
                                                              'coconut_wait', 'coconut_correct_withdrawal',
                                                              'coconut_create_bot', 'coconut_delete_bot',
                                                              'coconut_workspace', 'coconut_kanban_create',
-                                                             'coconut_kanban_comment',
+                                                             'coconut_kanban_comment', 'coconut_kanban_list',
+                                                             'coconut_kanban_show',
                                                              'coconut_track_pr', 'coconut_message_bot'])
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
                                       'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
@@ -783,7 +785,7 @@ class GatewayAdapterTests(unittest.TestCase):
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
-        self.assertEqual(len(tool_names), 13)
+        self.assertEqual(len(tool_names), 15)
         from coconut.card_tools import WORKSPACE_SCHEMA
         self.assertEqual(schemas['coconut_workspace'], WORKSPACE_SCHEMA)
         # The check tool has the revision fields of the worker's check tool: of a question and of a draft.

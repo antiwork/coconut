@@ -69,8 +69,8 @@ CONTEXT_MESSAGE = 'Answer the current question. Its pending decision stays open.
 REFRESH_TOOL = 'coconut_refresh_decision'
 REFRESH_MESSAGE = 'Record this check with coconut_refresh_decision. The check does not change the card in other ways.'
 NOT_A_CHECK_MESSAGE = 'Only an automatic check of a card records a check result.'
-AUDIT_BOARD_MESSAGE = ('This board is not the board of Coconut. Use coconut_kanban_create and coconut_kanban_comment, '
-                       'which write to the board of Coconut.')
+AUDIT_BOARD_MESSAGE = ('This board is not the board of Coconut. Use coconut_kanban_list, coconut_kanban_show, '
+                       'coconut_kanban_create and coconut_kanban_comment, which use the board of Coconut.')
 STATUS_MESSAGE = 'Answer from the saved context in the message. This answer uses no tools.'
 
 

@@ -183,7 +183,7 @@ WORKSPACE_INSTRUCTIONS = (
     'separate Git worktree. For existing changes, supply existing_worktree to retain the files and branch. Reuse its '
     'returned path for commands, replies, reviews, and recovery. Keep other work items and their files unchanged. ')
 
-# kanban_create and kanban_comment on Coconut's board, for an audit of a work source in the gateway
+# The board tools of Coconut's board, for an audit of a work source in the gateway
 # (gateway_chat.gateway_kanban_tool). The worker offers the Hermes tools themselves, bound to that board.
 KANBAN_CREATE_SCHEMA = {'name': 'coconut_kanban_create', 'description': (
     'In an audit of a work source: create a Hermes task on the board of Coconut for accepted work that no task owns. '
@@ -197,6 +197,17 @@ KANBAN_CREATE_SCHEMA = {'name': 'coconut_kanban_create', 'description': (
         'workspace_kind': {'type': 'string', 'enum': ['scratch', 'dir', 'worktree']},
         'workspace_path': {'type': 'string', 'description': 'With dir or worktree: the absolute path.'}},
         'required': ['title', 'body']}}
+KANBAN_LIST_SCHEMA = {'name': 'coconut_kanban_list', 'description': (
+    'In an audit of a work source: list the Hermes tasks of this bot on the board of Coconut, to find the task that '
+    'owns an outcome.'),
+    'parameters': {'type': 'object', 'properties': {
+        'status': {'type': 'string', 'description': 'Only tasks with this status, for example blocked or running.'},
+        'include_archived': {'type': 'boolean'},
+        'limit': {'type': 'integer', 'minimum': 1}}}}
+KANBAN_SHOW_SCHEMA = {'name': 'coconut_kanban_show', 'description': (
+    'In an audit of a work source: show one Hermes task on the board of Coconut, with its comments, runs and events.'),
+    'parameters': {'type': 'object', 'properties': {
+        'task_id': {'type': 'string', 'description': 'The Hermes task ID.'}}, 'required': ['task_id']}}
 KANBAN_COMMENT_SCHEMA = {'name': 'coconut_kanban_comment', 'description': (
     'In an audit of a work source: add a comment to a Hermes task on the board of Coconut, for example the current '
     'source revision and its facts.'),

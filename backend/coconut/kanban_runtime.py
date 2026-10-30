@@ -689,7 +689,7 @@ class Board:
 
 
 # The board tools that a gateway turn of a work source audit calls through Coconut (gateway_chat.gateway_kanban_tool).
-BOARD_TOOLS = ('kanban_create', 'kanban_comment')
+BOARD_TOOLS = ('kanban_create', 'kanban_comment', 'kanban_list', 'kanban_show')
 
 
 def board_tool(name, arguments, profile=None):
@@ -698,7 +698,7 @@ def board_tool(name, arguments, profile=None):
     `profile` is the Hermes profile of the bot. Hermes records it as the author of a comment and the creator of a task.
     """
     if name not in BOARD_TOOLS:
-        raise ValueError('Coconut runs only kanban_create and kanban_comment for a gateway turn.')
+        raise ValueError('Coconut runs only ' + ', '.join(BOARD_TOOLS) + ' for a gateway turn.')
     import tools.kanban_tools  # noqa: F401  The import registers the tools.
     from tools.registry import registry
     previous = os.environ.get('HERMES_PROFILE')
