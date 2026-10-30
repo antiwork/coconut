@@ -251,9 +251,9 @@ jobs:
           echo 'The installation or the native checks failed on Hermes main. A future Hermes release can break Coconut.' >> "$GITHUB_STEP_SUMMARY"
 
   # The Mac mini updater and branch protection require the check names contracts and native-kanban. This job gives the
-  # required Hermes legs that one name.
+  # required Hermes legs that one name. A newer push cancels the run; then this job is skipped, not failed.
   native-kanban:
-    if: always() && github.event_name != 'schedule'
+    if: ${{ !cancelled() && github.event_name != 'schedule' }}
     needs: native-kanban-hermes
     runs-on: ubuntu-latest
     timeout-minutes: 5
