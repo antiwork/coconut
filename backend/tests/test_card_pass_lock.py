@@ -161,7 +161,12 @@ class CardPassLockTests(unittest.TestCase):
                 self.service._initialize_decision_freshness(dict(saved), profile_revision=saved['_profile_revision'])
             return self.service._get('decisions', decision['id'])['_freshness']['fingerprint']
 
-        expected = initialize()
+        # The expected fingerprint comes from a parse of the whole task table, as the code computed it before.
+        tasks = {t['id']: t for t in self.service._all('tasks')}
+        artifacts = self.service._all('artifacts')
+        expected, _ = self.service._decision_evidence(
+            saved, tasks, self.service._decision_records(saved, tasks, artifacts), artifacts,
+            profile_revision=saved['_profile_revision'] or '')
         with patch.object(type(self.service), '_all', guarded):
             # The evidence reads the kept task map. It still reads the cards once, as the card pass does.
             self.assertEqual(initialize(), expected)
