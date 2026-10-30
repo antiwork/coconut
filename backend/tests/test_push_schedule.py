@@ -337,6 +337,69 @@ class DeliveryTimingTests(unittest.TestCase):
         self.assertEqual(len(self.sent()), 1)
         self.assertEqual(self.items(), [('decision', 1, 'sent')])
 
+    CLOSE = instant(2026, 7, 15, 18)
+
+    def test_nothing_outside_work_hours_checks_the_window_when_it_sends_not_when_the_card_arrived(self):
+        self.register(outside_work_hours='nothing')
+        self.decision(urgent=True, ts=self.CLOSE - 1)
+        self.deliver(self.CLOSE + 5)
+        self.assertEqual(self.sent(), [])
+        self.assertEqual(self.items(), [('decision', 1, 'waiting')])
+        self.deliver(self.MORNING)
+        self.assertEqual(len(self.sent()), 1)
+
+    def test_nothing_outside_work_hours_holds_a_retry_until_the_opening(self):
+        self.register(outside_work_hours='nothing')
+        self.decision(urgent=True, ts=self.CLOSE - 60)
+        self.transport.result = (503, 'Unavailable')
+        self.deliver(self.CLOSE - 60)
+        self.assertEqual(len(self.sent()), 1)
+        self.transport.result = (200, 'Accepted')
+        self.service.db.execute('UPDATE push_outbox SET not_before=0')
+        self.deliver(self.CLOSE + 600)
+        self.assertEqual(len(self.sent()), 1)
+        self.assertEqual(self.service.db.execute('SELECT not_before FROM push_outbox').fetchone()[0], self.MORNING)
+        self.deliver(self.MORNING)
+        self.assertEqual(len(self.sent()), 2)
+
+    def test_held_urgent_cards_wait_for_a_retrying_group_and_the_ten_minute_gap(self):
+        self.register(outside_work_hours='nothing')
+        self.decision(ts=self.CLOSE - 120)
+        self.transport.result = (503, 'Unavailable')
+        self.deliver(self.CLOSE - 60)
+        self.assertEqual(len(self.sent()), 1)
+        self.decision(urgent=True)
+        self.transport.result = (200, 'Accepted')
+        self.service.db.execute('UPDATE push_outbox SET not_before=0')
+        # At the opening, the group of yesterday sends first. The held urgent card does not form a second group with it.
+        self.deliver(self.MORNING)
+        self.assertEqual(len(self.sent()), 2)
+        self.assertEqual(self.items()[-1], ('decision', 1, 'waiting'))
+        self.deliver(self.MORNING + 599)
+        self.assertEqual(len(self.sent()), 2)
+        self.deliver(self.MORNING + 600)
+        self.assertEqual(len(self.sent()), 3)
+
+    def test_the_urgent_summary_reads_only_indexes(self):
+        db = self.service.db
+        current = __import__('time').time()
+        for query, index in [("SELECT COUNT(*) FROM decisions WHERE json_extract(data,'$.created_at')>=?", 'decisions_created'),
+                             ("SELECT COUNT(*) FROM decisions WHERE json_extract(data,'$.needs_attention_now') IS 1 "
+                              "AND json_extract(data,'$.created_at')>=?", 'decisions_urgent')]:
+            plan = ' '.join(row[-1] for row in db.execute('EXPLAIN QUERY PLAN ' + query, ('x',)))
+            self.assertIn(index, plan)
+        statements = []
+        db.set_trace_callback(statements.append)
+        try:
+            self.service.push.urgent_summary(current)
+        finally:
+            db.set_trace_callback(None)
+        self.assertEqual(len(statements), 3)
+        for statement in statements:
+            plan = ' '.join(row[-1] for row in db.execute('EXPLAIN QUERY PLAN ' + statement))
+            self.assertRegex(plan, r'USING (COVERING )?INDEX decisions_(created|urgent)', statement)
+            self.assertNotRegex(plan, r'SCAN (d|decisions)(?! USING)', statement)
+
     def test_outside_work_hours_keeps_its_value_until_an_app_changes_it(self):
         self.register(outside_work_hours='nothing')
         # An app before the choice does not send it.

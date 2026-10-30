@@ -259,6 +259,13 @@ enum NotificationLevel: String, Codable, CaseIterable, Sendable {
     }
 }
 
+struct PushChoices: Equatable, Sendable {
+    let preferences: NotificationPreferences
+    let schedule: NotificationSchedule
+    /// Only urgent and Nothing give the same schedule, so this must be a part of its own.
+    let outside: OutsideWorkHours
+}
+
 struct NotificationPreferences: Encodable, Equatable, Sendable {
     let level: NotificationLevel
     let messages: Bool
@@ -456,6 +463,11 @@ final class PushNotifications {
         NotificationSchedule(enabled: outsideWorkHours != .same, start: NotificationSchedule.clock(workStartMinutes),
                              end: NotificationSchedule.clock(workEndMinutes), timezone: workTimeZone,
                              weekdays: Array(Set(workWeekdays)).sorted())
+    }
+
+    /// Everything that the Mac must hear about. The app registers again when any part changes.
+    var choices: PushChoices {
+        PushChoices(preferences: preferences, schedule: schedule, outside: outsideWorkHours)
     }
 
     var allowed: Bool { [.authorized, .provisional, .ephemeral].contains(authorization) }

@@ -35,6 +35,7 @@ PUSH_TABLES = ('push_devices', 'push_routes', 'push_preferences', 'push_schedule
 # when the phone turns notifications off: the phone sends a report again only when it changes.
 PREVIEWS_FILE = 'push-previews.json'
 PREVIEW_TIMES = ('failing_since', 'failed_at', 'worked_at')
+URGENT_DECISION = "json_extract(data,'$.needs_attention_now') IS 1"
 # A phone reaches the Mac only through the relay tunnel, which needs the phone's static key. A device without one is an
 # old version 1 pairing or a tool on this Mac, so it is not paired for notifications.
 PHONES = 'SELECT id FROM devices WHERE peer_key IS NOT NULL'
@@ -150,6 +151,10 @@ class PushDelivery:
         CREATE TABLE IF NOT EXISTS push_previews (
             device_id TEXT PRIMARY KEY, data TEXT NOT NULL, reported REAL NOT NULL);
         ''')
+        # The urgent summary of the settings screen counts the cards of the last week and lists the last urgent cards.
+        if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='decisions'").fetchone():
+            db.execute("CREATE INDEX IF NOT EXISTS decisions_created ON decisions (json_extract(data,'$.created_at'))")
+            db.execute(f"CREATE INDEX IF NOT EXISTS decisions_urgent ON decisions (json_extract(data,'$.created_at')) WHERE {URGENT_DECISION}")
         columns = {row[1] for row in db.execute('PRAGMA table_info(push_outbox)')}
         if 'kind' in columns:
             # The outbox before grouping held one row per event. Its rows become items, so nothing notifies twice.
@@ -314,11 +319,14 @@ class PushDelivery:
         """How many cards of the last week were urgent, and the last urgent cards, for "What counts as urgent?"."""
         db = self.service.db
         week = iso(current - 7 * 86400)
-        urgent, total = db.execute('''SELECT COALESCE(SUM(json_extract(data,'$.needs_attention_now') IS 1),0),COUNT(*)
-            FROM decisions WHERE json_extract(data,'$.created_at')>=?''', (week,)).fetchone()
-        rows = db.execute('''SELECT json_extract(d.data,'$.title'),json_extract(b.data,'$.name'),json_extract(d.data,'$.created_at')
+        # Each read uses an index (decisions_created, decisions_urgent), so the settings screen does not scan the history.
+        total = db.execute("SELECT COUNT(*) FROM decisions WHERE json_extract(data,'$.created_at')>=?", (week,)).fetchone()[0]
+        urgent = db.execute(f"SELECT COUNT(*) FROM decisions WHERE {URGENT_DECISION} AND json_extract(data,'$.created_at')>=?",
+                            (week,)).fetchone()[0]
+        rows = db.execute(f'''SELECT json_extract(d.data,'$.title'),json_extract(b.data,'$.name'),json_extract(d.data,'$.created_at')
             FROM decisions d LEFT JOIN bots b ON b.id=json_extract(d.data,'$.bot_id')
-            WHERE json_extract(d.data,'$.needs_attention_now') IS 1 ORDER BY d.rowid DESC LIMIT ?''', (examples,)).fetchall()
+            WHERE {URGENT_DECISION.replace('data', 'd.data')} ORDER BY json_extract(d.data,'$.created_at') DESC LIMIT ?''',
+            (examples,)).fetchall()
         return {'week_urgent': urgent, 'week_total': total,
                 'examples': [{'title': title, 'bot_name': bot, 'created_at': created} for title, bot, created in rows]}
 
@@ -466,21 +474,23 @@ class PushDelivery:
             device = db.execute('SELECT enabled FROM push_devices WHERE device_id=?', (device_id,)).fetchone()
             items = self._items("device_id=? AND status='waiting'", (device_id,))
             schedule, level = self.schedule(device_id), self.preferences(device_id)['level']
-            # With Nothing outside work hours, an urgent card from outside them waits, and then joins the count.
+            # With Nothing outside work hours, an urgent card waits while work hours are closed, and also when it arrived
+            # outside them. It then joins the count and follows the timing of the other waiting items.
+            quiet = holds_urgent(schedule, current)
             for item in items:
-                item['held'] = bool(item['urgent']) and holds_urgent(schedule, item['created'])
+                item['held'] = bool(item['urgent']) and (quiet or holds_urgent(schedule, item['created']))
             alone = lambda item: item['urgent'] and not item['held']
-            waiting = [item for item in items if not item['urgent']]
+            waiting = [item for item in items if not alone(item)]
+            # Only urgent has no timing of its own: its held urgent cards wait as One summary at a time.
+            timing = level if level in ('every', 'grouped') else 'grouped'
             # The gap counts from the last delivered notification. With Grouped, new items also wait while a group retries.
             # Every card has no gap, so a retrying group does not hold its new items.
             last = db.execute("SELECT MAX(sent) FROM push_outbox WHERE device_id=? AND status='accepted'", (device_id,)).fetchone()[0]
-            pending = level == 'grouped' and db.execute(
+            pending = timing == 'grouped' and db.execute(
                 "SELECT 1 FROM push_outbox WHERE device_id=? AND status='queued' AND event_key LIKE 'group:%'", (device_id,)).fetchone()
-            opens = due(schedule, level, waiting[0]['created'], last or 0, current) if waiting and not pending else None
+            opens = due(schedule, timing, waiting[0]['created'], last or 0, current) if waiting and not pending else None
             # Items are checked only when they would notify, so a long wait outside work hours costs no reads.
-            held_ready = next_opening(schedule, current) <= current
-            ready = [item for item in items if alone(item) or (item['held'] and held_ready)
-                     or (not item['urgent'] and opens is not None and opens <= current)]
+            ready = [item for item in items if alone(item) or (opens is not None and opens <= current)]
             for item in ready:
                 if not device or not device[0] or not self.relevant(item):
                     db.execute("UPDATE push_items SET status='dropped',reason='NoLongerRelevant' WHERE device_id=? AND event_key=?",
@@ -538,6 +548,13 @@ class PushDelivery:
             device = service.db.execute('SELECT token,environment,enabled,updated FROM push_devices WHERE device_id=?', (job['device_id'],)).fetchone()
             route_row = service.db.execute('SELECT data FROM push_routes WHERE device_id=?', (job['device_id'],)).fetchone()
             route = json.loads(route_row[0]) if route_row else None
+            # With Nothing outside work hours, nothing sends while they are closed, also not a retry or a card queued
+            # just before they closed. It waits for the opening.
+            schedule = self.schedule(job['device_id'])
+            if holds_urgent(schedule, time.time()):
+                service.db.execute('UPDATE push_outbox SET not_before=? WHERE id=?',
+                                   (next_opening(schedule, time.time()), job['id']))
+                return True
             items = self._items('delivery_id=?', (job['id'],))
             live = [item for item in items if self.relevant(item)]
             # Every send checks again, so a muted bot or category stops a retry too. A sealed retry keeps its bytes.

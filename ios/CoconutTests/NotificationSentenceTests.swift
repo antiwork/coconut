@@ -105,6 +105,19 @@ final class NotificationSentenceTests: XCTestCase {
         XCTAssertEqual(signatures.count, 3)
     }
 
+    @MainActor
+    func testEachOutsideChoiceChangesWhatTheAppObservesForRegistration() {
+        let push = PushNotifications.shared
+        let saved = push.outsideWorkHours
+        defer { push.outsideWorkHours = saved }
+        push.outsideWorkHours = .urgent
+        let urgent = push.choices
+        push.outsideWorkHours = .nothing
+        // Only urgent and Nothing send the same schedule. The choice itself must still start a registration.
+        XCTAssertEqual(push.choices.schedule, urgent.schedule)
+        XCTAssertNotEqual(push.choices, urgent)
+    }
+
     func testTheUrgentSummaryDecodesAndAnOldMacSendsNone() throws {
         let json = #"{"registered": true, "last_delivered_at": null, "last_error": null, "last_error_at": null,"#
             + #" "urgent": {"week_urgent": 4, "week_total": 358, "examples": [{"title": "Approve the release", "bot_name": "Desk", "created_at": "2026-10-29T10:00:00Z"}]}}"#
