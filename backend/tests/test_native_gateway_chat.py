@@ -216,7 +216,7 @@ class NativeGatewayChatTests(unittest.TestCase):
             # Hermes lists plugin tools behind its tool search bridge (tools/tool_search.py): the names are in the
             # listing of tool_search, and tool_call runs them.
             tools = json.dumps(turn[0].get('tools') or [])
-            for name in ('coconut_ask', 'coconut_track_pr', 'coconut_message_bot'):
+            for name in ('coconut_ask', 'coconut_track_pr', 'coconut_message_bot', 'coconut_continue_work'):
                 self.assertIn(name, tools, diagnostics())
 
             # An attached text file goes to the gateway as text of the turn.

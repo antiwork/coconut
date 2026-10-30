@@ -69,6 +69,8 @@ GATEWAY_WAIT_SECONDS = 5 * 60
 WAITING = 'Waiting for the Hermes gateway. See Settings > Hermes when this takes long.'
 NOT_CONNECTED = ('The Hermes gateway did not connect for this bot in {minutes} minutes. Send the message again after '
                  'the gateway runs. See GET /v1/setup and {log}.')
+GATEWAY_PLAIN_CONTINUATION = ('A chat turn continues work without independent_technical_work. Call '
+                              'coconut_continue_work again without it.')
 PARKED = ('The Hermes profile of this bot is parked ({path}), so no Hermes gateway serves its chats. Remove that file '
           'to chat with the bot. Its routines run with Coconut meanwhile.')
 
@@ -503,6 +505,12 @@ class GatewayChat:
         if tool == 'correct_withdrawal':
             # The service refuses a card outside the turn's execution, and a card that a person handled.
             return self.correct_withdrawal(task_id, arguments)
+        if tool == 'continue_work':
+            # The receipt of the worker's coconut_continue_work, with each of its checks. A chat turn continues work
+            # plainly: the technical lane of a pending decision stays with the worker.
+            if 'independent_technical_work' in arguments:
+                raise ServiceError(400, GATEWAY_PLAIN_CONTINUATION)
+            return self.emit(task_id, 'work_continue', arguments)
         if data.get('tool') == 'track_pr':
             return self.emit(task_id, 'artifact', {'kind': 'pr', 'url': require_text(arguments, 'url', 500)})
         if data.get('tool') == 'message_bot':

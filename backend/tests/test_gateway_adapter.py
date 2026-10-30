@@ -709,10 +709,12 @@ class GatewayAdapterTests(unittest.TestCase):
         self.addCleanup(adapter.MODES.clear)
         with patch.object(hooks, '_turn', return_value=(None, 'turn-a')):
             self.assertIsNone(hooks.guard_tool(tool_name='terminal'))
+            self.assertIsNone(hooks.guard_tool(tool_name='coconut_continue_work'))
             adapter.MODES['turn-a'] = 'context'
             # A follow-up on a pending card answers the question. It makes no card and acts for nobody.
             self.assertEqual(hooks.guard_tool(tool_name='coconut_ask'), {'action': 'block', 'message': hooks.CONTEXT_MESSAGE})
             self.assertEqual(hooks.guard_tool(tool_name='clarify')['action'], 'block')
+            self.assertEqual(hooks.guard_tool(tool_name='coconut_continue_work')['action'], 'block')
             self.assertIsNone(hooks.guard_tool(tool_name='coconut_resolve_reply'))
             self.assertIsNone(hooks.guard_tool(tool_name='read_file'))
             adapter.PAUSED.add('turn-a')
@@ -747,7 +749,8 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual([name for name, _ in tool_names], ['coconut_ask', 'coconut_suggest', 'coconut_resolve_reply',
                                                              'coconut_wait', 'coconut_correct_withdrawal',
                                                              'coconut_create_bot', 'coconut_delete_bot',
-                                                             'coconut_track_pr', 'coconut_message_bot'])
+                                                             'coconut_track_pr', 'coconut_message_bot',
+                                                             'coconut_continue_work'])
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
                                       'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
                                       'pre_tool_call', 'post_tool_call'])
@@ -764,9 +767,12 @@ class GatewayAdapterTests(unittest.TestCase):
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
-        self.assertEqual(len(tool_names), 9)
+        self.assertEqual(len(tool_names), 10)
         # A gateway turn waits for its processes with the process tool of Hermes, not with coconut_wait.
         self.assertNotIn('process_id', schemas['coconut_wait']['parameters']['properties'])
+        # A chat continues work with the worker's tool (test_gateway_work_continuation.py).
+        from coconut.native_outcomes import CONTINUE_SCHEMA
+        self.assertEqual(schemas['coconut_continue_work'], CONTINUE_SCHEMA)
         options = calls[0]
         self.assertEqual((options['name'], options['label'], options['trusted_inbound'], options['display_tier']),
                          ('coconut', 'Coconut', True, 'high'))

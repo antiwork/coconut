@@ -52,7 +52,7 @@ QUESTION_KINDS = ('clarify', 'approval')
 # it. An audit uses the Kanban tools of Coconut's own board (work_sources), which the gateway does not have. Attachments, reactions, pending cards, the saved task list of an assignment, its dependencies, a recovery
 # context, a direct reply, the bot exchange, GitHub source activity, a PR review and the bot changes of a chat go to
 # the gateway as text of the turn (gateway_chat.gateway_turn_text). The plugin has the card tools, coconut_wait,
-# coconut_correct_withdrawal, coconut_message_bot, coconut_create_bot and coconut_delete_bot.
+# coconut_correct_withdrawal, coconut_message_bot, coconut_create_bot, coconut_delete_bot and coconut_continue_work.
 WORKER_INPUTS = (
     '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
     '_work_context_id', '_work_context', '_background_completion', '_source_answer_steps', '_source_audit_prompt',

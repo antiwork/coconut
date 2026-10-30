@@ -12,15 +12,20 @@ Cards. coconut_ask, coconut_suggest and coconut_resolve_reply have the schemas o
 (backend/coconut/card_tools.py, loaded by its path). A card of coconut_ask ends the turn, as in the worker: the service
 keeps the task waiting for the answer, and the pre_tool_call hook blocks each further tool call of the turn
 (hooks.guard_tool). The answer continues the work in a later turn.
+
+Work. coconut_continue_work has the schema of the worker's tool (backend/coconut/native_outcomes.py, CONTINUE_SCHEMA).
+The service continues the work as for a worker's call, with each of its checks (gateway_chat.gateway_tool).
 """
 from __future__ import annotations
 
 import importlib.util
 import json
 from pathlib import Path
+import sys
 
 TOOLSET = 'coconut'
 _CARDS = None
+_CONTINUE = None
 
 
 def cards():
@@ -33,6 +38,29 @@ def cards():
         spec.loader.exec_module(module)
         _CARDS = module
     return _CARDS
+
+
+def continue_schema():
+    """CONTINUE_SCHEMA of backend/coconut/native_outcomes.py. Outside its package that module imports technical_lane by
+    its name, as in a worker, and both import only the standard library. The name stays out of sys.modules."""
+    global _CONTINUE
+    if _CONTINUE is None:
+        def load(name):
+            path = Path(__file__).resolve().parents[2] / 'backend' / 'coconut' / f'{name}.py'
+            spec = importlib.util.spec_from_file_location('coconut_' + name, path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        previous = sys.modules.get('technical_lane')
+        sys.modules['technical_lane'] = load('technical_lane')
+        try:
+            _CONTINUE = load('native_outcomes').CONTINUE_SCHEMA
+        finally:
+            if previous is None:
+                sys.modules.pop('technical_lane')
+            else:
+                sys.modules['technical_lane'] = previous
+    return _CONTINUE
 
 
 def reply_schema():
@@ -101,5 +129,6 @@ def register(ctx):
                             (module.CORRECTION_SCHEMA, _service_tool('correct_withdrawal')),
                             (module.BOT_CREATION_SCHEMA, _service_tool('create_bot')),
                             (module.BOT_DELETION_SCHEMA, _service_tool('delete_bot')),
-                            (TRACK_PR, _service_tool('track_pr')), (MESSAGE_BOT, _service_tool('message_bot'))):
+                            (TRACK_PR, _service_tool('track_pr')), (MESSAGE_BOT, _service_tool('message_bot')),
+                            (continue_schema(), _service_tool('continue_work'))):
         ctx.register_tool(name=schema['name'], toolset=TOOLSET, schema=schema, handler=handler, emoji='🥥')
