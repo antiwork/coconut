@@ -167,8 +167,9 @@ THREAD_KEEP_SECONDS = 900
 THREAD_KEEP_COUNT = 6
 THREAD_REFRESH_BUDGET = 300
 THREAD_QUOTA_FLOOR = 1000
-# The most requests that one thread read can count: the issue, the PR and three lists of one page each.
-THREAD_READ_COST = 5
+# The most requests that one refresh of a thread can count, so a refresh starts only when the budget holds all of it:
+# two reads (the second one at a new revision), each with the issue, the PR and three lists of up to four pages.
+THREAD_READ_COST = 2 * (2 + 3 * 4)
 # A read with this `since` returns the thread facts without activity.
 _LATEST = '9999-12-31T23:59:59Z'
 _NO_ACTIVITY = dict(new_activity=[], omitted_items=0, incomplete=False)
