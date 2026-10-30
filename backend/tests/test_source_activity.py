@@ -116,6 +116,16 @@ class SourceActivityTests(unittest.TestCase):
         environment = patch.dict('os.environ', COCONUT_GITHUB_TRUSTED_OWNERS='Example')
         environment.start()
         self.addCleanup(environment.stop)
+        # A turn keeps its own read for the next turn. The tests here change a thread between turns without waiting,
+        # so a kept read counts as old, unless a test uses kept reads.
+        age = patch.object(decision_sources, 'THREAD_RECORD_SECONDS', -1)
+        age.start()
+        self.addCleanup(age.stop)
+
+    def use_kept_reads(self):
+        age = patch.object(decision_sources, 'THREAD_RECORD_SECONDS', 75)
+        age.start()
+        self.addCleanup(age.stop)
 
     tearDown = source_tests.DecisionSourceTests.tearDown
     event = source_tests.DecisionSourceTests.event
@@ -206,11 +216,13 @@ class SourceActivityTests(unittest.TestCase):
         return self.service.__dict__['_thread_records']
 
     def test_an_unchanged_thread_comes_from_the_kept_read(self):
+        self.use_kept_reads()
         self.approve_card()
         self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'This must handle 10x the current volume.'))
         self.turn()
         seen = self.service._get('tasks', self.task['id'])['_source_activity_seen']
         # Without a kept read, the next turn reads the thread at the turn.
+        self.records().records.clear()
         self.requeue()
         reads = len(self.tracker.paths)
         live, live_prompt = self.turn()
@@ -225,6 +237,7 @@ class SourceActivityTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', self.task['id'])['_source_activity_seen'], seen)
 
     def test_new_activity_is_read_at_the_turn(self):
+        self.use_kept_reads()
         self.approve_card()
         self.turn()
         self.records().refresh()
@@ -238,6 +251,7 @@ class SourceActivityTests(unittest.TestCase):
         self.assertIn('New requirement.', prompt)
 
     def test_an_old_kept_read_is_not_used(self):
+        self.use_kept_reads()
         self.approve_card()
         self.turn()
         self.records().refresh()
@@ -274,6 +288,7 @@ class SourceActivityTests(unittest.TestCase):
         self.assertTrue(records.records)
 
     def test_a_read_with_many_pages_never_passes_the_budget(self):
+        self.use_kept_reads()
         self.approve_card(urls=(PR_URL,))
         self.turn()
         records = self.records()
@@ -320,6 +335,24 @@ class SourceActivityTests(unittest.TestCase):
     def test_the_refresh_limits_stay_under_the_cap(self):
         self.assertLessEqual(decision_sources.THREAD_REFRESH_BUDGET, 300)
         self.assertGreaterEqual(decision_sources.THREAD_QUOTA_FLOOR, 1000)
+
+    def test_a_turn_keeps_its_read_at_the_revision_second_for_the_next_turn(self):
+        self.use_kept_reads()
+        self.approve_card()
+        self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Scale requirement.'))
+        self.turn()
+        # This turn reads at the revision that the first turn recorded, so it keeps its read.
+        self.requeue()
+        live, live_prompt = self.turn()
+        self.requeue()
+        reads = len(self.tracker.paths)
+        with self.assertLogs('coconut.decision_sources', level='WARNING') as logs:
+            kept, kept_prompt = self.turn()
+        self.assertEqual(self.tracker.paths[reads:], [])
+        self.assertEqual((kept.get('_source_activity'), kept_prompt), (live.get('_source_activity'), live_prompt))
+        line = next(json.loads(r.getMessage().partition('coconut.source_read ')[2]) for r in logs.records
+                    if 'coconut.source_read' in r.getMessage())
+        self.assertEqual((line['threads'], line['outcomes']), (1, [['kept', 0]]))
 
     def test_another_login_drops_the_kept_read(self):
         self.approve_card()
@@ -383,6 +416,9 @@ class SourceActivityTests(unittest.TestCase):
         self.approve_card((URL, PR_URL))
         self.tracker.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Scale requirement.'))
         self.tracker.threads[43].updated_at = '2026-09-23T12:20:00Z'
+        # Two pages of reviews: the PR read needs a third round of requests, and the budget ends before it.
+        self.tracker.threads[43].reviews = [dict(comment(100 + index, 'reviewer', '2026-09-23T12:20:00Z', 'Review'),
+                                                 submitted_at='2026-09-23T12:20:00Z') for index in range(150)]
         self.tracker.delay = 0.2
         started = time.monotonic()
         with patch.object(decision_sources, 'SOURCE_READ_SECONDS', 0.3):
@@ -851,6 +887,43 @@ class IssueActivityReadTests(unittest.TestCase):
         result = tracker.observe_issue_activity(PR_URL, APPROVED, operator=True)
         self.assertEqual([c['kind'] for c in result['new_activity']], ['review_comment'])
         self.assertEqual(result['observed_at'], '2026-09-23T12:10:00Z')
+
+    def test_parallel_and_one_by_one_reads_give_the_same_result(self):
+        stamp = '2026-09-23T12:20:00Z'
+        for since in (APPROVED, stamp, '2026-09-23T12:30:00Z'):
+            for url in (URL, PR_URL):
+                with self.subTest(since=since, url=url):
+                    results = []
+                    for budget in (None, 100):
+                        tracker = ThreadTracker()
+                        thread = tracker.threads[int(url.rsplit('/', 1)[1])]
+                        thread.add(comment(7, 'reviewer', '2026-09-23T12:10:00Z', 'Older.'),
+                                   comment(8, 'owner', stamp, 'At the revision.'))
+                        thread.reviews = [dict(comment(9, 'reviewer', stamp, 'Review.'), submitted_at=stamp)]
+                        thread.review_comments = [comment(10, 'reviewer', stamp, 'Inline.')]
+                        thread.pr_updated_at = '2026-09-23T12:25:00Z'
+                        if budget is None:
+                            results.append(tracker.observe_issue_activity(url, since, operator=True, include_same_second=True))
+                        else:
+                            # A budget makes the reads go one after the other, as before.
+                            with pr_tracking.request_budget(budget):
+                                results.append(tracker.observe_issue_activity(url, since, operator=True,
+                                                                              include_same_second=True))
+                    self.assertIsNotNone(results[0])
+                    self.assertEqual(results[0], results[1])
+
+    def test_the_reads_of_a_pull_request_run_at_the_same_time(self):
+        tracker = ThreadTracker()
+        thread = tracker.threads[43]
+        thread.updated_at = '2026-09-23T12:20:00Z'
+        tracker.delay = 0.2
+        started = time.monotonic()
+        result = tracker.observe_issue_activity(PR_URL, APPROVED, time.monotonic() + 5, operator=True,
+                                                include_same_second=True)
+        self.assertIsNotNone(result)
+        # Five reads one after the other take 1 s. The issue record and then the PR record with three lists take two rounds.
+        self.assertLess(time.monotonic() - started, 0.7)
+        self.assertEqual(len([path for path in tracker.paths if '/43' in path]), 5)
 
     def test_pull_link_to_a_plain_issue_reads_the_issue(self):
         tracker = ThreadTracker()

@@ -138,6 +138,37 @@ def _remember_quota(scope, headers):
             _QUOTA.pop(next(iter(_QUOTA)))
 
 
+def _together(*reads):
+    """Run the reads at the same time and return their results in order. A failed read returns its exception.
+
+    The first read raises its own failure. A reader with a request budget (see request_budget) reads one after the
+    other: the budget belongs to its thread. A read of None returns None.
+    """
+    if getattr(_SPENT, 'limit', None) is not None or sum(read is not None for read in reads) < 2:
+        results = []
+        for read in reads:
+            try:
+                results.append(read() if read is not None else None)
+            except Exception as error:
+                if not results:
+                    raise
+                results.append(error)
+        return results
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(reads), thread_name_prefix='github-read') as pool:
+        futures = [pool.submit(read) if read is not None else None for read in reads]
+    results = []
+    for index, future in enumerate(futures):
+        if future is None:
+            results.append(None)
+            continue
+        error = future.exception()
+        if error is not None and index == 0:
+            raise error
+        results.append(error if error is not None else future.result())
+    return results
+
+
 def _rate_limit(scope, headers, status, *, secondary=False):
     if status not in (403, 429) and headers.get('X-RateLimit-Remaining') != '0':
         return
@@ -581,6 +612,10 @@ class GitHubPRTracker:
         prefix = f'/repos/{owner}/{repo}'
         deadline = time.monotonic() + 10 if deadline is None else deadline
         items, incomplete = [], False
+        # The reads after the issue record run at the same time: the PR record and the activity lists. Each read waits
+        # for GitHub: on the Mac mini, five reads one after the other took about 1.8 s for a PR. The lists join in the
+        # order of the reads one after the other, so the result is the same.
+        lists = None
         try:
             issue, record = self._issue_record(f'{owner}/{repo}/issues/{number}', deadline, with_kind=True)
             if issue is None:
@@ -589,11 +624,18 @@ class GitHubPRTracker:
             kind = 'pulls' if 'pull_request' in record else 'issues'
             # The thread title is text from the thread author. Apply the same trust rule as for comments.
             if operator and _trusted(record):
-                issue['title'] = issue['title'][:200]
+                issue.update(title=issue['title'][:200])
             else:
                 issue.update(title=None, title_withheld=True)
             if kind == 'pulls':
-                record = self._get(f'{prefix}/pulls/{number}', deadline)
+                if issue['updated_at'] > since or (include_same_second and issue['updated_at'] == since):
+                    # The issue record alone shows that the lists are needed. Read them with the PR record.
+                    record, lists = _together(lambda: self._get(f'{prefix}/pulls/{number}', deadline),
+                                              lambda: self._activity_lists(prefix, number, kind, since, deadline, cache_lists))
+                    if isinstance(lists, BaseException):
+                        raise lists
+                else:
+                    record = self._get(f'{prefix}/pulls/{number}', deadline)
                 if not isinstance(record, dict) or not isinstance(record.get('updated_at'), str):
                     return None
                 # A review can change the PR record and leave the issue record unchanged.
@@ -603,26 +645,16 @@ class GitHubPRTracker:
             # Read the record first. Activity that arrives between the reads shows again on the next turn. It is not lost.
             first_read = None
             if issue['updated_at'] > since or (include_same_second and issue['updated_at'] == since):
-                # Filter by update time before pagination. Older comment pages
-                # cannot create false incomplete warnings on an unchanged thread.
-                review_since = (datetime.fromisoformat(since.replace('Z', '+00:00'))
-                                - timedelta(seconds=1)).astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-                values, more = self._newest_pages(
-                    f'{prefix}/issues/{number}/comments?since={quote(review_since)}&', deadline,
-                    lambda v: False, cache=cache_lists)
-                items += [_activity('comment', v, v.get('updated_at'), operator) for v in values
-                          if isinstance(v.get('updated_at'), str) and v['updated_at'] >= since]
-                incomplete = more
-                # Later reads can find newer items while a comment arrives behind them. Record only this first read.
-                first_read = max((item['_at'] for item in items), default=None)
-                if kind == 'pulls':
-                    for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
-                                               (f'pulls/{number}/comments?since={quote(review_since)}&', 'review_comment', 'updated_at')):
-                        values, more = self._newest_pages(f'{prefix}/{route}', deadline,
-                            lambda v: isinstance(v.get(stamp), str) and v[stamp] < since, cache=cache_lists)
-                        items += [_activity(name, v, v.get(stamp), operator) for v in values
-                                  if isinstance(v.get(stamp), str) and v[stamp] >= since]
-                        incomplete = incomplete or more
+                if lists is None:
+                    lists = self._activity_lists(prefix, number, kind, since, deadline, cache_lists)
+                for index, (name, stamp, (values, more)) in enumerate(lists):
+                    items += [_activity(name, v, v.get(stamp), operator) for v in values
+                              if isinstance(v.get(stamp), str) and v[stamp] >= since]
+                    incomplete = incomplete or more
+                    if index == 0:
+                        # Later reads can find newer items while a comment arrives behind them. Record only the
+                        # comments, as the first read of the lists.
+                        first_read = max((item['_at'] for item in items), default=None)
         except HTTPError as error:
             error.close()
             return None
@@ -637,6 +669,27 @@ class GitHubPRTracker:
         if issue['updated_at'] > since and (latest is None or latest < issue['updated_at']):
             result['changed_without_new_activity'] = True
         return result
+
+    def _activity_lists(self, prefix, number, kind, since, deadline, cache):
+        """Read the activity lists of a thread at the same time: [(name, time field, (items, unread pages))].
+
+        The comments come first, then for a PR its reviews and its inline review comments.
+        """
+        # Filter by update time before pagination. Older comment pages cannot create false incomplete warnings on an
+        # unchanged thread.
+        review_since = (datetime.fromisoformat(since.replace('Z', '+00:00'))
+                        - timedelta(seconds=1)).astimezone(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        lists = [(f'issues/{number}/comments?since={quote(review_since)}&', 'comment', 'updated_at', lambda v: False)]
+        if kind == 'pulls':
+            for route, name, stamp in ((f'pulls/{number}/reviews?', 'review', 'submitted_at'),
+                                       (f'pulls/{number}/comments?since={quote(review_since)}&', 'review_comment', 'updated_at')):
+                lists.append((route, name, stamp, lambda v, stamp=stamp: isinstance(v.get(stamp), str) and v[stamp] < since))
+        reads = _together(*[(lambda route=route, older=older: self._newest_pages(f'{prefix}/{route}', deadline, older, cache=cache))
+                            for route, _, _, older in lists])
+        for read in reads:
+            if isinstance(read, BaseException):
+                raise read
+        return [(name, stamp, read) for (_, name, stamp, _), read in zip(lists, reads)]
 
     def observe_discussion(self, url: str) -> str | None:
         """Fingerprint complete PR discussions and reviews. Never return their private text."""
