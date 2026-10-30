@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 from pathlib import Path
 import re
 from datetime import datetime, timezone
 import subprocess
+import tempfile
 import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
@@ -26,7 +29,10 @@ ITEM_LIFETIME = 7 * 86400
 HISTORY = 30 * 86400
 # The app refreshes its registration while it runs. A registration this old belongs to an install nobody uses.
 STALE_REGISTRATION = 30 * 86400
-PUSH_TABLES = ('push_devices', 'push_routes', 'push_preferences', 'push_schedules')
+PUSH_TABLES = ('push_devices', 'push_routes', 'push_preferences', 'push_schedules', 'push_previews')
+# The phone reports the last result of its notification previews here. `coconut status` reads this file.
+PREVIEWS_FILE = 'push-previews.json'
+PREVIEW_TIMES = ('failing_since', 'failed_at', 'worked_at')
 # A phone reaches the Mac only through the relay tunnel, which needs the phone's static key. A device without one is an
 # old version 1 pairing or a tool on this Mac, so it is not paired for notifications.
 PHONES = 'SELECT id FROM devices WHERE peer_key IS NOT NULL'
@@ -34,6 +40,36 @@ PHONES = 'SELECT id FROM devices WHERE peer_key IS NOT NULL'
 
 def iso(stamp):
     return datetime.fromtimestamp(stamp, timezone.utc).isoformat().replace('+00:00', 'Z') if stamp else None
+
+
+def preview_report(value):
+    """One preview report of the phone (ios/PushShared/PreviewDiagnostics.swift), or None. It holds a reason code
+    and times only. Raise ValueError when it is not valid."""
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not set(value) <= {'reason', *PREVIEW_TIMES}:
+        raise ValueError
+    reason = value.get('reason')
+    if reason is not None and not (isinstance(reason, str) and re.fullmatch(r"[\w .:'-]{1,80}", reason)):
+        raise ValueError
+    result = {'reason': reason}
+    for name in PREVIEW_TIMES:
+        text = value.get(name)
+        if text is not None and not isinstance(text, str):
+            raise ValueError
+        result[name] = iso(datetime.fromisoformat(text.replace('Z', '+00:00')).timestamp()) if text else None
+    return result
+
+
+def preview_line(report):
+    """The state of the previews of one phone, as `coconut status` prints it."""
+    app, extension = report.get('app') or {}, report.get('extension') or {}
+    for source, value in (('the app: ', app), ('', extension)):
+        if value.get('reason'):
+            return f"failing since {value.get('failing_since') or value.get('failed_at')}: {source}{value['reason']}"
+    if extension.get('worked_at'):
+        return f"working (last preview {extension['worked_at']})"
+    return 'no report from the notification extension yet'
 
 
 def preferences(data):
@@ -109,6 +145,8 @@ class PushDelivery:
             device_id TEXT PRIMARY KEY, data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS push_status (
             device_id TEXT PRIMARY KEY, last_delivered_at REAL, last_error TEXT, last_error_at REAL);
+        CREATE TABLE IF NOT EXISTS push_previews (
+            device_id TEXT PRIMARY KEY, data TEXT NOT NULL, reported REAL NOT NULL);
         ''')
         columns = {row[1] for row in db.execute('PRAGMA table_info(push_outbox)')}
         if 'kind' in columns:
@@ -205,7 +243,47 @@ class PushDelivery:
         for table in PUSH_TABLES:
             self.service.db.execute(f'DELETE FROM {table} WHERE device_id=?', (device_id,))
         self.unregister_jobs(device_id)
+        self.write_previews()
         return {'registered': False, 'configured': self.configured}
+
+    def previews(self, device_id, data):
+        """Keep the phone's last preview results, log a change, and write them for `coconut status`."""
+        from .service import ServiceError
+        try:
+            if not isinstance(data, dict) or not set(data) <= {'extension', 'app'}:
+                raise ValueError
+            report = {source: preview_report(data.get(source)) for source in ('extension', 'app')}
+        except (ValueError, TypeError, OverflowError):
+            raise ServiceError(400, 'Supply the preview reports of the notification extension and the app.') from None
+        row = self.service.db.execute('SELECT data FROM push_previews WHERE device_id=?', (device_id,)).fetchone()
+        line, previous = preview_line(report), preview_line(json.loads(row[0])) if row else ''
+        # A newer working preview is not a change of state, so it is not logged.
+        if line != previous and not (line.startswith('working') and previous.startswith('working')):
+            name = self.service.db.execute('SELECT name FROM devices WHERE id=?', (device_id,)).fetchone()
+            log = logging.getLogger(__name__)
+            (log.warning if line.startswith('failing') else log.info)(
+                'Notification previews on %s: %s', name[0] if name else device_id, line)
+        self.service.db.execute('''INSERT INTO push_previews VALUES (?,?,?) ON CONFLICT(device_id)
+            DO UPDATE SET data=excluded.data,reported=excluded.reported''', (device_id, json.dumps(report), time.time()))
+        self.write_previews()
+        return {'recorded': True}
+
+    def write_previews(self):
+        rows = self.service.db.execute(f'''SELECT p.device_id,d.name,p.data,p.reported FROM push_previews p
+            JOIN devices d ON d.id=p.device_id WHERE p.device_id IN ({PHONES}) ORDER BY d.name''').fetchall()
+        phones = [dict(device_id=device_id, name=name, reported_at=iso(reported), line=preview_line(json.loads(data)),
+                       **json.loads(data)) for device_id, name, data, reported in rows]
+        folder = Path(self.service.root)
+        path = folder / PREVIEWS_FILE
+        if not phones and not path.exists():
+            return
+        try:
+            with tempfile.NamedTemporaryFile('w', dir=folder, prefix='.push-previews-', delete=False) as handle:
+                json.dump({'phones': phones}, handle)
+            os.chmod(handle.name, 0o600)
+            os.replace(handle.name, path)
+        except OSError:
+            logging.getLogger(__name__).exception('Coconut could not write %s.', PREVIEWS_FILE)
 
     def note(self, device_id, error=None):
         """Record the phone's last delivered notification, or its last error."""

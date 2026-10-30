@@ -1539,6 +1539,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                             ('work_capacity', encoded(data['limit'])))
             self._event('settings.updated', {'work_capacity': result})
             return result
+        if parts == ['v1', 'device', 'push', 'previews'] and method == 'PUT':
+            return self.push.previews(device, data)
         if parts == ['v1', 'device', 'push']:
             if method == 'PUT':
                 return self.push.registration(device, data)

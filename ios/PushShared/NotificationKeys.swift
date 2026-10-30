@@ -31,17 +31,32 @@ enum NotificationKeys {
         delete(account: "pair:\(deviceId)")
     }
 
-    static func content(from userInfo: [AnyHashable: Any]) throws -> [String: Any]? {
+    /// Why a notification keeps the text of the relay. The reason holds no notification content and no key.
+    struct Failure: Error, Equatable {
+        let reason: String
+    }
+
+    static func content(from userInfo: [AnyHashable: Any], now: Date = .now) throws -> [String: Any]? {
         guard let value = userInfo["coconut_encrypted"] else { return nil }
-        let envelope = try JSONDecoder().decode(PushEnvelope.self, from: JSONSerialization.data(withJSONObject: value))
-        guard let binding = try read(Binding.self, account: "key:\(envelope.keyId)"),
-              let current = try read(Binding.self, account: "pair:\(binding.deviceId)"),
-              try current.keyId == envelope.keyId else { throw CocoaError(.coderValueNotFound) }
-        let data = try envelope.open(recipient: binding.key,
-                                     sender: Curve25519.KeyAgreement.PublicKey(rawRepresentation: binding.senderKey))
-        guard let content = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+        // JSONSerialization raises an exception, not an error, for a value that is not JSON. That stops the extension.
+        guard JSONSerialization.isValidJSONObject(value),
+              let envelope = try? JSONDecoder().decode(PushEnvelope.self, from: JSONSerialization.data(withJSONObject: value)) else {
+            throw Failure(reason: "envelope does not decode")
+        }
+        guard let binding = try read(Binding.self, account: "key:\(envelope.keyId)") else {
+            throw Failure(reason: "no key for this envelope")
+        }
+        guard let current = try read(Binding.self, account: "pair:\(binding.deviceId)"),
+              try current.keyId == envelope.keyId else { throw Failure(reason: "the pairing has a newer key") }
+        guard envelope.expires > Int(now.timeIntervalSince1970) else { throw Failure(reason: "envelope expired") }
+        let data: Data
+        do {
+            data = try envelope.open(recipient: binding.key,
+                                     sender: Curve25519.KeyAgreement.PublicKey(rawRepresentation: binding.senderKey), now: now)
+        } catch { throw Failure(reason: "decryption failed") }
+        guard let content = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let target = content["coconut"] as? [String: Any], target["device_id"] as? String == binding.deviceId else {
-            throw CocoaError(.coderInvalidValue)
+            throw Failure(reason: "content is not for this iPhone")
         }
         return content
     }
@@ -53,8 +68,9 @@ enum NotificationKeys {
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data else { throw CocoaError(.fileReadNoPermission) }
-        return try JSONDecoder().decode(type, from: data)
+        guard status == errSecSuccess, let data = result as? Data else { throw Failure(reason: "keychain read \(status)") }
+        guard let value = try? JSONDecoder().decode(type, from: data) else { throw Failure(reason: "keychain item does not decode") }
+        return value
     }
 
     static func save<T: Encodable>(_ value: T, account: String) throws {
@@ -64,10 +80,9 @@ enum NotificationKeys {
         let base = query(account: account)
         let status = SecItemUpdate(base as CFDictionary, attributes as CFDictionary)
         if status == errSecSuccess { return }
-        guard status == errSecItemNotFound,
-              SecItemAdd(base.merging(attributes) { _, new in new } as CFDictionary, nil) == errSecSuccess else {
-            throw CocoaError(.fileWriteNoPermission)
-        }
+        guard status == errSecItemNotFound else { throw Failure(reason: "keychain update \(status)") }
+        let added = SecItemAdd(base.merging(attributes) { _, new in new } as CFDictionary, nil)
+        guard added == errSecSuccess else { throw Failure(reason: "keychain add \(added)") }
     }
 
     static func delete(account: String) { SecItemDelete(query(account: account) as CFDictionary) }

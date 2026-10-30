@@ -52,6 +52,7 @@ final class AppStore {
     var pushStatus: PushStatus?
     @ObservationIgnored private var registeredPushSignature: String?
     @ObservationIgnored private var registeredPushAt = Date.distantPast
+    @ObservationIgnored private var sentPreviewReports: PreviewReports?
     @ObservationIgnored private var registeringPush = false
     @ObservationIgnored private var pushSyncRequested = false
     let isDemo: Bool
@@ -415,6 +416,7 @@ final class AppStore {
         if let deviceId = pairing?.deviceId {
             PushRelayClient.shared.disable(deviceId: deviceId)
             NotificationKeys.forget(deviceId: deviceId)
+            PreviewDiagnostics.clear()
         }
         let previousTunnel = tunnel
         tunnel = nil
@@ -427,6 +429,7 @@ final class AppStore {
             Task { await previousTunnel.close() }
         }
         registeredPushSignature = nil
+        sentPreviewReports = nil
         pushStatus = nil
         pushConfigured = false
         PushNotifications.shared.target = nil
@@ -1901,6 +1904,11 @@ final class AppStore {
                 Task { await syncPushRegistration() }
             }
         }
+        await registerPush(client: client, pairing: pairing)
+        await sendPreviewReports(client: client)
+    }
+
+    private func registerPush(client: APIClient, pairing: PairingConfiguration) async {
         let push = PushNotifications.shared
         await push.refresh(requestPermission: pushConfigured)
         guard self.client === client else { return }
@@ -1916,8 +1924,16 @@ final class AppStore {
             if push.allowed {
                 guard let token = push.deviceToken else { return }
                 let configuration: PushRelayConfiguration = try await client.request("push/config")
-                let relay = try await PushRelayClient.shared.register(deviceId: pairing.deviceId, token: token,
-                    environment: push.environment, configuration: configuration)
+                let relay: PushRelayGrant
+                do {
+                    relay = try await PushRelayClient.shared.register(deviceId: pairing.deviceId, token: token,
+                        environment: push.environment, configuration: configuration)
+                    PreviewDiagnostics.record(nil, source: .app)
+                } catch let failure as NotificationKeys.Failure {
+                    // The keys of the previews are not usable. The Mac shows this reason in coconut status.
+                    PreviewDiagnostics.record(failure.reason, source: .app)
+                    throw failure
+                }
                 guard self.client === client, push.allowed else {
                     PushRelayClient.shared.disable(deviceId: pairing.deviceId)
                     return
@@ -1937,6 +1953,20 @@ final class AppStore {
         } catch {
             pushRegistrationError = "Notification setup has not reached your Mac. Coconut will retry when connected."
         }
+    }
+
+    /// Send the last preview results to the Mac when they change. A Mac before this report answers 404, and the
+    /// next change tries again.
+    private func sendPreviewReports(client: APIClient) async {
+        let reports = PreviewReports(extension: PreviewDiagnostics.read(.extension), app: PreviewDiagnostics.read(.app))
+        guard reports != sentPreviewReports, reports.extension != nil || reports.app != nil else { return }
+        let encoder = APIJSON.encoder()
+        encoder.dateEncodingStrategy = .iso8601
+        guard let body = try? encoder.encode(reports),
+              let _: PreviewReportsResponse = try? await client.request("device/push/previews", method: "PUT", body: body,
+                                                                        idempotencyKey: UUID().uuidString),
+              self.client === client else { return }
+        sentPreviewReports = reports
     }
 
     private func preservingNativeSettings(in incoming: [Bot]) -> [Bot] {

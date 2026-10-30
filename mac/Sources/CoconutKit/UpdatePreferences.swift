@@ -206,6 +206,9 @@ public enum StatusText {
             lines.append(line)
         }
         lines.append("Hermes: \(status.hermes == "ok" ? status.hermesVersion ?? "ok" : status.hermesReason ?? status.hermes)")
+        for phone in status.previews ?? [] {
+            lines.append("Notification previews (\(phone.name)): \(phone.line)")
+        }
         return lines
     }
 }
