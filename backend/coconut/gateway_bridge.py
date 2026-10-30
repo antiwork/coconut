@@ -301,13 +301,17 @@ class GatewayBridge:
                 if turn.state != 'stopping':
                     self.turns.pop(turn.id, None)
 
-    def cancel(self, task_id: str) -> None:
+    def cancel(self, task_id: str) -> bool:
+        """Stop the turns of a task. Return whether a registered turn stops."""
+        stopped = False
         with self.lock:
             for turn in list(self.turns.values()):
                 if turn.task_id == task_id and turn.state in ('pending', 'active'):
                     # A stop goes to the chat of the turn, so it must not name the chat for a cron run.
                     turn.state = 'stopping' if turn.state == 'active' and not turn.cron else 'cancelled'
+                    stopped = True
             self.lock.notify_all()
+        return stopped
 
     def close(self) -> None:
         with self.lock:
