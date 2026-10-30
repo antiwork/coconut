@@ -134,8 +134,11 @@ class DecisionInbox:
         previous_id = explicit or (task.get('_resume_decision') if allow_resume else None)
         if not previous_id:
             return {}
-        previous = next((d for d in self._all('decisions') if d['id'] == previous_id), None)
-        previous_task = next((t for t in self._all('tasks') if previous and t['id'] == previous['task_id']), None)
+        # Read the two rows by ID. A parse of every card and every task took seconds under the service lock on the mini.
+        row = self.db.execute('SELECT data FROM decisions WHERE id=?', (previous_id,)).fetchone()
+        previous = json.loads(row[0]) if row else None
+        row = self.db.execute('SELECT data FROM tasks WHERE id=?', (previous['task_id'],)).fetchone() if previous else None
+        previous_task = json.loads(row[0]) if row else None
         valid = (previous_task is not None and previous['bot_id'] == previous_task['bot_id']
                  and previous_task.get('conversation_bot_id', previous_task['bot_id'])
                  == task.get('conversation_bot_id', task['bot_id'])
