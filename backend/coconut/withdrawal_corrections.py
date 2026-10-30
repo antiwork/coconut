@@ -116,7 +116,9 @@ class WithdrawalCorrections:
         ids = {task['id']}
         if task.get('_execution_session_id'):
             ids.update(row[0] for row in self.db.execute(
-                "SELECT id FROM tasks WHERE json_extract(data,'$._execution_session_id')=? AND json_extract(data,'$.bot_id')=?",
+                # SQLite chose the index by bot, and read every task of a busy bot: about 40 ms on each turn.
+                "SELECT id FROM tasks INDEXED BY tasks_execution "
+                "WHERE json_extract(data,'$._execution_session_id')=? AND json_extract(data,'$.bot_id')=?",
                 (task['_execution_session_id'], task['bot_id'])))
         return ids
 

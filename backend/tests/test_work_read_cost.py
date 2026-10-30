@@ -138,8 +138,9 @@ class WorkReadCostTests(unittest.TestCase):
         self.track()
         task = self.service._get('tasks', self.task['id'])
         with self.service._read_view() as view:
-            original = view._work_links
-            with patch.object(view, '_work_links', wraps=original) as links:
+            # The task links are the costly part of a graph. The receipts add only their own links.
+            original = view._work_task_link_pairs
+            with patch.object(view, '_work_task_link_pairs', wraps=original) as links:
                 with view._read_transaction():
                     tasks = {t['id']: t for t in view._all('tasks')}
                     records = view._work_receipts()

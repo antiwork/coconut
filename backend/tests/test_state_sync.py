@@ -641,9 +641,10 @@ class StateSyncTests(unittest.TestCase):
         artifacts = [dict(id=str(uuid4()), kind='work', task_id=t['id'], bot_id=self.bot['id'],
                           created_at=t['created_at'], title=t['title'], status='working') for t in tasks.values()]
         from coconut.work_status import WorkStatus
-        with patch.object(WorkStatus, '_work_links', wraps=WorkStatus._work_links) as build:
+        # The task links come from one pass for both kinds of chain. The receipts add only their own links.
+        with patch.object(WorkStatus, '_work_task_link_pairs', wraps=WorkStatus._work_task_link_pairs) as build:
             self.service._work_projection(artifacts)
-            self.assertLessEqual(build.call_count, 2)
+            self.assertLessEqual(build.call_count, 1)
             count = build.call_count
             self.service._work_projection(artifacts)
             self.assertGreater(build.call_count, count)

@@ -12,6 +12,26 @@ PROPOSAL_EXECUTION = ("json_extract(data, '$.inbox_kind')='proposal' "
                       "AND json_extract(data, '$._execution_task_id') IS NOT NULL")
 
 
+class _UnionLinks:
+    """The union of two maps of ID sets, read like one dict. Neither map changes."""
+    __slots__ = ('first', 'second')
+
+    def __init__(self, first, second):
+        self.first, self.second = first, second
+
+    def get(self, key, default=None):
+        first, second = self.first.get(key), self.second.get(key)
+        if first is None and second is None:
+            return default
+        if first is None or second is None:
+            return first if second is None else second
+        return first | second
+
+    def items(self):
+        for key in self.first.keys() | self.second.keys():
+            yield key, self.get(key)
+
+
 class WorkStatus:
     def _work_pause_peers(self, item, *, shared=False):
         # shared=True is for a caller that only reads the peers. _save_work_pause changes them, so it asks for copies.
@@ -271,7 +291,8 @@ class WorkStatus:
         return None
 
     @staticmethod
-    def _work_links(tasks, records, include_continuations):
+    def _work_record_links(records):
+        """The links and explicit waits that the receipts record."""
         linked = {}
         explicit_waits = {}
         for record in records:
@@ -280,25 +301,53 @@ class WorkStatus:
             for key in ('_relay_task_id', '_wait_task_id'):
                 if record.get(key) and not record.get('_process_delivery'):
                     linked.setdefault(record['task_id'], set()).add(record[key])
+        return linked, explicit_waits
+
+    @staticmethod
+    def _work_task_links(tasks, include_continuations):
+        """The links and explicit waits that the tasks record. They do not depend on the receipts."""
+        return WorkStatus._work_task_link_pairs(tasks)[include_continuations]
+
+    @staticmethod
+    def _work_task_link_pairs(tasks):
+        """The task links without continuations (False) and with them (True), from one pass over the tasks."""
+        plain, plain_waits, linked, explicit_waits = {}, {}, {}, {}
+
+        def link(source, target, *, continuation=False):
+            linked.setdefault(source, set()).add(target)
+            if not continuation:
+                plain.setdefault(source, set()).add(target)
+
         for task in tasks.values():
-            continued = WorkStatus._continued_work_task(task, tasks) if include_continuations else None
+            continued = WorkStatus._continued_work_task(task, tasks)
             if continued:
-                linked.setdefault(task['id'], set()).add(continued['id'])
+                link(task['id'], continued['id'], continuation=True)
                 explicit_waits.setdefault(task['id'], set()).add(continued['id'])
-            if include_continuations and task['status'] not in ('failed', 'cancelled'):
+            if task['status'] not in ('failed', 'cancelled'):
                 owner = WorkStatus._work_execution_owner(task, tasks)
                 if owner['id'] != task['id']:
-                    linked.setdefault(owner['id'], set()).add(task['id'])
+                    link(owner['id'], task['id'], continuation=True)
                     explicit_waits.setdefault(owner['id'], set()).add(task['id'])
-            if task.get('source_task_id') and ((task.get('_native_relay') and not task.get('_is_return'))
-                    or (include_continuations and task.get('_is_return') and task.get('_assignment_task_id'))):
-                linked.setdefault(task['source_task_id'], set()).add(task['id'])
-            if include_continuations and task.get('_assignment_task_id'):
-                linked.setdefault(task['_assignment_task_id'], set()).add(task['id'])
+            if task.get('source_task_id'):
+                if task.get('_native_relay') and not task.get('_is_return'):
+                    link(task['source_task_id'], task['id'])
+                elif task.get('_is_return') and task.get('_assignment_task_id'):
+                    link(task['source_task_id'], task['id'], continuation=True)
+            if task.get('_assignment_task_id'):
+                link(task['_assignment_task_id'], task['id'], continuation=True)
             for field in ('_requester_reply_task_id', '_relay_callback_owner'):
                 if task.get(field):
-                    linked.setdefault(task[field], set()).add(task['id'])
-            linked.setdefault(task['id'], set()).update(task.get('_waiting_on', []))
+                    link(task[field], task['id'])
+            for mapping in (linked, plain):
+                mapping.setdefault(task['id'], set()).update(task.get('_waiting_on', []))
+        return {False: (plain, plain_waits), True: (linked, explicit_waits)}
+
+    @staticmethod
+    def _work_links(tasks, records, include_continuations):
+        linked, explicit_waits = WorkStatus._work_task_links(tasks, include_continuations)
+        for target, source in zip((linked, explicit_waits), WorkStatus._work_record_links(records)):
+            for identity, identities in source.items():
+                target.setdefault(identity, set()).update(identities)
         return linked, explicit_waits
 
     # The work graph builders read these tables: _work_links reads tasks and receipts, _proposal_work_links
@@ -389,22 +438,58 @@ class WorkStatus:
                 linked.setdefault(source, set()).add(target)
                 explicit_waits.setdefault(source, set()).add(target)
 
-    def _work_chain(self, root, tasks, records, *, include_continuations=False):
-        """Follow recorded callbacks, including replies that assign further work."""
+    def _work_graph(self, tasks, records, include_continuations):
+        """The links and explicit waits of the work graph.
+
+        The links of the tasks, the proposals and the external waits do not depend on the receipts. One read block
+        builds them once for each task map, and each receipt list adds only its own links. A turn context reads two
+        receipt lists, so it built the whole graph three times: about 0.27 s of each turn on a copy of the Mac mini data.
+        """
+        shared = self._graph_memo()
+        task_key = ('task links', id(tasks))
+        if shared is not None and task_key in shared:
+            pairs = shared[task_key][1]
+        else:
+            # One pass builds the links with and without continuations. A turn context reads both.
+            pairs = self._work_task_link_pairs(tasks)
+            linked, explicit_waits = pairs[True]
+            for source, targets in self._proposal_work_links(tasks).items():
+                linked.setdefault(source, set()).update(targets)
+                explicit_waits.setdefault(source, set()).update(targets)
+            self._link_external_work(tasks, linked, explicit_waits)
+            if shared is not None:
+                # Keep the map alive so Python cannot reuse its ID within this read.
+                shared[task_key] = tasks, pairs
+        task_links = pairs[include_continuations]
         graphs = self._graph_memo(records)
         key = (id(tasks), id(records), include_continuations)
         if graphs is not None and key in graphs:
-            _, _, linked, explicit_waits = graphs[key]
-        else:
-            linked, explicit_waits = self._work_links(tasks, records, include_continuations)
-            if include_continuations:
-                for source, targets in self._proposal_work_links(tasks).items():
-                    linked.setdefault(source, set()).update(targets)
-                    explicit_waits.setdefault(source, set()).update(targets)
-                self._link_external_work(tasks, linked, explicit_waits)
-            if graphs is not None:
-                # Keep inputs alive so Python cannot reuse their IDs within this read.
-                graphs[key] = tasks, records, linked, explicit_waits
+            return graphs[key][2], graphs[key][3]
+        record_links = self._work_record_links(records)
+        linked, explicit_waits = (_UnionLinks(task_links[0], record_links[0]), _UnionLinks(task_links[1], record_links[1]))
+        if graphs is not None:
+            # Keep inputs alive so Python cannot reuse their IDs within this read.
+            graphs[key] = tasks, records, linked, explicit_waits
+        return linked, explicit_waits
+
+    def _work_node_current(self, task):
+        """Whether a work chain may pass through this task: its bot, session and conversation are current."""
+        bot = self._get('bots', task['bot_id'])
+        # _advance_input reserves a new turn ID before the queued turn starts.
+        unstarted = task['status'] == 'queued' and '_conversation_epoch' not in task
+        return not (bot.get('_deleted') or task.get('session_id') != bot.get('session_id')
+                    or (not unstarted and task.get('_conversation_epoch') != self._setting('conversation_epoch')))
+
+    @staticmethod
+    def _work_edge_current(parent, child, explicit_waits, include_continuations):
+        # A human reply can change the parent's exchange while its saved wait remains valid.
+        return not (include_continuations and child.get('exchange_id') != parent.get('exchange_id')
+                    and child['id'] not in parent.get('_waiting_on', [])
+                    and child['id'] not in explicit_waits.get(parent['id'], set()))
+
+    def _work_chain(self, root, tasks, records, *, include_continuations=False):
+        """Follow recorded callbacks, including replies that assign further work."""
+        linked, explicit_waits = self._work_graph(tasks, records, include_continuations)
         found, pending = {}, deque([(root['id'], 0)])
         while pending:
             identity, depth = pending.popleft()
@@ -413,23 +498,77 @@ class WorkStatus:
             task = tasks[identity]
             if not include_continuations and task.get('exchange_id') != root.get('exchange_id'):
                 continue
-            bot = self._get('bots', task['bot_id'])
-            # _advance_input reserves a new turn ID before the queued turn starts.
-            unstarted = task['status'] == 'queued' and '_conversation_epoch' not in task
-            if (bot.get('_deleted') or task.get('session_id') != bot.get('session_id')
-                    or (not unstarted and task.get('_conversation_epoch') != self._setting('conversation_epoch'))):
+            if not self._work_node_current(task):
                 continue
             found[identity] = (task, depth)
             for child in sorted(linked.get(identity, set())):
                 if child == identity or child not in tasks:
                     continue
-                # A human reply can change the parent's exchange while its saved wait remains valid.
-                if (include_continuations and tasks[child].get('exchange_id') != task.get('exchange_id')
-                        and child not in task.get('_waiting_on', [])
-                        and child not in explicit_waits.get(identity, set())):
+                if not self._work_edge_current(task, tasks[child], explicit_waits, include_continuations):
                     continue
                 pending.append((child, depth + 1))
         return found
+
+    @staticmethod
+    def _work_parents(linked):
+        """{child: set of parents} of a link map, without links of a task to itself."""
+        parents = {}
+        for parent, children in linked.items():
+            for child in children:
+                if child != parent:
+                    parents.setdefault(child, set()).add(parent)
+        return parents
+
+    def _work_reach(self, target_id, tasks, records, *, include_continuations=False):
+        """The IDs of the roots whose _work_chain holds the target, by the same rules followed backwards.
+
+        A context reader asked "is this task in the chain of that root?" for each artifact or peer, and each question
+        walked a chain. On the Mac mini copy, one turn context walked about 2,000 chains. One backward walk answers all
+        of them. The node and edge rules of _work_chain depend only on the node or the edge, so the set of roots does
+        not depend on the order of the walk. Without continuations every node of a chain shares the root's exchange,
+        so a backward walk keeps the target's exchange.
+        """
+        graphs = self._graph_memo(records)
+        key = ('reach', target_id, id(tasks), id(records), include_continuations)
+        if graphs is not None and key in graphs:
+            return graphs[key][-1]
+        linked, explicit_waits = self._work_graph(tasks, records, include_continuations)
+        parents_key = ('parents', id(tasks), id(records), include_continuations)
+        parents = graphs.get(parents_key, (None, None, None))[-1] if graphs is not None else None
+        if parents is None:
+            # The parents of the task links do not depend on the receipts. Keep them with the task links.
+            shared = self._graph_memo()
+            task_key = ('task parents', id(tasks), include_continuations)
+            if shared is not None and task_key in shared:
+                task_parents = shared[task_key][1]
+            else:
+                task_parents = self._work_parents(linked.first)
+                if shared is not None:
+                    shared[task_key] = tasks, task_parents
+            parents = _UnionLinks(task_parents, self._work_parents(linked.second))
+            if graphs is not None:
+                graphs[parents_key] = tasks, records, parents
+        target = tasks.get(target_id)
+        reached = set()
+        if target is not None and self._work_node_current(target):
+            reached.add(target_id)
+            pending = [target_id]
+            while pending:
+                child = tasks[pending.pop()]
+                for identity in parents.get(child['id'], ()):
+                    if identity in reached or identity not in tasks:
+                        continue
+                    parent = tasks[identity]
+                    if not include_continuations and parent.get('exchange_id') != target.get('exchange_id'):
+                        continue
+                    if (not self._work_edge_current(parent, child, explicit_waits, include_continuations)
+                            or not self._work_node_current(parent)):
+                        continue
+                    reached.add(identity)
+                    pending.append(identity)
+        if graphs is not None:
+            graphs[key] = tasks, records, reached
+        return reached
 
     def _work_report_roots(self, item, tasks, *, pr_heads=None):
         reporter = tasks.get(item.get('task_id'), {})
@@ -476,11 +615,12 @@ class WorkStatus:
         tasks = self._task_map()
         records = self._shared_work_receipts()
         urls = set()
+        reach = self._work_reach(task['id'], tasks, records)
         for artifact in self._all('artifacts'):
-            if artifact['kind'] != 'pr' or not self._pr_review_source_current(artifact):
-                continue
-            root = tasks[artifact['_review_task_id']]
-            if task['id'] in self._work_chain(root, tasks, records):
+            # Ask the cheap question first: only a PR whose review task reaches this task can count. The ownership
+            # check reads several rows for each PR.
+            if (artifact['kind'] == 'pr' and artifact.get('_review_task_id') in reach
+                    and self._pr_review_source_current(artifact)):
                 urls.add(artifact['url'])
         return sorted(urls)
 
