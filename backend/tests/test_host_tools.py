@@ -261,6 +261,76 @@ class HostLifecycleTests(unittest.TestCase):
         # The stop waits for the zombie, which no longer holds service.lock. It does not need the PID to vanish.
         self.assertEqual(len(calls), 6)
 
+    LINUX_START = 'Fri Oct 30 03:42:42 2026'
+
+    def linux_stop(self, outputs, start):
+        """Stop a service whose ps outputs follow `outputs`. lstart prints `start` for its process ID."""
+        command = f'Sl   /usr/bin/python3 -m coconut --data-dir {self.data} --port 8960 --provider hermes --tunnel-port 8961'
+        outputs = iter([command, *outputs])
+        calls = []
+        def run(arguments, **kwargs):
+            calls.append(arguments)
+            if arguments[-1] == 'lstart=':
+                return subprocess.CompletedProcess(arguments, 0, f'{start}\n', '')
+            output = next(outputs)
+            return subprocess.CompletedProcess(arguments, 1 if output is None else 0, output or '', '')
+        table = {4242: (1, 4242, 'Sl', self.LINUX_START, command.split(None, 1)[1])}
+        return calls, run, table
+
+    def test_a_linux_service_that_exits_after_the_signal_is_stopped_and_not_foreign(self):
+        # On Linux, a process that exits releases its memory before it becomes a zombie. In between, ps shows a live
+        # state and the name in brackets, not the launch command. The CI runner saw this under load.
+        self.write_process()
+        calls, run, table = self.linux_stop(['R    [python3]', 'D    [python3]', 'Z    [python3] <defunct>',
+                                             'Z    [python3] <defunct>'], self.LINUX_START)
+        with patch.object(host.subprocess, 'run', side_effect=run), patch.object(host.os, 'kill') as kill, \
+             patch.object(host.time, 'sleep'), patch.object(host, 'process_table', return_value=table):
+            host.stop_owned_process()
+        kill.assert_called_once_with(4242, host.signal.SIGTERM)
+        self.assertEqual(sum(call[-1] == 'stat=,command=' for call in calls), 5)
+
+    def test_a_reused_pid_with_a_bracketed_name_is_not_killed(self):
+        # The service exits, and another process gets its PID. Its name in brackets, such as a kernel worker, is not proof
+        # that it is the service that exits: its start time differs. The stop refuses it and sends no SIGKILL.
+        self.write_process()
+        calls, run, table = self.linux_stop(['S    [kworker/0:1]'], 'Fri Oct 30 03:50:00 2026')
+        with patch.object(host.subprocess, 'run', side_effect=run), patch.object(host.os, 'kill') as kill, \
+             patch.object(host.time, 'sleep'), patch.object(host, 'process_table', return_value=table):
+            with self.assertRaisesRegex(SystemExit, 'does not match'):
+                host.stop_owned_process()
+        kill.assert_called_once_with(4242, host.signal.SIGTERM)
+
+    def test_a_service_that_is_gone_before_its_start_time_is_read_has_ended(self):
+        # ps reads the bracketed name, then the service ends before ps reads its start time.
+        self.write_process()
+        calls, run, table = self.linux_stop(['R    [python3]', None, None], '')
+        def gone(arguments, **kwargs):
+            if arguments[-1] == 'lstart=':
+                return subprocess.CompletedProcess(arguments, 1, '', '')
+            return run(arguments, **kwargs)
+        with patch.object(host.subprocess, 'run', side_effect=gone), patch.object(host.os, 'kill') as kill, \
+             patch.object(host.time, 'sleep'), patch.object(host, 'process_table', return_value=table):
+            host.stop_owned_process()
+        kill.assert_called_once_with(4242, host.signal.SIGTERM)
+
+    def test_a_bracketed_name_needs_a_checked_service(self):
+        self.write_process()
+        lstart = subprocess.CompletedProcess([], 0, self.LINUX_START + '\n', '')
+        for output in ('R    [python3]', 'S    /usr/bin/python3 [python3]'):
+            listed = subprocess.CompletedProcess([], 0, output, '')
+            with self.subTest(output=output), patch.object(host.subprocess, 'run',
+                                                           side_effect=lambda a, **k: lstart if a[-1] == 'lstart=' else listed):
+                # Without a checked service, a bracketed name is a foreign process.
+                with self.assertRaisesRegex(SystemExit, 'does not match'):
+                    host.owned_process()
+                # Another PID or another start time is a foreign process too.
+                for verified in ((4343, self.LINUX_START), (4242, 'Fri Oct 30 03:50:00 2026')):
+                    with self.assertRaisesRegex(SystemExit, 'does not match'):
+                        host.owned_process(verified)
+        with patch.object(host.subprocess, 'run',
+                          side_effect=lambda a, **k: lstart if a[-1] == 'lstart=' else subprocess.CompletedProcess([], 0, 'R    [python3]', '')):
+            self.assertIsNone(host.owned_process((4242, self.LINUX_START)))
+
     def test_an_exiting_service_is_not_running_and_the_stop_waits_for_its_end(self):
         self.write_process()
         outputs = iter(['?Es  (Python)', '?Es  (Python)', '?Es  (Python)', None, None])

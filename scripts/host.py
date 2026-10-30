@@ -184,6 +184,33 @@ def exiting(state: str) -> bool:
     return any(letter in state for letter in EXITING)
 
 
+def start_time(pid: int) -> str | None:
+    """The start time of a process, as process_table gives it, or None. With the process ID, it identifies one process."""
+    result = subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], capture_output=True, text=True,
+                            env=dict(os.environ, LC_ALL="C"))
+    if result.returncode:
+        return None
+    # The same form as the start time of process_table: five words with single spaces.
+    return " ".join(result.stdout.split()) or None
+
+
+def exits_without_arguments(pid: int, command: str, verified: tuple[int, str] | None) -> bool:
+    """True when Linux shows a process of this service that exits.
+
+    Linux has no state letter for it: a process that exits releases its memory, and with it its argument list, before it
+    becomes a zombie. ps then shows its name in brackets, such as "[python3]", with a live state such as R or D. Any
+    process can show a bracketed name, so this counts only for the process that this stop already checked: the same
+    process ID and the same start time.
+    """
+    if not (command.startswith("[") and command.endswith("]") and verified is not None and verified[0] == pid
+            and verified[1] is not None):
+        return False
+    started = start_time(pid)
+    # A process that is gone when ps reads its start time has ended: it was the exiting service. A process with another
+    # start time is another process.
+    return started is None or started == verified[1]
+
+
 def recorded_pid() -> int | None:
     """The process ID in process.json, without any check. Use it only after owned_process accepted the record."""
     try:
@@ -198,7 +225,11 @@ def ended(pid: int) -> bool:
     return state is None or any(letter in state[0] for letter in EXITED)
 
 
-def owned_process() -> tuple[int, dict] | None:
+def owned_process(verified: tuple[int, str] | None = None) -> tuple[int, dict] | None:
+    """The process ID and options of this installation's service, or None when none runs or it exits.
+
+    `verified` is the process ID and start time of the service that the caller already checked and stops.
+    """
     if DEFAULT_DATA.is_symlink() or (ROOT / ".runtime").is_symlink():
         raise SystemExit("The runtime must not be a symbolic link. Coconut did not stop any process.")
     path = DEFAULT_DATA / "process.json"
@@ -214,7 +245,7 @@ def owned_process() -> tuple[int, dict] | None:
     except (OSError, ValueError, KeyError, TypeError):
         raise SystemExit("The process record does not identify this Coconut installation. No process was stopped.") from None
     state = process_state(pid)
-    if state is None or exiting(state[0]):
+    if state is None or exiting(state[0]) or exits_without_arguments(pid, state[1], verified):
         # An exiting process serves nothing. stop_owned_process waits until it is gone.
         return None
     pattern = (
@@ -418,8 +449,11 @@ def stop_owned_process() -> None:
     deadline = time.monotonic() + STOP_GRACE_SECONDS
     killed = False
     listed = time.monotonic()
+    # The service that this stop checked, with its start time from the table. Only it may show the bracketed name of a
+    # Linux process that exits.
+    verified = (pid, known[pid][0]) if current is not None and pid in known else None
     while True:
-        current = owned_process()
+        current = owned_process(verified)
         if current is not None and current[0] != pid:
             raise SystemExit(f"Another Coconut process ({current[0]}) started while process {pid} stopped. "
                              "Coconut kept its data unchanged.")
