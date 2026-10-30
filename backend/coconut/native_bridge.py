@@ -3,6 +3,7 @@ from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 import hashlib
 import json
+from pathlib import Path
 import threading
 import time
 
@@ -11,14 +12,19 @@ def fingerprint(action):
     return hashlib.sha256(json.dumps(action, separators=(',', ':'), sort_keys=True).encode()).hexdigest()
 
 
-def kanban_arguments(args, task_id, turn_id, bot_id):
+def kanban_arguments(args, task_id, turn_id, bot_id, workspaces=None):
+    """The arguments of kanban_create for a Coconut turn: the bot's tenant, a blocked card, an idempotency key of
+    the turn's input, and a folder of its own for a scratch workspace. `workspaces` is the workspace root of Coconut's
+    board. The worker reads it from Hermes (HERMES_KANBAN_WORKSPACES_ROOT), and the service passes it."""
     input_id = turn_id or task_id
     intake_key = fingerprint([input_id, args])
     args = dict(args, assignee='default', tenant=bot_id, session_id=task_id, initial_status='blocked',
                 idempotency_key='coconut:' + task_id + ':' + intake_key)
     if not args.get('workspace_kind') or args['workspace_kind'] == 'scratch':
-        from hermes_cli.kanban_db import workspaces_root
-        args.update(workspace_kind='dir', workspace_path=str(workspaces_root() /
+        if workspaces is None:
+            from hermes_cli.kanban_db import workspaces_root
+            workspaces = workspaces_root()
+        args.update(workspace_kind='dir', workspace_path=str(Path(workspaces) /
             ('coconut-' + fingerprint([task_id, intake_key]))))
     return args
 

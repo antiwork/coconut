@@ -183,6 +183,28 @@ WORKSPACE_INSTRUCTIONS = (
     'separate Git worktree. For existing changes, supply existing_worktree to retain the files and branch. Reuse its '
     'returned path for commands, replies, reviews, and recovery. Keep other work items and their files unchanged. ')
 
+# kanban_create and kanban_comment on Coconut's board, for an audit of a work source in the gateway
+# (gateway_chat.gateway_kanban_tool). The worker offers the Hermes tools themselves, bound to that board.
+KANBAN_CREATE_SCHEMA = {'name': 'coconut_kanban_create', 'description': (
+    'In an audit of a work source: create a Hermes task on the board of Coconut for accepted work that no task owns. '
+    'Coconut adopts the task as an outcome of this bot. Put the complete request, scope, approval limits and '
+    'acceptance criteria in body.'),
+    'parameters': {'type': 'object', 'properties': {
+        'title': {'type': 'string', 'description': 'A short title of the outcome.'},
+        'body': {'type': 'string', 'description': 'The request, scope, approval limits and acceptance criteria.'},
+        'parents': {'type': 'array', 'items': {'type': 'string'}, 'description': 'Hermes task IDs that must finish first.'},
+        'priority': {'type': 'integer'},
+        'workspace_kind': {'type': 'string', 'enum': ['scratch', 'dir', 'worktree']},
+        'workspace_path': {'type': 'string', 'description': 'With dir or worktree: the absolute path.'}},
+        'required': ['title', 'body']}}
+KANBAN_COMMENT_SCHEMA = {'name': 'coconut_kanban_comment', 'description': (
+    'In an audit of a work source: add a comment to a Hermes task on the board of Coconut, for example the current '
+    'source revision and its facts.'),
+    'parameters': {'type': 'object', 'properties': {
+        'task_id': {'type': 'string', 'description': 'The Hermes task ID.'},
+        'body': {'type': 'string', 'description': 'The comment.'}},
+        'required': ['task_id', 'body']}}
+
 # A typed answer from chat names its card and the human message (decision_inbox.resolve_chat_decision).
 CHAT_REPLY_SCHEMA = dict(REPLY_SCHEMA, parameters=dict(
     REPLY_SCHEMA['parameters'],

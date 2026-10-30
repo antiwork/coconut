@@ -1612,8 +1612,14 @@ class NativeOutcomes:
             # A native pass may be claiming a ready row of the bot's own execution, such as a conversation turn that owns
             # an outcome. Its turn starts only after the claim, so no chat turn of that execution starts meanwhile.
             active.update(self._kanban_claim_outcomes)
-        # Share host capacity, retaining one reserved slot for direct replies.
-        slots = max(0, capacity + 1 - len(self.running) - len(self.context_threads))
+        # Share host capacity, retaining one reserved slot for direct replies. An audit of a work source that the
+        # gateway runs has its own capacity: the Kanban pass bounds it, and it does not delay the person's chats.
+        audits = 0
+        if self.gateway_enabled():
+            from .gateway_bridge import gateway_work_turn
+            audits = sum(1 for i in self.running if self._get('tasks', i).get('_source_audit_prompt')
+                         and gateway_work_turn(self._get('tasks', i)))
+        slots = max(0, capacity + 1 - (len(self.running) - audits) - len(self.context_threads))
         if self._kanban_dispatching:
             foreground = sum(bool(chat_turn(self._get('tasks', i)) or
                 self._get('tasks', i).get('_work_status_only')) for i in self.running)

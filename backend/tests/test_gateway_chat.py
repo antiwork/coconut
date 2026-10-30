@@ -72,9 +72,10 @@ class WorkTurnRuleTests(unittest.TestCase):
         self.assertFalse(gateway_work_turn(dict(audit, _chat_session=True)))
         # A question about a Work item without a native outcome runs in the gateway too.
         self.assertTrue(gateway_work_turn(dict(audit, _work_context_id='work', _work_context={'id': 'work'})))
-        # The audit of a work source uses the Kanban tools of Coconut's board.
+        # The audit of a work source runs in the gateway too. Coconut runs its board tools (gateway_kanban_tool).
+        self.assertTrue(gateway_work_turn(dict(audit, _source_audit_prompt='Reconcile.', _source_answer_steps={'url': 'x'})))
         for key in ('_native_outcome_id', '_native_job', '_work_status_only', '_technical_lane',
-                    '_background_completion', '_native_receipts', '_source_audit_prompt', '_source_answer_steps'):
+                    '_background_completion', '_native_receipts'):
             with self.subTest(key=key):
                 self.assertFalse(gateway_work_turn(dict(audit, **{key: 'x'})))
 
@@ -1099,6 +1100,109 @@ class ServiceRoutingTests(unittest.TestCase):
             self.service.gateway_tool({'turn_id': adapter.turns[0]['id'], 'tool': 'workspace', 'arguments': {}})
         self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
         runner.join(5)
+
+    def source_audit(self, text='Reconcile these open assignments against the original sources. Source data follows.'):
+        """An audit of a work source, as work_sources queues it: a task without a message, with its audit text."""
+        with self.service.transaction():
+            task = self.service._send(self.read('bots', self.bot['id']), {'text': 'Review open assignment', 'mode': 'queue'},
+                                      record_message=False, human_authored=False)
+            task = self.service._get('tasks', task['id'])
+            task['_source_audit_prompt'] = text
+            self.service._put('tasks', task)
+        return self.read('tasks', task['id'])
+
+    def test_an_audit_of_a_work_source_runs_in_the_gateway_with_the_board_tools_of_coconut(self):
+        from coconut.gateway_chat import AUDIT_BOARD_TOOLS
+        audit = self.source_audit()
+        adapter = Adapter(self.service.gateway_bridge, self.home, [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'No card is needed.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.dispatch(audit['id'])
+        adapter.join(5)
+        turn = adapter.turns[0]
+        stored = self.read('tasks', audit['id'])
+        self.assertEqual(turn['chat_id'], self.bot['id'] + ':work:' + stored['_execution_session_id'])
+        # The worker's audit text, the board tools of this chat, and the mode in which the hooks block the gateway's board.
+        self.assertTrue(turn['text'].startswith('Reconcile these open assignments against the original sources.'))
+        self.assertIn(AUDIT_BOARD_TOOLS.strip(), turn['text'])
+        self.assertEqual(turn['mode'], 'audit')
+        self.assertEqual(stored['status'], 'completed')
+        self.assertEqual(self.provider.starts, [])
+
+    def test_the_board_tools_of_an_audit_run_on_the_board_of_coconut_with_receipts(self):
+        import json as _json
+        calls = []
+        class Board:
+            tasks = {}
+            def call(self, request):
+                calls.append(request)
+                if request['arguments'].get('title'):
+                    return {'result': _json.dumps({'ok': True, 'task_id': 't_new'})}
+                return {'result': _json.dumps({'ok': True, 'task_id': request['arguments']['task_id'], 'comment_id': 7})}
+            def close(self):
+                pass
+        audit = self.source_audit()
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.dispatch, args=(audit['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        # The turn runs. Coconut's board stands in for the Hermes Kanban runtime.
+        self.service.kanban = Board()
+        created = self.service.gateway_tool({'turn_id': turn, 'tool': 'kanban_create',
+                                             'arguments': {'title': 'Fix the export', 'body': 'Scope and criteria.'}})
+        commented = self.service.gateway_tool({'turn_id': turn, 'tool': 'kanban_comment',
+                                               'arguments': {'task_id': 't_old', 'body': 'Source revision 3.'}})
+        self.assertEqual((created['task_id'], commented['comment_id']), ('t_new', 7))
+        # Coconut gives kanban_create the worker's arguments: the bot's tenant, a blocked card, and an idempotency key.
+        arguments = calls[0]['arguments']
+        self.assertEqual((calls[0]['op'], calls[0]['name'], arguments['tenant'], arguments['initial_status']),
+                         ('tool', 'kanban_create', self.bot['id'], 'blocked'))
+        self.assertTrue(arguments['idempotency_key'].startswith('coconut:' + audit['id'] + ':'))
+        self.assertTrue(arguments['workspace_path'].startswith(str(Path(self.service.root) / 'kanban/kanban/workspaces')))
+        self.assertEqual(calls[0]['profile'], self.service.profiles.row(self.read('bots', self.bot['id']))['name'])
+        # Each call is a completed receipt of the turn, as for a worker. The comment records its board task.
+        with self.service.lock:
+            receipts = [r for r in self.service._all('native_receipts') if r['task_id'] == audit['id']]
+        self.assertEqual([(r['action']['name'], r['state']) for r in receipts],
+                         [('kanban_create', 'completed'), ('kanban_comment', 'completed')])
+        self.assertEqual(receipts[0]['action']['arguments'], arguments)
+        self.assertEqual(self.read('tasks', audit['id'])['_source_native_ids'], ['t_old'])
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        # A turn that is not an audit does not write to the board.
+        chat = self.send('Hello.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(chat['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        with self.assertRaisesRegex(ServiceError, 'Only an audit of a work source'):
+            self.service.gateway_tool({'turn_id': adapter.turns[0]['id'], 'tool': 'kanban_comment',
+                                       'arguments': {'task_id': 't_old', 'body': 'x'}})
+        self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        self.assertEqual(len(calls), 2)
+
+    def test_audits_in_the_gateway_do_not_take_the_slots_of_chats(self):
+        audits = [self.source_audit() for _ in range(3)]
+        hold = threading.Event()
+        self.addCleanup(hold.set)
+        with self.service.transaction():
+            for audit in audits:
+                stored = self.service._get('tasks', audit['id'])
+                self.service._ensure_execution_session(stored)
+                stored['status'] = 'working'
+                self.service._put('tasks', stored)
+                worker = threading.Thread(target=hold.wait, daemon=True)
+                worker.start()
+                self.service.running[audit['id']] = worker
+        chat = self.send('Are you there?')
+        started = []
+        with patch.object(self.service, '_run_task', side_effect=started.append), self.service.lock:
+            self.service._dispatch_chat(1)
+        self.assertEqual(started, [chat['id']])
 
     def test_a_kanban_claim_of_a_gateway_turn_holds_a_placeholder_process(self):
         task = self.audit()

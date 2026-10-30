@@ -59,8 +59,10 @@ WORKER_INPUTS = (
     '_technical_lane', '_native_receipts', '_work_status_only')
 # A task with its own work session runs in the gateway, in a chat of its own (gateway_work_turn), when it has no other
 # worker input. The dispatchers give it the work session and the Kanban claim. A question about a Work item without a
-# native outcome carries that item (`_work_context_id`, `_work_context`).
-WORK_SESSION_INPUTS = ('_execution_session_id', '_kanban_claim', '_work_context_id', '_work_context')
+# native outcome carries that item (`_work_context_id`, `_work_context`). An audit of a work source carries its text and
+# the steps for an answer to its source (`_source_audit_prompt`, `_source_answer_steps`).
+WORK_SESSION_INPUTS = ('_execution_session_id', '_kanban_claim', '_work_context_id', '_work_context',
+                       '_source_audit_prompt', '_source_answer_steps')
 
 
 # A message with one of these fields carries Coconut context that a gateway message does not: a work item. A quote, a
@@ -72,9 +74,9 @@ def gateway_work_turn(task: dict) -> bool:
     """Whether a task with its own work session runs in the gateway, in a separate chat (gateway_chat.work_chat).
 
     Such a task is not a turn of the bot's conversation (`_chat_session`) and has no worker input but its work session,
-    its Kanban claim and its Work item, for example a scheduled message or a question about a Work item. A native
-    outcome (and a question about its Work item), the audit of a work source and a status question stay with the
-    worker. A status question runs in the gateway on its own path (gateway_chat.run_gateway_status).
+    its Kanban claim, its Work item and its audit text, for example a scheduled message, a question about a Work item
+    or the audit of a work source. A native outcome (and a question about its Work item) stays with the worker. A
+    status question runs in the gateway on its own path (gateway_chat.run_gateway_status).
     """
     return (bool(task.get('_execution_session_id')) and not task.get('_chat_session')
             and not any(task.get(key) for key in WORKER_INPUTS if key not in WORK_SESSION_INPUTS))

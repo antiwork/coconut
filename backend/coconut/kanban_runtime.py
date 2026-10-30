@@ -688,6 +688,32 @@ class Board:
         return result
 
 
+# The board tools that a gateway turn of a work source audit calls through Coconut (gateway_chat.gateway_kanban_tool).
+BOARD_TOOLS = ('kanban_create', 'kanban_comment')
+
+
+def board_tool(name, arguments, profile=None):
+    """Run a board tool of Hermes on Coconut's board, as a worker of the bot runs it. Return its result text.
+
+    `profile` is the Hermes profile of the bot. Hermes records it as the author of a comment and the creator of a task.
+    """
+    if name not in BOARD_TOOLS:
+        raise ValueError('Coconut runs only kanban_create and kanban_comment for a gateway turn.')
+    import tools.kanban_tools  # noqa: F401  The import registers the tools.
+    from tools.registry import registry
+    previous = os.environ.get('HERMES_PROFILE')
+    if profile:
+        os.environ['HERMES_PROFILE'] = profile
+    try:
+        result = registry.dispatch(name, dict(arguments))
+    finally:
+        if previous is None:
+            os.environ.pop('HERMES_PROFILE', None)
+        else:
+            os.environ['HERMES_PROFILE'] = previous
+    return result if isinstance(result, str) else json.dumps(result)
+
+
 def main():
     board = Board(sys.argv[1])
     output = sys.stdout
@@ -734,6 +760,8 @@ def main():
                     result = {'tasks': board.snapshot(request.get('external_ids', []), request.get('native_ids', []))}
                 elif request['op'] == 'completion':
                     result = {'card': board.completion(request['id'])}
+                elif request['op'] == 'tool':
+                    result = {'result': board_tool(request['name'], request['arguments'], request.get('profile'))}
                 else:
                     raise ValueError('Unknown Kanban operation.')
             send({'result': result})

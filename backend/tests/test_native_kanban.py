@@ -82,6 +82,40 @@ class NativeKanbanTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
+    def test_a_gateway_audit_writes_to_the_board_of_coconut_and_its_task_becomes_an_outcome(self):
+        # An audit of a work source in the gateway calls coconut_kanban_create and coconut_kanban_comment. Coconut runs
+        # kanban_create and kanban_comment of Hermes on its own board, as a worker of the audit runs them.
+        with self.service.transaction():
+            audit = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Review open assignment',
+                                       'mode': 'queue'}, record_message=False, human_authored=False)
+            audit = self.service._get('tasks', audit['id'])
+            self.service._ensure_execution_session(audit)
+            audit.update(status='working', _source_audit_prompt='Reconcile.', _native_turn_id='turn-1')
+            self.service._put('tasks', audit)
+        with patch.object(self.service, 'gateway_enabled', return_value=True):
+            created = self.service.gateway_kanban_tool(audit['id'], 'kanban_create',
+                                                       {'title': 'Fix the export', 'body': 'Scope and criteria.'})
+            self.assertTrue(created.get('ok'), created)
+            # The same call of the same turn creates no second task.
+            again = self.service.gateway_kanban_tool(audit['id'], 'kanban_create',
+                                                     {'title': 'Fix the export', 'body': 'Scope and criteria.'})
+            self.assertEqual(again['task_id'], created['task_id'])
+            commented = self.service.gateway_kanban_tool(audit['id'], 'kanban_comment',
+                                                         {'task_id': created['task_id'], 'body': 'Source revision 3.'})
+        self.assertTrue(commented.get('ok'), commented)
+        # The task is on Coconut's board for this bot, and Coconut adopts it as an outcome of the audit.
+        self.assertEqual(self.native_program(
+            "task = board.kb.get_task(board.conn, sys.argv[2]); print(task.tenant, task.status)", created['task_id']),
+            self.bot['id'] + ' blocked')
+        self.assertEqual(self.native_program(
+            "print([c.body for c in board.kb.list_comments(board.conn, sys.argv[2])])", created['task_id']),
+            "['Source revision 3.']")
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._adopt_native_outcomes()
+        owners = [t for t in self.service._all('tasks') if t.get('_native_outcome_id') == created['task_id']]
+        self.assertEqual(len(owners), 1)
+        self.assertEqual(self.service._get('tasks', audit['id'])['_source_native_ids'], [created['task_id']])
+
     def test_source_urgency_orders_audits_without_lowering_returned_work(self):
         expected = {}
         # The source's label_priority sets the label scheme. A label outside it has the base priority.
