@@ -61,6 +61,32 @@ class TurnContextReadTests(unittest.TestCase):
             self.assertIn('root', self.service._work_reach('turn', tasks, records, include_continuations=True))
             self.assertEqual(self.service._work_reach('stale', tasks, records, include_continuations=True), set())
 
+    @staticmethod
+    def reference_task_links(tasks, include_continuations):
+        """The task part of _work_links as it was before the one-pass builder, kept here as the expected result."""
+        from coconut.work_status import WorkStatus
+        linked, explicit_waits = {}, {}
+        for task in tasks.values():
+            continued = WorkStatus._continued_work_task(task, tasks) if include_continuations else None
+            if continued:
+                linked.setdefault(task['id'], set()).add(continued['id'])
+                explicit_waits.setdefault(task['id'], set()).add(continued['id'])
+            if include_continuations and task['status'] not in ('failed', 'cancelled'):
+                owner = WorkStatus._work_execution_owner(task, tasks)
+                if owner['id'] != task['id']:
+                    linked.setdefault(owner['id'], set()).add(task['id'])
+                    explicit_waits.setdefault(owner['id'], set()).add(task['id'])
+            if task.get('source_task_id') and ((task.get('_native_relay') and not task.get('_is_return'))
+                    or (include_continuations and task.get('_is_return') and task.get('_assignment_task_id'))):
+                linked.setdefault(task['source_task_id'], set()).add(task['id'])
+            if include_continuations and task.get('_assignment_task_id'):
+                linked.setdefault(task['_assignment_task_id'], set()).add(task['id'])
+            for field in ('_requester_reply_task_id', '_relay_callback_owner'):
+                if task.get(field):
+                    linked.setdefault(task[field], set()).add(task['id'])
+            linked.setdefault(task['id'], set()).update(task.get('_waiting_on', []))
+        return linked, explicit_waits
+
     def test_one_pass_builds_the_task_links_with_and_without_continuations(self):
         self.graph()
         from coconut.work_status import WorkStatus
@@ -68,8 +94,7 @@ class TurnContextReadTests(unittest.TestCase):
         pairs = WorkStatus._work_task_link_pairs(tasks)
         for flag in (False, True):
             with self.subTest(continuations=flag):
-                linked, waits = WorkStatus._work_links(tasks, [], flag)
-                self.assertEqual(pairs[flag], (linked, waits))
+                self.assertEqual(pairs[flag], self.reference_task_links(tasks, flag))
         self.assertIn('turn', pairs[True][0]['root'])
         self.assertNotIn('turn', pairs[False][0].get('root', set()))
 
