@@ -29,8 +29,9 @@ ITEM_LIFETIME = 7 * 86400
 HISTORY = 30 * 86400
 # The app refreshes its registration while it runs. A registration this old belongs to an install nobody uses.
 STALE_REGISTRATION = 30 * 86400
-PUSH_TABLES = ('push_devices', 'push_routes', 'push_preferences', 'push_schedules', 'push_previews')
-# The phone reports the last result of its notification previews here. `coconut status` reads this file.
+PUSH_TABLES = ('push_devices', 'push_routes', 'push_preferences', 'push_schedules')
+# The phone reports the last result of its notification previews here. `coconut status` reads this file. A report stays
+# when the phone turns notifications off: the phone sends a report again only when it changes.
 PREVIEWS_FILE = 'push-previews.json'
 PREVIEW_TIMES = ('failing_since', 'failed_at', 'worked_at')
 # A phone reaches the Mac only through the relay tunnel, which needs the phone's static key. A device without one is an
@@ -243,7 +244,6 @@ class PushDelivery:
         for table in PUSH_TABLES:
             self.service.db.execute(f'DELETE FROM {table} WHERE device_id=?', (device_id,))
         self.unregister_jobs(device_id)
-        self.write_previews()
         return {'registered': False, 'configured': self.configured}
 
     def previews(self, device_id, data):
@@ -309,6 +309,8 @@ class PushDelivery:
             for (device_id,) in db.execute(f'SELECT device_id FROM {table} WHERE device_id NOT IN ({PHONES})').fetchall():
                 self.unregister(device_id)
                 db.execute('DELETE FROM push_status WHERE device_id=?', (device_id,))
+        if db.execute(f'DELETE FROM push_previews WHERE device_id NOT IN ({PHONES})').rowcount:
+            self.write_previews()
         for (device_id,) in db.execute('SELECT device_id FROM push_devices WHERE updated<?', (current - STALE_REGISTRATION,)).fetchall():
             self.unregister(device_id)
             self.note(device_id, 'NotRefreshed')

@@ -232,12 +232,15 @@ class PreviewReportTests(unittest.TestCase):
                 self.report(data)
         self.assertFalse(self.file.exists())
 
-    def test_unpairing_removes_the_phone_from_the_status_file(self):
+    def test_turning_notifications_off_keeps_the_report_and_unpairing_removes_it(self):
         self.report({'extension': {'worked_at': '2026-10-30T11:00:00Z'}})
+        # The phone sends a report again only when it changes, so turning notifications off and on must keep it.
+        self.service.mutate('DELETE', '/v1/device/push', {}, str(uuid4()), self.device)
+        self.assertEqual(json.loads(self.file.read_text())['phones'][0]['line'], 'working (last preview 2026-10-30T11:00:00Z)')
         with self.service.transaction():
-            self.service.push.unregister(self.device)
+            self.service.db.execute('DELETE FROM devices WHERE id=?', (self.device,))
+            self.service.push.remove_stale(__import__('time').time())
         self.assertEqual(json.loads(self.file.read_text()), {'phones': []})
-
 
 if __name__ == '__main__':
     unittest.main()
