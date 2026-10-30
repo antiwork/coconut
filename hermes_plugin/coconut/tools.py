@@ -13,6 +13,9 @@ Cards. coconut_ask, coconut_suggest and coconut_resolve_reply have the schemas o
 keeps the task waiting for the answer, and the pre_tool_call hook blocks each further tool call of the turn
 (hooks.guard_tool). The answer continues the work in a later turn.
 
+Worktrees. coconut_workspace gives a turn of a work session the Git worktree of that session, and Hermes then runs the
+terminal commands of the agent in it.
+
 Card checks. coconut_refresh_decision records the result of an automatic check of a pending card. Only a check turn
 (mode `refresh`) can call it, and a check turn can call no other Coconut tool (hooks.guard_tool).
 """
@@ -24,6 +27,7 @@ from pathlib import Path
 
 TOOLSET = 'coconut'
 _CARDS = None
+_WORKTREES = None
 
 
 def cards():
@@ -95,6 +99,44 @@ def _service_tool(name):
     return handler
 
 
+def worktrees():
+    """backend/coconut/work_workspace.py of this Coconut install. It imports only the standard library."""
+    global _WORKTREES
+    if _WORKTREES is None:
+        path = Path(__file__).resolve().parents[2] / 'backend' / 'coconut' / 'work_workspace.py'
+        spec = importlib.util.spec_from_file_location('coconut_work_workspace', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _WORKTREES = module
+    return _WORKTREES
+
+
+def _workspace(arguments, task_id=None, **_):
+    """coconut_workspace: the worktree of the work session of this turn, as the worker gets it.
+
+    The service names the registry and the outcome of the work session, and refuses a turn without one. The plugin
+    gets the worktree here, because work_workspace.acquire needs Hermes. Hermes then runs the terminal commands of this
+    agent in it (tools.terminal_tool.register_task_env_overrides), as in the worker."""
+    place = json.loads(_service_tool('workspace')({}))
+    if place.get('error'):
+        return _result(place)
+    options = {key: arguments[key] for key in ('repository', 'existing_worktree')
+               if isinstance((arguments or {}).get(key), str) and arguments[key]}
+    if 'repository' not in options:
+        return _result({'error': 'Supply the local repository path.'})
+    try:
+        binding = worktrees().acquire(place['root'], place['outcome'], **options)
+    except (ValueError, OSError) as error:
+        return _result({'error': str(error)})
+    if task_id:
+        try:
+            from tools.terminal_tool import register_task_env_overrides
+            register_task_env_overrides(task_id, {'cwd': binding['path']})
+        except Exception as error:
+            binding = dict(binding, warning=f'Use this path as cwd. Hermes did not set it ({type(error).__name__}).')
+    return _result(binding)
+
+
 def register(ctx):
     module = cards()
     for schema, handler in ((module.QUESTION_SCHEMA, _service_tool('ask')),
@@ -105,5 +147,6 @@ def register(ctx):
                             (module.CORRECTION_SCHEMA, _service_tool('correct_withdrawal')),
                             (module.BOT_CREATION_SCHEMA, _service_tool('create_bot')),
                             (module.BOT_DELETION_SCHEMA, _service_tool('delete_bot')),
+                            (module.WORKSPACE_SCHEMA, _workspace),
                             (TRACK_PR, _service_tool('track_pr')), (MESSAGE_BOT, _service_tool('message_bot'))):
         ctx.register_tool(name=schema['name'], toolset=TOOLSET, schema=schema, handler=handler, emoji='🥥')

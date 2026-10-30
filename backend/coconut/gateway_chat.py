@@ -85,9 +85,10 @@ def gateway_turn_text(request) -> str | None:
     from .native_conversation import (REACTION_SILENCE, WORK_RESUME, attachment_context, current_messages,
                                       message_content, reaction_feedback_context)
     messages = current_messages(request)
-    if any(message.get(field) for message in messages for field in WORKER_MESSAGE_FIELDS):
-        return None
     task = request['task']
+    # A message about a Work item goes with the turn that has that item (work_context_note).
+    if not task.get('_work_context') and any(message.get(field) for message in messages for field in WORKER_MESSAGE_FIELDS):
+        return None
     text = '\n\n'.join(message_content(message) for message in messages)
     if not text.strip() and (task.get('_work_resume') or task.get('_bot_messages') or task.get('_is_return')):
         # The worker names the task when no message of the person starts the turn, for example a message of another bot.
@@ -121,12 +122,17 @@ def work_notes(request) -> str:
     """
     import json
     from .native_conversation import (dependencies_note, direct_reply_note, exchange_note, pending_decisions_context,
-                                      recent_work_note, recovery_note, source_activity_note, tracked_note)
+                                      recent_work_note, recovery_note, source_activity_note, tracked_note,
+                                      work_context_note)
     from .work_progress import WORK_INSTRUCTIONS, work_enabled
     task = request['task']
     # A check of a blocked native task stays with the worker (`_native_outcome_id`), so this is never one.
-    text = (recovery_note(task) + recent_work_note(task) + direct_reply_note(task) + exchange_note(task)
-            + source_activity_note(task) + dependencies_note(task) + tracked_note(task))
+    text = (work_context_note(task) + recovery_note(task) + recent_work_note(task) + direct_reply_note(task)
+            + exchange_note(task) + source_activity_note(task) + dependencies_note(task) + tracked_note(task))
+    if gateway_work_turn(task):
+        # The worker gives each turn of a work session this rule (hermes_worker). coconut_workspace serves it.
+        from .card_tools import WORKSPACE_INSTRUCTIONS
+        text += '\n' + WORKSPACE_INSTRUCTIONS.strip()
     if request.get('bot') and request['operation'] in ('start', 'resume'):
         # The bot changes that the person's messages in this turn can request, as the worker gives them.
         from .hermes_worker import bot_creation_context, bot_deletion_context
@@ -318,13 +324,20 @@ class GatewayChat:
         prepared worker, because Hermes records a process for each claim and can end it. The provider prepares a
         worker for each other task."""
         if self.gateway_enabled() and gateway_work_turn(task):
-            return self.start_gateway_holder(identity)
+            return self.start_gateway_holder(identity, execution)
         return self.provider.prepare_kanban_worker(identity, bot, workspace, execution, native_id)
 
-    def start_gateway_holder(self, identity: str) -> int:
+    def start_gateway_holder(self, identity: str, outcome: str | None = None) -> int:
+        """Start the placeholder process of the Kanban claim of a gateway work turn. It carries the outcome of the work
+        session in COCONUT_WORKSPACE_OUTCOME, as a prepared worker does, so Coconut sees the outcome as running while
+        the turn runs (work_workspace.process_outcomes)."""
         self.stop_gateway_holder(identity)
+        env = dict(os.environ)
+        env.pop('COCONUT_WORKSPACE_OUTCOME', None)
+        if outcome:
+            env['COCONUT_WORKSPACE_OUTCOME'] = outcome
         process = subprocess.Popen([sys.executable, '-c', HOLDER], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                   stderr=subprocess.DEVNULL, start_new_session=True)
+                                   stderr=subprocess.DEVNULL, start_new_session=True, env=env)
         self.gateway_holders[identity] = process
         return process.pid
 
@@ -506,6 +519,8 @@ class GatewayChat:
             return self.wait_for_task(task_id, arguments)
         if tool == 'todos':
             return self.gateway_todos(task_id, arguments)
+        if tool == 'workspace':
+            return self.gateway_workspace(task_id)
         if tool == 'create_bot':
             # The service checks the human message that asks for the bot (service._create_bot_from_chat).
             return self._create_bot_from_chat(task_id, arguments)
@@ -531,6 +546,22 @@ class GatewayChat:
                                                          'text': require_text(arguments, 'text', 20000)})
             return {key: receipt[key] for key in ('status', 'target_bot_id', 'task_id') if key in receipt}
         raise ServiceError(404, 'This Coconut tool does not exist.')
+
+    def gateway_workspace(self, task_id: str) -> dict:
+        """coconut_workspace of a gateway work turn: the registry and the outcome of the worktree of its work session,
+        as the worker gets them (COCONUT_WORKSPACE_ROOT and COCONUT_WORKSPACE_OUTCOME of a prepared worker).
+
+        The plugin then gets the worktree with work_workspace.acquire in the gateway, because acquire needs Hermes, and
+        sets it as the working folder of the turn's terminal. The registry has its own lock across processes. Only a
+        turn of a work session has an outcome. A native outcome, which can continue the worktree of an earlier outcome
+        on Coconut's board (workspace_handoff), stays with the worker."""
+        from .service import ServiceError
+        from .work_capacity import execution_key
+        with self.lock:
+            task = self._get('tasks', task_id)
+            if task['status'] != 'working' or not gateway_work_turn(task):
+                raise ServiceError(409, 'coconut_workspace works only in a turn of a work session.')
+            return {'root': str(self.root / 'workspaces'), 'outcome': execution_key(task)}
 
     def gateway_todos(self, task_id: str, state: dict) -> dict:
         """The todo list of a gateway turn changed (hooks.save_todos). Save it as the work of the task, as the worker

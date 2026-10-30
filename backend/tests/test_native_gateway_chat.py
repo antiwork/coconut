@@ -47,6 +47,10 @@ FINISHED_LIST = 'The docs work is done.'
 # A task with its own work session, which runs in the chat of that work session.
 AUDIT = 'Reconcile these open assignments against the original sources.'
 AUDITED = 'The audit found nothing new.'
+# A question about a Work item. The turn gets the worktree of its work session and runs a command in it.
+FIX = 'Fix the export in the repository.'
+FIXED = 'The export fix is in the worktree.'
+REPOSITORY = {}
 CARD = dict(title='Ship the release?', context='The build passed and the notes are ready.',
             options=[dict(id='ship', label='Ship it', explanation=''), dict(id='wait', label='Wait a day', explanation='')])
 
@@ -63,6 +67,17 @@ def answer(request):
         return dict(role='assistant', content=READ)
     if REACTION in last:
         return dict(role='assistant', content='[SILENT]')
+    # The Work record of the question names the audit that made the item, so this check comes first.
+    if FIX in last and request.get('tools'):
+        done = [message for message in messages[users[-1]:] if message.get('role') == 'tool']
+        if len(done) >= 2:
+            return dict(role='assistant', content=FIXED)
+        # Hermes lists plugin tools behind its tool search bridge. The terminal tool is a core tool.
+        call = (dict(name='terminal', arguments=json.dumps(dict(command='pwd'))) if done else
+                dict(name='tool_call', arguments=json.dumps(dict(name='coconut_workspace',
+                                                                 arguments=dict(repository=REPOSITORY['path'])))))
+        return dict(role='assistant', content=None, tool_calls=[dict(id=f'call-fix-{len(done)}', type='function',
+                                                                     function=call)])
     if AUDIT in last:
         return dict(role='assistant', content=AUDITED)
     if RESUMED in last:
@@ -280,6 +295,43 @@ class NativeGatewayChatTests(unittest.TestCase):
             task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Say hello.'}, str(uuid4()), 'phone')
             service._run_task(task['id'])
             self.assertNotIn(AUDIT, json.dumps(Model.requests[-1]['messages']), diagnostics())
+
+            # A question about a Work item runs in the chat of its work session. coconut_workspace gives the turn the
+            # worktree of that session, and Hermes runs the turn's commands in it.
+            repository = data.parent / 'repository'
+            repository.mkdir()
+            for command in (['init', '-q', '-b', 'main'], ['-c', 'user.name=T', '-c', 'user.email=t@example.com',
+                                                            'commit', '-q', '--allow-empty', '-m', 'Start']):
+                subprocess.run(['git', '-C', str(repository), *command], check=True)
+            REPOSITORY['path'] = str(repository)
+            with service.transaction():
+                owner = service._get('tasks', audit['id'])
+                owner['status'] = 'working'
+                service._put('tasks', owner)
+            item = service._register_work(audit['id'], dict(key='export', title='Export account data',
+                                                            activity='Preparing the export', status='working'))
+            with service.transaction():
+                owner = service._get('tasks', audit['id'])
+                owner['status'] = 'completed'
+                service._put('tasks', owner)
+            question = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages',
+                                      {'text': FIX, 'mode': 'queue', 'work_artifact_id': item['id']}, str(uuid4()), 'phone')
+            service._run_task(question['id'])
+            replies = [m['text'] for m in service._task_messages(question['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
+            self.assertEqual((service._get('tasks', question['id'])['status'], replies), ('completed', [FIXED]), diagnostics())
+            final = next(request for request in reversed(Model.requests) if FIX in json.dumps(request['messages']))
+            results = [message.get('content') for message in final['messages'] if message.get('role') == 'tool']
+            binding = json.loads(results[-2])
+            binding = binding.get('result', binding) if isinstance(binding, dict) else binding
+            binding = json.loads(binding) if isinstance(binding, str) else binding
+            self.assertTrue(Path(binding['path']).is_dir(), diagnostics())
+            # Coconut's registry of worktrees holds it for the outcome of the work session, as for a worker.
+            from coconut.work_capacity import execution_key
+            saved = json.loads((data / 'workspaces/worktrees.json').read_text())
+            self.assertEqual([entry['path'] for entry in saved.values()
+                              if entry['outcome'] == execution_key(service._get('tasks', question['id']))],
+                             [binding['path']], saved)
+            self.assertIn(binding['path'], json.dumps(results[-1]), (binding, results[-1]))
 
             # A background process of a chat turn. Hermes runs its own turn for the completion, outside a Coconut
             # turn, and its reply reaches the bot's chat as a message of the bot.

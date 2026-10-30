@@ -758,6 +758,7 @@ class GatewayAdapterTests(unittest.TestCase):
                                                              'coconut_refresh_decision',
                                                              'coconut_wait', 'coconut_correct_withdrawal',
                                                              'coconut_create_bot', 'coconut_delete_bot',
+                                                             'coconut_workspace',
                                                              'coconut_track_pr', 'coconut_message_bot'])
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
                                       'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
@@ -775,7 +776,9 @@ class GatewayAdapterTests(unittest.TestCase):
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
-        self.assertEqual(len(tool_names), 10)
+        self.assertEqual(len(tool_names), 11)
+        from coconut.card_tools import WORKSPACE_SCHEMA
+        self.assertEqual(schemas['coconut_workspace'], WORKSPACE_SCHEMA)
         # The check tool has the revision fields of the worker's check tool: of a question and of a draft.
         from coconut.card_tools import refresh_schema
         revision = schemas['coconut_refresh_decision']['parameters']['properties']['revision']

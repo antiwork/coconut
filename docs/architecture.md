@@ -270,7 +270,14 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - The plugin offers `coconut_refresh_decision` with the schema of the worker's tool (`card_tools.REFRESH_SCHEMA`). In a check turn, the plugin blocks the card tools and `coconut_resolve_reply`. In every other turn, it blocks `coconut_refresh_decision` (`hooks.guard_tool`).
 - The service takes only `coconut_refresh_decision` from a check turn (`decision_freshness.refresh_decision`), and it sends no message to the chat. A follow-up on the card cannot record a check result.
 - The results of background research stay in the worker. Only a worker turn makes them: Coconut records the processes of a worker turn as receipts. Hermes runs the processes of a gateway turn and tells its session when one ends.
-- A question about a Work item stays in the worker. The Kanban claim of its work session prepares a worker process with `COCONUT_WORKSPACE_OUTCOME`, and `coconut_workspace` binds the checkout to that outcome. Retirement reads that variable of the running processes to keep a checkout that is in use (`work_workspace`). A native outcome also reads Coconut's board to continue the checkout of an earlier outcome (`workspace_handoff`).
+
+### Phase 5: work sessions in the gateway, part 3
+
+- A question about a Work item without a native outcome (`_work_context_id`) now runs in the gateway, in the chat of its work session (`gateway_bridge.gateway_work_turn`). The turn text has the worker's text for the Work item (`native_conversation.work_context_note`) and the worker's rule for the worktree of a work session (`card_tools.WORKSPACE_INSTRUCTIONS`).
+- The placeholder process of the Kanban claim of a gateway work turn carries the outcome of its work session in `COCONUT_WORKSPACE_OUTCOME`, as a prepared worker does. Coconut then sees the outcome as running while the turn runs (`work_workspace.process_outcomes`).
+- The plugin offers `coconut_workspace`. The service names the registry and the outcome of the turn's work session, and it refuses a turn without one (`gateway_chat.gateway_workspace`). The plugin then gets the worktree with `work_workspace.acquire` in the gateway, because `acquire` needs Hermes, and sets it as the working folder of the agent's terminal (`register_task_env_overrides`). The registry has its own lock across processes.
+- A question about a Work item with a native outcome stays in the worker. Its worktree can continue the worktree of an earlier outcome on Coconut's board (`workspace_handoff`).
+- A turn of a bot's conversation that owns a native outcome is not a chat turn (`work_capacity.chat_turn`). The Kanban scheduler dispatches it from the claim of the outcome's card, and the worker runs it. Before, the chat dispatcher started it without that claim, and the turn failed again and again.
 
 ### Kanban: not yet
 

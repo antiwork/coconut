@@ -175,7 +175,7 @@ class NativeKanban(NativeOutcomes):
             return self._kanban_rows_shared()
 
     def _kanban_rows_shared(self):
-        from .work_capacity import execution_key
+        from .work_capacity import chat_turn, execution_key
         known = self.kanban.tasks
         retained = json.dumps([i for i, task in known.items() if task.get('status') not in ('done', 'archived')])
         tasks = [json.loads(row[0]) for row in self.db.execute(
@@ -208,7 +208,7 @@ class NativeKanban(NativeOutcomes):
                     refresh_active |= bool(context.get('_decision_refresh'))
             rows.append(self._kanban_row(context, task, state, priority=30))
         for task in self._dispatch_order(tasks):
-            if task.get('_work_status_only') or task.get('_chat_session'):
+            if task.get('_work_status_only') or chat_turn(task):
                 continue
             if task['status'] not in self.ACTIVE and known.get(task['id'], {}).get('status', 'done') in ('done', 'archived'):
                 continue
@@ -298,8 +298,9 @@ class NativeKanban(NativeOutcomes):
         return owner if owner and owner['bot_id'] == native.get('tenant') else None
 
     def _dispatch_status_request(self):
+        from .work_capacity import chat_turn
         # A read-only progress question keeps its own bounded session when work capacity is full.
-        if any(self._get('tasks', identity).get('_work_status_only') or self._get('tasks', identity).get('_chat_session') for identity in self.running):
+        if any(self._get('tasks', identity).get('_work_status_only') or chat_turn(self._get('tasks', identity)) for identity in self.running):
             return
         for task in self._marked_tasks('_work_status_only'):
             if not self._dispatch_eligible(task, time.time()):
@@ -329,7 +330,7 @@ class NativeKanban(NativeOutcomes):
                     created_at=source.get('created_at', task.get('created_at', '')))
 
     def _dispatch_kanban(self):
-        from .work_capacity import execution_key, state as capacity_state
+        from .work_capacity import chat_turn, execution_key, state as capacity_state
         self._kanban_pass_started = time.monotonic()
         if self.restart_pending or self.stopping.is_set():
             # Finish committed turns, but neither adopt work nor claim/start any
@@ -363,7 +364,7 @@ class NativeKanban(NativeOutcomes):
             contexts = {row[0]: json.loads(row[1]) for row in self.db.execute(
                 'SELECT id, data FROM contexts WHERE id IN (SELECT value FROM json_each(?))',
                 (json.dumps([row['id'] for row in rows if row['state'] == 'ready']),))}
-            foreground = sum(bool(self._get('tasks', i).get('_chat_session') or
+            foreground = sum(bool(chat_turn(self._get('tasks', i)) or
                 self._get('tasks', i).get('_work_status_only')) for i in self.running)
             capacity = max(0, capacity - max(0, foreground - 1))
             # READY continuation must not change input between row capture and

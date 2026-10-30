@@ -1605,13 +1605,17 @@ class NativeOutcomes:
             self._event('artifact.updated', self._public(item), item['bot_id'], owner['id'])
 
     def _dispatch_chat(self, capacity):
-        from .work_capacity import execution_key
+        from .work_capacity import chat_turn, execution_key
         active = {execution_key(self._get('tasks', i)) for i in self.running}
         active.update(execution_key(self._get('tasks', self._get('contexts', i)['task_id'])) for i in self.context_threads)
+        if self._kanban_claiming:
+            # A native pass may be claiming a ready row of the bot's own execution, such as a conversation turn that owns
+            # an outcome. Its turn starts only after the claim, so no chat turn of that execution starts meanwhile.
+            active.update(self._kanban_claim_outcomes)
         # Share host capacity, retaining one reserved slot for direct replies.
         slots = max(0, capacity + 1 - len(self.running) - len(self.context_threads))
         if self._kanban_dispatching:
-            foreground = sum(bool(self._get('tasks', i).get('_chat_session') or
+            foreground = sum(bool(chat_turn(self._get('tasks', i)) or
                 self._get('tasks', i).get('_work_status_only')) for i in self.running)
             slots = min(slots, max(0, 1 - foreground))
         candidates = [json.loads(row[0]) for row in self.db.execute(
@@ -1620,7 +1624,8 @@ class NativeOutcomes:
         for task in self._dispatch_order(candidates):
             if not slots:
                 break
-            if not task.get('_chat_session') or execution_key(task) in active:
+            # A conversation turn that owns a native outcome starts from the outcome's claim (chat_turn).
+            if not chat_turn(task) or execution_key(task) in active:
                 continue
             bot = self._get('bots', task['bot_id'])
             if bot['archived'] or bot.get('_deleted') or not self._dispatch_eligible(task, time.time()):

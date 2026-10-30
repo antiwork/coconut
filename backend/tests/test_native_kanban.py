@@ -1093,6 +1093,259 @@ for title in ('First defect', 'Second defect'):
         self.service._migrate_native_work()
         self.assertNotIn('work_outcome_id', self.service._get('artifacts', report['id']))
 
+    def exchange_review(self):
+        """A review that Desk asks of Dev. With the gateway, the exchange is a turn of Dev's conversation
+        (join_conversation). Dev reports the open PR and ends its turn, and the retained PR migration binds the PR's
+        native outcome to that chat turn."""
+        from coconut.service import now
+        dev = self.write('/v1/bots', {'name': 'Dev', 'role': 'Review'})
+        requester = self.task('Own the review of the PR')
+        with self.service.transaction():
+            stored = self.service._get('tasks', requester['id'])
+            stored.update(status='working', _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', stored)
+        self.provider.supports_native_outcomes = True
+        with patch.object(self.service, 'gateway_enabled', return_value=True):
+            sent = self.service._deliver_bot_message(requester['id'], dict(
+                target_bot_id=dev['id'], text='Review the PR privately.', require_response=True))
+        with self.service.transaction():
+            stored = self.service._get('tasks', requester['id'])
+            stored['status'] = 'waiting'
+            self.service._put('tasks', stored)
+            review = self.service._get('tasks', sent['task_id'])
+            review.update(status='completed', _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', review)
+        self.assertTrue(review['_chat_session'])
+        self.assertNotIn('_execution_session_id', review)
+        self.assertEqual(self.service._get('tasks', requester['id'])['_waiting_on'], [review['id']])
+        self.service._put('artifacts', dict(id=str(uuid4()), kind='pr', task_id=review['id'], _review_task_id=review['id'],
+            bot_id=dev['id'], title='Correct the exported totals', url='https://github.com/example/project/pull/42',
+            status='ready_for_review', pr_state='open', observed_at=now(), created_at=now()))
+        self.service._migrate_native_work()
+        self.service.kanban.call({'op': 'snapshot'})
+        review = self.service._get('tasks', review['id'])
+        self.assertTrue(review['_chat_session'])
+        self.assertEqual(review['status'], 'queued')
+        native = self.service.kanban.tasks[review['id']]
+        self.assertEqual((native['id'], native['status']), (review['_native_outcome_id'], 'ready'))
+        return self.service._get('tasks', requester['id']), review
+
+    def claimed_starts(self, release=None):
+        """Run each provider turn as a native worker does. It records the claim that it receives, and with that claim it
+        completes the outcome's card with its result."""
+        starts = []
+        def run(task, bot, history, emit):
+            claim = task.get('_native_outcome')
+            starts.append((task['id'], claim, task.get('_kanban_claim')))
+            self.provider.started.append(task['id'])
+            if release is not None and not release.wait(15):
+                raise AssertionError('The test did not release the claimed turn.')
+            if claim:
+                self.native_program("assert board.kb.complete_task(board.conn, sys.argv[2], summary='Review result saved', "
+                                    "expected_run_id=int(sys.argv[3]))", claim['native_id'], str(claim['run_id']))
+            emit('text_delta', {'text': 'The review passed.'})
+            emit('completed', {'summary': 'Review result saved'})
+        self.provider.start_task = run
+        return starts
+
+    def returns(self, source_id, target_bot_id):
+        return [d for d in self.service._all('deliveries')
+                if d['source_task_id'] == source_id and d['target_bot_id'] == target_bot_id]
+
+    def stopped(self, task_id):
+        return [m['text'] for m in self.service._task_messages(task_id) if m['text'].startswith('Work stopped')]
+
+    def test_chat_turn_with_a_native_outcome_runs_once_from_its_claim(self):
+        requester, review = self.exchange_review()
+        starts = self.claimed_starts()
+        self.settle(lambda: starts or self.stopped(review['id']))
+        # No turn ran without the claim of the card, so none stopped with the missing claim and none returned a failure.
+        self.assertEqual(self.stopped(review['id']), [])
+        self.settle(lambda: self.service.kanban.tasks[review['id']]['status'] == 'done'
+                    and self.service._get('tasks', review['id'])['status'] == 'completed'
+                    and self.returns(review['id'], requester['bot_id']))
+        reviews = [s for s in starts if s[0] == review['id']]
+        self.assertEqual(len(reviews), 1)
+        _, outcome, claim = reviews[0]
+        native = self.service.kanban.tasks[review['id']]
+        self.assertEqual(outcome, claim)
+        self.assertEqual((claim['native_id'], claim['external_id']), (native['id'], review['id']))
+        self.assertEqual(self.service._get('tasks', review['id'])['_native_outcome_id'], native['id'])
+        # The requester receives the completed result once. More passes neither run the turn again nor send it again.
+        for _ in range(5):
+            self.tick()
+        sent = self.returns(review['id'], requester['bot_id'])
+        self.assertEqual(len(sent), 1)
+        self.assertFalse(sent[0]['text'].startswith('Task failed'))
+        self.assertEqual([s[0] for s in starts].count(review['id']), 1)
+        self.assertEqual(self.native_program(
+            "print(board.conn.execute('SELECT count(*) FROM task_runs WHERE task_id=?', (sys.argv[2],)).fetchone()[0])",
+            native['id']), '1')
+        callback = next(t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == review['id'])
+        self.assertEqual(callback['_assignment_task_id'], requester['id'])
+        self.assertNotIn(review['id'], self.service._get('tasks', requester['id']).get('_waiting_on', []))
+
+    def test_saved_claimless_failure_retries_once_from_the_claim_and_returns_one_result(self):
+        # The saved state of the incident: the conversation turn that owns the outcome ran without its claim, stopped,
+        # and returned that failure to the requester. Its card is ready and has no run.
+        requester, review = self.exchange_review()
+        with self.service.transaction():
+            stored = self.service._get('tasks', review['id'])
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+        self.service.emit(review['id'], 'failed', {'summary': "Work stopped: '_kanban_claim'"})
+        self.service._drain_returns()
+        failures = self.returns(review['id'], requester['bot_id'])
+        self.assertEqual([d['text'] for d in failures], ["Task failed: Work stopped: '_kanban_claim'"])
+        earlier = [t['id'] for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == review['id']]
+        self.assertEqual(len(earlier), 1)
+        self.service.kanban.call({'op': 'snapshot'})
+        native = self.service.kanban.tasks[review['id']]
+        self.assertEqual((native['status'], native.get('current_run_id')), ('ready', None))
+        starts = self.claimed_starts()
+        self.settle(lambda: self.service.kanban.tasks[review['id']]['status'] == 'done'
+                    and len(self.returns(review['id'], requester['bot_id'])) == 2)
+        for _ in range(5):
+            self.tick()
+        # The retry runs once, from the claim of the same card. No pass adds another failure for the requester.
+        reviews = [s for s in starts if s[0] == review['id']]
+        self.assertEqual(len(reviews), 1)
+        self.assertEqual(reviews[0][1]['native_id'], native['id'])
+        self.assertEqual(self.service._get('tasks', review['id'])['_native_outcome_id'], native['id'])
+        self.assertEqual(self.stopped(review['id']), ["Work stopped: '_kanban_claim'"])
+        sent = self.returns(review['id'], requester['bot_id'])
+        self.assertEqual([d['text'].startswith('Task failed') for d in sent], [True, False])
+        # The earlier failure callback is not rewritten and runs once as its own turn. The completed result reaches the
+        # requester once, in one more callback.
+        callbacks = [t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == review['id']]
+        self.assertEqual(callbacks[0]['id'], earlier[0])
+        self.assertEqual([t['status'] for t in callbacks], ['completed', 'completed'])
+        self.assertEqual([s[0] for s in starts].count(earlier[0]), 1)
+        self.assertEqual(self.native_program(
+            "print(board.conn.execute('SELECT count(*) FROM task_runs WHERE task_id=?', (sys.argv[2],)).fetchone()[0])",
+            native['id']), '1')
+
+    def test_requester_continues_a_conversation_outcome_on_its_successor_card(self):
+        requester, review = self.exchange_review()
+        starts = self.claimed_starts()
+        self.settle(lambda: self.service.kanban.tasks[review['id']]['status'] == 'done'
+                    and self.returns(review['id'], requester['bot_id']))
+        first = self.service.kanban.tasks[review['id']]['id']
+        callback = next(t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == review['id'])
+        self.settle(lambda: self.service._get('tasks', callback['id'])['status'] == 'completed')
+        care = self.write('/v1/bots', {'name': 'Care', 'role': ''})
+        foreign = self.write('/v1/bots/' + care['id'] + '/messages', {'text': 'Unrelated work'})
+        for source in (foreign, callback):
+            with self.service.transaction():
+                stored = self.service._get('tasks', source['id'])
+                stored['status'] = 'working'
+                self.service._put('tasks', stored)
+        before = (self.service._get('tasks', review['id']), len(self.service._all('deliveries')))
+        from coconut.service import ServiceError
+        with self.assertRaisesRegex(ServiceError, 'Only the owner or its requesting bot can continue this work.') as error:
+            self.service.emit(foreign['id'], 'work_continue', dict(task_id=first, message='Check another head.'))
+        self.assertEqual(error.exception.status, 403)
+        self.assertEqual((self.service._get('tasks', review['id']), len(self.service._all('deliveries'))), before)
+        receipt = self.service.emit(callback['id'], 'work_continue', dict(task_id=first, message='Check the new head.'))
+        self.assertEqual((receipt['task_id'], receipt['status']), (review['id'], 'queued'))
+        self.settle(lambda: len([s for s in starts if s[0] == review['id']]) == 2
+                    and self.service._get('tasks', review['id'])['status'] == 'completed'
+                    and len(self.returns(review['id'], requester['bot_id'])) == 2)
+        # The new input has a successor card. Its turn starts from that card's claim, never as a conversation turn.
+        successor = self.service.kanban.tasks[review['id']]
+        self.assertNotEqual(successor['id'], first)
+        self.assertEqual(self.service._get('tasks', review['id'])['_native_outcome_id'], successor['id'])
+        self.assertEqual([s[1]['native_id'] for s in starts if s[0] == review['id']], [first, successor['id']])
+        self.assertTrue(self.service._get('tasks', review['id'])['_chat_session'])
+        self.assertEqual(self.stopped(review['id']), [])
+        for _ in range(5):
+            self.tick()
+        self.assertEqual(len([s for s in starts if s[0] == review['id']]), 2)
+        self.assertEqual(len(self.returns(review['id'], requester['bot_id'])), 2)
+        self.assertEqual(len(self.returns(review['id'], care['id'])), 0)
+
+    def test_chat_turn_of_the_same_bot_waits_while_its_outcome_turn_is_claimed(self):
+        requester, review = self.exchange_review()
+        dev = self.service._get('bots', review['bot_id'])
+        starts = self.claimed_starts()
+        prepare = self.provider.prepare_kanban_worker
+        chats, during_claim = [], []
+        def claimed(identity, *args):
+            pid = prepare(identity, *args)
+            if identity == review['id'] and not chats:
+                # A message to Dev arrives while the native pass claims the review, and the conversation dispatcher
+                # runs on its own thread meanwhile. The review's execution is the bot's, so the chat turn shares it.
+                chats.append(self.write('/v1/bots/' + dev['id'] + '/messages', {'text': 'A direct question for Dev'}))
+                with self.service.lock:
+                    self.service._dispatch_chat(4)
+                    during_claim.append(set(self.service.running))
+            return pid
+        self.provider.prepare_kanban_worker = claimed
+        self.settle(lambda: chats and self.service.kanban.tasks[review['id']]['status'] == 'done'
+                    and self.service._get('tasks', chats[0]['id'])['status'] == 'completed')
+        chat = self.service._get('tasks', chats[0]['id'])
+        self.assertTrue(chat['_chat_session'])
+        # The chat turn waited for the claimed turn, and each ran once.
+        self.assertEqual(len(during_claim), 1)
+        self.assertNotIn(chat['id'], during_claim[0])
+        ids = [s[0] for s in starts]
+        self.assertEqual((ids.count(review['id']), ids.count(chat['id'])), (1, 1))
+        self.assertLess(ids.index(review['id']), ids.index(chat['id']))
+        self.assertEqual(self.stopped(review['id']), [])
+
+    def test_merge_card_waits_for_the_conversation_review_result_until_it_is_consumed(self):
+        from coconut.decision_sources import github_links
+        from coconut.pr_tracking import PRObservation
+        from coconut.service import ServiceError, YieldForDecision
+        URL, revision = 'https://github.com/example/project/pull/42', '2026-09-23T11:46:31Z'
+        state = PRObservation('pending', 'a' * 40, 'Change', URL, 'open', '2026-09-13T10:00:00Z', True, 'open', False, 'pending')
+        self.service.pr_tracker = type('Tracker', (), {'observe': lambda _, url: state, 'observe_discussion': lambda _, url: None,
+                                                       'observe_issue': lambda _, url: dict(updated_at=revision)})()
+        requester, review = self.exchange_review()
+        def working(task_id):
+            with self.service.transaction():
+                stored = self.service._get('tasks', task_id)
+                stored['status'] = 'working'
+                self.service._put('tasks', stored)
+        def ask(task_id):
+            payload = dict(title='Merge this PR?', merge_pr_url=URL, risk_level='low',
+                           risk='A bad merge reaches main until a revert.',
+                           options=[dict(id='merge', label='Merge', explanation='Merge the reviewed change.')])
+            payload['source_revisions'] = {url: revision for url in github_links(payload)}
+            receipt = self.service.emit(task_id, 'native_call', {'name': 'coconut_ask', 'arguments': payload})
+            self.service.emit(task_id, 'native_question', dict(payload, receipt_id=receipt['id']))
+        working(requester['id'])
+        self.service._register_pr_artifact(requester['id'], dict(url=URL))
+        release = threading.Event()
+        self.addCleanup(release.set)
+        starts = self.claimed_starts(release)
+        self.settle(lambda: starts)
+        self.assertEqual(self.service._get('tasks', review['id'])['status'], 'working')
+        # The reviewer's turn runs from its claim, so the requester cannot offer the merge yet.
+        with self.assertRaisesRegex(ServiceError, 'pending worker or delegated result'):
+            ask(requester['id'])
+        # Its result is saved but not delivered yet. The card still waits.
+        with patch.object(self.service, '_drain_returns'):
+            release.set()
+            self.settle(lambda: self.service.kanban.tasks[review['id']]['status'] == 'done'
+                        and self.service._get('tasks', review['id'])['status'] == 'completed')
+            self.assertEqual(self.returns(review['id'], requester['bot_id']), [])
+            with self.assertRaisesRegex(ServiceError, 'pending worker or delegated result'):
+                ask(requester['id'])
+        self.assertEqual([d for d in self.service._all('decisions') if d.get('merge_pr_url')], [])
+        # The requester's callback consumes the completed result once, and then it can offer the merge.
+        self.settle(lambda: any(t.get('_resolved_dependency_id') == review['id'] for t in self.service._all('tasks')))
+        sent = self.returns(review['id'], requester['bot_id'])
+        self.assertEqual(len(sent), 1)
+        self.assertFalse(sent[0]['text'].startswith('Task failed'))
+        callback = next(t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == review['id'])
+        working(callback['id'])
+        with self.assertRaises(YieldForDecision):
+            ask(callback['id'])
+        cards = [d for d in self.service._all('decisions') if d.get('merge_pr_url')]
+        self.assertEqual([(d['status'], d['task_id']) for d in cards], [('pending', callback['id'])])
+        self.assertEqual(len([s for s in starts if s[0] == review['id']]), 1)
+
     def test_completed_history_import_removes_repeated_chain_reads(self):
         task, item = self.legacy_work('Verified export')
         self.provider.supports_native_outcomes = True
