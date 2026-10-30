@@ -361,14 +361,17 @@ class DecisionFreshness:
     def _initialize_decision_freshness(self, decision, *, profile_revision=_PROFILE_REVISION_UNSET):
         if decision['action_type'] not in ('question', 'draft_message'):
             return
-        tasks = {t['id']: t for t in self._all('tasks')}
         artifacts = self._all('artifacts')
         current_revision = self.profiles.prompt_revision(self._get('bots', decision['bot_id']))
         if profile_revision is _PROFILE_REVISION_UNSET:
             # Direct local events certify their construction snapshot. Hermes supplies its worker snapshot.
             profile_revision = current_revision
-        fingerprint, _ = self._decision_evidence(decision, tasks,
-            self._decision_records(decision, tasks, artifacts), artifacts, profile_revision=profile_revision or '')
+        # The kept task map spares a parse of the whole task table under the service lock (TaskCache). The evidence
+        # only reads it.
+        with self._shared_reads():
+            tasks = self._task_map()
+            fingerprint, _ = self._decision_evidence(decision, tasks,
+                self._decision_records(decision, tasks, artifacts), artifacts, profile_revision=profile_revision or '')
         decision['_profile_revision'] = profile_revision
         if profile_revision != current_revision:
             decision['assessment_stale'] = True

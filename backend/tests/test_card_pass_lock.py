@@ -142,6 +142,35 @@ class CardPassLockTests(unittest.TestCase):
             self.service._queue_decision_refreshes()
         self.assertEqual(len(self.queued_checks()), 1)
 
+    def test_a_new_card_and_its_follow_up_read_no_whole_task_table(self):
+        decision = self.question()
+        original = type(self.service)._all
+
+        forbidden = {'tasks'}
+
+        def guarded(service, table):
+            if table in forbidden:
+                raise AssertionError(f'A card event must not parse every row of {table}.')
+            return original(service, table)
+
+        task = self.service._get('tasks', decision['task_id'])
+        saved = self.service._get('decisions', decision['id'])
+
+        def initialize():
+            with self.service.transaction():
+                self.service._initialize_decision_freshness(dict(saved), profile_revision=saved['_profile_revision'])
+            return self.service._get('decisions', decision['id'])['_freshness']['fingerprint']
+
+        expected = initialize()
+        with patch.object(type(self.service), '_all', guarded):
+            # The evidence reads the kept task map. It still reads the cards once, as the card pass does.
+            self.assertEqual(initialize(), expected)
+            forbidden.add('decisions')
+            # An unanswered card is not a valid follow-up. The check reads the card and its task by ID.
+            with self.assertRaisesRegex(Exception, 'Link an answered question'):
+                self.service.decision_followup(task, {'previous_decision_id': decision['id']})
+            self.assertEqual(self.service.decision_followup(task, {}), {})
+
     def test_card_reads_use_indexes(self):
         plans = {
             'SELECT rowid, data FROM messages INDEXED BY messages_human WHERE ' + HUMAN_MESSAGE: 'messages_human',
