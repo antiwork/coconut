@@ -86,6 +86,43 @@ class ProviderFailureRetryTests(unittest.TestCase):
             assert events() == 3, events()
         ''')
 
+    def test_a_completed_run_of_a_board_task_does_not_run_again_but_a_cut_off_run_does(self):
+        self.run_native('''
+            # Two tasks that Coconut put on the board (a binding, no adopted outcome). Each claim has a dead process
+            # and the same input as its row (kanban_scheduler.interrupted_claim), and a comment names a PR.
+            def board_task(name):
+                workspace = home / name
+                workspace.mkdir()
+                identity = kb.create_task(conn, title=name, body='Fixture', assignee='default', tenant='care',
+                    workspace_kind='dir', workspace_path=str(workspace))
+                board.bind(identity, name)
+                task = kb.claim_task(conn, identity)
+                return identity, task.current_run_id
+            done, done_run = board_task('done')
+            assert kb.complete_task(conn, done, summary='Merged', expected_run_id=done_run)
+            cut, cut_run = board_task('cut')
+            kb.schedule_task(conn, cut, reason='Resuming after the Mac service restarted.')
+            # Coconut makes both ready again. A promotion after the completed run lifts recent_success, so the PR
+            # guard decides for both.
+            import time
+            time.sleep(1.1)
+            with kb.write_txn(conn):
+                conn.execute("UPDATE tasks SET status='ready' WHERE id IN (?,?)", (done, cut))
+                kb._append_event(conn, done, 'promoted', {})
+            for identity in (done, cut):
+                kb.add_comment(conn, identity, author='default', body='Opened https://github.com/example/app/pull/7')
+                assert board.dispatch.check_respawn_guard(conn, identity) == 'active_pr'
+            assert not board.run_cut_off(done, done_run) and board.run_cut_off(cut, cut_run)
+            rows = [dict(id=name, state='ready', input='one', previous_input='one', recovering=False, native_id=None,
+                         interrupted=identity, interrupted_run=run)
+                    for name, identity, run in (('done', done, done_run), ('cut', cut, cut_run))]
+            spawned = []
+            result = board._dispatch_ready(rows, 2, lambda claim, workspace: spawned.append(claim.id))
+            # The completed run has its result, so its input does not run again. The cut-off run starts once more.
+            assert spawned == [cut], spawned
+            assert (done, 'active_pr') in result.respawn_guarded, result
+        ''')
+
     def test_a_task_that_the_guard_lets_through_still_spawns(self):
         self.run_native('''
             identity, run = claimed('free')
