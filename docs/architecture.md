@@ -303,7 +303,7 @@ Coconut keeps its private board in `<data>/kanban/kanban.db` and dispatches it i
 Hermes refuses to start a ready task again for some reasons (`check_respawn_guard`). One is `active_pr`: a recent comment names a PR, so a new run could open a second PR. Coconut lets a run pass `active_pr` in two cases, and only when no run of the task is alive:
 
 - The task continues accepted input on the same PR (`coconut_pr_followups`), or the input is new.
-- The task recovers. Either the bot recovers it (`_self_recovery`), or its claim was interrupted (`kanban_scheduler.interrupted_claim`): the board task is ready, its current run is not the run of the claim, and the process of the claim is gone. A restart of the service leaves this state, and before this rule the outcome never started again.
+- The task recovers. Either the bot recovers an outcome (`_self_recovery`), or the claim of any task on the board was interrupted (`kanban_scheduler.interrupted_claim`, the row field `interrupted`), also of a task that Coconut put on the board without an adopted outcome: the board task is ready, its current run is not the run of the claim, and the process of the claim is gone. A restart of the service leaves this state, and before this rule the outcome never started again.
 
 A task without a run keeps the guard: its creator may have opened the PR, and the task waits for new input. Comments and heartbeats do not repeat its guard event, so audits that comment on it leave one event (`_note_respawn_guard`).
 
