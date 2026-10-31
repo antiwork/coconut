@@ -88,6 +88,11 @@ BOARD_MESSAGE = ('This board is not the board of Coconut. Call the coconut_kanba
                  'the claim of this turn.')
 
 STATUS_MESSAGE = 'Answer from the saved context in the message. This answer uses no tools.'
+# The Hermes tools that a technical lane holds, as the service holds them for the worker (technical_lane.HELD_TOOLS),
+# and the gateway's message tool to other platforms, which publishes outside this Mac.
+LANE_TOOLS = ('message_agent', 'cronjob_manage', 'clarify', 'send_message')
+LANE_MESSAGE = ('Independent technical work holds this tool while its decision is pending. Stay within the authorized '
+                'local scope, and record what needs the person with coconut_kanban_comment on your own task.')
 
 
 def prompt_parts(text, size=SECTION_CHARS):
@@ -142,9 +147,16 @@ def guard_tool(tool_name='', task_id=None, **_):
 
     The first tool call of a native outcome turn also sets its working folder: the workspace of its claim, as the
     worker sets TERMINAL_CWD. coconut_workspace later replaces it with the worktree of the work."""
-    from .adapter import FOLDER_TASKS, FOLDERS, MODES, PAUSED
+    from .adapter import FOLDER_TASKS, FOLDERS, LANE_CHATS, MODES, PAUSED
     holder, turn = _turn()
     if turn is None:
+        # A turn of Hermes itself in the chat of a technical lane, for example the completion of a background process of
+        # the lane, keeps the lane holds. It has no Coconut turn, so it has no Coconut board tools either.
+        from gateway.session_context import get_session_env
+        if (get_session_env('HERMES_SESSION_PLATFORM', '') == NAME
+                and get_session_env('HERMES_SESSION_CHAT_ID', '') in LANE_CHATS
+                and (tool_name in LANE_TOOLS or tool_name.startswith('kanban_'))):
+            return {'action': 'block', 'message': LANE_MESSAGE}
         return None
     if turn in FOLDERS and task_id and task_id not in FOLDER_TASKS.setdefault(turn, set()):
         FOLDER_TASKS[turn].add(task_id)
@@ -158,6 +170,8 @@ def guard_tool(tool_name='', task_id=None, **_):
     if MODES.get(turn) == 'status':
         # A status question is answered from its saved context, without tools, as the worker answers it.
         return {'action': 'block', 'message': STATUS_MESSAGE}
+    if MODES.get(turn) == 'technical' and tool_name in LANE_TOOLS:
+        return {'action': 'block', 'message': LANE_MESSAGE}
     if tool_name.startswith('kanban_'):
         # The board tools of the gateway write to its own board, not to Coconut's, where the work of the bots is
         # (gateway_chat.gateway_kanban_tool).

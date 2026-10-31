@@ -290,7 +290,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 
 ### Native outcomes in the gateway
 
-- A native outcome (`_native_outcome_id`) runs in the gateway, in the chat of its work session, as a turn of that session (`gateway_bridge.gateway_work_turn`). A question about the Work item of an outcome is a turn of that outcome, so it runs there too. Its technical lane (`_technical_lane`) stays with the worker for now.
+- A native outcome (`_native_outcome_id`) runs in the gateway, in the chat of its work session, as a turn of that session (`gateway_bridge.gateway_work_turn`). A question about the Work item of an outcome is a turn of that outcome, so it runs there too: its message about the item goes with the native task of the outcome (`gateway_turn_text`). Its technical lane runs there too (see "The technical lane in the gateway").
 - The Kanban claim of the card holds the gateway's placeholder, not a prepared worker (`kanban_worker_pid`). Hermes's dispatcher keeps a claim with a live placeholder: it extends an expired claim and does not reclaim it, as for a worker. A placeholder that dies is a crashed worker, and Hermes runs the card again.
 - The turn text has what the worker gives the turn: the native task (`build_worker_context`), the outcome rules (`native_outcomes.WORK_INSTRUCTIONS`), the receipts of earlier attempts of the turn, and the rules of a check of a blocked task. The terminal of the turn runs in the workspace of the claim (`folder`, `hooks.guard_tool`), as the worker's TERMINAL_CWD. `coconut_workspace` carries the proof of the claim, so an outcome can continue the retired worktree of an earlier outcome (`workspace_handoff.native_successor`).
 - The board tools. Hermes refuses a plugin tool with the name of one of its tools, so each board tool of a worker has a Coconut name: `coconut_kanban_show`, `_comment`, `_heartbeat`, `_complete`, `_block`, `_schedule`, `_request_review`, `_link`, `_create`, `_list` and `_unblock`. The turn text maps each `kanban_` name to its Coconut name (`gateway_chat.OUTCOME_BOARD_TOOLS`), so the rules and the skills of a bot keep working. The schemas of the tools that only a worker had are the schemas of Hermes's tools, without the board (`tools.claim_schemas`).
@@ -298,8 +298,19 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - The service runs each tool on Coconut's board (`gateway_chat.gateway_kanban_tool`). It first checks that the turn holds the claim of its outcome. Then the Kanban runtime runs Hermes's tool with the worker env of that claim (`HERMES_KANBAN_TASK`, `HERMES_KANBAN_RUN_ID`, `HERMES_KANBAN_CLAIM_LOCK`, `kanban_runtime.board_tool`), so Hermes refuses a call for another task or for an earlier run, as for a worker. The runtime takes one request at a time, so the env of one call never reaches another. `kanban_list` and `kanban_unblock` route the board, and Hermes refuses them in a worker. They run without the claim: `kanban_list` shows only the tasks of the bot, and `kanban_unblock` changes only a task of the bot.
 - A tool that ends the run (`kanban_complete`, `kanban_block`, `kanban_schedule`, `kanban_request_review`) also stops the placeholder of the claim. The turn then finishes its reply without a claim, and the stopped placeholder is no lost claim (`claim_finished`).
 - A turn of an outcome that ends without one of these tools is a failed run, as for a worker: Coconut finishes the run as a protocol violation (`Board.finish`), and Hermes runs the card again.
-- Each write is a receipt of the turn, so adoption, completion proofs and routine reports read it as before. These receipts are no worker input (`GATEWAY_RECEIPTS`).
+- Each write is a receipt of the turn, so adoption, completion proofs and routine reports read it as before.
 - When Nous merges the spawn hook of the Hermes dispatcher (NousResearch/hermes-agent#146543), the dispatcher can start these turns itself, and the placeholder and the claim plumbing go.
+
+### The technical lane in the gateway
+
+- A turn of the technical lane of a native outcome (`_technical_lane`, technical_lane.py) runs in the gateway, as a turn of the outcome's work session. Its text adds the lane rules and the lane record, as the worker gives them (`technical_lane.instructions`).
+- The holds of the lane stay as for the worker. The board tools of the turn make receipts, so the service holds a Kanban write other than a note on the outcome's own card (`_refuse_technical_tool`). The Coconut tools that are events of the worker (cards, answers, waits, withdrawal corrections, bot changes, bot messages, tracked PRs, pauses) get the same refusal (`gateway_chat.LANE_EVENTS`, `_refuse_technical_event`). The hooks block the Hermes tools that the lane holds: clarify, cronjob_manage, message_agent, and the gateway's send_message (mode `technical`). Hermes also runs its own turns in the chat of the lane, for example for the completion of a background process of the lane. These turns keep the same holds and get no board tools, until the next Coconut turn of the chat in another mode (`adapter.LANE_CHATS`).
+- A Hermes approval request in a lane gets a denial at once, and a clarify gets the hold of the lane, without a card (`record_gateway_question`, `LANE_QUESTION`), as the worker denies it.
+- A finished lane turn returns the owner to its pending decision, and the native card parks as before (`_finish_technical_lane`, `_technical_native_state`).
+
+### Receipts are no worker input
+
+- The receipts of a turn and of the turns that it continues no longer send the turn to the worker. A gateway turn gets their index in its text, and `coconut_read_receipts` reads them (`gateway_chat.work_notes`, `gateway_read_receipts`). The worker also replayed a completed tool call by its hash; a gateway turn has the rule of the index instead: do not repeat a completed effect.
 
 ### Bot traffic stays out of the person's chat
 

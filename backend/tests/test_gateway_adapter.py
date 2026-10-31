@@ -945,6 +945,12 @@ class GatewayAdapterTests(unittest.TestCase):
             for tool in ('coconut_kanban_create', 'coconut_kanban_comment', 'coconut_kanban_list', 'coconut_kanban_show',
                          'coconut_ask', 'read_file'):
                 self.assertIsNone(hooks.guard_tool(tool_name=tool))
+            # A technical lane holds the Hermes tools that would ask the person, change routines or reach other bots.
+            adapter.MODES['turn-a'] = 'technical'
+            for tool in ('clarify', 'cronjob_manage', 'message_agent', 'send_message'):
+                self.assertEqual(hooks.guard_tool(tool_name=tool), {'action': 'block', 'message': hooks.LANE_MESSAGE})
+            for tool in ('terminal', 'read_file', 'coconut_kanban_comment'):
+                self.assertIsNone(hooks.guard_tool(tool_name=tool))
             # Each other Coconut turn, for example a native outcome or a chat, uses the Coconut board tools too, never the
             # gateway's own.
             for mode in ('outcome', None):
@@ -958,6 +964,23 @@ class GatewayAdapterTests(unittest.TestCase):
         # Outside a Coconut turn the hook does nothing.
         with patch.object(hooks, '_turn', return_value=(None, None)):
             self.assertIsNone(hooks.guard_tool(tool_name='terminal'))
+        # A turn of Hermes itself in the chat of a lane, for example the completion of a background process of the lane,
+        # keeps the lane holds. The next Coconut turn of the chat in another mode lifts them.
+        from gateway.config import PlatformConfig
+        lane_adapter = adapter.CoconutAdapter(PlatformConfig())
+        self.addCleanup(adapter.LANE_CHATS.clear)
+        lane_adapter._event({'id': 'turn-l', 'chat_id': 'bot:work:1', 'text': 'Run the tests.', 'mode': 'technical'})
+        token = self.session('bot:work:1')
+        try:
+            with patch.object(hooks, '_turn', return_value=(None, None)):
+                for tool in ('cronjob_manage', 'message_agent', 'clarify', 'kanban_complete'):
+                    self.assertEqual(hooks.guard_tool(tool_name=tool), {'action': 'block', 'message': hooks.LANE_MESSAGE})
+                self.assertIsNone(hooks.guard_tool(tool_name='terminal'))
+                lane_adapter._event({'id': 'turn-n', 'chat_id': 'bot:work:1', 'text': 'Continue.', 'mode': 'outcome'})
+                self.assertIsNone(hooks.guard_tool(tool_name='cronjob_manage'))
+        finally:
+            from gateway.session_context import SESSION
+            SESSION.reset(token)
         # The turn of a follow-up names its mode, and the end of the turn forgets it.
         from gateway.config import PlatformConfig
         coconut = adapter.CoconutAdapter(PlatformConfig())

@@ -41,8 +41,7 @@ class RoutingRuleTests(unittest.TestCase):
         self.assertTrue(plain_chat_turn(plain))
         # A task outside the bot's conversation gets its own work session from the dispatchers, which only the worker has.
         self.assertFalse(plain_chat_turn(dict(plain, _chat_session=False)))
-        for key in ('_native_job', '_work_context_id', '_technical_lane',
-                    '_execution_session_id', '_work_status_only'):
+        for key in ('_native_job', '_work_context_id', '_execution_session_id', '_work_status_only'):
             with self.subTest(key=key):
                 self.assertFalse(plain_chat_turn(dict(plain, **{key: [{'id': 'x'}]})))
         # Attachments, reactions, pending cards and the work of the chat's assignment go to the gateway as text.
@@ -74,14 +73,21 @@ class WorkTurnRuleTests(unittest.TestCase):
         self.assertTrue(gateway_work_turn(dict(audit, _work_context_id='work', _work_context={'id': 'work'})))
         # The audit of a work source runs in the gateway too. Coconut runs its board tools (gateway_kanban_tool).
         self.assertTrue(gateway_work_turn(dict(audit, _source_audit_prompt='Reconcile.', _source_answer_steps={'url': 'x'})))
-        # The receipts of the board tools that the gateway runs are no worker input. A receipt of a worker's tool is one.
+        # Receipts are no worker input: the turn text indexes them, also the receipts of a worker's tools.
         board = [{'action': {'name': 'kanban_comment', 'arguments': {}}}]
         self.assertTrue(gateway_work_turn(dict(audit, _source_audit_prompt='Reconcile.', _native_receipts=board)))
-        self.assertFalse(gateway_work_turn(dict(audit, _native_receipts=board + [{'action': {'name': 'terminal'}}])))
-        # A native outcome runs in the gateway too, with the board tools of its claim, and so do their receipts.
-        claim = [{'action': {'name': name, 'arguments': {}}} for name in ('kanban_heartbeat', 'kanban_complete')]
-        self.assertTrue(gateway_work_turn(dict(audit, _native_outcome_id='t_1', _native_receipts=claim)))
-        for key in ('_native_job', '_work_status_only', '_technical_lane', '_background_completion', '_native_receipts'):
+        self.assertTrue(gateway_work_turn(dict(audit, _native_receipts=board + [{'action': {'name': 'terminal'}}])))
+        # A native outcome runs in the gateway too, and so does its technical lane.
+        self.assertTrue(gateway_work_turn(dict(audit, _native_outcome_id='t_1', _technical_lane={'scope': ['tests']})))
+        # A message about the Work item of a native outcome goes to the turn of that outcome, which has its native task.
+        from coconut.gateway_chat import gateway_turn_text
+        message = dict(id='m1', role='user', kind='text', text='Is the export done?', task_id='t',
+                       work_context={'id': 'work'})
+        request = dict(operation='start', history=[message], task=dict(audit, id='t', title='Export', attachments=[]))
+        self.assertIsNone(gateway_turn_text(request))
+        request['task'].update(_native_outcome_id='t_1', _native_outcome={'context': 'Card body.'})
+        self.assertTrue(gateway_turn_text(request).startswith('Is the export done?'))
+        for key in ('_native_job', '_work_status_only', '_background_completion'):
             with self.subTest(key=key):
                 self.assertFalse(gateway_work_turn(dict(audit, **{key: 'x'})))
 
@@ -1672,7 +1678,7 @@ class ServiceRoutingTests(unittest.TestCase):
             from coconut.work_workspace import process_outcomes
             self.assertIn('work-1', process_outcomes())
             # A task that the worker runs gets a prepared worker, as before.
-            other = dict(stored, _technical_lane={'native_task_id': 'native-2'})
+            other = dict(stored, _background_completion=['The process exited.'])
             self.assertEqual(self.service.kanban_worker_pid('other', other, bot, self.temp.name, 'work-2', 'native-2'), 4321)
         self.service.stop_gateway_holder(task['id'])
         self.assertIsNotNone(holder.poll())

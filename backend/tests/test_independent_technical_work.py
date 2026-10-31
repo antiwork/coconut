@@ -1201,6 +1201,70 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         names = [r['action']['name'] for r in self.service._native_task_receipts(owner['id']) if r['turn_id'] == finished['_native_turn_id']]
         self.assertEqual(names, ['terminal'])
 
+    def test_lane_turn_through_the_gateway_keeps_the_holds_of_the_worker(self):
+        # The lane runs in the gateway, in the chat of its work session, with the lane rules. Its Coconut tools keep
+        # the holds of a worker lane: no card, no wait, no lifecycle tool. A note on its own card works. An approval
+        # request of Hermes gets a denial at once, and no card.
+        from coconut.gateway_chat import LANE_QUESTION
+        owner, source = self.lane_native()
+        self.lane(source)
+        stored = self.service._get('tasks', owner['id'])
+        stored['_kanban_claim'] = dict(stored.get('_kanban_claim') or {}, native_id='t_existing', run_id=4,
+                                       claim_lock='host:9', context='Card body: fix the subscription list.')
+        self.service._put('tasks', stored)
+        snapshot = self.service.kanban.call.side_effect
+        tools = []
+        def call(request):
+            if request.get('op') == 'tool':
+                tools.append((request['name'], request.get('claim')))
+                return {'result': json.dumps({'ok': True})}
+            return snapshot(request)
+        self.service.kanban.call.side_effect = call
+        seen, refused = {}, {}
+        bridge = self.service.gateway_bridge
+        home = self.service.profiles.home(self.service._get('bots', owner['bot_id']))
+        def run_turn(task_id, home_, chat_id, text, emit, **options):
+            seen.update(text=text, chat=chat_id, mode=options.get('mode'))
+            turn = bridge.open_turn(task_id, home_, chat_id)
+            def tool(name, **arguments):
+                try:
+                    return self.service.gateway_tool({'turn_id': turn, 'tool': name, 'arguments': arguments})
+                except ServiceError as error:
+                    refused[name] = error.status
+            for name, arguments in (('ask', dict(title='Mark the PR ready?', options=[])), ('wait', dict(task_id='t_desk')),
+                                    ('suggest', dict(key='ready', title='Mark ready?')),
+                                    ('resolve_reply', dict(choice='approve', decision_id='gate')),
+                                    ('kanban_complete', dict(summary='Fixed.')),
+                                    ('kanban_comment', dict(task_id='t_desk', body='Ready to merge')),
+                                    ('message_bot', dict(bot=source['bot_id'], text='Merge it.')),
+                                    ('track_pr', dict(url=URL))):
+                tool(name, **arguments)
+            seen['note'] = tool('kanban_comment', body='Fixed the failing spec locally.')
+            # As the gateway reports a command approval of Hermes (TurnEvents).
+            emit('gateway_question', dict(turn_id=turn, question_id='q1', question_kind='approval',
+                                          text='Allow the deploy?', detail='bin/deploy', choices=[]))
+            seen['answers'] = list(bridge.answers.get(os.path.realpath(home_), []))
+            emit('text_delta', {'text': 'The spec passes locally.'})
+            emit('completed', {'summary': 'Fixed locally.'})
+        with patch.object(self.service, 'gateway_enabled', return_value=True), \
+                patch.object(bridge, 'connected', return_value=True), patch.object(bridge, 'run_turn', run_turn):
+            self.service._run_task(owner['id'])
+        self.assertEqual(seen['mode'], 'technical')
+        self.assertTrue(seen['chat'].endswith(':work:' + owner['_execution_session_id']))
+        lane = self.service._technical_lane(self.service._get('tasks', owner['id'])) or stored['_technical_lane']
+        self.assertIn(instructions(lane).strip()[:120], seen['text'])
+        self.assertEqual(refused, {'ask': 400, 'wait': 403, 'suggest': 400, 'resolve_reply': 403,
+                                   'kanban_complete': 403, 'kanban_comment': 403, 'message_bot': 403, 'track_pr': 403})
+        self.assertTrue(seen['note']['ok'])
+        self.assertEqual(tools, [('kanban_comment', dict(native_id='t_existing', run_id=4, claim_lock='host:9'))])
+        self.assertEqual(seen['answers'], [dict(question_id='q1', text=LANE_QUESTION, choice='deny')])
+        # The lane turn returns the owner to its pending decision, as a worker lane turn does. No card changed.
+        finished = self.service._get('tasks', owner['id'])
+        self.assertEqual(finished['status'], 'needs_you')
+        self.assertEqual(self.service._get('decisions', 'gate'), self.gate)
+        self.assertEqual(len(self.service._all('decisions')), 3)
+        self.assertEqual(self.service.provider.starts if hasattr(self.service.provider, 'starts') else [], [])
+
     def test_an_automated_pending_revision_keeps_the_lane(self):
         task, source = self.admitted_turn()
         revised = dict(self.gate, revision=3, _answers=self.gate['_answers'] + [dict(choice='revise', decided_by=None)])
