@@ -718,8 +718,11 @@ final class AppStore {
 
     private func saveOutgoing() throws {
         guard let pairing else { return }
-        try ProtectedCache.write(OutgoingCache(deviceId: pairing.deviceId, messages: outgoingMessages, answers: outgoingAnswers), name: "outgoing.json")
+        try writeOutgoing(OutgoingCache(deviceId: pairing.deviceId, messages: outgoingMessages, answers: outgoingAnswers))
     }
+
+    /// Writes outgoing.json. A test can replace it to make the write fail.
+    @ObservationIgnored var writeOutgoing: (OutgoingCache) throws -> Void = { try ProtectedCache.write($0, name: "outgoing.json") }
 
     func decisionReference(for id: String) -> MessageReference? {
         guard let decision = decisions.first(where: { $0.id == id }) else { return nil }
@@ -1226,6 +1229,8 @@ final class AppStore {
     private func dropAnswer(_ answer: OutgoingAnswer, reason: String) {
         outgoingAnswers.removeAll { $0.id == answer.id }
         answeringDecisionIds.remove(answer.decisionId)
+        // As after a rejected answer, the typed reply comes back, so the person can send it again.
+        if answer.request.choice == "reply", let text = answer.request.correction { decisionReplyDrafts[answer.decisionId] = text }
         try? saveOutgoing()
         error = reason
     }
@@ -1245,10 +1250,16 @@ final class AppStore {
     @discardableResult
     func undoAnswer(decisionId: String) -> Bool {
         guard let answer = waitingAnswer(for: decisionId) else { return false }
+        let previous = outgoingAnswers
         outgoingAnswers.removeAll { $0.id == answer.id }
+        // Save the removal first. A saved answer that stayed in outgoing.json would send at the next launch.
+        do { try saveOutgoing() } catch {
+            outgoingAnswers = previous
+            report(error)
+            return false
+        }
         answeringDecisionIds.remove(decisionId)
         if answer.request.choice == "reply", let text = answer.request.correction { decisionReplyDrafts[decisionId] = text }
-        try? saveOutgoing()
         restoredDecisionId = decisionId
         return true
     }
@@ -2397,7 +2408,7 @@ struct OutgoingMessage: Codable, Identifiable, Equatable {
                 recipientBotIds: request.recipientBotIds, clientRequestId: id, replyTo: replyTo, workContext: workContext)
     }
 }
-private struct OutgoingCache: Codable { let deviceId: String; let messages: [OutgoingMessage]; var answers: [OutgoingAnswer]? = nil }
+struct OutgoingCache: Codable { let deviceId: String; let messages: [OutgoingMessage]; var answers: [OutgoingAnswer]? = nil }
 struct OutgoingAnswer: Codable, Identifiable, Equatable {
     let id: String
     let decisionId: String

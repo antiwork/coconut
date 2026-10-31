@@ -89,6 +89,25 @@ final class AnswerUndoTests: XCTestCase {
     }
 
     @MainActor
+    func testAnUndoThatCannotBeSavedKeepsTheAnswer() async throws {
+        let fixture = try await fixture()
+        defer { fixture.cleanup() }
+        let store = fixture.store
+        _ = await store.answer(fixture.decision, choice: "reject", undoSeconds: 1)
+        let answer = try XCTUnwrap(store.outgoingAnswers.first)
+        store.writeOutgoing = { _ in throw CocoaError(.fileWriteNoPermission) }
+        XCTAssertFalse(store.undoAnswer(decisionId: fixture.decision.id))
+        XCTAssertEqual(store.outgoingAnswers, [answer])
+        XCTAssertTrue(store.answeringDecisionIds.contains(fixture.decision.id))
+        XCTAssertNil(store.restoredDecisionId)
+        XCTAssertNotNil(store.error)
+        // The answer stays saved and sends, because the person did not get Undo.
+        store.writeOutgoing = { try ProtectedCache.write($0, name: "outgoing.json") }
+        try await waitUntil { fixture.server.answers == 1 }
+        XCTAssertEqual(fixture.server.answers, 1)
+    }
+
+    @MainActor
     func testAnAnswerSendsInTheBackground() async throws {
         let fixture = try await fixture()
         defer { fixture.cleanup() }
@@ -128,12 +147,13 @@ final class AnswerUndoTests: XCTestCase {
         let fixture = try await fixture()
         defer { fixture.cleanup() }
         let store = fixture.store
-        _ = await store.answer(fixture.decision, choice: "reject", undoSeconds: 0.5)
+        _ = await store.answer(fixture.decision, choice: "reply", correction: "Merge after the review.", undoSeconds: 0.5)
         store.decisions[0].revision += 1
         try await waitUntil { !store.answeringDecisionIds.contains(fixture.decision.id) }
         XCTAssertEqual(fixture.server.answers, 0)
         XCTAssertTrue(store.outgoingAnswers.isEmpty)
         XCTAssertEqual(store.error, AppStore.answerNotSent(store.decisions[0]))
+        XCTAssertEqual(store.decisionReplyDrafts[fixture.decision.id], "Merge after the review.")
     }
 
     func testAnAnswerSavedBeforeTheWindowSendsAtOnce() throws {
