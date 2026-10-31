@@ -482,17 +482,7 @@ class GatewayChat:
         """Run a turn of a work session in its own chat. A Kanban claim of the task holds a placeholder process for the
         turn (kanban_worker_pid). When Hermes ends that process, for example after its run limit, the turn stops."""
         chat, root = self.work_chat(bot, task)
-        holder = self.gateway_holders.get(task['id'])
-        ended, lost = threading.Event(), threading.Event()
-        def watch():
-            while holder is not None and not ended.wait(.5 if lost.is_set() else 2):
-                if holder.poll() is not None and not self.claim_finished(task['id']):
-                    if not lost.is_set():
-                        LOG.warning('The Kanban claim of work turn %s ended. The turn stops.', task['id'])
-                    lost.set()
-                    # Until the run ends: a turn that registers after an earlier cancel stops too.
-                    self.gateway_bridge.cancel(task['id'])
-        threading.Thread(target=watch, daemon=True, name='coconut-work-claim').start()
+        holder, ended, lost = self._watch_claim(task['id'], task['id'])
 
         def wanted():
             # A lost claim also ends the wait for an adapter, so the work never starts later.
@@ -518,6 +508,24 @@ class GatewayChat:
         if lost.is_set():
             raise RuntimeError('Hermes ended the Kanban claim of this work before the turn finished.')
         return True
+
+    def _watch_claim(self, identity: str, task_id: str):
+        """Watch the placeholder of the Kanban claim `identity` (a task or a follow-up on its card) while a gateway turn
+        of task `task_id` runs. When Hermes ends the placeholder, for example after its run limit, the watcher stops the
+        turn. Return the placeholder (or None), the event that the caller sets when the turn ends, and the event of a
+        lost claim. A stop after a board tool that ended the run is no lost claim (claim_finished)."""
+        holder = self.gateway_holders.get(identity)
+        ended, lost = threading.Event(), threading.Event()
+        def watch():
+            while holder is not None and not ended.wait(.5 if lost.is_set() else 2):
+                if holder.poll() is not None and not self.claim_finished(identity):
+                    if not lost.is_set():
+                        LOG.warning('The Kanban claim of gateway turn %s ended. The turn stops.', identity)
+                    lost.set()
+                    # Until the run ends: a turn that registers after an earlier cancel stops too.
+                    self.gateway_bridge.cancel(task_id)
+        threading.Thread(target=watch, daemon=True, name='coconut-work-claim').start()
+        return holder, ended, lost
 
     def run_gateway_status(self, task: dict, bot: dict, emit) -> bool:
         """Answer a status question about a Work item from its saved context, without tools, as the worker does.
@@ -621,19 +629,30 @@ class GatewayChat:
                 raise ServiceError(409, 'A follow-up on a card cannot ask the person.')
             return emit(kind, payload)
 
+        # The placeholder of the follow-up's Kanban claim, if it has one (kanban_scheduler). When Hermes ends it, the
+        # follow-up stops and fails, as a work turn does.
+        holder, ended, lost = self._watch_claim(context['id'], task['id'])
+
         def wanted():
-            return self._get('contexts', context['id'])['status'] == 'working'
+            # A lost claim also ends the wait for an adapter, so the follow-up never starts later.
+            return ((holder is None or holder.poll() is None)
+                    and self._get('contexts', context['id'])['status'] == 'working')
         # A check that finds nothing to change ends without a reply, as REFRESH_INSTRUCTIONS asks.
         check = bool(context.get('_decision_refresh'))
         chat = root = None
         if gateway_work_turn(task):
             chat, root = self.work_chat(bot, task)
         try:
-            return self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted,
-                                        mode='refresh' if check else None, silent=check, session=root, chat=chat)
+            self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted,
+                                 mode='refresh' if check else None, silent=check, session=root, chat=chat)
         finally:
-            # The placeholder of the follow-up's Kanban claim, if it has one (kanban_scheduler).
+            ended.set()
+            if holder is not None and holder.poll() is not None:
+                lost.set()
             self.stop_gateway_holder(context['id'])
+        if lost.is_set():
+            raise RuntimeError('Hermes ended the Kanban claim of this follow-up before it finished.')
+        return True
 
     def _run_in_gateway(self, task: dict, bot: dict, text: str, emit, *, silent: bool = False,
                         context_id: str | None = None, wanted=None, session: str | None = None,

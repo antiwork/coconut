@@ -785,6 +785,23 @@ class ServiceRoutingTests(unittest.TestCase):
             prepare.assert_not_called()
         self.service.stop_gateway_holder(context['id'])
 
+    def test_a_follow_up_stops_when_hermes_ends_its_kanban_claim(self):
+        # As a work turn: when Hermes ends the placeholder of the follow-up's claim, the follow-up stops and fails.
+        task, card, _ = self.ask_in_gateway()
+        self.write('POST', f'/v1/decisions/{card["id"]}/context', {'question': 'Is the build green?'})
+        context = next(c for c in self.service._all('contexts') if c['decision_id'] == card['id'])
+        self.service.start_gateway_holder(context['id'])
+        holder = self.service.gateway_holders[context['id']]
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        self.service._start_context(context['id'])
+        adapter.join(5)
+        self.assertEqual(adapter.turns[0]['mode'], 'context')
+        holder.kill()
+        self.service.context_threads[context['id']].join(15)
+        self.assertEqual(self.read('contexts', context['id'])['status'], 'failed')
+        self.assertNotIn(context['id'], self.service.gateway_holders)
+
     def test_an_automatic_check_of_a_card_runs_in_the_gateway_and_records_only_its_result(self):
         from datetime import datetime, timedelta, timezone
         task, card, _ = self.ask_in_gateway()
