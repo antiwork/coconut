@@ -60,6 +60,10 @@ MODES: dict[str, str] = {}
 # saves only the turn's own text (hooks.add_turn_context). Set when the hooks registered the middleware.
 CONTEXTS: dict[str, str] = {}
 CONTEXT_MIDDLEWARE = {'registered': False}
+# The chats whose newest Coconut turn is a turn of a technical lane. Hermes runs its own turns in such a chat too,
+# for example for the completion of a background process of the lane, and the hooks keep the lane holds on them
+# (hooks.guard_tool). The next Coconut turn of the chat in another mode lifts them.
+LANE_CHATS: set[str] = set()
 # The working folder of a turn of a native outcome: the workspace of its Kanban claim (hooks.guard_tool). The Hermes
 # task IDs of the turn whose terminal already has that folder.
 FOLDERS: dict[str, str] = {}
@@ -296,6 +300,10 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             self._roots[str(turn['chat_id'])] = str(turn['session_root'])
         if turn.get('mode'):
             MODES[str(turn['id'])] = str(turn['mode'])
+        if turn.get('mode') == 'technical':
+            LANE_CHATS.add(str(turn['chat_id']))
+        else:
+            LANE_CHATS.discard(str(turn['chat_id']))
         if turn.get('folder'):
             FOLDERS[str(turn['id'])] = str(turn['folder'])
         text = str(turn['text'])
