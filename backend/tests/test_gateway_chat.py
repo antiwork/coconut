@@ -1076,11 +1076,18 @@ class ServiceRoutingTests(unittest.TestCase):
         self.dispatch(sent['task_id'])
         adapter.join(5)
         self.assertEqual(self.read('tasks', sent['task_id'])['status'], 'failed')
+        # A store from before this change: Lin's failed task ran in Lin's conversation with the person.
+        with self.service.transaction():
+            failed = self.service._get('tasks', sent['task_id'])
+            failed['_chat_session'] = True
+            failed.pop('_execution_session_id', None)
+            self.service._put('tasks', failed)
         self.service._drain_returns()
         with self.service.lock:
             returned = next(t for t in self.service._all('tasks') if t['bot_id'] == self.bot['id']
                             and t.get('_is_return') and t['status'] == 'queued')
-        # Ada asks Lin again from the return. The retry is bot traffic too: it runs in a work session of Lin.
+        # Ada asks Lin again from the return. The retry is bot traffic too: it runs in a work session of Lin, and it
+        # gets the context of the failed task, whose history is in Lin's chat with the person.
         adapter = Adapter(self.service.gateway_bridge, self.home, [])
         adapter.start()
         self.service._dispatch_pending()
@@ -1091,11 +1098,15 @@ class ServiceRoutingTests(unittest.TestCase):
         self.service.running[returned['id']].join(10)
         stored = self.read('tasks', retry['task_id'])
         self.assertEqual((stored['status'], bool(stored.get('_chat_session'))), ('queued', False))
+        self.assertEqual((stored['_continued_from']['task_id'], stored['_continued_from']['request']),
+                         (sent['task_id'], 'Please check the logs.'))
         adapter = Adapter(self.service.gateway_bridge, other_home, [
             {'kind': 'send', 'message_id': 'm:1', 'text': 'The logs are clean now.'}, {'kind': 'done', 'outcome': 'success'}])
         adapter.start()
         self.dispatch(retry['task_id'])
         adapter.join(5)
+        self.assertIn('This message continues your failed task.', adapter.turns[0]['text'])
+        self.assertIn('Please check the logs.', adapter.turns[0]['text'])
         self.assertEqual(self.read('tasks', retry['task_id'])['status'], 'completed')
         self.assertEqual(self.provider.starts, [])
 
