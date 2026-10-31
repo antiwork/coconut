@@ -753,24 +753,40 @@ class GatewayAdapterTests(unittest.TestCase):
             self.assertIsNone(hooks.add_turn_context(request={'messages': [{'role': 'user', 'content': 'x'}]}))
 
     def test_a_typed_compress_or_new_reaches_hermes_as_a_command(self):
-        adapter = self.adapter_module
-        from gateway.config import PlatformConfig
         from gateway.platforms.event import MessageType
-        coconut = adapter.CoconutAdapter(PlatformConfig())
-        turn = {'id': 'turn-k', 'chat_id': 'bot', 'text': '/compress\nCards that wait for the person now: none',
-                'own': '/compress'}
-        for own, command in (('/compress', '/compress'), (' /new Plans ', '/new Plans'), ('/COMPRESS here 4', '/COMPRESS here 4'),
-                             ('/approve', '/approve'), ('/cancel', '/cancel')):
-            event = coconut._event(dict(turn, own=own))
-            # The command carries no context of Coconut, and the gateway may run it as a command.
-            self.assertEqual((event.text, event.message_type, event.allow_gateway_control), (command, MessageType.COMMAND, True))
-            self.assertEqual(event.message_id, 'turn-k')
-        # Another command, a command inside a message, and a turn without its own text stay chat messages.
-        for own in ('/model gpt', 'Please /compress this', ''):
-            event = coconut._event(dict(turn, own=own))
-            self.assertEqual((event.message_type, event.allow_gateway_control), (MessageType.TEXT, False))
-        self.assertEqual(coconut._event({'id': 't', 'chat_id': 'bot', 'text': '/compress'}).message_type, MessageType.TEXT)
-        adapter.CONTEXTS.clear()
+        seen = []
+        async def runner(event):
+            seen.append((event.text, event.message_type, event.allow_gateway_control))
+            return 'Done.'
+        self.connect(runner)
+        def turn(text):
+            task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': text})
+            self.service._run_task(task['id'])
+            return seen[-1]
+        # A message that the person typed is the command, without Coconut's context, and the gateway may run it.
+        for typed, command in (('/compress', '/compress'), (' /new Plans ', '/new Plans'), ('/approve', '/approve')):
+            self.assertEqual(turn(typed), (command, MessageType.COMMAND, True))
+        # Another command and a command inside a message stay chat messages.
+        for typed in ('/model gpt', 'Please /compress this'):
+            self.assertEqual(turn(typed)[1:], (MessageType.TEXT, False))
+        # A message of another bot never becomes a command, also when its text starts with one. Its turn runs in a
+        # work session of Ada, with the bot's text as its title.
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        with self.service.transaction():
+            requester = self.service._send(self.read('bots', other['id']), {'text': 'Ask Ada.', 'mode': 'queue'},
+                                           human_authored=False)
+            stored = self.service._get('tasks', requester['id'])
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+        count = len(seen)
+        exchange = self.service._deliver_bot_message(requester['id'], dict(target_bot_id=self.bot['id'], text='/compress',
+                                                                           require_response=True))['task_id']
+        deadline = time.monotonic() + 5
+        while len(seen) == count and time.monotonic() < deadline:
+            self.service._dispatch_pending()
+            time.sleep(.05)
+        self.assertEqual(self.read('tasks', exchange)['title'], '/compress')
+        self.assertEqual(seen[-1][1:], (MessageType.TEXT, False))
 
     def test_a_chat_at_the_compression_threshold_is_compressed_after_its_turn_and_the_notice_stays_in_the_log(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']

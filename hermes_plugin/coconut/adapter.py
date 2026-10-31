@@ -62,23 +62,12 @@ CONTEXTS: dict[str, str] = {}
 CONTEXT_MIDDLEWARE = {'registered': False}
 # The ID of a message outside a Coconut turn starts with this prefix. Its edits and its delete take the same route.
 OUTSIDE = 'outside:'
-# The commands of Hermes that a person may type in a Coconut chat. They reach Hermes as commands, without Coconut's
-# context (CoconutAdapter._event). Hermes asks to confirm /new, and the person answers with /approve, /always or /cancel,
-# as Hermes's text says.
-COMMANDS = ('/compress', '/new', '/approve', '/always', '/cancel')
 # The chats whose last model call reached the compression threshold of Hermes (hooks.note_prompt_size). After the turn,
 # the adapter compresses the chat's session (CoconutAdapter._compress).
 COMPRESS: set[str] = set()
 # The message ID of a compression that Coconut starts begins with this prefix. Hermes sends its notice as a reply to
 # that message, and the notice stays in the log.
 COMPRESSION = 'compress:'
-
-
-def command_text(text: str) -> str | None:
-    """The command of a message that is only a Hermes command that Coconut lets through, or None."""
-    stripped = text.strip()
-    name = stripped.split(maxsplit=1)[0].lower() if stripped else ''
-    return stripped if name in COMMANDS else None
 
 
 # The adapters of this process. The tools and the hooks find the adapter of a chat here.
@@ -297,17 +286,18 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
     def _event(self, turn: dict) -> MessageEvent:
         source = self.build_source(chat_id=str(turn['chat_id']), chat_name=str(turn.get('chat_name') or 'Coconut'),
                                    chat_type='dm', user_id='coconut', user_name=str(turn.get('user_name') or 'Coconut'))
-        # Text that starts with "/" stays a chat message, except a command of COMMANDS that is the whole text.
+        # Text that starts with "/" stays a chat message. The service names a command that the person typed (`command`).
         if turn.get('session_root'):
             # hooks.join_conversation reads it before the gateway runs the turn.
             self._roots[str(turn['chat_id'])] = str(turn['session_root'])
         if turn.get('mode'):
             MODES[str(turn['id'])] = str(turn['mode'])
         text = str(turn['text'])
-        command = command_text(str(turn['own'])) if turn.get('own') is not None else None
-        if command is not None:
-            # The person typed a command of Hermes. It reaches Hermes as the command, without Coconut's context.
-            return MessageEvent(text=command, message_type=MessageType.COMMAND, source=source, message_id=str(turn['id']))
+        if turn.get('command'):
+            # The person typed a command of Hermes (gateway_chat.gateway_command). It reaches Hermes as the command,
+            # without Coconut's context.
+            return MessageEvent(text=str(turn['command']), message_type=MessageType.COMMAND, source=source,
+                                message_id=str(turn['id']))
         if turn.get('own') is not None and CONTEXT_MIDDLEWARE['registered']:
             # Hermes saves the turn's own text. The model calls of this turn get the whole text (hooks.add_turn_context).
             CONTEXTS[str(turn['id'])] = text
