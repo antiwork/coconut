@@ -1577,6 +1577,11 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual((calls[-1]['name'], calls[-1]['claim']), ('kanban_unblock', None))
         self.assertEqual(holder.poll(), None)
         # kanban_complete ends the run of the claim. Its placeholder stops, and the turn continues without a claim.
+        # A PR that delivers the outcome names it, as with the worker's tool.
+        with patch.object(self.service, 'emit', return_value={'status': 'recorded'}) as emit:
+            tool('track_pr', url='https://github.com/example/app/pull/7', work_id='t_card')
+        emit.assert_called_once_with(task['id'], 'artifact', {'kind': 'pr', 'url': 'https://github.com/example/app/pull/7',
+                                                              'work_id': 't_card'})
         self.assertTrue(tool('kanban_complete', summary='The export ships.')['ok'])
         self.assertEqual(calls[-1]['claim'], claim)
         self.assertIsNotNone(holder.poll())

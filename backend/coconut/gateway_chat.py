@@ -713,7 +713,11 @@ class GatewayChat:
             # The service refuses a card outside the turn's execution, and a card that a person handled.
             return self.correct_withdrawal(task_id, arguments)
         if data.get('tool') == 'track_pr':
-            return self.emit(task_id, 'artifact', {'kind': 'pr', 'url': require_text(arguments, 'url', 500)})
+            artifact = {'kind': 'pr', 'url': require_text(arguments, 'url', 500)}
+            if isinstance(arguments.get('work_id'), str) and arguments['work_id'].strip():
+                # The PR delivers this outcome, as with the worker's tool (work_status._link_pr_outcome).
+                artifact['work_id'] = arguments['work_id'].strip()
+            return self.emit(task_id, 'artifact', artifact)
         if data.get('tool') == 'message_bot':
             target = require_text(arguments, 'bot', 200).strip()
             with self.lock:

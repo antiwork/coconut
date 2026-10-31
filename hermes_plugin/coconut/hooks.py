@@ -80,8 +80,7 @@ AUDIT_BOARD_MESSAGE = ('This board is not the board of Coconut. Use coconut_kanb
 BOARD_MESSAGE = ('This board is not the board of Coconut. Call the coconut_kanban_ tool with the same ending, for '
                  'example coconut_kanban_show for kanban_show. It uses the board of Coconut, and in a native outcome '
                  'the claim of this turn.')
-# The turns of native outcomes whose terminal runs in the workspace of their claim, by Hermes task ID.
-FOLDER_TASKS: set[tuple[str, str]] = set()
+
 STATUS_MESSAGE = 'Answer from the saved context in the message. This answer uses no tools.'
 
 
@@ -137,12 +136,12 @@ def guard_tool(tool_name='', task_id=None, **_):
 
     The first tool call of a native outcome turn also sets its working folder: the workspace of its claim, as the
     worker sets TERMINAL_CWD. coconut_workspace later replaces it with the worktree of the work."""
-    from .adapter import FOLDERS, MODES, PAUSED
+    from .adapter import FOLDER_TASKS, FOLDERS, MODES, PAUSED
     holder, turn = _turn()
     if turn is None:
         return None
-    if turn in FOLDERS and task_id and (turn, task_id) not in FOLDER_TASKS:
-        FOLDER_TASKS.add((turn, task_id))
+    if turn in FOLDERS and task_id and task_id not in FOLDER_TASKS.setdefault(turn, set()):
+        FOLDER_TASKS[turn].add(task_id)
         try:
             from tools.terminal_tool import register_task_env_overrides
             register_task_env_overrides(task_id, {'cwd': FOLDERS[turn]})

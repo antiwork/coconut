@@ -68,7 +68,11 @@ TRACK_PR = {'name': 'coconut_track_pr', 'description': (
     'on one, or when the person asks to follow one. Coconut reads GitHub and resumes the bot when results change. This '
     'does not create, edit, push or merge a PR.'),
     'parameters': {'type': 'object', 'properties': {
-        'url': {'type': 'string', 'description': 'The exact https://github.com/owner/repo/pull/number URL.'}},
+        'url': {'type': 'string', 'description': 'The exact https://github.com/owner/repo/pull/number URL.'},
+        # As the worker's tool for a native outcome (hermes_worker): the PR then belongs to the outcome it delivers.
+        'work_id': {'type': 'string', 'description': (
+            'Native task ID or Work item ID of the outcome that this PR delivers. Supply it only when the PR delivers '
+            'that outcome. Omit it for a separate PR.')}},
         'required': ['url']}}
 MESSAGE_BOT = {'name': 'coconut_message_bot', 'description': (
     'Send a message to another Coconut bot. The bot works on it in its own chat and replies to this chat. Use it to '
