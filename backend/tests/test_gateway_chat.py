@@ -661,6 +661,20 @@ class ServiceRoutingTests(unittest.TestCase):
             for number in range(gateway_chat.CARDS_NOTE_LIMIT):
                 self.service._put('decisions', dict(self.service._get('decisions', card['id']), id=str(uuid4()),
                                                     title=f'Card {number}', created_at=f'2099-01-01T00:00:{number:02d}Z'))
+            # A delegate's check reads its message history once for all cards.
+            delegate = dict(stored, bot_id=other['id'])
+            with patch.object(self.service, '_history_decision_ids', wraps=self.service._history_decision_ids) as reads:
+                self.service.cards_note(delegate)
+            self.assertEqual(reads.call_count, gateway_chat.CARDS_NOTE_LIMIT + 1)
+            calls = {call.args for call in reads.call_args_list}
+            self.assertEqual(calls, {(other['id'],)})
+            queries = []
+            self.service.db.set_trace_callback(queries.append)
+            try:
+                self.service.cards_note(delegate)
+            finally:
+                self.service.db.set_trace_callback(None)
+            self.assertEqual(sum('message_audience' in query for query in queries), 1)
             note = self.service.cards_note(stored)
             self.assertNotIn('Only this list is current', note)
             self.assertIn(f'oldest {gateway_chat.CARDS_NOTE_LIMIT} of {gateway_chat.CARDS_NOTE_LIMIT + 1} waiting cards', note)

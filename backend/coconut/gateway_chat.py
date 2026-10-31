@@ -376,7 +376,9 @@ class GatewayChat:
         cards = sorted((json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending'")),
             key=lambda card: card.get('created_at', ''))
-        cards = [card for card in cards if not card.get('_hidden') and self._decision_visible_to_task(card, task)]
+        # One shared read: the check of a delegate reads its message history once for all cards.
+        with self._shared_reads():
+            cards = [card for card in cards if not card.get('_hidden') and self._decision_visible_to_task(card, task)]
         names = {}
         lines = []
         for card in cards[:CARDS_NOTE_LIMIT]:
