@@ -19,6 +19,8 @@ struct DecisionInboxView: View {
     @AppStorage("inboxSort") private var sort = InboxSort.recommended.rawValue
     @State private var queue = DecisionQueue()
     @State private var lastSkipped: InboxUndoOperation?
+    /// The time that decides which answer still offers Undo. It moves on when the shown answer sends.
+    @State private var undoClock = Date()
     @State private var restoringDecision: Decision?
     @State private var confirmingChoice: (decision: Decision, optionId: String?)?
     @State private var updatingIds: Set<String> = []
@@ -65,6 +67,21 @@ struct DecisionInboxView: View {
             do { try await Task.sleep(for: .seconds(max(0, deadline.timeIntervalSinceNow))) }
             catch { return }
             clearUndo()
+        }
+        .task(id: store.latestWaitingAnswer(at: undoClock)?.id) {
+            undoClock = Date()
+            guard let sendAt = store.latestWaitingAnswer(at: undoClock)?.sendAt else { return }
+            do { try await Task.sleep(for: .seconds(max(0, sendAt.timeIntervalSinceNow))) }
+            catch { return }
+            undoClock = Date()
+        }
+        .onChange(of: store.restoredDecisionId) { _, id in
+            guard let id, pending.contains(where: { $0.id == id }) else { return }
+            store.restoredDecisionId = nil
+            clearUndo()
+            queue.reconcile(pending, sort: sorting)
+            queue.restoreFirst(id)
+            selectedId = id
         }
         .onDisappear { clearUndo() }
         .onChange(of: dragging) { _, active in
@@ -135,6 +152,12 @@ struct DecisionInboxView: View {
                 Button("Undo", action: undo)
                     .disabled(exiting)
                     .accessibilityIdentifier("undo-inbox-dismiss")
+            } else if let waiting = store.latestWaitingAnswer(at: undoClock) {
+                // The app holds the latest answer for a few seconds. Undo puts its card back at the top of Inbox.
+                Button("Undo") { store.undoAnswer(decisionId: waiting.decisionId) }
+                    .disabled(exiting)
+                    .accessibilityLabel("Undo the answer \(waiting.text)")
+                    .accessibilityIdentifier("undo-inbox-answer")
             } else {
                 Color.clear.accessibilityHidden(true)
             }

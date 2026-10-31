@@ -70,7 +70,8 @@ final class DecisionDeliveryTests: XCTestCase {
         var queue = DecisionQueue()
         queue.reconcile([decision], sort: .recommended)
         let start = ContinuousClock.now
-        let accepted = await store.answer(decision, choice: "reply", correction: "Please explain the effect first.")
+        // These tests check the delivery itself, so the answer sends at once (AnswerUndoTests checks the Undo window).
+        let accepted = await store.answer(decision, choice: "reply", correction: "Please explain the effect first.", undoSeconds: 0)
         let elapsed = start.duration(to: .now)
         print("COCONUT_CARD_LOCAL_ACCEPTANCE=\(elapsed)")
         XCTAssertTrue(accepted)
@@ -85,10 +86,10 @@ final class DecisionDeliveryTests: XCTestCase {
         XCTAssertEqual(reply.decisionId, decision.id)
         XCTAssertEqual(reply.replyTo?.text, decision.title)
         XCTAssertEqual(reply.replyTo?.messageId, decision.id)
-        let duplicate = await store.answer(decision, choice: "reply", correction: "Different reply")
+        let duplicate = await store.answer(decision, choice: "reply", correction: "Different reply", undoSeconds: 0)
         XCTAssertFalse(duplicate)
         if parallel {
-            let acceptedSecond = await store.answer(snapshot.decisions[1], choice: "reply", correction: "Another conversation")
+            let acceptedSecond = await store.answer(snapshot.decisions[1], choice: "reply", correction: "Another conversation", undoSeconds: 0)
             XCTAssertTrue(acceptedSecond)
             try await Task.sleep(for: .milliseconds(200))
             XCTAssertEqual(server.answers, 2, "An unrelated conversation must send before the first request returns.")
@@ -129,13 +130,16 @@ final class DecisionDeliveryTests: XCTestCase {
     }
 }
 
-private final class DecisionDeliveryServer: @unchecked Sendable {
+final class DecisionDeliveryServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "coconut.decision-delivery-test")
     private let lock = NSLock()
     private let listener: NWListener
     private let snapshot: StateSnapshot
     private var count = 0
     private var requestKeys: [String] = []
+    private var requestBodies: [Data] = []
+    /// The JSON bodies of the answer requests.
+    var bodies: [Data] { lock.withLock { requestBodies } }
     private let failFirst: Bool
     private let reject: Bool
     var keys: [String] { lock.withLock { requestKeys } }
@@ -151,7 +155,7 @@ private final class DecisionDeliveryServer: @unchecked Sendable {
     func start() async throws -> String {
         listener.newConnectionHandler = { [self] connection in
             connection.start(queue: queue)
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, _, _ in
+            receiveRequest(connection, Data()) { [self] data in
                 guard let data else { connection.cancel(); return }
                 let answer = String(decoding: data, as: UTF8.self).hasPrefix("POST /v1/decisions/")
                 let body: Data
@@ -159,7 +163,9 @@ private final class DecisionDeliveryServer: @unchecked Sendable {
                 if answer {
                     let key = String(decoding: data, as: UTF8.self).components(separatedBy: "\r\n")
                         .first { $0.lowercased().hasPrefix("idempotency-key:") } ?? "missing"
-                    lock.withLock { count += 1; requestKeys.append(key) }
+                    let text = String(decoding: data, as: UTF8.self)
+                    let requestBody = text.range(of: "\r\n\r\n").map { Data(text[$0.upperBound...].utf8) } ?? Data()
+                    lock.withLock { count += 1; requestKeys.append(key); requestBodies.append(requestBody) }
                     let request = String(decoding: data, as: UTF8.self)
                     var receipt = snapshot.decisions.first { request.hasPrefix("POST /v1/decisions/\($0.id)/answer ") } ?? snapshot.decisions[0]
                     receipt.status = "replied"
@@ -191,4 +197,20 @@ private final class DecisionDeliveryServer: @unchecked Sendable {
         }
     }
     func stop() { listener.cancel() }
+
+    /// Read until the headers end and the body has its Content-Length. A body can arrive in a later packet.
+    private func receiveRequest(_ connection: NWConnection, _ buffer: Data, _ done: @escaping @Sendable (Data?) -> Void) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, complete, _ in
+            guard let data else { done(buffer.isEmpty ? nil : buffer); return }
+            let all = buffer + data
+            let text = String(decoding: all, as: UTF8.self)
+            if let end = text.range(of: "\r\n\r\n") {
+                let length = text[..<end.lowerBound].components(separatedBy: "\r\n")
+                    .first { $0.lowercased().hasPrefix("content-length:") }
+                    .flatMap { Int($0.split(separator: ":")[1].trimmingCharacters(in: .whitespaces)) } ?? 0
+                if text[end.upperBound...].utf8.count >= length || complete { done(all); return }
+            } else if complete { done(all); return }
+            receiveRequest(connection, all, done)
+        }
+    }
 }

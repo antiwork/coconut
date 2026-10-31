@@ -98,6 +98,9 @@ struct DecisionCard: View {
                     .accessibilityIdentifier("dismiss-card-\(decision.id)")
                 }
             }
+            if let waiting = store.waitingAnswer(for: decision.id), let sendAt = waiting.sendAt {
+                AnswerUndoRow(answer: waiting, sendAt: sendAt) { store.undoAnswer(decisionId: decision.id) }
+            }
             if let previews = decision.previews, !previews.isEmpty {
                 DecisionPreviewStrip(previews: previews, loadedIds: $loadedPreviewIds, onFrameChange: onPreviewFrameChange)
                     .id(decision.previewsHash)
@@ -450,6 +453,33 @@ struct ArtifactCard: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
             .quickLookPreview($previewURL)
+        }
+    }
+}
+
+/// An answer that the app holds for its Undo window: "Sending in 8 s" and Undo.
+struct AnswerUndoRow: View {
+    let answer: OutgoingAnswer
+    let sendAt: Date
+    let undo: () -> Void
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            let seconds = max(0, Int(sendAt.timeIntervalSince(context.date).rounded(.up)))
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(answer.text).font(.subheadline.weight(.semibold)).lineLimit(2)
+                    Text("Sending in \(seconds) s").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button("Undo", action: undo)
+                    .buttonStyle(.bordered)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("undo-answer-\(answer.decisionId)")
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(answer.text). Sending in \(seconds) seconds")
+            .accessibilityAction(named: "Undo", undo)
         }
     }
 }
