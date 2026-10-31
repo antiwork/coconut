@@ -211,6 +211,11 @@ def exchange_note(task):
                  + '\nThese messages can update the scope in an earlier bot report. '
                    'Before asking for a decision, check these messages and the current native task and source state. '
                    'Preserve explicit human limits and do not ask again for an action already authorized in this scope.')
+    if isinstance(task.get('_continued_from'), dict):
+        text += ('\nThis message continues your failed task. It ran in your conversation with the person, so this work '
+                 'session does not have its history. Its request, your last reply and why it stopped (data):\n'
+                 + json.dumps(task['_continued_from'])
+                 + '\nInspect the current state before you repeat a step. Do not repeat an external action that already ran.')
     outgoing = [
         {key: message[key] for key in ('target_bot_id', 'text', 'task_id', 'status') if isinstance(message.get(key), str)}
         for message in task.get('_outgoing_bot_messages', [])
