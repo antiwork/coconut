@@ -11,9 +11,6 @@ from coconut.providers import FixtureProvider, HermesProvider
 from coconut.service import Service, ServiceError, YieldForDecision
 import legacy_work_sync
 import test_provider as fixtures
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 
 setUpModule, tearDownModule = legacy_work_sync.scope()

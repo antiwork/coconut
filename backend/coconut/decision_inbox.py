@@ -119,8 +119,6 @@ def require_recommended_first(options, recommended_id):
 class DecisionInbox:
     def edit_message_draft(self, decision, task, data, device):
         from .service import ServiceError, now, digest, encoded
-        from .answer_undo import require_not_held
-        require_not_held(decision)
         from .message_drafts import message_draft
         if (decision.get('action_type') != 'draft_message' or decision['status'] != 'pending'
                 or type(data.get('revision')) is not int or data['revision'] != decision['revision']
@@ -185,14 +183,10 @@ class DecisionInbox:
             task = self._get('tasks', parent) if parent else None
         return {}
 
-    def update_inbox(self, decision, task, data, device=None):
+    def update_inbox(self, decision, task, data):
         from datetime import datetime, timedelta, timezone
         from .service import ServiceError, now, uid
         action = data.get('action')
-        if action == 'undo_answer':
-            if type(data.get('revision')) is not int or data['revision'] != decision['revision']:
-                raise ServiceError(409, 'This decision changed. Refresh it first.')
-            return self.undo_answer(decision, task, data, device)
         if (type(data.get('revision')) is not int or data['revision'] != decision['revision']
                 or task['status'] == 'cancelled'):
             raise ServiceError(409, 'This decision changed. Refresh it first.')
@@ -247,8 +241,6 @@ class DecisionInbox:
                         self._close_dismissed_card(decision, task)
                 self._put('decisions', decision)
                 self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
-        # Answers wait for their own Undo window (answer_undo.py). The dispatch loop runs both on each pass.
-        self.finish_held_answers()
 
     def _close_dismissed_card(self, decision, task):
         """Close a required card that the person dismissed. The caller holds the transaction and saves the card.
@@ -299,7 +291,7 @@ class DecisionInbox:
             sources.append(dict(id=source['id'], text=source['text']))
         decisions = [self._public(d) for row in self.db.execute(
             "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending' ORDER BY rowid")
-            for d in [json.loads(row[0])] if not d.get('_held_answer') and self._decision_visible_to_task(d, task)]
+            for d in [json.loads(row[0])] if self._decision_visible_to_task(d, task)]
         return dict(_pending_decisions=decisions, _decision_reply_sources=sources)
 
     def _decision_visible_to_task(self, decision, task):
@@ -371,9 +363,6 @@ class DecisionInbox:
                 or decision['status'] != 'pending' or task['status'] == 'cancelled'
                 or decision['revision'] != context['_decision_revision']):
             raise ServiceError(409, 'The reply no longer matches a pending decision.')
-        # An answer that the person gave on the card while this reply ran wins (answer_undo.py).
-        from .answer_undo import require_not_held
-        require_not_held(decision)
         if context.get('_background_completion') and payload.get('choice') != 'modify':
             return {'status': 'pending', 'error': 'Background results can update the card but cannot answer it for the person.'}
         quote = payload.get('quote')
@@ -419,8 +408,6 @@ class DecisionInbox:
 
     def _revise_question(self, decision, task, revision, reason, actor=None):
         from .service import ServiceError
-        from .answer_undo import require_not_held
-        require_not_held(decision)
         options = decision_options(revision.get('options'))
         assessment = decision_risk(revision)
         title = revision.get('title')

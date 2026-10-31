@@ -6,9 +6,6 @@ from unittest.mock import patch
 import test_message_drafts as drafts
 import test_provider as providers
 from coconut.service import ServiceError, YieldForDecision
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 
 class DecisionCallRecoveryTests(unittest.TestCase):

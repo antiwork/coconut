@@ -3,9 +3,6 @@ import unittest
 import test_message_interactions as interactions
 from coconut.hermes_worker import conversation_input
 from coconut.service import YieldForDecision
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 
 class PassiveReactionTests(unittest.TestCase):

@@ -137,7 +137,6 @@ class DecisionFreshness:
             return
         for decision in self._all('decisions'):
             if (not decision.get('_native') or decision.get('action_type') not in ('question', 'draft_message')
-                    # A held answer (answer_undo.py) does not stop this: the end of its window finds the change.
                     or decision['bot_id'] != bot_id or decision['status'] != 'pending'
                     or observation.url.lower() not in {url.lower() for url in github_links(decision)}):
                 continue
@@ -691,8 +690,7 @@ class DecisionFreshness:
         current = datetime.now(timezone.utc)
         for decision in sorted(decisions, key=lambda d: d.get('_freshness', {}).get('queued_at', d['created_at'])):
             task = tasks[decision['task_id']]
-            if (decision['status'] != 'pending' or decision.get('_held_answer')
-                    or decision['action_type'] not in ('question', 'draft_message')
+            if (decision['status'] != 'pending' or decision['action_type'] not in ('question', 'draft_message')
                     or decision['id'] in self._pending_decision_sources
                     or (self._ready_decision_sources is not None
                         and self._ready_decision_sources.get(decision['id'])
@@ -773,9 +771,7 @@ class DecisionFreshness:
                 decision = self._get('decisions', context['decision_id'])
                 task = self._get('tasks', context['task_id'])
                 if (not context.get('_decision_refresh') or context['status'] != 'working'
-                        # A held answer (answer_undo.py) wins over a check of the card.
-                        or decision['status'] != 'pending' or decision.get('_held_answer')
-                        or decision['action_type'] not in ('question', 'draft_message')
+                        or decision['status'] != 'pending' or decision['action_type'] not in ('question', 'draft_message')
                         or decision['revision'] != context['_decision_revision'] or task['status'] == 'cancelled'
                         or self._task_paused(task) or self._human_reply_pending(task, self._all('contexts'))
                         or self._refresh_has_queued_owner(task)

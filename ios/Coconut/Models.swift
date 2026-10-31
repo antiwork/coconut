@@ -315,12 +315,6 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var inboxDeferredAt: String? = nil
     var inboxUndoUntil: String? = nil
     var inboxSwipeId: String? = nil
-    /// The Mac holds an answer with the status "held" until this time. Undo can return the card before then.
-    var answerUndoUntil: String? = nil
-    var answerUndoId: String? = nil
-    var heldAnswerLabel: String? = nil
-    /// Why the Mac did not send the last held answer, for example a source change in the Undo window.
-    var answerNotice: String? = nil
     var uncertainty: String? = nil
     var risk: String? = nil
     var riskLevel: String? = nil
@@ -376,13 +370,6 @@ struct Decision: Codable, Identifiable, Equatable, Sendable {
     var isProposal: Bool { inboxKind == "proposal" }
     var isRefreshing: Bool { status == "refreshing" || (status == "pending" && sourceRefreshing == true) }
     var isPending: Bool { status == "pending" && !isRefreshing }
-    var isHeld: Bool { status == "held" }
-
-    /// Whether this answer receipt offers Undo at `now`. A Mac before the Undo window sends no deadline.
-    func offersAnswerUndo(at now: Date = Date()) -> Bool {
-        guard isHeld, answerUndoId != nil, let deadline = answerUndoUntil?.apiDate else { return false }
-        return deadline > now
-    }
 }
 
 struct DecisionSource: Codable, Hashable, Sendable {

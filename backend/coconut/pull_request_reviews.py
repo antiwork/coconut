@@ -274,9 +274,8 @@ class PullRequestReviews:
                         merged.add((bot_id, url.lower()))
             for decision in decisions:
                 url = decision.get('merge_pr_url')
-                # A held answer (answer_undo.py) wins. After it, the card is no longer pending.
-                if (not url or decision['status'] != 'pending' or decision.get('_held_answer')
-                        or decision['action_type'] != 'question' or (decision['bot_id'], url.lower()) not in merged):
+                if (not url or decision['status'] != 'pending' or decision['action_type'] != 'question'
+                        or (decision['bot_id'], url.lower()) not in merged):
                     continue
                 task = self._get('tasks', decision['task_id'])
                 response = ('This PR has already merged. Coconut closed the merge question after verifying GitHub. '

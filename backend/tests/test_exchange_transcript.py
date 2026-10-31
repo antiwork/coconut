@@ -2,9 +2,6 @@ import unittest
 from coconut.service import YieldForDecision
 
 import test_service_team
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 
 class ExchangeTranscriptTests(unittest.TestCase):

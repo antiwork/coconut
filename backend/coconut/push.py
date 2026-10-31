@@ -413,8 +413,7 @@ class PushDelivery:
             return False
         if item['decision_id']:
             decision = service._get('decisions', item['decision_id'])
-            # A held answer (answer_undo.py) means the person already answered the card.
-            return decision['status'] == 'pending' and not decision.get('_hidden', False) and not decision.get('_held_answer')
+            return decision['status'] == 'pending' and not decision.get('_hidden', False)
         if item['message_id']:
             return self.visible_message(service._get('messages', item['message_id']), task)
         turn = task.get('_native_turn_id') or task.get('updated_at') or task['created_at']

@@ -18,14 +18,12 @@ final class AppStore {
     var reactionOverrides: [String: [String]] = [:]
     var decisions: [Decision] = []
     var answeringDecisionIds: Set<String> = []
-    /// Undo requests in flight, by answer_undo_id. Inbox hides their offer until the Mac answers.
-    var undoingAnswerIds: Set<String> = []
-    /// Undo offers that the Mac refused. They do not come back.
-    @ObservationIgnored private var refusedAnswerUndoIds: Set<String> = []
-    /// The request key of each Undo, so a retry after a lost response repeats the same request.
-    @ObservationIgnored private var answerUndoKeys: [String: String] = [:]
+    /// The answers whose request is on its way to the Mac. Undo cannot stop them.
+    var sendingAnswerIds: Set<String> = []
     /// After Undo, Inbox shows this card first.
     var restoredDecisionId: String?
+    /// The seconds that the app holds an answer before it sends it. Undo in this time sends nothing.
+    static let answerUndoSeconds: TimeInterval = 10
     var decisionReplyDrafts: [String: String] = [:]
     var artifacts: [Artifact] = [] {
         didSet { assign(\.transcriptArtifacts, artifacts.filter { $0.kind == "task" }) }
@@ -277,7 +275,22 @@ final class AppStore {
         } else {
             stopPolling()
             if let cachedState { saveCache(cachedState, immediately: true) }
-            closeTunnelWhenIdle()
+            if outgoingAnswers.isEmpty { closeTunnelWhenIdle() } else { sendAnswersThenClose() }
+        }
+    }
+
+    // An answer can wait for its Undo window when the app leaves the foreground. Background time lets it send.
+    // If iOS ends that time first, the saved answer sends at the next launch.
+    private func sendAnswersThenClose() {
+        let background = BackgroundTask()
+        background.begin("Send answers") { [weak self] in self?.closeTunnelWhenIdle() }
+        scheduleDelivery()
+        Task { [weak self] in
+            while let self, !self.foreground, !self.outgoingAnswers.isEmpty {
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+            if let self, !self.foreground { self.closeTunnelWhenIdle() }
+            background.end()
         }
     }
 
@@ -353,7 +366,7 @@ final class AppStore {
     // The new pairing starts without the outgoing items and the cursor of the earlier one.
     private func adopt(_ configuration: PairingConfiguration) async {
         resetDelivery()
-        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; undoingAnswerIds = []; restoredDecisionId = nil
+        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; sendingAnswerIds = []; restoredDecisionId = nil
         ProtectedCache.remove("outgoing.json")
         workVisibility = [:]; workUndo = []; workMutationIds = [:]
         pairing = configuration
@@ -450,7 +463,7 @@ final class AppStore {
         client = nil
         uncertainWriteKeys = [:]
         resetDelivery()
-        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; undoingAnswerIds = []; restoredDecisionId = nil
+        outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; sendingAnswerIds = []; restoredDecisionId = nil
         pairing = nil
         repairRequired = false
         if !isDemo {
@@ -1054,7 +1067,8 @@ final class AppStore {
     }
 
     @discardableResult
-    func answer(_ decision: Decision, choice: String, correction: String? = nil, optionId: String? = nil) async -> Bool {
+    func answer(_ decision: Decision, choice: String, correction: String? = nil, optionId: String? = nil,
+                undoSeconds: TimeInterval = AppStore.answerUndoSeconds) async -> Bool {
         guard ["approve", "reject", "modify", "reply"].contains(choice) else { return false }
         guard !answeringDecisionIds.contains(decision.id) else { return false }
         answeringDecisionIds.insert(decision.id)
@@ -1109,7 +1123,8 @@ final class AppStore {
             text: correction ?? decision.options.first { $0.id == optionId }?.label ?? choice.capitalized,
             request: AnswerRequest(choice: choice, revision: decision.revision, correction: correction,
                 optionId: optionId, draftHash: decision.draftHash, previewsHash: decision.previewsHash),
-            replyTo: choice == "reply" ? decisionReference(for: decision.id) : nil)
+            replyTo: choice == "reply" ? decisionReference(for: decision.id) : nil,
+            sendAt: undoSeconds > 0 ? Date().addingTimeInterval(undoSeconds) : nil)
         outgoingAnswers.append(queued)
         do { try saveOutgoing() }
         catch {
@@ -1147,6 +1162,11 @@ final class AppStore {
                         await self.deliverOutgoing(message.id)
                         if self.outgoingMessages.contains(where: { $0.id == message.id && $0.status == .failed }) { break }
                     } else if let answer {
+                        if let sendAt = answer.sendAt, sendAt > Date() {
+                            // The answer waits for its Undo window. Undo removes it, and the loop then finds nothing.
+                            try? await Task.sleep(for: .seconds(sendAt.timeIntervalSinceNow))
+                            continue
+                        }
                         if !(await self.deliverAnswer(answer)) { break }
                     } else { break }
                 }
@@ -1156,6 +1176,13 @@ final class AppStore {
 
     private func deliverAnswer(_ answer: OutgoingAnswer) async -> Bool {
         let identity = deliveryID
+        // The card changed while the answer waited, for example while the app was closed. The answer was for the old card.
+        if let card = decisions.first(where: { $0.id == answer.decisionId }), card.revision != answer.request.revision {
+            dropAnswer(answer, reason: Self.answerNotSent(card))
+            return true
+        }
+        sendingAnswerIds.insert(answer.id)
+        defer { sendingAnswerIds.remove(answer.id) }
         var rejected = false
         let recorded: Decision? = await write("decisions/\(answer.decisionId)/answer", payload: answer.request,
             as: Decision.self, quiet: true, refreshInBackground: true, idempotencyKey: answer.id,
@@ -1164,7 +1191,10 @@ final class AppStore {
                    case .response(let status, let reason) = serviceError,
                    (400..<500).contains(status), ![408, 429].contains(status) {
                     rejected = true
-                    if identity == self.deliveryID { self.error = reason }
+                    if identity == self.deliveryID {
+                        let card = self.decisions.first { $0.id == answer.decisionId }
+                        self.error = status == 409 && card != nil ? Self.answerNotSent(card!) : reason
+                    }
                 }
             }, onSuccess: { receipt in
                 guard identity == self.deliveryID else { return }
@@ -1189,46 +1219,38 @@ final class AppStore {
         return false
     }
 
-    /// The latest answer that the Mac holds for its Undo window, from the confirmed state. Each card has its own
-    /// window; Inbox offers the latest. A snapshot or a live update brings the offer too.
-    func answerUndoOffer(at now: Date = Date()) -> Decision? {
-        decisions.filter { decision in
-            guard decision.offersAnswerUndo(at: now), let id = decision.answerUndoId else { return false }
-            return !undoingAnswerIds.contains(id) && !refusedAnswerUndoIds.contains(id)
-        }.max { ($0.answerUndoUntil?.apiDate ?? .distantPast) < ($1.answerUndoUntil?.apiDate ?? .distantPast) }
+    static func answerNotSent(_ card: Decision) -> String {
+        "Your answer to \u{201C}\(card.title)\u{201D} was not sent, because the card changed. Answer it again."
     }
 
-    /// The request key of the Undo of this held answer. A retry uses the same key.
-    func answerUndoKey(for undoId: String) -> String {
-        if let key = answerUndoKeys[undoId] { return key }
-        let key = UUID().uuidString
-        answerUndoKeys[undoId] = key
-        return key
+    private func dropAnswer(_ answer: OutgoingAnswer, reason: String) {
+        outgoingAnswers.removeAll { $0.id == answer.id }
+        answeringDecisionIds.remove(answer.decisionId)
+        try? saveOutgoing()
+        error = reason
     }
 
-    /// Ask the Mac to return the held answer's card to pending. The offer stays until the Mac confirms. After a lost
-    /// response, the offer comes back while the window is open, and Undo repeats the same request.
+    /// The answer of this card that waits for its Undo window, or nil.
+    func waitingAnswer(for decisionId: String, at now: Date = Date()) -> OutgoingAnswer? {
+        outgoingAnswers.first { $0.decisionId == decisionId && $0.isWaiting(at: now) && !sendingAnswerIds.contains($0.id) }
+    }
+
+    /// The latest answer that waits for its Undo window. Inbox offers Undo for it.
+    func latestWaitingAnswer(at now: Date = Date()) -> OutgoingAnswer? {
+        outgoingAnswers.filter { $0.isWaiting(at: now) && !sendingAnswerIds.contains($0.id) }
+            .max { ($0.sendAt ?? .distantPast) < ($1.sendAt ?? .distantPast) }
+    }
+
+    /// Cancel an answer that has not been sent. Nothing reached the Mac, so the card is pending as before.
     @discardableResult
-    func undoAnswer(_ held: Decision) async -> Bool {
-        guard let undoId = held.answerUndoId, !undoingAnswerIds.contains(undoId) else { return false }
-        undoingAnswerIds.insert(undoId)
-        defer { undoingAnswerIds.remove(undoId) }
-        var refused = false
-        let restored: Decision? = await write("decisions/\(held.id)/inbox",
-            payload: AnswerUndoRequest(action: "undo_answer", revision: held.revision, undoId: undoId), as: Decision.self,
-            refreshInBackground: true, idempotencyKey: answerUndoKey(for: undoId), onFailure: { failure in
-                if let serviceError = failure as? ServiceError, case .response(let status, _) = serviceError,
-                   (400..<500).contains(status), ![408, 429].contains(status) { refused = true }
-            }, onSuccess: { receipt in
-                self.snapshotEpoch = UUID()
-                self.snapshotRequest = nil
-                if let index = self.decisions.firstIndex(where: { $0.id == receipt.id }) { self.decisions[index] = receipt }
-                self.cachedState?.decisions = self.decisions
-                self.restoredDecisionId = receipt.id
-            })
-        if refused { refusedAnswerUndoIds.insert(undoId) }
-        if restored != nil || refused { answerUndoKeys[undoId] = nil }
-        return restored != nil
+    func undoAnswer(decisionId: String) -> Bool {
+        guard let answer = waitingAnswer(for: decisionId) else { return false }
+        outgoingAnswers.removeAll { $0.id == answer.id }
+        answeringDecisionIds.remove(decisionId)
+        if answer.request.choice == "reply", let text = answer.request.correction { decisionReplyDrafts[decisionId] = text }
+        try? saveOutgoing()
+        restoredDecisionId = decisionId
+        return true
     }
 
     func editDraft(_ decision: Decision, draft: MessageDraft) async -> Bool {
@@ -2385,6 +2407,11 @@ struct OutgoingAnswer: Codable, Identifiable, Equatable {
     let text: String
     let request: AnswerRequest
     var replyTo: MessageReference? = nil
+    /// The app holds the answer until this time, so the person can undo it. An answer saved before the Undo window
+    /// has none and sends at once. `id` is the idempotency key of the request, the same as before the window.
+    var sendAt: Date? = nil
+
+    func isWaiting(at now: Date = Date()) -> Bool { sendAt.map { $0 > now } ?? false }
     var message: Message {
         Message(id: "outgoing-" + id, botId: botId, taskId: nil, role: "user", kind: "text", text: text,
                 decisionId: request.choice == "reply" ? decisionId : nil, artifactId: nil, createdAt: createdAt,
@@ -2394,7 +2421,6 @@ struct OutgoingAnswer: Codable, Identifiable, Equatable {
 struct AnswerRequest: Codable, Equatable { let choice: String; let revision: Int; let correction: String?; let optionId: String?; let draftHash: String?; let previewsHash: String? }
 private struct DraftEditRequest: Encodable { let revision: Int; let draft: MessageDraft }
 private struct InboxRequest: Encodable { let action: String; let revision: Int; let swipeId: String? }
-struct AnswerUndoRequest: Encodable, Equatable { let action: String; let revision: Int; let undoId: String }
 private struct ReplyRequest: Encodable { let text: String; let attachmentIds: [String]; let decisionId: String?; let mentionedBotIds: [String] }
 private struct ContextRequest: Encodable { let question: String }
 

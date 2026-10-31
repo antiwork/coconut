@@ -20,9 +20,6 @@ from coconut.providers import FixtureProvider, HermesProvider
 from coconut.service import Service, ServiceError, YieldForDecision, now
 from coconut.work_recovery import block_check_delay
 import test_provider as fixtures
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 ANSWER = 'delegate-answer'
 # The public answer fields a check may show of another bot's card.

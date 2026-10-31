@@ -150,7 +150,6 @@ from .work_sources import WorkSources, card_answer_steps
 from .work_status import PROPOSAL_EXECUTION, WorkStatus
 from .background_processes import BackgroundProcesses, PENDING_COMPLETIONS
 from .native_execution import NativeExecution
-from .answer_undo import AnswerUndo, public_status, require_not_held
 from .decision_inbox import DecisionInbox, migrate_notification_importance
 from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PR_URL_INDEX, PullRequestReviews
 from .work_progress import WorkProgress, work_enabled
@@ -206,7 +205,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, AnswerUndo, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat):
+class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -294,7 +293,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         CREATE INDEX IF NOT EXISTS contexts_status ON contexts (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS decisions_status ON decisions (json_extract(data,'$.status'));
         CREATE INDEX IF NOT EXISTS decisions_undo ON decisions (id) WHERE json_extract(data,'$.inbox_undo_until') IS NOT NULL;
-        CREATE INDEX IF NOT EXISTS decisions_held ON decisions (id) WHERE json_extract(data,'$._held_answer') IS NOT NULL;
         CREATE INDEX IF NOT EXISTS decisions_merge_url ON decisions (lower(json_extract(data,'$.merge_pr_url')));
         CREATE INDEX IF NOT EXISTS tasks_assignment ON tasks (json_extract(data, '$._assignment_task_id'));
         CREATE INDEX IF NOT EXISTS tasks_blocked ON tasks (id)
@@ -894,8 +892,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     @staticmethod
     def _public(obj: dict) -> dict:
         result = {key: value for key, value in obj.items() if not key.startswith('_')}
-        if obj.get('_held_answer') and obj.get('status') == 'pending':
-            result['status'] = public_status(obj)
         if obj.get('_source_recheck') and obj.get('status') == 'pending':
             # Older clients render unknown statuses as approved draft receipts.
             # Keep their pending presentation; answers remain fenced server-side.
@@ -1620,10 +1616,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if len(parts) == 4 and parts[1] == 'decisions' and method == 'POST':
             decision = self._get('decisions', parts[2])
             task = self._get('tasks', decision['task_id'])
-            if decision.get('_held_answer') and not (parts[3] == 'inbox' and data.get('action') == 'undo_answer'):
-                raise ServiceError(409, 'This card has an answer that waits for its Undo window. Undo it or wait a few seconds.')
             if parts[3] == 'inbox':
-                return self.update_inbox(decision, task, data, device)
+                return self.update_inbox(decision, task, data)
             if decision['status'] != 'pending' or task['status'] == 'cancelled':
                 raise ServiceError(409, 'This decision is no longer pending.')
             if parts[3] == 'draft':
@@ -1636,8 +1630,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 question = require_text(data, 'question', 4000)
                 return self._request_context(decision, task, question, [])
             if parts[3] == 'answer':
-                # The bot gets the answer after the Undo window (answer_undo.finish_held_answers).
-                return self.hold_answer(decision, task, data, device, callbacks)
+                if decision.get('_native'):
+                    return self.answer_native(decision, task, data, device, callbacks)
+                return self._answer(decision, task, data, device)
         if parts == ['v1', 'settings', 'approvals'] and method == 'PUT':
             if not hasattr(self.provider, 'native_settings'):
                 raise ServiceError(503, 'Hermes is not available.')
@@ -2355,9 +2350,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 raise ServiceError(409, 'Choose an active task from this conversation.')
             if task['status'] == 'needs_you':
                 decisions = [decision for decision in self._all('decisions') if decision['task_id'] == task['id'] and decision['status'] == 'pending']
-                # A held answer (answer_undo.py) starts no context request in its window.
-                for decision in decisions:
-                    require_not_held(decision)
                 if len(decisions) != 1:
                     raise ServiceError(409, 'Choose a pending decision before asking for context.')
                 self._request_context(decisions[0], task, text, attachments)
@@ -2555,7 +2547,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             decision = self._get('decisions', data['decision_id'])
             if decision['task_id'] not in thread_tasks or decision['status'] != 'pending':
                 raise ServiceError(409, 'Choose a pending decision from this thread.')
-            require_not_held(decision)
             pending_task = self._get('tasks', decision['task_id'])
             self._request_context(decision, pending_task, text, attachments)
             result = self._public(pending_task)
@@ -2732,7 +2723,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         return message['id']
 
     def _answer(self, decision: dict, task: dict, data: dict, device: str) -> dict:
-        require_not_held(decision)
         if decision.get('_gateway_question'):
             # The answer or a reply goes to the waiting gateway turn. A dismissal goes there too (dismiss_gateway_question).
             return self.answer_gateway_question(decision, task, data, device)
@@ -4329,7 +4319,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     if context.get('_decision_refresh'):
                         decision = self._get('decisions', context['decision_id'])
                         if (decision['status'] != 'pending' or decision['revision'] != context['_decision_revision']
-                                or decision.get('_held_answer')
                                 or context.get('_conversation_epoch') != task.get('_conversation_epoch')):
                             context['status'] = 'cancelled'
                             self._put('contexts', context)
@@ -4338,7 +4327,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                             return
                     if context.get('_background_completion'):
                         decision = self._get('decisions', context['decision_id'])
-                        if (decision['status'] != 'pending' or decision.get('_held_answer')
+                        if (decision['status'] != 'pending'
                                 or not self._process_observation_current(task, bot)
                                 or context.get('_conversation_epoch') != task.get('_conversation_epoch')):
                             context['status'] = 'cancelled'

@@ -5,9 +5,6 @@ import unittest
 from coconut.hermes_worker import conversation_input
 from coconut.native_failure import native_failure
 from coconut.native_receipt_context import CHUNK_SIZE, PAGE_SIZE, read_receipts, receipt_prompt
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 
 def receipts(count=305) -> list[dict]:

@@ -12,9 +12,6 @@ from uuid import UUID, uuid4, uuid5
 from coconut import gateway_bridge
 from coconut.service import Service
 from test_service import ControlledProvider
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 
 class Provider(ControlledProvider):

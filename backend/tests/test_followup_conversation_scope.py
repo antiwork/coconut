@@ -2,9 +2,6 @@ import unittest
 
 from coconut.service import ServiceError
 import test_decision_followups as followup_tests
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 
 class FollowupConversationScopeTests(unittest.TestCase):

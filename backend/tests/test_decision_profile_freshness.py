@@ -5,9 +5,6 @@ from unittest.mock import patch
 from coconut.profiles import ProfileError
 from coconut.service import ServiceError, YieldForDecision, now
 import test_decision_freshness as fixtures
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 
 setUpModule, tearDownModule = fixtures.legacy_work_sync.scope()

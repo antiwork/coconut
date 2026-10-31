@@ -4,9 +4,6 @@ from dataclasses import replace
 
 import test_pr_source_refresh as fixture
 from coconut.service import ServiceError
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 
 class TerminalCardTests(unittest.TestCase):

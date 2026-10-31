@@ -11,9 +11,6 @@ from uuid import uuid4
 from coconut.service import ServiceError
 import test_native_kanban as fixtures
 from hermes_env import needs_hermes
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 
 @needs_hermes

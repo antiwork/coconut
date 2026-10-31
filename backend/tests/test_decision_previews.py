@@ -5,9 +5,6 @@ from PIL import Image
 
 import test_native_execution as native_tests
 from coconut.service import ServiceError, YieldForDecision
-from coconut.answer_undo import AnswerUndo
-# These tests check what an answer does, so it applies at once. test_answer_undo.py tests the Undo window.
-AnswerUndo.answer_undo_seconds = 0
 
 def image_bytes(format='PNG'):
     output = BytesIO()

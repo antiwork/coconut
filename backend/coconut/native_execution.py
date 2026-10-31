@@ -255,8 +255,6 @@ class NativeExecution:
 
     def answer_native(self, decision, task, data, device, callbacks):
         from .service import ServiceError, now, decision_correction
-        from .answer_undo import require_not_held
-        require_not_held(decision)
         if decision.get('_source_recheck'):
             raise ServiceError(409, 'The source changed. Coconut is updating this decision.')
         if self._task_paused(task):
