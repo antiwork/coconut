@@ -288,6 +288,13 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - When a claimed task still goes to the worker, but its claim has no prepared worker, the task waits instead of failing (`kanban_scheduler.await_prepared_worker`). The placeholder stops, and the next claim prepares a worker (`_needs_worker`). Once, at a start, Coconut runs again the tasks that failed this way before the fix, with the person's card answer (`_recover_unprepared_workers`).
 - Audits have their own capacity. The Kanban pass bounds them, and an audit that the gateway runs does not take a slot of the person's chats (`native_outcomes._dispatch_chat`).
 
+### Bot traffic stays out of the person's chat
+
+- The person's chat (the bot's conversation, `_chat_session`) gets only the turns that the person starts: messages, reactions, card answers and their follow-ups, and the continuation of a proposal that the person accepted.
+- A message of another bot, a return, a delegated result and a retry of a failed exchange are bot traffic. Each one runs in a work session of the bot (`_ensure_execution_session`), in the chat of that session (`<bot>:work:<id>`, gateway_work_turn). Delivery, returns and waits work as before. The reply of such a turn still shows in the person's chat in Coconut, but the bot's Hermes session of the person's chat does not hold the bot traffic.
+- Before, bot traffic joined the person's chat (#308). On Desk's main chat, 49 of 53 active turns were bot traffic: about 159,000 of 160,500 transcript tokens. The chat was the bots' inbox, and its prompt grew to about 293,000 tokens.
+- Migration: no data moves. Tasks that already joined the person's chat stay there and run as before (the person's turn still goes first). New deliveries go to work sessions. The bot traffic that the Hermes session already holds goes when Hermes compacts the session, or with /new.
+
 ### A message of the person goes first
 
 - A bot's conversation runs one turn at a time, because each turn writes the same Hermes session. A person's turn (a message, a reaction or a card answer, `work_capacity.person_turn`) does not wait for bot traffic in that queue.

@@ -1467,9 +1467,9 @@ for title in ('First defect', 'Second defect'):
         self.assertNotIn('work_outcome_id', self.service._get('artifacts', report['id']))
 
     def exchange_review(self):
-        """A review that Desk asks of Dev. With the gateway, the exchange is a turn of Dev's conversation
-        (join_conversation). Dev reports the open PR and ends its turn, and the retained PR migration binds the PR's
-        native outcome to that chat turn."""
+        """A review that Desk asks of Dev, as a turn of Dev's conversation. A new exchange now runs in a work session
+        of Dev, but earlier exchanges joined the conversation (#308), and such tasks remain in stores. Dev reports the
+        open PR and ends its turn, and the retained PR migration binds the PR's native outcome to that chat turn."""
         from coconut.service import now
         dev = self.write('/v1/bots', {'name': 'Dev', 'role': 'Review'})
         requester = self.task('Own the review of the PR')
@@ -1486,7 +1486,9 @@ for title in ('First defect', 'Second defect'):
             stored['status'] = 'waiting'
             self.service._put('tasks', stored)
             review = self.service._get('tasks', sent['task_id'])
-            review.update(status='completed', _conversation_epoch=self.service._setting('conversation_epoch'))
+            # The earlier state: the exchange joined Dev's conversation.
+            review.update(status='completed', _conversation_epoch=self.service._setting('conversation_epoch'),
+                          _chat_session=True)
             self.service._put('tasks', review)
         self.assertTrue(review['_chat_session'])
         self.assertNotIn('_execution_session_id', review)

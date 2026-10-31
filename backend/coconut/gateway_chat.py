@@ -228,13 +228,14 @@ class GatewayChat:
                     and getattr(self.provider, 'hermes_root', None))
 
     def join_conversation(self, task: dict) -> None:
-        """Make a new task of a bot exchange or of an accepted proposal a turn of the bot's conversation. The caller
+        """Make the continuation of a proposal that the person accepted a turn of the bot's conversation. The caller
         holds the transaction and saves the task.
 
-        The dispatchers give a task outside the conversation its own work session, which only the worker has
-        (`_ensure_execution_session`, the Kanban dispatch). With the gateway, such a task runs in the bot's gateway chat
-        instead, as a chat turn (`_chat_session`). A task that already has a work session keeps it, and fixture mode
-        keeps the worker's way.
+        The person's chat gets only the turns that the person starts: messages, card answers and their follow-ups. Bot
+        traffic (a message of another bot, a return, a delegated result) runs in a work session of the bot instead:
+        the dispatchers give it one (`_ensure_execution_session`), and the gateway runs it in the chat of that session
+        (gateway_work_turn, `<bot>:work:<id>`). Its reply still reaches the person's chat in Coconut. A task that already
+        has a work session keeps it, and fixture mode keeps the worker's way.
         """
         if self.gateway_enabled() and not task.get('_execution_session_id'):
             task['_chat_session'] = True

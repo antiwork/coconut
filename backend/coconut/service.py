@@ -2002,8 +2002,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     # gateway conversation has no work session: the retry joins that conversation (join_conversation).
                     self._ensure_execution_session(previous)
                     task['_execution_session_id'] = previous['_execution_session_id']
-            # With the gateway, the message or the return is a turn of the target bot's conversation.
-            self.join_conversation(task)
+            # The message or the return is bot traffic. It runs in a work session of the target bot (the dispatchers
+            # give it one), never as a turn of the person's chat (gateway_chat.join_conversation).
         if native_reply or native_return:
             pass
         elif not continuation_owner and target_id == assignment.get('source_bot_id') and owner_id:
