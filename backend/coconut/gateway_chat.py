@@ -201,6 +201,12 @@ def work_notes(request) -> str:
     return text + pending_decisions_context(task)
 
 
+def gateway_context_turn(task: dict) -> bool:
+    """Whether the gateway answers a follow-up on a card of this task: a task of the bot's conversation or a task of a
+    work session (run_gateway_context). The Kanban claim of such a follow-up holds a placeholder."""
+    return plain_chat_turn(task) or gateway_work_turn(task)
+
+
 def gateway_resume(task: dict, decision: dict, cron_session: str = '') -> bool:
     """Whether the gateway continues a task after an answered card.
 
@@ -529,11 +535,13 @@ class GatewayChat:
         return task_id in self.gateway_finished_claims
 
     def kanban_worker_pid(self, identity: str, task: dict, bot: dict, workspace: str, execution: str,
-                          native_id: str) -> int:
+                          native_id: str, follow_up: bool = False) -> int:
         """The process of a Kanban claim. A task that the gateway runs holds a placeholder process instead of a
-        prepared worker, because Hermes records a process for each claim and can end it. The provider prepares a
-        worker for each other task."""
-        if self.gateway_enabled() and gateway_work_turn(task) and not task.get('_needs_worker'):
+        prepared worker, because Hermes records a process for each claim and can end it. So does a follow-up on a card
+        of a task (`follow_up`, the claim of a context) that the gateway answers (gateway_context_turn). The provider
+        prepares a worker for each other claim."""
+        runs = gateway_context_turn(task) if follow_up else gateway_work_turn(task)
+        if self.gateway_enabled() and runs and not task.get('_needs_worker'):
             return self.start_gateway_holder(identity, execution)
         return self.provider.prepare_kanban_worker(identity, bot, workspace, execution, native_id)
 
@@ -588,11 +596,13 @@ class GatewayChat:
 
         An automatic check of the card (`_decision_refresh`) runs in mode `refresh`, and the service takes only
         coconut_refresh_decision from it (decision_freshness.refresh_decision). It sends no message to the chat.
-        The worker answers the results of background research that a worker turn started, and each follow-up on a task
-        that the gateway does not run. The turn cannot make a card or act for the task: the plugin blocks the card
-        tools, and the service takes only text and coconut_resolve_reply from a follow-up.
+        A follow-up on a card of a task with its own work session runs in the chat of that session, as the worker
+        answers it in that session. The results of background research continue the follow-up, as the worker's text
+        says (context_prompt). The worker answers each follow-up on a task that the gateway does not run. The turn
+        cannot make a card or act for the task: the plugin blocks the card tools, and the service takes only text and
+        coconut_resolve_reply from a follow-up.
         """
-        if not self.gateway_enabled() or not plain_chat_turn(task) or context.get('_background_completion'):
+        if not self.gateway_enabled() or not gateway_context_turn(task):
             return False
         from .native_conversation import attachment_context, context_prompt
         from .service import ServiceError
@@ -615,8 +625,15 @@ class GatewayChat:
             return self._get('contexts', context['id'])['status'] == 'working'
         # A check that finds nothing to change ends without a reply, as REFRESH_INSTRUCTIONS asks.
         check = bool(context.get('_decision_refresh'))
-        return self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted,
-                                    mode='refresh' if check else None, silent=check)
+        chat = root = None
+        if gateway_work_turn(task):
+            chat, root = self.work_chat(bot, task)
+        try:
+            return self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted,
+                                        mode='refresh' if check else None, silent=check, session=root, chat=chat)
+        finally:
+            # The placeholder of the follow-up's Kanban claim, if it has one (kanban_scheduler).
+            self.stop_gateway_holder(context['id'])
 
     def _run_in_gateway(self, task: dict, bot: dict, text: str, emit, *, silent: bool = False,
                         context_id: str | None = None, wanted=None, session: str | None = None,

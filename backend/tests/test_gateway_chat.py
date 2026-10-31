@@ -747,6 +747,44 @@ class ServiceRoutingTests(unittest.TestCase):
                          ('pending', 'needs_you'))
         self.assertEqual(self.provider.contexts, [])
 
+    def test_a_follow_up_on_a_card_of_a_work_session_runs_in_its_chat_with_the_research_results(self):
+        # The card's task has its own work session, for example a native outcome, and background research of a worker
+        # returned to the follow-up. The gateway answers it in the chat of that work session, as the worker answers it
+        # in that session, with the worker's text for the results.
+        task, card, _ = self.ask_in_gateway()
+        with self.service.transaction():
+            stored = self.service._get('tasks', task['id'])
+            stored.pop('_chat_session', None)
+            self.service._put('tasks', stored)
+            self.service._ensure_execution_session(self.service._get('tasks', task['id']))
+        self.write('POST', f'/v1/decisions/{card["id"]}/context', {'question': 'Did the benchmark finish?'})
+        with self.service.transaction():
+            context = next(c for c in self.service._all('contexts') if c['decision_id'] == card['id'])
+            context['_background_completion'] = ['The benchmark finished: 12% faster.']
+            self.service._put('contexts', context)
+        adapter = Adapter(self.service.gateway_bridge, self.home, [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'Yes, 12% faster.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        with patch.object(self.service, '_process_observation_current', return_value=True):
+            self.service._start_context(context['id'])
+            adapter.join(5)
+            self.service.context_threads[context['id']].join(5)
+        turn = adapter.turns[0]
+        stored = self.read('tasks', task['id'])
+        self.assertEqual(turn['chat_id'], self.bot['id'] + ':work:' + stored['_execution_session_id'])
+        self.assertEqual(turn['mode'], 'context')
+        self.assertIn('The requested background research has returned.', turn['text'])
+        self.assertIn('12% faster', turn['text'])
+        self.assertEqual(self.read('contexts', context['id'])['status'], 'completed')
+        self.assertEqual(self.provider.contexts, [])
+        # The Kanban claim of such a follow-up holds a placeholder, not a prepared worker.
+        with patch.object(self.provider, 'prepare_kanban_worker', create=True, return_value=4321) as prepare:
+            pid = self.service.kanban_worker_pid(context['id'], stored, self.read('bots', self.bot['id']),
+                                                 self.temp.name, 'work-1', 'native-1', follow_up=True)
+            self.assertEqual(pid, self.service.gateway_holders[context['id']].pid)
+            prepare.assert_not_called()
+        self.service.stop_gateway_holder(context['id'])
+
     def test_an_automatic_check_of_a_card_runs_in_the_gateway_and_records_only_its_result(self):
         from datetime import datetime, timedelta, timezone
         task, card, _ = self.ask_in_gateway()
