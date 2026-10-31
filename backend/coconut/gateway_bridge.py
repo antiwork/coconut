@@ -47,15 +47,14 @@ KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
 QUESTION_KINDS = ('clarify', 'approval')
 
 # A turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: a work item with
-# its context and workspace, routines, the audit of a work source and the results of a worker's background process.
-# The worker runs
+# its context and workspace and routines. The worker runs
 # it. An audit uses the Kanban tools of Coconut's own board (work_sources), which the gateway does not have. Attachments, reactions, pending cards, the saved task list of an assignment, its dependencies, a recovery
 # context, a direct reply, the bot exchange, GitHub source activity, a PR review and the bot changes of a chat go to
 # the gateway as text of the turn (gateway_chat.gateway_turn_text). The plugin has the card tools, coconut_wait,
 # coconut_correct_withdrawal, coconut_message_bot, coconut_create_bot and coconut_delete_bot.
 WORKER_INPUTS = (
     '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
-    '_work_context_id', '_work_context', '_background_completion', '_source_answer_steps', '_source_audit_prompt',
+    '_work_context_id', '_work_context', '_source_answer_steps', '_source_audit_prompt',
     '_work_status_only')
 # A task with its own work session runs in the gateway, in a chat of its own (gateway_work_turn), when it has no other
 # worker input. The dispatchers give it the work session and the Kanban claim. A question about a Work item without a
