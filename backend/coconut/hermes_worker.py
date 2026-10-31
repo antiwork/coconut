@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from uuid import UUID, uuid4
 
 if __package__:
-    from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME, recovery_note, direct_reply_note, exchange_note, explicit_bot_messages, source_activity_note, tracked_note, work_context_note
+    from .native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME, recovery_note, direct_reply_note, exchange_note, explicit_bot_messages, source_activity_note, tracked_note, work_context_note, background_results_prompt
     from .native_bridge import TurnPaused
     from .native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
     from .pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
@@ -30,7 +30,7 @@ if __package__:
     from .native_receipt_context import receipt_prompt, receipt_reader, SCHEMA as RECEIPT_SCHEMA
     from .native_failure import native_failure
 else:
-    from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME, recovery_note, direct_reply_note, exchange_note, explicit_bot_messages, source_activity_note, tracked_note, work_context_note
+    from native_conversation import CONVERSATION_INSTRUCTIONS, NativeConversation, current_message, current_messages, visible_history, message_content, decision_context, reaction_only_turn, chat_message_content, REACTION_SILENCE, reaction_feedback_context, attachment_context, context_prompt, resume_prompt, pending_decisions_context, recent_work_note, dependencies_note, WORK_RESUME, recovery_note, direct_reply_note, exchange_note, explicit_bot_messages, source_activity_note, tracked_note, work_context_note, background_results_prompt
     from native_bridge import TurnPaused
     from native_turn_scope import TurnScope, current as current_turn, setup_lock, active_scopes, TurnUnconfirmed
     from pull_request_reviews import PR_REVIEW_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
@@ -488,10 +488,7 @@ def conversation_input(request):
             prompt = '\n\n'.join(chat_message_content(request, message) for message in current)
             history = history[:index]
         if request['task'].get('_background_completion'):
-            followup = '\nNew message from the person:\n' + prompt if current else ''
-            prompt = ('Continue your existing work from these Hermes process results. Do not repeat the completed command. '
-                      'Verify the result and continue any remaining work.\n'
-                      + '\n\n'.join(request['task']['_background_completion']) + followup)
+            prompt = background_results_prompt(request['task'], prompt if current else '')
     if (operation == 'start' and request['task'].get('_source_audit_prompt')
             and not request['task'].get('_background_completion')):
         followup = '\nNew message from the person:\n' + prompt if current else ''

@@ -87,7 +87,7 @@ class WorkTurnRuleTests(unittest.TestCase):
         self.assertIsNone(gateway_turn_text(request))
         request['task'].update(_native_outcome_id='t_1', _native_outcome={'context': 'Card body.'})
         self.assertTrue(gateway_turn_text(request).startswith('Is the export done?'))
-        for key in ('_native_job', '_work_status_only', '_background_completion'):
+        for key in ('_native_job', '_work_status_only'):
             with self.subTest(key=key):
                 self.assertFalse(gateway_work_turn(dict(audit, **{key: 'x'})))
 
@@ -356,15 +356,26 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertNotIn('_gateway_waiting', stored)
         self.assertEqual(self.provider.starts, [])
 
-    def test_a_turn_with_coconut_inputs_still_runs_in_the_worker(self):
-        Adapter(self.service.gateway_bridge, self.home, [])
-        task = self.send('The result of a worker process is Coconut context.')
+    def test_a_turn_with_the_results_of_a_background_process_runs_in_the_gateway(self):
+        # A worker's background process ended, and its results continue the task. The gateway gets the worker's text,
+        # and Hermes saves the results with the turn, as the worker's session did.
+        from coconut.native_conversation import BACKGROUND_RESULTS
+        adapter = Adapter(self.service.gateway_bridge, self.home, [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'The build passed.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        task = self.send('Also check the docs.')
         with self.service.transaction():
             stored = self.read('tasks', task['id'])
-            stored['_background_completion'] = ['The build finished.']
+            stored['_background_completion'] = ['The build finished with exit code 0.']
             self.service._put('tasks', stored)
         self.service._run_task(task['id'])
-        self.assertEqual(len(self.provider.starts), 1)
+        adapter.join(5)
+        turn = adapter.turns[0]
+        own = BACKGROUND_RESULTS + 'The build finished with exit code 0.\nNew message from the person:\nAlso check the docs.'
+        self.assertTrue(turn['text'].startswith(own))
+        self.assertEqual(turn['own'], own)
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.provider.starts, [])
 
     def dispatch(self, task_id):
         """Start the task through the dispatcher of the service, as in a running service, and wait for its turn."""
@@ -1678,7 +1689,7 @@ class ServiceRoutingTests(unittest.TestCase):
             from coconut.work_workspace import process_outcomes
             self.assertIn('work-1', process_outcomes())
             # A task that the worker runs gets a prepared worker, as before.
-            other = dict(stored, _background_completion=['The process exited.'])
+            other = dict(stored, _native_job={'id': 'job-1'})
             self.assertEqual(self.service.kanban_worker_pid('other', other, bot, self.temp.name, 'work-2', 'native-2'), 4321)
         self.service.stop_gateway_holder(task['id'])
         self.assertIsNotNone(holder.poll())

@@ -83,8 +83,8 @@ def gateway_turn_text(request) -> str | None:
     messages (work_notes). A turn that continues an unfinished assignment starts with the worker's text for it, also
     when no new message came.
     """
-    from .native_conversation import (REACTION_SILENCE, WORK_RESUME, attachment_context, current_messages,
-                                      message_content, reaction_feedback_context)
+    from .native_conversation import (REACTION_SILENCE, WORK_RESUME, attachment_context, background_results_prompt,
+                                      current_messages, message_content, reaction_feedback_context)
     messages = current_messages(request)
     task = request['task']
     # A message about a Work item goes with the turn that has that item (work_context_note). A turn of a native outcome
@@ -93,6 +93,10 @@ def gateway_turn_text(request) -> str | None:
             and any(message.get(field) for message in messages for field in WORKER_MESSAGE_FIELDS)):
         return None
     text = '\n\n'.join(message_content(message) for message in messages)
+    if task.get('_background_completion'):
+        # The results of the task's background processes, and a message of the person that came with them, as the
+        # worker gives them.
+        text = background_results_prompt(task, text)
     if task.get('_source_audit_prompt') and not task.get('_background_completion'):
         # The worker's text of an audit of a work source, and a message of the person that came with it.
         text = (task['_source_audit_prompt'] + ('\nNew message from the person:\n' + text if text.strip() else '')
@@ -132,6 +136,11 @@ def gateway_turn_own(request) -> str:
     task = request['task']
     text = '\n\n'.join(message_content(message) for message in current_messages(request))
     text += attachment_context(task.get('attachments', []))
+    if task.get('_background_completion'):
+        # The results of the task's background processes are input of this turn, as a message is. Later turns read
+        # them from the session.
+        from .native_conversation import background_results_prompt
+        return background_results_prompt(task, text)
     return text if text.strip() else task['title']
 
 
