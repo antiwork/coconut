@@ -51,6 +51,9 @@ AUDITED = 'The audit found nothing new.'
 FIX = 'Fix the export in the repository.'
 FIXED = 'The export fix is in the worktree.'
 REPOSITORY = {}
+# A chat turn whose model call reports a prompt above the compression threshold of Hermes.
+LARGE = 'This prompt is large.'
+LARGE_PROMPT = 100_000
 CARD = dict(title='Ship the release?', context='The build passed and the notes are ready.',
             options=[dict(id='ship', label='Ship it', explanation=''), dict(id='wait', label='Wait a day', explanation='')])
 
@@ -127,6 +130,9 @@ class Model(BaseHTTPRequestHandler):
         message = answer(request)
         finish = 'tool_calls' if message.get('tool_calls') else 'stop'
         data = dict(id='stub', created=int(time.time()), model=request['model'])
+        users = [m for m in request.get('messages') or [] if m.get('role') == 'user']
+        prompt = LARGE_PROMPT if users and LARGE in json.dumps(users[-1].get('content')) else 1
+        usage = dict(prompt_tokens=prompt, completion_tokens=1, total_tokens=prompt + 1)
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream' if request.get('stream') else 'application/json')
         self.end_headers()
@@ -139,9 +145,11 @@ class Model(BaseHTTPRequestHandler):
                 data.update(object='chat.completion.chunk', choices=[
                     dict(index=0, delta=delta, finish_reason=finish if index == len(deltas) - 1 else None)])
                 self.wfile.write(('data: ' + json.dumps(data) + '\n\n').encode())
+            data.update(choices=[], usage=usage)
+            self.wfile.write(('data: ' + json.dumps(data) + '\n\n').encode())
             self.wfile.write(b'data: [DONE]\n\n')
         else:
-            data.update(object='chat.completion', usage=dict(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+            data.update(object='chat.completion', usage=usage,
                         choices=[dict(index=0, message=message, finish_reason=finish)])
             self.wfile.write(json.dumps(data).encode())
 
@@ -264,6 +272,51 @@ class NativeGatewayChatTests(unittest.TestCase):
             self.assertFalse([m for m in service._task_messages(reaction['id']) if m['role'] == 'assistant'
                               and m['kind'] == 'text' and not m.get('_hidden')], diagnostics())
             self.assertTrue(any(REACTION in json.dumps(request['messages']) for request in Model.requests), diagnostics())
+
+            # A typed /compress reaches Hermes as its command, without Coconut's context, and the turn gets its reply.
+            # The conversation is short, so Hermes compresses nothing.
+            calls = len(Model.requests)
+            task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': '/compress'}, str(uuid4()), 'phone')
+            service._run_task(task['id'])
+            replies = [m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
+            self.assertEqual(service._get('tasks', task['id'])['status'], 'completed', diagnostics())
+            self.assertTrue(replies and REPLY not in replies, (replies, diagnostics()))
+            self.assertFalse([r for r in Model.requests[calls:] if '/compress' in json.dumps(r['messages'])], diagnostics())
+            # A turn whose model call reached the compression threshold: after the turn, the adapter compresses the chat.
+            # Hermes's notice of it stays in the log, and the bot's chat shows only the turn's reply.
+            with service.lock:
+                before = len([m for m in service._all('messages') if m['bot_id'] == bot['id']])
+            task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': LARGE}, str(uuid4()), 'phone')
+            service._run_task(task['id'])
+            self.assertEqual(service._get('tasks', task['id'])['status'], 'completed', diagnostics())
+
+            def logs():
+                return '\n'.join(path.read_text(errors='replace') for path in [log, *(home / 'logs').glob('*.log')]
+                                 if path.exists())
+            deadline = time.monotonic() + 60
+            while 'compression notice for chat' not in logs() and time.monotonic() < deadline:
+                time.sleep(.5)
+            self.assertIn(f'{LARGE_PROMPT} prompt tokens', logs(), diagnostics())
+            self.assertIn('compression notice for chat', logs(), diagnostics())
+            with service.lock:
+                after = [m for m in service._all('messages') if m['bot_id'] == bot['id']][before:]
+            self.assertEqual([m['text'] for m in after if m['role'] == 'assistant'], [REPLY], diagnostics())
+            # A typed /new starts a new session, and the bot's conversation continues there: the next turn no longer
+            # has the earlier conversation.
+            task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': '/new'}, str(uuid4()), 'phone')
+            service._run_task(task['id'])
+            self.assertEqual(service._get('tasks', task['id'])['status'], 'completed', diagnostics())
+            replies = [m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
+            # Hermes asks to confirm /new, and the person answers as its text says.
+            self.assertIn('/approve', ' '.join(replies), diagnostics())
+            task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': '/approve'}, str(uuid4()), 'phone')
+            service._run_task(task['id'])
+            self.assertEqual(service._get('tasks', task['id'])['status'], 'completed', diagnostics())
+            task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Say hello again.'}, str(uuid4()), 'phone')
+            service._run_task(task['id'])
+            fresh = next(r for r in reversed(Model.requests) if 'Say hello again.' in json.dumps(r['messages']))
+            self.assertNotIn('mango', json.dumps(fresh['messages']), diagnostics())
+            self.assertNotIn(LARGE, json.dumps(fresh['messages']), diagnostics())
 
             # A card of coconut_ask ends the gateway turn. The answer continues the conversation in a later turn.
             task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': ASK}, str(uuid4()), 'phone')

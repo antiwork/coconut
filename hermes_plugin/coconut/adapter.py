@@ -62,6 +62,25 @@ CONTEXTS: dict[str, str] = {}
 CONTEXT_MIDDLEWARE = {'registered': False}
 # The ID of a message outside a Coconut turn starts with this prefix. Its edits and its delete take the same route.
 OUTSIDE = 'outside:'
+# The commands of Hermes that a person may type in a Coconut chat. They reach Hermes as commands, without Coconut's
+# context (CoconutAdapter._event). Hermes asks to confirm /new, and the person answers with /approve, /always or /cancel,
+# as Hermes's text says.
+COMMANDS = ('/compress', '/new', '/approve', '/always', '/cancel')
+# The chats whose last model call reached the compression threshold of Hermes (hooks.note_prompt_size). After the turn,
+# the adapter compresses the chat's session (CoconutAdapter._compress).
+COMPRESS: set[str] = set()
+# The message ID of a compression that Coconut starts begins with this prefix. Hermes sends its notice as a reply to
+# that message, and the notice stays in the log.
+COMPRESSION = 'compress:'
+
+
+def command_text(text: str) -> str | None:
+    """The command of a message that is only a Hermes command that Coconut lets through, or None."""
+    stripped = text.strip()
+    name = stripped.split(maxsplit=1)[0].lower() if stripped else ''
+    return stripped if name in COMMANDS else None
+
+
 # The adapters of this process. The tools and the hooks find the adapter of a chat here.
 ADAPTERS = weakref.WeakSet()
 
@@ -194,6 +213,8 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         # The root of the bot's native conversation for each chat, from the newest turn (hooks.join_conversation).
         # The gateway refuses inbound metadata of other platforms, so the root stays here.
         self._roots: dict[str, str] = {}
+        # The compressions that this adapter started after a turn (_compress).
+        self._compressions: set = set()
         self._init_relay()
         ADAPTERS.add(self)
 
@@ -276,13 +297,17 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
     def _event(self, turn: dict) -> MessageEvent:
         source = self.build_source(chat_id=str(turn['chat_id']), chat_name=str(turn.get('chat_name') or 'Coconut'),
                                    chat_type='dm', user_id='coconut', user_name=str(turn.get('user_name') or 'Coconut'))
-        # Text that starts with "/" stays a chat message. Coconut does not offer gateway commands yet.
+        # Text that starts with "/" stays a chat message, except a command of COMMANDS that is the whole text.
         if turn.get('session_root'):
             # hooks.join_conversation reads it before the gateway runs the turn.
             self._roots[str(turn['chat_id'])] = str(turn['session_root'])
         if turn.get('mode'):
             MODES[str(turn['id'])] = str(turn['mode'])
         text = str(turn['text'])
+        command = command_text(str(turn['own'])) if turn.get('own') is not None else None
+        if command is not None:
+            # The person typed a command of Hermes. It reaches Hermes as the command, without Coconut's context.
+            return MessageEvent(text=command, message_type=MessageType.COMMAND, source=source, message_id=str(turn['id']))
         if turn.get('own') is not None and CONTEXT_MIDDLEWARE['registered']:
             # Hermes saves the turn's own text. The model calls of this turn get the whole text (hooks.add_turn_context).
             CONTEXTS[str(turn['id'])] = text
@@ -334,9 +359,31 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             if delay is not None:
                 await asyncio.sleep(delay)
         self._active.discard(event.message_id)
+        if event.source.chat_id in COMPRESS:
+            COMPRESS.discard(event.source.chat_id)
+            # The loop keeps only a weak reference to a task.
+            task = asyncio.ensure_future(self._compress(event.source.chat_id))
+            self._compressions.add(task)
+            task.add_done_callback(self._compressions.discard)
+
+    async def _compress(self, chat_id: str) -> None:
+        """Compress the session of a chat, as `/compress` does, after a turn whose prompt reached the compression
+        threshold of Hermes. Hermes compresses a chat before a model call only when the size of the call is anchored
+        on real usage, and a gateway turn of one call never gets that anchor (docs/architecture.md). Hermes's notice of
+        the compression stays in the log."""
+        source = self.build_source(chat_id=chat_id, chat_type='dm', user_id='coconut', user_name='Coconut')
+        try:
+            await self.handle_message(MessageEvent(text='/compress', message_type=MessageType.COMMAND, source=source,
+                                                   message_id=COMPRESSION + str(uuid.uuid4())))
+        except Exception:
+            LOG.exception('Coconut: the gateway did not compress chat %s.', chat_id)
 
     async def send(self, chat_id: str, content: str, reply_to=None, metadata=None) -> SendResult:
         turn = self._turns.get(str(chat_id))
+        if str(reply_to or '').startswith(COMPRESSION):
+            # The notice of a compression that Coconut started is no message for the person.
+            LOG.info('Coconut: a compression notice for chat %s stays in the log: %s', chat_id, str(content)[:200])
+            return SendResult(success=True)
         if turn is None:
             return await self._send_outside(str(chat_id), str(content), metadata or {})
         self._count += 1

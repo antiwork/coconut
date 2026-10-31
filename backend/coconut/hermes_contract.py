@@ -333,7 +333,8 @@ def verify_gateway_contract():
     if not isinstance(getattr(GatewayRunner, '_startup_restore_in_progress', None), bool):
         raise ValueError('Hermes changed the startup restore of the gateway. Review the coconut adapter.')
     missing = {'pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end', 'on_session_start',
-               'on_interim_message', 'post_llm_call', 'on_session_end', 'pre_tool_call'} - set(VALID_HOOKS)
+               'on_interim_message', 'post_llm_call', 'on_session_end', 'pre_tool_call', 'post_api_request',
+               'on_session_reset'} - set(VALID_HOOKS)
     if missing:
         raise ValueError('Hermes removed plugin hooks of the coconut platform: ' + ', '.join(sorted(missing)))
     # The card rules go into the system prompt of each Coconut session (hermes_plugin/coconut/hooks.py).
@@ -356,6 +357,13 @@ def verify_gateway_contract():
     from gateway.platforms.event import MessageEvent
     if 'reply_expected' not in getattr(MessageEvent, '__dataclass_fields__', {}):
         raise ValueError('Hermes changed how a platform marks a message that needs no reply.')
+    # The plugin compresses a chat after a turn whose prompt reached the compression threshold (hooks.note_prompt_size).
+    from agent.context_compressor import ContextCompressor
+    from hermes_cli.config import load_config_readonly
+    require_keywords(ContextCompressor._compute_threshold_tokens, ['context_length', 'threshold_percent', 'max_tokens'])
+    require_keywords(ContextCompressor._effective_threshold_percent, ['context_length', 'threshold_percent'])
+    if not callable(load_config_readonly):
+        raise ValueError('Hermes changed how a plugin reads its config. Review the coconut hooks.')
     if not hasattr(BasePlatformAdapter, '_send_exec_approval_prompt'):
         raise ValueError('Hermes changed the approval prompt of a gateway platform.')
     # A send outside a turn that Coconut refuses must not come back as a plain text copy.
