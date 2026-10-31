@@ -108,6 +108,11 @@ def plain_chat_turn(task: dict) -> bool:
     return bool(task.get('_chat_session')) and not any(worker_input(task, key) for key in WORKER_INPUTS)
 
 
+# The commands of Hermes that the person may type in a Coconut chat (gateway_chat.gateway_command). Hermes asks to
+# confirm /new, and the person answers with /approve, /always or /cancel, as Hermes's text says.
+COMMANDS = ('/compress', '/new', '/approve', '/always', '/cancel')
+
+
 class GatewayUnavailable(RuntimeError):
     """No adapter took the turn. Nothing ran, so the turn can wait for another adapter."""
 
@@ -256,19 +261,23 @@ class GatewayBridge:
 
     def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut',
                  session_root: str | None = None, silent: bool = False, context_id: str | None = None,
-                 mode: str | None = None, own: str | None = None, folder: str | None = None) -> None:
+                 mode: str | None = None, own: str | None = None, folder: str | None = None,
+                 command: str | None = None) -> None:
         """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends.
 
         With `silent`, the turn may end in silence (TurnEvents). With `context_id`, the turn answers a follow-up on a
         pending card: the plugin blocks the card tools in it. With `own`, the turn's own text, Hermes saves only `own`
         in the session, and the plugin gives the whole `text` to the model calls of this turn (hooks.add_turn_context).
         With `folder`, the terminal commands of the turn run in that folder, as in a worker of a native outcome
-        (hooks.guard_tool)."""
+        (hooks.guard_tool). With `command`, a command of Hermes that the person typed
+        (gateway_chat.gateway_command), the adapter gives the gateway that command instead of a message."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, text, chat_name, session_root)
         if own is not None:
             turn.request['own'] = own
         if folder:
             turn.request['folder'] = folder
+        if command:
+            turn.request['command'] = command
         turn.silent = silent
         if context_id:
             turn.context_id = context_id

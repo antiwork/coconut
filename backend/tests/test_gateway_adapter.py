@@ -115,7 +115,8 @@ class BasePlatformAdapter:
         try:
             response = await self._message_handler(event)
             if response:
-                await self.send(event.source.chat_id, response)
+                # Hermes sends the reply of a message as a reply to that message.
+                await self.send(event.source.chat_id, response, reply_to=event.message_id)
             outcome = ProcessingOutcome.SUCCESS
         except Exception:
             outcome = ProcessingOutcome.FAILURE
@@ -151,6 +152,22 @@ def current_cron_execution():
 CONFIG = {}
 def load_config_readonly():
     return CONFIG
+def cfg_get(cfg, *keys, default=None):
+    for key in keys:
+        if not isinstance(cfg, dict) or key not in cfg:
+            return default
+        cfg = cfg[key]
+    return cfg
+''',
+    'agent/__init__.py': '',
+    'agent/context_compressor.py': '''
+class ContextCompressor:
+    @staticmethod
+    def _effective_threshold_percent(context_length, threshold_percent):
+        return max(threshold_percent, 0.75) if context_length < 512_000 else threshold_percent
+    @staticmethod
+    def _compute_threshold_tokens(context_length, threshold_percent, max_tokens=None):
+        return int(context_length * threshold_percent)
 ''',
     'tools/__init__.py': '',
     'tools/terminal_tool.py': '''
@@ -312,11 +329,11 @@ class GatewayAdapterTests(unittest.TestCase):
             await self.adapter.edit_message(chat, first.message_id, 'Hello from the gateway.', finalize=True)
             return None
         self.connect(runner)
-        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': '/new is plain text here'})
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': '/model is plain text here'})
         self.service._run_task(task['id'])
         event = self.adapter.events[0]
         self.assertEqual((event.text.split('\n')[0], event.source.chat_id, event.allow_gateway_control),
-                         ('/new is plain text here', self.bot['id'], False))
+                         ('/model is plain text here', self.bot['id'], False))
         self.assertEqual(self.provider.starts, [])
         self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
         self.assertEqual(self.replies(task), [('I am looking.', True), ('Hello from the gateway.', False)])
@@ -753,6 +770,145 @@ class GatewayAdapterTests(unittest.TestCase):
         with patch.object(hooks, '_turn', return_value=(None, None)):
             self.assertIsNone(hooks.add_turn_context(request={'messages': [{'role': 'user', 'content': 'x'}]}))
 
+    def test_a_typed_compress_or_new_reaches_hermes_as_a_command(self):
+        from gateway.platforms.event import MessageType
+        seen = []
+        async def runner(event):
+            seen.append((event.text, event.message_type, event.allow_gateway_control))
+            return 'Done.'
+        self.connect(runner)
+        def turn(text):
+            task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': text})
+            self.service._run_task(task['id'])
+            return seen[-1]
+        # A message that the person typed is the command, without Coconut's context, and the gateway may run it.
+        for typed, command in (('/compress', '/compress'), (' /new Plans ', '/new Plans'), ('/approve', '/approve')):
+            self.assertEqual(turn(typed), (command, MessageType.COMMAND, True))
+        # Another command and a command inside a message stay chat messages.
+        for typed in ('/model gpt', 'Please /compress this'):
+            self.assertEqual(turn(typed)[1:], (MessageType.TEXT, False))
+        # A message of another bot never becomes a command, also when its text starts with one. Its turn runs in a
+        # work session of Ada, with the bot's text as its title.
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        with self.service.transaction():
+            requester = self.service._send(self.read('bots', other['id']), {'text': 'Ask Ada.', 'mode': 'queue'},
+                                           human_authored=False)
+            stored = self.service._get('tasks', requester['id'])
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+        count = len(seen)
+        exchange = self.service._deliver_bot_message(requester['id'], dict(target_bot_id=self.bot['id'], text='/compress',
+                                                                           require_response=True))['task_id']
+        deadline = time.monotonic() + 5
+        while len(seen) == count and time.monotonic() < deadline:
+            self.service._dispatch_pending()
+            time.sleep(.05)
+        self.assertEqual(self.read('tasks', exchange)['title'], '/compress')
+        self.assertEqual(seen[-1][1:], (MessageType.TEXT, False))
+
+    def test_a_chat_at_the_compression_threshold_is_compressed_after_its_turn_and_the_notice_stays_in_the_log(self):
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        from gateway.platforms.event import MessageType
+        import hermes_cli.config as config
+        self.addCleanup(self.adapter_module.COMPRESS.clear)
+        sizes, commands = [], []
+        async def runner(event):
+            if event.message_type == MessageType.COMMAND:
+                commands.append((event.source.chat_id, event.text))
+                return 'Compressed: 40 messages to 6.'
+            def model_call():
+                token = self.session(event.source.chat_id)
+                try:
+                    # As Hermes reports the usage of a model call. The window is 1,000,000 tokens, so the threshold of
+                    # the default settings (half the window) is 500,000.
+                    hooks.note_prompt_size(platform='coconut', usage={'prompt_tokens': sizes.pop(0)}, context_length=1_000_000)
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            await asyncio.to_thread(model_call)
+            return 'Done.'
+        self.connect(runner)
+        def turn(text, size):
+            sizes.append(size)
+            task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': text})
+            self.service._run_task(task['id'])
+            deadline = time.monotonic() + 5
+            while self.adapter._active and time.monotonic() < deadline:
+                time.sleep(.02)
+            return task
+        # Below the threshold, nothing happens after the turn.
+        turn('Small.', 499_999)
+        time.sleep(.2)
+        self.assertEqual(commands, [])
+        # At the threshold, the adapter sends /compress for the chat after the turn. Hermes's notice of it is no
+        # message of the bot: it stays in the log.
+        task = turn('Large.', 500_000)
+        deadline = time.monotonic() + 5
+        while not commands and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertEqual(commands, [(self.bot['id'], '/compress')])
+        time.sleep(.2)
+        self.assertEqual(self.replies(task), [('Done.', False)])
+        self.assertEqual(self.outside(), [])
+        # A send outside a turn still reaches the chat.
+        self.complete(self.adapter.send(self.bot['id'], 'The background job finished.'))
+        self.assertEqual(self.outside(), [('The background job finished.', False)])
+        # The share and the cap of the compression settings of Hermes count. Compression that is off stops it.
+        # Desk's settings: 15% of a window of 1,000,000 tokens.
+        with patch.dict(config.CONFIG, compression={'threshold': 0.15}):
+            self.assertEqual(hooks.compression_threshold(1_000_000), 150_000)
+            # Hermes raises the share for a window under 512K.
+            self.assertEqual(hooks.compression_threshold(200_000), 150_000)
+        with patch.dict(config.CONFIG, compression={'threshold': 0.8, 'threshold_tokens': 120_000}):
+            self.assertEqual(hooks.compression_threshold(1_000_000), 120_000)
+        with patch.dict(config.CONFIG, compression={'enabled': False}):
+            self.assertIsNone(hooks.compression_threshold(200_000))
+        # Another platform, a call without usage, and a chat without a Coconut turn mark nothing.
+        token = self.session(self.bot['id'])
+        try:
+            hooks.note_prompt_size(platform='telegram', usage={'prompt_tokens': 500_000}, context_length=200_000)
+            hooks.note_prompt_size(platform='coconut', usage=None, context_length=200_000)
+            hooks.note_prompt_size(platform='coconut', usage={'prompt_tokens': 500_000}, context_length=200_000)
+        finally:
+            from gateway.session_context import SESSION
+            SESSION.reset(token)
+        self.assertEqual(self.adapter_module.COMPRESS, set())
+
+    def test_new_in_a_coconut_chat_moves_the_conversation_to_the_new_session(self):
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        from hermes_state import SessionDB
+        from gateway.config import PlatformConfig
+        coconut = self.adapter_module.CoconutAdapter(PlatformConfig())
+        coconut._roots.update({'bot': 'root-a', 'other': 'root-b', 'third': 'root-c'})
+        for table in (SessionDB.meta, SessionDB.sessions, SessionDB.lineage, SessionDB.messages):
+            table.clear()
+        # The tip of root-a is a session that Hermes compressed into old-child, the session that /new left.
+        SessionDB.meta.update({hooks.TIP_KEY + 'root-a': 'old', hooks.TIP_KEY + 'root-b': 'b-tip'})
+        SessionDB.lineage['old'] = 'old-child'
+        with patch.dict(os.environ, HERMES_HOME=str(self.home)):
+            hooks.follow_new_session(old_session_id='old-child', new_session_id='fresh', platform='coconut')
+            self.assertEqual(SessionDB.meta, {hooks.TIP_KEY + 'root-a': 'fresh', hooks.TIP_KEY + 'root-b': 'b-tip'})
+            # A conversation without a recorded tip is its root session.
+            hooks.follow_new_session(old_session_id='root-c', new_session_id='fresh-c', platform='coconut')
+            self.assertEqual(SessionDB.meta[hooks.TIP_KEY + 'root-c'], 'fresh-c')
+            # The next turn stays in the new session, also before Hermes has saved it.
+            class Store:
+                switched = []
+                def get_or_create_session(self, source, force_new=False):
+                    return types.SimpleNamespace(session_key='agent:main:coconut:dm:bot', session_id='fresh')
+                def switch_session(self, session_key, target_session_id):
+                    self.switched.append(target_session_id)
+            from gateway.config import Platform
+            from gateway.platforms.event import MessageEvent, SessionSource
+            SessionDB.sessions.update({'root-a', 'old', 'old-child'})
+            store = Store()
+            hooks.join_conversation(event=MessageEvent(text='Hi', source=SessionSource(Platform('coconut'), 'bot')),
+                                    session_store=store)
+            self.assertEqual(store.switched, [])
+            # Another platform changes nothing.
+            hooks.follow_new_session(old_session_id='b-tip', new_session_id='x', platform='telegram')
+            self.assertEqual(SessionDB.meta[hooks.TIP_KEY + 'root-b'], 'b-tip')
+
     def test_the_hook_blocks_tools_after_a_card_and_cards_in_a_follow_up(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']
         adapter = self.adapter_module
@@ -877,7 +1033,7 @@ class GatewayAdapterTests(unittest.TestCase):
                                                              'coconut_kanban_unblock'])
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
                                       'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
-                                      'pre_tool_call', 'post_tool_call'])
+                                      'pre_tool_call', 'post_tool_call', 'post_api_request', 'on_session_reset'])
         # The card tool states the order rule, as the worker's tool does.
         self.assertIn('must be the first item of options',
                       schemas['coconut_ask']['parameters']['properties']['recommended_option_id']['description'])

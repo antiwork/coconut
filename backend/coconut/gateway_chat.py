@@ -133,6 +133,25 @@ def gateway_turn_own(request) -> str:
     return text if text.strip() else task['title']
 
 
+def gateway_command(request) -> str | None:
+    """The command of Hermes that the person typed as the whole message of this turn, or None.
+
+    Only a direct message that the person typed on the phone counts, as the service checks it for a bot change
+    (`_bot_creation_sources`, Service._human_source). Bot traffic and a title from a bot's text never count. Other text
+    that starts with "/" stays a chat message."""
+    from .gateway_bridge import COMMANDS
+    from .native_conversation import current_messages
+    task = request['task']
+    if request['operation'] != 'start' or task.get('attachments'):
+        return None
+    messages = current_messages(request)
+    human = {source.get('id') for source in task.get('_bot_creation_sources') or [] if isinstance(source, dict)}
+    if len(messages) != 1 or messages[0]['id'] not in human:
+        return None
+    text = str(messages[0].get('text') or '').strip()
+    return text if text and text.split(maxsplit=1)[0].lower() in COMMANDS else None
+
+
 def work_notes(request) -> str:
     """The work context of a gateway turn, as the worker gives it: a recovery context, the recent work updates of the
     chat, the note of a direct reply, the bot exchange, GitHub source activity, the other work of the exchange that the
@@ -336,7 +355,8 @@ class GatewayChat:
         with self.lock:
             if self._get('tasks', task['id']).get('_preempted'):
                 text = PREEMPTED + text
-        self._run_in_gateway(task, bot, text, emit, silent=reaction_only_turn(request), own=own)
+        self._run_in_gateway(task, bot, text, emit, silent=reaction_only_turn(request), own=own,
+                             command=gateway_command(request))
         self._requeue_if_preempted(task['id'], emit)
         return True
 
@@ -584,7 +604,7 @@ class GatewayChat:
     def _run_in_gateway(self, task: dict, bot: dict, text: str, emit, *, silent: bool = False,
                         context_id: str | None = None, wanted=None, session: str | None = None,
                         chat: str | None = None, mode: str | None = None, own: str | None = None,
-                        folder: str | None = None) -> bool:
+                        folder: str | None = None, command: str | None = None) -> bool:
         """Give a turn to the adapter of the bot's profile. Wait for one, at most GATEWAY_WAIT_SECONDS.
 
         The turn joins the bot's conversation, or the Hermes session `session`, for example of a cron run
@@ -608,7 +628,8 @@ class GatewayChat:
                         self.gateway_bridge.run_turn(
                             task['id'], home, chat or bot['id'], text, emit, chat_name=bot.get('name') or 'Coconut',
                             session_root=session or session_root(bot, epoch=task.get('_conversation_epoch')),
-                            silent=silent, context_id=context_id, mode=mode, own=own, folder=folder)
+                            silent=silent, context_id=context_id, mode=mode, own=own, folder=folder,
+                            command=command)
                         return True
                     except GatewayUnavailable:
                         # No adapter took the turn, so nothing ran. Wait for the next adapter.

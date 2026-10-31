@@ -163,7 +163,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - Only a few Coconut tools exist in the gateway. Work tracking, waits, and bot creation and deletion stay with the worker turns that need them.
 - Tool progress is off, so the phone shows only the phases "thinking" and "writing".
 - The adapter refused messages outside a Coconut turn, for example cron deliveries. Phase 4 delivers them (see [Messages outside a Coconut turn](#messages-outside-a-coconut-turn)).
-- Gateway notices, such as "No home channel is set", stay in the gateway log. They name gateway commands, and Coconut sends chat text without gateway commands.
+- Gateway notices, such as "No home channel is set", stay in the gateway log. They name gateway commands, and Coconut sends chat text without gateway commands. The exceptions are the commands that the person may type (see "Compression of gateway chats").
 - A profile without a connected adapter has no chat runtime, and its chat turns wait (phase 5). This happens when the gateway does not multiplex, or when the person created the profile outside Coconut after the last setup. A gateway that already runs loads the platform after its next restart.
 - Steering during a turn waits for the next turn.
 
@@ -314,6 +314,14 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - The rest of the turn text is context of this turn only: the notes and rules of the service, and the live state. The plugin gives it to each model call of the turn, after the last user message, with `llm_request` middleware (`hooks.add_turn_context`). So a later call does not send the context of each earlier turn again. A Hermes without request middleware gets the whole text as the message, as before.
 - Each chat turn, work-session turn and continuation after a card answer ends with the cards that wait for the person now, live from the store (`cards_note`: ID, title and bot). A card that the conversation mentioned earlier may be answered or outdated, and only this list is current.
 - On Desk's work session a10d62c8, 15 user messages held about 244,000 of 279,000 transcript tokens. With only their own text saved, the transcript is about 57,000 tokens.
+
+### Compression of gateway chats
+
+- Hermes compresses a session before a model call only when it knows the size of the call from the real usage of an earlier call (the usage anchor of the session). A gateway turn restores the anchor only when it matches the conversation history exactly. On Desk's main chat, the anchor of 293,292 prompt tokens had a base count of 167, but its fingerprint matched message 170, and the gateway's agent history had "Hey" at index 168. So each turn started without a known size, Hermes deferred the check, and a turn of one model call never compressed. The exact cause is in Hermes.
+- Coconut compresses as a safety net. After each model call of a Coconut turn, the plugin compares the prompt tokens with the compression threshold of Hermes, from the `compression` settings of the profile (`hooks.note_prompt_size`, `compression_threshold`). When a call reached it, the adapter sends `/compress` for the chat after the turn (`CoconutAdapter._compress`). Hermes's notice of that compression is a reply to the command, so it stays in the gateway log.
+- On Desk (claude-opus-5-5, a window of 1,000,000 tokens, `threshold: 0.15`), the threshold is 150,000 tokens. The main chat's last prompt of 293,292 tokens is above it, so the next turn of that chat ends with a compression.
+- The person may type `/compress` and `/new` in a Coconut chat. When the whole message is one of these commands, it reaches Hermes as the command, without Coconut's context. Only a direct message that the person typed on the phone counts, as the service checks it for a bot change (`gateway_chat.gateway_command`). Bot traffic never becomes a command, also when its text starts with one. Hermes asks to confirm `/new`, and the person answers with `/approve`, `/always` or `/cancel`, as Hermes's text says. Other text that starts with "/" stays a chat message.
+- After `/new`, the bot's conversation continues in the new session (`hooks.follow_new_session`, the `on_session_reset` hook). Without this, the next turn would join the old session again.
 
 ### A message of the person goes first
 
