@@ -702,6 +702,39 @@ class GatewayAdapterTests(unittest.TestCase):
         # Outside a Coconut turn the hook does nothing.
         self.assertIsNone(hooks.save_todos(tool_name='todo_list', result=json.dumps({'todos': todos})))
 
+    def test_the_context_of_a_turn_goes_to_its_model_calls_and_hermes_saves_only_its_own_text(self):
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        adapter = self.adapter_module
+        self.addCleanup(adapter.CONTEXTS.clear)
+        self.addCleanup(adapter.CONTEXT_MIDDLEWARE.update, registered=adapter.CONTEXT_MIDDLEWARE['registered'])
+        from gateway.config import PlatformConfig
+        coconut = adapter.CoconutAdapter(PlatformConfig())
+        turn = {'id': 'turn-c', 'chat_id': 'bot', 'text': 'Hey\nCards that wait for the person now: none', 'own': 'Hey'}
+        # Without the middleware of this Hermes, the message carries the whole text, as before.
+        adapter.CONTEXT_MIDDLEWARE['registered'] = False
+        self.assertEqual(coconut._event(turn).text, turn['text'])
+        adapter.CONTEXT_MIDDLEWARE['registered'] = True
+        self.assertEqual(coconut._event(turn).text, 'Hey')
+        with patch.object(hooks, '_turn', return_value=(None, 'turn-c')):
+            # A chat request: the last user message gets the context, and the earlier messages stay as Hermes saved them.
+            request = {'model': 'm', 'messages': [{'role': 'user', 'content': 'Old'}, {'role': 'assistant', 'content': 'Ok'},
+                                                  {'role': 'user', 'content': 'Hey'}]}
+            changed = hooks.add_turn_context(request=request)['request']
+            self.assertEqual(changed['messages'][0], {'role': 'user', 'content': 'Old'})
+            self.assertEqual(changed['messages'][2]['content'], 'Hey\n\n' + hooks.CONTEXT_HEADER + turn['text'])
+            self.assertEqual(request['messages'][2]['content'], 'Hey')
+            # A user message with parts, and a Responses API request.
+            parts = hooks.add_turn_context(request={'messages': [{'role': 'user', 'content': [{'type': 'text', 'text': 'Hey'}]}]})
+            self.assertEqual(parts['request']['messages'][0]['content'][-1],
+                             {'type': 'text', 'text': hooks.CONTEXT_HEADER + turn['text']})
+            responses = hooks.add_turn_context(request={'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': 'Hey'}]}]})
+            self.assertEqual(responses['request']['input'][0]['content'][-1]['type'], 'input_text')
+        # Another turn, or no Coconut turn, keeps its request.
+        with patch.object(hooks, '_turn', return_value=(None, 'turn-other')):
+            self.assertIsNone(hooks.add_turn_context(request={'messages': [{'role': 'user', 'content': 'x'}]}))
+        with patch.object(hooks, '_turn', return_value=(None, None)):
+            self.assertIsNone(hooks.add_turn_context(request={'messages': [{'role': 'user', 'content': 'x'}]}))
+
     def test_the_hook_blocks_tools_after_a_card_and_cards_in_a_follow_up(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']
         adapter = self.adapter_module

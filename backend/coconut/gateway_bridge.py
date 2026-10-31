@@ -253,12 +253,15 @@ class GatewayBridge:
 
     def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut',
                  session_root: str | None = None, silent: bool = False, context_id: str | None = None,
-                 mode: str | None = None) -> None:
+                 mode: str | None = None, own: str | None = None) -> None:
         """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends.
 
         With `silent`, the turn may end in silence (TurnEvents). With `context_id`, the turn answers a follow-up on a
-        pending card: the plugin blocks the card tools in it."""
+        pending card: the plugin blocks the card tools in it. With `own`, the turn's own text, Hermes saves only `own`
+        in the session, and the plugin gives the whole `text` to the model calls of this turn (hooks.add_turn_context)."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, text, chat_name, session_root)
+        if own is not None:
+            turn.request['own'] = own
         turn.silent = silent
         if context_id:
             turn.context_id = context_id

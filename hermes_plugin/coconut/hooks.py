@@ -49,6 +49,12 @@ def register(ctx):
     ctx.register_hook('on_session_end', cron_end)
     ctx.register_hook('pre_tool_call', guard_tool)
     ctx.register_hook('post_tool_call', save_todos)
+    if callable(getattr(ctx, 'register_middleware', None)):
+        # The context of a turn goes to its model calls only. A Hermes without request middleware gets the whole
+        # text as the message, as before (adapter.CONTEXT_MIDDLEWARE).
+        from .adapter import CONTEXT_MIDDLEWARE
+        ctx.register_middleware('llm_request', add_turn_context)
+        CONTEXT_MIDDLEWARE['registered'] = True
     from .tools import cards
     module = cards()
     for number, part in enumerate(prompt_parts(module.DECISION_INSTRUCTIONS)):
@@ -145,6 +151,44 @@ def guard_tool(tool_name='', **_):
         # The board tools of the gateway write to its own board, not to Coconut's (gateway_chat.gateway_kanban_tool).
         return {'action': 'block', 'message': AUDIT_BOARD_MESSAGE}
     return None
+
+
+CONTEXT_HEADER = ('Context of this turn from Coconut. It is current for this turn only, and Coconut gives it again with each '
+                  'turn:\n')
+
+
+def add_turn_context(request=None, **_):
+    """llm_request middleware: give a model call of a Coconut turn the whole turn text.
+
+    Hermes saves the user message of the turn, which is the turn's own text (the person's message, or a title). The
+    notes, the rules and the live state of the turn go to the last user message of each request only, so the session
+    does not keep them, and later calls do not send each earlier one again. Return None for any other request.
+    """
+    from .adapter import CONTEXTS
+    holder, turn = _turn()
+    context = CONTEXTS.get(turn) if turn is not None else None
+    if not context or not isinstance(request, dict):
+        return None
+    key = next((name for name in ('messages', 'input') if isinstance(request.get(name), list)), None)
+    if key is None:
+        return None
+    items = list(request[key])
+    index = next((i for i in range(len(items) - 1, -1, -1)
+                  if isinstance(items[i], dict) and items[i].get('role') == 'user'), None)
+    if index is None:
+        return None
+    item = dict(items[index])
+    note = CONTEXT_HEADER + context
+    content = item.get('content')
+    if isinstance(content, str):
+        item['content'] = content + '\n\n' + note
+    elif isinstance(content, list):
+        # The Responses API names its text parts input_text, and the chat formats name them text.
+        item['content'] = content + [{'type': 'input_text' if key == 'input' else 'text', 'text': note}]
+    else:
+        return None
+    items[index] = item
+    return {'request': dict(request, **{key: items}), 'source': 'coconut', 'reason': 'turn context'}
 
 
 def join_conversation(event=None, session_store=None, **_):

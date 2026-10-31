@@ -630,6 +630,61 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(self.provider.resumes, [])
         self.assertEqual(self.replies(task), [('Shipped.', False, False)])
 
+    def test_a_turn_saves_only_its_own_text_and_its_context_names_the_cards_that_wait_now(self):
+        # A card waits, and another card was answered in a work session. Earlier turns may have named both.
+        task, card, _ = self.ask_in_gateway()
+        with self.service.transaction():
+            answered = dict(self.service._get('decisions', card['id']), id=str(uuid4()), title='Move the login email?',
+                            status='approved')
+            self.service._put('decisions', answered)
+        hey = self.send('Hey')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'Hi.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.service._run_task(hey['id'])
+        adapter.join(5)
+        turn = adapter.turns[0]
+        # Hermes saves the person's message. The model calls get the whole text, with the live cards at its end.
+        self.assertEqual(turn['own'], 'Hey')
+        self.assertTrue(turn['text'].startswith('Hey'))
+        cards = turn['text'][turn['text'].index('Cards that wait for the person now'):]
+        self.assertIn('Only this list is current', cards)
+        self.assertIn(card['id'] + ': Ship the release? (Ada)', cards)
+        self.assertNotIn('Move the login email?', cards)
+        stored = self.read('tasks', hey['id'])
+        with self.service.lock:
+            # A turn of another bot's conversation does not see this conversation's card.
+            other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+            stranger = dict(stored, bot_id=other['id'], conversation_bot_id=other['id'])
+            self.assertTrue(self.service.cards_note(stranger).endswith('Only this list is current:\nnone'))
+            # A shortened list does not say that a card it leaves out was answered.
+            for number in range(gateway_chat.CARDS_NOTE_LIMIT):
+                self.service._put('decisions', dict(self.service._get('decisions', card['id']), id=str(uuid4()),
+                                                    title=f'Card {number}', created_at=f'2099-01-01T00:00:{number:02d}Z'))
+            # A delegate's check reads its message history once for all cards.
+            delegate = dict(stored, bot_id=other['id'])
+            with patch.object(self.service, '_history_decision_ids', wraps=self.service._history_decision_ids) as reads:
+                self.service.cards_note(delegate)
+            self.assertEqual(reads.call_count, gateway_chat.CARDS_NOTE_LIMIT + 1)
+            calls = {call.args for call in reads.call_args_list}
+            self.assertEqual(calls, {(other['id'],)})
+            queries = []
+            self.service.db.set_trace_callback(queries.append)
+            try:
+                self.service.cards_note(delegate)
+            finally:
+                self.service.db.set_trace_callback(None)
+            self.assertEqual(sum('message_audience' in query for query in queries), 1)
+            note = self.service.cards_note(stored)
+            self.assertNotIn('Only this list is current', note)
+            self.assertIn(f'oldest {gateway_chat.CARDS_NOTE_LIMIT} of {gateway_chat.CARDS_NOTE_LIMIT + 1} waiting cards', note)
+            self.assertIn('A card that it does not name may still wait', note)
+            self.assertIn('- and 1 more that wait', note)
+            # With no card, the list says so.
+            for decision in self.service._all('decisions'):
+                self.service._put('decisions', dict(decision, status='dismissed'))
+            self.assertTrue(self.service.cards_note(stored).endswith('Only this list is current:\nnone'))
+
     def test_a_typed_answer_in_chat_resolves_a_pending_card_in_the_gateway(self):
         task, card, _ = self.ask_in_gateway()
         reply = self.send('Yes, ship it today.')
