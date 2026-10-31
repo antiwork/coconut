@@ -186,9 +186,9 @@ WORKSPACE_INSTRUCTIONS = (
 # The board tools of Coconut's board, for an audit of a work source in the gateway
 # (gateway_chat.gateway_kanban_tool). The worker offers the Hermes tools themselves, bound to that board.
 KANBAN_CREATE_SCHEMA = {'name': 'coconut_kanban_create', 'description': (
-    'In an audit of a work source: create a Hermes task on the board of Coconut for accepted work that no task owns. '
-    'Coconut adopts the task as an outcome of this bot. Put the complete request, scope, approval limits and '
-    'acceptance criteria in body.'),
+    'Create a Hermes task on the board of Coconut (kanban_create) for accepted work that no task owns. Coconut adopts '
+    'the task as an outcome of this bot. Put the complete request, scope, approval limits and acceptance criteria in '
+    'body.'),
     'parameters': {'type': 'object', 'properties': {
         'title': {'type': 'string', 'description': 'A short title of the outcome.'},
         'body': {'type': 'string', 'description': 'The request, scope, approval limits and acceptance criteria.'},
@@ -198,19 +198,19 @@ KANBAN_CREATE_SCHEMA = {'name': 'coconut_kanban_create', 'description': (
         'workspace_path': {'type': 'string', 'description': 'With dir or worktree: the absolute path.'}},
         'required': ['title', 'body']}}
 KANBAN_LIST_SCHEMA = {'name': 'coconut_kanban_list', 'description': (
-    'In an audit of a work source: list the Hermes tasks of this bot on the board of Coconut, to find the task that '
-    'owns an outcome.'),
+    'List the Hermes tasks of this bot on the board of Coconut (kanban_list), for example to find the task that owns '
+    'an outcome.'),
     'parameters': {'type': 'object', 'properties': {
         'status': {'type': 'string', 'description': 'Only tasks with this status, for example blocked or running.'},
         'include_archived': {'type': 'boolean'},
         'limit': {'type': 'integer', 'minimum': 1}}}}
 KANBAN_SHOW_SCHEMA = {'name': 'coconut_kanban_show', 'description': (
-    'In an audit of a work source: show one Hermes task on the board of Coconut, with its comments, runs and events.'),
+    'Show one Hermes task on the board of Coconut (kanban_show), with its comments, runs and events.'),
     'parameters': {'type': 'object', 'properties': {
         'task_id': {'type': 'string', 'description': 'The Hermes task ID.'}}, 'required': ['task_id']}}
 KANBAN_COMMENT_SCHEMA = {'name': 'coconut_kanban_comment', 'description': (
-    'In an audit of a work source: add a comment to a Hermes task on the board of Coconut, for example the current '
-    'source revision and its facts.'),
+    'Add a comment to a Hermes task on the board of Coconut (kanban_comment), for example the current source revision '
+    'and its facts, or a handoff to another task.'),
     'parameters': {'type': 'object', 'properties': {
         'task_id': {'type': 'string', 'description': 'The Hermes task ID.'},
         'body': {'type': 'string', 'description': 'The comment.'}},

@@ -356,6 +356,15 @@ def verify_gateway_contract():
     from gateway.platforms.event import MessageEvent
     if 'reply_expected' not in getattr(MessageEvent, '__dataclass_fields__', {}):
         raise ValueError('Hermes changed how a platform marks a message that needs no reply.')
+    # A native outcome turn gets the board tools of a worker under Coconut names, with the schemas of Hermes's tools
+    # (hermes_plugin/coconut/tools.claim_schemas), and the workspace of its claim (hooks.guard_tool).
+    from tools import kanban_tools_schemas
+    from tools.terminal_tool import register_task_env_overrides
+    missing = [name for name in ('KANBAN_COMPLETE_SCHEMA', 'KANBAN_BLOCK_SCHEMA', 'KANBAN_SCHEDULE_SCHEMA',
+                                 'KANBAN_HEARTBEAT_SCHEMA', 'KANBAN_REQUEST_REVIEW_SCHEMA', 'KANBAN_LINK_SCHEMA',
+                                 'KANBAN_UNBLOCK_SCHEMA') if not isinstance(getattr(kanban_tools_schemas, name, None), dict)]
+    if missing or not callable(register_task_env_overrides):
+        raise ValueError('Hermes changed the board tools of a worker: ' + ', '.join(missing or ['terminal folders']))
     if not hasattr(BasePlatformAdapter, '_send_exec_approval_prompt'):
         raise ValueError('Hermes changed the approval prompt of a gateway platform.')
     # A send outside a turn that Coconut refuses must not come back as a plain text copy.

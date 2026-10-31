@@ -95,8 +95,10 @@ def gateway_turn_text(request) -> str | None:
         # The worker's text of an audit of a work source, and a message of the person that came with it.
         text = (task['_source_audit_prompt'] + ('\nNew message from the person:\n' + text if text.strip() else '')
                 + AUDIT_BOARD_TOOLS)
-    if not text.strip() and (task.get('_work_resume') or task.get('_bot_messages') or task.get('_is_return')):
-        # The worker names the task when no message of the person starts the turn, for example a message of another bot.
+    if not text.strip() and (task.get('_work_resume') or task.get('_bot_messages') or task.get('_is_return')
+                             or task.get('_native_outcome_id')):
+        # The worker names the task when no message of the person starts the turn, for example a message of another bot
+        # or a run of a native outcome.
         text = task['title']
     if reaction_only_turn(request):
         text += REACTION_SILENCE
@@ -144,11 +146,20 @@ def work_notes(request) -> str:
     from .native_conversation import (dependencies_note, direct_reply_note, exchange_note, pending_decisions_context,
                                       recent_work_note, recovery_note, source_activity_note, tracked_note,
                                       work_context_note)
+    from .native_receipt_context import receipt_prompt
     from .work_progress import WORK_INSTRUCTIONS, work_enabled
+    from .work_recovery import block_check_task
     task = request['task']
-    # A check of a blocked native task stays with the worker (`_native_outcome_id`), so this is never one.
-    text = (work_context_note(task) + recovery_note(task) + recent_work_note(task) + direct_reply_note(task)
+    # A check of a blocked native task gets the check rules and coconut_record_pause, as in the worker. An answered card
+    # continues the same turn, and its answer replaces the check rules (hermes_worker.block_check_turn).
+    check = block_check_task(task) and request['operation'] != 'resume'
+    text = (work_context_note(task) + recovery_note(task, check) + recent_work_note(task) + direct_reply_note(task)
             + exchange_note(task) + source_activity_note(task) + dependencies_note(task) + tracked_note(task))
+    if task.get('_native_outcome_id'):
+        # The rules of a native outcome, the board tools of its claim, and the receipts of earlier attempts of this turn,
+        # as the worker gives them.
+        from .native_outcomes import WORK_INSTRUCTIONS as OUTCOME_INSTRUCTIONS
+        text += '\n' + OUTCOME_INSTRUCTIONS.strip() + OUTCOME_BOARD_TOOLS + receipt_prompt(task.get('_native_receipts'))
     if gateway_work_turn(task):
         # The worker gives each turn of a work session this rule (hermes_worker). coconut_workspace serves it.
         from .card_tools import WORKSPACE_INSTRUCTIONS
@@ -196,6 +207,26 @@ AUDIT_BOARD_TOOLS = ('\nIn this chat, call coconut_kanban_list, coconut_kanban_s
                      'coconut_kanban_comment for kanban_list, kanban_show, kanban_create and kanban_comment. They use '
                      'the board of Coconut, where the Hermes tasks of this bot are. Find the existing task of an outcome '
                      'before you create one.')
+# The rules and the skills of a bot name the board tools of Hermes. In the gateway, Coconut runs them on its own board,
+# for the Kanban claim of the turn (gateway_kanban_tool). The plugin blocks the gateway's own board tools in the turn.
+OUTCOME_BOARD_TOOLS = (
+    '\nIn this chat, each Hermes board tool has a Coconut name: call coconut_kanban_show, coconut_kanban_comment, '
+    'coconut_kanban_heartbeat, coconut_kanban_complete, coconut_kanban_block, coconut_kanban_schedule, '
+    'coconut_kanban_request_review, coconut_kanban_link, coconut_kanban_create, coconut_kanban_list and '
+    'coconut_kanban_unblock for the kanban_ tool with the same ending, also when a rule or a skill names the kanban_ '
+    'tool. They use the board of Coconut, where the native task of this outcome is, and act for the claim of this '
+    'turn. A turn that ends without coconut_kanban_complete, coconut_kanban_block, coconut_kanban_schedule or '
+    'coconut_kanban_request_review counts as a failed run, and Hermes retries the task.')
+# The board tools that end the run of a claim. After one of them, the turn has no claim, and its placeholder stops.
+RUN_ENDING_TOOLS = ('kanban_complete', 'kanban_block', 'kanban_schedule', 'kanban_request_review')
+# The board tools that act on the run of a claim. Only a turn of a native outcome has one.
+RUN_TOOLS = (*RUN_ENDING_TOOLS, 'kanban_heartbeat')
+# The board tools that act for the claim of a native outcome turn, with the worker env of that claim
+# (kanban_runtime.board_tool). kanban_list and kanban_unblock route the board: Hermes refuses them in a worker.
+CLAIM_TOOLS = ('kanban_show', 'kanban_comment', 'kanban_create', 'kanban_link', 'kanban_heartbeat', *RUN_ENDING_TOOLS)
+# The board tools that a gateway turn runs on Coconut's board (kanban_runtime.BOARD_TOOLS).
+BOARD_TOOLS = ('kanban_create', 'kanban_comment', 'kanban_list', 'kanban_show', 'kanban_link', 'kanban_unblock',
+               *RUN_TOOLS)
 
 
 def chat_bot(chat_id: str) -> str:
@@ -236,6 +267,8 @@ class GatewayChat:
         self.gateway_cron_threads: dict[str, threading.Thread] = {}
         # The placeholder process of each Kanban claim that the gateway runs (kanban_worker_pid).
         self.gateway_holders: dict[str, subprocess.Popen] = {}
+        # The tasks whose running turn ended the run of its claim with a board tool (claim_finished).
+        self.gateway_finished_claims: set[str] = set()
         # Earlier versions had a `chat_runtime` setting. The gateway is now the only chat runtime.
         self.db.execute("DELETE FROM settings WHERE key='chat_runtime'")
 
@@ -412,7 +445,7 @@ class GatewayChat:
         ended, lost = threading.Event(), threading.Event()
         def watch():
             while holder is not None and not ended.wait(.5 if lost.is_set() else 2):
-                if holder.poll() is not None:
+                if holder.poll() is not None and not self.claim_finished(task['id']):
                     if not lost.is_set():
                         LOG.warning('The Kanban claim of work turn %s ended. The turn stops.', task['id'])
                     lost.set()
@@ -423,15 +456,22 @@ class GatewayChat:
         def wanted():
             # A lost claim also ends the wait for an adapter, so the work never starts later.
             return (holder is None or holder.poll() is None) and self._get('tasks', task['id'])['status'] == 'working'
+        # The mode names the rules of the turn for the hooks (hooks.guard_tool).
+        mode = 'audit' if task.get('_source_audit_prompt') else 'outcome' if task.get('_native_outcome_id') else None
+        claim = task.get('_kanban_claim') or {}
+        # A native outcome runs in the workspace of its claim, as the worker runs it (TERMINAL_CWD).
+        folder = claim.get('workspace') if mode == 'outcome' and claim.get('workspace') else None
         try:
-            self._run_in_gateway(task, bot, text, emit, session=root, chat=chat, wanted=wanted,
-                                 mode='audit' if task.get('_source_audit_prompt') else None, own=own)
+            self._run_in_gateway(task, bot, text, emit, session=root, chat=chat, wanted=wanted, mode=mode, own=own,
+                                 folder=folder if folder and os.path.isdir(folder) else None)
         finally:
             ended.set()
-            # A claim that ended before the watcher saw it is lost too. The turn's own stop below is not.
-            if holder is not None and holder.poll() is not None:
+            # A claim that ended before the watcher saw it is lost too. The turn's own stop below is not, and neither
+            # is the stop after a tool that ended the run (gateway_kanban_tool).
+            if holder is not None and holder.poll() is not None and not self.claim_finished(task['id']):
                 lost.set()
             self.stop_gateway_holder(task['id'])
+            self.gateway_finished_claims.discard(task['id'])
         if lost.is_set():
             raise RuntimeError('Hermes ended the Kanban claim of this work before the turn finished.')
         return True
@@ -446,6 +486,10 @@ class GatewayChat:
         text = STATUS_TEXT + json.dumps(task['_work_context'])
         return self._run_in_gateway(task, bot, text, emit, session=session_root(bot, execution=identity),
                                     chat=bot['id'] + STATUS_CHAT + task['id'], mode='status')
+
+    def claim_finished(self, task_id: str) -> bool:
+        """Whether a board tool of the running turn ended the run of its claim (RUN_ENDING_TOOLS)."""
+        return task_id in self.gateway_finished_claims
 
     def kanban_worker_pid(self, identity: str, task: dict, bot: dict, workspace: str, execution: str,
                           native_id: str) -> int:
@@ -539,7 +583,8 @@ class GatewayChat:
 
     def _run_in_gateway(self, task: dict, bot: dict, text: str, emit, *, silent: bool = False,
                         context_id: str | None = None, wanted=None, session: str | None = None,
-                        chat: str | None = None, mode: str | None = None, own: str | None = None) -> bool:
+                        chat: str | None = None, mode: str | None = None, own: str | None = None,
+                        folder: str | None = None) -> bool:
         """Give a turn to the adapter of the bot's profile. Wait for one, at most GATEWAY_WAIT_SECONDS.
 
         The turn joins the bot's conversation, or the Hermes session `session`, for example of a cron run
@@ -563,7 +608,7 @@ class GatewayChat:
                         self.gateway_bridge.run_turn(
                             task['id'], home, chat or bot['id'], text, emit, chat_name=bot.get('name') or 'Coconut',
                             session_root=session or session_root(bot, epoch=task.get('_conversation_epoch')),
-                            silent=silent, context_id=context_id, mode=mode, own=own)
+                            silent=silent, context_id=context_id, mode=mode, own=own, folder=folder)
                         return True
                     except GatewayUnavailable:
                         # No adapter took the turn, so nothing ran. Wait for the next adapter.
@@ -653,8 +698,12 @@ class GatewayChat:
             return self.gateway_todos(task_id, arguments)
         if tool == 'workspace':
             return self.gateway_workspace(task_id)
-        if tool in ('kanban_create', 'kanban_comment', 'kanban_list', 'kanban_show'):
+        if tool in BOARD_TOOLS:
             return self.gateway_kanban_tool(task_id, tool, arguments)
+        if tool == 'record_pause':
+            return self.gateway_record_pause(task_id, arguments)
+        if tool == 'read_receipts':
+            return self.gateway_read_receipts(task_id, arguments)
         if tool == 'create_bot':
             # The service checks the human message that asks for the bot (service._create_bot_from_chat).
             return self._create_bot_from_chat(task_id, arguments)
@@ -687,62 +736,135 @@ class GatewayChat:
 
         The plugin then gets the worktree with work_workspace.acquire in the gateway, because acquire needs Hermes, and
         sets it as the working folder of the turn's terminal. The registry has its own lock across processes. Only a
-        turn of a work session has an outcome. A native outcome, which can continue the worktree of an earlier outcome
-        on Coconut's board (workspace_handoff), stays with the worker."""
+        turn of a work session has an outcome. A native outcome can continue the retired worktree of an earlier outcome
+        on Coconut's board: the place then carries the proof of its claim (`successor`), and the plugin checks it with
+        workspace_handoff.native_successor, as the worker does."""
         from .service import ServiceError
         from .work_capacity import execution_key
         with self.lock:
             task = self._get('tasks', task_id)
             if task['status'] != 'working' or not gateway_work_turn(task):
                 raise ServiceError(409, 'coconut_workspace works only in a turn of a work session.')
-            return {'root': str(self.root / 'workspaces'), 'outcome': execution_key(task)}
+            place = {'root': str(self.root / 'workspaces'), 'outcome': execution_key(task)}
+            claim = task.get('_kanban_claim') or {}
+            if task.get('_native_outcome_id') and claim.get('native_id') and self.kanban is not None:
+                # The claim can prove that this outcome continues the retired worktree of an earlier outcome
+                # (workspace_handoff.native_successor). The proof comes from the claim and Coconut's board, never
+                # from tool arguments.
+                place['successor'] = {'database': str(self.root / 'kanban' / 'kanban.db'), 'task_id': task_id,
+                                      'native_id': task['_native_outcome_id'], 'tenant': task['bot_id'],
+                                      'claim': {key: claim.get(key) for key in
+                                                ('native_id', 'run_id', 'claim_lock', 'external_id')}}
+            return place
 
     def gateway_kanban_tool(self, task_id: str, name: str, arguments: dict) -> dict:
-        """The board tools of a gateway audit turn: kanban_list, kanban_show, kanban_create and kanban_comment on
-        Coconut's own board, as the worker of the audit runs them.
+        """The board tools of a gateway turn on Coconut's own board, as a worker of the turn runs them.
 
-        The worker binds the board tools of Hermes to Coconut's board (HERMES_KANBAN_DB). The gateway's own board tools
-        write to another board, so the plugin blocks them in an audit turn. Here the service records the call as a
-        receipt of the turn, the Kanban runtime runs the Hermes tool on Coconut's board, and the service records its
-        result. The receipts then adopt a created task and record a comment, as for a worker turn (native_execution).
-        A runtime that stops during the call leaves the receipt executing, so the effect stays unknown, as in a worker.
-        A read (kanban_list, kanban_show) changes nothing, so it has no receipt. A read shows only the tasks of the bot.
+        Each Coconut turn has the board tools of a worker (BOARD_TOOLS). Only a turn of a native outcome has the tools
+        that act on the run of its card (RUN_TOOLS). The worker binds the board tools of Hermes to Coconut's board
+        (HERMES_KANBAN_DB). The gateway's own board tools write to another board, so the plugin blocks them in each
+        Coconut turn (hooks.guard_tool).
+
+        Here the service records a write as a receipt of the turn, the Kanban runtime runs the Hermes tool on Coconut's
+        board, and the service records its result. The receipts then adopt a created task, record a comment and prove a
+        completion, as for a worker turn (native_execution). A runtime that stops during the call leaves the receipt
+        executing, so the effect stays unknown, as in a worker. A read (kanban_list, kanban_show) changes nothing, so it
+        has no receipt. kanban_list shows only the tasks of the bot, and kanban_show and kanban_unblock refuse a task of
+        another bot.
+
+        In a native outcome, a tool of CLAIM_TOOLS acts for the Kanban claim of the turn: the runtime gives the call the
+        worker env of that claim (kanban_runtime.board_tool), and Hermes refuses a call for another task or for an
+        earlier run, as for a worker. A tool that ends the run (RUN_ENDING_TOOLS) also stops the placeholder of the
+        claim, and the turn then continues without a claim (claim_finished).
         """
         from .native_bridge import kanban_arguments
         from .service import ServiceError
         with self.lock:
             task = self._get('tasks', task_id)
-            if task['status'] != 'working' or not task.get('_source_audit_prompt') or not gateway_work_turn(task):
-                raise ServiceError(409, 'Only an audit of a work source writes to the board of Coconut.')
+            outcome = bool(task.get('_native_outcome_id')) and gateway_work_turn(task)
+            if task['status'] != 'working':
+                raise ServiceError(409, 'This turn no longer runs.')
+            if name in RUN_TOOLS and not outcome:
+                raise ServiceError(409, 'Only a turn of a native outcome acts for the run of its card. Use '
+                                        'coconut_kanban_comment to hand information to a task.')
             if self.kanban is None:
                 raise ServiceError(409, 'Coconut has no board for native work. Use the saved coverage file instead.')
+            claim = None
+            if outcome and name in CLAIM_TOOLS:
+                claim = task.get('_kanban_claim') or {}
+                if (claim.get('native_id') != task['_native_outcome_id'] or not claim.get('run_id')
+                        or not claim.get('claim_lock') or self.claim_finished(task_id)):
+                    raise ServiceError(409, 'This turn no longer holds the Kanban claim of its outcome. Finish the reply.')
+                claim = {key: claim[key] for key in ('native_id', 'run_id', 'claim_lock')}
             bot = self._get('bots', task['bot_id'])
             profile = (self.profiles.row(bot) or {}).get('name')
         arguments = dict(arguments or {})
+        # The service chooses the board, never the model.
+        arguments.pop('board', None)
         if name in ('kanban_list', 'kanban_show'):
             if name == 'kanban_list':
                 arguments['tenant'] = bot['id']
-            result = self.kanban.call({'op': 'tool', 'name': name, 'arguments': arguments, 'profile': profile})['result']
-            try:
-                value = json.loads(result)
-            except ValueError:
-                return {'result': result}
-            if not isinstance(value, dict):
-                return {'result': value}
+            value = self._board_value(self.kanban.call({'op': 'tool', 'name': name, 'arguments': arguments,
+                                                        'profile': profile, 'claim': claim})['result'])
             if name == 'kanban_show' and (value.get('task') or {}).get('tenant') not in (None, bot['id']):
                 raise ServiceError(403, 'This Hermes task belongs to another bot.')
             return value
+        if name == 'kanban_unblock':
+            # kanban_unblock routes the board, so it runs without a claim. It changes only a task of this bot.
+            shown = self._board_value(self.kanban.call({'op': 'tool', 'name': 'kanban_show', 'profile': profile,
+                                                        'arguments': {'task_id': str(arguments.get('task_id') or '')}})
+                                      ['result'])
+            if (shown.get('task') or {}).get('tenant') != bot['id']:
+                raise ServiceError(403, 'Unblock only a Hermes task of this bot.')
         if name == 'kanban_create':
             arguments = kanban_arguments(arguments, task_id, task.get('_native_turn_id'), bot['id'],
                                          workspaces=self.root / 'kanban' / 'kanban' / 'workspaces')
         receipt = self.native_event(task_id, 'native_call', {'name': name, 'arguments': arguments})
-        result = self.kanban.call({'op': 'tool', 'name': name, 'arguments': arguments, 'profile': profile})['result']
+        result = self.kanban.call({'op': 'tool', 'name': name, 'arguments': arguments, 'profile': profile,
+                                   'claim': claim})['result']
         self.native_event(task_id, 'native_result', {'id': receipt['id'], 'result': result})
+        value = self._board_value(result)
+        if claim is not None and name in RUN_ENDING_TOOLS and value.get('ok'):
+            # The run of the claim ended, as when a worker ends it. Hermes no longer needs its placeholder, and the turn
+            # finishes its reply without a claim.
+            self.gateway_finished_claims.add(task_id)
+            self.stop_gateway_holder(task_id)
+        return value
+
+    @staticmethod
+    def _board_value(result) -> dict:
         try:
             value = json.loads(result)
-        except ValueError:
+        except (TypeError, ValueError):
             return {'result': result}
         return value if isinstance(value, dict) else {'result': value}
+
+    def gateway_record_pause(self, task_id: str, arguments: dict) -> dict:
+        """coconut_record_pause of a gateway turn that checks a blocked native task, as the worker offers it."""
+        from .service import ServiceError
+        from .work_recovery import block_check_task
+        with self.lock:
+            task = self._get('tasks', task_id)
+            if task['status'] != 'working' or not block_check_task(task):
+                raise ServiceError(409, 'Only a check of a blocked native task records a pause.')
+        return self.emit(task_id, 'block_pause', dict(arguments or {}))
+
+    def gateway_read_receipts(self, task_id: str, arguments: dict) -> dict:
+        """coconut_read_receipts of a gateway turn: the completed receipts of this turn and the receipts that it
+        continues, the snapshot that the turn text indexes (Service._run_task), as the worker reads it
+        (native_receipt_context)."""
+        from .native_receipt_context import read_receipts
+        from .service import ServiceError
+        with self.lock:
+            task = self._get('tasks', task_id)
+            if task['status'] != 'working':
+                raise ServiceError(409, 'This turn no longer runs.')
+            receipts = [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM native_receipts WHERE json_extract(data, '$.task_id')=? "
+                "AND json_extract(data, '$.turn_id')=? AND json_extract(data, '$.state')='completed' ORDER BY rowid",
+                (task_id, task.get('_native_turn_id')))]
+            carried = [self._get('native_receipts', identity) for identity in task.get('_continuation_receipt_ids', [])]
+        return read_receipts(list({r['id']: r for r in carried + receipts}.values()), arguments)
 
     def gateway_todos(self, task_id: str, state: dict) -> dict:
         """The todo list of a gateway turn changed (hooks.save_todos). Save it as the work of the task, as the worker

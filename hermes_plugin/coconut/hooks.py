@@ -77,6 +77,11 @@ REFRESH_MESSAGE = 'Record this check with coconut_refresh_decision. The check do
 NOT_A_CHECK_MESSAGE = 'Only an automatic check of a card records a check result.'
 AUDIT_BOARD_MESSAGE = ('This board is not the board of Coconut. Use coconut_kanban_list, coconut_kanban_show, '
                        'coconut_kanban_create and coconut_kanban_comment, which use the board of Coconut.')
+BOARD_MESSAGE = ('This board is not the board of Coconut. Call the coconut_kanban_ tool with the same ending, for '
+                 'example coconut_kanban_show for kanban_show. It uses the board of Coconut, and in a native outcome '
+                 'the claim of this turn.')
+# The turns of native outcomes whose terminal runs in the workspace of their claim, by Hermes task ID.
+FOLDER_TASKS: set[tuple[str, str]] = set()
 STATUS_MESSAGE = 'Answer from the saved context in the message. This answer uses no tools.'
 
 
@@ -126,17 +131,32 @@ def save_todos(tool_name='', result=None, **_):
     return None
 
 
-def guard_tool(tool_name='', **_):
-    """pre_tool_call: block a tool call of a turn that a card ended, and a card in a follow-up on a pending card."""
-    from .adapter import MODES, PAUSED
+def guard_tool(tool_name='', task_id=None, **_):
+    """pre_tool_call: block a tool call of a turn that a card ended, a card in a follow-up on a pending card, and the
+    gateway's own board tools, which write to another board than Coconut's.
+
+    The first tool call of a native outcome turn also sets its working folder: the workspace of its claim, as the
+    worker sets TERMINAL_CWD. coconut_workspace later replaces it with the worktree of the work."""
+    from .adapter import FOLDERS, MODES, PAUSED
     holder, turn = _turn()
     if turn is None:
         return None
+    if turn in FOLDERS and task_id and (turn, task_id) not in FOLDER_TASKS:
+        FOLDER_TASKS.add((turn, task_id))
+        try:
+            from tools.terminal_tool import register_task_env_overrides
+            register_task_env_overrides(task_id, {'cwd': FOLDERS[turn]})
+        except Exception as error:
+            LOG.warning('Coconut: the turn did not get the folder of its claim (%s).', type(error).__name__)
     if turn in PAUSED:
         return {'action': 'block', 'message': PAUSED_MESSAGE}
     if MODES.get(turn) == 'status':
         # A status question is answered from its saved context, without tools, as the worker answers it.
         return {'action': 'block', 'message': STATUS_MESSAGE}
+    if tool_name.startswith('kanban_'):
+        # The board tools of the gateway write to its own board, not to Coconut's, where the work of the bots is
+        # (gateway_chat.gateway_kanban_tool).
+        return {'action': 'block', 'message': AUDIT_BOARD_MESSAGE if MODES.get(turn) == 'audit' else BOARD_MESSAGE}
     if MODES.get(turn) == 'context' and tool_name in CARD_TOOLS:
         return {'action': 'block', 'message': CONTEXT_MESSAGE}
     if MODES.get(turn) == 'refresh':
@@ -147,9 +167,6 @@ def guard_tool(tool_name='', **_):
         return None
     if tool_name == REFRESH_TOOL:
         return {'action': 'block', 'message': NOT_A_CHECK_MESSAGE}
-    if MODES.get(turn) == 'audit' and tool_name.startswith('kanban_'):
-        # The board tools of the gateway write to its own board, not to Coconut's (gateway_chat.gateway_kanban_tool).
-        return {'action': 'block', 'message': AUDIT_BOARD_MESSAGE}
     return None
 
 

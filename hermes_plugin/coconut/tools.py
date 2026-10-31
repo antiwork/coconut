@@ -16,9 +16,15 @@ keeps the task waiting for the answer, and the pre_tool_call hook blocks each fu
 Worktrees. coconut_workspace gives a turn of a work session the Git worktree of that session, and Hermes then runs the
 terminal commands of the agent in it.
 
-Audits. coconut_kanban_list, coconut_kanban_show, coconut_kanban_create and coconut_kanban_comment use Coconut's board in
-an audit of a work source. The service runs them there and records each write as a receipt of the turn. The gateway's own board tools write to another
-board, so the hooks block them in an audit turn (mode `audit`).
+Board. Each Coconut turn has the board tools of a worker under a Coconut name (coconut_kanban_show for kanban_show, and
+so on), on Coconut's board, where the work of the bots is. Hermes refuses a plugin tool with the name of its own tool, so
+the names differ. Only a turn of a native outcome has the tools that act on the run of its card, for the Kanban claim of
+the turn. The service runs each tool and records each write as a receipt of the turn. The gateway's own board tools
+write to another board, so the hooks block them in each Coconut turn. The schemas of the tools that only a worker had
+are the schemas of Hermes's tools, without the board.
+
+Native outcomes. coconut_record_pause records a pause in a check of a blocked native task, and coconut_read_receipts
+reads the saved receipts of the turn, as in the worker.
 
 Card checks. coconut_refresh_decision records the result of an automatic check of a pending card. Only a check turn
 (mode `refresh`) can call it, and a check turn can call no other Coconut tool (hooks.guard_tool).
@@ -32,6 +38,11 @@ from pathlib import Path
 TOOLSET = 'coconut'
 _CARDS = None
 _WORKTREES = None
+_MODULES = {}
+# The board tools of a native outcome that Coconut names after Hermes's tools (claim_schemas).
+CLAIM_TOOLS = ('kanban_complete', 'kanban_block', 'kanban_schedule', 'kanban_heartbeat', 'kanban_request_review',
+               'kanban_link', 'kanban_unblock')
+CLAIM_NOTE = ('In Coconut, this acts on the board of Coconut for the Kanban claim of this turn. ')
 
 
 def cards():
@@ -107,12 +118,40 @@ def worktrees():
     """backend/coconut/work_workspace.py of this Coconut install. It imports only the standard library."""
     global _WORKTREES
     if _WORKTREES is None:
-        path = Path(__file__).resolve().parents[2] / 'backend' / 'coconut' / 'work_workspace.py'
-        spec = importlib.util.spec_from_file_location('coconut_work_workspace', path)
+        _WORKTREES = backend('work_workspace')
+    return _WORKTREES
+
+
+def backend(name):
+    """A module of backend/coconut of this Coconut install that imports only the standard library at its top."""
+    if name not in _MODULES:
+        path = Path(__file__).resolve().parents[2] / 'backend' / 'coconut' / (name + '.py')
+        spec = importlib.util.spec_from_file_location('coconut_' + name, path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        _WORKTREES = module
-    return _WORKTREES
+        _MODULES[name] = module
+    return _MODULES[name]
+
+
+def claim_schemas():
+    """The schemas of the board tools of a native outcome: the schemas of Hermes's tools, with a Coconut name and
+    without the board, which Coconut chooses. A Hermes without these schemas gets none of these tools."""
+    try:
+        from tools import kanban_tools_schemas as hermes
+    except Exception:
+        return []
+    schemas = []
+    for name in CLAIM_TOOLS:
+        schema = getattr(hermes, name.upper() + '_SCHEMA', None)
+        if not isinstance(schema, dict):
+            continue
+        parameters = dict(schema.get('parameters') or {})
+        parameters['properties'] = {key: value for key, value in (parameters.get('properties') or {}).items()
+                                    if key != 'board'}
+        parameters['required'] = [key for key in parameters.get('required') or [] if key != 'board']
+        schemas.append(dict(schema, name='coconut_' + name, description=CLAIM_NOTE + schema.get('description', ''),
+                            parameters=parameters))
+    return schemas
 
 
 def _workspace(arguments, task_id=None, **_):
@@ -128,6 +167,12 @@ def _workspace(arguments, task_id=None, **_):
                if isinstance((arguments or {}).get(key), str) and arguments[key]}
     if 'repository' not in options:
         return _result({'error': 'Supply the local repository path.'})
+    proof = place.get('successor')
+    if proof:
+        # A native outcome can continue the retired worktree of an earlier outcome. The service names the claim and
+        # the board, never the tool arguments (workspace_handoff.native_successor).
+        options['successor'] = backend('workspace_handoff').native_successor(
+            proof['database'], proof['claim'], proof['task_id'], proof['native_id'], proof['tenant'])
     try:
         binding = worktrees().acquire(place['root'], place['outcome'], **options)
     except (ValueError, OSError) as error:
@@ -156,5 +201,8 @@ def register(ctx):
                             (module.KANBAN_COMMENT_SCHEMA, _service_tool('kanban_comment')),
                             (module.KANBAN_LIST_SCHEMA, _service_tool('kanban_list')),
                             (module.KANBAN_SHOW_SCHEMA, _service_tool('kanban_show')),
-                            (TRACK_PR, _service_tool('track_pr')), (MESSAGE_BOT, _service_tool('message_bot'))):
+                            (TRACK_PR, _service_tool('track_pr')), (MESSAGE_BOT, _service_tool('message_bot')),
+                            (backend('work_recovery').BLOCK_PAUSE_SCHEMA, _service_tool('record_pause')),
+                            (backend('native_receipt_context').SCHEMA, _service_tool('read_receipts')),
+                            *((schema, _service_tool(schema['name'][len('coconut_'):])) for schema in claim_schemas())):
         ctx.register_tool(name=schema['name'], toolset=TOOLSET, schema=schema, handler=handler, emoji='🥥')
