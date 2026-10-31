@@ -742,6 +742,10 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertIn('What changed since the last release?', turn['text'])
         with self.assertRaisesRegex(ServiceError, 'pending decision stays open'):
             self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'ask', 'arguments': self.CARD})
+        # A follow-up on a card of the bot's conversation has no work session, so it has no worktree.
+        self.assertNotIn('folder', turn)
+        with self.assertRaisesRegex(ServiceError, 'only in a turn of a work session'):
+            self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'workspace', 'arguments': {}})
         bridge = self.service.gateway_bridge
         # Commentary streams before a tool call, and the gateway sends it as interim after that call.
         bridge.event({'turn_id': turn['id'], 'kind': 'delta', 'stream': 1, 'text': 'Only the notes.'})
@@ -762,6 +766,7 @@ class ServiceRoutingTests(unittest.TestCase):
         # The card's task has its own work session, for example a native outcome, and background research of a worker
         # returned to the follow-up. The gateway answers it in the chat of that work session, as the worker answers it
         # in that session, with the worker's text for the results.
+        from coconut.work_capacity import execution_key
         task, card, _ = self.ask_in_gateway()
         with self.service.transaction():
             stored = self.service._get('tasks', task['id'])
@@ -769,18 +774,30 @@ class ServiceRoutingTests(unittest.TestCase):
             self.service._put('tasks', stored)
             self.service._ensure_execution_session(self.service._get('tasks', task['id']))
         self.write('POST', f'/v1/decisions/{card["id"]}/context', {'question': 'Did the benchmark finish?'})
+        workspace = Path(self.temp.name) / 'claim-workspace'
+        workspace.mkdir()
         with self.service.transaction():
             context = next(c for c in self.service._all('contexts') if c['decision_id'] == card['id'])
             context['_background_completion'] = ['The benchmark finished: 12% faster.']
+            context['_kanban_claim'] = {'native_id': 't_card', 'run_id': 2, 'workspace': str(workspace)}
             self.service._put('contexts', context)
-        adapter = Adapter(self.service.gateway_bridge, self.home, [
-            {'kind': 'send', 'message_id': 'm:1', 'text': 'Yes, 12% faster.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
         adapter.start()
+        places = []
         with patch.object(self.service, '_process_observation_current', return_value=True):
             self.service._start_context(context['id'])
             adapter.join(5)
+            turn = adapter.turns[0]
+            # The follow-up runs in the workspace of its claim, and coconut_workspace gives it the worktree of the
+            # work session, as the worker's follow-up had them.
+            places.append(self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'workspace', 'arguments': {}}))
+            bridge = self.service.gateway_bridge
+            bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'm:1', 'text': 'Yes, 12% faster.'})
+            bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
             self.service.context_threads[context['id']].join(5)
-        turn = adapter.turns[0]
+        self.assertEqual(turn['folder'], str(workspace))
+        self.assertEqual(places, [{'root': str(Path(self.service.root) / 'workspaces'),
+                                   'outcome': execution_key(self.read('tasks', task['id']))}])
         stored = self.read('tasks', task['id'])
         self.assertEqual(turn['chat_id'], self.bot['id'] + ':work:' + stored['_execution_session_id'])
         self.assertEqual(turn['mode'], 'context')

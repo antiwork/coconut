@@ -648,12 +648,15 @@ class GatewayChat:
                     and self._get('contexts', context['id'])['status'] == 'working')
         # A check that finds nothing to change ends without a reply, as REFRESH_INSTRUCTIONS asks.
         check = bool(context.get('_decision_refresh'))
-        chat = root = None
+        chat = root = folder = None
         if gateway_work_turn(task):
             chat, root = self.work_chat(bot, task)
+            # The terminal of the follow-up runs in the workspace of its claim, as the worker's TERMINAL_CWD.
+            folder = (context.get('_kanban_claim') or {}).get('workspace')
         try:
             self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted,
-                                 mode='refresh' if check else None, silent=check, session=root, chat=chat)
+                                 mode='refresh' if check else None, silent=check, session=root, chat=chat,
+                                 folder=folder if folder and os.path.isdir(folder) else None)
         finally:
             ended.set()
             if holder is not None and holder.poll() is not None:
@@ -767,6 +770,10 @@ class GatewayChat:
                 return self.resolve_decision_reply(context_id, arguments)
             if check:
                 raise ServiceError(409, 'Record the check with coconut_refresh_decision. The card stays as it is.')
+            if tool == 'workspace':
+                # A follow-up on a card of a work session reads the worktree of that session, as the worker's
+                # follow-up had coconut_workspace (COCONUT_WORKSPACE_OUTCOME of its prepared worker).
+                return self.gateway_workspace(task_id, context_id=context_id)
             raise ServiceError(409, 'Answer the current question. Its pending decision stays open.')
         if tool == 'ask':
             return self.native_event(task_id, 'native_question', arguments)
@@ -820,7 +827,7 @@ class GatewayChat:
             return {key: receipt[key] for key in ('status', 'target_bot_id', 'task_id') if key in receipt}
         raise ServiceError(404, 'This Coconut tool does not exist.')
 
-    def gateway_workspace(self, task_id: str) -> dict:
+    def gateway_workspace(self, task_id: str, context_id: str | None = None) -> dict:
         """coconut_workspace of a gateway work turn: the registry and the outcome of the worktree of its work session,
         as the worker gets them (COCONUT_WORKSPACE_ROOT and COCONUT_WORKSPACE_OUTCOME of a prepared worker).
 
@@ -828,14 +835,21 @@ class GatewayChat:
         sets it as the working folder of the turn's terminal. The registry has its own lock across processes. Only a
         turn of a work session has an outcome. A native outcome can continue the retired worktree of an earlier outcome
         on Coconut's board: the place then carries the proof of its claim (`successor`), and the plugin checks it with
-        workspace_handoff.native_successor, as the worker does."""
+        workspace_handoff.native_successor, as the worker does.
+
+        A follow-up on a card of a work session (`context_id`) gets the worktree of that session too, while the
+        follow-up runs. It continues no earlier outcome, so it carries no proof."""
         from .service import ServiceError
         from .work_capacity import execution_key
         with self.lock:
             task = self._get('tasks', task_id)
-            if task['status'] != 'working' or not gateway_work_turn(task):
+            running = (self._get('contexts', context_id)['status'] == 'working' if context_id
+                       else task['status'] == 'working')
+            if not running or not gateway_work_turn(task):
                 raise ServiceError(409, 'coconut_workspace works only in a turn of a work session.')
             place = {'root': str(self.root / 'workspaces'), 'outcome': execution_key(task)}
+            if context_id:
+                return place
             claim = task.get('_kanban_claim') or {}
             if task.get('_native_outcome_id') and claim.get('native_id') and self.kanban is not None:
                 # The claim can prove that this outcome continues the retired worktree of an earlier outcome
