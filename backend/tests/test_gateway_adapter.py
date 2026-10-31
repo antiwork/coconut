@@ -945,6 +945,12 @@ class GatewayAdapterTests(unittest.TestCase):
             for tool in ('coconut_kanban_create', 'coconut_kanban_comment', 'coconut_kanban_list', 'coconut_kanban_show',
                          'coconut_ask', 'read_file'):
                 self.assertIsNone(hooks.guard_tool(tool_name=tool))
+            # A technical lane holds the Hermes tools that would ask the person, change routines or reach other bots.
+            adapter.MODES['turn-a'] = 'technical'
+            for tool in ('clarify', 'cronjob_manage', 'message_agent', 'send_message'):
+                self.assertEqual(hooks.guard_tool(tool_name=tool), {'action': 'block', 'message': hooks.LANE_MESSAGE})
+            for tool in ('terminal', 'read_file', 'coconut_kanban_comment'):
+                self.assertIsNone(hooks.guard_tool(tool_name=tool))
             # Each other Coconut turn, for example a native outcome or a chat, uses the Coconut board tools too, never the
             # gateway's own.
             for mode in ('outcome', None):

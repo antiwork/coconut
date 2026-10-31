@@ -88,6 +88,11 @@ BOARD_MESSAGE = ('This board is not the board of Coconut. Call the coconut_kanba
                  'the claim of this turn.')
 
 STATUS_MESSAGE = 'Answer from the saved context in the message. This answer uses no tools.'
+# The Hermes tools that a technical lane holds, as the service holds them for the worker (technical_lane.HELD_TOOLS),
+# and the gateway's message tool to other platforms, which publishes outside this Mac.
+LANE_TOOLS = ('message_agent', 'cronjob_manage', 'clarify', 'send_message')
+LANE_MESSAGE = ('Independent technical work holds this tool while its decision is pending. Stay within the authorized '
+                'local scope, and record what needs the person with coconut_kanban_comment on your own task.')
 
 
 def prompt_parts(text, size=SECTION_CHARS):
@@ -158,6 +163,8 @@ def guard_tool(tool_name='', task_id=None, **_):
     if MODES.get(turn) == 'status':
         # A status question is answered from its saved context, without tools, as the worker answers it.
         return {'action': 'block', 'message': STATUS_MESSAGE}
+    if MODES.get(turn) == 'technical' and tool_name in LANE_TOOLS:
+        return {'action': 'block', 'message': LANE_MESSAGE}
     if tool_name.startswith('kanban_'):
         # The board tools of the gateway write to its own board, not to Coconut's, where the work of the bots is
         # (gateway_chat.gateway_kanban_tool).

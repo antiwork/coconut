@@ -87,8 +87,10 @@ def gateway_turn_text(request) -> str | None:
                                       message_content, reaction_feedback_context)
     messages = current_messages(request)
     task = request['task']
-    # A message about a Work item goes with the turn that has that item (work_context_note).
-    if not task.get('_work_context') and any(message.get(field) for message in messages for field in WORKER_MESSAGE_FIELDS):
+    # A message about a Work item goes with the turn that has that item (work_context_note). A turn of a native outcome
+    # has the native task of its item instead (tracked_note), as in the worker.
+    if (not task.get('_work_context') and not task.get('_native_outcome_id')
+            and any(message.get(field) for message in messages for field in WORKER_MESSAGE_FIELDS)):
         return None
     text = '\n\n'.join(message_content(message) for message in messages)
     if task.get('_source_audit_prompt') and not task.get('_background_completion'):
@@ -175,10 +177,15 @@ def work_notes(request) -> str:
     text = (work_context_note(task) + recovery_note(task, check) + recent_work_note(task) + direct_reply_note(task)
             + exchange_note(task) + source_activity_note(task) + dependencies_note(task) + tracked_note(task))
     if task.get('_native_outcome_id'):
-        # The rules of a native outcome, the board tools of its claim, and the receipts of earlier attempts of this turn,
-        # as the worker gives them.
+        # The rules of a native outcome and the board tools of its claim, as the worker gives them.
         from .native_outcomes import WORK_INSTRUCTIONS as OUTCOME_INSTRUCTIONS
-        text += '\n' + OUTCOME_INSTRUCTIONS.strip() + OUTCOME_BOARD_TOOLS + receipt_prompt(task.get('_native_receipts'))
+        text += '\n' + OUTCOME_INSTRUCTIONS.strip() + OUTCOME_BOARD_TOOLS
+    # The receipts of earlier attempts of this turn and of the turns that it continues, as the worker gives them.
+    text += receipt_prompt(task.get('_native_receipts'))
+    if task.get('_technical_lane'):
+        # The rules and the record of the technical lane, as the worker gives them (technical_lane.instructions).
+        from .technical_lane import instructions
+        text += '\n' + instructions(task['_technical_lane']) + json.dumps(task['_technical_lane'])
     if gateway_work_turn(task):
         # The worker gives each turn of a work session this rule (hermes_worker). coconut_workspace serves it.
         from .card_tools import WORKSPACE_INSTRUCTIONS
@@ -243,6 +250,14 @@ RUN_TOOLS = (*RUN_ENDING_TOOLS, 'kanban_heartbeat')
 # The board tools that act for the claim of a native outcome turn, with the worker env of that claim
 # (kanban_runtime.board_tool). kanban_list and kanban_unblock route the board: Hermes refuses them in a worker.
 CLAIM_TOOLS = ('kanban_show', 'kanban_comment', 'kanban_create', 'kanban_link', 'kanban_heartbeat', *RUN_ENDING_TOOLS)
+# The answer of a question of Hermes in a technical lane. The lane makes no card.
+LANE_QUESTION = ('Independent technical work cannot ask the person or get an approval while its decision is pending. '
+                 'Stay within the authorized local scope, and record what needs the person with kanban_comment.')
+# The Coconut tools of a gateway turn and the service events that they are. In a technical lane, the service refuses
+# these events as it refuses them for the worker (technical_lane.REFUSED_EVENTS). The other tools emit their event.
+LANE_EVENTS = {'ask': 'native_question', 'suggest': 'native_proposal', 'resolve_reply': 'decision_response',
+               'wait': 'work_wait', 'correct_withdrawal': 'withdrawal_correction', 'create_bot': 'bot_create',
+               'delete_bot': 'bot_delete'}
 # The board tools that a gateway turn runs on Coconut's board (kanban_runtime.BOARD_TOOLS).
 BOARD_TOOLS = ('kanban_create', 'kanban_comment', 'kanban_list', 'kanban_show', 'kanban_link', 'kanban_unblock',
                *RUN_TOOLS)
@@ -477,10 +492,12 @@ class GatewayChat:
             # A lost claim also ends the wait for an adapter, so the work never starts later.
             return (holder is None or holder.poll() is None) and self._get('tasks', task['id'])['status'] == 'working'
         # The mode names the rules of the turn for the hooks (hooks.guard_tool).
-        mode = 'audit' if task.get('_source_audit_prompt') else 'outcome' if task.get('_native_outcome_id') else None
+        # A technical lane (`technical`) also blocks the Hermes tools that the lane holds (hooks.guard_tool).
+        mode = ('audit' if task.get('_source_audit_prompt') else 'technical' if task.get('_technical_lane')
+                else 'outcome' if task.get('_native_outcome_id') else None)
         claim = task.get('_kanban_claim') or {}
         # A native outcome runs in the workspace of its claim, as the worker runs it (TERMINAL_CWD).
-        folder = claim.get('workspace') if mode == 'outcome' and claim.get('workspace') else None
+        folder = claim.get('workspace') if mode in ('outcome', 'technical') and claim.get('workspace') else None
         try:
             self._run_in_gateway(task, bot, text, emit, session=root, chat=chat, wanted=wanted, mode=mode, own=own,
                                  folder=folder if folder and os.path.isdir(folder) else None)
@@ -691,6 +708,9 @@ class GatewayChat:
         arguments = data.get('arguments') if isinstance(data.get('arguments'), dict) else {}
         tool = data.get('tool')
         context_id = self.gateway_bridge.context_of(data.get('turn_id'))
+        if tool in LANE_EVENTS:
+            # A technical lane cannot create or answer cards, wait, or change bots, as for the worker.
+            self._refuse_technical_event(task_id, LANE_EVENTS[tool])
         if context_id is not None:
             # A follow-up on a pending card answers the question and can record a typed answer to that card. An
             # automatic check of the card records only its result.
@@ -1053,12 +1073,18 @@ class GatewayChat:
     def record_gateway_question(self, task: dict, payload: dict) -> None:
         """A question of a gateway turn becomes a decision card. The caller holds the transaction.
 
-        The task stays working: the gateway turn waits for the answer and goes on after it.
+        The task stays working: the gateway turn waits for the answer and goes on after it. In a technical lane, the
+        question gets an answer at once and no card: Hermes denies an approval request, as the worker does
+        (native_bridge.NativeBridge.approval), and a clarify gets the hold of the lane.
         """
         from uuid import uuid4
         from .decision_inbox import decision_options
         from .service import now, digest, encoded
         approval = payload['question_kind'] == 'approval'
+        if self._technical_lane(task):
+            self.gateway_bridge.answer(payload['turn_id'], dict(
+                question_id=payload['question_id'], text=LANE_QUESTION, choice='deny' if approval else ''))
+            return
         choices = payload.get('choices') or []
         if choices:
             options = decision_options([dict(id=choice['id'], label=choice['label']) for choice in choices])

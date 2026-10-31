@@ -47,8 +47,8 @@ KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
 QUESTION_KINDS = ('clarify', 'approval')
 
 # A turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: a work item with
-# its context and workspace, routines, the audit of a work source, the results of a worker's background process, the
-# receipts of a worker's tool calls and the technical lane of a native outcome. The worker runs
+# its context and workspace, routines, the audit of a work source and the results of a worker's background process.
+# The worker runs
 # it. An audit uses the Kanban tools of Coconut's own board (work_sources), which the gateway does not have. Attachments, reactions, pending cards, the saved task list of an assignment, its dependencies, a recovery
 # context, a direct reply, the bot exchange, GitHub source activity, a PR review and the bot changes of a chat go to
 # the gateway as text of the turn (gateway_chat.gateway_turn_text). The plugin has the card tools, coconut_wait,
@@ -56,7 +56,7 @@ QUESTION_KINDS = ('clarify', 'approval')
 WORKER_INPUTS = (
     '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
     '_work_context_id', '_work_context', '_background_completion', '_source_answer_steps', '_source_audit_prompt',
-    '_technical_lane', '_native_receipts', '_work_status_only')
+    '_work_status_only')
 # A task with its own work session runs in the gateway, in a chat of its own (gateway_work_turn), when it has no other
 # worker input. The dispatchers give it the work session and the Kanban claim. A question about a Work item without a
 # native outcome carries that item (`_work_context_id`, `_work_context`). An audit of a work source carries its text and
@@ -71,17 +71,14 @@ WORK_SESSION_INPUTS = ('_execution_session_id', '_kanban_claim', '_work_context_
 WORKER_MESSAGE_FIELDS = ('work_context',)
 
 
-# The receipts of the board tools that the gateway runs on Coconut's board (gateway_chat.gateway_kanban_tool). The
-# gateway continues a turn with them, so they are no worker input. A receipt of another tool is one.
-GATEWAY_RECEIPTS = ('kanban_create', 'kanban_comment', 'kanban_complete', 'kanban_block', 'kanban_schedule',
-                    'kanban_heartbeat', 'kanban_request_review', 'kanban_link', 'kanban_unblock')
+# The receipts of the tool calls of a turn and of the turns that it continues are no worker input. A gateway turn
+# gets their index in its text, and coconut_read_receipts reads them (gateway_chat.work_notes), as the worker gives
+# them. The worker also replayed a completed tool call by its hash. A gateway turn has the rule of the index instead:
+# do not repeat a completed effect.
 
 
 def worker_input(task: dict, key: str) -> bool:
-    """Whether the task has the worker input `key`. The receipts of the turn count only when a worker made them."""
-    if key == '_native_receipts' and isinstance(task.get(key), list):
-        return any(not isinstance(receipt, dict) or (receipt.get('action') or {}).get('name') not in GATEWAY_RECEIPTS
-                   for receipt in task[key])
+    """Whether the task has the worker input `key`."""
     return bool(task.get(key))
 
 
@@ -91,8 +88,9 @@ def gateway_work_turn(task: dict) -> bool:
     Such a task is not a turn of the bot's conversation (`_chat_session`) and has no worker input but its work session,
     its Kanban claim, its Work item and its audit text, for example a scheduled message, a question about a Work item
     or the audit of a work source. A native outcome (and a question about its Work item) runs here too, with the
-    board tools of its claim (gateway_chat.gateway_kanban_tool). Its technical lane stays with the worker. A status
-    question runs in the gateway on its own path (gateway_chat.run_gateway_status).
+    board tools of its claim (gateway_chat.gateway_kanban_tool), and so does its technical lane, with the holds of the
+    lane (gateway_chat.LANE_EVENTS). A status question runs in the gateway on its own path
+    (gateway_chat.run_gateway_status).
     """
     return (bool(task.get('_execution_session_id')) and not task.get('_chat_session')
             and not any(worker_input(task, key) for key in WORKER_INPUTS if key not in WORK_SESSION_INPUTS))
