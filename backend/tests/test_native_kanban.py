@@ -28,6 +28,10 @@ class Provider(FixtureProvider):
         self.release = threading.Event()
         self.release.set()
 
+    def has_prepared_worker(self, identity):
+        # As the provider of the worker: a claim has a worker when Coconut prepared one for it.
+        return any(prepared[0] == identity for prepared in self.prepared)
+
     def prepare_kanban_worker(self, identity, bot, workspace, execution_id, worker_id=None):
         self.prepared.append((identity, str(workspace), execution_id, worker_id))
         process = subprocess.Popen(['sleep', '90'])
@@ -319,6 +323,137 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
         with self.assertLogs('coconut.kanban_scheduler', 'WARNING'):
             self.service._note_respawn_guards(saved['since'] + RESPAWN_GUARD_NOTICE_SECONDS + 1)
         self.assertIn('its respawn guard is active_pr', self.service._get('tasks', owner['id'])['summary'])
+
+    CARD = dict(title='Refund the buyer?', context='The seller is suspended.',
+                options=[dict(id='refund', label='Verify and refund', explanation=''),
+                         dict(id='hold', label='Hold', explanation='')])
+
+    def gateway(self):
+        """Serve the gateway turns of the bot's profile, as the coconut adapter does. Return the turns that it took."""
+        from coconut.service import ServiceError
+        self.service.gateway_enabled = lambda: True
+        bridge, home = self.service.gateway_bridge, str(self.service.profiles.home(self.service._get('bots', self.bot['id'])))
+        turns, done = [], threading.Event()
+        self.addCleanup(done.set)
+        def serve():
+            while not done.is_set():
+                for turn in bridge.poll({'home': home, 'wait': .1, 'active': [t['id'] for t in turns]})['turns']:
+                    turns.append(turn)
+                    if 'Reconcile' in turn['text']:
+                        # The audit records the source revision on Coconut's board and asks the person.
+                        native = self.service.kanban.tasks[turn['text'] and self.audit_id]['id']
+                        self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'kanban_comment',
+                                                   'arguments': {'task_id': native, 'body': 'Source revision 2.'}})
+                        try:
+                            self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'ask', 'arguments': self.CARD})
+                        except ServiceError:
+                            pass
+                    else:
+                        bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'm:' + turn['id'], 'text': 'Refunded.'})
+                    bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
+        threading.Thread(target=serve, daemon=True).start()
+        bridge.poll({'home': home, 'wait': 0})
+        return turns
+
+    def test_a_card_answer_of_a_gateway_audit_continues_in_the_gateway_from_its_claim(self):
+        # From build 569 the continuation went to the worker, whose claim had only the gateway's placeholder, and the
+        # task failed with "The native claim has no prepared worker." The receipt of the audit's board comment made the
+        # turn look like work of the worker.
+        with self.service.transaction():
+            audit = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Review open assignment',
+                                       'mode': 'queue'}, record_message=False, human_authored=False)
+            stored = self.service._get('tasks', audit['id'])
+            stored['_source_audit_prompt'] = 'Reconcile these open assignments against the original sources.'
+            self.service._put('tasks', stored)
+        self.audit_id = audit['id']
+        turns = self.gateway()
+        self.settle(lambda: any(d['task_id'] == audit['id'] for d in self.service._all('decisions')))
+        card = next(d for d in self.service._all('decisions') if d['task_id'] == audit['id'])
+        self.settle(lambda: self.service._get('tasks', audit['id'])['status'] == 'needs_you')
+        # The claim held the gateway's placeholder, and the board comment is a receipt of the turn.
+        self.assertEqual(self.provider.prepared, [])
+        self.assertTrue(any(r['action']['name'] == 'kanban_comment' for r in self.service._all('native_receipts')
+                            if r['task_id'] == audit['id']))
+        self.service.mutate('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'refund', 'revision': 1},
+                            str(uuid4()))
+        self.settle(lambda: self.service._get('tasks', audit['id'])['status'] in ('completed', 'failed'))
+        stored = self.service._get('tasks', audit['id'])
+        self.assertEqual(stored['status'], 'completed', stored.get('summary'))
+        # The answer continued in the gateway, and no worker ran it.
+        self.assertTrue(turns[-1]['text'].startswith('Continue the original task using this recorded answer.'))
+        self.assertEqual(self.provider.started, [])
+
+    def test_a_claimed_task_without_a_prepared_worker_waits_for_one(self):
+        # A task that the worker must run, with a claim that holds only the gateway's placeholder. The worker would
+        # refuse it. The task waits, and its next claim prepares a worker, which runs it once.
+        from coconut.kanban_scheduler import WAITING_FOR_WORKER
+        with self.service.transaction():
+            task = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Run the export.',
+                                      'mode': 'queue'}, human_authored=False)
+        self.service.gateway_enabled = lambda: True
+        ran = []
+        def run(started, bot, history, emit):
+            ran.append(started.get('_kanban_external_id'))
+            emit('completed', {'summary': 'Done.'})
+        self.provider.start_task = run
+        # The gateway takes no turn here, so the turn goes to the worker.
+        with patch.object(self.service, 'run_gateway_chat', return_value=False):
+            self.settle(lambda: self.service._get('tasks', task['id']).get('_needs_worker')
+                        or self.service._get('tasks', task['id'])['status'] == 'completed')
+            self.assertEqual(self.service._get('tasks', task['id'])['summary'], WAITING_FOR_WORKER)
+            self.assertEqual(ran, [])
+            self.settle(lambda: self.service._get('tasks', task['id'])['status'] == 'completed')
+        self.assertEqual(ran, [task['id']])
+        self.assertEqual([p[0] for p in self.provider.prepared], [task['id']])
+
+    def test_a_task_that_failed_without_a_prepared_worker_runs_again_with_its_answer(self):
+        failed = 'Work stopped: The native claim has no prepared worker.'
+        with self.service.transaction():
+            task = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Review open assignment',
+                                      'mode': 'queue'}, human_authored=False)
+            other = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Other work',
+                                       'mode': 'queue'}, human_authored=False)
+        # The scheduler claims both tasks, and the worker refuses them, as before the fix.
+        def refuse(started, bot, history, emit):
+            if started['id'] == task['id']:
+                raise RuntimeError('The native claim has no prepared worker.')
+            raise RuntimeError('another error.')
+        self.provider.start_task = refuse
+        self.settle(lambda: all(self.service._get('tasks', t['id'])['status'] == 'failed' for t in (task, other)))
+        self.assertEqual(self.service._get('tasks', task['id'])['summary'], failed)
+        # The person had answered a card of the task, and the failure failed the answer too.
+        with self.service.transaction():
+            card = dict(id=str(uuid4()), task_id=task['id'], bot_id=self.bot['id'], status='failed', outcome=failed,
+                        title='Refund the buyer?', action_type='question', revision=2, _native=True,
+                        created_at=task['created_at'], options=[dict(id='refund', label='Verify and refund')])
+            self.service._put('decisions', card)
+            self.service._put('tasks', dict(self.service._get('tasks', task['id']), _resume_decision=card['id']))
+            # The first start after the update runs the recovery. This service started before the failure.
+            self.service.db.execute("DELETE FROM settings WHERE key='recovered.unprepared_workers'")
+        self.service.close()
+        self.provider.close()
+        self.provider = Provider(self.tmp.name)
+        self.service = Service(self.tmp.name, self.provider, start_workers=False)
+        self.assertEqual(self.service._get('decisions', card['id'])['status'], 'approved')
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'queued')
+        self.assertEqual(self.service._get('tasks', other['id'])['status'], 'failed')
+        # The scheduler claims the task again, and its turn continues with the person's answer, once.
+        resumed = []
+        def resume(started, bot, history, decision, emit):
+            resumed.append((started['id'], decision['id'], decision['status'], started.get('_kanban_external_id')))
+            emit('text_delta', {'text': 'Refunded the buyer.'})
+            emit('completed', {'summary': 'Refunded.'})
+        self.provider.resume_task = resume
+        self.settle(lambda: self.service._get('tasks', task['id'])['status'] == 'completed')
+        for _ in range(3):
+            self.tick()
+        self.assertEqual(resumed, [(task['id'], card['id'], 'approved', task['id'])])
+        self.assertEqual(self.service._get('tasks', task['id'])['summary'], 'Refunded.')
+        self.assertEqual(self.service._get('tasks', other['id'])['status'], 'failed')
+        # The recovery runs once: a later start leaves a new failure alone.
+        self.service._put('tasks', dict(self.service._get('tasks', task['id']), status='failed', summary=failed))
+        self.service._recover_unprepared_workers()
+        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'failed')
 
     def test_source_urgency_orders_audits_without_lowering_returned_work(self):
         expected = {}

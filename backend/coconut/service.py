@@ -3701,8 +3701,12 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 emit = lambda kind, payload: self.emit(task_id, kind, payload)
                 if decision:
                     if not self.run_gateway_resume(provider_task, bot, history, decision, emit):
+                        if self.await_prepared_worker(provider_task):
+                            return
                         self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
                 elif not self.run_gateway_chat(provider_task, bot, history, emit):
+                    if self.await_prepared_worker(provider_task):
+                        return
                     self.provider.start_task(provider_task, self._public(bot), history, emit)
                 with self.lock:
                     current = self._get('tasks', task_id)
@@ -4235,6 +4239,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
 
     def _recover(self):
         self.recover_native_relays()
+        if self.kanban is not None:
+            self._recover_unprepared_workers()
         # The status indexes find the working contexts and tasks, and a partial index the streaming messages. The start
         # parses no whole table here. No ORDER BY: it makes SQLite scan the table. The rows sort here.
         for context in self._rows_in_order("SELECT rowid, data FROM contexts WHERE json_extract(data,'$.status')='working'"):
