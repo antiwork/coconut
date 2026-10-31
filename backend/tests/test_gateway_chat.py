@@ -78,8 +78,10 @@ class WorkTurnRuleTests(unittest.TestCase):
         board = [{'action': {'name': 'kanban_comment', 'arguments': {}}}]
         self.assertTrue(gateway_work_turn(dict(audit, _source_audit_prompt='Reconcile.', _native_receipts=board)))
         self.assertFalse(gateway_work_turn(dict(audit, _native_receipts=board + [{'action': {'name': 'terminal'}}])))
-        for key in ('_native_outcome_id', '_native_job', '_work_status_only', '_technical_lane',
-                    '_background_completion', '_native_receipts'):
+        # A native outcome runs in the gateway too, with the board tools of its claim, and so do their receipts.
+        claim = [{'action': {'name': name, 'arguments': {}}} for name in ('kanban_heartbeat', 'kanban_complete')]
+        self.assertTrue(gateway_work_turn(dict(audit, _native_outcome_id='t_1', _native_receipts=claim)))
+        for key in ('_native_job', '_work_status_only', '_technical_lane', '_background_completion', '_native_receipts'):
             with self.subTest(key=key):
                 self.assertFalse(gateway_work_turn(dict(audit, **{key: 'x'})))
 
@@ -1386,8 +1388,8 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertIn(WORKSPACE_INSTRUCTIONS.strip(), turn['text'])
         self.assertEqual(stored['status'], 'completed')
         self.assertEqual(self.provider.starts, [])
-        # A Work item with a native outcome stays with the worker.
-        self.assertFalse(gateway_chat.gateway_work_turn(dict(question, _native_outcome_id='native-1')))
+        # A question about a Work item with a native outcome is a turn of that outcome, and it runs in the gateway too.
+        self.assertTrue(gateway_chat.gateway_work_turn(dict(question, _native_outcome_id='native-1')))
 
     def test_a_turn_of_a_work_session_gets_the_place_of_its_worktree(self):
         from coconut.work_capacity import execution_key
@@ -1486,19 +1488,155 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(self.read('tasks', audit['id'])['_source_native_ids'], ['t_old'])
         self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
         runner.join(5)
-        # A turn that is not an audit does not write to the board.
+        # A chat turn writes to the board of Coconut too, as a worker of the chat did. Only a native outcome acts on the
+        # run of a card.
         chat = self.send('Hello.')
         adapter = Adapter(self.service.gateway_bridge, self.home, [])
         adapter.start()
         runner = threading.Thread(target=self.service._run_task, args=(chat['id'],), daemon=True)
         runner.start()
         adapter.join(5)
-        with self.assertRaisesRegex(ServiceError, 'Only an audit of a work source'):
-            self.service.gateway_tool({'turn_id': adapter.turns[0]['id'], 'tool': 'kanban_comment',
-                                       'arguments': {'task_id': 't_old', 'body': 'x'}})
+        self.service.gateway_tool({'turn_id': adapter.turns[0]['id'], 'tool': 'kanban_comment',
+                                   'arguments': {'task_id': 't_old', 'body': 'x'}})
+        self.assertEqual((calls[-1]['name'], calls[-1]['claim']), ('kanban_comment', None))
+        for name in ('kanban_complete', 'kanban_block', 'kanban_heartbeat', 'kanban_schedule', 'kanban_request_review'):
+            with self.assertRaisesRegex(ServiceError, 'Only a turn of a native outcome'):
+                self.service.gateway_tool({'turn_id': adapter.turns[0]['id'], 'tool': name,
+                                           'arguments': {'task_id': 't_old', 'summary': 'x'}})
         self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
         runner.join(5)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
+
+    def native_outcome(self):
+        """A native outcome of the bot with the Kanban claim of its card, held by a placeholder, as the dispatcher
+        claims it for a gateway turn."""
+        task = self.audit()
+        workspace = Path(self.temp.name) / 'card-workspace'
+        workspace.mkdir()
+        with self.service.transaction():
+            stored = self.service._get('tasks', task['id'])
+            self.service._ensure_execution_session(stored)
+            stored = self.service._get('tasks', task['id'])
+            stored.update(_native_outcome_id='t_card', _kanban_claim={
+                'native_id': 't_card', 'run_id': 3, 'claim_lock': 'host:77', 'external_id': task['id'],
+                'workspace': str(workspace), 'context': 'Card body: ship the export.'})
+            self.service._put('tasks', stored)
+        self.service.start_gateway_holder(task['id'])
+        return self.read('tasks', task['id']), workspace
+
+    def test_a_native_outcome_runs_in_the_gateway_and_its_board_tools_act_for_its_claim(self):
+        import json as _json
+        from coconut.gateway_chat import OUTCOME_BOARD_TOOLS
+        calls = []
+        bot = self.bot['id']
+        class Board:
+            tasks = {}
+            def call(self, request):
+                calls.append(request)
+                if request['name'] == 'kanban_show':
+                    tenant = 'other-bot' if request['arguments'].get('task_id') == 't_other' else bot
+                    return {'result': _json.dumps({'task': {'id': request['arguments'].get('task_id') or 't_card',
+                                                            'tenant': tenant}})}
+                if request['name'] == 'kanban_list':
+                    return {'result': _json.dumps({'tasks': []})}
+                return {'result': _json.dumps({'ok': True, 'task_id': 't_card'})}
+            def close(self):
+                pass
+        task, workspace = self.native_outcome()
+        holder = self.service.gateway_holders[task['id']]
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]
+        # The outcome runs in the chat of its work session, in the workspace of its claim, with the native task, the
+        # outcome rules and the Coconut names of the board tools. The hooks block the gateway's own board.
+        self.assertEqual(turn['chat_id'], bot + ':work:' + task['_execution_session_id'])
+        self.assertEqual((turn['mode'], turn['folder']), ('outcome', str(workspace)))
+        self.assertIn('Native kanban task:\nCard body: ship the export.', turn['text'])
+        self.assertIn('Use kanban_complete only after verifying every accepted outcome.', turn['text'])
+        self.assertIn(OUTCOME_BOARD_TOOLS.strip(), turn['text'])
+        self.assertEqual(self.provider.starts, [])
+        self.service.kanban = Board()
+        def tool(name, **arguments):
+            return self.service.gateway_tool({'turn_id': turn['id'], 'tool': name, 'arguments': arguments})
+        claim = {'native_id': 't_card', 'run_id': 3, 'claim_lock': 'host:77'}
+        # A worker's board tools act for the claim: the runtime gives them its worker env, and the board is Coconut's.
+        self.assertTrue(tool('kanban_heartbeat', note='Exporting.', board='elsewhere')['ok'])
+        self.assertEqual((calls[-1]['name'], calls[-1]['claim'], calls[-1]['arguments']),
+                         ('kanban_heartbeat', claim, {'note': 'Exporting.'}))
+        tool('kanban_show')
+        self.assertEqual(calls[-1]['claim'], claim)
+        # kanban_list and kanban_unblock route the board, so they run without the claim, and only for this bot.
+        tool('kanban_list', tenant='other-bot')
+        self.assertEqual((calls[-1]['claim'], calls[-1]['arguments']['tenant']), (None, bot))
+        with self.assertRaisesRegex(ServiceError, 'only a Hermes task of this bot'):
+            tool('kanban_unblock', task_id='t_other')
+        self.assertTrue(tool('kanban_unblock', task_id='t_child')['ok'])
+        self.assertEqual((calls[-1]['name'], calls[-1]['claim']), ('kanban_unblock', None))
+        self.assertEqual(holder.poll(), None)
+        # kanban_complete ends the run of the claim. Its placeholder stops, and the turn continues without a claim.
+        # A PR that delivers the outcome names it, as with the worker's tool.
+        with patch.object(self.service, 'emit', return_value={'status': 'recorded'}) as emit:
+            tool('track_pr', url='https://github.com/example/app/pull/7', work_id='t_card')
+        emit.assert_called_once_with(task['id'], 'artifact', {'kind': 'pr', 'url': 'https://github.com/example/app/pull/7',
+                                                              'work_id': 't_card'})
+        self.assertTrue(tool('kanban_complete', summary='The export ships.')['ok'])
+        self.assertEqual(calls[-1]['claim'], claim)
+        self.assertIsNotNone(holder.poll())
+        with self.assertRaisesRegex(ServiceError, 'no longer holds the Kanban claim'):
+            tool('kanban_heartbeat', note='Late.')
+        time.sleep(2.5)
+        self.service.gateway_bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'm:1', 'text': 'Shipped.'})
+        self.service.gateway_bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(10)
+        # The stopped placeholder is no lost claim, so the turn ends as it ran.
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertFalse(self.service.claim_finished(task['id']))
+        # Each write is a receipt of the turn, as for a worker. A read has none.
+        with self.service.lock:
+            receipts = [r['action']['name'] for r in self.service._all('native_receipts') if r['task_id'] == task['id']]
+        self.assertEqual(receipts, ['kanban_heartbeat', 'kanban_unblock', 'kanban_complete'])
+
+    def test_a_native_outcome_turn_gets_its_worktree_proof_its_receipts_and_a_pause_only_in_a_block_check(self):
+        import json as _json
+        from coconut.work_capacity import execution_key
+        task, _ = self.native_outcome()
+        # An earlier attempt of this turn left a receipt.
+        with self.service.transaction():
+            stored = self.service._get('tasks', task['id'])
+            stored['_native_turn_id'] = 'turn-1'
+            self.service._put('tasks', stored)
+            self.service._put('native_receipts', dict(
+                id='r-1', task_id=task['id'], turn_id='turn-1', state='completed', result='{"ok": true}',
+                action={'name': 'kanban_comment', 'arguments': {'task_id': 't_card', 'body': 'Exported half.'}}))
+        self.service.kanban = type('Board', (), {'tasks': {}, 'close': lambda self: None})()
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]
+        # The turn text names the saved receipts, and coconut_read_receipts reads them, as in the worker.
+        self.assertIn('Saved native receipt index', turn['text'])
+        read = self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'read_receipts',
+                                          'arguments': {'receipt_id': 'r-1'}})
+        self.assertIn('Exported half.', _json.dumps(read))
+        # coconut_workspace of an outcome carries the proof of its claim, for a successor of a retired worktree. The
+        # service names the claim and the board.
+        place = self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'workspace', 'arguments': {}})
+        self.assertEqual(place['outcome'], execution_key(self.read('tasks', task['id'])))
+        self.assertEqual(place['successor'], {
+            'database': str(Path(self.service.root) / 'kanban' / 'kanban.db'), 'task_id': task['id'],
+            'native_id': 't_card', 'tenant': self.bot['id'],
+            'claim': {'native_id': 't_card', 'run_id': 3, 'claim_lock': 'host:77', 'external_id': task['id']}})
+        # Only a check of a blocked native task records a pause.
+        with self.assertRaisesRegex(ServiceError, 'Only a check of a blocked native task'):
+            self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'record_pause', 'arguments': {'decision_id': 'd'}})
+        self.service.gateway_bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
+        runner.join(10)
+        self.service.kanban = None
 
     def test_audits_in_the_gateway_do_not_take_the_slots_of_chats(self):
         audits = [self.source_audit() for _ in range(3)]
@@ -1534,7 +1672,7 @@ class ServiceRoutingTests(unittest.TestCase):
             from coconut.work_workspace import process_outcomes
             self.assertIn('work-1', process_outcomes())
             # A task that the worker runs gets a prepared worker, as before.
-            other = dict(stored, _native_outcome_id='native-2')
+            other = dict(stored, _technical_lane={'native_task_id': 'native-2'})
             self.assertEqual(self.service.kanban_worker_pid('other', other, bot, self.temp.name, 'work-2', 'native-2'), 4321)
         self.service.stop_gateway_holder(task['id'])
         self.assertIsNotNone(holder.poll())

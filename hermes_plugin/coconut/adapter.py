@@ -60,6 +60,10 @@ MODES: dict[str, str] = {}
 # saves only the turn's own text (hooks.add_turn_context). Set when the hooks registered the middleware.
 CONTEXTS: dict[str, str] = {}
 CONTEXT_MIDDLEWARE = {'registered': False}
+# The working folder of a turn of a native outcome: the workspace of its Kanban claim (hooks.guard_tool). The Hermes
+# task IDs of the turn whose terminal already has that folder.
+FOLDERS: dict[str, str] = {}
+FOLDER_TASKS: dict[str, set] = {}
 # The ID of a message outside a Coconut turn starts with this prefix. Its edits and its delete take the same route.
 OUTSIDE = 'outside:'
 # The chats whose last model call reached the compression threshold of Hermes (hooks.note_prompt_size). After the turn,
@@ -292,6 +296,8 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             self._roots[str(turn['chat_id'])] = str(turn['session_root'])
         if turn.get('mode'):
             MODES[str(turn['id'])] = str(turn['mode'])
+        if turn.get('folder'):
+            FOLDERS[str(turn['id'])] = str(turn['folder'])
         text = str(turn['text'])
         if turn.get('command'):
             # The person typed a command of Hermes (gateway_chat.gateway_command). It reaches Hermes as the command,
@@ -340,6 +346,8 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         PAUSED.discard(event.message_id)
         MODES.pop(event.message_id, None)
         CONTEXTS.pop(event.message_id, None)
+        FOLDERS.pop(event.message_id, None)
+        FOLDER_TASKS.pop(event.message_id, None)
         self.drop_stream(event.message_id)
         # The turn stays active in the polls until the service has its end. Otherwise the service would fail a
         # finished turn after a short outage.

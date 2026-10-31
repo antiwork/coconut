@@ -355,6 +355,54 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
         bridge.poll({'home': home, 'wait': 0})
         return turns
 
+    def test_a_native_outcome_runs_in_the_gateway_and_ends_its_run_with_the_tools_of_its_claim(self):
+        # A native outcome runs in the gateway. Its claim holds the gateway's placeholder, and Coconut runs the board
+        # tools of the turn on its board for that claim. A turn that ends without a run-ending tool is a failed run,
+        # as for a worker, and Hermes runs the card again.
+        identity, owner = self.outcome('Ship the export')
+        self.service.gateway_enabled = lambda: True
+        bridge, home = self.service.gateway_bridge, str(self.service.profiles.home(self.service._get('bots', self.bot['id'])))
+        turns, results, holders, done = [], [], [], threading.Event()
+        self.addCleanup(done.set)
+        def serve():
+            while not done.is_set():
+                for turn in bridge.poll({'home': home, 'wait': .1, 'active': [t['id'] for t in turns]})['turns']:
+                    turns.append(turn)
+                    def tool(name, **arguments):
+                        results.append((name, self.service.gateway_tool({'turn_id': turn['id'], 'tool': name,
+                                                                           'arguments': arguments})))
+                    if turn['chat_id'] != self.bot['id']:
+                        holders.append(self.service.gateway_holders.get(owner['id']))
+                        tool('kanban_heartbeat', note='Exporting.')
+                        tool('kanban_show')
+                        if len(holders) > 1:
+                            tool('kanban_complete', summary='The export ships.')
+                    bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'm:' + turn['id'], 'text': 'Done.'})
+                    bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
+        threading.Thread(target=serve, daemon=True).start()
+        bridge.poll({'home': home, 'wait': 0})
+        self.settle(lambda: len(holders) > 1 or self.service._get('tasks', owner['id'])['status'] == 'failed')
+        self.settle(lambda: self.service.kanban.tasks[owner['id']]['status'] == 'done'
+                    and self.service._get('tasks', owner['id'])['status'] == 'completed')
+        work = [turn for turn in turns if turn['chat_id'] != self.bot['id']]
+        self.assertEqual([turn['mode'] for turn in work], ['outcome', 'outcome'])
+        # No worker ran the outcome, and no claim prepared one.
+        self.assertEqual((self.provider.started, self.provider.prepared), ([], []))
+        # The tools acted for each claim on Coconut's board: the heartbeat and the show of the claimed card.
+        self.assertTrue(all(value.get('ok') for name, value in results if name == 'kanban_heartbeat'), results)
+        self.assertTrue(all((value.get('task') or {}).get('id') == identity
+                            for name, value in results if name == 'kanban_show'), results)
+        self.assertEqual(self.native_program(
+            "print(sorted({e.kind for e in board.kb.list_events(board.conn, sys.argv[2])} & {'heartbeat', 'completed'}))",
+            identity), "['completed', 'heartbeat']")
+        # The first turn ended without a run-ending tool, so its run failed and Hermes ran the card again. The second
+        # turn completed it, and its placeholder stopped.
+        self.assertEqual(self.runs(identity), 2)
+        self.assertEqual(self.native_program(
+            "print([r.outcome for r in board.kb.list_runs(board.conn, sys.argv[2])])", identity),
+            "['worker_protocol_violation', 'completed']")
+        self.assertTrue(all(holder is not None and holder.poll() is not None for holder in holders))
+
     def test_a_card_answer_of_a_gateway_audit_continues_in_the_gateway_from_its_claim(self):
         # From build 569 the continuation went to the worker, whose claim had only the gateway's placeholder, and the
         # task failed with "The native claim has no prepared worker." The receipt of the audit's board comment made the

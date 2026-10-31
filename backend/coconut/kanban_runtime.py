@@ -699,29 +699,41 @@ class Board:
         return result
 
 
-# The board tools that a gateway turn of a work source audit calls through Coconut (gateway_chat.gateway_kanban_tool).
-BOARD_TOOLS = ('kanban_create', 'kanban_comment', 'kanban_list', 'kanban_show')
+# The board tools that a gateway turn calls through Coconut (gateway_chat.gateway_kanban_tool): the tools of an audit,
+# and the tools of a native outcome, which act for the Kanban claim of its turn.
+BOARD_TOOLS = ('kanban_create', 'kanban_comment', 'kanban_list', 'kanban_show', 'kanban_complete', 'kanban_block',
+               'kanban_schedule', 'kanban_heartbeat', 'kanban_request_review', 'kanban_link', 'kanban_unblock')
+# The worker env of a Kanban claim. Hermes checks with it that a call acts for the task and the run of the claim.
+CLAIM_ENV = ('HERMES_KANBAN_TASK', 'HERMES_KANBAN_RUN_ID', 'HERMES_KANBAN_CLAIM_LOCK')
 
 
-def board_tool(name, arguments, profile=None):
+def board_tool(name, arguments, profile=None, claim=None):
     """Run a board tool of Hermes on Coconut's board, as a worker of the bot runs it. Return its result text.
 
     `profile` is the Hermes profile of the bot. Hermes records it as the author of a comment and the creator of a task.
+    With `claim` (native_id, run_id and claim_lock of a Kanban claim), the call has the worker env of that claim, as a
+    worker that holds the claim has it. Hermes then refuses a call for another task or for an earlier run. The runtime
+    takes one request at a time, so the env of one call never reaches another.
     """
     if name not in BOARD_TOOLS:
         raise ValueError('Coconut runs only ' + ', '.join(BOARD_TOOLS) + ' for a gateway turn.')
     import tools.kanban_tools  # noqa: F401  The import registers the tools.
     from tools.registry import registry
-    previous = os.environ.get('HERMES_PROFILE')
-    if profile:
-        os.environ['HERMES_PROFILE'] = profile
+    values = {'HERMES_PROFILE': profile} if profile else {}
+    if claim:
+        values.update(zip(CLAIM_ENV, (str(claim['native_id']), str(claim['run_id']), str(claim['claim_lock']))))
+    previous = {key: os.environ.get(key) for key in ('HERMES_PROFILE', *CLAIM_ENV)}
+    for key in CLAIM_ENV:
+        os.environ.pop(key, None)
+    os.environ.update(values)
     try:
         result = registry.dispatch(name, dict(arguments))
     finally:
-        if previous is None:
-            os.environ.pop('HERMES_PROFILE', None)
-        else:
-            os.environ['HERMES_PROFILE'] = previous
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
     return result if isinstance(result, str) else json.dumps(result)
 
 
@@ -772,7 +784,8 @@ def main():
                 elif request['op'] == 'completion':
                     result = {'card': board.completion(request['id'])}
                 elif request['op'] == 'tool':
-                    result = {'result': board_tool(request['name'], request['arguments'], request.get('profile'))}
+                    result = {'result': board_tool(request['name'], request['arguments'], request.get('profile'),
+                                                   request.get('claim'))}
                 else:
                     raise ValueError('Unknown Kanban operation.')
             send({'result': result})

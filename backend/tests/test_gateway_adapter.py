@@ -170,6 +170,24 @@ class ContextCompressor:
         return int(context_length * threshold_percent)
 ''',
     'tools/__init__.py': '',
+    'tools/terminal_tool.py': '''
+overrides = []
+def register_task_env_overrides(task_id, values):
+    overrides.append((task_id, values))
+''',
+    'tools/kanban_tools_schemas.py': '''
+def _schema(name, required):
+    return {"name": name, "description": "Hermes " + name + ".", "parameters": {"type": "object", "properties": {
+        "task_id": {"type": "string"}, "summary": {"type": "string"}, "board": {"type": "string"}},
+        "required": required}}
+KANBAN_COMPLETE_SCHEMA = _schema("kanban_complete", ["board"])
+KANBAN_BLOCK_SCHEMA = _schema("kanban_block", [])
+KANBAN_SCHEDULE_SCHEMA = _schema("kanban_schedule", [])
+KANBAN_HEARTBEAT_SCHEMA = _schema("kanban_heartbeat", [])
+KANBAN_REQUEST_REVIEW_SCHEMA = _schema("kanban_request_review", [])
+KANBAN_LINK_SCHEMA = _schema("kanban_link", [])
+KANBAN_UNBLOCK_SCHEMA = _schema("kanban_unblock", ["task_id"])
+''',
     'tools/clarify_gateway.py': '''
 calls = []
 def resolve_gateway_clarify(clarify_id, response):
@@ -927,6 +945,16 @@ class GatewayAdapterTests(unittest.TestCase):
             for tool in ('coconut_kanban_create', 'coconut_kanban_comment', 'coconut_kanban_list', 'coconut_kanban_show',
                          'coconut_ask', 'read_file'):
                 self.assertIsNone(hooks.guard_tool(tool_name=tool))
+            # Each other Coconut turn, for example a native outcome or a chat, uses the Coconut board tools too, never the
+            # gateway's own.
+            for mode in ('outcome', None):
+                adapter.MODES.pop('turn-a', None)
+                if mode:
+                    adapter.MODES['turn-a'] = mode
+                for tool in ('kanban_complete', 'kanban_block', 'kanban_heartbeat', 'kanban_show', 'kanban_create'):
+                    self.assertEqual(hooks.guard_tool(tool_name=tool), {'action': 'block', 'message': hooks.BOARD_MESSAGE})
+                for tool in ('coconut_kanban_complete', 'coconut_kanban_heartbeat', 'coconut_ask', 'terminal'):
+                    self.assertIsNone(hooks.guard_tool(tool_name=tool))
         # Outside a Coconut turn the hook does nothing.
         with patch.object(hooks, '_turn', return_value=(None, None)):
             self.assertIsNone(hooks.guard_tool(tool_name='terminal'))
@@ -935,6 +963,46 @@ class GatewayAdapterTests(unittest.TestCase):
         coconut = adapter.CoconutAdapter(PlatformConfig())
         coconut._event({'id': 'turn-b', 'chat_id': 'bot', 'text': 'Why?', 'mode': 'context'})
         self.assertEqual(adapter.MODES['turn-b'], 'context')
+
+    def test_a_native_outcome_turn_runs_its_terminal_in_the_workspace_of_its_claim(self):
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        adapter = self.adapter_module
+        from tools import terminal_tool
+        self.addCleanup(adapter.FOLDERS.clear)
+        self.addCleanup(adapter.FOLDER_TASKS.clear)
+        self.addCleanup(terminal_tool.overrides.clear)
+        from gateway.config import PlatformConfig
+        coconut = adapter.CoconutAdapter(PlatformConfig())
+        coconut._event({'id': 'turn-o', 'chat_id': 'bot:work:1', 'text': 'Ship it.', 'mode': 'outcome',
+                        'folder': '/work/card'})
+        with patch.object(hooks, '_turn', return_value=(None, 'turn-o')):
+            # The first tool call of the turn sets the folder, as the worker sets TERMINAL_CWD. Later calls keep it, so
+            # coconut_workspace can replace it.
+            hooks.guard_tool(tool_name='terminal', task_id='hermes-task')
+            hooks.guard_tool(tool_name='terminal', task_id='hermes-task')
+        self.assertEqual(terminal_tool.overrides, [('hermes-task', {'cwd': '/work/card'})])
+        # Another turn has no folder.
+        with patch.object(hooks, '_turn', return_value=(None, 'turn-x')):
+            hooks.guard_tool(tool_name='terminal', task_id='other-task')
+        self.assertEqual(len(terminal_tool.overrides), 1)
+        # The end of the turn forgets its folder and its flags.
+        coconut._active.add('turn-o')
+        from gateway.platforms.event import MessageEvent
+        event = MessageEvent(text='', source=coconut.build_source(chat_id='bot:work:1'), message_id='turn-o')
+        with patch.object(coconut, '_report', return_value=True):
+            self.complete(coconut.on_processing_complete(event, 'success'))
+        self.assertEqual((adapter.FOLDERS, adapter.FOLDER_TASKS), ({}, {}))
+
+    def test_the_board_tools_of_a_claim_have_the_schemas_of_hermes_without_the_board(self):
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        schemas = {schema['name']: schema for schema in tools.claim_schemas()}
+        self.assertEqual(sorted(schemas), sorted('coconut_' + name for name in tools.CLAIM_TOOLS))
+        complete = schemas['coconut_kanban_complete']
+        self.assertEqual(sorted(complete['parameters']['properties']), ['summary', 'task_id'])
+        self.assertEqual(complete['parameters']['required'], [])
+        self.assertEqual(schemas['coconut_kanban_unblock']['parameters']['required'], ['task_id'])
+        self.assertTrue(complete['description'].startswith(tools.CLAIM_NOTE))
+        self.assertTrue(complete['description'].endswith('Hermes kanban_complete.'))
 
     def test_registration_declares_a_trusted_service_platform_for_this_hermes(self):
         calls, tool_names, hook_names, sections, schemas = [], [], [], {}, {}
@@ -957,7 +1025,12 @@ class GatewayAdapterTests(unittest.TestCase):
                                                              'coconut_workspace', 'coconut_kanban_create',
                                                              'coconut_kanban_comment', 'coconut_kanban_list',
                                                              'coconut_kanban_show',
-                                                             'coconut_track_pr', 'coconut_message_bot'])
+                                                             'coconut_track_pr', 'coconut_message_bot',
+                                                             'coconut_record_pause', 'coconut_read_receipts',
+                                                             'coconut_kanban_complete', 'coconut_kanban_block',
+                                                             'coconut_kanban_schedule', 'coconut_kanban_heartbeat',
+                                                             'coconut_kanban_request_review', 'coconut_kanban_link',
+                                                             'coconut_kanban_unblock'])
         self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
                                       'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
                                       'pre_tool_call', 'post_tool_call', 'post_api_request', 'on_session_reset'])
@@ -977,7 +1050,7 @@ class GatewayAdapterTests(unittest.TestCase):
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
-        self.assertEqual(len(tool_names), 15)
+        self.assertEqual(len(tool_names), 24)
         from coconut.card_tools import WORKSPACE_SCHEMA
         self.assertEqual(schemas['coconut_workspace'], WORKSPACE_SCHEMA)
         # The check tool has the revision fields of the worker's check tool: of a question and of a draft.
