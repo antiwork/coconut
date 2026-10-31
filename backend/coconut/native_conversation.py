@@ -57,6 +57,15 @@ def reaction_only_turn(request):
 
 
 REACTION_SILENCE = '\nIf this reaction needs no useful reply, return exactly [SILENT]. Do not explain the silence.'
+BACKGROUND_RESULTS = ('Continue your existing work from these Hermes process results. Do not repeat the completed command. '
+                      'Verify the result and continue any remaining work.\n')
+
+
+def background_results_prompt(task, messages_text):
+    """The text of a turn that continues with the results of background processes (`_background_completion`), with
+    the person's new messages after them, for the worker and the gateway."""
+    followup = '\nNew message from the person:\n' + messages_text if messages_text.strip() else ''
+    return BACKGROUND_RESULTS + '\n\n'.join(task['_background_completion']) + followup
 ATTACHMENT_LIMIT = 128_000
 
 

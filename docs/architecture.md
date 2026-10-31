@@ -312,6 +312,11 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 
 - The receipts of a turn and of the turns that it continues no longer send the turn to the worker. A gateway turn gets their index in its text, and `coconut_read_receipts` reads them (`gateway_chat.work_notes`, `gateway_read_receipts`). The worker also replayed a completed tool call by its hash; a gateway turn has the rule of the index instead: do not repeat a completed effect.
 
+### Results of background processes in the gateway
+
+- A turn that continues a task with the results of its background processes (`_background_completion`) runs in the gateway. Its text is the worker's text for the results, with the person's new message after them (`native_conversation.background_results_prompt`). Hermes saves this text as the turn's own text, as the worker's session saved it.
+- Only a worker's process makes such results: Coconut watches the processes that a worker's receipts name (background_processes). Hermes delivers the completion of a gateway turn's process itself, as a turn of its own (gateway_message). A follow-up on a card with such results runs in the gateway too (see "Card follow-ups in the gateway").
+
 ### Card follow-ups in the gateway
 
 - A follow-up on a card of a task with its own work session (a native outcome, an audit, bot traffic) runs in the gateway, in the chat of that work session, as the worker answers it in that session (`gateway_chat.gateway_context_turn`, `run_gateway_context`). Before, only a follow-up on a card of the bot's conversation ran there.
