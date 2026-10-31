@@ -296,7 +296,7 @@ class GatewayChat:
             return False
         own = gateway_turn_own(request)
         with self.lock:
-            text += self.cards_note()
+            text += self.cards_note(task)
         if work:
             return self._run_work_turn(task, bot, text, emit, own=own)
         with self.lock:
@@ -362,9 +362,12 @@ class GatewayChat:
             self._event('task.updated', self._public(task), task['bot_id'], task_id)
             self._refresh_bot(task['bot_id'])
 
-    def cards_note(self) -> str:
-        """The cards that wait for the person now, live from the store, for the end of a gateway turn. The caller holds
-        the lock.
+    def cards_note(self, task: dict) -> str:
+        """The cards that wait for the person now and that this turn may see, live from the store, for the end of a
+        gateway turn. The caller holds the lock.
+
+        A turn sees the cards of its conversation, as in decision_chat_input (_decision_visible_to_task): a delegate
+        sees only the cards that its messages name.
 
         A card that the conversation mentioned earlier may be answered or outdated by now, for example when a work
         session answered it. Only this list is current. It is compact (titles only) and it is context of this turn only
@@ -373,7 +376,7 @@ class GatewayChat:
         cards = sorted((json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending'")),
             key=lambda card: card.get('created_at', ''))
-        cards = [card for card in cards if not card.get('_hidden')]
+        cards = [card for card in cards if not card.get('_hidden') and self._decision_visible_to_task(card, task)]
         names = {}
         lines = []
         for card in cards[:CARDS_NOTE_LIMIT]:
@@ -381,10 +384,14 @@ class GatewayChat:
                 row = self.db.execute('SELECT data FROM bots WHERE id=?', (card['bot_id'],)).fetchone()
                 names[card['bot_id']] = json.loads(row[0]).get('name', 'a bot') if row else 'a bot'
             lines.append(f"- {card['id']}: {card.get('title') or 'Untitled card'} ({names[card['bot_id']]})")
+        header = ('\nCards that wait for the person now (live from Coconut). A card that the conversation mentioned '
+                  'earlier may be answered or outdated.')
         if len(cards) > CARDS_NOTE_LIMIT:
-            lines.append(f'- and {len(cards) - CARDS_NOTE_LIMIT} more')
-        return ('\nCards that wait for the person now (live from Coconut). A card that the conversation mentioned '
-                'earlier may be answered or outdated. Only this list is current:\n' + ('\n'.join(lines) or 'none'))
+            # A shortened list cannot say that a missing card was answered.
+            lines.append(f'- and {len(cards) - CARDS_NOTE_LIMIT} more that wait')
+            return (header + f' This list names the oldest {CARDS_NOTE_LIMIT} of {len(cards)} waiting cards. A card '
+                    'that it does not name may still wait:\n' + '\n'.join(lines))
+        return header + ' Only this list is current:\n' + ('\n'.join(lines) or 'none')
 
     def work_chat(self, bot: dict, task: dict) -> tuple[str, str]:
         """The chat and the session root of the work session of a task, as the worker roots that session
@@ -486,7 +493,7 @@ class GatewayChat:
         # The recorded answer is the turn's own text. The notes and the live cards are context of this turn only.
         own = resume_prompt(request)
         with self.lock:
-            text = own + work_notes(request) + self.cards_note()
+            text = own + work_notes(request) + self.cards_note(task)
         if gateway_work_turn(task):
             return self._run_work_turn(task, bot, text, emit, own=own)
         return self._run_in_gateway(task, bot, text, emit, session=cron_session or None, own=own)

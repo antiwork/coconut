@@ -651,11 +651,25 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertIn('Only this list is current', cards)
         self.assertIn(card['id'] + ': Ship the release? (Ada)', cards)
         self.assertNotIn('Move the login email?', cards)
-        # With no card, the list says so.
+        stored = self.read('tasks', hey['id'])
         with self.service.lock:
+            # A turn of another bot's conversation does not see this conversation's card.
+            other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+            stranger = dict(stored, bot_id=other['id'], conversation_bot_id=other['id'])
+            self.assertTrue(self.service.cards_note(stranger).endswith('Only this list is current:\nnone'))
+            # A shortened list does not say that a card it leaves out was answered.
+            for number in range(gateway_chat.CARDS_NOTE_LIMIT):
+                self.service._put('decisions', dict(self.service._get('decisions', card['id']), id=str(uuid4()),
+                                                    title=f'Card {number}', created_at=f'2099-01-01T00:00:{number:02d}Z'))
+            note = self.service.cards_note(stored)
+            self.assertNotIn('Only this list is current', note)
+            self.assertIn(f'oldest {gateway_chat.CARDS_NOTE_LIMIT} of {gateway_chat.CARDS_NOTE_LIMIT + 1} waiting cards', note)
+            self.assertIn('A card that it does not name may still wait', note)
+            self.assertIn('- and 1 more that wait', note)
+            # With no card, the list says so.
             for decision in self.service._all('decisions'):
                 self.service._put('decisions', dict(decision, status='dismissed'))
-            self.assertTrue(self.service.cards_note().endswith('Only this list is current:\nnone'))
+            self.assertTrue(self.service.cards_note(stored).endswith('Only this list is current:\nnone'))
 
     def test_a_typed_answer_in_chat_resolves_a_pending_card_in_the_gateway(self):
         task, card, _ = self.ask_in_gateway()
