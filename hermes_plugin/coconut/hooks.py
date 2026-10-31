@@ -20,6 +20,10 @@ Cards. A card of coconut_ask ends its turn, and a follow-up on a pending card ca
 system prompt of each Coconut session, in parts of at most 4000 characters, as Hermes allows. So do the worker's
 rules for a merge card and for bot changes.
 
+Compression. `note_prompt_size` (post_api_request) marks a Coconut chat whose model call reached the compression
+threshold of Hermes, and the adapter compresses that chat after the turn. `follow_new_session` (on_session_reset) keeps
+the bot's conversation in the new session after /new.
+
 Streamed text. The `on_stream_*` hooks receive the text deltas of each model call, also when the gateway streams nothing
 to the platform (`streaming.enabled` off). A hook runs in a Hermes dispatcher thread with the session context of the
 turn, so `get_session_env` names the chat. Only a turn of a Coconut chat that an adapter of this process runs goes to
@@ -49,6 +53,8 @@ def register(ctx):
     ctx.register_hook('on_session_end', cron_end)
     ctx.register_hook('pre_tool_call', guard_tool)
     ctx.register_hook('post_tool_call', save_todos)
+    ctx.register_hook('post_api_request', note_prompt_size)
+    ctx.register_hook('on_session_reset', follow_new_session)
     if callable(getattr(ctx, 'register_middleware', None)):
         # The context of a turn goes to its model calls only. A Hermes without request middleware gets the whole
         # text as the message, as before (adapter.CONTEXT_MIDDLEWARE).
@@ -191,6 +197,78 @@ def add_turn_context(request=None, **_):
     return {'request': dict(request, **{key: items}), 'source': 'coconut', 'reason': 'turn context'}
 
 
+def compression_threshold(context_length):
+    """The prompt size in tokens at which Hermes compresses a session, from the `compression` settings of this Hermes
+    home, or None when compression is off. The same rule as Hermes's compressor: the share `threshold` of the window
+    (at least 75% for a window under 512K), at most `threshold_tokens`. A threshold for one model (`model_thresholds`)
+    does not count here."""
+    try:
+        from agent.context_compressor import ContextCompressor
+        from hermes_cli.config import cfg_get, load_config_readonly
+        config = load_config_readonly()
+        if cfg_get(config, 'compression', 'enabled', default=True) is False:
+            return None
+        # Hermes raises the share for a small window.
+        share = ContextCompressor._effective_threshold_percent(
+            int(context_length), float(cfg_get(config, 'compression', 'threshold', default=0.5)))
+        threshold = ContextCompressor._compute_threshold_tokens(int(context_length), share, None)
+        cap = cfg_get(config, 'compression', 'threshold_tokens', default=None)
+        return min(threshold, int(cap)) if cap else threshold
+    except Exception:
+        LOG.exception('Coconut: the compression threshold of Hermes is not known.')
+        return None
+
+
+def note_prompt_size(platform='', usage=None, context_length=None, **_):
+    """post_api_request: mark a Coconut chat whose model call reached the compression threshold of Hermes. The adapter
+    compresses the chat's session after the turn (adapter.CoconutAdapter._compress).
+
+    Hermes compresses a session before a model call only when it knows the size of the call from the real usage of an
+    earlier call. A gateway turn of one model call starts without that size, so Hermes never compresses it
+    (docs/architecture.md)."""
+    if platform != NAME or not isinstance(usage, dict) or not context_length:
+        return None
+    from gateway.session_context import get_session_env
+    from .adapter import COMPRESS, turn_for_chat
+    chat = get_session_env('HERMES_SESSION_CHAT_ID', '')
+    if not chat or turn_for_chat(chat)[1] is None:
+        return None
+    prompt = int(usage.get('prompt_tokens') or 0)
+    threshold = compression_threshold(context_length)
+    if threshold and prompt >= threshold:
+        LOG.info('Coconut: chat %s sent %s prompt tokens, at or above %s. Its session is compressed after the turn.',
+                 chat, prompt, threshold)
+        COMPRESS.add(chat)
+    return None
+
+
+def follow_new_session(old_session_id=None, new_session_id=None, platform='', **_):
+    """on_session_reset: after /new in a Coconut chat, the conversation of the bot continues in the new session.
+
+    join_conversation joins each turn to the session that the tip of the conversation's root names (TIP_KEY). Without
+    this hook, the next turn would join the old session again and undo /new."""
+    if platform != NAME or not old_session_id or not new_session_id:
+        return None
+    from .adapter import ADAPTERS
+    roots = {root for adapter in list(ADAPTERS) for root in adapter._roots.values()}
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=Path(get_hermes_home()) / 'state.db')
+        try:
+            old = db.resolve_resume_session_id(old_session_id)
+            for root in sorted(roots):
+                # As in join_conversation: without a recorded tip, the conversation is its root session.
+                tip = db.get_meta(TIP_KEY + root) or root
+                if db.resolve_resume_session_id(tip) == old:
+                    db.set_meta(TIP_KEY + root, new_session_id)
+        finally:
+            db.close()
+    except Exception:
+        LOG.exception('Coconut: the conversation did not follow /new to the new session.')
+    return None
+
+
 def join_conversation(event=None, session_store=None, **_):
     source = getattr(event, 'source', None)
     if source is None or getattr(source.platform, 'value', source.platform) != NAME or session_store is None:
@@ -205,9 +283,13 @@ def join_conversation(event=None, session_store=None, **_):
         db = SessionDB(db_path=Path(get_hermes_home()) / 'state.db')
         try:
             tip = db.get_meta(TIP_KEY + root)
+            entry = session_store.get_or_create_session(source)
+            if tip and tip == entry.session_id:
+                # The chat's session is the tip. After /new, Hermes may not have saved that session yet
+                # (follow_new_session).
+                return None
             if not (tip and db.get_session(tip)):
                 tip = root if db.get_session(root) else None
-            entry = session_store.get_or_create_session(source)
             if tip is None:
                 if db.get_session(entry.session_id) and db.get_resume_conversations(entry.session_id)[0]:
                     # The chat has a session of an earlier conversation, for example before a restart of the bots
