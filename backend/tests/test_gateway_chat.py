@@ -844,16 +844,63 @@ class ServiceRoutingTests(unittest.TestCase):
         self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
         runner.join(5)
 
-    def exchange(self, other, text):
-        """A message of the bot `other` to Ada from a working task of `other`: a bot exchange in Ada's conversation."""
+    def exchange(self, other, text, legacy=True):
+        """A message of the bot `other` to Ada from a working task of `other`.
+
+        A new exchange runs in a work session of Ada. With `legacy`, the exchange is a turn of Ada's conversation, as
+        exchanges were before: such tasks can remain in a store, and the person's turn still goes first."""
         with self.service.transaction():
             requester = self.service._send(self.read('bots', other['id']), {'text': 'Ask Ada.', 'mode': 'queue'},
                                            human_authored=False)
             stored = self.service._get('tasks', requester['id'])
             stored['status'] = 'working'
             self.service._put('tasks', stored)
-        return self.service._deliver_bot_message(requester['id'], dict(target_bot_id=self.bot['id'], text=text,
-                                                                       require_response=True))['task_id']
+        identity = self.service._deliver_bot_message(requester['id'], dict(target_bot_id=self.bot['id'], text=text,
+                                                                           require_response=True))['task_id']
+        if legacy:
+            with self.service.transaction():
+                stored = self.service._get('tasks', identity)
+                stored['_chat_session'] = True
+                self.service._put('tasks', stored)
+        return identity
+
+    def test_bot_traffic_runs_in_work_sessions_beside_the_person_chat(self):
+        # A message of another bot is bot traffic. It runs in a work session of Ada, in a chat of its own, so the
+        # person's chat neither waits for it nor holds it in its Hermes session.
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        exchange = self.exchange(other, 'Please check the release notes in detail.', legacy=False)
+        stored = self.read('tasks', exchange)
+        self.assertFalse(stored.get('_chat_session'))
+        person = self.send('Are you there?')
+        bridge = self.service.gateway_bridge
+        turns = []
+        done = threading.Event()
+        self.addCleanup(done.set)
+        def serve():
+            while not done.is_set():
+                for turn in bridge.poll({'home': str(self.home), 'wait': .1, 'active': [t['id'] for t in turns]})['turns']:
+                    turns.append(turn)
+                    if 'Are you there?' in turn['text']:
+                        bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'm:1', 'text': 'Here.'})
+                        bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
+        threading.Thread(target=serve, daemon=True).start()
+        bridge.poll({'home': str(self.home), 'wait': 0})
+        # The exchange starts and keeps running. The person's turn runs beside it, in the person's chat.
+        self.service._dispatch_pending()
+        deadline = time.monotonic() + 5
+        while len(turns) < 2 and time.monotonic() < deadline:
+            self.service._dispatch_pending()
+            time.sleep(.05)
+        chats = {('Are you there?' in turn['text']): turn['chat_id'] for turn in turns}
+        execution = self.read('tasks', exchange)['_execution_session_id']
+        self.assertEqual(chats, {True: self.bot['id'], False: self.bot['id'] + ':work:' + execution})
+        deadline = time.monotonic() + 5
+        while self.read('tasks', person['id'])['status'] != 'completed' and time.monotonic() < deadline:
+            time.sleep(.05)
+        self.assertEqual(self.read('tasks', person['id'])['status'], 'completed')
+        self.assertEqual(self.read('tasks', exchange)['status'], 'working')
+        exchange_turn = next(turn for turn in turns if 'Are you there?' not in turn['text'])
+        bridge.event({'turn_id': exchange_turn['id'], 'kind': 'done', 'outcome': 'success'})
 
     def test_a_message_of_the_person_never_waits_behind_bot_traffic(self):
         from coconut.work_capacity import person_turn
@@ -1036,20 +1083,21 @@ class ServiceRoutingTests(unittest.TestCase):
         self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': 'I asked Lin.'})
         self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
         runner.join(5)
-        # The dispatcher gives Lin's task no work session: it runs in Lin's gateway chat, with the delivered message as
-        # the worker gives it.
+        # The message is bot traffic: Lin's task runs in a work session of Lin, in the chat of that session, not in
+        # Lin's conversation with the person. The text has the delivered message, as the worker gives it.
         adapter = Adapter(self.service.gateway_bridge, other_home, [
             {'kind': 'send', 'message_id': 'm:1', 'text': 'The logs are clean.'}, {'kind': 'done', 'outcome': 'success'}])
         adapter.start()
         self.dispatch(sent['task_id'])
         adapter.join(5)
-        self.assertNotIn('_execution_session_id', self.read('tasks', sent['task_id']))
+        delivered = self.read('tasks', sent['task_id'])
+        self.assertFalse(delivered.get('_chat_session'))
         text = adapter.turns[0]['text']
-        self.assertEqual(adapter.turns[0]['chat_id'], other['id'])
+        self.assertEqual(adapter.turns[0]['chat_id'], other['id'] + ':work:' + delivered['_execution_session_id'])
         self.assertIn('Explicit messages delivered by the service.', text)
         self.assertIn('Please check the error logs of today.', text)
         self.assertEqual(self.read('tasks', sent['task_id'])['status'], 'completed')
-        # The result returns to Ada as a new task of Ada's own conversation, which also runs in the gateway.
+        # The result returns to Ada as a new task, which also runs in a work session of Ada in the gateway.
         # The dispatcher of the service returns the result (Service._drain_returns).
         self.service._drain_returns()
         with self.service.lock:
@@ -1060,6 +1108,8 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertIn('The logs are clean.', text)
         self.assertIn('This reply continues your original assignment.', text)
         self.assertEqual(self.read('tasks', returned['id'])['status'], 'completed')
+        self.assertFalse(self.read('tasks', returned['id']).get('_chat_session'))
+        self.assertTrue(self.read('tasks', returned['id'])['_execution_session_id'])
 
     def test_a_failed_exchange_can_be_asked_again_in_the_gateway(self):
         other = self.write('POST', '/v1/bots', {'name': 'Lin'})
@@ -1081,12 +1131,18 @@ class ServiceRoutingTests(unittest.TestCase):
         self.dispatch(sent['task_id'])
         adapter.join(5)
         self.assertEqual(self.read('tasks', sent['task_id'])['status'], 'failed')
+        # A store from before this change: Lin's failed task ran in Lin's conversation with the person.
+        with self.service.transaction():
+            failed = self.service._get('tasks', sent['task_id'])
+            failed['_chat_session'] = True
+            failed.pop('_execution_session_id', None)
+            self.service._put('tasks', failed)
         self.service._drain_returns()
         with self.service.lock:
             returned = next(t for t in self.service._all('tasks') if t['bot_id'] == self.bot['id']
                             and t.get('_is_return') and t['status'] == 'queued')
-        # Ada asks Lin again from the return. The retry joins Lin's gateway conversation: the failed turn had no work
-        # session to continue.
+        # Ada asks Lin again from the return. The retry is bot traffic too: it runs in a work session of Lin, and it
+        # gets the context of the failed task, whose history is in Lin's chat with the person.
         adapter = Adapter(self.service.gateway_bridge, self.home, [])
         adapter.start()
         self.service._dispatch_pending()
@@ -1096,13 +1152,16 @@ class ServiceRoutingTests(unittest.TestCase):
         self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
         self.service.running[returned['id']].join(10)
         stored = self.read('tasks', retry['task_id'])
-        self.assertEqual((stored['status'], stored.get('_chat_session')), ('queued', True))
-        self.assertNotIn('_execution_session_id', stored)
+        self.assertEqual((stored['status'], bool(stored.get('_chat_session'))), ('queued', False))
+        self.assertEqual((stored['_continued_from']['task_id'], stored['_continued_from']['request']),
+                         (sent['task_id'], 'Please check the logs.'))
         adapter = Adapter(self.service.gateway_bridge, other_home, [
             {'kind': 'send', 'message_id': 'm:1', 'text': 'The logs are clean now.'}, {'kind': 'done', 'outcome': 'success'}])
         adapter.start()
         self.dispatch(retry['task_id'])
         adapter.join(5)
+        self.assertIn('This message continues your failed task.', adapter.turns[0]['text'])
+        self.assertIn('Please check the logs.', adapter.turns[0]['text'])
         self.assertEqual(self.read('tasks', retry['task_id'])['status'], 'completed')
         self.assertEqual(self.provider.starts, [])
 
@@ -1255,14 +1314,13 @@ class ServiceRoutingTests(unittest.TestCase):
         adapter.start()
         self.service._dispatch_pending()
         adapter.join(5)
-        # The coordinator names the failed task. It has no work session, so the message joins Lin's conversation.
+        # The coordinator names the failed task. The message is bot traffic, so it runs in a work session of Lin.
         retry = self.service.emit(returned['id'], 'bot_message', {
             'target_bot_id': other['id'], 'text': 'Please continue the log check.', 'continuation_task_id': sent['task_id']})
         self.service.gateway_bridge.event({'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'success'})
         self.service.running[returned['id']].join(10)
         stored = self.read('tasks', retry['task_id'])
-        self.assertEqual((stored['status'], stored.get('_chat_session'), stored['bot_id']), ('queued', True, other['id']))
-        self.assertNotIn('_execution_session_id', stored)
+        self.assertEqual((stored['status'], bool(stored.get('_chat_session')), stored['bot_id']), ('queued', False, other['id']))
 
     def audit(self):
         """A task outside the bot's conversation, which the dispatchers give its own work session."""

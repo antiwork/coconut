@@ -1851,6 +1851,20 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 raise ServiceError(409, f'This task already continued as {peer["id"]}. Check that task before continuing.')
         return previous
 
+    def _continued_context(self, previous):
+        """The context of a failed turn of the bot's conversation that a bot asks to continue.
+
+        Such a turn ran in the person's chat, in the Hermes session of that chat. Its retry is bot traffic and runs in a
+        work session of the bot, which has none of that history. So the retry gets the request of the person, the last
+        reply of the bot, and why the turn stopped (native_conversation.exchange_note)."""
+        messages = self._task_messages(previous['id'])
+        requests = [m['text'] for m in messages if m['role'] == 'user' and m['kind'] == 'text' and not m.get('_hidden')]
+        # A delivered message of another bot records no message of the person. Its request is the delivered text.
+        requests = requests or [m.get('text', '') for m in previous.get('_bot_messages', []) if isinstance(m, dict)]
+        replies = [m['text'] for m in messages if m['role'] == 'assistant' and m['kind'] == 'text' and not m.get('_hidden')]
+        return dict(task_id=previous['id'], title=previous['title'], request='\n\n'.join(requests[-3:])[-4000:],
+                    last_reply=(replies[-1] if replies else '')[-2000:], stopped=previous.get('summary', ''))
+
     def _store_bot_message(self, source_task_id: str, payload: dict, *, returning: bool = False, record_message: bool = True) -> dict:
         target_id = require_text(payload, 'target_bot_id', 100)
         text = require_text(payload, 'text', None if returning else 20000)
@@ -1998,12 +2012,17 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         and all(previous.get(k) == task.get(k) for k in ('bot_id', 'session_id', 'conversation_bot_id'))
                         and previous.get('_conversation_epoch') == self._setting('conversation_epoch')
                         and (previous.get('_execution_session_id') or not previous.get('_chat_session'))):
-                    # The coordinator continues the failed worker in its saved workspace. A failed turn of the bot's
-                    # gateway conversation has no work session: the retry joins that conversation (join_conversation).
+                    # The coordinator continues the failed worker in its saved workspace.
                     self._ensure_execution_session(previous)
                     task['_execution_session_id'] = previous['_execution_session_id']
-            # With the gateway, the message or the return is a turn of the target bot's conversation.
-            self.join_conversation(task)
+                elif previous['status'] == 'failed' and previous['bot_id'] == task['bot_id']:
+                    task['_continued_from'] = self._continued_context(previous)
+            if continuation_id and not continuation_owner and '_continued_from' not in task:
+                previous = self._get('tasks', continuation_id)
+                if previous['bot_id'] == task['bot_id'] and previous['status'] == 'failed':
+                    task['_continued_from'] = self._continued_context(previous)
+            # The message or the return is bot traffic. It runs in a work session of the target bot (the dispatchers
+            # give it one), never as a turn of the person's chat (gateway_chat.join_conversation).
         if native_reply or native_return:
             pass
         elif not continuation_owner and target_id == assignment.get('source_bot_id') and owner_id:
@@ -3652,6 +3671,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                             {k: message[k] for k in ('id', 'text', 'created_at')}
                             for message in (json.loads(row[0]) for row in rows)]))
                     provider_task['_bot_messages'] = task.get('_bot_messages', [])
+                    if task.get('_continued_from'):
+                        provider_task['_continued_from'] = task['_continued_from']
                     provider_task['_is_return'] = bool(task.get('_is_return'))
                     timing.mark('context_inputs')
                     assignment = view._assignment(task)
