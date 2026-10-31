@@ -288,6 +288,13 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - When a claimed task still goes to the worker, but its claim has no prepared worker, the task waits instead of failing (`kanban_scheduler.await_prepared_worker`). The placeholder stops, and the next claim prepares a worker (`_needs_worker`). Once, at a start, Coconut runs again the tasks that failed this way before the fix, with the person's card answer (`_recover_unprepared_workers`).
 - Audits have their own capacity. The Kanban pass bounds them, and an audit that the gateway runs does not take a slot of the person's chats (`native_outcomes._dispatch_chat`).
 
+### The context of a gateway turn is not saved
+
+- Coconut gives each gateway turn its own text (`own`, gateway_chat.gateway_turn_own): the person's messages and their files, the recorded answer of a card, or the title of a turn that no message starts. Hermes saves only this text in the session.
+- The rest of the turn text is context of this turn only: the notes and rules of the service, and the live state. The plugin gives it to each model call of the turn, after the last user message, with `llm_request` middleware (`hooks.add_turn_context`). So a later call does not send the context of each earlier turn again. A Hermes without request middleware gets the whole text as the message, as before.
+- Each chat turn, work-session turn and continuation after a card answer ends with the cards that wait for the person now, live from the store (`cards_note`: ID, title and bot). A card that the conversation mentioned earlier may be answered or outdated, and only this list is current.
+- On Desk's work session a10d62c8, 15 user messages held about 244,000 of 279,000 transcript tokens. With only their own text saved, the transcript is about 57,000 tokens.
+
 ### A message of the person goes first
 
 - A bot's conversation runs one turn at a time, because each turn writes the same Hermes session. A person's turn (a message, a reaction or a card answer, `work_capacity.person_turn`) does not wait for bot traffic in that queue.

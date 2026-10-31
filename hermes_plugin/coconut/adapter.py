@@ -56,6 +56,10 @@ STREAM_CHARACTERS = 400
 # `context`: a follow-up on a pending card. The pre_tool_call hook reads both (hooks.guard_tool).
 PAUSED: set[str] = set()
 MODES: dict[str, str] = {}
+# The context of each running Coconut turn: the whole turn text, which the model calls of the turn get, while Hermes
+# saves only the turn's own text (hooks.add_turn_context). Set when the hooks registered the middleware.
+CONTEXTS: dict[str, str] = {}
+CONTEXT_MIDDLEWARE = {'registered': False}
 # The ID of a message outside a Coconut turn starts with this prefix. Its edits and its delete take the same route.
 OUTSIDE = 'outside:'
 # The adapters of this process. The tools and the hooks find the adapter of a chat here.
@@ -278,9 +282,14 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             self._roots[str(turn['chat_id'])] = str(turn['session_root'])
         if turn.get('mode'):
             MODES[str(turn['id'])] = str(turn['mode'])
+        text = str(turn['text'])
+        if turn.get('own') is not None and CONTEXT_MIDDLEWARE['registered']:
+            # Hermes saves the turn's own text. The model calls of this turn get the whole text (hooks.add_turn_context).
+            CONTEXTS[str(turn['id'])] = text
+            text = str(turn['own'])
         # A turn that may stay silent, such as a reaction, needs no reply. Hermes then keeps a silence marker silent
         # instead of a notice (gateway.response_filters.silence_allowed).
-        return MessageEvent(text=str(turn['text']), message_type=MessageType.TEXT, source=source,
+        return MessageEvent(text=text, message_type=MessageType.TEXT, source=source,
                             message_id=str(turn['id']), allow_gateway_control=False,
                             reply_expected=False if turn.get('silent') else None)
 
@@ -315,6 +324,7 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         self._typing.discard(event.message_id)
         PAUSED.discard(event.message_id)
         MODES.pop(event.message_id, None)
+        CONTEXTS.pop(event.message_id, None)
         self.drop_stream(event.message_id)
         # The turn stays active in the polls until the service has its end. Otherwise the service would fail a
         # finished turn after a short outage.

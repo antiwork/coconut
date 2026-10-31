@@ -630,6 +630,33 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(self.provider.resumes, [])
         self.assertEqual(self.replies(task), [('Shipped.', False, False)])
 
+    def test_a_turn_saves_only_its_own_text_and_its_context_names_the_cards_that_wait_now(self):
+        # A card waits, and another card was answered in a work session. Earlier turns may have named both.
+        task, card, _ = self.ask_in_gateway()
+        with self.service.transaction():
+            answered = dict(self.service._get('decisions', card['id']), id=str(uuid4()), title='Move the login email?',
+                            status='approved')
+            self.service._put('decisions', answered)
+        hey = self.send('Hey')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'Hi.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.service._run_task(hey['id'])
+        adapter.join(5)
+        turn = adapter.turns[0]
+        # Hermes saves the person's message. The model calls get the whole text, with the live cards at its end.
+        self.assertEqual(turn['own'], 'Hey')
+        self.assertTrue(turn['text'].startswith('Hey'))
+        cards = turn['text'][turn['text'].index('Cards that wait for the person now'):]
+        self.assertIn('Only this list is current', cards)
+        self.assertIn(card['id'] + ': Ship the release? (Ada)', cards)
+        self.assertNotIn('Move the login email?', cards)
+        # With no card, the list says so.
+        with self.service.lock:
+            for decision in self.service._all('decisions'):
+                self.service._put('decisions', dict(decision, status='dismissed'))
+            self.assertTrue(self.service.cards_note().endswith('Only this list is current:\nnone'))
+
     def test_a_typed_answer_in_chat_resolves_a_pending_card_in_the_gateway(self):
         task, card, _ = self.ask_in_gateway()
         reply = self.send('Yes, ship it today.')

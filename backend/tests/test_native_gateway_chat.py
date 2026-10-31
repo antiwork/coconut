@@ -244,6 +244,15 @@ class NativeGatewayChatTests(unittest.TestCase):
             service._run_task(task['id'])
             replies = [m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
             self.assertEqual((service._get('tasks', task['id'])['status'], replies), ('completed', [READ]), diagnostics())
+            # Hermes saves only each turn's own text. The context of a turn, with the live cards, goes to its calls only,
+            # so a later call does not send the context of an earlier turn again (hooks.add_turn_context).
+            read = next(r for r in Model.requests if 'Read the notes.' in json.dumps(r['messages']))
+            users = [m for m in read['messages'] if m.get('role') == 'user']
+            self.assertIn('Context of this turn from Coconut', json.dumps(users[-1]), diagnostics())
+            self.assertIn('Cards that wait for the person now', json.dumps(users[-1]), diagnostics())
+            earlier = [m for m in users[:-1] if 'Say hello.' in json.dumps(m)]
+            self.assertTrue(earlier, diagnostics())
+            self.assertNotIn('Context of this turn from Coconut', json.dumps(earlier), diagnostics())
             # A reaction to a reply is a turn in the gateway, and the bot may stay silent.
             reply = next(m for m in service._task_messages(task['id']) if m['role'] == 'assistant')
             service.mutate('POST', f'/v1/messages/{reply["id"]}/reactions', {'emoji': '👍', 'active': True},
