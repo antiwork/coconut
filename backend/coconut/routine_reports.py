@@ -126,10 +126,11 @@ def scopes(service, owner, item, peers, tasks, deliveries):
                     or coordinator.get('session_id') != requester.get('session_id')
                     or coordinator.get('_conversation_epoch') != reporter.get('_conversation_epoch')
                     or any(coordinator.get(k) != reporter.get(k) for k in ('thread_id', 'conversation_bot_id', 'exchange_id'))
-                    or not envelope or relay.get('sender_bot_id') != reporter['bot_id']):
+                    or (relay and (not envelope or relay.get('sender_bot_id') != reporter['bot_id']))):
                 continue
+            # The delivery of a message of coconut_message_bot, or the saved native envelope of a worker's relay.
             route = [d for d in delivered(deliveries, reporter, coordinator)
-                     if d['id'] == digest(encoded([reporter['id'], envelope]))]
+                     if not relay or d['id'] == digest(encoded([reporter['id'], envelope]))]
             if len(route) != 1:
                 continue
             proof = dict(owner_id=owner['id'], reporter_id=reporter['id'], coordinator_id=coordinator['id'],
