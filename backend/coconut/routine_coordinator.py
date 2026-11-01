@@ -806,8 +806,12 @@ class NativeRoutines:
             previous = {r['id']: r for r in map(json.loads, stored)}
             for routine in native:
                 routine['last_task_id'] = previous.get(routine['id'], {}).get('last_task_id')
-            # Before the comparison, so that a pause that holds writes nothing.
+            # Before the comparison, so that a pause that holds writes nothing. A change of the pause is an event, so
+            # the phone shows it at once.
             self._pause_unserved_routines(native)
+            for routine in native:
+                if routine.get('error') != previous.get(routine['id'], {}).get('error') and routine['id'] in previous:
+                    self._event('routine.updated', self._public(routine), routine['bot_id'])
             # Most passes find the same routines. Then the table already holds them, in the same order.
             if [encoded(routine) for routine in native] != stored:
                 self.db.execute('DELETE FROM routines')
@@ -837,11 +841,7 @@ class NativeRoutines:
             served = self.gateway_served_bots()
         changed = []
         for routine in routines:
-            reason = None
-            if routine['bot_id'] not in served:
-                bot = self._get('bots', routine['bot_id'])
-                parked = self.profiles.home(bot) / 'gateway.parked'
-                reason = (ROUTINES_PARKED.format(path=parked) if parked.exists() else ROUTINES_UNSERVED)
+            reason = self._routine_pause(routine['bot_id'], served)
             paused = (routine.get('error') == ROUTINES_UNSERVED
                       or str(routine.get('error') or '').startswith(ROUTINES_PARKED.split('{', 1)[0]))
             if reason and not routine.get('error'):
@@ -852,6 +852,15 @@ class NativeRoutines:
                 routine['error'] = reason
                 changed.append(routine)
         return changed
+
+    def _routine_pause(self, bot_id, served=None):
+        """The reason why the routines of this bot do not run now, or None (_pause_unserved_routines)."""
+        if not (hasattr(self, 'gateway_enabled') and self.gateway_enabled()):
+            return None
+        if bot_id in (self.gateway_served_bots() if served is None else served):
+            return None
+        parked = self.profiles.home(self._get('bots', bot_id)) / 'gateway.parked'
+        return ROUTINES_PARKED.format(path=parked) if parked.exists() else ROUTINES_UNSERVED
 
     def mutate_native_routine(self, method, parts, data, key):
         from .service import ServiceError
@@ -913,6 +922,11 @@ class NativeRoutines:
             raise ServiceError(409, 'Restore the bot before running this routine.')
         if routine.get('error'):
             raise ServiceError(409, routine['error'])
+        pause = self._routine_pause(bot['id'])
+        if pause:
+            if manual:
+                raise ServiceError(409, pause)
+            return None
         result = self.provider.native_settings('routine_claim', [bot], bot_id=bot['id'], native_id=routine['_native_id'], manual=manual)
         job = result['job']
         if not job:

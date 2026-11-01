@@ -199,6 +199,31 @@ class GatewayCronTests(unittest.TestCase):
         from coconut.service import ServiceError
         with self.assertRaisesRegex(ServiceError, 'is parked'), self.service.transaction():
             self.service.claim_native_routine(stored, manual=True)
+        # Also a routine that Hermes just returned without the mark, for example after an edit: the claim checks the
+        # gateway itself, and a scheduled claim takes nothing.
+        fresh = dict(stored, error=None)
+        with patch.object(self.provider, 'native_settings', create=True) as native:
+            with self.assertRaisesRegex(ServiceError, 'is parked'), self.service.transaction():
+                self.service.claim_native_routine(fresh, manual=True)
+            with self.service.transaction():
+                self.assertIsNone(self.service.claim_native_routine(fresh))
+            native.assert_not_called()
+        # The settings that the phone reads show the pause, also when the stored routine has no mark yet.
+        with self.service.transaction():
+            self.service._put('routines', fresh)
+        shown = next(r for r in self.service.native_snapshot()['routines'] if r['id'] == routine['id'])
+        self.assertIn('is parked', shown['error'])
+        # A read of Hermes marks the pause and publishes it, once.
+        def read(bots):
+            return {'routines': [dict(fresh)], 'completions': {}}
+        with patch.object(self.provider, 'native_settings', create=True), \
+                patch.object(self.provider, 'native_routines', create=True, side_effect=read):
+            cursor = self.service._cursor()
+            self.service.refresh_native_routines()
+            self.service.refresh_native_routines()
+        events = [e for e in self.service.events(cursor)['events'] if e['type'] == 'routine.updated']
+        self.assertEqual([e['data']['id'] for e in events], [routine['id']])
+        self.assertIn('is parked', self.read('routines', routine['id'])['error'])
         # A chat turn fails at once with the reason, without the wait.
         task = self.service.mutate('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Hello?'}, str(uuid4()), 'phone')
         self.service._run_task(task['id'])

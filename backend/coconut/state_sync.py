@@ -312,8 +312,13 @@ class StateSync:
                     if native.get('routines') is None:
                         native['routines'] = stored
                     if native.get('routines') is not None:
+                        native['routines'] = [dict(r) for r in native['routines']
+                                              if r['bot_id'] in visible and not r.get('_deleted')]
+                        # The settings read Hermes directly. The pause of a routine whose profile no gateway serves
+                        # shows here too (RoutineCoordinator._pause_unserved_routines).
+                        view._pause_unserved_routines(native['routines'])
                         native['routines'] = [dict(view._public(r), last_task_id=previous.get(r['id']))
-                                              for r in native['routines'] if r['bot_id'] in visible and not r.get('_deleted')]
+                                              for r in native['routines']]
                     return dict(cursor=view._cursor(), push_configured=self.push.configured, bots=[view._bot_view(dict(b, **observed.get(b['id'], {})), catalog) for b in bots],
                                 model_catalog=catalog, model_configured=bool(catalog and catalog.get('default_configured')), **{k: native.get(k) for k in ('approvals', 'parallel_work', 'api_fallback', 'mcp_servers', 'routines')})
         from .service import ServiceError
