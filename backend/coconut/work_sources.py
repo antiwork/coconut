@@ -640,20 +640,20 @@ class WorkSources:
             self.stopping.wait(15)
 
     def _retire_worktrees_safely(self):
-        try:
+        # Service.close waits for this thread before it closes the database. After a stop, no further step starts.
+        steps = (
             # This call returns at once until an hour has passed since the previous run.
-            self.retire_finished_worktrees()
-        except Exception:
-            logging.getLogger(__name__).exception('Could not retire finished worktrees.')
-        try:
+            (self.retire_finished_worktrees, 'Could not retire finished worktrees.'),
             # Session maintenance uses the same idle rules and the same hourly cadence.
-            self.maintain_native_sessions()
-        except Exception:
-            logging.getLogger(__name__).exception('Could not maintain native sessions.')
-        try:
-            self.maintain_database()
-        except Exception:
-            logging.getLogger(__name__).exception('Could not maintain the Coconut database.')
+            (self.maintain_native_sessions, 'Could not maintain native sessions.'),
+            (self.maintain_database, 'Could not maintain the Coconut database.'))
+        for step, failure in steps:
+            if self.stopping.is_set():
+                return
+            try:
+                step()
+            except Exception:
+                logging.getLogger(__name__).exception(failure)
 
     def audit_work_sources(self):
         path = self.root / 'work-sources.json'
