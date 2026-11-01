@@ -73,13 +73,6 @@ def worker(request, default_home):
         finally:
             reset_secret_scope(scope)
             reset_hermes_home_override(token)
-    if op == 'relay_recover':
-        from native_relay import recover_delivery
-        return recover_delivery(homes[request['bot_id']], request['call_id'])
-    if op == 'relay_reply':
-        from native_relay import write_native_reply
-        write_native_reply(homes[request['bot_id']], request['envelope_id'], request['text'], request.get('failed', False))
-        return {'status': 'recorded'}
     if op.startswith('routine'):
         from native_routines import worker as routines
         return routines(op, request, homes)

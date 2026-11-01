@@ -442,16 +442,6 @@ def holders_by_path(paths, *, detail=False):
     return held if detail else {path: set(pids) for path, pids in held.items()}
 
 
-def busy_paths(paths):
-    """Return the paths in which a process that is not a shared service has its cwd or an open file. Use one lsof scan."""
-    held = holders_by_path(paths, detail=True)
-    busy = {path for path in paths if held[str(path)]}
-    if not busy:
-        return busy
-    table = process_table()
-    return {path for path in busy if blocking(held[str(path)], path, table)}
-
-
 def in_use(path):
     """Return True when a process has an open file in the path, or has its cwd there and is not a shared service."""
     return bool(blocking(holders(path, detail=True), path))
@@ -2554,7 +2544,6 @@ def acquire(root, outcome, repository, existing_worktree=None, *, successor=None
         return binding
 
 
-
 def chosen(root, outcome, bindings):
     # A path hint does not restore a retired worktree. It names the path that a restore uses.
     retired = len(bindings) == 1 and bindings[0].get('retired') or {}
@@ -2593,13 +2582,3 @@ def preferred(root, outcome, *, verify=True):
                 save_bindings(manifest, saved)
             return chosen(root, outcome, bindings)
     return root / outcome
-
-
-def retired_path(root, outcome, path):
-    """Return True when `path` is the saved path of a retired binding of `outcome`. Read without the lock."""
-    try:
-        saved = json.loads((Path(root) / 'worktrees.json').read_text())
-    except (OSError, ValueError):
-        return False
-    return any(isinstance(b, dict) and b.get('outcome') == outcome and b.get('retired')
-               and b.get('path') == str(path) for b in saved.values())

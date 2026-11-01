@@ -60,11 +60,6 @@ CREATE TABLE IF NOT EXISTS native_receipts (id TEXT PRIMARY KEY, data TEXT NOT N
 # receipts of its tasks go after the same time. A resumed outcome then continues from its visible conversation.
 RECEIPT_RETENTION_DAYS = SESSION_RETENTION_DAYS
 FINISHED = ('completed', 'failed', 'cancelled')
-# PENDING_COMPLETIONS is NULL, not false, for some receipts, and NOT NULL is NULL, so the deletion kept them. A
-# delivered process result is one of them, and a withdrawal check reads it later, so it stays. A terminal result without
-# notify_on_complete is the other one. It is a plain command output, and most stored tool output is of this kind.
-UNKNOWN_COMPLETION_KEPT = ("CASE WHEN json_extract(data,'$.action.name')='terminal' AND json_valid(json_extract(data,'$.result')) "
-                           "THEN json_extract(json_extract(data,'$.result'),'$.notify_on_complete') IS NOT NULL ELSE 1 END")
 # Lookups read these receipts by content at any age: NativeOutcomes adopts a native task by the idempotency key
 # of its kanban_create receipt, routine_reports.created_occurrences finds the routines that a task created, and
 # WorkProgress links a manual routine run. Other cronjob_manage calls, such as a list of every job, have no reader.
@@ -244,9 +239,9 @@ class DatabaseMaintenance:
         All tasks of an idle outcome are finished, and none changed within that time. The rule keeps a receipt that
         a lookup still reads:
         - an executing receipt;
-        - the receipts of a task with a pending completion (PENDING_COMPLETIONS), because the task resumes;
-        - a receipt that a decision (_receipt_id), a task (_continuation_receipt_ids), or a waiting receipt
-          (_wait_process_receipt) names, because _get fails without it;
+        - the receipts of a task with a pending wait (PENDING_COMPLETIONS), because the task resumes;
+        - a receipt that a decision (_receipt_id) or a task (_continuation_receipt_ids) names, because _get fails
+          without it;
         - the receipts of a task in the scope of a pending decision, because its freshness fingerprint lists them;
         - the receipts of a task with a queued or working context;
         - kanban_create receipts and the cronjob_manage calls in KEPT_ROUTINE_CALLS (KEPT_RECEIPT).
@@ -288,8 +283,7 @@ class DatabaseMaintenance:
                 candidates.update({t['id']: None for t in tasks.values()
                                    if t['id'] not in candidates and t['id'] not in held and ended(t, history)})
             named = ({d['_receipt_id'] for d in decisions if d.get('_receipt_id')}
-                     | {i for t in tasks.values() for i in t.get('_continuation_receipt_ids', [])}
-                     | {r['_wait_process_receipt'] for r in pending if r.get('_wait_process_receipt')})
+                     | {i for t in tasks.values() for i in t.get('_continuation_receipt_ids', [])})
         if not candidates:
             return 0
         with self._read_view() as view, view._read_transaction():
@@ -320,12 +314,10 @@ class DatabaseMaintenance:
                 excluded.update(task_id for _, task_id, status, _ in decisions if status == 'pending')
                 excluded.update(r['task_id'] for r in pending)
                 names = (named | {i for t in live for i in t.get('_continuation_receipt_ids', [])}
-                         | {receipt for *_, receipt in decisions if receipt}
-                         | {r['_wait_process_receipt'] for r in pending if r.get('_wait_process_receipt')})
+                         | {receipt for *_, receipt in decisions if receipt})
                 deleted += self._delete_rows('native_receipts',
                     'rowid IN (SELECT value FROM json_each(?)) '
-                    "AND json_extract(data,'$.state')='completed' AND NOT COALESCE((" + PENDING_COMPLETIONS + '), '
-                    + UNKNOWN_COMPLETION_KEPT + ') '
+                    "AND json_extract(data,'$.state')='completed' AND NOT (" + PENDING_COMPLETIONS + ') '
                     'AND id NOT IN (SELECT value FROM json_each(?)) '
                     "AND json_extract(data,'$.task_id') NOT IN (SELECT value FROM json_each(?))",
                     (json.dumps(rows[start:start + BATCH_ROWS]), json.dumps(sorted(names)),

@@ -54,10 +54,10 @@ class ServiceRestart:
             drained.write_text('1')
 
     def _service_busy(self):
-        # Caller holds self.lock. The same work that keeps a bot's restart from taking effect: turns, claims, uncertain
-        # dispatch and worker cleanup.
+        # Caller holds self.lock. The same work that keeps a bot's restart from taking effect: turns, claims and
+        # uncertain dispatch.
         return (any(t.is_alive() for t in [*self.running.values(), *self.context_threads.values(), *self.gateway_cron_threads.values()])
-                or bool(self._kanban_claiming) or bool(self._kanban_dispatch_uncertain) or bool(self._kanban_trimming))
+                or bool(self._kanban_claiming) or bool(self._kanban_dispatch_uncertain))
 
     def poll_hermes_change(self):
         """After a change of Hermes, start no new turn until the restart. See hermes_changed and take_service_restart."""
@@ -122,11 +122,11 @@ class ServiceRestart:
                 # As an update does: wait for the running work, but not longer than HERMES_DRAIN_SECONDS.
                 if self._service_busy() and time.monotonic() < self.hermes_restart_deadline:
                     return False
-            elif active_turns or self._kanban_trimming:
+            elif active_turns:
                 if (not recovery and self.restart_pending and time.monotonic() >= self.restart_deadline
                         and not getattr(self, '_draining', False)):
                     with self.transaction():
-                        self._event('service.restart_deferred', {'reason': 'active_turns' if active_turns else 'worker_cleanup', 'dispatch_resumed': True})
+                        self._event('service.restart_deferred', {'reason': 'active_turns', 'dispatch_resumed': True})
                     self.restart_pending = False
                     self.changed.notify_all()
                 return False

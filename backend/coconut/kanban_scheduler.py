@@ -10,7 +10,6 @@ import queue
 import time
 from pathlib import Path
 import subprocess
-from uuid import uuid4
 import threading
 
 from .kanban_runtime import IDLE_STATUSES
@@ -152,11 +151,6 @@ def native_state(status):
             'completed': 'done', 'cancelled': 'archived', 'needs_you': 'review'}.get(status, 'blocked')
 
 
-# The error of the worker for a claim without a prepared worker (providers.py), and the summary of a task that waits for
-# a claim with a worker (await_prepared_worker).
-UNPREPARED_WORKER = 'The native claim has no prepared worker.'
-WAITING_FOR_WORKER = 'Waiting for a worker for this work.'
-
 # A respawn guard that holds this long is shown in the task and its Work item (_note_respawn_guards).
 RESPAWN_GUARD_NOTICE_SECONDS = 3600
 
@@ -291,7 +285,7 @@ class NativeKanban(NativeOutcomes):
         for parent in card['parent_ids']:
             helper = self._card_owner(parent, cards.get(parent), bound.get(parent))
             if (helper and helper['id'] != task['id'] and helper.get('_reply_to_task_id') == task['id']
-                    and (helper['status'] in self.ACTIVE or helper.get('_return_pending') or helper.get('_native_reply_pending'))):
+                    and (helper['status'] in self.ACTIVE or helper.get('_return_pending'))):
                 return True
         return False
 
@@ -428,15 +422,12 @@ class NativeKanban(NativeOutcomes):
                         or row['id'] in self.running or row['id'] in self.context_threads):
                     raise ValueError('This request stopped before dispatch.')
                 bot = self._get('bots', task['bot_id'])
-            # With the gateway on, the claim holds a placeholder process instead of a prepared worker.
-            pid = self.kanban_worker_pid(row['id'], task, bot, claim['workspace'], execution_key(task),
-                                         claim['native_id'])
+            # The claim holds a placeholder process. The gateway runs the turn, or the provider in fixture mode.
+            pid = self.kanban_worker_pid(row['id'], execution_key(task))
             with self.transaction():
                 table = 'contexts' if context else 'tasks'
                 item = self._get(table, row['id'])
                 item['_kanban_claim'] = dict(claim, pid=pid, input=row['input'], generation=self.generation)
-                # The claim now has a prepared worker (await_prepared_worker).
-                item.pop('_needs_worker', None)
                 self._put(table, item)
             return pid
         try:
@@ -454,26 +445,6 @@ class NativeKanban(NativeOutcomes):
         self._publish_kanban_changes()
 
     def _idle_kanban(self):
-        with self.lock:
-            trim = not (self.restart_pending or self.stopping.is_set()) and hasattr(self.provider, 'trim_kanban_workers')
-            if trim:
-                keep = set()
-                for record in self._pending_completion_receipts():
-                    if self._get('tasks', record['task_id'])['status'] == 'cancelled':
-                        continue
-                    identity = self._receipt_native_worker_id(record)
-                    if identity:
-                        keep.add(identity)
-                # Restart must not close the provider after trim removes a worker
-                # from its registry but before that worker has terminated.
-                self._kanban_trimming = True
-        if trim:
-            try:
-                self.provider.trim_kanban_workers(keep)
-            finally:
-                with self.changed:
-                    self._kanban_trimming = False
-                    self.changed.notify_all()
         if self.restart_pending or self.stopping.is_set():
             with self.changed:
                 self.changed.wait(.2)
@@ -504,61 +475,6 @@ class NativeKanban(NativeOutcomes):
                 affected.update(t['id'] for t in self.kanban.tasks.values() if t['status'] == 'ready')
                 self._kanban_visible = visible
                 self._event('work.updated', {'native_task_ids': sorted(affected)})
-
-    def await_prepared_worker(self, task):
-        """Put a claimed task that the worker must run, but whose claim has no prepared worker, back in the queue.
-
-        The claim of a task that the gateway runs holds a placeholder process, not a worker (kanban_worker_pid). When the
-        turn still goes to the worker, the worker refuses it (`The native claim has no prepared worker`), before the
-        turn has any effect. Then the claim ends, the task waits, and its next claim prepares a worker (`_needs_worker`).
-        Return whether the task waits. The caller is _run_task, before the worker gets the turn.
-        """
-        from .service import now
-        check = getattr(self.provider, 'has_prepared_worker', None)
-        identity = task.get('_kanban_external_id')
-        if not identity or check is None or check(identity):
-            return False
-        logging.getLogger(__name__).warning('Task %s goes to the worker, but its claim has no prepared worker. '
-                                            'It waits for a claim with a worker.', task['id'])
-        with self.transaction():
-            stored = self._get('tasks', task['id'])
-            if stored['status'] != 'working':
-                return True
-            stored.update(status='queued', summary=WAITING_FOR_WORKER, updated_at=now(), _needs_worker=True)
-            self._put('tasks', stored)
-            self._event('task.updated', self._public(stored), stored['bot_id'], stored['id'])
-        # The placeholder ends the claim's run. The next pass claims the task again with a worker.
-        self.stop_gateway_holder(identity)
-        return True
-
-    def _recover_unprepared_workers(self):
-        """Once: put back in the queue each task that failed because its claim had no prepared worker.
-
-        From build 569 the continuation of a gateway audit after a card answer went to the worker, whose claim had no
-        worker, and the task failed before the turn had any effect. The person's answer then stayed unused. The task now
-        runs again with a new input, and a card answer that failed with it is the person's answer again.
-        """
-        from .service import now
-        key = 'recovered.unprepared_workers'
-        if self._setting(key):
-            return
-        failed = 'Work stopped: ' + UNPREPARED_WORKER
-        for task in (json.loads(row[0]) for row in self.db.execute(
-                "SELECT data FROM tasks WHERE json_extract(data,'$.status')='failed' AND json_extract(data,'$.summary')=?",
-                (failed,))):
-            decision = self._get('decisions', task['_resume_decision']) if task.get('_resume_decision') else None
-            if decision and decision['status'] == 'failed' and decision.get('outcome') == failed:
-                decision.update(status='approved')
-                decision.pop('outcome', None)
-                self._put('decisions', decision)
-                self._event('decision.updated', self._public(decision), decision['bot_id'], task['id'])
-            # A new input: the claim of the failed run ended, so the next claim is a new run.
-            task.update(status='queued', summary='Running again after a failed start.', updated_at=now(),
-                        _native_turn_id=str(uuid4()))
-            self._put('tasks', task)
-            self._event('task.updated', self._public(task), task['bot_id'], task['id'])
-            logging.getLogger(__name__).warning('Task %s failed without a prepared worker. It runs again.', task['id'])
-        self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(True)))
 
     def _note_respawn_guards(self, current=None):
         """Show a native outcome that Hermes has not started for an hour because of a respawn guard.
@@ -677,9 +593,7 @@ class NativeKanban(NativeOutcomes):
                         continue
                     if (native['status'] == 'running' and not native.get('worker_pid')
                             and item['status'] != 'working'):
-                        # No turn starts before the native PID commit. Reclaim an interrupted preparation.
-                        if hasattr(self.provider, 'release_kanban_preparation'):
-                            self.provider.release_kanban_preparation(identity)
+                        # No turn starts before the native PID commit. Reclaim an interrupted claim.
                         self.stop_gateway_holder(identity)
                         finishes.append(dict(op='finish', id=native['id'], run_id=native['current_run_id'],
                                              state=self._technical_native_state(item) or native_state(item['status']),
@@ -709,8 +623,6 @@ class NativeKanban(NativeOutcomes):
                             workers[identity] = worker
                             worker.start()
                     else:
-                        if hasattr(self.provider, 'release_kanban_preparation'):
-                            self.provider.release_kanban_preparation(identity)
                         self.stop_gateway_holder(identity)
                         # A finished declined-merge lane turn parks its card. See technical_lane.py.
                         state = self._technical_native_state(item) or native_state(status)

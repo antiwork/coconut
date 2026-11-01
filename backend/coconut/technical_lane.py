@@ -131,7 +131,7 @@ KANBAN_READS = frozenset({'kanban_show', 'kanban_list', 'kanban_attachments'})
 KANBAN_NOTES = frozenset({'kanban_comment', 'kanban_heartbeat'})
 PENDING_RECEIPT_STATES = ('executing', 'awaiting_approval', 'awaiting_answer')
 # Provider events that change decisions, ownership, routes, or other bots. Each needs a normal turn.
-REFUSED_EVENTS = frozenset({'decision', 'artifact', 'bot_message', 'native_bot_message', 'bot_create', 'bot_delete',
+REFUSED_EVENTS = frozenset({'decision', 'artifact', 'bot_message', 'bot_create', 'bot_delete',
                             'service_restart', 'withdrawal_correction', 'work_wait', 'work_continue', 'dependency_unlink',
                             'block_pause', 'native_approval', 'native_question', 'native_proposal', 'decision_response'})
 

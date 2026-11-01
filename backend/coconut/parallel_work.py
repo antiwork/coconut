@@ -1,4 +1,4 @@
-"""Map Coconut worker preferences to native Hermes delegation settings."""
+"""Map the Coconut setting for parallel helpers to native Hermes delegation settings."""
 from functools import lru_cache
 import os
 import subprocess
@@ -55,15 +55,3 @@ def save(home, limit, *, inherit=False):
     else:
         delegation['max_concurrent_children'] = limit
     save_config(home, config)
-
-
-def prepare_turn(limit):
-    """Apply the worker limit of the Coconut settings through Hermes's supported fallback.
-
-    An explicit delegation.max_concurrent_children in the profile takes precedence.
-    """
-    validate_limit(limit)
-    if limit is None:
-        os.environ.pop('DELEGATION_MAX_CONCURRENT_CHILDREN', None)
-    else:
-        os.environ['DELEGATION_MAX_CONCURRENT_CHILDREN'] = str(limit)

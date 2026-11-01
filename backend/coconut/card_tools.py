@@ -77,26 +77,10 @@ REPLY_SCHEMA = {
     }, 'required': ['choice', 'quote']},
 }
 
+# coconut_wait. Hermes starts and watches the background processes of a gateway turn, and Coconut has no record of
+# them. The turn waits for a process with Hermes's own process tool, and Hermes delivers the result of a process started
+# with notify_on_complete in a later turn of the chat.
 WAIT_SCHEMA = {'name': 'coconut_wait', 'description':
-    'Wait for existing work. Call without arguments to list tasks, decisions, and background processes in this exchange. '
-    'Supply task_id, process_id, or decision_id and a short reason to register a durable wait. '
-    'Use decision_id for an existing card, including when its owner waits for your work. '
-    'Use process_id only when the terminal result confirms notify_on_complete=true. '
-    'Otherwise use native process(action="wait") until the process exits. '
-    'especially if its owner task already depends on your reply. Finish your turn after registration; '
-    'Coconut resumes it once the task finishes or fails. A completed task or process returns its saved result immediately; '
-    'use that result without waiting again. This does not send a message or create new work. '
-    'In an audit of a work source, set no_card with a reason to record that the source needs no card now.',
-    'parameters': {'type': 'object', 'properties': {
-        'task_id': {'type': 'string'}, 'process_id': {'type': 'string'}, 'decision_id': {'type': 'string'}, 'reason': {'type': 'string', 'maxLength': 80},
-        'no_card': {'type': 'boolean', 'description': 'Only in an audit of a work source: the source needs no card now. '
-            'Coconut audits it again at next_check_at or when the source changes. With task_id, only while that live task owns the work.'},
-        'next_check_at': {'type': 'string', 'description': 'With no_card: an ISO 8601 UTC time to audit again. Defaults to 24 hours, at most 7 days.'}}}}
-
-# coconut_wait in the gateway. Hermes starts and watches the background processes of a gateway turn, and Coconut has
-# no record of them. The turn waits for a process with Hermes's own process tool, and Hermes delivers the result of a
-# process started with notify_on_complete in a later turn of the chat.
-GATEWAY_WAIT_SCHEMA = {'name': 'coconut_wait', 'description':
     'Wait for existing work of this exchange. Call without arguments to list its tasks and decisions. '
     'Supply task_id or decision_id and a short reason to register a durable wait. '
     'Use decision_id for an existing card, including when its owner waits for your work. '
@@ -106,7 +90,10 @@ GATEWAY_WAIT_SCHEMA = {'name': 'coconut_wait', 'description':
     'its saved result immediately; use that result without waiting again. This does not send a message or create new work. '
     'In an audit of a work source, set no_card with a reason to record that the source needs no card now.',
     'parameters': {'type': 'object', 'properties': {
-        key: value for key, value in WAIT_SCHEMA['parameters']['properties'].items() if key != 'process_id'}}}
+        'task_id': {'type': 'string'}, 'decision_id': {'type': 'string'}, 'reason': {'type': 'string', 'maxLength': 80},
+        'no_card': {'type': 'boolean', 'description': 'Only in an audit of a work source: the source needs no card now. '
+            'Coconut audits it again at next_check_at or when the source changes. With task_id, only while that live task owns the work.'},
+        'next_check_at': {'type': 'string', 'description': 'With no_card: an ISO 8601 UTC time to audit again. Defaults to 24 hours, at most 7 days.'}}}}
 GATEWAY_PROCESS_WAIT = ('Coconut has no record of the processes of this chat. Wait for a background process with the '
                         'native process tool: process(action="wait"), or notify_on_complete=true and finish the turn.')
 

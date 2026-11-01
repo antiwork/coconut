@@ -200,23 +200,6 @@ class HermesProfiles:
         return dict(profile_id=profile_id(bot), bot_id=bot['id'], session_id=bot['session_id'], status=status, created=False)
 
 
-def merge_runtime_config(home: str | Path) -> None:
-    """Load profile credentials without changing native settings."""
-    from dotenv import dotenv_values
-    home = Path(home).absolute()
-    _safe(home / '.env', home)
-    try:
-        from .runtime_environment import CLAUDE_PROFILE_OVERRIDES, profile_environment
-    except ImportError:
-        from runtime_environment import CLAUDE_PROFILE_OVERRIDES, profile_environment
-    protected = set(profile_environment(home)) | set(CLAUDE_PROFILE_OVERRIDES) | {'HERMES_HOME', 'PYTHONPATH'}
-    for key in CLAUDE_PROFILE_OVERRIDES:
-        os.environ.pop(key, None)
-    for key, value in dotenv_values(home / '.env').items():
-        if value is not None and key not in protected:
-            os.environ[key] = value
-
-
 def inspect_profiles(data_dir: str | Path, identity: str | None = None, *, include_deleted: bool = False) -> list[dict]:
     """Read profile identities without loading instructions, memory, or credentials."""
     profiles = HermesProfiles(data_dir)

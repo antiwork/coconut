@@ -46,64 +46,50 @@ MAX_TEXT = 200_000
 KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
 QUESTION_KINDS = ('clarify', 'approval')
 
-# A turn with one of these inputs needs a Coconut tool or context that the gateway does not have yet: a work item with
-# its context and workspace and routines. The worker runs
-# it. An audit uses the Kanban tools of Coconut's own board (work_sources), which the gateway does not have. Attachments, reactions, pending cards, the saved task list of an assignment, its dependencies, a recovery
-# context, a direct reply, the bot exchange, GitHub source activity, a PR review and the bot changes of a chat go to
-# the gateway as text of the turn (gateway_chat.gateway_turn_text). The plugin has the card tools, coconut_wait,
-# coconut_correct_withdrawal, coconut_message_bot, coconut_create_bot and coconut_delete_bot.
-WORKER_INPUTS = (
-    '_native_job', '_kanban_claim', '_native_outcome_id', '_execution_session_id',
-    '_work_context_id', '_work_context', '_source_answer_steps', '_source_audit_prompt',
-    '_work_status_only')
-# A task with its own work session runs in the gateway, in a chat of its own (gateway_work_turn), when it has no other
-# worker input. The dispatchers give it the work session and the Kanban claim. A question about a Work item without a
-# native outcome carries that item (`_work_context_id`, `_work_context`). An audit of a work source carries its text and
-# the steps for an answer to its source (`_source_audit_prompt`, `_source_answer_steps`). A native outcome
-# (`_native_outcome_id`) acts on its card with the board tools of its claim (gateway_chat.gateway_kanban_tool).
+# The chat of a turn (gateway_chat.run_gateway_chat). A turn of the bot's conversation runs in the bot's chat
+# (plain_chat_turn). A task with its own work session runs in the chat of that session (gateway_work_turn). A turn of the
+# bot's conversation that owns a native outcome runs in the bot's chat with the Kanban claim of its outcome
+# (conversation_outcome_turn). A status question has its own chat (gateway_chat.run_gateway_status). Attachments,
+# reactions, pending cards, the saved task list of an assignment, its dependencies, a recovery context, a direct reply,
+# the bot exchange, GitHub source activity, a PR review, the receipts of earlier turns and the bot changes of a chat go
+# to the gateway as text of the turn (gateway_chat.gateway_turn_text, work_notes).
+#
+# The inputs of a work session: the dispatchers give it the work session and the Kanban claim. A question about a Work
+# item carries that item (`_work_context_id`, `_work_context`). An audit of a work source carries its text and the steps
+# for an answer to its source (`_source_audit_prompt`, `_source_answer_steps`). A native outcome (`_native_outcome_id`)
+# acts on its card with the board tools of its claim (gateway_chat.gateway_kanban_tool).
 WORK_SESSION_INPUTS = ('_execution_session_id', '_kanban_claim', '_work_context_id', '_work_context',
                        '_source_audit_prompt', '_source_answer_steps', '_native_outcome_id')
+# A task with one of these takes no chat turn: a routine run that an earlier version of Coconut claimed (`_native_job`),
+# which no gateway runs (gateway_chat.gateway_unsupported), and a status question (run_gateway_status).
+OTHER_PATHS = ('_native_job', '_work_status_only')
 
-
-# A message with one of these fields carries Coconut context that a gateway message does not: a work item. A quote, a
-# reaction and a bot mention go into the text of the gateway message (native_conversation.message_content).
-WORKER_MESSAGE_FIELDS = ('work_context',)
-
-
-# The receipts of the tool calls of a turn and of the turns that it continues are no worker input. A gateway turn
-# gets their index in its text, and coconut_read_receipts reads them (gateway_chat.work_notes), as the worker gives
-# them. The worker also replayed a completed tool call by its hash. A gateway turn has the rule of the index instead:
-# do not repeat a completed effect.
-
-
-def worker_input(task: dict, key: str) -> bool:
-    """Whether the task has the worker input `key`."""
-    return bool(task.get(key))
+# A message with one of these fields carries a Work item. It goes with a turn that has that item. A quote, a reaction
+# and a bot mention go into the text of the gateway message (native_conversation.message_content).
+WORK_MESSAGE_FIELDS = ('work_context',)
 
 
 def gateway_work_turn(task: dict) -> bool:
     """Whether a task with its own work session runs in the gateway, in a separate chat (gateway_chat.work_chat).
 
-    Such a task is not a turn of the bot's conversation (`_chat_session`) and has no worker input but its work session,
-    its Kanban claim, its Work item and its audit text, for example a scheduled message, a question about a Work item
-    or the audit of a work source. A native outcome (and a question about its Work item) runs here too, with the
-    board tools of its claim (gateway_chat.gateway_kanban_tool), and so does its technical lane, with the holds of the
-    lane (gateway_chat.LANE_EVENTS). A status question runs in the gateway on its own path
-    (gateway_chat.run_gateway_status).
+    Such a task is not a turn of the bot's conversation (`_chat_session`), for example a scheduled message, a question
+    about a Work item or the audit of a work source. A native outcome (and a question about its Work item) runs here
+    too, with the board tools of its claim (gateway_chat.gateway_kanban_tool), and so does its technical lane, with the
+    holds of the lane (gateway_chat.LANE_EVENTS).
     """
     return (bool(task.get('_execution_session_id')) and not task.get('_chat_session')
-            and not any(worker_input(task, key) for key in WORKER_INPUTS if key not in WORK_SESSION_INPUTS))
+            and not any(task.get(key) for key in OTHER_PATHS))
 
 
 def conversation_outcome_turn(task: dict) -> bool:
     """Whether a turn of the bot's conversation (`_chat_session`) that owns a native outcome runs in the gateway.
 
     Such a turn starts from the Kanban claim of its outcome (work_capacity.chat_turn). It has no work session, so it
-    runs in the bot's chat, as the worker runs it in the bot's conversation. It acts on its card with the board tools
-    of its claim (gateway_chat.gateway_kanban_tool), but it has no worktree (gateway_chat.gateway_workspace).
+    runs in the bot's chat. It acts on its card with the board tools of its claim (gateway_chat.gateway_kanban_tool),
+    but it has no worktree (gateway_chat.gateway_workspace).
     """
     return (bool(task.get('_chat_session')) and bool(task.get('_native_outcome_id'))
-            and not any(worker_input(task, key) for key in WORKER_INPUTS if key not in WORK_SESSION_INPUTS))
+            and not any(task.get(key) for key in OTHER_PATHS))
 
 
 def gateway_claim_turn(task: dict) -> bool:
@@ -113,13 +99,13 @@ def gateway_claim_turn(task: dict) -> bool:
 
 
 def plain_chat_turn(task: dict) -> bool:
-    """Whether a turn can run in the gateway: a turn of the bot's conversation (`_chat_session`) without a worker input.
+    """Whether a turn runs in the bot's chat: a turn of the bot's conversation (`_chat_session`) without the inputs of a
+    work session.
 
-    With the gateway, a message of another bot, the return of a delegated task and the continuation of an accepted
-    proposal are turns of the bot's conversation too (gateway_chat.join_conversation). A task with its own work session
-    (`_execution_session_id`) stays with the worker.
+    A message of another bot, the return of a delegated task and the continuation of an accepted proposal are turns of
+    the bot's conversation too (gateway_chat.join_conversation).
     """
-    return bool(task.get('_chat_session')) and not any(worker_input(task, key) for key in WORKER_INPUTS)
+    return bool(task.get('_chat_session')) and not any(task.get(key) for key in OTHER_PATHS + WORK_SESSION_INPUTS)
 
 
 # The commands of Hermes that the person may type in a Coconut chat (gateway_chat.gateway_command). Hermes asks to

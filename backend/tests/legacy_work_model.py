@@ -6,7 +6,7 @@ a native outcome, so the reducer lives here. legacy_work_sync.scope() adds it to
 """
 from datetime import datetime, timezone
 
-from coconut.background_processes import subscription
+from coconut.background_processes import WORK_DESCRIPTION_SECONDS
 
 
 class LegacyWorkModel:
@@ -26,14 +26,7 @@ class LegacyWorkModel:
 
     def _work_live(self, task, records, timestamp):
         worker = self.running.get(task['id'])
-        if worker and worker.is_alive():
-            return True
-        return any(r['task_id'] == task['id'] and subscription(r) and not r.get('_process_delivery')
-                   and (r.get('turn_id') == task.get('_native_turn_id')
-                        or self._can_resume_completion(task, self._get('bots', task['bot_id']), r))
-                   and r.get('_process_status') == 'running' and r.get('_process_observed_at')
-                   and (timestamp - datetime.fromisoformat(r['_process_observed_at'].replace('Z', '+00:00'))).total_seconds() < 45
-                   for r in records)
+        return bool(worker and worker.is_alive())
 
     def _queue_positions(self, tasks, timestamp):
         if self.kanban is not None:
@@ -117,17 +110,10 @@ class LegacyWorkModel:
             if record['task_id'] not in identities or record.get('_process_delivery'):
                 continue
             kind, target = next(((kind, record[key]) for kind, key in (
-                ('task', '_relay_task_id'), ('task', '_wait_task_id'), ('process', '_wait_process_receipt'),
-                ('decision', '_wait_decision_id')) if record.get(key)), (None, None))
-            if subscription(record):
-                kind, target = 'process', subscription(record)
+                ('task', '_wait_task_id'), ('decision', '_wait_decision_id')) if record.get(key)), (None, None))
             if not kind:
                 continue
-            ready = bool(record.get('_completion_text'))
-            if any(record.get(k) for k in ('_wait_task_id', '_wait_process_receipt', '_wait_decision_id')):
-                ready = self._wait_completion(record, tasks[record['task_id']]) is not None
-            elif record.get('_relay_task_id'):
-                ready = bool(tasks.get(target, {}).get('_native_relay_result'))
+            ready = self._wait_completion(record, tasks[record['task_id']]) is not None
             dependencies.append(dict(id=record['id'], kind=kind, target_id=target,
                                      state='ready' if ready else 'waiting',
                                      reason=record.get('action', {}).get('arguments', {}).get('reason')))
@@ -177,9 +163,6 @@ class LegacyWorkModel:
                 continue
             report = next((p for p in sorted(reports, key=lambda p: p.get('_activity_at', ''), reverse=True)
                            if p['_activity_task_id'] == task['id']), {})
-            if task['status'] == 'failed' and any(r['task_id'] == task['id'] and subscription(r)
-                                                    and not r.get('_process_delivery') for r in current_records):
-                continue
             if task['status'] != 'failed' and report.get('_activity_state') != 'blocked':
                 continue
             descendants = self._work_chain(task, tasks, records, include_continuations=True)
@@ -218,7 +201,7 @@ class LegacyWorkModel:
                     or tasks[d['target_id']]['status'] != 'completed'
                     or self._unfinished_work(tasks[d['target_id']])))) for d in dependencies)
             or any(r['task_id'] in report_tasks and (r.get('state') == 'executing'
-                or ((subscription(r) or any(r.get(k) for k in ('_wait_process_receipt', '_wait_task_id', '_wait_decision_id')))
+                or (any(r.get(k) for k in ('_wait_task_id', '_wait_decision_id'))
                     and not r.get('_process_delivery'))) for r in current_records))
         completed_report = (item['kind'] == 'work' and item['status'] == 'completed'
             and bool(item.get('completion_evidence')) and not item.get('_work_resuming')
@@ -298,20 +281,10 @@ class LegacyWorkModel:
                                     and todo.get('content')), None)
                 if description:
                     activity, description_at = description
-        if state == 'working':
-            # Process health cannot renew a model's old description of its work.
-            from coconut.worker_activity import FRESH_SECONDS
-            processes = [r for r in current_records if subscription(r) and not r.get('_process_delivery')
-                         and r.get('_process_status') == 'running'
-                         and self._work_live(tasks[r['task_id']], [r], timestamp)]
-            if processes:
-                from coconut.worker_activity import progress_label
-                process = max(processes, key=lambda r: (r.get('_worker_progress', {}).get('at', 0), r.get('created_at', '')))
-                activity = progress_label(process, timestamp)
-            elif description_at:
-                reported = datetime.fromisoformat(description_at.replace('Z', '+00:00'))
-                if (timestamp - reported).total_seconds() > FRESH_SECONDS:
-                    activity = 'Waiting for a progress update'
+        if state == 'working' and description_at:
+            reported = datetime.fromisoformat(description_at.replace('Z', '+00:00'))
+            if (timestamp - reported).total_seconds() > WORK_DESCRIPTION_SECONDS:
+                activity = 'Waiting for a progress update'
         actor = owner.get('bot_id') or item['bot_id']
         if state == 'needs_recovery' and blockers:
             actor = blockers[-1][0]['bot_id']

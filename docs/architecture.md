@@ -1,7 +1,8 @@
 # Architecture
 
 The SwiftUI app consumes a versioned HTTP API through an end-to-end encrypted relay tunnel. It never parses Hermes CLI output.
-The Mac service owns coordination and runs separate Hermes worker processes.
+The Mac service owns coordination. The person's Hermes gateway runs each turn of a bot, through Coconut's `coconut`
+gateway plugin (`hermes_plugin/coconut`).
 A future execution provider can move work to another host without changing bot, task, decision, or artifact IDs.
 
 ## Ownership
@@ -22,7 +23,7 @@ A future execution provider can move work to another host without changing bot, 
 
 Coconut retains small projections for phone display. Native files own behavior.
 Inbox threads group decisions. They do not restrict a bot's recall of its own conversation.
-Workers resume native history and compression continuations. The phone never displays those internal boundaries.
+The gateway resumes native history and compression continuations. The phone never displays those internal boundaries.
 Model and access defaults resolve from the active native default profile.
 Each bot stores its MCP servers, approval settings and API fallback in its own native configuration, as in Hermes. A bot without its own model uses the default model.
 
@@ -30,19 +31,12 @@ Each bot stores its MCP servers, approval settings and API fallback in its own n
 
 Coconut installs no files into the Hermes source checkout.
 Coconut ships its `coconut` skill in `skills/` of the install folder. Hermes loads it through `skills.external_dirs`: setup adds that folder to the person's Hermes profiles, which are also the bots, and a profile that Coconut creates gets it at creation. The person's other Hermes surfaces, such as the Telegram gateway, then know how to update, pair, and repair Coconut. See [the coconut skill](install-and-update.md#the-coconut-skill-for-hermes).
-The worker loads `AIAgent`, native CLI tool configuration, profile context, memory, and skill discovery.
-The worker records a revision of native identity and memory files in the session metadata.
-Each file must contain valid UTF-8 in a regular file of at most 1 MiB.
-When those files change, the worker clears the saved prompt through `SessionDB.update_system_prompt`.
-Hermes rebuilds the prompt from current native files once.
-Unchanged turns keep the saved prompt and native session hooks.
-The same session retains its full history and tool receipts.
+The gateway of the person's Hermes runs each turn with the bot's profile: its tools, context, memory and skills.
+The `coconut` plugin adds Coconut's tools and hooks through Hermes's plugin API.
+The service records the board tools of a turn as receipts of the turn.
 The recorded card choice keeps its exact action scope.
-The worker attaches its captured revision to card and tool requests.
-The service checks that revision before it records a current assessment.
-Changes during a turn leave its cards stale until another check.
-A runtime plugin registers middleware through Hermes's plugin API.
-The middleware records tool intent and result through the parent service.
+A card check records the revision of native identity and memory files of the bot. The service checks that revision
+before it records a current assessment. Changes during a turn leave its cards stale until another check.
 Coconut adapts native approvals through the gateway callback. Each profile's own approval settings apply.
 
 Native `off`, `smart`, and `manual` modes retain their Hermes meaning.
@@ -56,21 +50,16 @@ Other bots continue. Context requests produce linked answers while preserving th
 Pending card checks include the current profile revision.
 A change to identity or memory schedules a new assessment of the same card.
 This check does not answer the card.
-After an answer, the service starts a continuation with the recorded choice and prior completed tool receipts.
-A completed tool result can satisfy its matching replay call once. New turns use new receipt generations.
+After an answer, the service starts a continuation with the recorded choice and the index of the completed tool
+receipts (`coconut_read_receipts`). A turn does not repeat a completed effect.
 
 Native tool execution is not a transaction with SQLite.
 If a process dies between an effect and its completion receipt, Coconut marks the task failed for inspection.
 It does not promise exactly-once execution for arbitrary shell commands or external services.
-Native bot deliveries commit their task and receipt together.
-A local journal recovers a native envelope when the service loses its response.
+Bot deliveries commit their task and receipt together.
 The explicit Coconut file executor reconciles output identity and content before retrying.
 
-Routines use native jobs and native execution claims.
-A small receipt bridges a native claim to its Coconut task and reuses the same claim after a restart.
-An interrupted, unconfirmed claim produces a visible error. It does not dispatch again automatically.
-Native claim fences protect routine tool calls against an owner change.
-Advanced native jobs that Coconut cannot preserve do not execute through its dispatcher.
+Routines are native jobs. The gateway of the bot's profile runs them (see "Phase 4: routines in the gateway").
 
 ## Isolation and routing
 
@@ -82,7 +71,7 @@ Each bot is one Hermes profile of the person, keyed by the profile name. `defaul
 
 - The service scans the profiles at its start and when `<Hermes home>/profiles` changes. A new profile folder becomes a new bot.
 - A folder that disappears makes its bot `missing`. The bot keeps its history and returns with a folder of the same name. Coconut does not follow renames: a renamed folder is a missing bot and a new bot.
-- A worker runs with `HERMES_HOME` set to the profile. Coconut chats, `hermes -p <name>`, and the gateway share the same skills, memories, config, and cron jobs. A worker belongs to one `HERMES_HOME`, so a changed folder starts a new worker.
+- Coconut chats, `hermes -p <name>`, and the gateway share the same skills, memories, config, and cron jobs of the profile.
 - Settings are native. The default settings are those of `<Hermes home>/config.yaml`. Each other profile uses its own config.
 - Coconut creates a profile only through the Hermes profile API, once. A failure fails the request. A folder that Hermes left behind becomes a bot at the next scan.
 - A settings write to a missing profile fails. Coconut never creates a profile folder itself.
@@ -96,11 +85,11 @@ Its configuration overrides remain unset so Claude Code and Hermes use the same 
 These paths organize data; they do not restrict a full-access process from reading other paths.
 Browser tools must use the intended profile. Shared desktop control needs serialized ownership.
 
-Homebrew packages and trust share one scope across Coconut bots. Workers set `HOMEBREW_XDG_CONFIG_HOME` to `<data-dir>/shared`. Homebrew owns `shared/homebrew/trust.json` and its write lock. Hermes profiles, browser profiles, and supported tool settings remain separate. Keep the inherited `HOME` and tool configuration paths. Existing trust grants need an explicit move to this scope; Coconut does not merge private trust files automatically.
+Homebrew packages and trust share one scope across Coconut bots. The processes of a bot set `HOMEBREW_XDG_CONFIG_HOME` to `<data-dir>/shared`. Homebrew owns `shared/homebrew/trust.json` and its write lock. Hermes profiles, browser profiles, and supported tool settings remain separate. Keep the inherited `HOME` and tool configuration paths. Existing trust grants need an explicit move to this scope; Coconut does not merge private trust files automatically.
 Coconut does not provide an operating system sandbox or universal desktop lock.
 
-Hermes `message_agent` produces native relay envelopes.
-The Mac adapter routes these envelopes with stable IDs and durable delivery receipts.
+A bot sends a message to another bot with `coconut_message_bot`. The service delivers it with a stable ID and a
+durable delivery receipt.
 A delivery confirms queuing, not completion. Exchanges limit new requests and propagate cancellation.
 Results can return after the request limit is reached.
 An assignment waits while its dependencies run. Each reply resumes the original scope in the same Hermes conversation.

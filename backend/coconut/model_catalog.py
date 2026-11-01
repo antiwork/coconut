@@ -32,9 +32,7 @@ def apply_env_file(path):
             os.environ[key] = value
 # A profile read that failed, for example because a busy Mac delayed the settings process, runs again after this.
 PROFILE_RETRY_SECONDS = 15
-NATIVE_TEXT_FIELDS = {'routine_finish': 'output', 'relay_reply': 'text'}
-RUNTIME_KEYS = frozenset(('provider', 'api_mode', 'base_url', 'api_key', 'requested_provider',
-                          'acp_command', 'acp_args', 'command', 'args'))
+NATIVE_TEXT_FIELDS = {'routine_finish': 'output'}
 ENV_KEYS = ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
             'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY')
 # xai-oauth is an xAI subscription through Hermes device-code sign-in. It uses the codex_responses API.
@@ -169,7 +167,6 @@ class HermesModelCatalog:
         self._write_lock = threading.Lock()
         self._refreshing = False
         self._profile_cache = {}
-        self._worker_limit_cache = None
         self.on_change = None
 
     def _signature(self):
@@ -309,14 +306,6 @@ class HermesModelCatalog:
                 self._cache_time = time.monotonic()
                 return deepcopy(result)
 
-    def resolve_runtime(self, selection, bot_id=None):
-        """Return private constructor arguments. Never store these in public state."""
-        # Callers may pass the resolved public selection, which contains a trusted URL.
-        value = {key: selection.get(key) for key in ('model', 'provider', 'reasoning_effort')}
-        _selection(value)
-        profile_home = str(self._profile_home(bot_id)) if bot_id else None
-        return self._call('runtime', selection=value, profile_home=profile_home)
-
     def _profile_home(self, bot_id, *, write=False):
         """The Hermes profile folder of a bot. A write needs the folder: Coconut never creates a profile here."""
         if not isinstance(bot_id, str) or str(UUID(bot_id)) != bot_id:
@@ -335,7 +324,7 @@ class HermesModelCatalog:
             self.root = self.root_boundary = Path(hermes_home).expanduser().absolute()
             # The `default` profile is the Hermes home itself, whatever `hermes profile use` selected for the CLI.
             self.base_home = True
-            self._cache = self._cache_key = self._worker_limit_cache = None
+            self._cache = self._cache_key = None
             self._profile_cache = {}
 
     def _settings_home(self):
@@ -383,22 +372,6 @@ class HermesModelCatalog:
             except FileNotFoundError:
                 files.append((name, None))
         return self._signature(), tuple(files)
-
-    def worker_limit(self):
-        """Return the worker limit of the Coconut settings, which each turn applies. Read it again after a change."""
-        with self._lock:
-            try:
-                state = _contained(self._settings_home() / 'config.yaml', self.root).stat()
-                signature = (state.st_ino, state.st_mtime_ns, state.st_size)
-            except FileNotFoundError:
-                signature = None
-            cached = self._worker_limit_cache
-            if cached and cached[0] == signature:
-                return cached[1]
-        limit = self._call('native', native_operation='parallel_work_read')['effective_limit']
-        with self._lock:
-            self._worker_limit_cache = (signature, limit)
-        return limit
 
     def read_profile(self, bot_id):
         return self.read_profiles([bot_id])[bot_id]
@@ -529,7 +502,7 @@ class HermesModelCatalog:
                                         input=serialized, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
                                         env=environment, cwd=self.private_home,
                                         # A turn reads its bot's profile first. Under load, this read can take seconds.
-                                        timeout=30 if operation in ('get', 'runtime', 'native', 'read_profiles', 'follow_default') else 5)
+                                        timeout=30 if operation in ('get', 'native', 'read_profiles', 'follow_default') else 5)
             # The snapshot combines settings and routines, each with a separate response budget.
             response_limit = 8_000_000 if operation == 'native' and payload.get('native_operation') == 'snapshot_read' else 4_000_000
             if result.returncode or len(result.stdout) > response_limit:
@@ -546,7 +519,6 @@ class HermesModelCatalog:
                 'invalid_selection': 'Select an available model and effort from the Hermes list.',
                 'unsafe_endpoint': 'Use a separate credential field and a secure endpoint in Hermes settings.',
                 'invalid_config': 'Fix the native Hermes config before changing its model.',
-                'auth': 'Reconnect this provider with hermes model in Terminal.',
                 'unsupported_route': UNSUPPORTED_ROUTE_MESSAGE,
             }
             raise ModelCatalogError(messages.get(response['error'], 'Hermes could not read its model settings.'))
@@ -974,93 +946,6 @@ def _follow_default(request, default_home, config, model, provider, base_url):
     return result
 
 
-def signed_in(home, provider):
-    """Whether this Hermes home keeps a sign-in (OAuth state) for the provider. An unreadable store holds none."""
-    from hermes_cli import auth
-    home = Path(home)
-    if provider == 'anthropic' and (home / '.anthropic_oauth.json').is_file():
-        return True
-    registration = auth.PROVIDER_REGISTRY.get(provider)
-    if registration is not None and registration.auth_type == 'api_key' and provider != 'anthropic':
-        return False
-    if not (home / 'auth.json').is_file():
-        return False
-    try:
-        return auth._provider_state_in(auth._load_auth_store(home / 'auth.json'), provider) is not None
-    except (OSError, ValueError):
-        return False
-
-
-def own_credentials(home, provider):
-    """Whether this profile has its own credential for the provider: a sign-in, an API key in .env, or a pool entry."""
-    from dotenv import dotenv_values
-    from hermes_cli import auth
-    home = Path(home)
-    if signed_in(home, provider):
-        return True
-    registration = auth.PROVIDER_REGISTRY.get(provider)
-    values = dotenv_values(home / '.env') if (home / '.env').is_file() else {}
-    if registration is not None and any(values.get(name) for name in registration.api_key_env_vars):
-        return True
-    try:
-        store = json.loads((home / 'auth.json').read_text()) if (home / 'auth.json').is_file() else {}
-    except (OSError, ValueError):
-        return False
-    pool = store.get('credential_pool') if isinstance(store, dict) else None
-    return isinstance(pool, dict) and bool(pool.get(provider))
-
-
-def sign_in_home(provider, profile, defaults):
-    """The home whose credentials a profile uses for this provider.
-
-    The profile uses its own home when it has its own credential for the provider. Otherwise it uses the first default
-    home that keeps a sign-in for it. Without any, it uses its own home, where Hermes reads API keys and pools.
-    """
-    if own_credentials(profile, provider):
-        return profile
-    return next((home for home in defaults if signed_in(home, provider)), profile)
-
-
-def _native_runtime(selection, profile_home=None):
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from hermes_cli.config import load_config
-    config = load_config()
-    current_model = config.get('model') or {}
-    current_url = current_model.get('base_url') if isinstance(current_model, dict) else None
-    if not _supported_route(config, selection['provider'], selection['model'], current_url):
-        raise UnsupportedModelRoute(UNSUPPORTED_ROUTE_MESSAGE)
-    token = None
-    if profile_home:
-        apply_env_file(Path(profile_home) / '.env')
-        # Hermes reads and refreshes the sign-ins of the profile itself.
-        token = set_hermes_home_override(profile_home)
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-    # Native resolution owns credentials, OAuth refresh, aliases, and endpoint binding.
-    try:
-        config = load_config()
-        current_model = config.get('model') or {}
-        current_url = current_model.get('base_url') if isinstance(current_model, dict) else None
-        if not _supported_route(config, selection['provider'], selection['model'], current_url):
-            raise UnsupportedModelRoute(UNSUPPORTED_ROUTE_MESSAGE)
-        runtime = resolve_runtime_provider(requested=selection['provider'], target_model=selection['model'])
-    finally:
-        if token is not None:
-            reset_hermes_home_override(token)
-    if (runtime.get('provider') not in SUPPORTED_PROVIDERS or callable(runtime.get('api_key'))
-            or any(runtime.get(key) for key in UNSUPPORTED_RUNTIME_FIELDS)):
-        raise UnsupportedModelRoute(UNSUPPORTED_ROUTE_MESSAGE)
-    result = {key: value for key, value in runtime.items() if key in RUNTIME_KEYS}
-    if not result.get('provider') or not result.get('api_mode'):
-        raise ModelCatalogError('Hermes did not resolve this provider.')
-    if 'command' in result:
-        result['acp_command'] = result.pop('command')
-    if 'args' in result:
-        result['acp_args'] = result.pop('args')
-    # Functions and credential pools cannot cross the private JSON transport.
-    json.dumps(result)
-    return result
-
-
 def _worker(request):
     root = Path(os.environ['HERMES_HOME'])
     selected_home = root if request.get('base_home') else native_home(root)
@@ -1078,22 +963,6 @@ def _worker(request):
     if request['operation'] == 'native':
         from native_settings import worker
         return worker(dict(request, settings_root=str(root)), selected_home)
-    if request['operation'] == 'runtime':
-        selection = _selection(request['selection'])
-        profile = request.get('profile_home')
-        if profile:
-            profile = profile_contained(profile, request)
-            for name in ('config.yaml', '.env', 'auth.json', '.anthropic_oauth.json'):
-                profile_contained(profile / name, request)
-            # A profile with no selection uses native global routing and credentials.
-            config, model, provider, base_url = _native_state()
-            inherited = _catalog(config, model, provider, base_url, [])['default']
-            if (_read_profile(profile, inherited)['model_override'] is None
-                    or sign_in_home(selection['provider'], profile, dict.fromkeys((selected_home, root))) != profile):
-                # Hermes refreshes a sign-in only in the store that holds it. A bot whose model uses a sign-in of the
-                # default home resolves its route there, so Coconut copies no refresh token into the profile.
-                profile = None
-        return _native_runtime(selection, profile)
     config, model, provider, base_url = _native_state()
     if request['operation'] == 'follow_default':
         return _follow_default(request, selected_home, config, model, provider, base_url)
@@ -1140,7 +1009,7 @@ def main():
         if len(serialized) > MAX_REQUEST_CHARACTERS:
             raise ValueError('Request too large')
         request = json.loads(serialized)
-        if request.get('operation') not in ('get', 'defaults', 'set_default', 'runtime', 'migrate', 'read_profiles',
+        if request.get('operation') not in ('get', 'defaults', 'set_default', 'migrate', 'read_profiles',
                                             'set_profile', 'native', 'follow_default'):
             raise ValueError('Invalid operation')
         if 'native_text_file' in request:
@@ -1157,7 +1026,7 @@ def main():
         response = {'result': result}
     except Exception as error:
         # Native auth errors can contain tokens and private URLs. Never serialize their text.
-        code = 'auth' if request.get('operation') == 'runtime' else 'invalid_config'
+        code = 'invalid_config'
         if isinstance(error, UnsupportedModelRoute):
             code = 'unsupported_route'
         elif isinstance(error, ModelCatalogError):

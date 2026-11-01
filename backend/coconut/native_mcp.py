@@ -1,6 +1,4 @@
-"""Manage native Hermes MCP configuration and the MCP connections of one profile."""
-import hashlib
-import json
+"""Manage native Hermes MCP configuration of one profile."""
 import re
 from urllib.parse import urlsplit
 
@@ -99,53 +97,3 @@ def manage(request, home):
     else:
         raise ValueError('Unknown MCP operation.')
     return dict(ok=True, tools=[], servers=public_servers(home))
-
-
-_signature = None
-_names = []
-
-
-def reset_connections():
-    from tools import mcp_tool
-    from tools.registry import registry
-    from tools.mcp_tool_lifecycle import shutdown_mcp_servers
-    from tools.mcp_tool_agent import reprobe_tool_availability
-    with mcp_tool._lock:
-        owned = [(name, mcp_tool._server_registry_scope(server))
-                 for name, server in mcp_tool._mcp_tool_server_names.items()]
-    shutdown_mcp_servers()
-    for name, scope in owned:
-        registry.deregister(name, scope=scope)
-    # Native shutdown keeps lazy registrations. Drop them before loading new credentials.
-    with mcp_tool._lock:
-        for values in (mcp_tool._lazy_server_configs, mcp_tool._lazy_server_fingerprints,
-                       mcp_tool._lazy_server_tool_names, mcp_tool._mcp_tool_server_names,
-                       mcp_tool._server_trust_levels, mcp_tool._tool_read_only_hints,
-                       mcp_tool._server_error_counts, mcp_tool._server_breaker_opened_at,
-                       mcp_tool._parallel_safe_servers):
-            values.clear()
-    reprobe_tool_availability()
-
-
-def prepare_turn(*, allow_reset=True):
-    """Return the MCP servers of this profile, as Hermes reads them. Reconnect them after the profile changed them.
-
-    Between turns, the person can change the servers. A reconnect stops the connections of all turns in this process,
-    so it waits until this turn is the only one.
-    """
-    global _signature, _names
-    import os
-    home = os.environ['HERMES_HOME']
-    if _signature is None and not servers(home):
-        return []
-    from tools import mcp_tool_config
-    from tools.mcp_tool_common import mcp_server_enabled
-    entries = mcp_tool_config._load_mcp_config()
-    signature = hashlib.sha256(json.dumps([home, entries], sort_keys=True, default=str).encode()).hexdigest()
-    if _signature is not None and _signature != signature:
-        if not allow_reset:
-            return list(_names)
-        reset_connections()
-    _signature = signature
-    _names = [name for name, entry in entries.items() if isinstance(entry, dict) and mcp_server_enabled(entry)]
-    return list(_names)
