@@ -99,8 +99,7 @@ class RoutineIndexTests(unittest.TestCase):
     def test_the_routine_tick_reads_tasks_only_through_indexes(self):
         from coconut import routine_coordinator
         # A scan of a partial index reads only the rows of that index.
-        for name, statement in {'open native jobs': routine_coordinator.OPEN_NATIVE_JOBS,
-                                'open routine tasks': routine_coordinator.OPEN_ROUTINE_TASKS,
+        for name, statement in {'open routine tasks': routine_coordinator.OPEN_ROUTINE_TASKS,
                                 'queued or working routine tasks': routine_coordinator.RUNNING_ROUTINE_TASKS,
                                 'child tasks': routine_coordinator.CHILD_TASKS}.items():
             plan = [row[3] for row in self.service.db.execute('EXPLAIN QUERY PLAN ' + statement, ('[]',)[:statement.count('?')])]

@@ -4,6 +4,7 @@ Coconut archives the waiting native task of every finished request (see _settle_
 occurrence still continues through the authenticated continuation route. Hermes keeps the archived task and the
 continuation gets a successor task in the same execution and workspace. Every other archived task stays final.
 """
+import legacy_routine
 import copy
 import json
 from pathlib import Path
@@ -50,9 +51,9 @@ class ArchivedOccurrence:
     def claim(self, job):
         routine = dict(id=str(uuid5(UUID(self.dev['id']), 'cron:' + job['id'])), bot_id=self.dev['id'],
                        name=job['name'], _native_id=job['id'])
-        self.store.provider.native_settings = lambda *a, **kw: dict(job=copy.deepcopy(job))
+        # An earlier Coconut claimed the run in Hermes (legacy_routine).
         with self.store.transaction():
-            task = self.store.claim_native_routine(routine)
+            task = legacy_routine.claimed(self.store, routine, copy.deepcopy(job))
         return self.store._get('tasks', task['id'])
 
     def archived(self, job=None):
@@ -485,9 +486,9 @@ class ArchivedFailedRoutineNativeTests(unittest.TestCase):
         job = dict(saved_job(retired))
         routine = dict(id=str(uuid5(UUID(self.bot['id']), 'cron:' + JOB)), bot_id=self.bot['id'],
                        name=job['name'], _native_id=JOB)
-        self.service.provider.native_settings = lambda *a, **kw: dict(job=copy.deepcopy(job))
+        # An earlier Coconut claimed the run in Hermes (legacy_routine).
         with self.service.transaction():
-            owner = self.service._get('tasks', self.service.claim_native_routine(routine)['id'])
+            owner = self.service._get('tasks', legacy_routine.claimed(self.service, routine, copy.deepcopy(job))['id'])
             owner.update(_execution_session_id=owner['id'], _conversation_epoch=self.service._setting('conversation_epoch'))
             self.service._put('tasks', owner)
         row = self.service._kanban_row(owner, owner, 'ready', 10)
@@ -537,7 +538,9 @@ class ArchivedFailedRoutineNativeTests(unittest.TestCase):
         self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
         # The archived task keeps its own history. Hermes runs only the successor.
         self.assertEqual(self.native(archived), history)
-        proof = task['_native_job_completion']
+        # The continuation guard of the routine still proves the saved occurrence and its continuation.
+        with self.service.lock:
+            proof = self.service.native_routine_completion_input(self.service._get('tasks', owner['id']))
         self.assertEqual(proof['completion'], dict(job_id=JOB, owner=OWNER, success=False, native_confirmed=True))
         self.assertEqual(proof['continuation']['native_task_id'], successor)
         self.assertEqual(proof['continuation']['turn_id'], continued['_native_turn_id'])
@@ -575,10 +578,6 @@ class ArchivedFailedRoutineNativeTests(unittest.TestCase):
         self.assertEqual(native['parents'], [successor])
         self.assertEqual(native['key'], 'coconut-followup:' + owner['id'] + ':' + continued['_native_turn_id'])
         self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
-        proof = second['_native_job_completion']
-        self.assertEqual(proof['completion'], dict(job_id=JOB, owner=OWNER, success=False, native_confirmed=True))
-        self.assertEqual(proof['continuation']['native_task_id'], latest)
-        self.assertEqual(proof['continuation']['turn_id'], continued['_native_turn_id'])
         self.assertEqual(second['_kanban_workspace'], workspace)
 
     def test_cancelled_occurrence_stays_archived(self):

@@ -104,41 +104,6 @@ with tempfile.TemporaryDirectory(prefix='coconut-native-restart-') as temporary:
 )
 
 
-PROGRAMS += (r"""
-from pathlib import Path
-import sys, tempfile, uuid
-root = Path(sys.argv[1]).resolve()
-sys.path.insert(0, str(root / 'backend'))
-from coconut.providers import HermesProvider
-from coconut.service import Service
-with tempfile.TemporaryDirectory(prefix='coconut-native-routine-') as temporary:
-    def start():
-        provider = HermesProvider(temporary, python=root/'.runtime/hermes/venv/bin/python', hermes_root=root/'.runtime/hermes/source')
-        return Service(temporary, provider, start_workers=False)
-    service = start()
-    def write(method, path, data):
-        return service.mutate(method, path, data, str(uuid.uuid4()))
-    try:
-        bot = write('POST', '/v1/bots', {'name': 'Routine check'})
-        routine = write('POST', f"/v1/bots/{bot['id']}/routines", {'name': 'Native check', 'prompt': 'Use terminal to run exactly printf routine-once >> routine-count.txt, then reply Done. Do not use other tools.', 'cron': 'every 30m', 'enabled': True})
-        task = write('POST', f"/v1/routines/{routine['id']}/run", {})
-        service._run_task(task['id'])
-        assert service._get('tasks', task['id'])['status'] == 'completed'
-        service.tick_native_routines()
-        assert len(service._all('tasks')) == 1
-        assert service._get('tasks', task['id'])['_native_job_finished']
-        service.close(); service = start()
-        service.tick_native_routines()
-        assert len(service._all('tasks')) == 1
-        assert (Path(temporary)/'bots'/bot['id']/'workspace/routine-count.txt').read_text() == 'routine-once'
-        native = service.provider.native_settings('routines_read', [bot])['routines'][0]
-        assert native['_job']['last_status'] == 'ok', native['_job']['last_status']
-        print('PASS: native routine tool execution, completion output, restart, and no immediate repeat.')
-    finally:
-        service.close()
-""",)
-
-
 def main():
     config = remote.configuration()
     root = config['directory']

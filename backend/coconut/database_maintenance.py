@@ -61,9 +61,9 @@ CREATE TABLE IF NOT EXISTS native_receipts (id TEXT PRIMARY KEY, data TEXT NOT N
 RECEIPT_RETENTION_DAYS = SESSION_RETENTION_DAYS
 FINISHED = ('completed', 'failed', 'cancelled')
 # Lookups read these receipts by content at any age: NativeOutcomes adopts a native task by the idempotency key
-# of its kanban_create receipt, routine_reports.created_occurrences finds the routines that a task created, and
-# WorkProgress links a manual routine run. Other cronjob_manage calls, such as a list of every job, have no reader.
-KEPT_ROUTINE_CALLS = ('create', 'run', 'run_now', 'trigger')
+# of its kanban_create receipt, and WorkProgress links a manual routine run. Other cronjob_manage calls, such as a
+# list of every job, have no reader.
+KEPT_ROUTINE_CALLS = ('run', 'run_now', 'trigger')
 KEPT_RECEIPT = ("(json_extract(data,'$.action.name')='kanban_create' OR (json_extract(data,'$.action.name')='cronjob_manage' "
                 "AND lower(trim(COALESCE(json_extract(data,'$.action.arguments.action'),''))) IN "
                 "(SELECT value FROM json_each(:routine_calls))))")

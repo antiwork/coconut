@@ -1,9 +1,8 @@
 """Read native Hermes settings through the Python of the installed Hermes."""
 from __future__ import annotations
 
-from contextlib import ExitStack, redirect_stderr, redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from copy import deepcopy
-import hashlib
 import io
 import json
 import os
@@ -32,7 +31,6 @@ def apply_env_file(path):
             os.environ[key] = value
 # A profile read that failed, for example because a busy Mac delayed the settings process, runs again after this.
 PROFILE_RETRY_SECONDS = 15
-NATIVE_TEXT_FIELDS = {'routine_finish': 'output'}
 ENV_KEYS = ('PATH', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
             'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY')
 # xai-oauth is an xAI subscription through Hermes device-code sign-in. It uses the codex_responses API.
@@ -355,19 +353,16 @@ class HermesModelCatalog:
     def routines_signature(self, bot_id):
         """Identify the files that native_routines reads for this bot, with the default profile files.
 
-        Hermes keeps the jobs in cron/jobs.json and their runs in cron/executions.db. Coconut keeps its claim and
-        completion receipts in the runs folder beside the profile. The settings set the time zone and the routine model.
+        Hermes keeps the jobs in cron/jobs.json and their runs in cron/executions.db. The settings set the time zone and
+        the routine model.
         """
         home = self._profile_home(bot_id)
-        # Coconut's own folder of the bot holds the receipts (native_routine_receipts.runs_directory).
-        receipts = _contained(self.data_dir / 'bots' / bot_id / 'runs', self.data_dir)
         paths = [(name, home / name) for name in ('cron/jobs.json', 'cron/executions.db', 'cron/executions.db-wal',
                                                    'config.yaml', '.env')]
-        paths += sorted(('runs/' + path.name, path) for path in receipts.glob('*.json'))
         files = []
         for name, path in paths:
             try:
-                state = _contained(path, self.data_dir if name.startswith('runs/') else _boundary(self.data_dir, home)).stat()
+                state = _contained(path, _boundary(self.data_dir, home)).stat()
                 files.append((name, state.st_ino, state.st_mtime_ns, state.st_size))
             except FileNotFoundError:
                 files.append((name, None))
@@ -480,29 +475,17 @@ class HermesModelCatalog:
         environment.update(HERMES_HOME=str(self.root), PYTHONPATH=str(self.source),
                            TMPDIR=str(self.private_home / 'tmp'), HERMES_DISABLE_TELEMETRY='1',
                            PYTHONUNBUFFERED='1', COCONUT_DATA_DIR=str(self.data_dir))
-        if operation == 'native' and payload.get('native_operation', '').startswith('routine_'):
-            # Coconut retains job ownership after the settings subprocess exits.
-            environment['HERMES_MACHINE_ID'] = 'coconut-' + hashlib.sha256(str(self.data_dir).encode()).hexdigest()[:24]
         try:
-            with ExitStack() as files:
-                request = dict(operation=operation, data_root=str(self.data_dir), profile_roots=self._profile_roots(),
-                               base_home=getattr(self, 'base_home', False), **payload)
-                text_field = NATIVE_TEXT_FIELDS.get(payload.get('native_operation')) if operation == 'native' else None
-                if text_field:
-                    # Completed results can exceed the settings request bound.
-                    output = files.enter_context(tempfile.NamedTemporaryFile(
-                        mode='w', encoding='utf-8', dir=environment['TMPDIR'], prefix='coconut-native-'))
-                    output.write(request.pop(text_field, '') or '')
-                    output.flush()
-                    request['native_text_file'] = Path(output.name).name
-                serialized = json.dumps(request, ensure_ascii=False)
-                if len(serialized) > MAX_REQUEST_CHARACTERS:
-                    raise ModelCatalogError('The Hermes settings request is too large.')
-                result = subprocess.run([self.python, str(Path(__file__).resolve()), '--worker'],
-                                        input=serialized, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                                        env=environment, cwd=self.private_home,
-                                        # A turn reads its bot's profile first. Under load, this read can take seconds.
-                                        timeout=30 if operation in ('get', 'native', 'read_profiles', 'follow_default') else 5)
+            request = dict(operation=operation, data_root=str(self.data_dir), profile_roots=self._profile_roots(),
+                           base_home=getattr(self, 'base_home', False), **payload)
+            serialized = json.dumps(request, ensure_ascii=False)
+            if len(serialized) > MAX_REQUEST_CHARACTERS:
+                raise ModelCatalogError('The Hermes settings request is too large.')
+            result = subprocess.run([self.python, str(Path(__file__).resolve()), '--worker'],
+                                    input=serialized, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                    env=environment, cwd=self.private_home,
+                                    # A turn reads its bot's profile first. Under load, this read can take seconds.
+                                    timeout=30 if operation in ('get', 'native', 'read_profiles', 'follow_default') else 5)
             # The snapshot combines settings and routines, each with a separate response budget.
             response_limit = 8_000_000 if operation == 'native' and payload.get('native_operation') == 'snapshot_read' else 4_000_000
             if result.returncode or len(result.stdout) > response_limit:
@@ -1012,15 +995,6 @@ def main():
         if request.get('operation') not in ('get', 'defaults', 'set_default', 'migrate', 'read_profiles',
                                             'set_profile', 'native', 'follow_default'):
             raise ValueError('Invalid operation')
-        if 'native_text_file' in request:
-            name = request.pop('native_text_file')
-            field = NATIVE_TEXT_FIELDS.get(request.get('native_operation'))
-            if (request['operation'] != 'native' or not field
-                    or not isinstance(name, str) or Path(name).name != name or not name.startswith('coconut-native-')
-                    or field in request):
-                raise ValueError('Invalid native text file')
-            directory = Path(os.environ['TMPDIR'])
-            request[field] = _contained(directory / name, directory).read_text(encoding='utf-8')
         with open(os.devnull, 'w') as quiet, redirect_stdout(quiet), redirect_stderr(quiet):
             result = _worker(request)
         response = {'result': result}

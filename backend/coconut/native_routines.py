@@ -30,11 +30,7 @@ def unsupported(job, config=None):
 
 def view(bot_id, job):
     from hermes_cli.config import load_config_readonly
-    from hermes_constants import get_hermes_home
-    import native_routine_receipts as receipts
-    home = get_hermes_home()
     config = load_config_readonly()
-    receipt = receipts.read(home, job['id'])
     schedule = job.get('schedule') or {}
     identity = str(uuid5(UUID(bot_id), 'cron:' + job['id']))
     # A one-time job runs once at run_at. Hermes keeps it for some days in state 'completed'. The phone uses
@@ -47,25 +43,21 @@ def view(bot_id, job):
                 enabled=job.get('enabled', True) and not job.get('paused_at'),
                 next_run_at=job.get('next_run_at'), last_run_at=job.get('last_run_at'), last_task_id=None,
                 created_at=job.get('created_at') or '', updated_at=job.get('updated_at') or job.get('created_at') or '',
-                _native_id=job['id'], _job=job, error=unsupported(job, config) or receipts.issue(home, job),
-                _recover_claim=receipt.get('phase') == 'claimed', one_time=one_time, state=job.get('state'),
+                _native_id=job['id'], _job=job, error=unsupported(job, config), one_time=one_time, state=job.get('state'),
                 run_at=schedule.get('run_at') if one_time else None)
 
 
 def worker(operation, request, homes):
     from cron import jobs
     if operation == 'routines_read':
-        from native_routine_receipts import completion_receipts
-        result, completions = [], {}
+        result = []
         for bot_id, home in homes.items():
             if not Path(home).is_dir():
                 # A missing profile folder has no routines. Hermes would create its cron folder on a read.
-                completions[bot_id] = {}
                 continue
             with profile(home):
                 result.extend(view(bot_id, job) for job in jobs.list_jobs(include_disabled=True))
-                completions[bot_id] = completion_receipts(home)
-        return {'routines': result, 'completions': completions}
+        return {'routines': result}
     bot_id = request['bot_id']
     with profile(homes[bot_id]):
         if operation == 'routine_create':
@@ -80,9 +72,6 @@ def worker(operation, request, homes):
                                   origin={'platform': 'coconut', 'chat_id': bot_id, 'coconut_request': source},
                                   paused=not data.get('enabled', True))
             return view(bot_id, job)
-        if operation == 'routine_prune_completions':
-            from native_routine_receipts import prune_completions
-            return prune_completions(homes[bot_id], request['completions'])
         identity = request['native_id']
         if operation == 'routine_update':
             changes = request['changes']
@@ -98,24 +87,10 @@ def worker(operation, request, homes):
         if operation == 'routine_delete':
             jobs.remove_job(identity)
             return {'ok': True}
-        if operation == 'routine_claim':
-            job = jobs.get_job(identity)
-            from hermes_cli.config import load_config_readonly
-            error = unsupported(job, load_config_readonly()) if job else None
-            if error:
-                raise ValueError(error)
-            from native_routine_receipts import claim
-            return claim(homes[bot_id], identity, jobs, manual=request.get('manual', False))
         if operation == 'routine_trigger':
             # Hermes runs the job at the next tick of the gateway that serves the profile, as `hermes cron run` asks.
             job = jobs.trigger_job(identity)
             if job is None:
                 raise ValueError('Hermes does not have this routine.')
             return view(bot_id, job)
-        if operation == 'routine_heartbeat':
-            return {'ok': jobs.heartbeat_fire_claim(identity, expected_owner=request['owner'])}
-        if operation == 'routine_finish':
-            from native_routine_receipts import finish
-            return finish(homes[bot_id], identity, jobs, owner=request['owner'], success=request['success'],
-                          output=request.get('output') or '', failure=request.get('failure'))
     raise ValueError('Unknown routine operation.')

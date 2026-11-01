@@ -148,31 +148,24 @@ class GatewayCronTests(unittest.TestCase):
             self.service.tick_native_routines()
 
         with patch.object(self.service, 'refresh_native_routines'), \
-                patch.object(self.service, 'claim_native_routine') as claim:
+                patch.object(self.service, 'run_native_routine') as claim:
             # The coconut adapter of the bot's profile is connected: the gateway serves the profile and fires the routine.
             self.service.gateway_bridge.poll({'home': str(self.home), 'wait': 0})
             self.assertEqual(self.service.gateway_served_bots(), {self.bot['id']})
             tick()
             claim.assert_not_called()
-            # A claim that Coconut made before it stopped, for a run that the person started, still comes back.
-            with self.service.transaction():
-                self.service._put('routines', dict(routine, _recover_claim=True))
-            tick()
-            self.assertEqual(claim.call_count, 1)
-            with self.service.transaction():
-                self.service._put('routines', routine)
             # The switch: the adapter is gone, for example while the gateway starts again. Coconut fires nothing: only
             # a gateway runs the agent job of a profile. The routine shows that it is paused, and why.
             from coconut.routine_coordinator import ROUTINES_UNSERVED
             with patch.object(gateway_bridge, 'ADAPTER_SECONDS', 0):
                 self.assertEqual(self.service.gateway_served_bots(), set())
                 tick()
-            self.assertEqual(claim.call_count, 1)
+            claim.assert_not_called()
             self.assertEqual(self.read('routines', routine['id'])['error'], ROUTINES_UNSERVED)
             # The adapter is back: the routine runs on its schedule in the gateway, without a catch-up by Coconut.
             self.service.gateway_bridge.poll({'home': str(self.home), 'wait': 0})
             tick()
-            self.assertEqual(claim.call_count, 1)
+            claim.assert_not_called()
             self.assertIsNone(self.read('routines', routine['id'])['error'])
 
     def test_a_parked_profile_pauses_its_routines_and_its_chat_says_why(self):
@@ -187,7 +180,7 @@ class GatewayCronTests(unittest.TestCase):
         name = self.service.profiles.row(self.bot)['name']
         self.assertEqual(self.service.gateway_status()['unserved_profiles'], [name])
         with patch.object(self.service, 'refresh_native_routines'), \
-                patch.object(self.service, 'claim_native_routine') as claim:
+                patch.object(self.service, 'run_native_routine') as claim:
             self.service._native_cron_next = 0
             self.service.tick_native_routines()
         # The routine does not run, and it says why, as the chat does.
@@ -198,15 +191,13 @@ class GatewayCronTests(unittest.TestCase):
         # A run that the person starts gets the reason too.
         from coconut.service import ServiceError
         with self.assertRaisesRegex(ServiceError, 'is parked'), self.service.transaction():
-            self.service.claim_native_routine(stored, manual=True)
-        # Also a routine that Hermes just returned without the mark, for example after an edit: the claim checks the
-        # gateway itself, and a scheduled claim takes nothing.
+            self.service.run_native_routine(stored)
+        # Also a routine that Hermes just returned without the mark, for example after an edit: the run checks the
+        # gateway itself.
         fresh = dict(stored, error=None)
         with patch.object(self.provider, 'native_settings', create=True) as native:
             with self.assertRaisesRegex(ServiceError, 'is parked'), self.service.transaction():
-                self.service.claim_native_routine(fresh, manual=True)
-            with self.service.transaction():
-                self.assertIsNone(self.service.claim_native_routine(fresh))
+                self.service.run_native_routine(fresh)
             native.assert_not_called()
         # The settings that the phone reads show the pause, also when the stored routine has no mark yet.
         with self.service.transaction():
@@ -215,7 +206,7 @@ class GatewayCronTests(unittest.TestCase):
         self.assertIn('is parked', shown['error'])
         # A read of Hermes marks the pause and publishes it, once.
         def read(bots):
-            return {'routines': [dict(fresh)], 'completions': {}}
+            return {'routines': [dict(fresh)]}
         with patch.object(self.provider, 'native_settings', create=True), \
                 patch.object(self.provider, 'native_routines', create=True, side_effect=read):
             cursor = self.service._cursor()
@@ -248,10 +239,6 @@ class GatewayCronTests(unittest.TestCase):
         later = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
         with patch.object(self.provider, 'native_settings', create=True,
                           return_value=dict(routine, next_run_at=later)) as native:
-            with self.service.transaction():
-                # A scheduled claim takes nothing: the gateway fires the routine itself.
-                self.assertIsNone(self.service.claim_native_routine(dict(routine)))
-            native.assert_not_called()
             # Run now asks Hermes to run the job at the next tick of the gateway, and Coconut runs no worker.
             queued = self.service.mutate('POST', f'/v1/routines/{routine["id"]}/run', {}, str(uuid4()), 'phone')
             # A second run now, before the gateway runs the job, finds the same task.
@@ -271,6 +258,27 @@ class GatewayCronTests(unittest.TestCase):
         with self.service.lock:
             self.assertEqual([t['id'] for t in self.service._all('tasks') if t.get('routine_id') == routine['id']],
                              [queued['id']])
+
+    def test_without_a_gateway_nothing_runs_a_routine(self):
+        # Coconut no longer claims a routine in Hermes, so a Mac without a gateway (fixture mode) runs none: neither
+        # on its schedule nor when the person starts it.
+        from coconut.routine_coordinator import ROUTINES_NEED_GATEWAY
+        from coconut.service import ServiceError
+        due = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        routine = dict(id=str(uuid5(UUID(self.bot['id']), 'cron:intake')), bot_id=self.bot['id'], name='Intake',
+                       enabled=True, error=None, next_run_at=due, _native_id='intake')
+        with self.service.transaction():
+            self.service._put('routines', routine)
+        self.service.gateway_enabled = lambda: False
+        with patch.object(self.provider, 'native_settings', create=True) as native, \
+                patch.object(self.service, 'refresh_native_routines'):
+            self.service._native_cron_next = 0
+            self.service.tick_native_routines()
+            with self.assertRaisesRegex(ServiceError, ROUTINES_NEED_GATEWAY):
+                self.service.mutate('POST', f'/v1/routines/{routine["id"]}/run', {}, str(uuid4()), 'phone')
+            native.assert_not_called()
+        with self.service.lock:
+            self.assertEqual([t for t in self.service._all('tasks') if t.get('routine_id') == routine['id']], [])
 
     def test_a_trigger_that_no_gateway_cron_run_takes_fails_with_the_reason(self):
         from coconut.routine_coordinator import TRIGGER_EXPIRED, TRIGGER_SECONDS

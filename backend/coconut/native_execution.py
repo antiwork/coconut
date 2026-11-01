@@ -51,15 +51,7 @@ class NativeExecution:
                 if action['name'] == 'kanban_create':
                     record['_attachment_ids'] = list(task.get('_turn_attachment_ids', task.get('_attachment_ids', [])))
                 self._put('native_receipts', record)
-                result = {'status': 'recorded', 'id': record['id']}
-                if action['name'] == 'cronjob_manage':
-                    result.update(self.native_scheduler_status())
-                    if str(action['arguments'].get('action', '')).strip().lower() in ('run', 'run_now', 'trigger'):
-                        output = json.dumps(self.run_native_routine_tool(task, action['arguments']), sort_keys=True)
-                        record.update(state='completed', result=output, completed_at=now())
-                        self._put('native_receipts', record)
-                        result['routine_result'] = output
-                return result
+                return {'status': 'recorded', 'id': record['id']}
             if kind == 'native_result':
                 record = self._get('native_receipts', payload['id'])
                 if record['task_id'] == task_id and record['state'] == 'completed' and record['result'] == payload['result']:
@@ -78,8 +70,6 @@ class NativeExecution:
                             and result.get('task_id') == identity and result.get('comment_id') is not None):
                         task['_source_native_ids'] = sorted(set(task.get('_source_native_ids', [])) | {identity})
                         self._put('tasks', task)
-                if record['action']['name'] == 'kanban_complete' and not context:
-                    self._capture_occurrence(task, record)
                 # Every tool result reaches this point. Read only this task's approved decisions through the task index.
                 approved = (json.loads(row[0]) for row in self.db.execute(
                     "SELECT data FROM decisions WHERE json_extract(data,'$.task_id')=? "

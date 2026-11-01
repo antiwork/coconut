@@ -574,12 +574,6 @@ class NativeOutcomes:
                 raise ServiceError(409, 'This work is paused or cancelled.')
             tasks = {t['id']: t for t in self._all('tasks')}
             records = self._pending_completion_receipts()
-            from . import routine_reports
-            routine_scopes = {}
-            for member in items:
-                # Each scope belongs to one PR and its URL, so the scopes of grouped PRs do not overlap.
-                routine_scopes.update(routine_reports.scopes(self, owner, member, peers, tasks, get_deliveries()))
-            report_changes = {}
             peer_chains = []
             finished_roots = {}
             linked_activities = set()
@@ -736,20 +730,6 @@ class NativeOutcomes:
                         # callbacks must finish too. Do not exempt the caller.
                         linked.update(self._work_chain(report_coordinator, tasks, records, include_continuations=True))
                         linked[report_coordinator['id']] = (report_coordinator, 0)
-                    routine_scope = routine_scopes.get((peer['id'], reporter['id']))
-                    if routine_scope:
-                        # Include the original requester and ALL report branches,
-                        # not just the two tasks whose presentation links matched.
-                        roots = {source['id'], routine_scope['coordinator_id'],
-                                 *routine_scope['sibling_reporter_ids']}
-                        for identity in roots:
-                            linked.update(self._work_chain(tasks[identity], tasks, records, include_continuations=True))
-                            linked[identity] = (tasks[identity], 0)
-                        for task in tasks.values():
-                            if task.get('_assignment_task_id') in roots or execution_key(task) in roots:
-                                linked.setdefault(task['id'], (task, 0))
-                                linked.update(self._work_chain(task, tasks, records, include_continuations=True))
-                        linked.pop(owner['id'], None)
                     native_tasks = [t for t, _ in linked.values()
                                     if t.get('_native_outcome_id') or t.get('_kanban_claim')]
                     peer_chains.append((peer, reporter, linked, native_tasks, passive_report, bool(report_coordinator)))
@@ -781,17 +761,6 @@ class NativeOutcomes:
                     # The direct requester's own native turn makes this call. Its waits, returns,
                     # decisions, unknown tools, and other branches stay in the guard.
                     foreground = caller['id']
-                routine_scope = routine_scopes.get((peer['id'], reporter['id']))
-                projection = (routine_reports.project(self, routine_scope, tasks, snapshots, get_deliveries(), caller)
-                              if routine_scope else None)
-                if projection:
-                    if running_tool(owner):
-                        raise ServiceError(409, 'Wait for the original owner to finish its tool call.')
-                    changes, current = projection
-                    report_changes.update(changes)
-                    linked = {key: (changes.get(key, task), depth) for key, (task, depth) in linked.items()}
-                    foreground = current
-                    linked_report = True
                 historical = {t['id'] for t, _ in linked.values() if self._completed_peer_continuation(
                     t, linked, tasks, snapshots, get_deliveries)}
                 # A delivered result starts the caller's own turn (_resume_process_task) and stays its
@@ -816,19 +785,13 @@ class NativeOutcomes:
                                or self._unfinished_work(t)
                                or (t['id'] != foreground and self.running.get(t['id']) and self.running[t['id']].is_alive())
                                or (t['id'] not in historical and running_tool(t))
-                               or ((t['id'] == foreground or historical or projection) and (self._task_work_is_paused(t)
+                               or ((t['id'] == foreground or historical) and (self._task_work_is_paused(t)
                                    or t.get('_steering') or t.get('_live_messages') or t.get('_blocked_followup')))
                                for t, _ in linked.values())
                         or any(d['status'] == 'pending' and d['task_id'] in linked for d in self._all('decisions'))
                         or any(c['status'] in ('queued', 'working') and c['task_id'] in linked
                                for c in self._all('contexts'))):
                     raise ServiceError(409, 'This Work item has another execution. Continue its current owner.')
-            # Admission and consumption commit together. A failed peer check or
-            # deferred snapshot rolls back without retiring any input or wait.
-            for identity, changed in report_changes.items():
-                if changed != tasks[identity]:
-                    self._put('tasks', changed)
-                    self._event('task.updated', self._public(changed), changed['bot_id'], identity)
             for member in items:
                 member['_native_outcome_id'] = native['id']
         else:

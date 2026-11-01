@@ -10,6 +10,7 @@ Only that exact card continues: the successor of an authenticated continuation, 
 input, whose last run is the scheduled run of that input's claim. The original success and every receipt stay.
 Native CI sets COCONUT_REQUIRE_NATIVE, and then a missing Hermes install fails the native tests instead of skipping them.
 """
+import legacy_routine
 import copy
 from datetime import datetime, timedelta, timezone
 import json
@@ -86,9 +87,9 @@ class ScheduledOccurrence:
     def claim(self, job):
         routine = dict(id=str(uuid5(UUID(self.dev['id']), 'cron:' + job['id'])), bot_id=self.dev['id'],
                        name=job['name'], _native_id=job['id'])
-        self.store.provider.native_settings = lambda *a, **kw: dict(job=copy.deepcopy(job))
+        # An earlier Coconut claimed the run in Hermes (legacy_routine).
         with self.store.transaction():
-            task = self.store.claim_native_routine(routine)
+            task = legacy_routine.claimed(self.store, routine, copy.deepcopy(job))
         return self.store._get('tasks', task['id'])
 
     def update(self, identity, **fields):
@@ -120,13 +121,16 @@ class ScheduledOccurrence:
                             _kanban_claim=dict(native_id='t_original', external_id=owner['id'], input=owner['id'],
                                                run_id=26393, claim_lock='host:1', workspace=str(self.execution_dir)),
                             _kanban_started=26393)
-        self.receipt(owner['id'], 'kanban_complete', dict(task_id='t_original', summary='Validated the intake.'),
-                     dict(ok=True, task_id='t_original', run_id=26393))
+        completion = self.receipt(owner['id'], 'kanban_complete', dict(task_id='t_original', summary='Validated the intake.'),
+                                  dict(ok=True, task_id='t_original', run_id=26393))
         self.store.emit(owner['id'], 'completed', dict(summary='Validated the intake.'))
         self.store._drain_returns()
-        # refresh_native_routines saves the receipt that Hermes wrote when the routine finished.
+        # The earlier Coconut kept the card and run that ended the occurrence, and the receipt that Hermes wrote when
+        # the routine finished.
         owner = self.update(owner['id'], _native_job_finished=True, _native_finish_unconfirmed=False,
-                            _native_job_completion_receipt=dict(SUCCESS))
+                            _native_job_completion_receipt=dict(SUCCESS),
+                            _native_occurrence=dict(native_id='t_original', run_id=26393, turn_id='turn-original',
+                                                    receipt_id=completion, input=owner['id']))
         self.assertEqual(owner['_native_occurrence']['native_id'], 't_original')
         self.store.kanban.tasks[owner['id']] = self.card(owner, 't_original', 'coconut:' + owner['id'])
         self.runs['t_original'] = [dict(id=26393, status='done', outcome='completed', ended=True)]
@@ -510,9 +514,9 @@ class ArchivedScheduledRoutineNativeTests(unittest.TestCase):
         job = saved_job(Path(self.tmp.name))
         routine = dict(id=str(uuid5(UUID(self.bot['id']), 'cron:' + JOB)), bot_id=self.bot['id'],
                        name=job['name'], _native_id=JOB)
-        self.service.provider.native_settings = lambda *a, **kw: dict(job=copy.deepcopy(job))
+        # An earlier Coconut claimed the run in Hermes (legacy_routine).
         with self.service.transaction():
-            owner = self.service._get('tasks', self.service.claim_native_routine(routine)['id'])
+            owner = self.service._get('tasks', legacy_routine.claimed(self.service, routine, copy.deepcopy(job))['id'])
             owner.update(_execution_session_id=owner['id'], _conversation_epoch=self.service._setting('conversation_epoch'))
             self.service._put('tasks', owner)
         row = self.service._kanban_row(owner, owner, 'ready', 10)
@@ -533,9 +537,13 @@ class ArchivedScheduledRoutineNativeTests(unittest.TestCase):
         self.service.emit(owner['id'], 'native_result', dict(id=call['id'], result=json.dumps(
             dict(ok=True, task_id=identity, run_id=int(run)))))
         self.service.emit(owner['id'], 'completed', dict(summary='Validated the intake.'))
+        # The earlier Coconut kept the card and run that ended the occurrence, and the receipt that Hermes wrote when
+        # the routine finished.
         with self.service.transaction():
             owner = self.service._get('tasks', owner['id'])
-            owner.update(_native_job_finished=True, _native_finish_unconfirmed=False, _native_job_completion_receipt=dict(SUCCESS))
+            owner.update(_native_job_finished=True, _native_finish_unconfirmed=False, _native_job_completion_receipt=dict(SUCCESS),
+                         _native_occurrence=dict(native_id=identity, run_id=int(run), turn_id='turn-original',
+                                                 receipt_id=call['id'], input=row['input']))
             self.service._put('tasks', owner)
         self.assertEqual(owner['_native_occurrence']['native_id'], identity)
         # The next dispatcher pass reads the committed card before any continuation, as the scheduler does.
@@ -594,7 +602,9 @@ class ArchivedScheduledRoutineNativeTests(unittest.TestCase):
         self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
         # The archived card and the original card keep their history. Hermes runs only the successor.
         self.assertEqual((self.native(scheduled), self.native(original)), history)
-        proof = task['_native_job_completion']
+        # The continuation guard of the routine still proves the saved occurrence and its continuation.
+        with self.service.lock:
+            proof = self.service.native_routine_completion_input(self.service._get('tasks', owner['id']))
         self.assertEqual(proof['completion'], dict(SUCCESS, native_confirmed=True))
         self.assertEqual(proof['continuation']['native_task_id'], successor)
         self.assertEqual(proof['continuation']['turn_id'], continued['_native_turn_id'])
