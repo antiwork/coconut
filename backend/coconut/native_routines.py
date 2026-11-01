@@ -106,6 +106,12 @@ def worker(operation, request, homes):
                 raise ValueError(error)
             from native_routine_receipts import claim
             return claim(homes[bot_id], identity, jobs, manual=request.get('manual', False))
+        if operation == 'routine_trigger':
+            # Hermes runs the job at the next tick of the gateway that serves the profile, as `hermes cron run` asks.
+            job = jobs.trigger_job(identity)
+            if job is None:
+                raise ValueError('Hermes does not have this routine.')
+            return view(bot_id, job)
         if operation == 'routine_heartbeat':
             return {'ok': jobs.heartbeat_fire_claim(identity, expected_owner=request['owner'])}
         if operation == 'routine_finish':

@@ -232,6 +232,68 @@ class GatewayCronTests(unittest.TestCase):
         self.assertIn('is parked', stored['summary'])
         self.assertEqual(self.provider.starts, [])
 
+    def served_routine(self):
+        """A routine of the bot, whose profile the gateway serves."""
+        routine = dict(id=str(uuid5(UUID(self.bot['id']), 'cron:intake')), bot_id=self.bot['id'],
+                       name='Desk fast work intake', enabled=True, error=None, next_run_at=None, _native_id='intake')
+        with self.service.transaction():
+            self.service._put('routines', routine)
+        self.service.gateway_enabled = lambda: True
+        self.service.gateway_bridge.poll({'home': str(self.home), 'wait': 0})
+        return routine
+
+    def test_a_run_that_the_person_starts_is_a_trigger_that_the_gateway_cron_runs(self):
+        from coconut.routine_coordinator import TRIGGER_WAITING
+        routine = self.served_routine()
+        later = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        with patch.object(self.provider, 'native_settings', create=True,
+                          return_value=dict(routine, next_run_at=later)) as native:
+            with self.service.transaction():
+                # A scheduled claim takes nothing: the gateway fires the routine itself.
+                self.assertIsNone(self.service.claim_native_routine(dict(routine)))
+            native.assert_not_called()
+            # Run now asks Hermes to run the job at the next tick of the gateway, and Coconut runs no worker.
+            queued = self.service.mutate('POST', f'/v1/routines/{routine["id"]}/run', {}, str(uuid4()), 'phone')
+            # A second run now, before the gateway runs the job, finds the same task.
+            again = self.service.mutate('POST', f'/v1/routines/{routine["id"]}/run', {}, str(uuid4()), 'phone')
+        self.assertEqual(again['id'], queued['id'])
+        self.assertEqual(native.call_count, 1)
+        self.assertEqual(native.call_args.args[0], 'routine_trigger')
+        self.assertEqual(native.call_args.kwargs['native_id'], 'intake')
+        task = self.read('tasks', queued['id'])
+        self.assertEqual((task['status'], task['summary'], task['routine_id']), ('waiting', TRIGGER_WAITING, routine['id']))
+        self.assertEqual(self.read('routines', routine['id'])['next_run_at'], later)
+        self.assertEqual(self.provider.starts, [])
+        # The gateway's cron run takes that task, so the phone keeps the task that it got.
+        started = self.start()
+        self.assertEqual(started['task_id'], queued['id'])
+        self.assertEqual(self.read('tasks', queued['id'])['status'], 'working')
+        with self.service.lock:
+            self.assertEqual([t['id'] for t in self.service._all('tasks') if t.get('routine_id') == routine['id']],
+                             [queued['id']])
+
+    def test_a_trigger_that_no_gateway_cron_run_takes_fails_with_the_reason(self):
+        from coconut.routine_coordinator import TRIGGER_EXPIRED, TRIGGER_SECONDS
+        routine = self.served_routine()
+        with patch.object(self.provider, 'native_settings', create=True, return_value=dict(routine)):
+            queued = self.service.mutate('POST', f'/v1/routines/{routine["id"]}/run', {}, str(uuid4()), 'phone')
+
+        def tick():
+            self.service._native_cron_next = 0
+            with patch.object(self.service, 'refresh_native_routines'):
+                self.service.tick_native_routines()
+
+        tick()
+        self.assertEqual(self.read('tasks', queued['id'])['status'], 'waiting')
+        with self.service.transaction():
+            task = self.service._get('tasks', queued['id'])
+            old = datetime.now(timezone.utc) - timedelta(seconds=TRIGGER_SECONDS + 1)
+            task['_gateway_trigger']['at'] = old.isoformat()
+            self.service._put('tasks', task)
+        tick()
+        task = self.read('tasks', queued['id'])
+        self.assertEqual((task['status'], task['summary']), ('failed', TRIGGER_EXPIRED))
+
 
 if __name__ == '__main__':
     unittest.main()

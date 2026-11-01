@@ -202,7 +202,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - When no adapter of the bot's profile is connected, the turn waits, at most 5 minutes (`GATEWAY_WAIT_SECONDS`). The task stays working, and its summary says that it waits for the Hermes gateway. `GET /v1/setup` shows the state of the gateway, the reason and the connected profiles. When the wait ends without an adapter, the task fails with a reason that names the gateway log.
 - While the supervised gateway starts again, the chat turns wait. The service starts it again 30 seconds after an exit, and the adapters connect after the gateway restored its sessions. The waiting turns then run. A turn that the gateway ran when it stopped fails, because the adapter stops listing it.
 - The gateway fires the routines of each profile that it serves (phase 4). The routines of a profile that no gateway serves do not run: a profile that the person parked in Hermes (`gateway.parked`), or any profile while the gateway starts again. Hermes runs an agent cron job only in the profile's gateway (`hermes cron run` sends the job to that gateway, and `hermes cron tick` skips agent jobs without one), so Coconut has no other way to run them without its worker. Each such routine shows that it is paused, and why (`routine_coordinator._pause_unserved_routines`, the routine's `error`), in the style of the refusal of a parked chat. It runs again on its schedule when a gateway serves the profile, without a catch-up by Coconut. Coconut does not remove a parked file, because that is the person's setting. `GET /v1/setup` lists these profiles in `gateway.unserved_profiles`. A chat turn of a parked profile fails at once and says why.
-- Turns of the other types still run in the worker: questions about a Work item, native outcomes and their technical lane. See the sections below.
+- Coconut starts no worker with the gateway on. See "No worker with the gateway".
 - A service without a Hermes home (fixture mode and tests) has no gateway. Its provider runs every turn.
 
 ### Phase 5, group 1: attachments and reactions
@@ -321,7 +321,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 
 - A follow-up on a card of a task with its own work session (a native outcome, an audit, bot traffic) runs in the gateway, in the chat of that work session, as the worker answers it in that session (`gateway_chat.gateway_context_turn`, `run_gateway_context`). Before, only a follow-up on a card of the bot's conversation ran there.
 - The results of background research that returned to a follow-up continue it in the gateway too, with the worker's text for them (`context_prompt`).
-- The Kanban claim of such a follow-up holds the gateway's placeholder, not a prepared worker (`kanban_worker_pid`, `follow_up`). The turn stops the placeholder when it ends.
+- The Kanban claim of such a follow-up holds the gateway's placeholder, not a prepared worker (`kanban_worker_pid`). The turn stops the placeholder when it ends.
 - A status question about a Work item already runs in the gateway, without tools (`run_gateway_status`).
 
 ### Bot traffic stays out of the person's chat
@@ -354,6 +354,14 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - When the bot's conversation runs a bot-originated turn in the gateway, the person's message stops that turn, as a stop of the person does (`gateway_chat.preempt_for_person`). The stopped turn goes back to the queue with the same input, and its streamed reply goes. It runs again after the person's turn, with a note that tells the bot to continue it and not to repeat finished steps.
 - A turn that ended before the stop reached it keeps its result. Work sessions and audits run in chats of their own, so they never block the person's chat. A card check that runs in the conversation still finishes first.
 
+### No worker with the gateway
+
+- With the gateway on, Coconut starts no worker. Each Kanban claim holds the gateway's placeholder process (`kanban_worker_pid`), also for a task that the gateway does not run.
+- A turn of the bot's conversation that owns a native outcome (`gateway_bridge.conversation_outcome_turn`) runs in the gateway, in the bot's chat, as the worker ran it in the bot's conversation. It has the outcome rules, the workspace of its claim and the board tools of its claim, but no worktree, as in the worker. Its card answers and follow-ups run there too.
+- A turn that the gateway does not run, a continuation after its card answer, and a follow-up on its card fail at once with the reason (`gateway_chat.gateway_unsupported`, `UNSUPPORTED`). Examples: a task from an earlier version that waits for a worker (`_native_job`), and a command approval that a worker recorded. Before, such a turn went to the worker.
+- A run of a routine that the person starts ("Run now") is a trigger in Hermes (`jobs.trigger_job`, `native_routines` operation `routine_trigger`). The gateway's cron runs the job at its next tick. Until then, the routine's task waits (`_gateway_trigger`), and the cron run of the gateway takes that task as its turn (`gateway_chat.gateway_cron`). A task that no run takes in 5 minutes fails with the reason (`routine_coordinator._expire_routine_triggers`). Coconut no longer claims a scheduled routine: the gateway fires it.
+- Fixture mode has no gateway, so its provider still runs every turn and every routine.
+
 ### Kanban: not yet
 
 Coconut keeps its private board in `<data>/kanban/kanban.db` and dispatches it itself (`kanban_scheduler`, `kanban_runtime`). Its spawn function makes a Coconut task for each claim, so the work has Coconut cards, receipts and workspaces. The embedded dispatcher of the gateway calls `dispatch_once` with the default spawn of Hermes (`gateway/kanban_watchers_dispatcher.py`, `tick_once_for_board`), which starts a plain `hermes -p <assignee>` worker, and a plugin cannot give it another spawn function. It dispatches the boards of the Hermes home, not `<data>/kanban`. So the gateway does not serve Coconut's board, and the two dispatchers never share one. Upstream ask: a spawn hook for the embedded dispatcher.
@@ -373,7 +381,6 @@ A task that a guard holds for more than an hour shows: Coconut logs a warning on
 
 - The worker turn types, one group at a time, after the gateway runs them: attachments and reactions; card answers, work items and claims, and recovery turns; bot exchanges and returns; GitHub source activity and PR reviews, and bot creation and deletion confirmations.
 - Then the worker runtime: `hermes_worker.py`, `worker_protocol.py`, `worker_transport.py`, `worker_cli.py`, `worker_activity.py`, the worker parts of `providers.py`, and the `native_*` modules that serve worker turns.
-- Coconut's claims of routines that the person runs now, when the gateway runs those too.
 - `kanban_scheduler.py` and `kanban_runtime.py` only after Hermes gives its dispatcher a spawn hook. Until then they stay.
 
 ## Transport and future providers
