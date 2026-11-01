@@ -35,6 +35,53 @@ class Adapter(threading.Thread):
             self.answers.append(self.bridge.event(dict(event, turn_id=self.turns[0]['id'])))
 
 
+class TurnRecordTests(unittest.TestCase):
+    """The comments of the native task, and the delivered and sent messages, are records that a session keeps once."""
+
+    def task(self, status='queued'):
+        return {'id': 't1', 'title': 'Ship the export', '_native_outcome_id': 'n1',
+                '_native_outcome': {'context': '# Kanban task n1\n## Body\nShip it.\n',
+                                    'comments': [{'id': 7, 'author': 'default', 'at': 1793546240, 'body': 'Found the bug.'}]},
+                '_bot_messages': [{'sender_bot_id': 'b2', 'sender_name': 'Lin', 'text': 'The logs are clean.'}],
+                '_outgoing_bot_messages': [{'target_bot_id': 'b2', 'text': 'Check the logs.', 'task_id': 't2',
+                                            'status': status}]}
+
+    def test_the_records_of_a_turn_leave_its_context(self):
+        from coconut.native_conversation import turn_records
+        task = self.task()
+        records = turn_records(task)
+        self.assertEqual([record['id'].split(':')[0] for record in records], ['comment', 'message', 'sent'])
+        self.assertEqual(records[0]['id'], 'comment:7')
+        self.assertIn('Found the bug.', records[0]['text'])
+        self.assertIn('The logs are clean.', records[1]['text'])
+        self.assertIn('Check the logs.', records[2]['text'])
+        # The context of the turn has the native task, but not the records.
+        from coconut.gateway_chat import work_notes
+        text = work_notes(dict(operation="start", task=task, history=[]))
+        self.assertIn('Ship it.', text)
+        for record in ('Found the bug.', 'The logs are clean.', 'Check the logs.'):
+            self.assertNotIn(record, text)
+        # A record keeps its ID in a later turn. A sent message whose task changed is a new record.
+        later = dict(task, _bot_messages=task['_bot_messages'] + [{'sender_bot_id': 'b2', 'sender_name': 'Lin',
+                                                                   'text': 'One more thing.'}])
+        self.assertEqual([r['id'] for r in turn_records(later)][:2], [r['id'] for r in records][:2])
+        self.assertNotEqual(turn_records(self.task('completed'))[2]['id'], records[2]['id'])
+
+    def test_a_claim_gives_its_turn_the_comments_apart_from_the_worker_context(self):
+        from types import SimpleNamespace
+        from coconut import kanban_runtime
+        comments = [SimpleNamespace(id=number, author='default', created_at=number, body='Comment %d' % number)
+                    for number in range(kanban_runtime.CLAIM_COMMENTS + 2)]
+        kb = SimpleNamespace(
+            build_worker_context=lambda conn, identity: ('# Kanban task n1\n## Body\nShip it.\n\n## Comment thread\n'
+                                                         'comment from worker `default` at 5m ago:\nComment 51\n'),
+            list_comments=lambda conn, identity: comments)
+        context, records = kanban_runtime.worker_context(SimpleNamespace(kb=kb, conn=None), 'n1')
+        self.assertEqual(context, '# Kanban task n1\n## Body\nShip it.\n')
+        self.assertEqual(len(records), kanban_runtime.CLAIM_COMMENTS)
+        self.assertEqual(records[-1], {'id': 51, 'author': 'default', 'at': 51, 'body': 'Comment 51'})
+
+
 class RoutingRuleTests(unittest.TestCase):
     def test_only_a_plain_chat_turn_goes_to_the_gateway(self):
         plain = {'_chat_session': True, 'attachments': [], '_pending_decisions': [], '_tracked_pr_observations': []}
@@ -393,7 +440,9 @@ class ServiceRoutingTests(unittest.TestCase):
             self.service._run_task(task['id'])
         adapter.join(5)
         self.assertEqual(self.provider.starts, [])
-        return adapter.turns[0]['text']
+        # The model gets the text with the records that the session does not hold yet: every record in a new session.
+        from coconut.native_conversation import records_text
+        return adapter.turns[0]['text'] + records_text(adapter.turns[0].get('records') or [])
 
     def test_an_attached_file_goes_to_the_gateway_as_text_of_the_turn(self):
         import base64
@@ -1182,8 +1231,13 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertFalse(delivered.get('_chat_session'))
         text = adapter.turns[0]['text']
         self.assertEqual(adapter.turns[0]['chat_id'], other['id'] + ':work:' + delivered['_execution_session_id'])
-        self.assertIn('Explicit messages delivered by the service.', text)
-        self.assertIn('Please check the error logs of today.', text)
+        # The delivered message is a record of the turn, which the session of the chat keeps once (turn_records).
+        self.assertNotIn('delivered by the service', text)
+        records = adapter.turns[0]['records']
+        self.assertEqual(len(records), 1)
+        self.assertTrue(records[0]['id'].startswith('message:0:'))
+        self.assertIn('Explicit message delivered by the service.', records[0]['text'])
+        self.assertIn('Please check the error logs of today.', records[0]['text'])
         self.assertEqual(self.read('tasks', sent['task_id'])['status'], 'completed')
         # The result returns to Ada as a new task, which also runs in a work session of Ada in the gateway.
         # The dispatcher of the service returns the result (Service._drain_returns).
