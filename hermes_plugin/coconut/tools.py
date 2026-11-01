@@ -106,13 +106,16 @@ def _service_tool(name):
         if turn is None:
             return _result({'error': f'{name} works only during a Coconut chat turn.'})
         import urllib.error
-        from .adapter import PAUSED, REQUEST_SECONDS
+        from .adapter import PAUSED, REQUEST_SECONDS, WAITED
         try:
             result = adapter._bridge.request('/v1/gateway/tools', {
                 'turn_id': turn, 'tool': name, 'arguments': dict(arguments or {})}, REQUEST_SECONDS * 6)
             if result.get('paused'):
                 # The card ends the turn. The hook blocks each further tool call (hooks.guard_tool).
                 PAUSED.add(turn)
+            if result.get('ended'):
+                # A recorded wait ends the turn. The hook blocks each further tool call (hooks.guard_tool).
+                WAITED.add(turn)
             return _result(result)
         except urllib.error.HTTPError as error:
             # The service refused the request, for example an unknown bot. Its reason helps the model.

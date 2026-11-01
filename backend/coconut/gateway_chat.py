@@ -67,6 +67,14 @@ OUTSIDE_GROUP_SECONDS = 10 * 60
 CRON_DELIVERY_SECONDS = 24 * 3600
 # A chat turn waits this long for an adapter of the bot's profile, for example while the gateway starts again.
 GATEWAY_WAIT_SECONDS = 5 * 60
+# A recorded wait ends its turn (gateway_wait). The plugin blocks each further tool call of the turn.
+WAIT_FINISH = ('This wait is recorded. Finish this turn now with a short summary, and call no other tool. Coconut '
+               'continues the work when the wait ends.')
+WAIT_REPEATED = 'This wait is already recorded. ' + WAIT_FINISH
+# The wait calls of one turn, at most. A model that repeats its wait would otherwise keep the turn running.
+WAIT_CALLS = 6
+WAIT_CALLS_SPENT = ('This turn called coconut_wait ' + str(WAIT_CALLS) + ' times. Finish this turn now with a short '
+                    'summary.')
 # A turn waits this long, at most, while the gateway runs another turn in the session of its chat (GatewayBusy), and
 # tries again after each pause.
 BUSY_WAIT_SECONDS = 30 * 60
@@ -782,6 +790,28 @@ class GatewayChat:
             if context_id is None:
                 self._close_gateway_questions(task['id'])
 
+    def gateway_wait(self, turn_id: str, task_id: str, arguments: dict) -> dict:
+        """coconut_wait of a gateway turn. A recorded wait (a registered wait for a task or a card, or no_card in an
+        audit) ends the turn: the result says so, and the plugin blocks each further tool call (`ended`). The same wait
+        again in the turn records nothing and says the same, and a turn has at most WAIT_CALLS wait calls. The reason
+        text does not count, because a model words it anew each time."""
+        waits = self.gateway_bridge.waits_of(turn_id)
+        key = json.dumps({name: arguments.get(name) for name in ('task_id', 'decision_id', 'no_card', 'next_check_at')},
+                         sort_keys=True)
+        if waits is not None:
+            if key in waits['recorded']:
+                return {'status': 'already_recorded', 'instruction': WAIT_REPEATED, 'ended': True}
+            if waits['calls'] >= WAIT_CALLS:
+                # The limit ends the turn too, so the plugin blocks each further tool call.
+                return {'status': 'limit', 'instruction': WAIT_CALLS_SPENT, 'ended': True}
+            waits['calls'] += 1
+        result = self.wait_for_task(task_id, arguments)
+        if result.get('status') in ('waiting', 'recorded'):
+            if waits is not None:
+                waits['recorded'].add(key)
+            result = dict(result, instruction=WAIT_FINISH, ended=True)
+        return result
+
     def _gateway_wait_summary(self, task_id: str, text: str | None) -> bool:
         """Show on a working task that it waits for the gateway (text), or that it no longer waits (None). Return
         whether the task changed."""
@@ -853,7 +883,7 @@ class GatewayChat:
                 # Hermes runs the processes of a gateway turn, and Coconut has no receipts for them.
                 from .card_tools import GATEWAY_PROCESS_WAIT
                 raise ServiceError(400, GATEWAY_PROCESS_WAIT)
-            return self.wait_for_task(task_id, arguments)
+            return self.gateway_wait(data.get('turn_id'), task_id, arguments)
         if tool == 'todos':
             return self.gateway_todos(task_id, arguments)
         if tool == 'workspace':

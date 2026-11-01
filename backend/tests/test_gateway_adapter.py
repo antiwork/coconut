@@ -584,6 +584,47 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(cards['Delete files?']['explanation'], 'rm -rf build')
         self.assertEqual(self.replies(task), [('Done.', False)])
 
+    def test_a_recorded_wait_ends_the_turn_in_the_gateway(self):
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        results = []
+        async def runner(event):
+            def tool_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    results.append(json.loads(tools._service_tool('wait')({})))
+                    # A list of the waits does not end the turn.
+                    results.append(hooks.guard_tool(tool_name='coconut_wait', args={}))
+                    # A wait that fails does not end it either.
+                    results.append(json.loads(tools._service_tool('wait')({'task_id': 'gone'})))
+                    results.append(hooks.guard_tool(tool_name='coconut_wait', args={}))
+                    results.append(json.loads(tools._service_tool('wait')({'no_card': True, 'reason': 'Same.'})))
+                    # The recorded wait ended the turn: Hermes asks the hook before each further tool call.
+                    results.append(hooks.guard_tool(tool_name='coconut_wait', args={}))
+                    results.append(hooks.guard_tool(tool_name='terminal', args={}))
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            await asyncio.to_thread(tool_calls)
+            return 'Nothing needs you now.'
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Check the source.'})
+        from coconut.service import ServiceError
+        def wait_for_task(task_id, payload):
+            if payload.get('task_id') == 'gone':
+                raise ServiceError(400, 'The owner task must be live.')
+            return {'status': 'recorded', 'next_check_at': 'later'} if payload else {'tasks': []}
+        with patch.object(self.service, 'wait_for_task', side_effect=wait_for_task):
+            self.service._run_task(task['id'])
+        self.assertNotIn('ended', results[0])
+        self.assertIsNone(results[1])
+        self.assertIn('error', results[2])
+        self.assertIsNone(results[3])
+        self.assertEqual((results[4]['status'], results[4]['ended']), ('recorded', True))
+        self.assertEqual(results[5:], [{'action': 'block', 'message': hooks.WAITED_MESSAGE}] * 2)
+        self.assertEqual(self.replies(task), [('Nothing needs you now.', False)])
+        self.assertEqual(self.adapter_module.WAITED, set())
+
     def test_the_coconut_tools_act_for_the_turn_of_the_chat_and_a_card_ends_the_turn(self):
         tools = sys.modules['hermes_plugins.coconut.tools']
         hooks = sys.modules['hermes_plugins.coconut.hooks']

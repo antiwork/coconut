@@ -134,6 +134,8 @@ class _Turn:
         self.state = 'pending'  # pending, active, done, cancelled, stopping
         self.created = self.seen = time.monotonic()
         self.events: list[dict] = []
+        # The waits that the turn recorded and the number of its wait calls (gateway_chat.gateway_wait).
+        self.waits = {'recorded': set(), 'calls': 0}
         self.silent_seconds = SILENT_SECONDS
         # A cron run of the gateway (open_turn). The adapter cannot stop it: it runs in a cron session, not in the chat.
         self.cron = False
@@ -240,6 +242,12 @@ class GatewayBridge:
         with self.lock:
             turn = self.turns.get(turn_id)
             return turn.task_id if turn is not None and turn.state == 'active' else None
+
+    def waits_of(self, turn_id) -> dict | None:
+        """The wait record of a running turn (gateway_chat.gateway_wait), or None."""
+        with self.lock:
+            turn = self.turns.get(turn_id)
+            return turn.waits if turn is not None and turn.state == 'active' else None
 
     def context_of(self, turn_id) -> str | None:
         """The context that a running turn answers, or None for a turn of its task."""

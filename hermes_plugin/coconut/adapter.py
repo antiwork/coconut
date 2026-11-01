@@ -55,6 +55,8 @@ STREAM_CHARACTERS = 400
 # The turns whose card ended them (coconut_ask), and the mode of a turn that is not a plain chat turn, for example
 # `context`: a follow-up on a pending card. The pre_tool_call hook reads both (hooks.guard_tool).
 PAUSED: set[str] = set()
+# The turns that recorded a wait (coconut_wait). A recorded wait ends its turn, so the hook blocks each further tool call.
+WAITED: set[str] = set()
 MODES: dict[str, str] = {}
 # The context of each running Coconut turn: the whole turn text, which the model calls of the turn get, while Hermes
 # saves only the turn's own text (hooks.add_turn_context). Set when the hooks registered the middleware.
@@ -369,6 +371,7 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             del self._turns[event.source.chat_id]
         self._typing.discard(event.message_id)
         PAUSED.discard(event.message_id)
+        WAITED.discard(event.message_id)
         MODES.pop(event.message_id, None)
         CONTEXTS.pop(event.message_id, None)
         FOLDERS.pop(event.message_id, None)
