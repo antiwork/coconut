@@ -595,6 +595,9 @@ class GatewayAdapterTests(unittest.TestCase):
                     results.append(json.loads(tools._service_tool('wait')({})))
                     # A list of the waits does not end the turn.
                     results.append(hooks.guard_tool(tool_name='coconut_wait', args={}))
+                    # A wait that fails does not end it either.
+                    results.append(json.loads(tools._service_tool('wait')({'task_id': 'gone'})))
+                    results.append(hooks.guard_tool(tool_name='coconut_wait', args={}))
                     results.append(json.loads(tools._service_tool('wait')({'no_card': True, 'reason': 'Same.'})))
                     # The recorded wait ended the turn: Hermes asks the hook before each further tool call.
                     results.append(hooks.guard_tool(tool_name='coconut_wait', args={}))
@@ -606,13 +609,19 @@ class GatewayAdapterTests(unittest.TestCase):
             return 'Nothing needs you now.'
         self.connect(runner)
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Check the source.'})
-        with patch.object(self.service, 'wait_for_task', side_effect=lambda task_id, payload: (
-                {'status': 'recorded', 'next_check_at': 'later'} if payload else {'tasks': []})):
+        from coconut.service import ServiceError
+        def wait_for_task(task_id, payload):
+            if payload.get('task_id') == 'gone':
+                raise ServiceError(400, 'The owner task must be live.')
+            return {'status': 'recorded', 'next_check_at': 'later'} if payload else {'tasks': []}
+        with patch.object(self.service, 'wait_for_task', side_effect=wait_for_task):
             self.service._run_task(task['id'])
         self.assertNotIn('ended', results[0])
         self.assertIsNone(results[1])
-        self.assertEqual((results[2]['status'], results[2]['ended']), ('recorded', True))
-        self.assertEqual(results[3:], [{'action': 'block', 'message': hooks.WAITED_MESSAGE}] * 2)
+        self.assertIn('error', results[2])
+        self.assertIsNone(results[3])
+        self.assertEqual((results[4]['status'], results[4]['ended']), ('recorded', True))
+        self.assertEqual(results[5:], [{'action': 'block', 'message': hooks.WAITED_MESSAGE}] * 2)
         self.assertEqual(self.replies(task), [('Nothing needs you now.', False)])
         self.assertEqual(self.adapter_module.WAITED, set())
 

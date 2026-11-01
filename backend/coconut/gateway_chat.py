@@ -795,7 +795,6 @@ class GatewayChat:
         audit) ends the turn: the result says so, and the plugin blocks each further tool call (`ended`). The same wait
         again in the turn records nothing and says the same, and a turn has at most WAIT_CALLS wait calls. The reason
         text does not count, because a model words it anew each time."""
-        from .service import ServiceError
         waits = self.gateway_bridge.waits_of(turn_id)
         key = json.dumps({name: arguments.get(name) for name in ('task_id', 'decision_id', 'no_card', 'next_check_at')},
                          sort_keys=True)
@@ -803,7 +802,8 @@ class GatewayChat:
             if key in waits['recorded']:
                 return {'status': 'already_recorded', 'instruction': WAIT_REPEATED, 'ended': True}
             if waits['calls'] >= WAIT_CALLS:
-                raise ServiceError(409, WAIT_CALLS_SPENT)
+                # The limit ends the turn too, so the plugin blocks each further tool call.
+                return {'status': 'limit', 'instruction': WAIT_CALLS_SPENT, 'ended': True}
             waits['calls'] += 1
         result = self.wait_for_task(task_id, arguments)
         if result.get('status') in ('waiting', 'recorded'):

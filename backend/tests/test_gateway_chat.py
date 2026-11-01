@@ -1507,8 +1507,10 @@ class ServiceRoutingTests(unittest.TestCase):
             # A turn has at most WAIT_CALLS wait calls.
             for number in range(gateway_chat.WAIT_CALLS - 3):
                 wait(reason='Another', no_card=True, next_check_at='2026-11-0%dT14:00:00Z' % (3 + number))
-            with self.assertRaisesRegex(ServiceError, 'Finish this turn now'):
-                wait(reason='One more', no_card=True, next_check_at='2026-11-09T14:00:00Z')
+            # The call after the limit ends the turn, so the plugin blocks each further tool call.
+            spent = wait(reason='One more', no_card=True, next_check_at='2026-11-09T14:00:00Z')
+            self.assertEqual((spent['status'], spent['ended']), ('limit', True))
+            self.assertIn('Finish this turn now', spent['instruction'])
         self.assertEqual(len(calls), gateway_chat.WAIT_CALLS)
 
     def running_turn(self, task, **fields):
