@@ -1,5 +1,5 @@
-"""Routines in the gateway: a cron run of the gateway is a Coconut turn, and Coconut fires only the routines of a
-profile that no gateway serves.
+"""Routines in the gateway: a cron run of the gateway is a Coconut turn. The routines of a profile that no gateway
+serves are paused, with the reason.
 test_gateway_adapter.py checks the plugin side, test_native_gateway_chat.py a real gateway."""
 from datetime import datetime, timedelta, timezone
 import tempfile
@@ -135,7 +135,7 @@ class GatewayCronTests(unittest.TestCase):
         self.assertEqual(self.messages(started['task_id'])[-1], ('Filed both items.', False))
         self.assertEqual(self.provider.resumes, [])
 
-    def test_the_gateway_fires_the_routines_of_a_served_profile_and_coconut_fires_the_others(self):
+    def test_the_gateway_fires_the_routines_of_a_served_profile_and_pauses_the_others(self):
         due = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         routine = dict(id=str(uuid5(UUID(self.bot['id']), 'cron:intake')), bot_id=self.bot['id'], name='Intake',
                        enabled=True, error=None, next_run_at=due)
@@ -161,18 +161,21 @@ class GatewayCronTests(unittest.TestCase):
             self.assertEqual(claim.call_count, 1)
             with self.service.transaction():
                 self.service._put('routines', routine)
-            # The switch: the adapter is gone, for example while the gateway starts again. Coconut fires the routine,
-            # and the native fire claim keeps the gateway from a second run of the same fire.
+            # The switch: the adapter is gone, for example while the gateway starts again. Coconut fires nothing: only
+            # a gateway runs the agent job of a profile. The routine shows that it is paused, and why.
+            from coconut.routine_coordinator import ROUTINES_UNSERVED
             with patch.object(gateway_bridge, 'ADAPTER_SECONDS', 0):
                 self.assertEqual(self.service.gateway_served_bots(), set())
                 tick()
-            self.assertEqual(claim.call_count, 2)
-            # The adapter is back: the gateway fires the routine again.
+            self.assertEqual(claim.call_count, 1)
+            self.assertEqual(self.read('routines', routine['id'])['error'], ROUTINES_UNSERVED)
+            # The adapter is back: the routine runs on its schedule in the gateway, without a catch-up by Coconut.
             self.service.gateway_bridge.poll({'home': str(self.home), 'wait': 0})
             tick()
-            self.assertEqual(claim.call_count, 2)
+            self.assertEqual(claim.call_count, 1)
+            self.assertIsNone(self.read('routines', routine['id'])['error'])
 
-    def test_a_parked_profile_keeps_its_routines_with_coconut_and_its_chat_says_why(self):
+    def test_a_parked_profile_pauses_its_routines_and_its_chat_says_why(self):
         due = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         routine = dict(id=str(uuid5(UUID(self.bot['id']), 'cron:intake')), bot_id=self.bot['id'], name='Intake',
                        enabled=True, error=None, next_run_at=due)
@@ -187,7 +190,40 @@ class GatewayCronTests(unittest.TestCase):
                 patch.object(self.service, 'claim_native_routine') as claim:
             self.service._native_cron_next = 0
             self.service.tick_native_routines()
-        self.assertEqual(claim.call_args.args[0]['id'], routine['id'])
+        # The routine does not run, and it says why, as the chat does.
+        claim.assert_not_called()
+        stored = self.read('routines', routine['id'])
+        self.assertIn('is parked (' + str(self.home / 'gateway.parked') + ')', stored['error'])
+        self.assertIn('run them again on their schedule', stored['error'])
+        # A run that the person starts gets the reason too.
+        from coconut.service import ServiceError
+        with self.assertRaisesRegex(ServiceError, 'is parked'), self.service.transaction():
+            self.service.claim_native_routine(stored, manual=True)
+        # Also a routine that Hermes just returned without the mark, for example after an edit: the claim checks the
+        # gateway itself, and a scheduled claim takes nothing.
+        fresh = dict(stored, error=None)
+        with patch.object(self.provider, 'native_settings', create=True) as native:
+            with self.assertRaisesRegex(ServiceError, 'is parked'), self.service.transaction():
+                self.service.claim_native_routine(fresh, manual=True)
+            with self.service.transaction():
+                self.assertIsNone(self.service.claim_native_routine(fresh))
+            native.assert_not_called()
+        # The settings that the phone reads show the pause, also when the stored routine has no mark yet.
+        with self.service.transaction():
+            self.service._put('routines', fresh)
+        shown = next(r for r in self.service.native_snapshot()['routines'] if r['id'] == routine['id'])
+        self.assertIn('is parked', shown['error'])
+        # A read of Hermes marks the pause and publishes it, once.
+        def read(bots):
+            return {'routines': [dict(fresh)], 'completions': {}}
+        with patch.object(self.provider, 'native_settings', create=True), \
+                patch.object(self.provider, 'native_routines', create=True, side_effect=read):
+            cursor = self.service._cursor()
+            self.service.refresh_native_routines()
+            self.service.refresh_native_routines()
+        events = [e for e in self.service.events(cursor)['events'] if e['type'] == 'routine.updated']
+        self.assertEqual([e['data']['id'] for e in events], [routine['id']])
+        self.assertIn('is parked', self.read('routines', routine['id'])['error'])
         # A chat turn fails at once with the reason, without the wait.
         task = self.service.mutate('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Hello?'}, str(uuid4()), 'phone')
         self.service._run_task(task['id'])

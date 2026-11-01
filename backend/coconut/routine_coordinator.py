@@ -26,6 +26,12 @@ OPEN_INTAKE = ('_steering', '_live_messages', '_blocked_followup', '_native_repl
 FAILED_RUN_OUTCOMES = ('blocked', 'crashed', 'gave_up', 'spawn_failed', 'stale', 'timed_out', 'worker_failed')
 # Inputs that a failed turn selected but may never have received. continue_native_work hands them to the retry.
 FAILED_TURN_INPUT = ('_background_completion', '_pr_review')
+# The reason of a routine that does not run, because no Hermes gateway serves the bot's profile
+# (RoutineCoordinator._pause_unserved_routines). The phone shows it with the routine, as a chat shows its refusal.
+ROUTINES_PARKED = ('The Hermes profile of this bot is parked ({path}), so no Hermes gateway runs its routines. Remove '
+                   'that file to run them again on their schedule.')
+ROUTINES_UNSERVED = ('No Hermes gateway serves the profile of this bot now, so its routines are paused. They run again on '
+                     'their schedule when the gateway serves the profile.')
 # Records that only a routine occurrence has. A request that has any of them, even an empty one, follows the routine
 # rules alone. Only the routine code writes them, so an ordinary request never has one.
 ROUTINE_PROVENANCE = ('routine_id', 'routine_occurrence_id', '_native_job', '_native_job_finished', '_native_finish_unconfirmed',
@@ -800,6 +806,12 @@ class NativeRoutines:
             previous = {r['id']: r for r in map(json.loads, stored)}
             for routine in native:
                 routine['last_task_id'] = previous.get(routine['id'], {}).get('last_task_id')
+            # Before the comparison, so that a pause that holds writes nothing. A change of the pause is an event, so
+            # the phone shows it at once.
+            self._pause_unserved_routines(native)
+            for routine in native:
+                if routine.get('error') != previous.get(routine['id'], {}).get('error') and routine['id'] in previous:
+                    self._event('routine.updated', self._public(routine), routine['bot_id'])
             # Most passes find the same routines. Then the table already holds them, in the same order.
             if [encoded(routine) for routine in native] != stored:
                 self.db.execute('DELETE FROM routines')
@@ -813,6 +825,42 @@ class NativeRoutines:
             if candidates:
                 self.provider.native_settings('routine_prune_completions', [bot], bot_id=bot['id'],
                                               completions=candidates)
+
+    def _pause_unserved_routines(self, routines, served=None):
+        """Mark each routine of a bot whose profile no gateway serves as paused, with the reason, and return the
+        routines that changed. The caller holds the service lock.
+
+        With the gateway on, only the gateway fires routines: Hermes runs an agent job of a profile only in that
+        profile's gateway. A routine of a profile that no gateway serves, for example a profile that the person parked
+        in Hermes, does not run. It runs again on its schedule when a gateway serves the profile, without a catch-up.
+        The reason is the routine's `error`, which the phone shows and which keeps Coconut from a claim. A service
+        without a gateway (fixture mode) runs routines with its provider, as before."""
+        if not (hasattr(self, 'gateway_enabled') and self.gateway_enabled()):
+            return []
+        if served is None:
+            served = self.gateway_served_bots()
+        changed = []
+        for routine in routines:
+            reason = self._routine_pause(routine['bot_id'], served)
+            paused = (routine.get('error') == ROUTINES_UNSERVED
+                      or str(routine.get('error') or '').startswith(ROUTINES_PARKED.split('{', 1)[0]))
+            if reason and not routine.get('error'):
+                routine['error'] = reason
+                changed.append(routine)
+            elif paused and routine.get('error') != reason:
+                # The gateway serves the profile again, or the profile's state changed.
+                routine['error'] = reason
+                changed.append(routine)
+        return changed
+
+    def _routine_pause(self, bot_id, served=None):
+        """The reason why the routines of this bot do not run now, or None (_pause_unserved_routines)."""
+        if not (hasattr(self, 'gateway_enabled') and self.gateway_enabled()):
+            return None
+        if bot_id in (self.gateway_served_bots() if served is None else served):
+            return None
+        parked = self.profiles.home(self._get('bots', bot_id)) / 'gateway.parked'
+        return ROUTINES_PARKED.format(path=parked) if parked.exists() else ROUTINES_UNSERVED
 
     def mutate_native_routine(self, method, parts, data, key):
         from .service import ServiceError
@@ -874,6 +922,11 @@ class NativeRoutines:
             raise ServiceError(409, 'Restore the bot before running this routine.')
         if routine.get('error'):
             raise ServiceError(409, routine['error'])
+        pause = self._routine_pause(bot['id'])
+        if pause:
+            if manual:
+                raise ServiceError(409, pause)
+            return None
         result = self.provider.native_settings('routine_claim', [bot], bot_id=bot['id'], native_id=routine['_native_id'], manual=manual)
         job = result['job']
         if not job:
@@ -988,10 +1041,14 @@ class NativeRoutines:
             for identity in set(probes) - awaiting:
                 del probes[identity]
             # A gateway that serves a bot's profile fires its routines, and its runs reach Coconut as turns
-            # (hermes_plugin/coconut/cron.py). Coconut fires the routines of a bot that no gateway serves, for example a
-            # profile that the person parked in Hermes. The native fire claim decides a race at a switch.
+            # (hermes_plugin/coconut/cron.py). The routines of a bot that no gateway serves are paused, with the reason.
+            # A service without a gateway (fixture mode) fires the routines of each bot itself.
             served = self.gateway_served_bots() if hasattr(self, 'gateway_served_bots') else set()
             with self.transaction():
+                # A change of the gateway since the last read of Hermes shows here, before any claim.
+                for routine in self._pause_unserved_routines(self._all('routines'), served):
+                    self._put('routines', routine)
+                    self._event('routine.updated', self._public(routine), routine['bot_id'])
                 # One grouping of the tasks serves every routine. A task that a claim adds belongs to its own routine,
                 # so it cannot change the result for another routine.
                 index = None
