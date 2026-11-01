@@ -608,6 +608,29 @@ def board_tool(name, arguments, profile=None, claim=None):
     return result if isinstance(result, str) else json.dumps(result)
 
 
+# The comments of a native task that a claim gives its turn, newest last, and the length of each.
+CLAIM_COMMENTS = 50
+CLAIM_COMMENT_CHARACTERS = 4000
+
+
+def worker_context(board, identity):
+    """Hermes's worker context of a native task without its comment thread, and the comments of the task with their
+    IDs. A turn gets the comments as records, which its Hermes session keeps once (native_conversation.turn_records).
+
+    Hermes builds the context with the comments that list_comments of its Kanban module returns, so the context
+    without the thread is the context of a task without comments. The adapter handles one request at a time, so the
+    swap of that function reaches no other caller."""
+    kb, original = board.kb, board.kb.list_comments
+    comments = original(board.conn, identity)
+    try:
+        kb.list_comments = lambda conn, task_id: []
+        context = kb.build_worker_context(board.conn, identity)
+    finally:
+        kb.list_comments = original
+    return context, [dict(id=comment.id, author=comment.author, at=comment.created_at,
+                          body=(comment.body or '')[:CLAIM_COMMENT_CHARACTERS]) for comment in comments][-CLAIM_COMMENTS:]
+
+
 def main():
     board = Board(sys.argv[1])
     output = sys.stdout
@@ -619,9 +642,10 @@ def main():
         if binding is None:
             raise ValueError('No Coconut request owns this task.')
         owned = board.conn.execute('SELECT 1 FROM coconut_outcomes WHERE native_id=?', (task.id,)).fetchone()
+        context, comments = worker_context(board, task.id) if owned else ('', [])
         send({'spawn': {'external_id': binding[0], 'native_id': task.id,
                         'run_id': task.current_run_id, 'claim_lock': task.claim_lock, 'workspace': workspace,
-                        'context': board.kb.build_worker_context(board.conn, task.id) if owned else ''}})
+                        'context': context, 'comments': comments}})
         reply = json.loads(sys.stdin.readline())
         if reply.get('error'):
             raise ValueError(reply['error'])

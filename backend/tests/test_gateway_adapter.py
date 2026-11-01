@@ -700,6 +700,98 @@ class GatewayAdapterTests(unittest.TestCase):
         hooks.cron_answer(assistant_response='Ignored.')
         hooks.cron_end(completed=True)
 
+    def test_a_session_gets_each_record_once_and_a_new_session_gets_every_record(self):
+        # The records of a turn (native_conversation.turn_records) go into the text that Hermes saves, so a later turn
+        # of the same session gets only new records. A session that does not hold them gets every record.
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        adapter_module = self.adapter_module
+        from hermes_state import SessionDB
+        from gateway.config import Platform, PlatformConfig
+        from gateway.platforms.event import MessageEvent, SessionSource
+        class Entry:
+            def __init__(self, session_id):
+                self.session_key, self.session_id = 'agent:main:coconut:dm:bot:work:1', session_id
+        class Store:
+            def __init__(self, session_id):
+                self.entry = Entry(session_id)
+            def get_or_create_session(self, source, force_new=False):
+                if force_new:
+                    self.entry = Entry('fresh')
+                    SessionDB.sessions.add('fresh')
+                return self.entry
+            def switch_session(self, session_key, target_session_id):
+                self.entry.session_id = target_session_id
+        adapter = adapter_module.CoconutAdapter(PlatformConfig())
+        adapter._roots['bot:work:1'] = 'root-w'
+        for table in (SessionDB.meta, SessionDB.sessions, SessionDB.lineage, SessionDB.messages):
+            table.clear()
+        self.addCleanup(adapter_module.RECORDS.clear)
+        self.addCleanup(hooks.PENDING_RECORDS.clear)
+        count = iter(range(100))
+
+        def turn(store, *names, busy=False):
+            identity = 'turn-%d' % next(count)
+            adapter_module.RECORDS[identity] = [{'id': name, 'text': 'Record ' + name} for name in names]
+            event = MessageEvent(text='Own text.', source=SessionSource(Platform('coconut'), 'bot:work:1'),
+                                 message_id=identity)
+            result = hooks.join_conversation(event=event, session_store=store)
+            hooks.commit_records(identity, held=not busy)
+            return [name for name in names if result and 'Record ' + name in result['text']]
+
+        with patch.dict(os.environ, HERMES_HOME=str(self.home)):
+            store = Store('s1')
+            SessionDB.sessions.add('s1')
+            # The first turn of a session gets every record.
+            self.assertEqual(turn(store, 'comment:1', 'message:0:a'), ['comment:1', 'message:0:a'])
+            self.assertEqual(SessionDB.meta[hooks.TIP_KEY + 'root-w'], 's1')
+            # A later turn of the same session gets only new records, and none when nothing is new.
+            self.assertEqual(turn(store, 'comment:1', 'message:0:a', 'comment:2'), ['comment:2'])
+            self.assertEqual(turn(store, 'comment:1', 'message:0:a', 'comment:2'), [])
+            # A turn that the gateway skipped, because the session ran another turn, added nothing to the session.
+            self.assertEqual(turn(store, 'comment:1', 'comment:3', busy=True), ['comment:3'])
+            self.assertEqual(turn(store, 'comment:1', 'comment:3'), ['comment:3'])
+            every = ['comment:1', 'message:0:a', 'comment:2', 'comment:3']
+            # /new: the conversation continues in a new session (follow_new_session), which holds no record.
+            SessionDB.sessions.add('s2')
+            SessionDB.meta[hooks.TIP_KEY + 'root-w'] = 's2'
+            self.assertEqual(turn(store, *every), every)
+            self.assertEqual(store.entry.session_id, 's2')
+            self.assertEqual(turn(store, *every), [])
+            # A compression summarizes the session into a new session of its lineage.
+            SessionDB.sessions.add('s3')
+            SessionDB.lineage['s2'] = 's3'
+            self.assertEqual(turn(store, *every), every)
+            self.assertEqual(json.loads(SessionDB.meta[hooks.RECORDS_KEY + 's3']), every)
+            # A reset of Hermes gives the chat a new session. The conversation of the bot stays in its session, and
+            # the turn joins it, so the records stay held.
+            store.entry = Entry('reset')
+            SessionDB.sessions.add('reset')
+            self.assertEqual(turn(store, *every), [])
+            # A conversation whose session Hermes no longer has starts in a new session, with every record.
+            SessionDB.sessions.discard('s3')
+            SessionDB.sessions.discard('s2')
+            SessionDB.messages['s3'] = [{'role': 'user', 'content': 'Old.'}]
+            SessionDB.sessions.add('s3')
+            SessionDB.meta[hooks.TIP_KEY + 'root-w'] = 'gone'
+            SessionDB.lineage.clear()
+            self.assertEqual(turn(store, *every), every)
+            self.assertEqual(store.entry.session_id, 'fresh')
+            # Without a session of the bot's conversation, each turn gets every record.
+            self.assertEqual(turn(None, *every), every)
+            self.assertEqual(turn(None, *every), every)
+        # The adapter gives the records to the hook. A Hermes without request middleware saves the whole text of each
+        # turn, so each turn has every record in its text.
+        self.addCleanup(adapter_module.CONTEXT_MIDDLEWARE.update, registered=adapter_module.CONTEXT_MIDDLEWARE['registered'])
+        self.addCleanup(adapter_module.CONTEXTS.clear)
+        request = {'id': 'turn-r', 'chat_id': 'bot:work:1', 'text': 'Own text.\nRules.', 'own': 'Own text.',
+                   'records': [{'id': 'comment:9', 'text': 'Record comment:9'}]}
+        adapter_module.CONTEXT_MIDDLEWARE['registered'] = True
+        self.assertEqual(adapter._event(request).text, 'Own text.')
+        self.assertEqual(adapter_module.RECORDS['turn-r'], request['records'])
+        adapter_module.CONTEXT_MIDDLEWARE['registered'] = False
+        self.assertTrue(adapter._event(dict(request, id='turn-s')).text.endswith('Record comment:9'))
+        self.assertNotIn('turn-s', adapter_module.RECORDS)
+
     def test_the_gateway_session_of_a_chat_joins_the_native_conversation_of_the_bot(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']
         from hermes_state import SessionDB

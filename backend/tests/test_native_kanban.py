@@ -84,6 +84,25 @@ class NativeKanbanTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
+    def test_a_claim_gives_the_comments_of_its_task_apart_from_the_worker_context(self):
+        # The body of the task holds the heading of Hermes's comment thread, as pasted Markdown may. The whole body
+        # stays in the context, and only the comments leave it.
+        body = 'Keep this.\n## Comment thread\nPasted heading.\nKeep this too.'
+        result = json.loads(self.native_program(
+            'import json\nfrom coconut.kanban_runtime import worker_context\n'
+            'identity = board.kb.create_task(board.conn, title="Fix the export", body=sys.argv[2], assignee="default", '
+            'created_by="coconut", tenant="bot")\n'
+            'board.kb.add_comment(board.conn, identity, "default", "Found the cause.")\n'
+            'context, comments = worker_context(board, identity)\n'
+            'print(json.dumps([context, comments, board.kb.build_worker_context(board.conn, identity)]))', body))
+        context, comments, full = result
+        self.assertIn(body, context)
+        self.assertNotIn('Found the cause.', context)
+        self.assertEqual([(c['author'], c['body']) for c in comments], [('default', 'Found the cause.')])
+        self.assertIsInstance(comments[0]['id'], int)
+        # Hermes's own context keeps its comments: the swap ends with the call.
+        self.assertIn('Found the cause.', full)
+
     def test_a_gateway_audit_writes_to_the_board_of_coconut_and_its_task_becomes_an_outcome(self):
         # An audit of a work source in the gateway calls coconut_kanban_create and coconut_kanban_comment. Coconut runs
         # kanban_create and kanban_comment of Hermes on its own board, as a worker of the audit runs them.

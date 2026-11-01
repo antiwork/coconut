@@ -60,6 +60,10 @@ MODES: dict[str, str] = {}
 # saves only the turn's own text (hooks.add_turn_context). Set when the hooks registered the middleware.
 CONTEXTS: dict[str, str] = {}
 CONTEXT_MIDDLEWARE = {'registered': False}
+# The records of each Coconut turn that its Hermes session keeps once (native_conversation.turn_records). The
+# pre_gateway_dispatch hook adds to the turn's own text the records that the session does not hold yet
+# (hooks.add_records), and the end of the turn notes them as held (hooks.commit_records).
+RECORDS: dict[str, list] = {}
 # The chats whose newest Coconut turn is a turn of a technical lane. Hermes runs its own turns in such a chat too,
 # for example for the completion of a background process of the lane, and the hooks keep the lane holds on them
 # (hooks.guard_tool). The next Coconut turn of the chat in another mode lifts them.
@@ -316,10 +320,19 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             # without Coconut's context.
             return MessageEvent(text=str(turn['command']), message_type=MessageType.COMMAND, source=source,
                                 message_id=str(turn['id']))
+        records = [record for record in turn.get('records') or [] if isinstance(record, dict)
+                   and isinstance(record.get('id'), str) and isinstance(record.get('text'), str)]
         if turn.get('own') is not None and CONTEXT_MIDDLEWARE['registered']:
             # Hermes saves the turn's own text. The model calls of this turn get the whole text (hooks.add_turn_context).
             CONTEXTS[str(turn['id'])] = text
             text = str(turn['own'])
+            if records:
+                # hooks.add_records adds the records that the session of the chat does not hold yet.
+                RECORDS[str(turn['id'])] = records
+        elif records:
+            # Hermes saves the whole text in each turn, so each turn gets every record.
+            from .hooks import records_text
+            text += records_text(records)
         # A turn that may stay silent, such as a reaction, needs no reply. Hermes then keeps a silence marker silent
         # instead of a notice (gateway.response_filters.silence_allowed).
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source,
@@ -363,9 +376,15 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         self.drop_stream(event.message_id)
         # The turn stays active in the polls until the service has its end. Otherwise the service would fail a
         # finished turn after a short outage.
+        RECORDS.pop(event.message_id, None)
+        from .hooks import commit_records
         if event.message_id in BUSY:
             BUSY.discard(event.message_id)
             outcome = 'busy'
+            commit_records(event.message_id, held=False)
+        else:
+            # The session saved the turn's text with its new records.
+            commit_records(event.message_id)
         for delay in (*RETRY_SECONDS, None):
             if await self._report(event.message_id, 'done', outcome=getattr(outcome, 'value', str(outcome))):
                 break

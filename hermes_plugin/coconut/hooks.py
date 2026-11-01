@@ -8,6 +8,10 @@ When the bot has no conversation for this root yet, the gateway session becomes 
 session holds an earlier conversation, for example after a restart of the bots. Each turn then writes to the same
 session and follows the compression lineage of Hermes from it, so the turns of a chat see the same history.
 
+Records. The comments of a native task and the messages between bots are records that a session keeps once
+(native_conversation.turn_records). After the join, `add_records` adds to the turn's own text only the records that
+the session does not hold yet, and `commit_records` notes them as held when the turn ends. A new session holds none.
+
 Cron runs. A cron run of the gateway in a bot's profile reports to a Coconut turn through the session hooks
 (cron.py).
 
@@ -30,6 +34,7 @@ the service. The person's streaming settings stay as they are.
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -329,6 +334,17 @@ def join_conversation(event=None, session_store=None, gateway=None, **_):
         from .adapter import BUSY
         BUSY.add(str(event.message_id))
         return {'action': 'skip', 'reason': 'coconut: the session of this chat runs another turn'}
+    from .adapter import RECORDS
+    records = RECORDS.pop(str(event.message_id), None)
+    session = _join_session(source, session_store)
+    if records is None:
+        return None
+    return add_records(event, records, session)
+
+
+def _join_session(source, session_store):
+    """Point the gateway session of the chat at the bot's conversation. Return (the state database, the ID of the
+    session that the turn runs in), or None when the turn runs in the gateway's own session of the chat."""
     if session_store is None:
         return None
     from .adapter import session_root_for_chat
@@ -338,14 +354,15 @@ def join_conversation(event=None, session_store=None, gateway=None, **_):
     try:
         from hermes_constants import get_hermes_home
         from hermes_state import SessionDB
-        db = SessionDB(db_path=Path(get_hermes_home()) / 'state.db')
+        path = Path(get_hermes_home()) / 'state.db'
+        db = SessionDB(db_path=path)
         try:
             tip = db.get_meta(TIP_KEY + root)
             entry = session_store.get_or_create_session(source)
             if tip and tip == entry.session_id:
                 # The chat's session is the tip. After /new, Hermes may not have saved that session yet
-                # (follow_new_session).
-                return None
+                # (follow_new_session). A compression continues the conversation in a newer session of its lineage.
+                return path, db.resolve_resume_session_id(entry.session_id)
             if not (tip and db.get_session(tip)):
                 tip = root if db.get_session(root) else None
             if tip is None:
@@ -354,16 +371,78 @@ def join_conversation(event=None, session_store=None, gateway=None, **_):
                     # gave the chat a new root. The new conversation starts in a new session, as /new does.
                     entry = session_store.get_or_create_session(source, force_new=True)
                 db.set_meta(TIP_KEY + root, entry.session_id)
-            else:
-                target = db.resolve_resume_session_id(tip)
-                if db.resolve_resume_session_id(entry.session_id) != target:
-                    session_store.switch_session(entry.session_key, target)
+                return path, entry.session_id
+            target = db.resolve_resume_session_id(tip)
+            if db.resolve_resume_session_id(entry.session_id) != target:
+                session_store.switch_session(entry.session_key, target)
+            return path, target
         finally:
             db.close()
     except Exception:
         # The turn still runs, in the gateway's own session of the chat.
         LOG.exception('Coconut: the gateway session did not join the conversation of the bot.')
     return None
+
+
+# The state_meta key of Hermes that holds the IDs of the records that a session holds (add_records).
+RECORDS_KEY = 'coconut.records.'
+# The IDs that a session keeps on record, newest last.
+RECORDS_KEPT = 5000
+# The records that a running turn adds to its session: (state database, session ID, record IDs).
+PENDING_RECORDS: dict[str, tuple] = {}
+
+
+def records_text(records):
+    """backend/coconut/native_conversation.records_text of this Coconut install."""
+    from .tools import backend
+    return backend('native_conversation').records_text(records)
+
+
+def add_records(event, records, session):
+    """The rewrite of the turn's own text with the records that its session does not hold yet.
+
+    Hermes saves the turn's own text in the session, so the session holds each record that a turn added. A session
+    is new after /new, a reset of Hermes, or a compression, which summarizes the earlier turns into a new session.
+    A new session holds no record, so its first turn gets every record. Without a session of the bot's conversation
+    (`session` None) the turn gets every record too. The IDs count as held when the turn ends (commit_records)."""
+    held = set()
+    if session is not None:
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB(db_path=session[0])
+            try:
+                held = set(json.loads(db.get_meta(RECORDS_KEY + session[1]) or '[]'))
+            finally:
+                db.close()
+        except Exception:
+            LOG.exception('Coconut: the records of a session could not be read. The turn gets every record.')
+            held = set()
+    new = [record for record in records if record['id'] not in held]
+    if session is not None and new:
+        PENDING_RECORDS[str(event.message_id)] = (session[0], session[1], [record['id'] for record in new])
+    if not new:
+        return None
+    return {'action': 'rewrite', 'text': (event.text or '') + records_text(new)}
+
+
+def commit_records(turn, held=True):
+    """Note the records that a turn added to its session as held, when the session saved the turn's text."""
+    pending = PENDING_RECORDS.pop(str(turn), None)
+    if pending is None or not held:
+        return
+    path, session, identities = pending
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=path)
+        try:
+            kept = [identity for identity in json.loads(db.get_meta(RECORDS_KEY + session) or '[]')
+                    if identity not in identities]
+            db.set_meta(RECORDS_KEY + session, json.dumps((kept + identities)[-RECORDS_KEPT:]))
+        finally:
+            db.close()
+    except Exception:
+        # The next turn of the session gets these records again.
+        LOG.exception('Coconut: the records of a session could not be saved.')
 
 
 def session_busy(event, gateway) -> bool:

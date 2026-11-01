@@ -190,8 +190,10 @@ def work_notes(request) -> str:
     # A check of a blocked native task gets the check rules and coconut_record_pause. An answered card continues the
     # same turn, and its answer replaces the check rules.
     check = block_check_task(task) and request['operation'] != 'resume'
+    # The delivered and the sent messages, and the comments of the native task, are records that the session keeps
+    # once (native_conversation.turn_records, _run_in_gateway).
     text = (work_context_note(task) + recovery_note(task, check) + recent_work_note(task) + direct_reply_note(task)
-            + exchange_note(task) + source_activity_note(task) + dependencies_note(task) + tracked_note(task))
+            + exchange_note(task, records=True) + source_activity_note(task) + dependencies_note(task) + tracked_note(task))
     if task.get('_native_outcome_id'):
         # The rules of a native outcome and the board tools of its claim, as the worker gives them.
         from .native_outcomes import WORK_INSTRUCTIONS as OUTCOME_INSTRUCTIONS
@@ -729,6 +731,10 @@ class GatewayChat:
         if wanted is None:
             def wanted():
                 return self._get('tasks', task['id'])['status'] == 'working'
+        # A turn with its own text gets the records that its session keeps once (turn_records): the plugin adds the
+        # records that the session does not hold yet to the text that Hermes saves (hooks.add_records).
+        from .native_conversation import turn_records
+        records = turn_records(task) if own is not None else []
         try:
             while True:
                 with self.lock:
@@ -743,7 +749,7 @@ class GatewayChat:
                             task['id'], home, chat or bot['id'], text, emit, chat_name=bot.get('name') or 'Coconut',
                             session_root=session or session_root(bot, epoch=task.get('_conversation_epoch')),
                             silent=silent, context_id=context_id, mode=mode, own=own, folder=folder,
-                            command=command)
+                            command=command, records=records)
                         return True
                     except GatewayUnavailable:
                         # No adapter took the turn, so nothing ran. Wait for the next adapter.
