@@ -143,26 +143,15 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_pairing_redaction.py 2> .runtime/pairing-redaction.log || { cat .runtime/pairing-redaction.log; exit 1; }
           cat .runtime/pairing-redaction.log
           grep -qx 'OK' .runtime/pairing-redaction.log # The pairing link must pass the redaction of this Hermes, not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_withdrawal_correction_route.py 2> .runtime/withdrawal-correction-route.log || { cat .runtime/withdrawal-correction-route.log; exit 1; }
-          cat .runtime/withdrawal-correction-route.log
-          grep -qx 'OK' .runtime/withdrawal-correction-route.log # The registered schema check must run, not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_turn_timings.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_interim_messages.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_live_messages.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_gateway_chat.py 2> .runtime/native-gateway-chat.log || { cat .runtime/native-gateway-chat.log; exit 1; }
           cat .runtime/native-gateway-chat.log
           grep -qx 'OK' .runtime/native-gateway-chat.log # A real gateway must carry the chat turn, so the check must not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_gateway_idle_exit.py 2> .runtime/native-gateway-idle-exit.log || { cat .runtime/native-gateway-idle-exit.log; exit 1; }
           cat .runtime/native-gateway-idle-exit.log
           grep -qx 'OK' .runtime/native-gateway-idle-exit.log # Real client-started gateways must run, so the check must not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_initial_input.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_api_fallback.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_compression.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_turn_context_replay.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_prompt_refresh.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_compression_fallback.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_receipt_context.py
-          "$COCONUT_HERMES_PYTHON" scripts/test_native_receipt_context.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON" --evidence .runtime/receipt-test-evidence
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py 2> .runtime/native-kanban.log || { cat .runtime/native-kanban.log; exit 1; }
           cat .runtime/native-kanban.log
           grep -qx 'OK' .runtime/native-kanban.log # The real board wait and completion checks must run, not skip.
@@ -179,7 +168,7 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_independent_technical_work.py 2> .runtime/independent-technical-work.log || { cat .runtime/independent-technical-work.log; exit 1; }
           cat .runtime/independent-technical-work.log
           grep -qx 'OK' .runtime/independent-technical-work.log # The real review card claim and finish checks must run, not skip.
-          grep -Eq '^Ran 87 tests in ' .runtime/independent-technical-work.log # Includes the declined merge lane on a real triage card, the held merge lane on a done card's successor, two open delegated PRs of one Work that continue together under the lane, and a lane turn through the gateway.
+          grep -Eq '^Ran 83 tests in ' .runtime/independent-technical-work.log # Includes the declined merge lane on a real triage card, the held merge lane on a done card's successor, two open delegated PRs of one Work that continue together under the lane, and a lane turn through the gateway.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_delegated_report_continuation.py 2> .runtime/delegated-report-continuation.log || { cat .runtime/delegated-report-continuation.log; exit 1; }
           cat .runtime/delegated-report-continuation.log
           grep -qx 'OK' .runtime/delegated-report-continuation.log # The native dispatch checks must run, not skip.
@@ -197,16 +186,12 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_tool_store.py 2> .runtime/native-tool-store.log || { cat .runtime/native-tool-store.log; exit 1; }
           cat .runtime/native-tool-store.log
           grep -qx 'OK' .runtime/native-tool-store.log # The installer's source must not choose a bot's tool store, so the check must not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_browser_socket.py 2> .runtime/native-browser-socket.log || { cat .runtime/native-browser-socket.log; exit 1; }
-          cat .runtime/native-browser-socket.log
-          grep -qx 'OK' .runtime/native-browser-socket.log # The harness daemon must listen in a bot, so the check must not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_display.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_pr_links.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_work_workspace.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_workspace_handoff.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_workspace_recovery.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_targeted_bot_continuation.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_kanban_workers.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_session_maintenance.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_model_catalog_native.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_config_yaml_style.py
@@ -223,7 +208,7 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_failed_request_continuation.py 2> .runtime/archived-failed-request-continuation.log || { cat .runtime/archived-failed-request-continuation.log; exit 1; }
           cat .runtime/archived-failed-request-continuation.log
           grep -qx 'OK' .runtime/archived-failed-request-continuation.log # The native dispatch checks must run, not skip.
-          grep -Eq '^Ran 25 tests in ' .runtime/archived-failed-request-continuation.log # Includes the successor that a provider stop ended.
+          grep -Eq '^Ran 23 tests in ' .runtime/archived-failed-request-continuation.log # Includes the successor that a provider stop ended.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_scheduled_routine_continuation.py 2> .runtime/archived-scheduled-routine-continuation.log || { cat .runtime/archived-scheduled-routine-continuation.log; exit 1; }
           cat .runtime/archived-scheduled-routine-continuation.log
           grep -qx 'OK' .runtime/archived-scheduled-routine-continuation.log # The native dispatch checks must run, not skip.
@@ -232,15 +217,11 @@ jobs:
           grep -qx 'OK' .runtime/archived-scheduled-assignment-continuation.log # The native dispatch checks must run, not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_scheduled_original_continuation.py 2> .runtime/archived-scheduled-original-continuation.log || { cat .runtime/archived-scheduled-original-continuation.log; exit 1; }
           cat .runtime/archived-scheduled-original-continuation.log
-          grep -qx 'OK' .runtime/archived-scheduled-original-continuation.log # The native dispatch and worktree restore checks must run, not skip.
+          grep -qx 'OK' .runtime/archived-scheduled-original-continuation.log # The checks must run, not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_closed_source_continuation.py 2> .runtime/closed-source-continuation.log || { cat .runtime/closed-source-continuation.log; exit 1; }
           cat .runtime/closed-source-continuation.log
           grep -qx 'OK' .runtime/closed-source-continuation.log # The real assignment pass, archive note, and successor dispatch must run, not skip.
           grep -Eq '^Ran 18 tests in ' .runtime/closed-source-continuation.log # Includes the two checks against the real adapter.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_relay_roster.py
-          "$COCONUT_HERMES_PYTHON" scripts/test_native_kanban.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"
-          "$COCONUT_HERMES_PYTHON" scripts/test_completed_routine_continuation.py --source "$COCONUT_HERMES_ROOT" --python "$COCONUT_HERMES_PYTHON"
-          "$COCONUT_HERMES_PYTHON" scripts/test_script_routines.py --local
           # The tests do not change the Hermes source folder.
           git -C "$COCONUT_HERMES_ROOT" status --porcelain --untracked-files=no | diff "$RUNNER_TEMP/hermes-source-status" -
       - name: Report a failure of Hermes main

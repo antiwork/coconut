@@ -19,6 +19,9 @@ setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class Provider(FixtureProvider):
+    # The board runs in a Kanban runtime of the local Hermes, and the fixture runs the turns.
+    native_board = True
+
     def __init__(self, root):
         super().__init__(root)
         self.hermes_root, self.python = Path(SOURCE), PYTHON

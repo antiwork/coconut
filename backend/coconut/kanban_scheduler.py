@@ -194,9 +194,8 @@ from .native_outcomes import NativeOutcomes
 class NativeKanban(NativeOutcomes):
     def _init_kanban(self):
         self._kanban_visible = None
-        # The board holds the native outcomes, which the person's Hermes runs (HermesProvider). Fixture mode has none.
-        self.kanban = (KanbanScheduler(self.provider, self.root)
-                       if getattr(self.provider, 'supports_native_outcomes', False) else None)
+        # A Kanban runtime of the person's Hermes runs the board (HermesProvider.native_board). Fixture mode has none.
+        self.kanban = KanbanScheduler(self.provider, self.root) if getattr(self.provider, 'native_board', False) else None
 
     def _kanban_rows(self):
         # The pause checks of many tasks read the same tables. One shared read decodes each table once.
