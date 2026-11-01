@@ -92,12 +92,14 @@ class ScheduledOriginal:
                                                     claim_lock=None, last_activity_at=time.time() - 60)
         self.runs[NATIVE][-1].update(status='scheduled', outcome='scheduled', ended=True)
 
-    def original(self, source=None):
-        """The saved shape: Desk relayed the request, a helper's result was new input, and the settle pass archived the card."""
+    def original(self, source=None, gateway=False):
+        """The saved shape: Desk sent the request, a helper's result was new input, and the settle pass archived the card.
+        In the gateway, Desk sends it with coconut_message_bot, and the delivery is the only record."""
         requester = self.working(self.desk, 'Ask Reviews to preserve the legacy rental copy.')
         delivered = self.store._store_bot_message(requester['id'], dict(target_bot_id=self.reviews['id'], text=REQUEST))
-        # A worker of an earlier version relayed the request through its native envelope. The task keeps that record.
-        owner = self.update(delivered['task_id'], _native_relay=dict(sender_bot_id=self.desk['id'], envelope_id=ENVELOPE))
+        # Otherwise a worker of an earlier version relayed the request through its native envelope. The task keeps that record.
+        owner = self.store._get('tasks', delivered['task_id']) if gateway else self.update(
+            delivered['task_id'], _native_relay=dict(sender_bot_id=self.desk['id'], envelope_id=ENVELOPE))
         self.assertEqual((owner['source_bot_id'], owner['source_task_id'], owner['_reply_to_task_id']),
                          (self.desk['id'], requester['id'], requester['id']))
         self.workspace = self.store.root / 'workspaces' / owner['id']
@@ -211,6 +213,12 @@ class ArchivedScheduledOriginalAdmissionTests(ScheduledOriginal, unittest.TestCa
         self.assertEqual(self.store._get('tasks', owner['id']), continued)
         self.assertEqual(self.cancellations(owner), [])
         self.assertEqual([c for c in self.calls if c['op'] == 'archive_settled'], settled)
+
+    def test_a_request_of_coconut_message_bot_continues_its_original_card(self):
+        owner = self.original(gateway=True)
+        self.assertNotIn('_native_relay', owner)
+        self.assertTrue(self.settled(owner))
+        self.assertEqual(self.resume(), dict(task_id=owner['id'], native_task_id=NATIVE, status='queued'))
 
     def test_successor_returns_the_result_to_the_original_requester_once(self):
         owner = self.original()
@@ -404,8 +412,8 @@ class ArchivedScheduledOriginalGuardTests(ScheduledOriginal, unittest.TestCase):
         return change
 
     def test_the_creation_must_be_the_requesting_bots_relay(self):
+        # Without a relay, the creation delivery alone is the proof (a request of coconut_message_bot).
         self.refused(dict(
-            no_relay=lambda owner, card, runs: owner.pop('_native_relay'),
             relay_of_another_bot=lambda owner, card, runs: owner['_native_relay'].update(sender_bot_id=self.helper['id']),
             relay_without_envelope=lambda owner, card, runs: owner['_native_relay'].pop('envelope_id'),
             no_native_intake=lambda owner, card, runs: owner.pop('_native_intake'),

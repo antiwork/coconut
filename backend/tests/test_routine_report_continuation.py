@@ -34,7 +34,7 @@ class RoutineReportContinuationTests(unittest.TestCase):
         self.service._put('tasks', saved)
         return call['id']
 
-    def incident(self):
+    def incident(self, gateway=False):
         owner, source = self.scheduled_native()
         self.claim(owner, 't_existing', run=10)
         create = self.receipt(owner, 'cronjob_manage', dict(action='create', schedule='1h'),
@@ -52,16 +52,19 @@ class RoutineReportContinuationTests(unittest.TestCase):
                             task_id=reporter['id']), reporter['bot_id'], reporter['id'])
         completion = self.receipt(reporter, 'kanban_complete', {},
                                   dict(ok=True, task_id='t_report', run_id=11))
-        # The saved state of the report that an earlier Coconut delivered through its native relay: the delivery under
-        # its envelope ID and the relay of the coordinator. Coconut no longer makes this state, but it reads it.
+        # In the gateway, coconut_message_bot saves the delivery of the report under its own ID. Otherwise the saved
+        # state of the report that an earlier Coconut delivered through its native relay: the delivery under its
+        # envelope ID and the relay of the coordinator. Coconut no longer makes that state, but it reads it.
         envelope = 'a' * 32
         with self.service.transaction():
             relay = self.service._store_bot_message(reporter['id'], dict(target_bot_id=source['bot_id'], text='Capacity report'))
             delivery = next(d for d in reversed(self.service._all('deliveries')) if d['receipt']['task_id'] == relay['task_id'])
-            self.service.db.execute('DELETE FROM deliveries WHERE id=?', (delivery['id'],))
-            self.service._put('deliveries', dict(delivery, id=digest(encoded([reporter['id'], envelope]))))
+            if not gateway:
+                self.service.db.execute('DELETE FROM deliveries WHERE id=?', (delivery['id'],))
+                self.service._put('deliveries', dict(delivery, id=digest(encoded([reporter['id'], envelope]))))
         coordinator = self.service._get('tasks', relay['task_id'])
-        coordinator['_native_relay'] = dict(sender_bot_id=reporter['bot_id'], envelope_id=envelope)
+        if not gateway:
+            coordinator['_native_relay'] = dict(sender_bot_id=reporter['bot_id'], envelope_id=envelope)
         coordinator.update(status='completed', _conversation_epoch=owner['_conversation_epoch'],
             _native_turn_id='coordinator-input', updated_at=now())
         coordinator['_execution_session_id'] = coordinator['id']
@@ -102,6 +105,17 @@ class RoutineReportContinuationTests(unittest.TestCase):
         self.assertEqual(len(report['_routine_report_returns']), 1)
         self.assertEqual(self.service._get('tasks', returned['id'])['status'], 'completed')
         self.assertEqual(self.service.kanban.tasks, snapshots)
+
+    def test_the_delivery_of_coconut_message_bot_proves_the_report(self):
+        owner, caller, reporter, coordinator, returned, _, _ = self.incident(gateway=True)
+        self.assertNotIn('_native_relay', coordinator)
+        delivery, = [d for d in self.service._all('deliveries') if d['receipt']['task_id'] == coordinator['id']]
+        # A progress note to the coordinator proves nothing.
+        self.service._put('deliveries', dict(delivery, _progress_only=True))
+        self.reject_unchanged(caller, owner, reporter, returned)
+        self.service._put('deliveries', delivery)
+        self.assertEqual(self.resume(caller)['task_id'], owner['id'])
+        self.assertEqual(self.service._get('tasks', reporter['id'])['status'], 'completed')
 
     def test_unproved_create_receipt_and_occurrence_fail_closed(self):
         for case in ('missing', 'wrong-job', 'wrong-owner', 'hash', 'duplicate', 'trigger', 'epoch'):

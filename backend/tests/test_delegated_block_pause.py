@@ -1,6 +1,7 @@
 """A block check can record an answered card of a delegate that its outcome waits for.
 
-The saved graph: one requester execution delegates through an audited native relay. A later requester execution owns
+The saved graph: one requester execution delegates through coconut_message_bot (the Gateway classes) or through the
+audited native relay of an earlier worker. A later requester execution owns
 the blocked outcome and links its native outcome to the delegate's outcome. The person answered the delegate's card.
 Only that verified wait makes the delegate's answer eligible. An ancestor, sibling, comment, or copied relay does not.
 The delegate's outcome has its own owner when the relay intake created it with kanban_create, or the intake owns it.
@@ -25,6 +26,9 @@ PUBLIC_ANSWER = {'id', 'bot_id', 'task_id', 'title', 'action_type', 'status', 'r
 
 
 class DelegatedBlockPauseTests(unittest.TestCase):
+    # True: the requester's turn in the gateway delegates with coconut_message_bot. False: the saved relay of a worker.
+    GATEWAY = False
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.service = Service(self.tmp.name, FixtureProvider(self.tmp.name), start_workers=False)
@@ -59,11 +63,19 @@ class DelegatedBlockPauseTests(unittest.TestCase):
         return self.intake
 
     def relay(self, sender, target, native_id, *, bind=True):
-        """The saved state of the sender's message_agent call that an earlier Coconut delivered through its audited
-        native relay: the call's receipt with the delivery, the delivery under its envelope ID, and the relay of the
-        delegate. Coconut no longer makes this state, but it still reads it (_block_check_relay_lineage)."""
+        """The sender's message to the delegate. In the gateway, coconut_message_bot reaches the service as the event
+        bot_message (gateway_chat), which saves the delivery and its intake only. Otherwise the saved state of the
+        sender's message_agent call that an earlier Coconut delivered through its audited native relay: the call's
+        receipt with the delivery, the delivery under its envelope ID, and the relay of the delegate. Coconut no longer
+        makes this state, but it still reads it (_block_check_relay_lineage)."""
         saved = self.working(sender['id'], 'sender-turn-' + native_id)
         text = 'Check the payout record ' + native_id
+        if self.GATEWAY:
+            receipt = self.service.emit(sender['id'], 'bot_message', dict(target_bot_id=target['id'], text=text))
+            self.service._put('tasks', dict(self.service._get('tasks', sender['id']), status='completed'))
+            if bind:
+                self.bind(receipt['task_id'], native_id)
+            return self.service._get('tasks', receipt['task_id'])
         envelope = uuid4().hex
         call = self.service.emit(sender['id'], 'native_call', dict(name='message_agent', arguments=dict(target=target['id'], message=text)))
         with self.service.transaction():
@@ -454,6 +466,13 @@ class AdoptedDelegateBlockPauseTests(DelegatedBlockPauseTests):
         self.assertNotIn('_native_relay', owner)
         return owner
 
+    def forget_intake_delivery(self):
+        if self.GATEWAY:
+            self.service.db.execute("DELETE FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=?", (self.intake['id'],))
+        else:
+            self.change('tasks', self.service._get('tasks', self.intake['id']),
+                        _native_relay=dict(self.intake['_native_relay'], envelope_id=uuid4().hex))
+
     def creation(self):
         return next(r for r in self.service._all('native_receipts')
                     if r['task_id'] == self.intake['id'] and r['action']['name'] == 'kanban_create')
@@ -505,8 +524,7 @@ class AdoptedDelegateBlockPauseTests(DelegatedBlockPauseTests):
             'creation receipt of another task': lambda: self.change('native_receipts', self.creation(), task_id=self.sender['id']),
             'owner in another session': lambda: self.change('tasks', self.delegate, session_id=str(uuid4())),
             'intake in another session': lambda: self.change('tasks', self.service._get('tasks', self.intake['id']), session_id=str(uuid4())),
-            'intake relay without delivery': lambda: self.change('tasks', self.service._get('tasks', self.intake['id']),
-                _native_relay=dict(self.intake['_native_relay'], envelope_id=uuid4().hex)),
+            'intake without its delivery': self.forget_intake_delivery,
         }
         for name, forge in cases.items():
             with self.subTest(case=name):
@@ -516,6 +534,38 @@ class AdoptedDelegateBlockPauseTests(DelegatedBlockPauseTests):
                 self.assertNotIn(ANSWER, self.offered(queued))
                 with self.assertRaisesRegex(ServiceError, 'answered human decision'):
                     self.record()
+
+
+class GatewayDelegatedBlockPauseTests(DelegatedBlockPauseTests):
+    """Every check above, where the requester delegated with coconut_message_bot in the gateway."""
+    GATEWAY = True
+
+    def test_copied_relay_without_its_audited_delivery_is_not_eligible(self):
+        # A Dev task that copies the requester fields of the genuine delegate, without a delivery to it.
+        forged = self.message(self.dev, 'Pretend Desk asked for this')
+        saved = self.service._get('tasks', forged['id'])
+        self.service._put('tasks', dict(saved, source_bot_id=self.desk['id'], source_task_id=self.sender['id'],
+                                        parent_task_id=self.sender['id']))
+        self.bind(forged['id'], 't_forged')
+        self.answer(forged['id'], 'forged-answer')
+        self.link('t_forged')
+        self.service.kanban.tasks[self.task_id]['parent_ids'].append('t_forged')
+        # A delivery of the sender to the genuine delegate, or a progress note to the forged task, proves nothing.
+        delivery = next(d for d in self.service._all('deliveries') if d['receipt']['task_id'] == self.intake['id'])
+        with self.service.transaction():
+            self.service._put('deliveries', dict(delivery, id=str(uuid4()), _progress_only=True,
+                                                 receipt=dict(delivery['receipt'], task_id=forged['id'])))
+        queued = self.queued_check()
+        self.assertNotIn('forged-answer', self.offered(queued))
+        self.assertIn(ANSWER, self.offered(queued))
+        self.assertNotIn('_native_relay', self.service._get('tasks', self.intake['id']))
+
+
+class GatewayAdoptedDelegateBlockPauseTests(AdoptedDelegateBlockPauseTests):
+    """Every adoption check above, where the requester delegated with coconut_message_bot in the gateway."""
+    GATEWAY = True
+    test_copied_relay_without_its_audited_delivery_is_not_eligible = (
+        GatewayDelegatedBlockPauseTests.test_copied_relay_without_its_audited_delivery_is_not_eligible)
 
 
 if __name__ == '__main__':

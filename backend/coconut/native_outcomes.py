@@ -527,14 +527,14 @@ class NativeOutcomes:
                 or any(execution_key(t) == execution_key(previous) and t['id'] not in linked
                        for t in tasks.values())):
             return False
-        # Reciprocal execution links alone do not prove an authorized continuation.
-        # Join the saved native envelope to the service's exact delivery.
+        # Reciprocal execution links alone do not prove an authorized continuation. Join the delivery to the service's
+        # exact record of it: a message of coconut_message_bot, or the saved native envelope of a worker's relay.
         sender = tasks.get(successor.get('source_task_id'))
         relay = successor.get('_native_relay') or {}
         envelope = relay.get('envelope_id')
-        if (not sender or not envelope or relay.get('sender_bot_id') != sender['bot_id']
+        if (not sender or (relay and (not envelope or relay.get('sender_bot_id') != sender['bot_id']))
                 or successor.get('source_bot_id') != sender['bot_id']
-                or not any(d['id'] == digest(encoded([sender['id'], envelope]))
+                or not any((not relay or d['id'] == digest(encoded([sender['id'], envelope])))
                     and d.get('source_task_id') == sender['id']
                     and d.get('target_bot_id') == successor['bot_id'] and not d.get('_progress_only')
                     and d.get('receipt', {}).get('task_id') == successor['id']
@@ -1802,10 +1802,12 @@ class NativeOutcomes:
         return delegates
 
     def _block_check_relay_lineage(self, task, owner, tasks, depth=0):
-        # Return [owner, ..., intake] when the intake received an audited native relay from this bot. An owner that
-        # holds the relay is its own intake. Otherwise _adopt_native_outcomes made the owner for an outcome that its
-        # parent task created: the owner ID derives from that parent and the outcome, the parent's own kanban_create
-        # receipt returned that outcome, and the callback owner that adoption copied is the parent's verified intake.
+        # Return [owner, ..., intake] when the intake received an audited message from this bot: a message of
+        # coconut_message_bot that the service delivered (_block_check_message_intake), or the native relay of an
+        # earlier worker. An owner that holds the message is its own intake. Otherwise _adopt_native_outcomes made the
+        # owner for an outcome that its parent task created: the owner ID derives from that parent and the outcome, the
+        # parent's own kanban_create receipt returned that outcome, and the callback owner that adoption copied is the
+        # parent's verified intake.
         from .service import digest, encoded
         if depth > 8:
             return None
@@ -1838,7 +1840,7 @@ class NativeOutcomes:
         if not (derived and owner.get('_execution_session_id') == owner['id'] and origin['bot_id'] == owner['bot_id']
                 and origin.get('session_id') == owner.get('session_id') and origin.get('source_bot_id') == task['bot_id']
                 and owner.get('source_bot_id') == task['bot_id']):
-            return None
+            return self._block_check_message_intake(task, owner, tasks)
         created = False
         for receipt in self._native_task_receipts(origin['id'], state='completed'):
             arguments = (receipt.get('action') or {}).get('arguments') or {}
@@ -1858,6 +1860,29 @@ class NativeOutcomes:
         if not lineage or callback != lineage[-1]['id'] or owner.get('_relay_callback_owner') != callback:
             return None
         return [owner] + lineage
+
+    def _block_check_message_intake(self, task, owner, tasks):
+        """[owner] when the owner is the intake of a message of coconut_message_bot from this bot, else None.
+
+        The task of this bot that sent the message is in the session of the task, and the service recorded the delivery
+        of exactly this message to the owner (`deliveries`). The service records a delivery only for the tool call of
+        the sending turn, so the record is the proof, as the receipt of a relay call was for a worker."""
+        source = tasks.get(owner.get('source_task_id'), {})
+        if not (owner['bot_id'] != task['bot_id'] and not owner.get('_is_return')
+                and owner.get('source_bot_id') == task['bot_id'] and source.get('bot_id') == task['bot_id']
+                and source.get('session_id') == task.get('session_id')):
+            return None
+        row = self._read_one('SELECT data FROM bots WHERE id=?', (owner['bot_id'],))
+        bot = json.loads(row[0]) if row else {}
+        if not bot or bot.get('_deleted') or owner.get('session_id') != bot.get('session_id'):
+            return None
+        deliveries = (json.loads(raw) for raw, in self.db.execute(
+            "SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=?", (owner['id'],)))
+        if any(d.get('source_task_id') == source['id'] and d.get('target_bot_id') == owner['bot_id']
+               and not d.get('_progress_only') and (d.get('receipt') or {}).get('task_id') == owner['id']
+               for d in deliveries):
+            return [owner]
+        return None
 
     def _block_check_results(self, task_id, name):
         for receipt in self._native_task_receipts(task_id, state='completed'):

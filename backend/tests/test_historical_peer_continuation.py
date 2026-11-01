@@ -168,6 +168,21 @@ class HistoricalPeerContinuationTests(unittest.TestCase):
         self.service._put('tasks', dict(successor, _native_relay=relay))
         self.assert_blocked(source)
 
+    def test_the_delivery_of_coconut_message_bot_proves_the_continuation(self):
+        # In the gateway, coconut_message_bot saves the delivery under its own ID, and the successor has no relay.
+        owner, source, _, successor, _, _, _ = self.saved_shape()
+        delivery, = [d for d in self.service._all('deliveries')
+                     if d['receipt'].get('task_id') == successor['id']]
+        self.service.db.execute('DELETE FROM deliveries WHERE id=?', (delivery['id'],))
+        gateway = dict(delivery, id='gateway-delivery')
+        self.service._put('deliveries', gateway)
+        self.service._put('tasks', {k: v for k, v in successor.items() if k != '_native_relay'})
+        # The delivery must still be the exact one. A progress note to the successor proves nothing.
+        self.service._put('deliveries', dict(gateway, _progress_only=True))
+        self.assert_blocked(source)
+        self.service._put('deliveries', gateway)
+        self.assertEqual(self.resume(source)['task_id'], owner['id'])
+
     def test_failed_or_closed_alone_never_qualifies_a_peer(self):
         _, source, previous, successor, unknown, _, _ = self.saved_shape()
         self.service._put('tasks', dict(previous, _continued_task_id=None))

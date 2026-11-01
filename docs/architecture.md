@@ -367,7 +367,11 @@ reason (`gateway_unsupported`).
   (`HermesProvider.native_board`).
 - The relay of the worker is gone: its envelope delivery, its recovery and the reply into an envelope
   (`_native_reply_pending`). The service keeps the saved `_native_relay` of earlier tasks as history, for the proofs that
-  read it (`_completed_peer_continuation`, `_block_check_relay_lineage`, `routine_reports`).
+  read it (`_completed_peer_continuation`, `_block_check_relay_lineage`, `routine_reports.scopes`,
+  `_settled_original_card`). Each of these proofs also accepts a message of `coconut_message_bot`. That message has no
+  envelope, so its proof is the service's own record of the delivery: from the sending task to the bot, with the
+  receiving task in its receipt, and not a progress note. `_block_check_message_intake` proves the intake of the
+  delegated block check this way.
 - The watch of a worker's background processes is gone: the process subscriptions of its receipts, their delivery,
   the waits for a process, and the periodic check of interrupted tool calls. A local command that an earlier worker of
   a native task left without a result ends at a service start when it started an hour ago, no process carries its

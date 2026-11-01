@@ -451,8 +451,9 @@ class NativeRoutines:
         """Whether the archived card is the original card of this relayed request, and its worker parked it on this input.
 
         Board.sync makes one card for a request, under the key coconut:<id>, and later input reuses that card until it is
-        done or archived. The key proves nothing more, so Coconut's own records must prove the rest. Another bot relayed
-        the request through its native envelope: the task holds that bot's envelope, and that bot's message comes first.
+        done or archived. The key proves nothing more, so Coconut's own records must prove the rest. Another bot sent the
+        request with coconut_message_bot, or an earlier worker relayed it through its native envelope (then the task holds
+        that bot's envelope). That bot's message comes first.
         Coconut created the task once, and its first delivery is that message, from the requesting task to this bot.
         A return callback is no such request. The current input has its own proof: in this turn, while the task worked,
         the bridge saved a completed kanban_schedule call on this card, and Hermes reported that the run of the claim
@@ -464,8 +465,8 @@ class NativeRoutines:
         if (task.get('_is_return') or task.get('_native_intake') is not True
                 or not isinstance(source, str) or not source or task.get('parent_task_id') != source
                 or not task.get('source_bot_id') or task['source_bot_id'] == task['bot_id']
-                or relay.get('sender_bot_id') != task['source_bot_id']
-                or not isinstance(relay.get('envelope_id'), str) or not relay['envelope_id']
+                or (relay and (relay.get('sender_bot_id') != task['source_bot_id']
+                               or not isinstance(relay.get('envelope_id'), str) or not relay['envelope_id']))
                 or first.get('sender_bot_id') != task['source_bot_id']):
             return False
         requester = self.db.execute('SELECT data FROM tasks WHERE id=?', (source,)).fetchone()
