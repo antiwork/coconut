@@ -479,6 +479,39 @@ class HistoryRetentionTests(ServiceCase):
         self.assertTrue(new.exists())
 
 
+class CloseTests(unittest.TestCase):
+    def test_a_stop_waits_for_the_running_maintenance_step_and_starts_no_other(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        # The test closes this service itself.
+        self.service = Service(temp.name, FixtureProvider(temp.name), start_workers=False)
+        started, release, steps = threading.Event(), threading.Event(), []
+
+        def retire():
+            started.set()
+            release.wait(10)
+            # The step still reads the database after the stop began.
+            steps.append(self.service.db.execute('SELECT count(*) FROM tasks').fetchone()[0])
+
+        with patch.object(self.service, 'retire_finished_worktrees', retire), \
+                patch.object(self.service, 'maintain_native_sessions', lambda: steps.append('sessions')), \
+                patch.object(self.service, 'maintain_database', lambda: steps.append('database')):
+            # The source poller starts this thread (work_sources).
+            self.service._retirement_thread = threading.Thread(target=self.service._retire_worktrees_safely, daemon=True)
+            self.service._retirement_thread.start()
+            self.assertTrue(started.wait(5))
+            closing = threading.Thread(target=self.service.close)
+            closing.start()
+            closing.join(.5)
+            self.assertTrue(closing.is_alive(), 'The stop closed the database while maintenance used it.')
+            release.set()
+            closing.join(10)
+            self.assertFalse(closing.is_alive())
+        self.assertEqual(steps, [0])
+        with self.assertRaises(sqlite3.ProgrammingError):
+            self.service.db.execute('SELECT 1')
+
+
 class FreePageTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

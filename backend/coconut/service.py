@@ -88,6 +88,9 @@ def issue_pairing_code(db, lifetime: float, tunnel: bool = False) -> tuple[str, 
 
 # A version 2 link is valid for ten minutes, because the person may get it from Hermes in a chat.
 TUNNEL_PAIRING_LIFETIME = 600
+# How long a stop waits for the running step of worktree retirement and maintenance. A step that runs longer keeps the
+# database open: the process exits without closing it, as after a turn that does not stop.
+RETIREMENT_CLOSE_SECONDS = 30
 
 
 def pair_device(db, data: dict, paired, peer: str | None = None) -> dict | ServiceError:
@@ -4412,6 +4415,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             self.process_poller.join(timeout=20)
         if self.source_poller:
             self.source_poller.join(timeout=65)
+        # The maintenance thread of the source poller reads and writes the database, so the database stays open while
+        # it runs (RETIREMENT_CLOSE_SECONDS). It starts no new step after the stop (_retire_worktrees_safely).
+        retirement = getattr(self, '_retirement_thread', None)
+        if retirement is not None:
+            retirement.join(timeout=RETIREMENT_CLOSE_SECONDS)
         if getattr(self, 'profile_watcher', None):
             self.profile_watcher.join(timeout=10)
         self.push.close()
@@ -4427,7 +4435,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if self.kanban is not None:
             self.kanban.close()
         # A provider must honor cancellation before its connection can close.
-        if not any(thread.is_alive() for thread in [*self.running.values(), *self.context_threads.values(), *self.gateway_cron_threads.values()]):
+        if not any(thread.is_alive() for thread in [*self.running.values(), *self.context_threads.values(),
+                                                    *self.gateway_cron_threads.values(), *filter(None, [retirement])]):
             with self.lock:
                 self.db.close()
                 fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
