@@ -926,6 +926,21 @@ class GatewayAdapterTests(unittest.TestCase):
         adapter.CONTEXT_MIDDLEWARE['registered'] = True
         self.assertEqual(coconut._event(turn).text, 'Hey')
         with patch.object(hooks, '_turn', return_value=(None, 'turn-c')):
+            # An Anthropic request sends tool results as user messages. The context stays on the turn's own message, so
+            # each later call of the turn sends the same prefix, and the prompt cache holds it.
+            def anthropic(results):
+                messages = [{'role': 'user', 'content': [{'type': 'text', 'text': 'Hey'}]}]
+                for number in range(results):
+                    messages += [{'role': 'assistant', 'content': [{'type': 'tool_use', 'id': f't{number}', 'name': 'x',
+                                                                     'input': {}}]},
+                                 {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': f't{number}',
+                                                               'content': 'ok'}]}]
+                return hooks.add_turn_context(request={'messages': messages})['request']['messages']
+            first, second, third = anthropic(1), anthropic(2), anthropic(3)
+            self.assertEqual(first[0]['content'][-1], {'type': 'text', 'text': hooks.CONTEXT_HEADER + turn['text']})
+            self.assertEqual(first[:3], second[:3])
+            self.assertEqual(second[:5], third[:5])
+            self.assertNotIn(hooks.CONTEXT_HEADER, json.dumps(third[1:]))
             # A chat request: the last user message gets the context, and the earlier messages stay as Hermes saved them.
             request = {'model': 'm', 'messages': [{'role': 'user', 'content': 'Old'}, {'role': 'assistant', 'content': 'Ok'},
                                                   {'role': 'user', 'content': 'Hey'}]}

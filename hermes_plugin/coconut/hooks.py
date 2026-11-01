@@ -206,8 +206,9 @@ def add_turn_context(request=None, **_):
     """llm_request middleware: give a model call of a Coconut turn the whole turn text, and only the tools it can use.
 
     Hermes saves the user message of the turn, which is the turn's own text (the person's message, or a title). The
-    notes, the rules and the live state of the turn go to the last user message of each request only, so the session
-    does not keep them, and later calls do not send each earlier one again.
+    notes, the rules and the live state of the turn go to the turn's own message in each request only, so the session
+    does not keep them, and later calls do not send each earlier one again. That message stays the same through the
+    turn, so the provider's prompt cache holds the context after the first call of the turn (turn_message).
 
     Only an automatic check of a card (mode `refresh`) can call coconut_refresh_decision (guard_tool), so the other
     turns do not get its schema. Hermes registers a plugin tool for every turn. Return None for any other request.
@@ -225,8 +226,7 @@ def add_turn_context(request=None, **_):
     context = CONTEXTS.get(turn)
     key = next((name for name in ('messages', 'input') if isinstance(request.get(name), list)), None)
     items = list(request[key]) if context and key else []
-    index = next((i for i in range(len(items) - 1, -1, -1)
-                  if isinstance(items[i], dict) and items[i].get('role') == 'user'), None)
+    index = next((i for i in range(len(items) - 1, -1, -1) if turn_message(items[i])), None)
     if index is not None:
         item = dict(items[index])
         note = CONTEXT_HEADER + context
@@ -245,6 +245,18 @@ def add_turn_context(request=None, **_):
     if not changes:
         return None
     return {'request': dict(request, **changes), 'source': 'coconut', 'reason': ' and '.join(reasons)}
+
+
+def turn_message(item):
+    """Whether a request item is a message of the person or of Coconut, not a tool result.
+
+    The Anthropic format sends tool results as user messages of tool_result blocks. The context must not go on them: it
+    would move to the newest result on each call, and the prompt cache would miss from the earlier result on."""
+    if not isinstance(item, dict) or item.get('role') != 'user':
+        return False
+    content = item.get('content')
+    return not (isinstance(content, list) and content
+                and all(isinstance(part, dict) and part.get('type') == 'tool_result' for part in content))
 
 
 def _tool_name(tool):
