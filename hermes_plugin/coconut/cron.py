@@ -18,7 +18,7 @@ import logging
 import os
 import threading
 
-from .adapter import DEFAULT_BRIDGE, PAUSED, REQUEST_SECONDS, Bridge, StreamRelay
+from .adapter import DEFAULT_BRIDGE, PAUSED, REQUEST_SECONDS, WAITED, Bridge, StreamRelay
 
 LOG = logging.getLogger(__name__)
 _RUNS: dict[str, 'CronRun'] = {}
@@ -119,3 +119,4 @@ def finish(outcome):
             run = _RUNS.pop(execution.execution_id, None)
         if run is not None:
             PAUSED.discard(run.turn)
+            WAITED.discard(run.turn)

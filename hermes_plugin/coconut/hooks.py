@@ -82,6 +82,8 @@ CARD_TOOLS = ('coconut_ask', 'coconut_suggest', 'clarify', 'coconut_track_pr', '
               'coconut_continue_work', 'coconut_track_work')
 PAUSED_MESSAGE = ('Coconut shows a card and waits for the answer of the person. End this turn now. Coconut continues '
                   'this conversation with the answer.')
+WAITED_MESSAGE = ('Coconut recorded the wait of this turn. Finish this turn now with a short summary, and call no other '
+                  'tool. Coconut continues the work when the wait ends.')
 CONTEXT_MESSAGE = 'Answer the current question. Its pending decision stays open.'
 REFRESH_TOOL = 'coconut_refresh_decision'
 REFRESH_MESSAGE = 'Record this check with coconut_refresh_decision. The check does not change the card in other ways.'
@@ -152,7 +154,7 @@ def guard_tool(tool_name='', task_id=None, **_):
 
     The first tool call of a native outcome turn also sets its working folder: the workspace of its claim, as the
     worker sets TERMINAL_CWD. coconut_workspace later replaces it with the worktree of the work."""
-    from .adapter import FOLDER_TASKS, FOLDERS, LANE_CHATS, MODES, PAUSED
+    from .adapter import FOLDER_TASKS, FOLDERS, LANE_CHATS, MODES, PAUSED, WAITED
     holder, turn = _turn()
     if turn is None:
         # A turn of Hermes itself in the chat of a technical lane, for example the completion of a background process of
@@ -172,6 +174,8 @@ def guard_tool(tool_name='', task_id=None, **_):
             LOG.warning('Coconut: the turn did not get the folder of its claim (%s).', type(error).__name__)
     if turn in PAUSED:
         return {'action': 'block', 'message': PAUSED_MESSAGE}
+    if turn in WAITED:
+        return {'action': 'block', 'message': WAITED_MESSAGE}
     if MODES.get(turn) == 'status':
         # A status question is answered from its saved context, without tools, as the worker answers it.
         return {'action': 'block', 'message': STATUS_MESSAGE}

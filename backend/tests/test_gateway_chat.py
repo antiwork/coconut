@@ -1476,6 +1476,41 @@ class ServiceRoutingTests(unittest.TestCase):
                                       human_authored=False)
         return self.read('tasks', task['id'])
 
+    def test_a_recorded_wait_ends_the_turn_and_a_repeat_records_nothing(self):
+        # On the mini, Desk called coconut_wait with no_card thousands of times in one turn: each call returned only
+        # "recorded", and the model called it again. A recorded wait ends the turn now.
+        from coconut import gateway_chat
+        task = self.audit()
+        turn = self.running_turn(task)
+        calls = []
+        def wait_for_task(task_id, payload):
+            calls.append(payload)
+            if not payload:
+                return {'tasks': [], 'decisions': []}
+            if payload.get('task_id') == 'done-task':
+                return {'status': 'completed', 'task_id': 'done-task', 'result': 'Done.'}
+            return {'status': 'recorded', 'next_check_at': '2026-11-02T14:00:00+00:00'}
+        def wait(**arguments):
+            return self.service.gateway_tool({'turn_id': turn, 'tool': 'wait', 'arguments': arguments})
+        no_card = dict(no_card=True, next_check_at='2026-11-02T14:00:00Z')
+        with patch.object(self.service, 'wait_for_task', side_effect=wait_for_task):
+            # A list of the waits and a finished task's result do not end the turn.
+            self.assertNotIn('ended', wait())
+            self.assertNotIn('ended', wait(task_id='done-task', reason='Read the result'))
+            recorded = wait(reason='#4138 same rev', **no_card)
+            self.assertEqual((recorded['status'], recorded['ended']), ('recorded', True))
+            self.assertEqual(recorded['instruction'], gateway_chat.WAIT_FINISH)
+            # The same wait again, in other words, records nothing and says to finish.
+            again = wait(reason='#4138 rev same', **no_card)
+            self.assertEqual((again['status'], again['ended']), ('already_recorded', True))
+            self.assertEqual(len(calls), 3)
+            # A turn has at most WAIT_CALLS wait calls.
+            for number in range(gateway_chat.WAIT_CALLS - 3):
+                wait(reason='Another', no_card=True, next_check_at='2026-11-0%dT14:00:00Z' % (3 + number))
+            with self.assertRaisesRegex(ServiceError, 'Finish this turn now'):
+                wait(reason='One more', no_card=True, next_check_at='2026-11-09T14:00:00Z')
+        self.assertEqual(len(calls), gateway_chat.WAIT_CALLS)
+
     def running_turn(self, task, **fields):
         """A gateway turn of `task`, which runs now, with these task fields."""
         with self.service.transaction():
