@@ -1,8 +1,8 @@
-"""A bot worker selects the tools of its own Hermes home, also when another home owns the Hermes source.
+"""A process of a bot selects the tools of its own Hermes home, also when another home owns the Hermes source.
 
 The official installer stamps its source folder, so Hermes reads the tool store of the installer's home by default. Each
-bot has its own HERMES_HOME, and the bot's terminal `hermes` installs tools into <HERMES_HOME>/tools. The worker, its
-terminal, and its routine scripts must agree with that store. No tool is downloaded or run: the test records the pinned
+bot has its own HERMES_HOME, and the bot's terminal `hermes` installs tools into <HERMES_HOME>/tools. A process of the
+bot (HermesProvider.environment) and its terminal must agree with that store. No tool is downloaded or run: the test records the pinned
 agent-browser of this Hermes in a scratch bot home, as an install would.
 """
 import json
@@ -42,7 +42,6 @@ if sys.argv[1] == 'record':
 from pm import paths
 from tools.browser_tool_install import _find_agent_browser
 from tools.environments.local import LocalEnvironment
-from coconut import native_routine_execution
 try:
     browser = _find_agent_browser(validate=False)
 except FileNotFoundError:
@@ -52,11 +51,7 @@ try:
     shell = terminal.execute('printf "%s" "$HERMES_RUNTIME_DIR"')
 finally:
     terminal.cleanup()
-native_routine_execution.use_worker_python_for_scripts()
-from cron import scheduler_script
-argv, _ = scheduler_script._posix_cron_script_argv(Path('routine.py'))
-print(json.dumps({'store': str(paths.store_root()), 'browser': browser, 'shell': shell.get('output', ''),
-                  'routine': argv[:2] == [sys.executable, '-c']}))
+print(json.dumps({'store': str(paths.store_root()), 'browser': browser, 'shell': shell.get('output', '')}))
 '''
 
 
@@ -80,17 +75,15 @@ class NativeToolStoreTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout.strip().splitlines()[-1]), env
 
-    def test_the_worker_selects_the_browser_that_the_bot_installed(self):
+    def test_a_bot_process_selects_the_browser_that_the_bot_installed(self):
         bot = str(uuid4())
         recorded, env = self.run_bot(bot, 'record')
         seen, _ = self.run_bot(bot, 'select')
         store = str(Path(env['HERMES_HOME']) / 'tools')
         self.assertEqual(seen['store'], store)
         self.assertEqual(seen['browser'], recorded['binary'])
-        # The terminal of the worker, and a `hermes` started there, read the same store.
+        # The terminal of the process, and a `hermes` started there, read the same store.
         self.assertEqual(seen['shell'], store)
-        # Routine scripts keep the worker's Python, although the bot's store has no Python.
-        self.assertTrue(seen['routine'], seen)
 
     def test_bots_do_not_share_a_tool_store(self):
         owner, other = str(uuid4()), str(uuid4())

@@ -9,7 +9,6 @@ import unittest
 from unittest.mock import patch
 
 from coconut.runtime_environment import CLAUDE_PROFILE_OVERRIDES, prepare_profile, profile_environment
-from coconut.profiles import merge_runtime_config
 from coconut.terminal_setup import configure_terminal
 
 
@@ -64,24 +63,6 @@ class RuntimeEnvironmentTests(unittest.TestCase):
             self.assertTrue((account / '.claude').is_symlink())
             self.assertEqual(saved.read_text(), 'native saved state')
             self.assertEqual(list(outside.iterdir()), [saved])
-
-    def test_profile_credentials_cannot_replace_runtime_paths(self):
-        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ):
-            profile = Path(directory)
-            env = prepare_profile(profile)
-            os.environ.update(env)
-            values = dict(CLAUDE_CONFIG_DIR='/other', CLAUDE_SECURESTORAGE_CONFIG_DIR='/other', HOME='/other',
-                          USER='other-user', GH_CONFIG_DIR=str(profile / '.config/gh'), CUSTOM_API_KEY='profile-value')
-            os.environ.update({key: '/old/profile' for key in CLAUDE_PROFILE_OVERRIDES})
-            with patch.dict(sys.modules, {'dotenv': SimpleNamespace(dotenv_values=lambda _: values)}):
-                merge_runtime_config(profile)
-            for key, value in env.items():
-                self.assertEqual(os.environ[key], value)
-            for key in CLAUDE_PROFILE_OVERRIDES:
-                self.assertNotIn(key, os.environ)
-            self.assertEqual(os.environ['CUSTOM_API_KEY'], 'profile-value')
-            # A profile that keeps its own login folder sets it in its .env file.
-            self.assertEqual(os.environ['GH_CONFIG_DIR'], str(profile / '.config/gh'))
 
     def test_native_shell_init_restores_account_home_and_tool_scope(self):
         with tempfile.TemporaryDirectory(prefix="coconut's profile ") as directory, patch.dict(os.environ):

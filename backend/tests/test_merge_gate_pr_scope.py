@@ -153,14 +153,6 @@ class MergeGatePullRequestScopeTests(unittest.TestCase):
         self.receipt('target-wait', 'f21ea9d7', _wait_task_id=EXPERT)
         self.assertBlocked()
 
-    def test_unread_process_result_of_the_target_review_still_gates(self):
-        self.deliver_sibling_wait()
-        record = self.receipt('target-review', 'f21ea9d7', action=dict(name='terminal', arguments={}),
-                              result=json.dumps(dict(session_id='review', notify_on_complete=True)))
-        self.assertBlocked()
-        self.service._put('native_receipts', dict(record, _process_delivery='consumed'))
-        self.assertOpen()
-
     def test_undelivered_answer_queued_for_a_target_task_still_gates(self):
         self.patch('393ab0b2', status='queued', _background_completion=['The review finished.'])
         self.assertBlocked()
@@ -265,15 +257,6 @@ class MergeGatePullRequestScopeTests(unittest.TestCase):
     def test_a_sibling_task_keeps_every_other_unread_effect_in_the_gate(self):
         self.assertOpen()
         effects = {
-            'terminal for unknown work': dict(action=dict(name='terminal', arguments={}),
-                                              result=json.dumps(dict(session_id='unknown', notify_on_complete=True))),
-            'terminal for the target review': dict(action=dict(name='terminal', arguments={}),
-                                                   result=json.dumps(dict(session_id='review', notify_on_complete=True))),
-            'dispatched delegation': dict(action=dict(name='delegate_task', arguments={}),
-                                          result=json.dumps(dict(status='dispatched', delegation_id='delegated'))),
-            'relay for unknown work': dict(action=dict(name='message_agent', arguments={}), _relay_task_id='unknown'),
-            'relay for the target review': dict(action=dict(name='message_agent', arguments={}), _relay_task_id='f21ea9d7'),
-            'process result wait': dict(_wait_process_receipt='some-process'),
             'decision wait': dict(_wait_decision_id='some-decision'),
             'wait fields on another tool': dict(_wait_task_id=EXPERT, action=dict(name='terminal', arguments={})),
         }
@@ -285,15 +268,10 @@ class MergeGatePullRequestScopeTests(unittest.TestCase):
                 self.service._put('native_receipts', dict(record, _process_delivery='consumed'))
                 self.assertOpen()
 
-    def test_a_wait_receipt_that_is_also_a_relay_process_or_decision_wait_is_never_exempt(self):
-        self.patch(EXPERT, _native_relay_result=dict(status='completed'))
-        self.receipt('process-source', EXPERT, _completion_text='The process finished.')
+    def test_a_wait_receipt_that_is_also_a_decision_wait_is_never_exempt(self):
         self.service._put('decisions', dict(self.sibling_decision, id='replied-decision', task_id=EXPERT, status='replied'))
-        for name, fields in {'relay': dict(_relay_task_id=EXPERT), 'process': dict(_wait_process_receipt='process-source'),
-                             'decision': dict(_wait_decision_id='replied-decision')}.items():
-            with self.subTest(name):
-                self.receipt('sibling-wait', SETUP, _wait_task_id=EXPERT, **fields)
-                self.assertBlocked()
+        self.receipt('sibling-wait', SETUP, _wait_task_id=EXPERT, _wait_decision_id='replied-decision')
+        self.assertBlocked()
         self.receipt('sibling-wait', SETUP, _wait_task_id=EXPERT)
         self.assertOpen()
 
@@ -326,10 +304,6 @@ class MergeGatePullRequestScopeTests(unittest.TestCase):
                                                 fields.get('keep', {CALLER, ROOT}))
         self.assertEqual(inert(), {'sibling-wait'})
         self.assertEqual(inert(keep={SETUP}), set())
-        # A target that still has its own unread process result has not delivered its result.
-        self.receipt('expert-process', EXPERT, action=dict(name='terminal', arguments={}),
-                     result=json.dumps(dict(session_id='expert', notify_on_complete=True)))
-        self.assertEqual(inert(), set())
 
     def test_active_background_completion_of_a_sibling_task_still_gates(self):
         for status in ('queued', 'working', 'needs_you', 'paused'):
@@ -440,22 +414,6 @@ class MergeGateNativeReceiptBoundaryTests(unittest.TestCase):
                          {k: v for k, v in sibling['native_receipts'].items() if k != call['id']})
         self.assertEqual({t['id']: self.raw('tasks', t['id']) for t in self.service._all('tasks') if t['id'] != CALLER}, sibling_tasks)
 
-    def test_an_unread_result_of_the_same_pr_refuses_the_card_and_changes_nothing_until_consumed(self):
-        record = self.receipt('target-review', 'f21ea9d7', action=dict(name='terminal', arguments={}),
-                              result=json.dumps(dict(session_id='review', notify_on_complete=True)))
-        call = self.call()
-        before = {name: self.bytes_of(name) for name in ('tasks', 'native_receipts', 'decisions', 'artifacts')}
-        self.assertRefused(call['id'], 400, PENDING)
-        # The refusal rolls back the whole receipt route: no card, no receipt state, no caller status change.
-        self.assertEqual({name: self.bytes_of(name) for name in before}, before)
-        self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'executing')
-        self.assertEqual(self.service._get('tasks', CALLER)['status'], 'working')
-        self.assertEqual(self.service._get('decisions', 'xcode-decision'), self.sibling_decision)
-        # Reading the result opens the same receipt for the same question.
-        self.service._put('native_receipts', dict(record, _process_delivery='consumed'))
-        decision = self.assertCreated(call['id'])
-        self.assertEqual(decision['merge_pr_url'], TARGET)
-
     def test_a_pending_wait_of_the_same_pr_refuses_the_card_without_a_receipt_link_too(self):
         self.receipt('target-wait', 'f21ea9d7', _wait_task_id=EXPERT)
         # A question without receipt_id is also validated: leaving the receipt out is no way around the gate.
@@ -466,14 +424,6 @@ class MergeGateNativeReceiptBoundaryTests(unittest.TestCase):
         self.assertRefused(call['id'], 400, PENDING)
         self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'executing')
         self.assertEqual(self.service._all('decisions'), [self.sibling_decision])
-
-    def test_a_sibling_effect_still_refuses_the_card_through_the_native_receipt_route(self):
-        self.receipt('sibling-effect', SETUP, action=dict(name='terminal', arguments={}),
-                     result=json.dumps(dict(session_id='unknown', notify_on_complete=True)))
-        call = self.call()
-        self.assertRefused(call['id'], 400, PENDING)
-        self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'executing')
-        self.assertEqual(self.service._get('decisions', 'xcode-decision'), self.sibling_decision)
 
     def test_a_caller_cannot_use_the_receipt_of_another_task(self):
         call = self.call()

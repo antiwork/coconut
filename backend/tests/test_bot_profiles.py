@@ -203,7 +203,7 @@ class ProfileTests(unittest.TestCase):
         self.assertNotEqual(self.bots()['work']['id'], bots['work']['id'])
 
     def test_a_bot_can_only_remove_another_bot_from_coconut(self):
-        from coconut.hermes_worker import BOT_DELETION_SCHEMA
+        from coconut.card_tools import BOT_DELETION_SCHEMA
         self.assertEqual(set(BOT_DELETION_SCHEMA['parameters']['properties']), {'source_message_id', 'target_bot_id', 'expected_name'})
         self.assertIn('Hermes profile folder stays', BOT_DELETION_SCHEMA['description'])
 
@@ -218,8 +218,8 @@ class ProfileTests(unittest.TestCase):
             self.provider_environment({'id': bot_id})
 
 
-class WorkerTests(unittest.TestCase):
-    def test_a_worker_runs_in_the_profile_and_is_replaced_when_the_home_changes(self):
+class EnvironmentTests(unittest.TestCase):
+    def test_the_processes_of_a_bot_run_in_its_profile_and_follow_a_changed_home(self):
         from coconut.providers import HermesProvider as Real
         with tempfile.TemporaryDirectory() as temporary:
             root, hermes = Path(temporary) / 'data', Path(temporary) / '.hermes'
@@ -233,27 +233,8 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual((env['HERMES_HOME'], env['COCONUT_BOT_ID']), (str(first), bot_id))
             self.assertEqual(env['COCONUT_BOT_DIR'], str(root.resolve() / 'bots' / bot_id))
             self.assertEqual(sorted(first.iterdir()), [])
-            started, stopped = [], []
-
-            class Process:
-                def __init__(self, *args, env=None, **kwargs):
-                    self.pid, self.env = 1000 + len(started), env
-                    started.append(self)
-
-                def poll(self):
-                    return None
-
-            bot = {'id': bot_id}
-            with patch('coconut.providers.subprocess.Popen', Process), patch.object(provider, '_terminate', side_effect=stopped.append):
-                provider.prepare_kanban_worker('one', bot, temporary, 'execution', worker_id='worker')
-                provider.release_kanban_preparation('one')
-                provider.prepare_kanban_worker('two', bot, temporary, 'execution', worker_id='worker')
-                provider.release_kanban_preparation('two')
-                self.assertEqual(len(started), 1)
-                provider.profile_rows[bot_id]['home'] = str(second)
-                provider.prepare_kanban_worker('three', bot, temporary, 'execution', worker_id='worker')
-            self.assertEqual(started[1].env['HERMES_HOME'], str(second))
-            self.assertEqual(stopped, [started[0]])
+            provider.profile_rows[bot_id]['home'] = str(second)
+            self.assertEqual(provider.environment(bot_id)[0]['HERMES_HOME'], str(second))
 
 
 class ProfileCommandTests(unittest.TestCase):

@@ -10,7 +10,7 @@ from urllib.parse import parse_qs
 
 from coconut import decision_sources, pr_tracking
 from coconut.work_sources import source_fingerprint
-from coconut.hermes_worker import conversation_input
+from turn_text import turn_input
 from coconut.pr_tracking import GitHubPRTracker, PRTrackingError
 from coconut.service import YieldForDecision
 import test_decision_sources as source_tests
@@ -166,7 +166,7 @@ class SourceActivityTests(unittest.TestCase):
         else:
             args = self.service.provider.start_task.call_args.args
             request = dict(operation='start', task=args[0], history=[])
-        return args[0], conversation_input(request)[0] if render else None
+        return args[0], turn_input(request)[0] if render else None
 
     def requeue(self):
         with self.service.transaction():
@@ -568,7 +568,7 @@ class SourceActivityTests(unittest.TestCase):
         self.assertTrue(any(item.get('selection_limited') for item in activity))
         task = dict(self.service._get('tasks', self.task['id']), _source_activity=activity)
         self.assertIn('could not select all linked GitHub threads',
-                      conversation_input(dict(operation='start', task=task, history=[]))[0])
+                      turn_input(dict(operation='start', task=task, history=[]))[0])
 
     def test_explicitly_visible_card_is_read(self):
         with self.service.transaction():
@@ -627,7 +627,7 @@ class SourceActivityTests(unittest.TestCase):
     def test_truncated_text_tells_the_bot_to_read_the_rest(self):
         task = dict(self.service._get('tasks', self.task['id']), _source_activity=[dict(
             url=URL, updated_at='2026-09-23T12:10:00Z', new_activity=[dict(kind='comment', body='x' * 1500, truncated=True)])])
-        prompt = conversation_input(dict(operation='start', task=task, history=[]))[0]
+        prompt = turn_input(dict(operation='start', task=task, history=[]))[0]
         self.assertIn('Coconut did not show all new activity for these GitHub threads: ' + URL, prompt)
 
     def test_activity_after_the_thread_read_is_recorded_as_seen(self):
@@ -944,7 +944,7 @@ class ActivityPromptTests(unittest.TestCase):
         records = [dict(url=URL, new_activity=[], omitted_items=2, incomplete=False),
                    dict(url=PR_URL, new_activity=[], omitted_items=0, incomplete=True),
                    dict(url=URL + '0', new_activity=[], omitted_items=0, incomplete=False)]
-        prompt = conversation_input(dict(operation='start', task=dict(id='task', title='Check', _source_activity=records),
+        prompt = turn_input(dict(operation='start', task=dict(id='task', title='Check', _source_activity=records),
                                          history=[]))[0]
         self.assertIn(f'Coconut did not show all new activity for these GitHub threads: {URL}, {PR_URL}. '
                       'Read the rest of each thread yourself before you act.', prompt)

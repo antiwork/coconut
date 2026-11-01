@@ -327,10 +327,16 @@ class ExternalWorkWaitTests(unittest.TestCase):
 
         recovery.update(status='working', _native_turn_id='verified-recovery')
         self.service._put('tasks', recovery)
-        process = self.service.native_event(recovery['id'], 'native_call',
-            dict(name='terminal', arguments={'command': 'read saved verification'}))
-        self.service.native_event(recovery['id'], 'native_result', dict(id=process['id'],
-            result={'session_id': 'recovery-check', 'notify_on_complete': True}))
+        # The recovery waits for another task (coconut_wait).
+        target = self.service._get('tasks', self.write('POST', '/v1/bots/' + child['bot_id'] + '/messages',
+                                                       dict(text='Verify the records', mode='queue'))['id'])
+        target['status'] = 'waiting'
+        self.service._put('tasks', target)
+        before += 1
+        process = dict(id=str(uuid4()), task_id=recovery['id'], turn_id='verified-recovery', state='completed',
+                       action={'name': 'coconut_wait'}, result='{}', _wait_task_id=target['id'],
+                       _wait_session_id=target['session_id'])
+        self.service._put('native_receipts', process)
         recovery['status'] = 'waiting'
         self.service._put('tasks', recovery)
         self.assertEqual(self.sync()[0]['work_state'], 'waiting')
@@ -345,7 +351,7 @@ class ExternalWorkWaitTests(unittest.TestCase):
         self.service._put('tasks', recovery)
         # An assignment can still own a result when one of its callbacks fails.
         receipt = self.service._get('native_receipts', receipt['id'])
-        receipt.update(state='completed', result={'session_id': 'other-result', 'notify_on_complete': True})
+        receipt.update(state='completed', result='{}', _wait_task_id=target['id'], _wait_session_id=target['session_id'])
         self.service._put('native_receipts', receipt)
         self.service._register_work(recovery['id'], self.payload)
         self.assertEqual(self.service._get('artifacts', item['id'])['_external_wait_task_id'], callback['id'])

@@ -1,7 +1,5 @@
 """A requester return may admit its delegate, but only its own foreground is exempt."""
 import copy
-import json
-import os
 from pathlib import Path
 import threading
 import unittest
@@ -10,7 +8,6 @@ from uuid import uuid4
 
 from coconut.service import ServiceError
 import test_native_work_continuation as fixtures
-import test_provider
 
 
 class RequesterCallbackContinuationTests(unittest.TestCase):
@@ -65,26 +62,21 @@ class RequesterCallbackContinuationTests(unittest.TestCase):
             self.assertNotIn('_native_outcome_id', task)
         return owner, requester, report, caller, original, peer
 
-    def through_provider(self, caller, *, twice=False):
-        self.root = Path(self.temp.name) / str(uuid4())
+    def request_continuation(self, caller, *, twice=False):
+        """Call coconut_continue_work for the caller's turn. The call reaches the service as the work_continue event,
+        and a client error of the service is a rejected receipt of the tool."""
         payload = dict(task_id='t_existing', message='Keep the verified correction local.')
-        behavior = "import json\nresult = json.loads(registry.dispatch('coconut_continue_work', " + repr(payload) + "))\n"
+
+        def call():
+            try:
+                return self.service.emit(caller['id'], 'work_continue', payload)
+            except ServiceError as error:
+                self.assertTrue(400 <= error.status < 500, error)
+                return {'status': 'rejected', 'error': str(error)}
+        result = call()
         if twice:
-            behavior += "assert json.loads(registry.dispatch('coconut_continue_work', " + repr(payload) + ")) == result\n"
-        behavior += "return {'completed': True, 'final_response': json.dumps(result)}\n"
-        provider = test_provider.ProviderTests.fake_hermes(self, behavior)
-        self.assertTrue(provider.catalog.root.is_relative_to(Path(self.temp.name)))
-        events = []
-        def emit(kind, data):
-            if kind == 'work_continue':
-                return self.service.emit(caller['id'], kind, data)
-            events.append((kind, data))
-        with patch.dict(os.environ, ANTHROPIC_API_KEY='test-only'):
-            provider.start_task({k: caller[k] for k in ('id', 'bot_id', 'title', '_native_turn_id')},
-                                self.service._get('bots', caller['bot_id']), [], emit)
-        text = ''.join(data['text'] for kind, data in events if kind == 'text_delta')
-        self.assertTrue(text.startswith('{'), events)
-        return json.loads(text)
+            self.assertEqual(call(), result)
+        return result
 
     def reject(self, owner, caller):
         with self.assertRaises(ServiceError):
@@ -99,7 +91,7 @@ class RequesterCallbackContinuationTests(unittest.TestCase):
         self.service._put('decisions', dict(id='answered', task_id=owner['id'], status='rejected'))
         before = copy.deepcopy(self.service.kanban.tasks)
         tasks_before = self.service._all('tasks')
-        receipt = self.through_provider(caller, twice=True)
+        receipt = self.request_continuation(caller, twice=True)
         self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
         queued = self.service._get('tasks', owner['id'])
         for key in ('id', '_execution_session_id', '_kanban_claim', 'source_task_id', 'source_bot_id',
@@ -155,8 +147,7 @@ class RequesterCallbackContinuationTests(unittest.TestCase):
         owner, _, _, caller, _, _ = self.callback()
         for changes in ({'_waiting_on': ['unfinished']}, {'_return_pending': {'text': 'result'}},
                         {'_steering': ['new input']}, {'_live_messages': {'message': 'new input'}},
-                        {'_blocked_followup': {'text': 'new input'}},
-                        {'_native_reply_pending': {'text': 'result'}}):
+                        {'_blocked_followup': {'text': 'new input'}}):
             with self.subTest(changes=changes):
                 self.service._put('tasks', dict(caller, **changes))
                 self.reject(owner, caller)
@@ -166,13 +157,13 @@ class RequesterCallbackContinuationTests(unittest.TestCase):
     def test_provider_returns_actionable_caller_decision_and_context_rejections(self):
         owner, _, _, caller, _, _ = self.callback()
         self.service._put('decisions', dict(id='pending', task_id=caller['id'], status='pending'))
-        receipt = self.through_provider(caller)
+        receipt = self.request_continuation(caller)
         self.assertEqual(receipt['status'], 'rejected')
         self.assertIn('another execution', receipt['error'])
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
         self.service._put('decisions', dict(id='pending', task_id=caller['id'], status='executed'))
         self.service._put('contexts', dict(id='pending-context', task_id=caller['id'], status='queued'))
-        receipt = self.through_provider(caller)
+        receipt = self.request_continuation(caller)
         self.assertEqual(receipt['status'], 'rejected')
         self.assertIn('another execution', receipt['error'])
         self.assertEqual(self.service._get('contexts', 'pending-context')['status'], 'queued')
@@ -267,7 +258,7 @@ class RequesterCallbackContinuationTests(unittest.TestCase):
                     return {'tasks': [dict(rows[i], external_id=i) for i in request['external_ids'] if i in rows]}
                 self.service.kanban.call.side_effect = snapshot
                 try:
-                    result = self.through_provider(caller)
+                    result = self.request_continuation(caller)
                     self.assertEqual(result['status'], 'rejected', result)
                     self.assertEqual(self.service._get('tasks', owner['id']), owner)
                 finally:
@@ -288,7 +279,7 @@ class RequesterRootCallbackContinuationTests(unittest.TestCase):
     scheduled_native = fixtures.NativeWorkContinuationTests.scheduled_native
     snapshot_result = fixtures.NativeWorkContinuationTests.snapshot_result
     resume = fixtures.NativeWorkContinuationTests.resume
-    through_provider = RequesterCallbackContinuationTests.through_provider
+    request_continuation = RequesterCallbackContinuationTests.request_continuation
     reject = RequesterCallbackContinuationTests.reject
 
     def returned(self, owner, root, name, *, callback_owner=None, status='completed'):
@@ -362,7 +353,7 @@ class RequesterRootCallbackContinuationTests(unittest.TestCase):
         self.service._put('decisions', dict(id='answered', task_id=owner['id'], status='rejected'))
         before = copy.deepcopy(self.service.kanban.tasks)
         tasks_before = self.service._all('tasks')
-        receipt = self.through_provider(caller, twice=True)
+        receipt = self.request_continuation(caller, twice=True)
         self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
         queued = self.service._get('tasks', owner['id'])
         for key in ('id', '_execution_session_id', '_kanban_claim', 'source_task_id', 'source_bot_id',
@@ -439,8 +430,6 @@ class RequesterRootCallbackContinuationTests(unittest.TestCase):
                                    action={'name': 'unknown', 'arguments': {}}),
             'running command': row('native_receipts', id='source-command', turn_id='source-turn', state='executing',
                                    action={'name': 'terminal', 'arguments': {}}),
-            'background wait': row('native_receipts', id='source-wait', turn_id='source-turn', state='completed',
-                                   action={'name': 'process', 'arguments': {}}, _wait_process_receipt='source-process'),
             'native ready': card(status='ready', block_kind='dependency', current_run_id=None, worker_pid=None),
             'native claim': card(status='running', current_run_id=91, worker_pid=191),
             'native input block': card(status='blocked', block_kind='needs_input'),
@@ -454,24 +443,21 @@ class RequesterRootCallbackContinuationTests(unittest.TestCase):
                 self.setUp()
                 owner, root, source, reporter, helper, caller, _, _ = self.incident()
                 apply(self, source, helper)
-                receipt = self.through_provider(caller)
+                receipt = self.request_continuation(caller)
                 self.assertEqual(receipt['status'], 'rejected', receipt)
                 self.assertIn('another execution', receipt['error'])
                 self.assertEqual(self.service._get('tasks', owner['id']), owner)
                 for decision in self.service._all('decisions'):
                     self.assertEqual(decision['status'], 'pending')
-        # The same source admits once it is quiet: answered decision, ended context and delivered wait.
+        # The same source admits once it is quiet: answered decision and ended context.
         self.tearDown()
         self.setUp()
         owner, root, source, reporter, helper, caller, _, _ = self.incident()
         self.service._put('decisions', dict(id='source-decision', task_id=source['id'], status='executed'))
         self.service._put('contexts', dict(id='source-context', task_id=source['id'], status='completed'))
-        self.service._put('native_receipts', dict(id='source-wait', task_id=source['id'], turn_id='source-turn',
-            state='completed', action={'name': 'process', 'arguments': {}}, _wait_process_receipt='source-process',
-            _process_delivery='delivered'))
         self.service._put('native_receipts', dict(id='source-unknown', task_id=source['id'], turn_id='source-turn',
             state='completed', action={'name': 'unknown', 'arguments': {}}))
-        receipt = self.through_provider(caller, twice=True)
+        receipt = self.request_continuation(caller, twice=True)
         self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
         self.assertEqual(self.service._get('tasks', source['id']), source)
 
@@ -547,7 +533,7 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
     scheduled_native = fixtures.NativeWorkContinuationTests.scheduled_native
     snapshot_result = fixtures.NativeWorkContinuationTests.snapshot_result
     resume = fixtures.NativeWorkContinuationTests.resume
-    through_provider = RequesterCallbackContinuationTests.through_provider
+    request_continuation = RequesterCallbackContinuationTests.request_continuation
     reject = RequesterCallbackContinuationTests.reject
 
     def returned(self, producer, name):
@@ -565,11 +551,8 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
         return callback
 
     def relay(self, source, bot, text):
-        # A native message_agent call and its relay delivery, as the worker sends them.
-        call = self.service.emit(source['id'], 'native_call', dict(name='message_agent',
-                                 arguments=dict(target=bot['id'], message=text)))
-        receipt = self.service.emit(source['id'], 'native_bot_message', dict(native_call_id=call['id'],
-            native_envelope_id=uuid4().hex, target_bot_id=bot['id'], text=text))
+        # The saved state of a message_agent call that an earlier Coconut delivered through its native relay.
+        receipt = fixtures.NativeWorkContinuationTests.linked_report_message(self, source, bot['id'], text)
         return self.service._get('tasks', receipt['task_id'])
 
     def finish(self, task, summary):
@@ -700,8 +683,8 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
         self.service._put('tasks', root)
         seen = {}
         def start(task, bot, history, emit):
-            from coconut.hermes_worker import conversation_input
-            seen['prompt'] = conversation_input(dict(operation='start', task=task, history=history))[0]
+            from turn_text import turn_input
+            seen['prompt'] = turn_input(dict(operation='start', task=task, history=history))[0]
             seen['started'] = copy.deepcopy(self.get(ids['root']))
             if during:
                 during()
@@ -810,7 +793,7 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
         root = self.run_root(self.get(ids['root']))
         self.assertTrue(self.foreground(ids))
         owner = self.get(ids['owner'])
-        receipt = self.through_provider(root)
+        receipt = self.request_continuation(root)
         self.assertEqual(receipt['status'], 'rejected', receipt)
         self.assertIn('another execution', receipt['error'])
         self.assertEqual(self.get(ids['owner']), owner)
@@ -823,7 +806,7 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
         before = copy.deepcopy(self.service.kanban.tasks)
         tasks_before = self.service._all('tasks')
         decisions_before = self.service._all('decisions')
-        receipt = self.through_provider(root, twice=True)
+        receipt = self.request_continuation(root, twice=True)
         self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
         queued = self.get(owner['id'])
         for key in ('id', '_execution_session_id', '_kanban_claim', 'source_task_id', 'source_bot_id',
@@ -865,7 +848,7 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
                                          run_id=95, pid=195, context=''))
         self.service._put('tasks', result)
         self.service.kanban.tasks[result['id']] = dict(id='t_later', status='running', current_run_id=95, worker_pid=195)
-        again = self.through_provider(result)
+        again = self.request_continuation(result)
         self.assertEqual(again, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
         continued = self.get(owner['id'])
         for key in ('_execution_session_id', '_kanban_claim', '_reply_to_task_id', '_work_context_id'):
@@ -988,9 +971,7 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
             'helper reply not yet delivered': (True, finished, 'scheduled'),
             'helper failed with its result pending': (True, failed, 'scheduled'),
             'helper waits for a person': (True, helper(status='needs_you'), 'scheduled'),
-            'helper native reply pending': (True, helper(status='completed', _native_reply_pending={'text': 'reply'}), 'scheduled'),
-            'helper result pending without a relay reply': (True, helper(status='completed', _native_reply_pending=None,
-                                                                         _return_pending={'text': 'result'}), 'scheduled'),
+            'helper result pending': (True, helper(status='completed', _return_pending={'text': 'result'}), 'scheduled'),
             'helper reply delivered': (True, delivered, 'ready'),
             'helper replies to another task': (True, helper(_reply_to_task_id='another-task'), 'ready'),
             'helper card is not a parent': (False, None, 'ready'),
@@ -1277,7 +1258,7 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
                                                state='executing', action={'name': 'unknown', 'arguments': {}})
         for key, value in (('_waiting_on', ['unfinished']), ('_return_pending', {'text': 'result'}),
                            ('_steering', ['new input']), ('_live_messages', {'message': 'new input'}),
-                           ('_blocked_followup', {'text': 'new input'}), ('_native_reply_pending', {'text': 'result'})):
+                           ('_blocked_followup', {'text': 'new input'})):
             cases['root ' + key] = task('root', **{key: value})
         for name in ('helper', 'delegate', 'requester'):
             cases['return ' + name] = task(name, _return_pending={'text': 'result'})
@@ -1301,7 +1282,7 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
                 ids, original, peer, root = self.fresh()
                 owner = self.get(ids['owner'])
                 apply(ids, original, peer)
-                receipt = self.through_provider(self.get(ids['root']))
+                receipt = self.request_continuation(self.get(ids['root']))
                 self.assertEqual(receipt['status'], 'rejected', receipt)
                 self.assertEqual(self.get(ids['owner']), owner)
                 for decision in self.service._all('decisions'):
@@ -1309,7 +1290,7 @@ class ApprovedProposalRequesterContinuationTests(unittest.TestCase):
                         self.assertEqual(decision['status'], 'pending')
         # Without any of them the same graph admits once.
         ids, original, peer, root = self.fresh()
-        self.assertEqual(self.through_provider(root)['task_id'], ids['owner'])
+        self.assertEqual(self.request_continuation(root)['task_id'], ids['owner'])
 
 if __name__ == '__main__':
     unittest.main()

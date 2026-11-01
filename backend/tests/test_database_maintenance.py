@@ -244,30 +244,29 @@ class ReceiptRetentionTests(ServiceCase):
         gone = {self.receipt(idle), self.receipt(idle, **routine('list'))}
         kept = {self.receipt(idle, state='executing', result=None), self.receipt(idle, 'kanban_create'),
                 self.receipt(idle, **routine('create')), self.receipt(idle, **routine(' Run_Now '))}
-        decided, carried, waited = self.receipt(idle), self.receipt(idle), self.receipt(idle)
-        kept |= {decided, carried, waited}
+        decided, carried = self.receipt(idle), self.receipt(idle)
+        kept |= {decided, carried}
         with self.service.transaction():
             self.service._put('decisions', dict(id=str(uuid4()), task_id=other['id'], bot_id=self.bot['id'],
                                                 status='approved', _receipt_id=decided))
             self.service._put('tasks', dict(other, _continuation_receipt_ids=[carried]))
-        # A pending receipt, here a wait, keeps every receipt of its task. It also names the receipt that it waits for.
+        # A pending receipt, here a wait for another task, keeps every receipt of its task.
         waiter = self.task()
-        kept |= {self.receipt(waiter, 'process', _wait_process_receipt=waited), self.receipt(waiter)}
+        kept |= {self.receipt(waiter, 'coconut_wait', result='{}', _wait_task_id=other['id'], _wait_session_id='session'),
+                 self.receipt(waiter)}
         self.assertEqual(self.service._prune_receipts(NOW), 2)
         self.assertEqual(self.remaining(), kept)
         self.assertFalse(gone & self.remaining())
 
     def test_an_idle_outcome_loses_its_terminal_results(self):
-        # A terminal result without notify_on_complete makes PENDING_COMPLETIONS NULL. Such receipts hold most tool output.
-        idle = self.task()
+        # Such receipts hold most tool output. A background process of a worker's terminal call keeps nothing now:
+        # Hermes watches the processes of a turn, and Coconut has no subscription to deliver.
+        idle, background = self.task(), self.task()
         gone = {self.receipt(idle, 'terminal', result='{"output":"long build log"}'),
-                self.receipt(idle, 'terminal', result='not json')}
-        background = self.task()
-        kept = {self.receipt(background, 'terminal', result='{"session_id":"proc","notify_on_complete":true}'),
-                # A withdrawal check reads a delivered process result later.
+                self.receipt(idle, 'terminal', result='not json'),
+                self.receipt(background, 'terminal', result='{"session_id":"proc","notify_on_complete":true}'),
                 self.receipt(idle, 'terminal', result='{"session_id":"done","notify_on_complete":true}', _process_delivery='check')}
-        self.assertEqual(self.service._prune_receipts(NOW), 2)
-        self.assertEqual(self.remaining(), kept)
+        self.assertEqual(self.service._prune_receipts(NOW), 4)
         self.assertFalse(gone & self.remaining())
 
     def test_live_recent_and_pending_work_keeps_its_receipts(self):
@@ -323,14 +322,15 @@ class ReceiptRetentionTests(ServiceCase):
         self.assertEqual(self.remaining(), {kept})
         self.assertNotIn(gone, self.remaining())
 
-    def test_a_wait_that_starts_between_batches_keeps_the_receipt_it_names(self):
-        first, second, waiter = self.task(), self.task(), self.task(status='working')
-        gone, waited = self.receipt(first), self.receipt(second)
+    def test_a_wait_that_starts_between_batches_keeps_the_receipts_of_its_task(self):
+        first, second, target = self.task(), self.task(), self.task(status='working')
+        gone, kept = self.receipt(first), self.receipt(second)
         def wait_for_it():
-            self.service._put('native_receipts', dict(id='wait', task_id=waiter['id'], turn_id='turn', state='completed',
-                action={'name': 'process', 'arguments': {}}, action_hash='hash', created_at=RECENT, _wait_process_receipt=waited))
+            self.service._put('native_receipts', dict(id='wait', task_id=second['id'], turn_id='turn', state='completed',
+                action={'name': 'coconut_wait', 'arguments': {}}, action_hash='hash', created_at=RECENT, result='{}',
+                _wait_task_id=target['id'], _wait_session_id='session'))
         self.between_batches(wait_for_it)
-        self.assertEqual(self.remaining(), {waited, 'wait'})
+        self.assertEqual(self.remaining(), {kept, 'wait'})
         self.assertNotIn(gone, self.remaining())
 
 
@@ -529,46 +529,18 @@ class StartupReadTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         provider = FixtureProvider(temp.name)
-        # Relay recovery runs only for a provider with native settings.
-        provider.native_settings = lambda operation, bots, **options: None
         service = Service(temp.name, provider, start_workers=False)
         bot = service.mutate('POST', '/v1/bots', {'name': 'Desk'}, str(uuid4()), 'phone')
         task = service.mutate('POST', f"/v1/bots/{bot['id']}/messages", {'text': 'Ask Dev'}, str(uuid4()), 'phone')
-        relay = dict(id=str(uuid4()), task_id=task['id'], state='executing', action={'name': 'message_agent', 'arguments': {}})
+        receipt = dict(id=str(uuid4()), task_id=task['id'], state='executing', action={'name': 'write_file', 'arguments': {}})
         with service.transaction():
             service._put('tasks', dict(service._get('tasks', task['id']), status='working'))
-            service._put('native_receipts', relay)
+            service._put('native_receipts', receipt)
         service.close()
-        recovered = []
-        provider.native_settings = lambda operation, bots, **options: recovered.append(options.get('call_id'))
         with patch.object(Service, '_all', side_effect=Service._all, autospec=True) as reads:
             service = Service(temp.name, provider, start_workers=False)
         self.addCleanup(service.close)
         self.assertNotIn('native_receipts', [call.args[1] for call in reads.call_args_list])
-        # Relay recovery still finds the executing relay of a working task.
-        self.assertIn(relay['id'], recovered)
-
-    def test_the_process_delivery_migration_runs_once(self):
-        temp = tempfile.TemporaryDirectory()
-        self.addCleanup(temp.cleanup)
-        service = Service(temp.name, FixtureProvider(temp.name), start_workers=False)
-        bot = service.mutate('POST', '/v1/bots', {'name': 'Desk'}, str(uuid4()), 'phone')
-        task = dict(id=str(uuid4()), bot_id=bot['id'], status='completed')
-        receipt = dict(id=str(uuid4()), task_id=task['id'], state='completed', action={'name': 'terminal', 'arguments': {}},
-                       result=json.dumps({'session_id': 'proc', 'notify_on_complete': True}))
-        with service.transaction():
-            service._put('tasks', task)
-            service._put('native_receipts', receipt)
-        service.close()
-        statements = []
-        service = Service(temp.name, FixtureProvider(temp.name), start_workers=False)
-        self.addCleanup(service.close)
-        # The first start ran the migration. Runtime code registers new receipts, so a later start reads none.
-        self.assertEqual(service._get('native_receipts', receipt['id']), receipt)
-        service.db.set_trace_callback(statements.append)
-        service._migrate_process_deliveries()
-        service.db.set_trace_callback(None)
-        self.assertFalse([s for s in statements if 'native_receipts' in s])
 
 
 class LogRotationTests(unittest.TestCase):

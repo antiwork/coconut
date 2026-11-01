@@ -1,7 +1,7 @@
 """Emoji feedback must not create work or consume a model turn by itself."""
 import unittest
 import test_message_interactions as interactions
-from coconut.hermes_worker import conversation_input
+from turn_text import turn_input
 from coconut.service import YieldForDecision
 
 
@@ -25,7 +25,7 @@ class PassiveReactionTests(unittest.TestCase):
         next_task = self.send('Continue with the other report.')
         self.service._run_task(next_task['id'])
         task, bot, history = self.provider.starts[-1]
-        prompt, _ = conversation_input(dict(operation='start', task=task, bot=bot, history=history))
+        prompt, _ = turn_input(dict(operation='start', task=task, bot=bot, history=history))
         self.assertIn('❤️', prompt)
         self.assertIn(self.original['text'], prompt)
         self.assertIn('Continue with the other report.', prompt)
@@ -97,8 +97,8 @@ class PassiveReactionTests(unittest.TestCase):
         self.service._run_task(task['id'])
         task, bot, history = self.provider.starts[-1]
         request = dict(operation='start', task=task, bot=bot, history=history)
-        self.assertNotIn('Reaction added:', str(interactions.seed_messages(request)))
-        self.assertEqual(interactions.current_message(request)['text'], 'Continue.')
+        self.assertNotIn('Reaction added:', interactions.turn_input(request)[0])
+        self.assertEqual(interactions.gateway_turn_own(request), 'Continue.')
 
     def test_decision_resume_uses_feedback_changed_while_waiting(self):
         for initial in (False, True):
@@ -151,7 +151,7 @@ class PassiveReactionTests(unittest.TestCase):
             task = self.service.snapshot()['tasks'][-1]
             self.service._run_task(task['id'])
             task, bot, history = self.provider.starts[-1]
-            prompt, _ = conversation_input(dict(operation='start', task=task, bot=bot, history=history))
+            prompt, _ = turn_input(dict(operation='start', task=task, bot=bot, history=history))
             self.assertIn('[SILENT]', prompt)
             self.assertIn('does not approve', prompt)
             self.react(False, emoji=emoji)

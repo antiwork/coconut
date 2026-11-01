@@ -112,7 +112,7 @@ class DecisionInboxTests(unittest.TestCase):
         self.assertIn('offer the next step in a card', DECISION_INSTRUCTIONS)
 
     def test_all_card_tools_expose_the_same_optional_risk_contract(self):
-        from coconut.native_bridge import QUESTION_SCHEMA, SUGGEST_SCHEMA, REPLY_SCHEMA
+        from coconut.card_tools import QUESTION_SCHEMA, SUGGEST_SCHEMA, REPLY_SCHEMA
         common = QUESTION_SCHEMA['parameters']['properties']
         for properties in (common, SUGGEST_SCHEMA['parameters']['properties'],
                            REPLY_SCHEMA['parameters']['properties']['revision']['properties']):
@@ -121,7 +121,7 @@ class DecisionInboxTests(unittest.TestCase):
         self.assertNotIn('risk_level', QUESTION_SCHEMA['parameters']['required'])
 
     def test_card_tools_expose_needs_attention_now_apart_from_risk(self):
-        from coconut.native_bridge import QUESTION_SCHEMA, SUGGEST_SCHEMA, REPLY_SCHEMA
+        from coconut.card_tools import QUESTION_SCHEMA, SUGGEST_SCHEMA, REPLY_SCHEMA
         for schema in (QUESTION_SCHEMA, SUGGEST_SCHEMA):
             properties = schema['parameters']['properties']
             self.assertEqual(properties['needs_attention_now']['type'], 'boolean')

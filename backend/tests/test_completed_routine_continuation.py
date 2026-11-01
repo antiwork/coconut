@@ -1,163 +1,10 @@
-"""Completed routine provenance and active-claim fencing."""
+"""Completed routine provenance."""
 import copy
-from contextlib import contextmanager
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from coconut.native_bridge import NativeBridge, TurnPaused
 from coconut import native_routine_receipts as receipts
-import test_native_recovery as fixtures
-
-
-class CompletedRoutineTests(unittest.TestCase):
-    setUp = fixtures.NativeCompletionReceiptTests.setUp
-    get_job = fixtures.NativeCompletionReceiptTests.get_job
-    _hermes_now = fixtures.NativeCompletionReceiptTests._hermes_now
-    _under_fire_fence = fixtures.NativeCompletionReceiptTests._under_fire_fence
-    _with_job = fixtures.NativeCompletionReceiptTests._with_job
-    save_job_output = fixtures.NativeCompletionReceiptTests.save_job_output
-    save_jobs = fixtures.NativeCompletionReceiptTests.save_jobs
-    _record_run_outcome = fixtures.NativeCompletionReceiptTests._record_run_outcome
-    _advance_after_run = fixtures.NativeCompletionReceiptTests._advance_after_run
-    finish = fixtures.NativeCompletionReceiptTests.finish
-
-    def bridge(self, finished=True, owner='owner'):
-        task = dict(id='original-execution', _native_job=copy.deepcopy(self.job), _native_job_finished=finished)
-        task['_native_job']['fire_claim'] = {'by': owner}
-        return NativeBridge({'task': task}, lambda *args: None, lambda *args: None)
-
-    @contextmanager
-    def fire_claim_fence(self, identity, *, expected_owner):
-        self.fenced = True
-        try:
-            yield (self.job.get('fire_claim') or {}).get('by') == expected_owner
-        finally:
-            self.fenced = False
-
-    def run_tool(self, bridge):
-        modules = {'cron.jobs': self, 'hermes_constants': SimpleNamespace(get_hermes_home=lambda: self.home)}
-        with patch.dict('sys.modules', modules), bridge.claim():
-            if (self.job.get('fire_claim') or {}).get('by') == bridge.request['task']['_native_job']['fire_claim']['by']:
-                self.assertTrue(self.fenced)
-            return 'executed'
-
-    def test_completed_occurrence_can_continue_with_original_provenance(self):
-        bridge = self.bridge()
-        original = copy.deepcopy(bridge.request)
-        self.assertTrue(self.finish()['ok'])
-        self.assertEqual(self.run_tool(bridge), 'executed')
-        self.assertEqual(bridge.request, original)
-
-    def test_legacy_completion_requires_exact_native_success(self):
-        bridge = self.bridge()
-        self.assertTrue(self.finish()['ok'])
-        receipts.receipt_path(self.home, receipts.completion_id('job', 'owner')).unlink()
-        self.job.pop('_coconut_completion')
-        bridge.request['task']['_native_job_completion'] = dict(job_id='job', owner='owner', success=True)
-        self.assertEqual(self.run_tool(bridge), 'executed')
-        self.job['_coconut_completion_owner'] = 'other-owner'
-        self.assertEqual(self.run_tool(bridge), 'executed')
-        with self.assertRaises(TurnPaused): self.run_tool(self.bridge(owner='other-owner'))
-
-    def legacy_bridge(self):
-        bridge = self.bridge()
-        self.assertTrue(self.finish()['ok'])
-        receipts.receipt_path(self.home, receipts.completion_id('job', 'owner')).unlink()
-        self.job.pop('_coconut_completion')
-        bridge.request['task']['_native_job_completion'] = dict(job_id='job', owner='owner', success=True)
-        return bridge
-
-    def claim_job_for_fire(self, identity, **kwargs):
-        self.job['fire_claim'] = {'by': 'later-owner'}
-        return copy.deepcopy(self.job)
-
-    def claim_dispatch(self, identity): return True
-
-    def test_validated_legacy_continuation_survives_later_claim(self):
-        bridge = self.legacy_bridge()
-        self.assertEqual(self.run_tool(bridge), 'executed')
-        receipts.claim(self.home, 'job', self, manual=True)
-        self.assertEqual(self.run_tool(bridge), 'executed')
-        self.assertEqual(receipts.read(self.home, receipts.completion_id('job', 'owner')),
-                         bridge.request['task']['_native_job_completion'])
-
-    def test_legacy_validation_rechecks_after_taking_receipt_lock(self):
-        bridge = self.legacy_bridge()
-        original = receipts.locked
-        @contextmanager
-        def later_claim(home, identity):
-            self.assertFalse(self.fenced, 'Native fence held while taking receipt lock')
-            with patch.object(receipts, 'locked', original):
-                receipts.claim(home, identity, self, manual=True)
-            with original(home, identity):
-                yield
-        with patch.object(receipts, 'locked', side_effect=later_claim):
-            with self.assertRaises(TurnPaused): self.run_tool(bridge)
-        self.assertFalse(receipts.receipt_path(self.home, receipts.completion_id('job', 'owner')).exists())
-
-    def test_later_native_success_does_not_authorize_failed_owner(self):
-        bridge = self.bridge()
-        self.request['success'] = False
-        self.assertTrue(self.finish()['ok'])
-        self.job['fire_claim'] = {'by': 'native-owner'}
-        self.assertTrue(fixtures.NativeCompletionReceiptTests.mark_job_run(
-            self, 'job', True, expected_fire_owner='native-owner'))
-        with self.assertRaises(TurnPaused): self.run_tool(bridge)
-
-    def test_finish_retry_cannot_launder_later_native_success(self):
-        self.request['success'] = False
-        self.assertTrue(self.finish()['ok'])
-        self.job['fire_claim'] = {'by': 'native-owner'}
-        fixtures.NativeCompletionReceiptTests.mark_job_run(
-            self, 'job', True, expected_fire_owner='native-owner')
-        self.assertTrue(self.finish()['ok'])
-        self.assertNotEqual(receipts.read(self.home, receipts.completion_id('job', 'owner')),
-                            dict(job_id='job', owner='owner', success=True))
-
-    def test_finished_flag_does_not_authorize_a_lost_claim(self):
-        bridge = self.bridge()
-        self.job['fire_claim'] = None
-        with self.assertRaises(TurnPaused): self.run_tool(bridge)
-        self.job['fire_claim'] = {'by': 'new-owner'}
-        with self.assertRaises(TurnPaused): self.run_tool(bridge)
-
-    def test_active_claim_stays_fenced_even_with_a_finished_flag(self):
-        bridge = self.bridge()
-        with patch.object(receipts, 'completed', side_effect=AssertionError('Active claim consulted completion')):
-            self.assertEqual(self.run_tool(bridge), 'executed')
-
-    def test_cancelled_or_failed_occurrence_cannot_bypass_a_released_claim(self):
-        bridge = self.bridge()
-        self.request['success'] = False
-        self.assertTrue(self.finish()['ok'])
-        with self.assertRaises(TurnPaused): self.run_tool(bridge)
-
-    def test_later_occurrence_does_not_erase_completed_execution_proof(self):
-        bridge = self.bridge()
-        self.assertTrue(self.finish()['ok'])
-        self.job['fire_claim'] = {'by': 'next-owner'}
-        self.request.update(owner='next-owner', success=True)
-        self.assertTrue(self.finish()['ok'])
-        self.assertEqual(self.run_tool(bridge), 'executed')
-        with self.assertRaises(TurnPaused): self.run_tool(self.bridge(owner='unrelated-owner'))
-
-    def test_no_finished_flag_does_not_release_a_stale_turn(self):
-        bridge = self.bridge(finished=False)
-        self.assertTrue(self.finish()['ok'])
-        with self.assertRaises(TurnPaused): self.run_tool(bridge)
-
-    def test_cancelled_tool_scope_remains_paused_after_completion(self):
-        bridge = self.bridge()
-        self.assertTrue(self.finish()['ok'])
-        bridge.paused.set()
-        with self.assertRaises(TurnPaused): bridge.start_execution()
-
-    def test_malformed_or_unavailable_completion_proof_fails_closed(self):
-        bridge = self.bridge()
-        self.job['fire_claim'] = None
-        with patch.object(receipts, 'read', side_effect=OSError('unavailable')):
-            with self.assertRaises(TurnPaused): self.run_tool(bridge)
 
 
 class ServiceCompletionTests(unittest.TestCase):
@@ -275,14 +122,15 @@ class CompletionRetentionTests(ServiceCompletionTests):
         self.assertEqual(receipts.read(self.home, 'completed-unrelated'), dict(unrelated=True))
         self.assertTrue(receipts.receipt_path(self.home, later_id).exists())
 
-    def test_inflight_request_keeps_receipt_until_worker_exits(self):
-        old_request = NativeBridge({'task': copy.deepcopy(self.task)}, lambda *a: None, lambda *a: None)
+    def test_inflight_turn_keeps_receipt_until_it_ends(self):
+        # The turn that runs holds its own copy of the task.
+        held = copy.deepcopy(self.task)
         self.service.running[self.task['id']] = SimpleNamespace(is_alive=lambda: True)
         self.service.refresh_native_routines()
         self.assertEqual(receipts.read(self.home, self.identity), self.expected)
         jobs = SimpleNamespace(get_job=lambda _: {'_coconut_completion': dict(job_id='job', owner='next', success=True)})
         self.assertTrue(receipts.completed(self.home, 'job', 'owner', jobs,
-                                          old_request.request['task'].get('_native_job_completion')))
+                                          held.get('_native_job_completion')))
         self.service.running.clear()
         self.service.refresh_native_routines()
         self.assertFalse(receipts.receipt_path(self.home, self.identity).exists())

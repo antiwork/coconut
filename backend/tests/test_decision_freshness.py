@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from coconut.decision_freshness import age
 
 import test_automatic_work as fixtures
-from coconut.hermes_worker import conversation_input
+from turn_text import turn_input
 from coconut.service import ServiceError, YieldForDecision
 import legacy_work_sync
 
@@ -107,27 +107,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         context['_failed_at'] = (datetime.now(timezone.utc) - timedelta(seconds=RETRY_SECONDS + 30)).isoformat()
         self.service._put('contexts', context)
         self.assertTrue(self.failed_check(decision, 10 ** 6))
-
-    def test_checks_that_leave_process_receipts_still_stop(self):
-        from coconut.decision_freshness import REFRESH_MAX_FAILURES
-        decision = self.question()
-        task = self.service._get('tasks', self.task['id'])
-        results = []
-        for step in range(REFRESH_MAX_FAILURES + 3):
-            queued = self.failed_check(decision, 10 ** 6)
-            results.append(queued)
-            if queued:
-                # A check that starts a background process leaves a saved receipt on its own turn.
-                context = self.service._all('contexts')[-1]
-                self.service._put('native_receipts', dict(id=f'process-{step}', task_id=task['id'], turn_id=context['id'],
-                    action=dict(name='terminal', arguments={'command': 'run tests'}), state='completed',
-                    completed_at=task['created_at'], created_at=task['created_at'], _process_delivery='delivered',
-                    result=json.dumps(dict(session_id=f'session-{step}', notify_on_complete=True))))
-        # Each receipt changed the full fingerprint of the next check, and only the external evidence counts.
-        checks = [c for c in self.service._all('contexts') if c.get('_decision_refresh')]
-        self.assertEqual(len({c['_evidence_fingerprint'] for c in checks}), len(checks))
-        self.assertEqual(len({c['_external_fingerprint'] for c in checks}), 1)
-        self.assertEqual(results, [True] * REFRESH_MAX_FAILURES + [False] * 3)
 
     def test_new_evidence_starts_the_failure_count_again(self):
         from coconut.decision_freshness import REFRESH_MAX_FAILURES
@@ -813,7 +792,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertEqual(saved['status'], 'resolved')
         self.assertIsNone(saved['decided_by'])
         self.assertEqual((task['status'], task['_resume_decision']), ('queued', decision['id']))
-        prompt, _ = conversation_input(dict(operation='resume', task=task, decision=saved, history=[]))
+        prompt, _ = turn_input(dict(operation='resume', task=task, decision=saved, history=[]))
         self.assertIn('No option was selected', prompt)
 
     def test_closed_source_with_completed_exact_action_can_withdraw(self):
@@ -913,61 +892,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertEqual(retry['_reply_device'], human['_reply_device'])
         self.assertFalse(retry.get('_decision_refresh'))
 
-    def test_maintenance_read_preserves_delivery_to_the_process_owner(self):
-        decision = self.question()
-        original = self.process_receipt()
-        context = self.refresh()
-        read = self.service.native_event(self.task['id'], 'native_call',
-            dict(name='process', arguments={'session_id': 'test-process'}), context_id=context['id'])
-        self.service.native_event(self.task['id'], 'native_result', dict(id=read['id'],
-            result=json.dumps(dict(status='exited', session_id='test-process', output='Tests passed'))), context_id=context['id'])
-        self.assertFalse(self.service._get('native_receipts', original['id']).get('_process_delivery'))
-        self.assertTrue(self.service._background_pending(self.task['id']))
-        self.assertIn('Tests passed', self.service._get('native_receipts', original['id'])['_completion_text'])
-        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
-        task = self.service._get('tasks', self.task['id'])
-        task['status'] = 'waiting'
-        self.service._put('tasks', task)
-        # The store predates the migration.
-        self.service.db.execute("DELETE FROM settings WHERE key='process_deliveries_migrated'")
-        self.service._migrate_process_deliveries()
-        self.assertFalse(self.service._get('native_receipts', original['id']).get('_process_delivery'))
-        self.service.provider.process_completions = lambda bot, processes: self.fail('The saved result must not be fetched again.')
-        self.service._drain_process_completions()
-        resumed = self.service._get('tasks', self.task['id'])
-        self.assertEqual(resumed['status'], 'queued')
-        self.assertIn('Tests passed', str(resumed['_background_completion']))
-
-    def test_poller_preserves_an_owner_result_before_the_refresh_read_returns(self):
-        self.question()
-        original = self.process_receipt()
-        context = self.refresh()
-        self.service.native_event(self.task['id'], 'native_call',
-            dict(name='process', arguments={'session_id': 'test-process'}), context_id=context['id'])
-        self.provider.process_completions = lambda bot, processes: [dict(id=original['id'], consumed=True, text='Tests passed')]
-        self.service._drain_process_completions()
-        saved = self.service._get('native_receipts', original['id'])
-        self.assertFalse(saved.get('_process_delivery'))
-        self.assertEqual(saved['_completion_text'], 'Tests passed')
-
-    def test_outstanding_refresh_process_prevents_duplicate_research(self):
-        decision = self.question()
-        context = self.refresh()
-        record = self.process_receipt()
-        record.update(id='refresh-process', turn_id=context['id'])
-        self.service._put('native_receipts', record)
-        context['status'] = 'failed'
-        self.service._put('contexts', context)
-        decision = self.service._get('decisions', decision['id'])
-        decision['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'
-        self.service._put('decisions', decision)
-        self.service._queue_decision_refreshes()
-        self.assertEqual(len(self.service._all('contexts')), 1)
-        self.provider.process_completions = lambda bot, processes: [dict(id=record['id'], text='Research is complete')]
-        self.service._drain_process_completions()
-        self.assertEqual(len(self.service._all('contexts')), 2)
-        self.assertEqual(self.service._all('contexts')[-1]['_background_completion'], ['Research is complete'])
-
     def test_interrupted_refresh_passes_unknown_effects_to_its_retry(self):
         decision = self.question()
         context = self.refresh()
@@ -1046,40 +970,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertIn('The research result is available.', retry['_context_recovery'])
         self.assertIn('Reuse their processes', retry['_context_recovery'])
 
-    def test_maintenance_process_is_not_a_task_dependency(self):
-        decision = self.question()
-        context = self.refresh()
-        record = self.process_receipt()
-        record['turn_id'] = context['id']
-        self.service._put('native_receipts', record)
-        self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(revision=1, option_id='install'))
-        owner = self.service._get('tasks', self.task['id'])
-        owner['status'] = 'working'
-        self.service._put('tasks', owner)
-        self.assertEqual(self.service.wait_for_task(owner['id'], {})['processes'], [])
-        with self.assertRaises(ServiceError):
-            self.service.wait_for_task(owner['id'], dict(process_id='test-process', reason='Wait for research'))
-
-    def test_partial_completion_does_not_forget_a_second_research_process(self):
-        decision = self.question()
-        context = self.refresh()
-        first = self.process_receipt()
-        first['turn_id'] = context['id']
-        self.service._put('native_receipts', first)
-        second = dict(first, id='second-research', result=json.dumps(dict(session_id='second-process', notify_on_complete=True)))
-        self.service._put('native_receipts', second)
-        context['status'] = 'failed'
-        self.service._put('contexts', context)
-        self.service._resume_process_context(context['id'], [(first, 'The first result is ready.')])
-        continuation = self.service._all('contexts')[-1]
-        continuation['status'] = 'failed'
-        self.service._put('contexts', continuation)
-        decision = self.service._get('decisions', decision['id'])
-        decision['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'
-        self.service._put('decisions', decision)
-        self.service._queue_decision_refreshes()
-        self.assertEqual(len(self.service._all('contexts')), 2)
-
     def test_human_reply_interrupts_the_check_before_changing_the_card(self):
         decision = self.question()
         context = self.refresh()
@@ -1091,26 +981,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertEqual(self.service._get('decisions', decision['id'])['revision'], 1)
         self.service._queue_decision_refreshes()
         self.assertEqual(len(self.service._all('contexts')), 2)
-
-    def test_result_for_a_cancelled_callback_reaches_the_replacement_check(self):
-        decision = self.question()
-        context = self.refresh()
-        record = self.process_receipt()
-        record['turn_id'] = context['id']
-        self.service._put('native_receipts', record)
-        context['status'] = 'failed'
-        self.service._put('contexts', context)
-        self.service._resume_process_context(context['id'], [(record, 'The dependency is already installed.')])
-        callback = self.service._all('contexts')[-1]
-        callback['status'] = 'cancelled'
-        self.service._put('contexts', callback)
-        decision = self.service._get('decisions', decision['id'])
-        decision['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'
-        self.service._put('decisions', decision)
-        self.service._queue_decision_refreshes()
-        retry = self.service._all('contexts')[-1]
-        self.assertNotEqual(retry['id'], callback['id'])
-        self.assertIn('The dependency is already installed.', retry['_context_recovery'])
 
     def test_normal_chat_cancels_and_defers_automatic_checks(self):
         decision = self.question()
@@ -1145,27 +1015,6 @@ class DecisionFreshnessTests(unittest.TestCase):
             self.service.native_event(self.task['id'], 'native_result',
                 dict(id=other['id'], result=other['result']), context_id=context['id'])
 
-    def test_second_research_result_invalidates_a_running_callback(self):
-        decision = self.question()
-        context = self.refresh()
-        first = self.process_receipt()
-        first['turn_id'] = context['id']
-        self.service._put('native_receipts', first)
-        second = dict(first, id='second-research', result=json.dumps(dict(session_id='second-process', notify_on_complete=True)))
-        self.service._put('native_receipts', second)
-        self.finish(context)
-        self.service._resume_process_context(context['id'], [(first, 'The first result is ready.')])
-        callback = self.service._all('contexts')[-1]
-        callback['status'] = 'working'
-        self.service._put('contexts', callback)
-        # The callback starts with the delivered result in its current evidence.
-        self.service.refresh_decision(callback['id'], dict(status='current', evidence='The second process still runs.'))
-        second['_completion_text'] = 'The second result changes the required decision.'
-        self.service._put('native_receipts', second)
-        with self.assertRaises(ServiceError):
-            self.service.refresh_decision(callback['id'], dict(status='withdraw', evidence='Old first result.'))
-        self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
-
     def test_working_human_chat_keeps_priority_until_its_turn_finishes(self):
         decision = self.question()
         context = self.refresh()
@@ -1191,24 +1040,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._put('tasks', task)
         self.service._queue_decision_refreshes()
         self.assertEqual(len(self.service._all('contexts')), 2)
-
-    def test_human_reply_research_keeps_priority_after_its_turn_ends(self):
-        decision = self.question()
-        self.write('POST', '/v1/decisions/' + decision['id'] + '/reply', dict(text='Check the source before changing this.', revision=1))
-        human = self.service._all('contexts')[-1]
-        human['status'] = 'working'
-        self.service._put('contexts', human)
-        receipt = self.service.native_event(self.task['id'], 'native_call',
-            dict(name='terminal', arguments={'command': 'inspect source'}), context_id=human['id'])
-        self.service.native_event(self.task['id'], 'native_result', dict(id=receipt['id'],
-            result=json.dumps(dict(session_id='human-research', notify_on_complete=True))), context_id=human['id'])
-        self.finish(human)
-        self.service._queue_decision_refreshes()
-        self.assertEqual(len(self.service._all('contexts')), 1)
-        self.provider.process_completions = lambda bot, processes: [dict(id=receipt['id'], text='The source confirms a change.')]
-        self.service._drain_process_completions()
-        self.assertEqual(len(self.service._all('contexts')), 2)
-        self.assertFalse(self.service._all('contexts')[-1].get('_decision_refresh'))
 
     def test_busy_owner_does_not_block_another_cards_refresh(self):
         import threading
@@ -1247,45 +1078,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.service._cancel_stale_decision_refreshes()
         self.assertEqual(self.service._get('contexts', context['id'])['status'], 'cancelled')
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'queued')
-
-    def test_waiting_human_chat_research_defers_card_checks(self):
-        self.question()
-        reply = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages', dict(text='Inspect the source first.', mode='queue'))
-        task = self.service._get('tasks', reply['id'])
-        task.update(status='working', _turn_preference_source_ids=task['_preference_source_ids'])
-        self.service._put('tasks', task)
-        receipt = self.service.native_event(task['id'], 'native_call', dict(name='terminal', arguments={'command': 'inspect source'}))
-        self.service.native_event(task['id'], 'native_result', dict(id=receipt['id'],
-            result=json.dumps(dict(session_id='human-research', notify_on_complete=True))))
-        task.update(status='waiting', _preference_source_ids=[], _turn_preference_source_ids=[])
-        self.service._put('tasks', task)
-        self.service._queue_decision_refreshes()
-        self.assertEqual(self.service._all('contexts'), [])
-
-    def test_retry_keeps_original_research_after_recording_a_result(self):
-        decision = self.question()
-        context = self.refresh()
-        process = self.process_receipt()
-        process['turn_id'] = context['id']
-        self.service._put('native_receipts', process)
-        self.service.native_event(self.task['id'], 'native_call', dict(name='read_file', arguments={'path': 'source'}), context_id=context['id'])
-        context['status'] = 'failed'
-        self.service._put('contexts', context)
-        decision = self.service._get('decisions', decision['id'])
-        decision['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'
-        self.service._put('decisions', decision)
-        retry = self.refresh()
-        self.service.refresh_decision(retry['id'], dict(status='current', evidence='The required decision remains unchanged.'))
-        self.finish(retry)
-        process['_completion_text'] = 'The original research found a changed source.'
-        self.service._put('native_receipts', process)
-        decision = self.service._get('decisions', decision['id'])
-        decision['_freshness']['queued_at'] = '2000-01-01T00:00:00Z'
-        self.service._put('decisions', decision)
-        self.service._queue_decision_refreshes()
-        replacement = self.service._all('contexts')[-1]
-        self.assertNotEqual(replacement['id'], retry['id'])
-        self.assertIn('The original research found a changed source.', replacement['_context_recovery'])
 
     def test_approved_continuation_in_another_session_preempts_the_check(self):
         decision = self.question()
@@ -1340,35 +1132,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         }
 
         self.assertTrue(self.service._refresh_has_queued_owner(owner))
-
-    def test_second_completion_carries_an_unknown_effect_from_its_sibling(self):
-        decision = self.question()
-        context = self.refresh()
-        first = self.process_receipt()
-        first['turn_id'] = context['id']
-        self.service._put('native_receipts', first)
-        second = dict(first, id='second-research', result=json.dumps(dict(session_id='second-process', notify_on_complete=True)))
-        self.service._put('native_receipts', second)
-        self.finish(context)
-        self.service._resume_process_context(context['id'], [(first, 'First research result.')])
-        sibling = self.service._all('contexts')[-1]
-        sibling['status'] = 'working'
-        self.service._put('contexts', sibling)
-        unknown = self.service.native_event(self.task['id'], 'native_call', dict(name='terminal', arguments={'command': 'inspect result'}), context_id=sibling['id'])
-        sibling['status'] = 'failed'
-        self.service._put('contexts', sibling)
-        self.service._resume_process_context(context['id'], [(second, 'Second research result.')])
-        callback = self.service._all('contexts')[-1]
-        self.assertIn(unknown['id'], callback['_context_recovery'])
-        callback['status'] = 'working'
-        self.service._put('contexts', callback)
-        self.service.refresh_decision(callback['id'], dict(status='current', evidence='The question still applies.'))
-        self.finish(callback)
-        decision = self.service._get('decisions', decision['id'])
-        decision['_freshness'].update(checked_at='2000-01-01T00:00:00Z', queued_at='2000-01-01T00:00:00Z')
-        self.service._put('decisions', decision)
-        self.service._queue_decision_refreshes()
-        self.assertIn(unknown['id'], self.service._all('contexts')[-1]['_context_recovery'])
 
     def test_dispatch_runs_only_one_automatic_callback_at_a_time(self):
         import threading
@@ -1665,7 +1428,7 @@ class DecisionFreshnessTests(unittest.TestCase):
         messages = self.service._all('messages')
         def answer(task, bot, history, question, emit):
             self.assertTrue(task['_decision_refresh'])
-            self.assertNotIn('Do not change the pending proposal', conversation_input(dict(
+            self.assertNotIn('Do not change the pending proposal', turn_input(dict(
                 operation='context', task=task, history=history, question=question))[0])
             emit('decision_response', dict(status='current', evidence='Verified source; the account choice remains open.'))
             emit('completed', dict(summary='[SILENT]'))
@@ -1675,47 +1438,6 @@ class DecisionFreshnessTests(unittest.TestCase):
         self.assertEqual(self.service._get('contexts', context['id'])['status'], 'completed')
         self.assertIn('checked_at', self.service._get('decisions', decision['id'])['_freshness'])
         self.assertEqual(self.service._all('messages'), messages)
-
-
-import test_provider as provider_fixtures
-
-
-class RefreshCancellationTests(unittest.TestCase):
-    setUp = provider_fixtures.ProviderTests.setUp
-    tearDown = provider_fixtures.ProviderTests.tearDown
-    fake_hermes = provider_fixtures.ProviderTests.fake_hermes
-    wait_for_path = provider_fixtures.ProviderTests.wait_for_path
-
-    def test_native_context_cancellation_preserves_the_task_and_runtime(self):
-        import os
-        import threading
-        started = self.root / 'started'
-        provider = self.fake_hermes(
-            "from pathlib import Path\nimport time\n"
-            "if 'pendingcheck' in prompt:\n"
-            f"    Path({str(started)!r}).touch()\n"
-            "    while not getattr(self, 'interrupted', False): time.sleep(0.01)\n"
-            "return {'completed': True, 'final_response': 'Done.'}\n")
-        source = provider.hermes_root / 'run_agent.py'
-        source.write_text(source.read_text().replace('class AIAgent:', 'class AIAgent:\n    def hard_interrupt(self, reason): self.interrupted = True'))
-        context = dict(self.task, _context_id='freshness-check')
-        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            thread = threading.Thread(target=lambda: provider.answer_context(context, self.bot, [], 'pendingcheck', lambda *_: None))
-            thread.start()
-            try:
-                self.wait_for_path(started)
-                runtime = provider._runtimes[self.bot['id']]
-                provider.cancel_context(self.task['id'], context['_context_id'])
-                thread.join(timeout=3)
-                self.assertFalse(thread.is_alive())
-                self.assertIsNone(runtime.poll())
-                events = []
-                provider.start_task(self.task, self.bot, [], lambda kind, data: events.append(kind))
-                self.assertIn('completed', events)
-            finally:
-                if thread.is_alive():
-                    provider.cancel_task(self.task['id'])
-                    thread.join(timeout=3)
 
 
 if __name__ == '__main__':

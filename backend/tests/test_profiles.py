@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from uuid import uuid4
 
-from coconut.profiles import MAX_PROMPT_FILE_BYTES, HermesProfiles, ProfileError, inspect_profiles, merge_runtime_config, profile_id
+from coconut.profiles import MAX_PROMPT_FILE_BYTES, HermesProfiles, ProfileError, inspect_profiles, profile_id
 
 
 class ProfileTests(unittest.TestCase):

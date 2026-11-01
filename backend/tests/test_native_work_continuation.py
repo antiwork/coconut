@@ -1,6 +1,5 @@
 import copy
 import json
-import os
 import threading
 import unittest
 from unittest.mock import Mock, patch
@@ -824,12 +823,26 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.service._put('artifacts', pr)
         return owner, source, work, pr
 
-    def linked_report_message(self, source, target, text):
+    def linked_report_message(self, source, target, text, continuation_task_id=None):
+        """The saved state of a message_agent call that an earlier Coconut delivered through its audited native relay:
+        the call's receipt with the delivery, the delivery under its envelope ID, and the relay of the recipient.
+        Coconut no longer makes this state, but its guards still read it."""
         from uuid import uuid4
+        from coconut.service import digest, encoded
+        envelope = uuid4().hex
+        continuation = {'continuation_task_id': continuation_task_id} if continuation_task_id else {}
         call = self.service.emit(source['id'], 'native_call', dict(name='message_agent',
-            arguments={'target': target, 'message': text}))
-        return self.service.emit(source['id'], 'native_bot_message', dict(native_call_id=call['id'],
-            native_envelope_id=uuid4().hex, target_bot_id=target, text=text))
+            arguments=dict(target=target, message=text, **continuation)))
+        with self.service.transaction():
+            receipt = self.service._store_bot_message(source['id'], dict(target_bot_id=target, text=text, **continuation))
+            delivery = next(d for d in reversed(self.service._all('deliveries')) if d['receipt']['task_id'] == receipt['task_id'])
+            self.service.db.execute('DELETE FROM deliveries WHERE id=?', (delivery['id'],))
+            self.service._put('deliveries', dict(delivery, id=digest(encoded([source['id'], envelope]))))
+            recipient = self.service._get('tasks', receipt['task_id'])
+            self.service._put('tasks', dict(recipient, _native_relay=dict(sender_bot_id=source['bot_id'], envelope_id=envelope)))
+        receipt = dict(receipt, delivery_id=envelope)
+        self.service.emit(source['id'], 'native_result', dict(id=call['id'], result=json.dumps(receipt)))
+        return receipt
 
     def linked_owner_report(self, direct_native=False):
         owner, source = self.scheduled_native()
@@ -944,35 +957,6 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.assert_linked_report_blocked_without_mutation(caller)
         self.service.kanban.tasks[source['id']] = dict(id='t_original_requester', status='done')
         self.assertEqual(self.resume(callers[0])['task_id'], owner['id'])
-
-    def test_linked_owner_native_report_guards_completed_pending_native_replies(self):
-        self.test_linked_owner_report_guards_completed_pending_native_replies(direct_native=True)
-
-    def test_linked_owner_report_guards_completed_pending_native_replies(self, direct_native=False):
-        owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report(direct_native)
-        # A different authenticated invocation keeps the original requester in
-        # the checked chain. Every task is completed and every native card done.
-        caller = self.linked_report_other_caller(owner['bot_id'])
-        source = dict(source, status='completed', _waiting_on=[],
-                      _kanban_claim={'native_id': 't_original_requester'})
-        self.service._put('tasks', source)
-        self.service.kanban.tasks[source['id']] = dict(id='t_original_requester', status='done')
-        guarded = {t['id']: t for t in (source, reporter, coordinator, callback)}
-        for index, root in enumerate((source, reporter, coordinator, callback)):
-            sibling = dict(root, id=f'reply-sibling-{index}', _execution_session_id=f'reply-sibling-{index}',
-                           _assignment_task_id=root['id'], _kanban_claim={'native_id': f't_reply_sibling_{index}'})
-            sibling.pop('_native_outcome_id', None)
-            self.service._put('tasks', sibling)
-            self.service.kanban.tasks[sibling['id']] = dict(id=f't_reply_sibling_{index}', status='done')
-            guarded[sibling['id']] = sibling
-        for task in guarded.values():
-            with self.subTest(task=task['id']):
-                self.assertEqual(task['status'], 'completed')
-                self.assertEqual(self.service.kanban.tasks[task['id']]['status'], 'done')
-                self.service._put('tasks', dict(task, _native_reply_pending={'text': 'Result still awaiting delivery'}))
-                self.assert_linked_report_blocked_without_mutation(caller)
-                self.service._put('tasks', task)
-        self.assertEqual(self.resume(caller)['task_id'], owner['id'])
 
     def test_linked_owner_report_reads_deliveries_once_per_request(self):
         owner, source, work, pr, coordinator_pr, reporter, coordinator, callback = self.linked_owner_report()
@@ -1201,8 +1185,6 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.service.kanban.tasks[sibling['id']] = card
             self.service._put('tasks', dict(sibling, _return_pending={'text': 'Not delivered'}))
             self.assert_linked_report_blocked_without_mutation(source)
-            self.service._put('tasks', dict(sibling, _native_reply_pending={'text': 'Native result not delivered'}))
-            self.assert_linked_report_blocked_without_mutation(source)
             self.service._put('tasks', dict(sibling, status='cancelled' if index == 1 else 'failed'))
         self.assertEqual(self.resume(source)['task_id'], owner['id'])
 
@@ -1380,194 +1362,6 @@ class NativeWorkContinuationTests(unittest.TestCase):
             self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
         # The receipt stays for the owner's next turn. Only the writer guard reads it as ended.
         self.assertEqual(self.service._get('native_receipts', 'cut-off')['state'], 'executing')
-
-    def test_the_poller_marks_a_call_ended_only_when_no_process_remains(self):
-        owner, coordinator, work, pr = self.audited_requester_pr()
-        branch = self.ended_branch(coordinator)
-        workspace = self.service.root / 'workspaces' / 'coordinator-branch'
-        workspace.mkdir(parents=True, exist_ok=True)
-        cases = (({'coordinator-branch'}, set(), False), (None, set(), False),
-                 (set(), {str(workspace)}, False), (set(), ValueError('no lsof'), False), (set(), set(), True))
-        for outcomes, busy, ended in cases:
-            with self.subTest(outcomes=outcomes, busy=busy), \
-                    patch('coconut.work_workspace.process_outcomes', return_value=outcomes), \
-                    patch('coconut.work_workspace.busy_paths', side_effect=[busy]):
-                self.assertEqual(self.service._mark_ended_tool_calls(current=0), ['cut-off'] if ended else [])
-                self.assertEqual(bool(self.service._get('native_receipts', 'cut-off').get('_process_ended_at')), ended)
-                self.service._ended_tool_check_at = 0
-                self.service._busy_tool_calls = {}
-        self.assertEqual(self.service._get('native_receipts', 'cut-off')['state'], 'executing')
-
-    def test_an_interrupted_delegation_ends_only_with_every_process_of_its_execution(self):
-        owner, coordinator, work, pr = self.audited_requester_pr()
-        branch = self.ended_branch(coordinator, action='delegate_task')
-        chains = lambda root, *arguments, **options: {branch['id']: (branch, 1)} if root['id'] == coordinator['id'] else {}
-        workspace = self.service.root / 'workspaces' / 'coordinator-branch'
-        workspace.mkdir(parents=True, exist_ok=True)
-        with patch.object(self.service, '_work_chain', side_effect=chains):
-            # A live child process, a child holding the workspace, or an unreadable listing keeps the fence.
-            for outcomes, busy in (({'coordinator-branch'}, set()), (None, set()), (set(), {str(workspace)}),
-                                   (set(), ValueError('no lsof'))):
-                with self.subTest(outcomes=outcomes, busy=busy), \
-                        patch('coconut.work_workspace.process_outcomes', return_value=outcomes), \
-                        patch('coconut.work_workspace.busy_paths', side_effect=[busy]):
-                    self.service._ended_tool_check_at = 0
-                    self.service._busy_tool_calls = {}
-                    self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
-                    with self.assertRaisesRegex(ServiceError, 'another execution'):
-                        self.resume(coordinator)
-            with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
-                    patch('coconut.work_workspace.busy_paths', return_value=set()):
-                self.service._ended_tool_check_at = 0
-                self.service._busy_tool_calls = {}
-                self.assertEqual(self.service._mark_ended_tool_calls(current=0), ['cut-off'])
-            # A live worker of the branch still fences the owner.
-            self.service.running[branch['id']] = Mock(is_alive=Mock(return_value=True))
-            with self.assertRaisesRegex(ServiceError, 'another execution'):
-                self.resume(coordinator)
-            self.service.running.pop(branch['id'])
-            self.assertEqual(self.resume(coordinator)['task_id'], owner['id'])
-        # The receipt keeps its state and raw intent. Only the ended mark is new.
-        receipt = self.service._get('native_receipts', 'cut-off')
-        self.assertEqual((receipt['state'], receipt['action']['name']), ('executing', 'delegate_task'))
-        self.assertNotIn('result', receipt)
-
-    def test_an_interrupted_delegation_with_a_result_or_a_live_native_run_never_ends(self):
-        owner, coordinator, work, pr = self.audited_requester_pr()
-        branch = self.ended_branch(coordinator, action='delegate_task')
-        with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
-                patch('coconut.work_workspace.busy_paths', return_value=set()):
-            self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='running', current_run_id=7)
-            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
-            self.service.kanban.tasks[branch['id']] = dict(id='t_branch', status='blocked', block_kind=None)
-            # A receipt that already holds its result is no unknown effect. The poller leaves it alone.
-            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), state='completed',
-                                                      result={'status': 'completed'}))
-            self.service._ended_tool_check_at = 0
-            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
-            self.assertFalse(self.service._get('native_receipts', 'cut-off').get('_process_ended_at'))
-            # The same setup with an executing receipt and a quiet card does end.
-            interrupted = dict(self.service._get('native_receipts', 'cut-off'), state='executing')
-            interrupted.pop('result')
-            self.service._put('native_receipts', interrupted)
-            self.service._ended_tool_check_at = 0
-            self.assertEqual(self.service._mark_ended_tool_calls(current=122), ['cut-off'])
-
-    def test_the_poller_skips_a_live_worker_a_wait_and_runs_once_a_minute(self):
-        owner, coordinator, work, pr = self.audited_requester_pr()
-        branch = self.ended_branch(coordinator)
-        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
-                patch('coconut.work_workspace.busy_paths', return_value=set()):
-            self.service.running[branch['id']] = Mock(is_alive=Mock(return_value=True))
-            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
-            self.service.running.pop(branch['id'])
-            self.assertEqual(self.service._mark_ended_tool_calls(current=30), [])
-            outcomes.assert_not_called()
-            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'),
-                                                      action={'name': 'coconut_wait', 'arguments': {}}))
-            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
-
-    def test_the_poller_checks_the_bound_worktree_and_the_claim_workspace(self):
-        owner, coordinator, work, pr = self.audited_requester_pr()
-        branch = self.ended_branch(coordinator)
-        root = self.service.root / 'workspaces'
-        worktree, claimed = self.service.root / 'elsewhere' / 'worktree', self.service.root / 'claimed'
-        for path in (root / 'coordinator-branch', worktree, claimed):
-            path.mkdir(parents=True, exist_ok=True)
-        self.service._put('tasks', dict(branch, _kanban_claim=dict(branch['_kanban_claim'], workspace=str(claimed))))
-        (root / 'worktrees.json').write_text(json.dumps({
-            'bound': dict(outcome='coordinator-branch', path=str(worktree), branch='wt/x', repository='/repo'),
-            'broken': dict(outcome='coordinator-branch'), 'other': dict(outcome='other', path='/other')}))
-        with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
-                patch('coconut.work_workspace.busy_paths', return_value={str(worktree)}) as busy:
-            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
-        self.assertEqual(busy.call_args.args[0], {str(root / 'coordinator-branch'), str(worktree), str(claimed)})
-        # A registry that is not an object reads as empty.
-        (root / 'worktrees.json').write_text('[]')
-        self.service._busy_tool_calls = {}
-        with patch('coconut.work_workspace.process_outcomes', return_value=set()), \
-                patch('coconut.work_workspace.busy_paths', return_value=set()):
-            self.assertEqual(self.service._mark_ended_tool_calls(current=61), ['cut-off'])
-
-    def test_the_poller_backs_off_a_call_whose_workspace_stays_busy(self):
-        owner, coordinator, work, pr = self.audited_requester_pr()
-        branch = self.ended_branch(coordinator)
-        workspace = self.service.root / 'workspaces' / 'coordinator-branch'
-        workspace.mkdir(parents=True, exist_ok=True)
-        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
-                patch('coconut.work_workspace.busy_paths', return_value={str(workspace)}) as busy:
-            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
-            # The next minute skips the busy call, so no scan runs.
-            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
-            self.assertEqual(busy.call_count, 1)
-            self.assertEqual(self.service._mark_ended_tool_calls(current=601), [])
-            self.assertEqual(busy.call_count, 2)
-            # The delay doubles.
-            self.assertEqual(self.service._mark_ended_tool_calls(current=1202), [])
-            self.assertEqual(busy.call_count, 2)
-            busy.return_value = set()
-            self.assertEqual(self.service._mark_ended_tool_calls(current=1802), ['cut-off'])
-        # A call that no longer runs loses its back-off.
-        self.service._busy_tool_calls['finished-call'] = (9999, 600)
-        self.service._ended_tool_check_at = 0
-        self.service._mark_ended_tool_calls(current=1900)
-        self.assertNotIn('finished-call', self.service._busy_tool_calls)
-
-    def test_the_poller_never_ends_a_privileged_command(self):
-        owner, coordinator, work, pr = self.audited_requester_pr()
-        self.ended_branch(coordinator)
-        receipt = self.service._get('native_receipts', 'cut-off')
-        for command in ('sudo make install', 'cd /repo && doas cp a b', 'su - root -c true', 'FOO=1 /usr/bin/sudo ls',
-                        '(pkexec true)', 'echo $(sudo id)', "bash -c 'sudo id'", 'xargs sudo rm', 'grep sudo README.md'):
-            with self.subTest(command=command), patch('coconut.work_workspace.process_outcomes', return_value=set()), \
-                    patch('coconut.work_workspace.busy_paths', return_value=set()):
-                self.service._put('native_receipts', dict(receipt, action={'name': 'terminal', 'arguments': {'command': command}}))
-                self.service._ended_tool_check_at = 0
-                self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
-        # A word that only contains a privileged name is not one.
-        for command in ('git log --grep=pseudo', 'make summary'):
-            with self.subTest(command=command), patch('coconut.work_workspace.process_outcomes', return_value=set()), \
-                    patch('coconut.work_workspace.busy_paths', return_value=set()):
-                self.service._put('native_receipts', dict(receipt, action={'name': 'terminal', 'arguments': {'command': command}}))
-                self.service._ended_tool_check_at = 0
-                self.assertEqual(self.service._mark_ended_tool_calls(current=0), ['cut-off'])
-
-    def test_the_poller_waits_an_hour_before_it_trusts_the_checks(self):
-        from datetime import datetime, timezone
-        owner, coordinator, work, pr = self.audited_requester_pr()
-        self.ended_branch(coordinator)
-        recent = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-        self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), created_at=recent))
-        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
-                patch('coconut.work_workspace.busy_paths', return_value=set()):
-            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
-            outcomes.assert_not_called()
-            self.service.stopping.set()
-            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'),
-                                                      created_at='2026-09-25T14:19:42Z'))
-            # A stopping service does not write after its scans.
-            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
-            self.service.stopping.clear()
-            self.assertEqual(self.service._mark_ended_tool_calls(current=122), ['cut-off'])
-
-    def test_the_poller_checks_only_kanban_worker_calls_and_scans_files_only_when_needed(self):
-        owner, coordinator, work, pr = self.audited_requester_pr()
-        branch = self.ended_branch(coordinator)
-        # Only a kanban worker sets COCONUT_WORKSPACE_OUTCOME. A chat task or a context job has no such proof.
-        self.service._put('tasks', dict(branch, _kanban_claim=None))
-        with patch('coconut.work_workspace.process_outcomes', return_value=set()) as outcomes, \
-                patch('coconut.work_workspace.busy_paths', return_value=set()) as busy:
-            self.assertEqual(self.service._mark_ended_tool_calls(current=0), [])
-            outcomes.assert_not_called()
-            self.service._put('tasks', branch)
-            self.service._put('contexts', dict(id='context-turn', task_id=branch['id'], bot_id=branch['bot_id'], status='failed'))
-            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), turn_id='context-turn'))
-            self.assertEqual(self.service._mark_ended_tool_calls(current=61), [])
-            outcomes.assert_not_called()
-            self.service._put('native_receipts', dict(self.service._get('native_receipts', 'cut-off'), turn_id='old-turn'))
-            outcomes.return_value = {'coordinator-branch'}
-            self.assertEqual(self.service._mark_ended_tool_calls(current=122), [])
-            busy.assert_not_called()
 
     def test_an_ended_wait_or_relay_call_still_blocks_the_audited_pr(self):
         owner, coordinator, work, pr = self.audited_requester_pr()
@@ -2450,17 +2244,10 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', reporter['id']), reporter)
         self.assertEqual(self.service._native_task_receipts(reporter['id']), receipts)
 
-    def test_reporter_process_or_unknown_action_still_blocks_restoration(self):
-        import json
+    def test_reporter_unknown_action_still_blocks_restoration(self):
         owner, source, reporter, item = self.reported_work()
         self.service._put('tasks', dict(reporter, status='working'))
-        record = self.service.emit(reporter['id'], 'native_call', dict(name='terminal', arguments={'command': 'run tests'}))
-        self.service._put('tasks', reporter)
-        with self.assertRaisesRegex(ServiceError, 'another execution'):
-            self.resume(source)
-        self.service._put('tasks', dict(reporter, status='working'))
-        self.service.emit(reporter['id'], 'native_result', dict(id=record['id'],
-            result=json.dumps(dict(notify_on_complete=True, session_id='running-process'))))
+        self.service.emit(reporter['id'], 'native_call', dict(name='terminal', arguments={'command': 'run tests'}))
         self.service._put('tasks', reporter)
         with self.assertRaisesRegex(ServiceError, 'another execution'):
             self.resume(source)
@@ -2559,7 +2346,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual({table: self.service._all(table) for table in before}, before)
 
     def test_unconfirmed_actions_and_saved_results_reach_the_continued_worker(self):
-        from coconut.hermes_worker import conversation_input
+        from turn_text import turn_input
         owner, source = self.native()
         self.service._put('tasks', dict(owner, status='working', _native_turn_id='previous-turn'))
         unknown = self.service.emit(owner['id'], 'native_call',
@@ -2574,7 +2361,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         continued = self.service._get('tasks', owner['id'])
         self.assertEqual({r['id'] for r in continued['_self_recovery']['unknown_tools']}, {'older', unknown['id']})
         self.assertEqual(continued['_continuation_receipt_ids'], [finished['id']])
-        prompt = conversation_input(dict(operation='start', task=continued, history=[]))[0]
+        prompt = turn_input(dict(operation='start', task=continued, history=[]))[0]
         self.assertIn('Never repeat a write while its effect remains unknown', prompt)
         self.assertIn('git push', prompt)
         self.assertEqual(self.service._get('native_receipts', unknown['id'])['state'], 'executing')
@@ -2634,7 +2421,7 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', owner['id']), continued)
 
     def test_human_restriction_survives_failure_before_provider_input(self):
-        from coconut.hermes_worker import conversation_input
+        from turn_text import turn_input
         owner, source = self.native()
         owner.update(status='queued', _kanban_claim={})
         self.service._put('tasks', owner)
@@ -2653,56 +2440,12 @@ class NativeWorkContinuationTests(unittest.TestCase):
         self.resume(source)
         captured = []
         def verify(task, bot, history, emit):
-            captured.append(conversation_input(dict(operation='start', task=task, history=history))[0])
+            captured.append(turn_input(dict(operation='start', task=task, history=history))[0])
             emit('completed', {'summary': 'The change remains local.'})
         self.provider.start_task = verify
         self.service._run_task(owner['id'])
         self.assertEqual(len(captured), 1)
         self.assertIn('Do not publish. Keep the change local.', captured[0])
-
-
-class NativeContinuationProviderTests(unittest.TestCase):
-    import test_provider as provider_fixtures
-    setUp = provider_fixtures.ProviderTests.setUp
-    tearDown = provider_fixtures.ProviderTests.tearDown
-    fake_hermes = provider_fixtures.ProviderTests.fake_hermes
-
-    def test_tool_receives_rejection_and_can_continue_another_native_task(self):
-        provider = self.fake_hermes(
-            "import json\n"
-            "rejected = json.loads(registry.dispatch('coconut_continue_work', {'task_id': 't_active', 'message': 'Continue.'}))\n"
-            "assert rejected == {'status': 'rejected', 'error': 'The worker is still active.'}\n"
-            "receipt = json.loads(registry.dispatch('coconut_continue_work', {'task_id': 't_blocked', 'message': 'The checks passed.'}))\n"
-            "assert receipt == {'status': 'queued', 'task_id': 'existing', 'native_task_id': 't_blocked'}\n"
-            "return {'completed': True, 'final_response': 'The existing work will continue.'}\n")
-        events = []
-        def emit(kind, data):
-            events.append((kind, data))
-            if kind == 'work_continue':
-                if data['task_id'] == 't_active':
-                    raise ServiceError(409, 'The worker is still active.')
-                return dict(status='queued', task_id='existing', native_task_id='t_blocked')
-        with patch.dict(os.environ, ANTHROPIC_API_KEY='test-only'):
-            provider.start_task(self.task, self.bot, [], emit)
-        self.assertEqual(len([e for e in events if e[0] == 'work_continue']), 2)
-        self.assertEqual(events[-1][0], 'completed', events)
-
-    def test_premature_merge_validation_reaches_the_worker_without_failing(self):
-        provider = self.fake_hermes(
-            "import json\n"
-            "result = json.loads(registry.dispatch('coconut_ask', {'title': 'Merge?', 'options': [{'id': 'merge', 'label': 'Merge'}]}))\n"
-            "assert result['status'] == 'validation_failed'\n"
-            "assert 'pending worker' in result['error']\n"
-            "return {'completed': True, 'final_response': 'I will read the review result first.'}\n")
-        events = []
-        def emit(kind, data):
-            events.append((kind, data))
-            if kind == 'native_question':
-                raise ServiceError(400, 'The PR review still has a pending worker or delegated result.')
-        with patch.dict(os.environ, ANTHROPIC_API_KEY='test-only'):
-            provider.start_task(self.task, self.bot, [], emit)
-        self.assertEqual(events[-1][0], 'completed', events)
-        self.assertNotIn('failed', [kind for kind, _ in events])
 
 
 if __name__ == '__main__':

@@ -109,7 +109,7 @@ class NoCardTests(unittest.TestCase):
         # Every audit ends with a card or a no-card record, so a bot cannot leave the item as a silent gap.
         self.assertIn('exactly one result for each assignment', prompt)
         self.assertIn('Do not finish without a card or this record', prompt)
-        from coconut.native_bridge import QUESTION_SCHEMA
+        from coconut.card_tools import QUESTION_SCHEMA
         revisions = QUESTION_SCHEMA['parameters']['properties']['source_revisions']['description']
         self.assertIn('no_card true', revisions)
         self.assertNotIn('continue without creating a card', revisions)

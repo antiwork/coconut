@@ -37,12 +37,24 @@ class MarkedTaskTests(unittest.TestCase):
         self.put(_work_status_only=False)
         self.put()
         second = self.put(_return_pending={'text': 'b'})
-        self.put(_native_reply_pending={'text': 'c'})
         self.assertEqual([t['id'] for t in self.service._marked_tasks('_return_pending')], [first, second])
-        self.assertEqual(len(self.service._marked_tasks('_native_reply_pending')), 1)
         self.assertEqual(self.service._marked_tasks('_work_status_only'), [])
         rows = self.service.db.execute(f"SELECT COUNT(*) FROM tasks WHERE {marked('_work_status_only')}").fetchone()[0]
         self.assertEqual(rows, 0, 'A false marker is not indexed.')
+
+    def test_a_start_drops_the_index_of_a_retired_marker(self):
+        root = Path(self.temp.name) / 'earlier'
+        earlier = Service(root, FixtureProvider(root), start_workers=False)
+        # An earlier version indexed the reply of a worker's relay.
+        earlier.db.execute("CREATE INDEX tasks_native_reply_pending ON tasks (id) WHERE "
+                           "json_type(data,'$._native_reply_pending') IN ('object','true')")
+        earlier.close()
+        service = Service(root, FixtureProvider(root), start_workers=False)
+        self.addCleanup(service.close)
+        names = {row[0] for row in service.db.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        self.assertNotIn('tasks_native_reply_pending', names)
+        with self.assertRaises(ValueError):
+            service._marked_tasks('_native_reply_pending')
 
     def test_an_unknown_field_is_refused(self):
         with self.assertRaises(ValueError):

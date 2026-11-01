@@ -7,12 +7,9 @@ import subprocess
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
-from uuid import uuid4
 
 from coconut import work_workspace
 from coconut.work_workspace import git, head_log, preferred, validate_binding
-import test_finished_routine_workspace as provider_fixtures
 
 IDENTITY = {'GIT_AUTHOR_NAME': 'Test', 'GIT_AUTHOR_EMAIL': 'test@example.invalid',
             'GIT_COMMITTER_NAME': 'Test', 'GIT_COMMITTER_EMAIL': 'test@example.invalid'}
@@ -202,64 +199,6 @@ class ReflogRewriteTests(unittest.TestCase):
         checked = dict(self.binding)
         validate_binding(checked, allow_rename=True)
         self.assertEqual(checked['branch'], 'reviewed-name')
-
-
-class RetainedWorktreeProviderTests(unittest.TestCase):
-    """The provider checks the saved worktree before a turn, in a real worker process with the shared native stub."""
-    upstream_commit = ReflogRewriteTests.upstream_commit
-    gc = ReflogRewriteTests.gc
-    retained_history = ReflogRewriteTests.retained_history
-
-    def setUp(self):
-        provider_fixtures.FinishedRoutineWorkspaceTests.setUp(self)
-        use_test_git(self)
-        retain_worktree(self, self.root, self.data / 'workspaces', self.execution)
-
-    def run_turn(self):
-        task = dict(id=str(uuid4()), title='Continue the accepted change', bot_id=self.bot['id'],
-                    _native_turn_id='turn', _native_outcome_id='t_native', _execution_session_id=self.execution)
-        task.update(_kanban_external_id=task['id'], _kanban_workspace=str(self.workspace))
-        events = []
-        self.provider.prepare_kanban_worker(task['id'], self.bot, str(self.workspace), self.execution)
-        with patch.object(self.provider, 'observe_bot', return_value=self.bot), patch.object(
-                self.provider, 'resolve_task_model', return_value=dict(
-                    model='gpt-6-astra', provider='openai-codex', base_url=self.native['base_url'])):
-            try:
-                self.provider._run_turn('start', task, self.bot, [], lambda kind, data: events.append((kind, data)),
-                                        isolated=True)
-            finally:
-                scopes = Path(str(self.capture) + '.cwd')
-                self.rows = [json.loads(line) for line in scopes.read_text().splitlines()] if scopes.exists() else []
-        return task, events
-
-    def test_the_turn_starts_in_the_retained_worktree_after_gc_rewrote_its_reflog(self):
-        self.retained_history()
-        task, events = self.run_turn()
-        self.assertIn(('completed', {'summary': 'Complete.'}), events)
-        # The worker gives the native session and terminal the retained worktree as cwd.
-        self.assertEqual([row[1]['cwd'] for row in self.rows if row[0] == 'session'], [str(self.path)])
-        self.assertIn(['override', task['id'], {'cwd': str(self.path)}], self.rows)
-        saved = json.loads(self.manifest.read_text())
-        self.assertEqual(list(saved), [self.execution + '-key'])
-        binding = saved[self.execution + '-key']
-        self.assertEqual({k: v for k, v in binding.items() if k != '_head_log'},
-                         {k: v for k, v in dict(self.binding, branch='reviewed-name').items() if k != '_head_log'})
-        log = head_log(self.path)
-        self.assertEqual(binding['_head_log'], dict(size=len(log), digest=hashlib.sha256(log).hexdigest()))
-
-    def test_unknown_history_stops_the_turn_before_the_worker_runs(self):
-        self.retained_history()
-        # The saved checkpoint names other entries. Nothing proves that this checkout continues them.
-        saved = json.loads(self.manifest.read_text())
-        other = b'0' * 40 + b' ' + b'1' * 40 + b' Test <test@example.invalid> 1792428026 -0400\n'
-        saved[self.execution + '-key']['_head_log'] = dict(size=len(other), digest=hashlib.sha256(other).hexdigest())
-        self.manifest.write_text(json.dumps(saved))
-        before = self.manifest.read_text()
-        with self.assertRaisesRegex(ValueError, 'changed branches'):
-            self.run_turn()
-        self.assertEqual(self.manifest.read_text(), before)
-        self.assertEqual(self.rows, [])
-        self.assertFalse(Path(str(self.capture) + '.prompts').exists())
 
 
 if __name__ == '__main__':

@@ -707,19 +707,6 @@ class DurableToolEffectTests(Fixture, unittest.TestCase):
                 self.service._put('tasks', dict(task, status=status, created_at=old, updated_at=old))
         self.service.running.clear()
 
-    def lost_delivery(self, legacy):
-        """A process result reaches a check that is cancelled before it records anything. A retry withdraws the card."""
-        decision = self.draft()
-        check = self.card_check(decision)
-        process = self.receipt('lost-delivery', check['id'],
-                               result=json.dumps(dict(session_id='test-process', notify_on_complete=True)))
-        self.service._put('contexts', dict(check, status='completed'))
-        self.service._resume_process_context(check['id'], [(process, 'The tests passed.')])
-        lost = self.service._all('contexts')[-1]
-        self.service._put('contexts', dict(lost, status='cancelled'))
-        withdrawn, retry = self.finish_withdrawal(decision, self.card_check(decision), legacy=legacy)
-        return decision, withdrawn, retry, process
-
     def clean_up(self, kept=(), deleted=()):
         """Run the real receipt and context cleanup passes, then restart the service."""
         self.service._prune_receipts(time.time())
@@ -738,13 +725,6 @@ class DurableToolEffectTests(Fixture, unittest.TestCase):
                                result='{"content": "plan"}')
         withdrawn, check = self.finish_withdrawal(decision, check, legacy=legacy)
         return decision, withdrawn, check, command
-
-    def test_a_delivered_result_to_an_unrecorded_check_survives_cleanup_and_refuses(self):
-        # Receipt cleanup keeps a delivered process result, so the lost delivery stays visible after both passes.
-        decision, withdrawn, retry, process = self.lost_delivery(legacy=False)
-        self.age_outcome()
-        self.clean_up(kept=[process['id']])
-        self.assertRefused(self.delegate(), self.payload(withdrawn, retry), 409, decision)
 
     def test_a_check_receipt_lost_to_cleanup_refuses(self):
         decision, withdrawn, check, command = self.read_check(legacy=False)
@@ -804,49 +784,6 @@ class DurableToolEffectTests(Fixture, unittest.TestCase):
         # Once the command has a recorded result, the card can be reopened.
         self.service._put('native_receipts', dict(command, state='completed', result='{"output": "commented"}'))
         self.assertEqual(self.correct(helper, self.payload(withdrawn, retry))['status'], 'restored')
-
-    def test_a_process_result_awaiting_delivery_refuses(self):
-        decision = self.draft()
-        check = self.card_check(decision)
-        process = self.receipt('waiting-tests', check['id'],
-                               result=json.dumps(dict(session_id='test-process', notify_on_complete=True)))
-        withdrawn, check = self.finish_withdrawal(decision, check)
-        self.prune_and_reload()
-        helper = self.delegate()
-        self.assertRefused(helper, self.payload(withdrawn, check), 409, decision)
-        # A delegated relay that still waits for its reply refuses too.
-        self.service._put('native_receipts', dict(process, result='{}', _relay_task_id='relay-task'))
-        self.assertRefused(helper, self.payload(withdrawn, check), 409, decision)
-
-    def test_a_delivered_process_result_allows_the_correction(self):
-        decision = self.draft()
-        check = self.card_check(decision)
-        process = self.receipt('delivered-tests', check['id'],
-                               result=json.dumps(dict(session_id='test-process', notify_on_complete=True)))
-        self.service._put('contexts', dict(check, status='completed'))
-        # The service delivers the result into a continuation check, which records the withdrawal.
-        self.service._resume_process_context(check['id'], [(process, 'The tests passed.')])
-        callback = self.service._all('contexts')[-1]
-        self.assertEqual(self.service._get('native_receipts', process['id'])['_process_delivery'], callback['id'])
-        self.service._put('contexts', dict(callback, status='working'))
-        withdrawn, callback = self.finish_withdrawal(decision, self.service._get('contexts', callback['id']))
-        self.prune_and_reload()
-        self.assertEqual(self.correct(self.delegate(), self.payload(withdrawn, callback))['status'], 'restored')
-
-    def test_a_result_delivered_to_an_unrecorded_check_refuses(self):
-        decision = self.draft()
-        check = self.card_check(decision)
-        process = self.receipt('lost-delivery', check['id'],
-                               result=json.dumps(dict(session_id='test-process', notify_on_complete=True)))
-        self.service._put('contexts', dict(check, status='completed'))
-        self.service._resume_process_context(check['id'], [(process, 'The tests passed.')])
-        lost = self.service._all('contexts')[-1]
-        # The check that received the result was cancelled before it recorded anything.
-        self.service._put('contexts', dict(lost, status='cancelled'))
-        retry = self.card_check(decision)
-        withdrawn, retry = self.finish_withdrawal(decision, retry)
-        self.prune_and_reload()
-        self.assertRefused(self.delegate(), self.payload(withdrawn, retry), 409, decision)
 
     def test_unknown_effects_outside_this_card_do_not_block(self):
         decision = self.draft()

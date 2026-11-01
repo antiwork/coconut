@@ -3,8 +3,9 @@ import unittest
 from uuid import uuid4
 
 from coconut.service import Service, ServiceError
-from coconut.hermes_worker import conversation_input
-from coconut.native_conversation import current_message, seed_messages
+from turn_text import turn_input
+from coconut.gateway_chat import gateway_turn_own
+from coconut.native_conversation import message_content
 from test_service import ControlledProvider
 
 
@@ -42,12 +43,14 @@ class MessageInteractionTests(unittest.TestCase):
         message = next(m for m in history if m['task_id'] == task['id'] and m['role'] == 'user')
         self.assertEqual(message['text'], 'Use that last item.')
         self.assertEqual(message['reply_to']['message_id'], original['id'])
-        prompt, _ = conversation_input(request)
+        prompt, _ = turn_input(request)
         self.assertIn(original['text'], prompt)
         self.assertIn('your previous message', prompt)
-        self.assertTrue(prompt.endswith('Use that last item.'))
-        self.assertEqual(current_message(request)['text'], prompt)
-        self.assertIn(original['text'], seed_messages(dict(request, operation='resume'))[-2]['content'])
+        # The turn's own text, which Hermes saves, is the message with its quote. The notes follow it.
+        own = gateway_turn_own(request)
+        self.assertTrue(own.endswith('Use that last item.'))
+        self.assertEqual(message_content(message), own)
+        self.assertTrue(prompt.startswith(own))
 
     def test_reply_to_confirmed_user_message(self):
         original = next(m for m in self.service.snapshot()['messages'] if m['role'] == 'user')
@@ -70,11 +73,12 @@ class MessageInteractionTests(unittest.TestCase):
         history = self.service._history(other['id'])
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]['reply_to']['message_id'], self.original['id'])
-        prompt, _ = conversation_input(dict(operation='start', task=task, bot=other, history=history))
+        prompt, _ = turn_input(dict(operation='start', task=task, bot=other, history=history))
         self.assertIn("Desk's message", prompt)
         self.assertNotIn('your previous message', prompt)
         self.assertIn(self.original['text'], prompt)
-        self.assertTrue(prompt.endswith('Explain this result.'))
+        self.assertTrue(gateway_turn_own(dict(operation='start', task=task, bot=other, history=history))
+                        .endswith('Explain this result.'))
 
     def test_unfinished_targets_rejected(self):
         for flag in ('streaming', '_hidden', '_deleted'):
@@ -99,7 +103,7 @@ class MessageInteractionTests(unittest.TestCase):
         followup = self.send('Continue with the next item.')
         self.service._run_task(followup['id'])
         task, bot, history = self.provider.starts[-1]
-        prompt, _ = conversation_input(dict(operation='start', task=task, bot=bot, history=history))
+        prompt, _ = turn_input(dict(operation='start', task=task, bot=bot, history=history))
         self.assertIn(self.original['text'], prompt)
         self.assertIn('❤️', prompt)
         self.assertIn('Earlier emoji feedback', prompt)
@@ -125,7 +129,7 @@ class MessageInteractionTests(unittest.TestCase):
         followup = self.send('What is next?')
         self.service._run_task(followup['id'])
         current, bot, history = self.provider.starts[-1]
-        prompt, _ = conversation_input(dict(operation='start', task=current, bot=bot, history=history))
+        prompt, _ = turn_input(dict(operation='start', task=current, bot=bot, history=history))
         self.assertIn('Earlier emoji feedback', prompt)
         self.assertIn('What is next?', prompt)
         self.assertNotIn('Continue work', prompt)

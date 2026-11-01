@@ -30,7 +30,7 @@ class DependencyContextTests(unittest.TestCase):
         self.assertEqual(task['status'], 'waiting')
         self.assertNotIn('_work_retry', task)
         self.finish_target(target)
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         resumed = self.service._get('tasks', self.child)
         self.assertEqual(resumed['status'], 'queued')
         self.assertIn('Publication verified', resumed['_background_completion'][0])

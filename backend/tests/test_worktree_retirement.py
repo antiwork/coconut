@@ -2589,29 +2589,6 @@ class WorktreeRetirementTests(unittest.TestCase):
             self.skipTest('This system hides process environments.')
         self.assertIn('probe-outcome', found)
 
-    def test_busy_paths_reports_each_held_path_from_one_scan(self):
-        held, free = self.root / 'held', self.root / 'free'
-        held.mkdir()
-        free.mkdir()
-        listing = b'p10\nfcwd\nn' + os.fsencode(str(held)) + b'/log.txt\np11\nfcwd\nn' + os.fsencode(str(free)) + b'-other\n'
-        self.holders.stop()
-        # busy_paths reads the process table only to exempt shared services.
-        table = patch('coconut.work_workspace.process_table', return_value={})
-        table.start()
-        self.addCleanup(table.stop)
-        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)) as run:
-            self.assertEqual(work_workspace.busy_paths({str(held), str(free)}), {str(held)})
-        self.assertEqual(run.call_count, 1)
-        # A failed lsof can print part of the list, so it does not count.
-        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=1)):
-            with self.assertRaises(ValueError):
-                work_workspace.busy_paths({str(held), str(free)})
-        # Two paths with one resolved form are both busy.
-        link = self.root / 'held-link'
-        link.symlink_to(held)
-        with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
-            self.assertEqual(work_workspace.busy_paths({str(held), str(link)}), {str(held), str(link)})
-
     def nested_worktree(self, parent, name='base', folder='tmp'):
         """Add a detached worktree inside the parent, as a bot does to test a base commit."""
         inner = parent / folder / name
@@ -3199,15 +3176,15 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.holders.stop()
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
             with patch('coconut.work_workspace.process_table', return_value={10: (1, 50, '/opt/sdk/platform-tools/adb')}):
-                self.assertEqual(work_workspace.busy_paths({str(held)}), set())
+                self.assertFalse(work_workspace.in_use(held))
         # An open file of a shared service keeps the path busy.
         opened = b'p10\nf12\nn' + os.fsencode(str(held)) + b'/data\n'
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=opened, returncode=0)):
             with patch('coconut.work_workspace.process_table', return_value={10: (1, 50, '/opt/sdk/platform-tools/adb')}):
-                self.assertEqual(work_workspace.busy_paths({str(held)}), {str(held)})
+                self.assertTrue(work_workspace.in_use(held))
         with patch('coconut.work_workspace.subprocess.run', return_value=SimpleNamespace(stdout=listing, returncode=0)):
             with patch('coconut.work_workspace.process_table', return_value={10: (1, 50, '/usr/bin/ruby')}):
-                self.assertEqual(work_workspace.busy_paths({str(held)}), {str(held)})
+                self.assertTrue(work_workspace.in_use(held))
 
     def test_a_system_child_of_an_orphan_stops_and_a_shared_child_stays(self):
         table = {200: (1, 99999, '/usr/bin/safaridriver'), 201: (200, 99999, '/System/Library/Frameworks/WebKit.framework/XPCServices/WebContent'),

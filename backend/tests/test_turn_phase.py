@@ -1,37 +1,9 @@
-import os
 import tempfile
 import unittest
-from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.service import Service
-from coconut.turn_phase import tool_phase
 from test_service import ControlledProvider
-
-
-class ToolPhaseTests(unittest.TestCase):
-    def test_native_tools_map_to_short_phases(self):
-        self.assertEqual(tool_phase('read_file', {'path': 'a.py'}), 'reading')
-        self.assertEqual(tool_phase('patch', {}), 'editing')
-        self.assertEqual(tool_phase('search_files', {}), 'searching')
-        self.assertEqual(tool_phase('web_search', {}), 'browsing')
-        self.assertEqual(tool_phase('browser_navigate', {}), 'browsing')
-        self.assertEqual(tool_phase('session_search', {}), 'memory')
-        self.assertEqual(tool_phase('delegate_task', {}), 'helpers')
-        self.assertEqual(tool_phase('mcp_github_list_pulls', {}), 'github')
-        self.assertEqual(tool_phase('skill_view', {}), 'working')
-
-    def test_commands_use_their_executable(self):
-        self.assertEqual(tool_phase('terminal', {'command': 'gh pr view 12'}), 'github')
-        self.assertEqual(tool_phase('terminal', {'command': 'python3 -m pytest tests'}), 'testing')
-        self.assertEqual(tool_phase('terminal', {'command': 'ls -la'}), 'command')
-        self.assertEqual(tool_phase('terminal', {'command': 'echo "unclosed'}), 'command')
-        self.assertEqual(tool_phase('terminal', {}), 'command')
-
-    def test_bookkeeping_keeps_the_previous_phase(self):
-        self.assertIsNone(tool_phase('todo', {}))
-        self.assertIsNone(tool_phase('coconut_send_message', {}))
-        self.assertIsNone(tool_phase(None, {}))
 
 
 class RecordedPhaseTests(unittest.TestCase):
@@ -83,93 +55,6 @@ class RecordedPhaseTests(unittest.TestCase):
             self.service._put('tasks', task)
         self.service.emit(self.task['id'], 'phase', {'phase': 'writing'})
         self.assertNotIn('phase', self.stored())
-
-
-class BridgePhaseTests(unittest.TestCase):
-    def bridge(self):
-        from coconut.native_bridge import NativeBridge
-        sent = []
-        bridge = NativeBridge({'operation': 'start', 'task': {'id': str(uuid4())}},
-                              lambda kind, data: sent.append(data['phase']), None)
-        bridge.PHASE_INTERVAL = 0.05
-        return bridge, sent
-
-    def settle(self, bridge):
-        timer = bridge.phase_timer
-        if timer is not None:
-            timer.join()
-
-    def test_parallel_tools_report_thinking_after_the_last_one_returns(self):
-        bridge, sent = self.bridge()
-        bridge.PHASE_INTERVAL = 0
-        reading = bridge.tool_phase_started('reading')
-        testing = bridge.tool_phase_started('testing')
-        bridge.tool_phase_finished(reading)
-        self.assertEqual(sent, ['reading', 'testing'])
-        bridge.tool_phase_finished(testing)
-        self.assertEqual(sent, ['reading', 'testing', 'thinking'])
-
-    def test_a_finished_tool_returns_the_label_to_a_tool_that_still_runs(self):
-        bridge, sent = self.bridge()
-        bridge.PHASE_INTERVAL = 0
-        reading = bridge.tool_phase_started('reading')
-        testing = bridge.tool_phase_started('testing')
-        bridge.tool_phase_finished(testing)
-        self.assertEqual(sent, ['reading', 'testing', 'reading'])
-        bridge.tool_phase_finished(reading)
-        self.assertEqual(sent[-1], 'thinking')
-
-    def test_fast_changes_send_only_the_latest_phase(self):
-        bridge, sent = self.bridge()
-        bridge.report_phase('thinking')
-        bridge.report_phase('reading')
-        bridge.report_phase('testing')
-        self.assertEqual(sent, ['thinking'])
-        self.settle(bridge)
-        self.assertEqual(sent, ['thinking', 'testing'])
-
-    def test_no_phase_follows_the_turn_outcome(self):
-        bridge, sent = self.bridge()
-        bridge.report_phase('thinking')
-        bridge.report_phase('reading')
-        timer = bridge.phase_timer
-        bridge.stop_phases()
-        timer.join()
-        bridge.report_phase('writing')
-        self.assertEqual(sent, ['thinking'])
-
-    def test_a_return_to_the_sent_phase_sends_nothing(self):
-        bridge, sent = self.bridge()
-        bridge.report_phase('thinking')
-        bridge.report_phase('reading')
-        bridge.report_phase('thinking')
-        self.settle(bridge)
-        self.assertEqual(sent, ['thinking'])
-
-
-class WorkerPhaseTests(unittest.TestCase):
-    def test_worker_reports_each_phase_change_once(self):
-        from test_provider import ProviderTests
-        fixture = ProviderTests()
-        fixture.setUp()
-        try:
-            provider = fixture.fake_hermes(
-                "import json\n"
-                "for _ in range(2):\n"
-                "    registry.dispatch('coconut_track_pr', {'url': 'https://github.com/example/project/pull/42'})\n"
-                "return {'completed': True, 'final_response': 'Tracked.'}\n")
-            phases = []
-            def emit(kind, data):
-                if kind == 'phase':
-                    phases.append(data['phase'])
-                return {'id': 'saved-pr', 'status': 'checks_running'} if kind == 'artifact' else None
-            with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-                provider.start_task(fixture.task, fixture.bot, [], emit)
-            # Calls inside one second share an update, so the fast fixture shows only the first phase.
-            self.assertEqual(phases, ['thinking'])
-        finally:
-            fixture.tearDown()
-            fixture.doCleanups()
 
 
 if __name__ == '__main__':

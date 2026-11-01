@@ -96,7 +96,7 @@ class LegacyWorkModel:
             task = tasks.get(record['task_id'])
             if not task or task['id'] not in identities or task['status'] == 'cancelled':
                 continue
-            if task['status'] in ('completed', 'failed') and not self._can_resume_completion(task, self._get('bots', task['bot_id']), record):
+            if task['status'] in ('completed', 'failed') and not self._can_resume_process(task, self._get('bots', task['bot_id'])):
                 continue
             context = next((c for c in contexts if c['id'] == record.get('turn_id')), None)
             if context:

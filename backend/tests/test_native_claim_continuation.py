@@ -301,8 +301,8 @@ else:
         self.assertFalse(worker.is_alive())
         self.assertEqual(self.provider.started, [owner['id']], self.service._get('tasks', owner['id']))
         self.assertEqual(len(captured), 1)
-        from coconut.hermes_worker import conversation_input
-        prompt = conversation_input(dict(operation='start', task=captured[0], history=[]))[0]
+        from turn_text import turn_input
+        prompt = turn_input(dict(operation='start', task=captured[0], history=[]))[0]
         self.assertIn('The review passed. Verify locally; do not publish.', prompt)
         self.assertIn('Keep the correction local.', prompt)
         self.assertEqual(captured[0]['_kanban_workspace'], str(workspace))
@@ -503,10 +503,8 @@ assert kb.get_task(conn, stale).status == 'ready', kb.get_task(conn, stale).stat
         def card(task):
             return self.service.kanban.tasks[task['id']]
         def relay(source, bot, text):
-            call = self.service.emit(source['id'], 'native_call', dict(name='message_agent',
-                                     arguments=dict(target=bot['id'], message=text)))
-            receipt = self.service.emit(source['id'], 'native_bot_message', dict(native_call_id=call['id'],
-                native_envelope_id=uuid4().hex, target_bot_id=bot['id'], text=text))
+            # The source sends the request with coconut_message_bot.
+            receipt = self.service.emit(source['id'], 'bot_message', dict(target_bot_id=bot['id'], text=text))
             return self.service._get('tasks', receipt['task_id'])
         def finish(task, summary):
             self.service._put('tasks', dict(self.service._get('tasks', task['id']), status='working'))
@@ -654,7 +652,7 @@ assert event.get('rekind_reason') == ('no_open_parent' if kind == 'dependency' e
                 for event in (*releases, root_end):
                     self.addCleanup(event.set)
                 def provider(task, bot, history, emit):
-                    from coconut.hermes_worker import conversation_input
+                    from turn_text import turn_input
                     if task['id'] == helper['id']:
                         index = len(turns)
                         turns.append(task['_native_turn_id'])
@@ -666,7 +664,7 @@ assert event.get('rekind_reason') == ('no_open_parent' if kind == 'dependency' e
                             emit('text_delta', {'text': reply})
                             emit('completed', {'summary': 'Route repaired'})
                     elif task['id'] == root['id']:
-                        starts.append(conversation_input(dict(operation='start', task=task, history=history))[0])
+                        starts.append(turn_input(dict(operation='start', task=task, history=history))[0])
                         if not root_end.wait(60):
                             return
                         # The root's turn ends normally after its continuation: its run completes its card.

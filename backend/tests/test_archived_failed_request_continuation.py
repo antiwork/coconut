@@ -1,14 +1,14 @@
 """A failed ordinary request continues after Coconut's own settle pass archives its native task.
 
 A requester delegates work to another bot through the native relay. The owner's turn fails before its worker starts,
-Hermes moves the task to triage, and the requester can still continue it there. A few minutes later the settle pass
+Hermes moves the task to triage, and the requester can still continue it there. Only a worker of an earlier version
+relayed a request through a native envelope, so these tests build that saved record. A few minutes later the settle pass
 archives the task of the failed request. The request has no routine record, so the routine rule cannot reach it.
 
 Only that exact archive continues: the task that Coconut created for this request, ended by the run of the claim of
 the current input without success, with no run, worker, unknown tool call, decision, or other open input left.
 The continuation keeps the request, its execution, its claim history, and its result route. Hermes keeps the archived
-task, and Board.sync gives the new input a successor in the same workspace. A discarded worktree comes back only when
-the owner's own turn starts. Native CI sets COCONUT_REQUIRE_NATIVE, and then the native tests fail instead of skipping.
+task, and Board.sync gives the new input a successor in the same workspace. Native CI sets COCONUT_REQUIRE_NATIVE, and then the native tests fail instead of skipping.
 """
 import copy
 import json
@@ -16,20 +16,17 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 from uuid import uuid4
 
 from coconut import routine_coordinator
 from coconut.kanban_runtime import IDLE_AGE
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError
-from coconut.work_workspace import discard, git, head_log, preferred
 import legacy_work_sync
 import test_archived_failed_routine_continuation as failed_routine_fixtures
 import test_archived_scheduled_routine_continuation as routine_fixtures
-import test_finished_routine_workspace as workspace_fixtures
 import test_native_kanban as native_fixtures
-import test_workspace_reflog_rewrite as reflog_fixtures
 import hermes_env
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
@@ -75,9 +72,9 @@ class ArchivedRequest:
         """The saved shape: Desk relayed the request, its input failed in preparation, and the settle pass archived it."""
         requester = self.working(self.desk, 'Ask Dev for the admin-only download grant.')
         delivered = self.store._store_bot_message(requester['id'], dict(
-            target_bot_id=self.dev['id'], text='Implement the admin-only download grant.', native_envelope_id=ENVELOPE))
-        owner = self.store._get('tasks', delivered['task_id'])
-        self.assertEqual(owner['_native_relay'], dict(sender_bot_id=self.desk['id'], envelope_id=ENVELOPE))
+            target_bot_id=self.dev['id'], text='Implement the admin-only download grant.'))
+        # A worker of an earlier version relayed the request through its native envelope. The task keeps that record.
+        owner = self.update(delivered['task_id'], _native_relay=dict(sender_bot_id=self.desk['id'], envelope_id=ENVELOPE))
         self.assertEqual((owner['source_bot_id'], owner['_reply_to_task_id']), (self.desk['id'], requester['id']))
         self.workspace = self.store.root / 'workspaces' / owner['id']
         self.workspace.mkdir(parents=True)
@@ -563,89 +560,6 @@ class ProviderStoppedSuccessorTests(ArchivedRequest, unittest.TestCase):
         self.assertEqual([r['id'] for r in recorded], ['helper-unknown'])
 
 
-class ArchivedFailedRequestWorkerTests(ArchivedRequest, unittest.TestCase):
-    """The provider starts a real worker process for the continued owner. Its native modules are the shared stub.
-
-    The service discarded the owner's worktree after its native task was archived, as it does for an idle outcome
-    whose pull request merged. The branch and the archive keep the work, and only the owner's own turn restores them.
-    """
-
-    def setUp(self):
-        workspace_fixtures.FinishedRoutineWorkspaceTests.setUp(self)
-        ArchivedRequest.setUp(self)
-        reflog_fixtures.use_test_git(self)
-        self.registry = self.data / 'workspaces'
-        self.owner = self.archived()
-        # The Dev worktree of this execution: renamed branch, a commit, and an uncommitted file. Then the discard.
-        reflog_fixtures.retain_worktree(self, self.root, self.registry, self.owner['id'])
-        git(self.path, 'commit', '--allow-empty', '-m', 'Scoped change')
-        git(self.path, 'branch', '-m', 'reviewed-name')
-        (self.path / 'pending.txt').write_text('Unfinished change')
-        self.head = git(self.path, 'rev-parse', 'HEAD')
-        identity = self.owner['id'] + '-key'
-        with patch('coconut.work_workspace.holders', return_value=set()):
-            self.assertTrue(discard(self.registry, identity, lambda wait: True, merged=True))
-        self.assertFalse(self.path.exists())
-        self.discarded = json.loads(self.manifest.read_text())[identity]
-        self.assertEqual((self.discarded['branch'], self.discarded['retired']['done']), ('reviewed-name', True))
-
-    def turn(self, task):
-        events = []
-        prepared = task['_kanban_workspace']
-        self.provider.prepare_kanban_worker(task['id'], self.bot, prepared, task['_execution_session_id'])
-        with patch.object(self.provider, 'observe_bot', return_value=self.bot), patch.object(
-                self.provider, 'resolve_task_model', return_value=dict(
-                    model='gpt-6-astra', provider='openai-codex', base_url=self.native['base_url'])):
-            self.provider._run_turn('start', task, self.bot, [], lambda kind, data: events.append((kind, data)), isolated=True)
-        scopes = Path(str(self.capture) + '.cwd')
-        rows = [json.loads(line) for line in scopes.read_text().splitlines()] if scopes.exists() else []
-        scopes.unlink(missing_ok=True)
-        return events, rows
-
-    def continued_task(self):
-        """The continued owner after Board.sync made its successor in the registry's path and Hermes claimed it."""
-        self.resume()
-        continued = self.store._get('tasks', self.owner['id'])
-        # Board.sync reads the registry's path hint for the successor. Hermes creates that empty folder for its claim.
-        workspace = preferred(self.registry, continued['_execution_session_id'], verify=False)
-        self.assertEqual(workspace, self.path)
-        workspace.mkdir(parents=True)
-        claim = dict(continued['_kanban_claim'], native_id='t_successor', run_id=RUN + 1,
-                     input=continued['_native_turn_id'], workspace=str(workspace))
-        return dict(id=continued['id'], title=continued['title'], bot_id=self.bot['id'],
-                    _execution_session_id=continued['_execution_session_id'], _native_turn_id=continued['_native_turn_id'],
-                    _native_outcome_id='t_successor', _kanban_claim=claim, _kanban_external_id=continued['id'],
-                    _kanban_workspace=str(workspace), _reply_to_task_id=continued['_reply_to_task_id'])
-
-    def test_the_owner_turn_restores_its_discarded_worktree(self):
-        task = self.continued_task()
-        events, rows = self.turn(task)
-        self.assertIn(('completed', {'summary': 'Complete.'}), events)
-        self.assertEqual([row[1]['cwd'] for row in rows if row[0] == 'session'], [str(self.path)])
-        self.assertEqual(git(self.path, 'branch', '--show-current'), 'reviewed-name')
-        self.assertEqual(git(self.path, 'rev-parse', 'HEAD'), self.head)
-        self.assertEqual((self.path / 'pending.txt').read_text(), 'Unfinished change')
-        restored = json.loads(self.manifest.read_text())[self.owner['id'] + '-key']
-        self.assertNotIn('retired', restored)
-        self.assertEqual({k: restored[k] for k in ('path', 'branch', 'repository', 'outcome')},
-                         {k: self.discarded[k] for k in ('path', 'branch', 'repository', 'outcome')})
-        log = head_log(self.path)
-        self.assertEqual(restored['_head_log']['size'], len(log))
-
-    def test_another_execution_does_not_restore_it(self):
-        before = self.manifest.read_text()
-        other = str(uuid4())
-        scratch = self.registry / other
-        scratch.mkdir(parents=True)
-        events, rows = self.turn(dict(id=other, title='Other work', bot_id=self.bot['id'], _execution_session_id=other,
-                                      _native_turn_id='other-turn', _native_outcome_id='t_other', _kanban_external_id=other,
-                                      _kanban_workspace=str(scratch)))
-        self.assertIn(('completed', {'summary': 'Complete.'}), events)
-        self.assertEqual([row[1]['cwd'] for row in rows if row[0] == 'session'], [str(scratch)])
-        self.assertFalse(self.path.exists())
-        self.assertEqual(self.manifest.read_text(), before)
-
-
 class ArchivedFailedRequestNativeTests(unittest.TestCase):
     """The installed Hermes kernel: the settle pass archives the failed request's task, continuation dispatches a successor."""
 
@@ -696,7 +610,6 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         return json.dumps(dict(
             started=[{k: t.get(k) for k in ('id', 'bot_id', 'source_task_id', '_execution_session_id', '_native_outcome_id',
                                             '_native_turn_id')} for t in self.provider.tasks],
-            prepared=[list(p[:3]) for p in self.provider.prepared],
             owner=dict({k: task.get(k) for k in ('status', '_native_outcome_id', '_native_turn_id', '_kanban_started',
                                                 '_waiting_on')}, return_pending=bool(task.get('_return_pending')),
                        claim={k: (task.get('_kanban_claim') or {}).get(k) for k in ('native_id', 'input', 'run_id')},
@@ -762,7 +675,9 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         requester = self.write('/v1/bots/' + self.bot['id'] + '/messages', {'text': 'Ask Dev for the grant.'})
         requester = self.update(requester['id'], status='working')
         delivered = self.service._store_bot_message(requester['id'], dict(
-            target_bot_id=self.dev['id'], text='Implement the admin-only download grant.', native_envelope_id=ENVELOPE))
+            target_bot_id=self.dev['id'], text='Implement the admin-only download grant.'))
+        # A worker of an earlier version relayed the request through its native envelope. The task keeps that record.
+        self.update(delivered['task_id'], _native_relay=dict(sender_bot_id=self.bot['id'], envelope_id=ENVELOPE))
         # The saved input carries the PR facts that its failed turn never received.
         self.owner_id = delivered['task_id']
         owner = self.update(delivered['task_id'], status='queued', _native_intake=True, _native_turn_id=TURN,
@@ -805,7 +720,6 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         self.assertEqual(native['parents'], [archived])
         self.assertEqual(native['key'], 'coconut-followup:' + owner['id'] + ':' + continued['_native_turn_id'])
         self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
-        self.assertEqual([p for p in self.provider.prepared if p[0] == owner['id']][-1][1:3], (workspace, owner['id']))
         self.assertEqual(self.native(archived), history)
         self.assertEqual((task['_native_turn_id'], task['_kanban_workspace']), (continued['_native_turn_id'], workspace))
         # The provider task carries public fields only. The result route stays on the owner and its source.
@@ -862,7 +776,9 @@ class ArchivedFailedRequestNativeTests(unittest.TestCase):
         requester = self.write('/v1/bots/' + self.bot['id'] + '/messages', {'text': 'Ask Dev for the grant.'})
         requester = self.update(requester['id'], status='working')
         delivered = self.service._store_bot_message(requester['id'], dict(
-            target_bot_id=self.dev['id'], text='Implement the admin-only download grant.', native_envelope_id=ENVELOPE))
+            target_bot_id=self.dev['id'], text='Implement the admin-only download grant.'))
+        # A worker of an earlier version relayed the request through its native envelope. The task keeps that record.
+        self.update(delivered['task_id'], _native_relay=dict(sender_bot_id=self.bot['id'], envelope_id=ENVELOPE))
         self.owner_id = delivered['task_id']
         owner = self.update(delivered['task_id'], status='queued', _native_intake=True, _native_turn_id='first-input',
                             _execution_session_id=delivered['task_id'],

@@ -1,17 +1,14 @@
 """Continuation admission must survive replacement of the scheduler's cache."""
 import copy
 import json
-import os
 import queue
 import threading
 import unittest
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 from coconut.kanban_scheduler import KanbanScheduler
 from coconut.service import ServiceError
 import test_native_work_continuation as fixtures
-import test_provider
 
 
 class ContinuationSnapshotEvictionTests(unittest.TestCase):
@@ -24,7 +21,7 @@ class ContinuationSnapshotEvictionTests(unittest.TestCase):
     completed_pr_peer = fixtures.NativeWorkContinuationTests.completed_pr_peer
     resume = fixtures.NativeWorkContinuationTests.resume
 
-    def admission(self, *, provider=False, change=None, context=False, cached=False, periodic=None):
+    def admission(self, *, change=None, context=False, cached=False, periodic=None):
         owner, source, peer, items = self.completed_pr_peer()
         peer['_kanban_claim'] = dict(native_id='t_peer', input='peer-input')
         self.service._put('tasks', peer)
@@ -117,29 +114,10 @@ class ContinuationSnapshotEvictionTests(unittest.TestCase):
         try:
             with patch.object(adapter, 'call', side_effect=targeted), patch.object(
                     self.service, '_all', side_effect=evict_during_lookup if cached else all_rows):
-                if provider:
-                    self.root = Path(self.temp.name) / 'provider-fixture'
-                    transport = test_provider.ProviderTests.fake_hermes(self,
-                        "import json\n"
-                        "result = json.loads(registry.dispatch('coconut_continue_work', " + repr(payload) + "))\n"
-                        "return {'completed': True, 'final_response': json.dumps(result)}\n")
-                    events = []
-                    def emit(kind, data):
-                        if kind == 'work_continue':
-                            self.assertEqual(data, payload)
-                            return self.service.emit(source['id'], kind, data)
-                        events.append((kind, data))
-                    task = {key: source[key] for key in ('id', 'bot_id', 'title')}
-                    with patch.dict(os.environ, ANTHROPIC_API_KEY='test-only'):
-                        transport.start_task(task, self.service._get('bots', source['bot_id']), [], emit)
-                    text = ''.join(data['text'] for kind, data in events if kind == 'text_delta')
-                    self.assertTrue(text.startswith('{'), events)
-                    result = json.loads(text)
-                else:
-                    try:
-                        result = self.service.emit(source['id'], 'work_continue', payload)
-                    except ServiceError as error:
-                        result = error
+                try:
+                    result = self.service.emit(source['id'], 'work_continue', payload)
+                except ServiceError as error:
+                    result = error
         finally:
             ticks.put(None)
             worker.join(10)
@@ -171,9 +149,6 @@ class ContinuationSnapshotEvictionTests(unittest.TestCase):
         self.assertEqual(len(values[-1]), 2)
         self.assertEqual(set(values[-1][-1]['external_ids']), {values[0]['id'], values[2]['id']})
 
-    def test_provider_tool_admits_after_periodic_eviction(self):
-        self.assert_admitted(self.admission(provider=True))
-
     def test_context_and_owner_survive_periodic_eviction(self):
         self.assert_admitted(self.admission(context=True))
 
@@ -190,12 +165,13 @@ class ContinuationSnapshotEvictionTests(unittest.TestCase):
         self.assertEqual(result.status, 403)
         self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
 
-    def test_provider_receives_pending_decision_rejection(self):
+    def test_a_pending_decision_rejects_the_continuation(self):
         def change(owner, source, peer, snapshots):
             self.service._put('decisions', dict(id='pause', task_id=owner['id'], status='pending'))
-        owner, _, _, _, result, _ = self.admission(provider=True, change=change)
-        self.assertEqual(result['status'], 'rejected')
-        self.assertIn('existing decision', result['error'])
+        owner, _, _, _, result, _ = self.admission(change=change)
+        self.assertIsInstance(result, ServiceError)
+        self.assertTrue(400 <= result.status < 500, result)
+        self.assertIn('existing decision', str(result))
         self.assertEqual(self.service._get('tasks', owner['id']), owner)
         self.assertEqual(self.service._get('decisions', 'pause')['status'], 'pending')
 

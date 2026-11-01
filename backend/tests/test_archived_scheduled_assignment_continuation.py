@@ -407,14 +407,14 @@ class ArchivedScheduledAssignmentAdmissionTests(ScheduledAssignment, unittest.Te
                 self.store.db.execute("DELETE FROM decisions WHERE id='archived-question'")
         self.assertEqual(self.resume('t_scheduled', 'Finish the bank validation.')['task_id'], owner['id'])
 
-    def test_open_input_decision_waits_background_and_unknown_effects_hold(self):
+    def test_open_input_decision_waits_and_unknown_effects_hold(self):
         owner = self.saved()
         self.store._put('decisions', dict(id='pending', task_id=owner['id'], bot_id=owner['bot_id'], status='pending'))
         self.assertRejected(owner)
         self.store.db.execute("DELETE FROM decisions WHERE id='pending'")
         for changes in (dict(_steering=['Use the other checkout.']), dict(_blocked_followup=dict(
                 message_ids=['m'], source_ids=['m'], attachment_ids=[])), dict(_waiting_on=['dependency']),
-                dict(_return_pending=dict(text='Saved result')), dict(_native_reply_pending=True),
+                dict(_return_pending=dict(text='Saved result')),
                 dict(_self_recovery=dict(owner['_self_recovery'], unknown_tools=[dict(id='unknown')]))):
             with self.subTest(changes=changes):
                 self.store._put('tasks', dict(owner, **changes))
@@ -422,11 +422,11 @@ class ArchivedScheduledAssignmentAdmissionTests(ScheduledAssignment, unittest.Te
         self.store._put('tasks', owner)
         base = dict(task_id=owner['id'], turn_id=owner['_native_turn_id'], action_hash='hash',
                     created_at='2026-10-16T20:16:00Z')
-        self.store._put('native_receipts', dict(base, id='process', state='completed',
-            action={'name': 'terminal', 'arguments': {}},
-            result=json.dumps({'notify_on_complete': True, 'session_id': 'proc-1'})))
+        # A wait for another task that has no result yet.
+        self.store._put('native_receipts', dict(base, id='wait', state='completed', result='{}',
+            action={'name': 'coconut_wait', 'arguments': {}}, _wait_task_id='dependency', _wait_session_id='session'))
         self.assertRejected(owner)
-        self.store.db.execute("DELETE FROM native_receipts WHERE id='process'")
+        self.store.db.execute("DELETE FROM native_receipts WHERE id='wait'")
         self.store._put('native_receipts', dict(base, id='unknown', state='executing',
                                                 action={'name': 'write_file', 'arguments': {}}))
         self.assertRejected(owner)
@@ -1000,7 +1000,6 @@ class ArchivedScheduledAssignmentNativeTests(unittest.TestCase):
         self.assertEqual(native['parents'], [scheduled])
         self.assertEqual(native['key'], 'coconut-followup:' + owner['id'] + ':' + continued['_native_turn_id'])
         self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
-        self.assertEqual(self.provider.prepared[-1][1:], (workspace, owner['id'], successor))
         self.assertEqual(task['_kanban_workspace'], workspace)
         self.assertEqual(task['_native_turn_id'], continued['_native_turn_id'])
         # The archived card and the original card keep their history. Hermes runs only the successor.

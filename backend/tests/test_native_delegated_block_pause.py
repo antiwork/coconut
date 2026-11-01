@@ -1,23 +1,21 @@
-"""A block check records a delegate's answer from the installed Hermes board and tool registry.
+"""A block check records a delegate's answer from the installed Hermes board.
 
-The fixture board is the test's own Hermes Kanban board. The delegate's relay intake creates the delegate's outcome with
+The fixture board is the test's own Hermes Kanban board. The delegate's relay intake (saved relay history) creates the delegate's outcome with
 Hermes' own kanban_create, and _adopt_native_outcomes gives that outcome its own owner, as in normal native delegation.
 The blocked outcome's claimed run links its card to that outcome's card and blocks it through Hermes' own kanban_link
 and kanban_block tools. Coconut reads the edge from its adapter snapshot. The check offers the delegate's answer, and
-coconut_record_pause reaches the service through the real Hermes registry with the schema the worker registers.
+coconut_record_pause reaches the service on the route of the gateway plugin.
 Native CI sets COCONUT_REQUIRE_NATIVE, and then a missing Hermes install fails these tests instead of skipping them.
 """
 import json
-import os
 from pathlib import Path
-import subprocess
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from coconut.native_bridge import kanban_arguments
+from coconut.gateway_chat import kanban_arguments
 from coconut.native_outcomes import outcome_owner_id
-from coconut.service import ServiceError, now
+from coconut.service import ServiceError, digest, encoded, now
 from coconut.work_recovery import BLOCK_PAUSE_SCHEMA, block_check_delay
 import legacy_work_sync
 import test_native_kanban as native_fixtures
@@ -25,7 +23,6 @@ import hermes_env
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
 
-BACKEND = str(Path(__file__).resolve().parents[1])
 ANSWER = 'delegate-answer'
 SIBLING = 'sibling-answer'
 PUBLIC_ANSWER = {'id', 'bot_id', 'task_id', 'title', 'action_type', 'status', 'revision', 'decided_at',
@@ -46,30 +43,6 @@ os.environ.update(HERMES_KANBAN_TASK=sys.argv[2], HERMES_KANBAN_RUN_ID=sys.argv[
 import tools.kanban_tools
 from tools.registry import registry
 print(json.dumps(dict(result=registry.dispatch(sys.argv[5], json.loads(sys.argv[6])))))
-'''
-
-# The block check turn's registration of coconut_record_pause in the installed Hermes registry, as hermes_worker does
-# it. The handler sends the worker's receipt request and waits for the service's receipt, one JSON line each.
-PAUSE_TURN = r'''
-import json, sys
-from coconut.native_turn_scope import TurnScope, current
-from coconut.work_recovery import BLOCK_PAUSE_SCHEMA
-from tools.registry import registry
-scope = TurnScope(sys.argv[1])
-current.set(scope)
-requests = iter(range(1, 100))
-def request_receipt(kind, data):
-    request_id = next(requests)
-    print(json.dumps(dict(type=kind, data=data, request_id=request_id)), flush=True)
-    reply = json.loads(sys.stdin.readline())
-    assert reply['request_id'] == request_id, reply
-    return reply['receipt']
-name = BLOCK_PAUSE_SCHEMA['name']
-scope.register(name=name, toolset='coconut', schema=BLOCK_PAUSE_SCHEMA,
-               handler=lambda arguments, **kwargs: json.dumps(request_receipt('block_pause', arguments)))
-results = [json.loads(registry.dispatch(name, arguments)) for arguments in json.loads(sys.argv[2])]
-print(json.dumps(dict(type='done', definitions=registry.get_definitions({name}, quiet=True),
-                      schema=registry.get_schema(name), results=results)), flush=True)
 '''
 
 
@@ -130,11 +103,20 @@ class NativeDelegatedBlockPauseTests(unittest.TestCase):
         self.service.emit(identity, 'native_result', dict(id=call['id'], result=result))
 
     def relay(self, sender, target, text):
-        """The sender's message_agent call delivered through the audited native relay route."""
+        """The saved state of the sender's message_agent call that an earlier Coconut delivered through its audited
+        native relay: the call's receipt with the delivery, the delivery under its envelope ID, and the relay of the
+        intake. Coconut no longer makes this state, but it still reads it (_block_check_relay_lineage)."""
         self.update(sender['id'], status='working', _native_turn_id='sender-turn-' + str(uuid4()))
+        envelope = uuid4().hex
         call = self.service.emit(sender['id'], 'native_call', dict(name='message_agent', arguments=dict(target=target['id'], message=text)))
-        receipt = self.service.native_relay_delivery(sender['id'], dict(
-            native_call_id=call['id'], native_envelope_id=uuid4().hex, target_bot_id=target['id'], text=text))
+        with self.service.transaction():
+            receipt = self.service._store_bot_message(sender['id'], dict(target_bot_id=target['id'], text=text))
+            delivery = next(d for d in reversed(self.service._all('deliveries')) if d['receipt']['task_id'] == receipt['task_id'])
+            self.service.db.execute('DELETE FROM deliveries WHERE id=?', (delivery['id'],))
+            self.service._put('deliveries', dict(delivery, id=digest(encoded([sender['id'], envelope]))))
+            intake = self.service._get('tasks', receipt['task_id'])
+            self.service._put('tasks', dict(intake, _native_relay=dict(sender_bot_id=sender['bot_id'], envelope_id=envelope)))
+        self.service.emit(sender['id'], 'native_result', dict(id=call['id'], result=json.dumps(dict(receipt, delivery_id=envelope))))
         self.update(sender['id'], status='completed')
         return self.service._get('tasks', receipt['task_id'])
 
@@ -144,7 +126,7 @@ class NativeDelegatedBlockPauseTests(unittest.TestCase):
         self.update(intake['id'], status='working', _native_turn_id=turn)
         arguments = kanban_arguments(dict(title=title, body='Check it read-only.', workspace_kind='dir',
                                           workspace_path=str(Path(self.tmp.name) / 'workspaces' / str(uuid4()))),
-                                     intake['id'], turn, intake['bot_id'])
+                                     intake['id'], turn, intake['bot_id'], self.service.root / 'kanban' / 'kanban' / 'workspaces')
         created = self.last_json(self.native_program(CHAT_TOOL, 'kanban_create', json.dumps(arguments)))['result']
         native = json.loads(created)
         self.assertIs(native.get('ok'), True, created)
@@ -186,42 +168,18 @@ class NativeDelegatedBlockPauseTests(unittest.TestCase):
         return self.service._get('tasks', identity)
 
     def pause_turn(self, identity, payloads):
-        """Dispatch coconut_record_pause through the installed Hermes registry. Serve each receipt from the service."""
-        home = Path(self.tmp.name) / 'registry-home'
-        home.mkdir(exist_ok=True)
-        log = Path(self.tmp.name) / 'registry.log'
-        env = dict(os.environ, PYTHONPATH=os.pathsep.join((BACKEND, hermes_env.SOURCE)), HERMES_HOME=str(home),
-                   PYTHONDONTWRITEBYTECODE='1', HERMES_DISABLE_TELEMETRY='1')
-        received, done = [], None
-        with log.open('w') as errors:
-            process = subprocess.Popen([hermes_env.PYTHON, '-c', PAUSE_TURN, identity, json.dumps(payloads)], env=env,
-                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True)
+        """Call coconut_record_pause of the check turn as the gateway plugin calls it (gateway_chat.gateway_record_pause).
+        The plugin returns a refusal of the service as an error result."""
+        results = []
+        for arguments in payloads:
             try:
-                for line in process.stdout:
-                    if not line.startswith('{'):
-                        continue
-                    event = json.loads(line)
-                    if event['type'] == 'done':
-                        done = event
-                        break
-                    self.assertEqual(event['type'], 'block_pause')
-                    received.append(event['data'])
-                    try:
-                        receipt = self.service.emit(identity, 'block_pause', event['data'])
-                    except ServiceError as error:
-                        # HermesProvider returns a client error of this route to the worker as a rejected receipt.
-                        self.assertTrue(400 <= error.status < 500, error)
-                        receipt = {'status': 'rejected', 'error': str(error)}
-                    process.stdin.write(json.dumps(dict(request_id=event['request_id'], receipt=receipt)) + '\n')
-                    process.stdin.flush()
-            finally:
-                process.stdin.close()
-                process.wait(timeout=30)
-        self.assertEqual(process.returncode, 0, log.read_text())
-        self.assertIsNotNone(done, log.read_text())
-        return done, received
+                results.append(self.service.gateway_record_pause(identity, arguments))
+            except ServiceError as error:
+                self.assertTrue(400 <= error.status < 500, error)
+                results.append({'error': str(error)})
+        return results
 
-    def test_check_records_the_delegate_answer_from_the_hermes_board_and_registry(self):
+    def test_check_records_the_delegate_answer_from_the_hermes_board(self):
         sender = self.task('Ask Dev to check the payout record')
         intake = self.relay(sender, self.dev, 'Check the payout record')
         # The intake creates two outcomes. The blocked outcome waits for one of them only.
@@ -280,17 +238,13 @@ class NativeDelegatedBlockPauseTests(unittest.TestCase):
         self.check(checked['id'], 10 ** 9 + 1)
         counts = {table: len(self.service._all(table)) for table in ('decisions', 'deliveries', 'messages')}
 
-        done, received = self.pause_turn(checked['id'], [dict(decision_id=SIBLING), {}, dict(decision_id=ANSWER)])
-        # Hermes exposes the exact registered schema to the model.
-        self.assertEqual(done['definitions'], [dict(type='function', function=BLOCK_PAUSE_SCHEMA)])
-        self.assertEqual(done['schema']['parameters']['required'], ['decision_id'])
-        self.assertIs(done['schema']['parameters']['additionalProperties'], False)
-        # Hermes' registry passes the arguments to the handler as given. It does not apply the schema, so the empty
-        # call reaches the service, which refuses it. The schema guides the model; the service checks the request.
-        self.assertEqual(received, [dict(decision_id=SIBLING), {}, dict(decision_id=ANSWER)])
-        refused, missing, recorded = done['results']
-        self.assertEqual(refused, dict(status='rejected', error='Choose an answered human decision from this check context.'))
-        self.assertEqual(missing, dict(status='rejected', error='decision_id must contain between 1 and 100 characters.'))
+        # The plugin offers coconut_record_pause with this schema.
+        self.assertEqual(BLOCK_PAUSE_SCHEMA['parameters']['required'], ['decision_id'])
+        self.assertIs(BLOCK_PAUSE_SCHEMA['parameters']['additionalProperties'], False)
+        # Hermes does not apply the schema to the arguments, so an empty call reaches the service, which refuses it.
+        refused, missing, recorded = self.pause_turn(checked['id'], [dict(decision_id=SIBLING), {}, dict(decision_id=ANSWER)])
+        self.assertEqual(refused, dict(error='Choose an answered human decision from this check context.'))
+        self.assertEqual(missing, dict(error='decision_id must contain between 1 and 100 characters.'))
         self.assertEqual(recorded, dict(status='recorded', decision_id=ANSWER))
         # The pause is saved in the committed task row.
         saved = json.loads(self.service.db.execute('SELECT data FROM tasks WHERE id=?', (checked['id'],)).fetchone()[0])

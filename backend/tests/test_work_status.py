@@ -1,12 +1,9 @@
-import json
 import threading
 import unittest
-from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.service import ServiceError, now
 from test_service_pr import PRServiceTests, URL
-from test_background_processes import BackgroundProcessTests
 import legacy_work_sync
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
@@ -79,33 +76,6 @@ class WorkStatusTests(unittest.TestCase):
             self.assertEqual(self.row()['activity'], 'Reviewing with Fable')
         finally:
             self.service.running.clear()
-
-    def test_process_receipt_expires_without_observation(self):
-        self.artifact()
-        self.status('waiting')
-        record = dict(id=str(uuid4()), task_id=self.task['id'], action={'name': 'terminal'}, state='completed',
-                      result=json.dumps(dict(session_id='test-process', notify_on_complete=True)),
-                      turn_id=self.service._get('tasks', self.task['id']).get('_native_turn_id'),
-                      _process_status='running', _process_observed_at=now())
-        with self.service.transaction(): self.service._put('native_receipts', record)
-        self.assertEqual(self.row()['activity'], 'Waiting for worker output')
-        record['_process_observed_at'] = '2000-01-01T00:00:00Z'
-        with self.service.transaction(): self.service._put('native_receipts', record)
-        self.assertEqual(self.row()['work_state'], 'waiting')
-
-    def test_active_process_survives_a_later_owner_turn(self):
-        self.artifact()
-        self.status('waiting')
-        record = dict(id=str(uuid4()), task_id=self.task['id'], action={'name': 'terminal'}, state='completed',
-                      result=json.dumps(dict(session_id='test-process', notify_on_complete=True)),
-                      turn_id='earlier-turn', _process_status='running', _process_observed_at=now())
-        with self.service.transaction():
-            self.service._put('native_receipts', record)
-        self.assertEqual(self.row()['work_state'], 'working')
-        record['_process_delivery'] = 'finished-turn'
-        with self.service.transaction():
-            self.service._put('native_receipts', record)
-        self.assertNotEqual(self.row()['work_state'], 'working')
 
     def test_verified_outcome_survives_turn_but_not_changed_head(self):
         artifact = self.artifact('Review needs changes', 'blocked')
@@ -182,24 +152,36 @@ class WorkStatusTests(unittest.TestCase):
             self.write('POST', f'/v1/work/pull-requests/{artifact["id"]}/dismiss', dict(dismissal_id='test'))
         self.assertEqual(error.exception.status, 409)
 
+    def test_saved_todo_expires_and_notifies_phone_once(self):
+        import time
+        from datetime import datetime, timezone
+        self.artifact()
+        self.status('working')
+        with self.service.transaction():
+            artifact = self.service._all('artifacts')[0]
+            artifact.pop('_activity_task_id', None)
+            self.service._put('artifacts', artifact)
+            task = self.service._get('tasks', self.task['id'])
+            old = datetime.fromtimestamp(time.time() - 181, timezone.utc).isoformat()
+            task['_work_progress_at'] = old
+            task['_work_todos'] = {'todos': [{'id': 'edit', 'content': 'Editing old files', 'status': 'in_progress'}]}
+            self.service._put('tasks', task)
+        self.service.running[self.task['id']] = threading.current_thread()
+        try:
+            self.assertEqual(self.row()['activity'], 'Waiting for a progress update')
+            before = self.service.db.execute('select count(*) from events').fetchone()[0]
+            self.service._expire_work_descriptions()
+            self.assertEqual(self.service.db.execute('select count(*) from events').fetchone()[0], before + 1)
+            self.service._expire_work_descriptions()
+            self.assertEqual(self.service.db.execute('select count(*) from events').fetchone()[0], before + 1)
+            with self.service.transaction():
+                task = self.service._get('tasks', self.task['id'])
+                task['_work_progress_at'] = datetime.now(timezone.utc).isoformat()
+                self.service._put('tasks', task)
+            self.assertEqual(self.row()['activity'], 'Editing old files')
+        finally:
+            self.service.running.clear()
 
-class ProcessObservationTests(unittest.TestCase):
-    setUp = BackgroundProcessTests.setUp
-    tearDown = BackgroundProcessTests.tearDown
-    write = BackgroundProcessTests.write
-    start = BackgroundProcessTests.start
 
-    def test_running_observation_does_not_resume_or_consume(self):
-        task_id = self.start()
-        def observe(bot, processes):
-            return [dict(id=p['id'], observation='running', session_id=p['session_id']) for p in processes]
-        with patch.object(self.provider, 'process_completions', side_effect=observe):
-            self.service._drain_process_completions()
-        receipt = self.service._all('native_receipts')[0]
-        self.assertEqual(receipt['_process_status'], 'running')
-        self.assertTrue(receipt['_process_observed_at'])
-        self.assertNotIn('_process_delivery', receipt)
-        self.assertEqual(self.service._get('tasks', task_id)['status'], 'waiting')
-        self.provider.results['proc_test'] = 'The review finished.'
-        self.service._drain_process_completions()
-        self.assertEqual(self.service._get('tasks', task_id)['status'], 'queued')
+if __name__ == '__main__':
+    unittest.main()

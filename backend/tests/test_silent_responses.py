@@ -140,19 +140,6 @@ class SilentResponseTests(unittest.TestCase):
         self.assertEqual(self.service._get('messages', old['id'])['text'], '[SILENT]')
         self.assertNotEqual(self.service._get('bots', self.bot['id'])['last_message'], '[SILENT]')
 
-    def test_silent_turn_still_returns_to_its_requester(self):
-        with self.service.transaction():
-            task = self.service._get('tasks', self.task['id'])
-            task['source_bot_id'] = 'requester'
-            task['_native_relay'] = dict(envelope_id='native-envelope')
-            self.service._put('tasks', task)
-        self.provider.start_task = lambda task, bot, history, emit: emit('completed', dict(summary='Complete.', silent_response=True))
-        self.service._run_task(self.task['id'])
-        task = self.service._get('tasks', self.task['id'])
-        self.assertEqual(task['status'], 'completed')
-        self.assertIn('_native_reply_pending', task)
-        self.assertNotIn('[SILENT]', task['_native_reply_pending']['text'])
-
     def test_failure_remains_visible_even_with_silence_flag(self):
         self.provider.start_task = lambda task, bot, history, emit: emit('failed', dict(summary='The export failed.', silent_response=True))
         self.service._run_task(self.task['id'])

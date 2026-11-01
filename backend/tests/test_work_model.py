@@ -1,4 +1,3 @@
-import json
 import threading
 import unittest
 
@@ -134,40 +133,6 @@ class WorkModelTests(unittest.TestCase):
         finally:
             self.service.context_threads.clear()
 
-    def test_completed_process_is_queued_for_delivery_not_still_waiting(self):
-        self.track()
-        call = self.service.native_event(self.task['id'], 'native_call', dict(name='terminal', arguments={}))
-        self.service.native_event(self.task['id'], 'native_result', dict(id=call['id'], result=json.dumps(
-            dict(session_id='proc-one', status='running', notify_on_complete=True))))
-        self.state(status='waiting')
-        self.assertEqual(self.row()['work_state'], 'waiting')
-        with self.service.transaction():
-            receipt = self.service._get('native_receipts', call['id'])
-            receipt['_completion_text'] = 'The check passed.'
-            self.service._put('native_receipts', receipt)
-        row = self.row()
-        self.assertEqual(row['work_state'], 'queued')
-        self.assertEqual(row['work_dependencies'][0]['state'], 'ready')
-        self.assertEqual(len(self.service._all('artifacts')), 1)
-
-    def test_saved_source_result_readies_a_process_wait(self):
-        self.track()
-        self.state(status='waiting')
-        task = self.service._get('tasks', self.task['id'])
-        self.service._put('tasks', dict(task, id='other'))
-        self.service._put('native_receipts', dict(id='source', task_id='other', state='completed',
-            action={'name': 'terminal'}, _completion_text='The check passed.'))
-        self.service._put('native_receipts', dict(id='wait', task_id=task['id'], state='completed',
-            action={'name': 'coconut_wait', 'arguments': {'reason': 'Waiting for the check'}},
-            turn_id=task.get('_native_turn_id'), _wait_process_receipt='source', _wait_session_id=task['session_id']))
-        self.assertEqual(self.row()['work_state'], 'queued')
-        self.assertEqual(self.row()['work_dependencies'][0]['state'], 'ready')
-
-    def test_completed_turn_keeps_undelivered_process_dependency(self):
-        self.test_completed_process_is_queued_for_delivery_not_still_waiting()
-        self.state(status='completed')
-        self.assertEqual(self.row()['work_state'], 'queued')
-
     def test_decision_wait_uses_the_dispatcher_rules(self):
         self.track()
         self.state(status='waiting')
@@ -196,14 +161,6 @@ class WorkModelTests(unittest.TestCase):
         self.assertEqual(row['work_state'], 'queued')
         self.assertIsNone(row['work_decision_id'])
 
-    def test_continuation_keeps_the_other_process_dependency(self):
-        self.test_completed_process_is_queued_for_delivery_not_still_waiting()
-        receipt = self.service._all('native_receipts')[-1]
-        receipt.pop('_completion_text')
-        self.service._put('native_receipts', receipt)
-        self.state(status='waiting', _native_turn_id='continuation')
-        self.assertEqual(self.row()['work_state'], 'waiting')
-
     def test_completed_task_with_unfinished_work_is_not_a_ready_result(self):
         self.track()
         self.state(status='waiting')
@@ -214,44 +171,6 @@ class WorkModelTests(unittest.TestCase):
         self.service._put('native_receipts', receipt)
         self.assertIsNone(self.service._wait_completion(receipt, task))
         self.assertEqual(self.row()['work_state'], 'waiting')
-
-
-class WorkContextModelTests(unittest.TestCase):
-    from test_context_completions import ContextCompletionTests as Fixtures
-    setUp = Fixtures.setUp
-    tearDown = Fixtures.tearDown
-    write = Fixtures.write
-    event = Fixtures.event
-    question = Fixtures.question
-    restart = Fixtures.restart
-    run_context = Fixtures.run_context
-    start_research = Fixtures.start_research
-    drain = Fixtures.drain
-
-    def row(self):
-        return next(a for a in self.service.snapshot()['artifacts'] if a['id'] == 'research-work')
-
-    def test_background_research_and_cached_result_survive_restart(self):
-        from coconut.service import now
-        self.start_research()
-        self.service._put('artifacts', dict(id='research-work', task_id=self.task['id'], bot_id=self.task['bot_id'],
-            kind='work', title='Check the local workflow', status='waiting', activity='Checking the workflow',
-            created_at=now(), observed_at=now(), url=None))
-        receipt = self.service._all('native_receipts')[-1]
-        receipt.update(_process_status='running', _process_observed_at=now())
-        self.service._put('native_receipts', receipt)
-        self.assertEqual(self.row()['work_state'], 'working')
-        receipt['_completion_text'] = 'The local workflow is available.'
-        receipt['_process_status'] = 'completed'
-        self.service._put('native_receipts', receipt)
-        self.assertEqual(self.row()['work_state'], 'queued')
-        self.restart()
-        self.assertEqual(self.row()['work_state'], 'queued')
-        self.drain()
-        self.drain()
-        self.assertEqual(len(self.service._all('contexts')), 2)
-        self.assertEqual(self.row()['work_state'], 'queued')
-        self.assertEqual(self.service._get('decisions', self.decision['id'])['status'], 'pending')
 
 
 class WorkReviewOwnershipTests(unittest.TestCase):

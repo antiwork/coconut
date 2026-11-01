@@ -38,7 +38,7 @@ class RegisteredDelegationTests(unittest.TestCase):
     scheduled_native = fixtures.NativeWorkContinuationTests.scheduled_native
     snapshot_result = fixtures.NativeWorkContinuationTests.snapshot_result
     resume = fixtures.NativeWorkContinuationTests.resume
-    through_provider = callbacks.RequesterCallbackContinuationTests.through_provider
+    request_continuation = callbacks.RequesterCallbackContinuationTests.request_continuation
 
     def saved_graph(self, settled=True, link=True):
         owner, audit = self.scheduled_native()
@@ -131,7 +131,7 @@ class RegisteredDelegationTests(unittest.TestCase):
     def assert_admitted(self, owner, caller, saved):
         before = copy.deepcopy(self.service.kanban.tasks)
         tasks_before = self.service._all('tasks')
-        receipt = self.through_provider(caller, twice=True)
+        receipt = self.request_continuation(caller, twice=True)
         self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id='t_existing', status='queued'))
         queued = self.service._get('tasks', owner['id'])
         for key in ('id', '_execution_session_id', '_kanban_claim', 'session_id', 'thread_id', 'exchange_id',
@@ -293,7 +293,7 @@ class RegisteredDelegationTests(unittest.TestCase):
                 if path == 'emit':
                     self.assert_rejected(owner, caller, UNRELATED)
                 else:
-                    receipt = self.through_provider(caller)
+                    receipt = self.request_continuation(caller)
                     self.assertEqual(receipt['status'], 'rejected')
                     self.assertIn(UNRELATED, receipt['error'])
                     self.assertEqual(self.service._get('tasks', owner['id']), owner)

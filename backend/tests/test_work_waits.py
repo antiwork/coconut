@@ -1,4 +1,3 @@
-import json
 import threading
 import unittest
 from types import SimpleNamespace
@@ -45,17 +44,17 @@ class WorkWaitTests(unittest.TestCase):
         target = self.target()
         self.wait(target)
         count = len(self.service._all('tasks'))
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertEqual(self.service._get('tasks', self.child)['status'], 'waiting')
         self.service.close()
         self.service = Service(self.temp.name, self.provider, start_workers=False)
         self.finish_target(target)
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         resumed = self.service._get('tasks', self.child)
         self.assertEqual(resumed['status'], 'queued')
         self.assertIn('Publication verified', resumed['_background_completion'][0])
         turn = resumed['_native_turn_id']
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertEqual(self.service._get('tasks', self.child)['_native_turn_id'], turn)
         self.assertEqual(len(self.service._all('tasks')), count)
         self.provider.mode = 'done'
@@ -64,14 +63,14 @@ class WorkWaitTests(unittest.TestCase):
 
     def test_failed_dependency_wakes_waiter(self):
         target = self.target(); self.wait(target); self.finish_target(target, 'failed')
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertIn('failed', self.service._get('tasks', self.child)['_background_completion'][0])
 
     def test_cancelled_waiter_does_not_resume(self):
         target = self.target(); self.wait(target)
         self.write(f'/v1/tasks/{self.child}/cancel', {})
         self.finish_target(target)
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertEqual(self.service._get('tasks', self.child)['status'], 'cancelled')
 
     def test_decision_defers_wakeup(self):
@@ -79,7 +78,7 @@ class WorkWaitTests(unittest.TestCase):
         with self.service.transaction():
             task = self.service._get('tasks', self.child); task['status'] = 'needs_you'
             self.service._put('tasks', task)
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertEqual(self.service._get('tasks', self.child)['status'], 'needs_you')
 
     def test_rejects_self_other_exchange_and_circular_waits(self):
@@ -166,24 +165,6 @@ class WorkWaitTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.service.wait_for_task(callback['id'], {'task_id': original['id'], 'reason': 'Waiting for the assignment'})
 
-    def test_existing_relay_subscription_is_not_registered_twice(self):
-        target = self.target()
-        with self.service.transaction():
-            self.service._put('native_receipts', dict(id=str(uuid4()), task_id=self.child,
-                action={'name': 'message_agent'}, state='completed', result='{}', _relay_task_id=target))
-        self.wait(target)
-        self.assertFalse(any(r.get('_wait_task_id') for r in self.service._all('native_receipts')))
-        self.finish_target(target)
-        with self.service.transaction():
-            task = self.service._get('tasks', target)
-            task['_native_relay_result'] = {'failed': False, 'text': 'Publication verified.'}
-            self.service._put('tasks', task)
-        self.service._drain_process_completions()
-        self.provider.mode = 'done'
-        self.service._run_task(self.child)
-        self.service._drain_process_completions()
-        self.assertEqual(self.service._get('tasks', self.child)['status'], 'completed')
-
     def test_existing_handoff_dependency_is_not_registered_twice(self):
         target = self.target()
         with self.service.transaction():
@@ -191,20 +172,6 @@ class WorkWaitTests(unittest.TestCase):
             task['_waiting_on'] = [target]; self.service._put('tasks', task)
         self.wait(target)
         self.assertFalse(any(r.get('_wait_task_id') for r in self.service._all('native_receipts')))
-
-    def test_restart_during_registration_replays_a_valid_native_receipt(self):
-        from coconut.native_bridge import NativeBridge, fingerprint
-        target = self.target()
-        with self.service.transaction():
-            task = self.service._get('tasks', self.child)
-            task.update(status='working', _conversation_epoch=self.service._setting('conversation_epoch'))
-            self.service._put('tasks', task)
-        self.service.wait_for_task(self.child, {'task_id': target, 'reason': 'Waiting for publication'})
-        self.service.close()
-        self.service = Service(self.temp.name, self.provider, start_workers=False)
-        receipts = [r for r in self.service._all('native_receipts') if r['task_id'] == self.child]
-        bridge = NativeBridge({'task': {'id': self.child, '_native_receipts': receipts}}, None, None)
-        self.assertIn(fingerprint(receipts[0]['action']), bridge.completed)
 
     def test_completed_scope_does_not_retry_later_work(self):
         def start(task, bot, history, emit):
@@ -233,7 +200,7 @@ class WorkWaitTests(unittest.TestCase):
         self.assertEqual(result, {'status': 'completed', 'task_id': target,
                                   'result': f'Task {target} completed: Publication verified.'})
         self.assertEqual(self.task_waits(target), [])
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertEqual(self.service._get('tasks', self.child)['status'], 'working')
         self.assertNotIn('_background_completion', self.service._get('tasks', self.child))
 
@@ -241,7 +208,7 @@ class WorkWaitTests(unittest.TestCase):
         target = self.target()
         self.wait(target)
         self.finish_target(target)
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         resumed = self.service._get('tasks', self.child)
         self.assertEqual(resumed['status'], 'queued')
         self.assertIn('Publication verified', resumed['_background_completion'][0])
@@ -266,33 +233,13 @@ class WorkWaitTests(unittest.TestCase):
             if restart:
                 self.service.close()
                 self.service = Service(self.temp.name, self.provider, start_workers=False)
-            self.service._drain_process_completions()
+            self.service._drain_task_completions()
             self.service._drain_returns()
             finished = self.service._get('tasks', self.child)
             self.assertEqual((finished['status'], finished['_native_turn_id']), ('completed', turn))
             self.assertEqual(len(self.task_waits(target)), 1)
         returns = [t for t in self.service._all('tasks') if t.get('_is_return') and t['bot_id'] == self.desk['id']]
         self.assertEqual(len(returns), 1)
-
-    def test_completed_target_with_pending_work_still_waits_for_its_new_result(self):
-        target = self.target(); self.finish_target(target)
-        with self.service.transaction():
-            self.service._put('native_receipts', dict(id=str(uuid4()), task_id=target, turn_id=None,
-                action={'name': 'terminal', 'arguments': {'background': True, 'notify': True}}, state='completed',
-                result=json.dumps({'session_id': 'proc_publish', 'notify_on_complete': True, 'status': 'running'})))
-        self.wait(target)
-        self.assertEqual(len(self.task_waits(target)), 1)
-        self.service._drain_process_completions()
-        self.assertEqual(self.service._get('tasks', self.child)['status'], 'waiting')
-        self.provider.results['proc_publish'] = 'Publication checks passed.'
-        self.service._drain_process_completions()
-        self.assertEqual(self.service._get('tasks', target)['status'], 'queued')
-        self.assertEqual(self.service._get('tasks', self.child)['status'], 'waiting')
-        self.service._run_task(target)
-        self.service._drain_process_completions()
-        resumed = self.service._get('tasks', self.child)
-        self.assertEqual(resumed['status'], 'queued')
-        self.assertEqual(resumed['_background_completion'], [f'Task {target} completed: Complete.'])
 
     def test_unsettled_targets_keep_a_durable_wait(self):
         cases = {
@@ -345,6 +292,6 @@ class WorkWaitTests(unittest.TestCase):
         with self.service.transaction():
             task = self.service._get('tasks', target); task.update(status='completed', summary='The refreshed PR passed.')
             self.service._put('tasks', task)
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertEqual(self.service._get('tasks', self.child)['_background_completion'],
                          [f'Task {target} completed: The refreshed PR passed.'])

@@ -6,14 +6,14 @@ from uuid import uuid4
 
 from coconut.service import Service
 from coconut.work_progress import NativeWork, ROOT_ID
-from test_background_processes import CompletionProvider
+from test_service import ControlledProvider
 
 
 def progress(status='pending'):
     return {'todos': [{'id': ROOT_ID, 'content': 'Validate and publish the approved patch', 'status': status}], 'revision': 2}
 
 
-class Provider(CompletionProvider):
+class Provider(ControlledProvider):
     def __init__(self):
         super().__init__()
         self.mode = 'unfinished'
@@ -25,9 +25,6 @@ class Provider(CompletionProvider):
             emit('completed', {'summary': 'Complete.'})
             return
         state = progress('completed' if self.mode == 'done' else 'pending')
-        if self.mode == 'process':
-            record = emit('native_call', {'name': 'terminal', 'arguments': {'background': True, 'notify': True}})
-            emit('native_result', {'id': record['id'], 'result': json.dumps({'session_id': 'proc_test', 'notify_on_complete': True, 'status': 'running'}), '_work_todos': state})
         if self.mode == 'progress':
             record = emit('native_call', {'name': 'todo_list', 'arguments': {}, '_work_todos': state})
             emit('native_result', {'id': record['id'], 'result': json.dumps(state), '_work_todos': state})
@@ -129,18 +126,6 @@ class WorkProgressTests(unittest.TestCase):
         self.assertEqual(task['_return_pending']['result_status'], 'failed')
         self.service._run_task(self.child)
         self.assertEqual(len(self.provider.starts), 3)
-
-    def test_recorded_process_owns_the_next_wakeup(self):
-        self.provider.mode = 'process'
-        self.service._run_task(self.child)
-        self.assertEqual(self.service._get('tasks', self.child)['status'], 'waiting')
-        self.assertNotIn('_work_retry', self.service._get('tasks', self.child))
-        self.provider.results['proc_test'] = 'Validation completed'
-        self.service._drain_process_completions()
-        self.assertEqual(self.service._get('tasks', self.child)['status'], 'queued')
-        self.provider.mode = 'done'
-        self.service._run_task(self.child)
-        self.assertEqual(self.service._get('tasks', self.child)['status'], 'completed')
 
     def test_decision_saves_list_without_automatic_retry(self):
         self.provider.mode = 'decision'

@@ -1,18 +1,12 @@
 """Owner-created routine reports preserve original continuation ownership."""
 import copy
 import json
-import os
-from pathlib import Path
-from types import MethodType
 import unittest
-from unittest.mock import patch
 from uuid import UUID, uuid4, uuid5
 
 from coconut import routine_reports
-from coconut.providers import HermesProvider
-from coconut.service import ServiceError, now
+from coconut.service import ServiceError, digest, encoded, now
 import test_native_work_continuation as fixtures
-import test_provider
 
 
 class RoutineReportContinuationTests(unittest.TestCase):
@@ -58,10 +52,16 @@ class RoutineReportContinuationTests(unittest.TestCase):
                             task_id=reporter['id']), reporter['bot_id'], reporter['id'])
         completion = self.receipt(reporter, 'kanban_complete', {},
                                   dict(ok=True, task_id='t_report', run_id=11))
+        # The saved state of the report that an earlier Coconut delivered through its native relay: the delivery under
+        # its envelope ID and the relay of the coordinator. Coconut no longer makes this state, but it reads it.
+        envelope = 'a' * 32
         with self.service.transaction():
-            relay = self.service._store_bot_message(reporter['id'], dict(
-                target_bot_id=source['bot_id'], text='Capacity report', native_envelope_id='a' * 32))
+            relay = self.service._store_bot_message(reporter['id'], dict(target_bot_id=source['bot_id'], text='Capacity report'))
+            delivery = next(d for d in reversed(self.service._all('deliveries')) if d['receipt']['task_id'] == relay['task_id'])
+            self.service.db.execute('DELETE FROM deliveries WHERE id=?', (delivery['id'],))
+            self.service._put('deliveries', dict(delivery, id=digest(encoded([reporter['id'], envelope]))))
         coordinator = self.service._get('tasks', relay['task_id'])
+        coordinator['_native_relay'] = dict(sender_bot_id=reporter['bot_id'], envelope_id=envelope)
         coordinator.update(status='completed', _conversation_epoch=owner['_conversation_epoch'],
             _native_turn_id='coordinator-input', updated_at=now())
         coordinator['_execution_session_id'] = coordinator['id']
@@ -284,25 +284,11 @@ class RoutineReportContinuationTests(unittest.TestCase):
         self.service._put('tasks', caller)
         self.assertEqual(self.resume(caller)['task_id'], owner['id'])
 
-    def test_provider_receipt_uses_actual_service_admission(self):
+    def test_continuation_receipt_uses_actual_service_admission(self):
         owner, caller, reporter, coordinator, returned, _, _ = self.incident()
-        self.root = Path(self.temp.name) / 'provider-fixture'
         payload = dict(task_id='t_existing', message='Restore the original owner.')
-        transport = test_provider.ProviderTests.fake_hermes(self,
-            "result = json.loads(registry.dispatch('coconut_continue_work', " + repr(payload) + "))\n"
-            "return {'completed': True, 'final_response': json.dumps(result)}\n")
-        transport._run = MethodType(HermesProvider._run, transport)
-        transport.catalog.private_home = self.root / 'private'
-        self.assertTrue(transport.catalog.root.is_relative_to(self.root))
-        events = []
-        def emit(kind, data):
-            if kind in ('work_continue', 'native_call', 'native_result'):
-                return self.service.emit(caller['id'], kind, data)
-            events.append((kind, data))
-        task = {k: caller[k] for k in ('id', 'bot_id', 'title')}
-        with patch.dict(os.environ, ANTHROPIC_API_KEY='test-only'):
-            transport.start_task(task, self.service._get('bots', caller['bot_id']), [], emit)
-        result = json.loads(''.join(d['text'] for k, d in events if k == 'text_delta'))
+        # The turn's coconut_continue_work reaches the service as the work_continue event.
+        result = self.service.emit(caller['id'], 'work_continue', payload)
         self.assertEqual(result['status'], 'queued')
         self.assertEqual(result['task_id'], owner['id'])
         self.assertEqual(self.service._get('tasks', owner['id'])['_execution_session_id'], owner['_execution_session_id'])

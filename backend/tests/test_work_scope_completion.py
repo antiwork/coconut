@@ -52,10 +52,7 @@ class WorkScopeCompletionTests(unittest.TestCase):
         self.service._put('tasks', task)
         bot = self.write('POST', '/v1/bots', dict(name='Developer', role='Develop'))
         from uuid import uuid4
-        call = self.service.emit(task['id'], 'native_call', dict(name='message_agent',
-            arguments=dict(target=bot['id'], message='Continue the implementation')))
-        sent = self.service.emit(task['id'], 'native_bot_message', dict(native_call_id=call['id'],
-            native_envelope_id=uuid4().hex, target_bot_id=bot['id'], text='Continue the implementation'))
+        sent = self.service.emit(task['id'], 'bot_message', dict(target_bot_id=bot['id'], text='Continue the implementation'))
         task = self.service._get('tasks', task['id'])
         task['status'] = 'waiting'
         self.service._put('tasks', task)
@@ -67,21 +64,6 @@ class WorkScopeCompletionTests(unittest.TestCase):
         self.assertEqual(self.row()['work_state'], 'completed')
         task['_explicit_work_waits'] = [sent['task_id']]
         task['_waiting_on'] = [sent['task_id']]
-        self.service._put('tasks', task)
-        self.assertNotEqual(self.row()['work_state'], 'completed')
-
-    def test_unconfirmed_local_process_still_requires_its_result(self):
-        _, task = self.completed_diagnosis()
-        self.service._put('native_receipts', dict(id='process', task_id=task['id'], state='completed',
-            action={'name': 'terminal'}, turn_id=task.get('_native_turn_id'),
-            _process_session_id='proc-one', _process_status='running'))
-        # Use the native result format to register a real background subscription.
-        task['status'] = 'working'
-        self.service._put('tasks', task)
-        call = self.service.native_event(task['id'], 'native_call', dict(name='terminal', arguments={}))
-        self.service.native_event(task['id'], 'native_result', dict(id=call['id'], result=json.dumps(
-            dict(session_id='proc-two', status='running', notify_on_complete=True))))
-        task['status'] = 'waiting'
         self.service._put('tasks', task)
         self.assertNotEqual(self.row()['work_state'], 'completed')
 
@@ -172,22 +154,16 @@ class WorkScopeCompletionTests(unittest.TestCase):
         self.service._put('tasks', second)
         self.service._save_work_progress(second, {'_work_todos': {'todos': [
             dict(id='coconut-assignment', status='in_progress', content='Verify the diagnosis')]}})
-        call = self.service.native_event(second['id'], 'native_call', dict(name='terminal', arguments={}))
-        self.service.native_event(second['id'], 'native_result', dict(id=call['id'], result=json.dumps(
-            dict(session_id='verify-diagnosis', status='running', notify_on_complete=True))))
+        # The second callback waits for another task (coconut_wait).
+        target = dict(owner, id='verification', status='queued', _assignment_task_id=None)
+        self.service._put('tasks', target)
+        self.service._put('native_receipts', dict(id='verification-wait', task_id=second['id'], state='completed',
+            action={'name': 'coconut_wait'}, turn_id=second.get('_native_turn_id'),
+            _wait_task_id=target['id'], _wait_session_id=second['session_id']))
         second = self.service._get('tasks', second['id'])
         second['status'] = 'waiting'
         self.service._put('tasks', second)
         self.assertNotEqual(self.row()['work_state'], 'completed')
-
-    def test_completed_report_keeps_an_explicit_process_wait(self):
-        _, task = self.completed_diagnosis()
-        self.service._put('native_receipts', dict(id='source', task_id=task['id'], state='completed',
-            action={'name': 'terminal'}, turn_id=task.get('_native_turn_id')))
-        self.service._put('native_receipts', dict(id='wait', task_id=task['id'], state='completed',
-            action={'name': 'coconut_wait'}, turn_id=task.get('_native_turn_id'),
-            _wait_process_receipt='source', _wait_session_id=task['session_id']))
-        self.assertEqual(self.row()['work_state'], 'waiting')
 
     def test_completed_report_keeps_explicit_task_and_decision_waits(self):
         _, task = self.completed_diagnosis()
