@@ -805,12 +805,9 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertIn('12% faster', turn['text'])
         self.assertEqual(self.read('contexts', context['id'])['status'], 'completed')
         self.assertEqual(self.provider.contexts, [])
-        # The Kanban claim of such a follow-up holds a placeholder, not a prepared worker.
-        with patch.object(self.provider, 'prepare_kanban_worker', create=True, return_value=4321) as prepare:
-            pid = self.service.kanban_worker_pid(context['id'], stored, self.read('bots', self.bot['id']),
-                                                 self.temp.name, 'work-1', 'native-1')
-            self.assertEqual(pid, self.service.gateway_holders[context['id']].pid)
-            prepare.assert_not_called()
+        # The Kanban claim of such a follow-up holds a placeholder process.
+        pid = self.service.kanban_worker_pid(context['id'], 'work-1')
+        self.assertEqual(pid, self.service.gateway_holders[context['id']].pid)
         self.service.stop_gateway_holder(context['id'])
 
     def test_a_follow_up_stops_when_hermes_ends_its_kanban_claim(self):
@@ -1787,24 +1784,16 @@ class ServiceRoutingTests(unittest.TestCase):
         task = self.audit()
         with self.service.transaction():
             self.service._ensure_execution_session(self.service._get('tasks', task['id']))
-        stored = self.read('tasks', task['id'])
-        bot = self.read('bots', self.bot['id'])
-        with patch.object(self.provider, 'prepare_kanban_worker', create=True, return_value=4321) as prepare:
-            pid = self.service.kanban_worker_pid(task['id'], stored, bot, self.temp.name, 'work-1', 'native-1')
-            holder = self.service.gateway_holders[task['id']]
-            self.assertEqual((pid, holder.poll()), (holder.pid, None))
-            prepare.assert_not_called()
-            # The placeholder carries the outcome of the work session, as a prepared worker does.
-            from coconut.work_workspace import process_outcomes
-            self.assertIn('work-1', process_outcomes())
-            # With the gateway on, a claim of any task holds a placeholder: Coconut starts no worker.
-            other = dict(stored, _native_job={'id': 'job-1'})
-            pid = self.service.kanban_worker_pid('other', other, bot, self.temp.name, 'work-2', 'native-2')
-            self.assertEqual(pid, self.service.gateway_holders['other'].pid)
-            prepare.assert_not_called()
-            # Without a gateway (fixture mode), the provider prepares a worker.
-            with patch.object(self.service, 'gateway_enabled', return_value=False):
-                self.assertEqual(self.service.kanban_worker_pid('third', other, bot, self.temp.name, 'work-3', 'native-3'), 4321)
+        pid = self.service.kanban_worker_pid(task['id'], 'work-1')
+        holder = self.service.gateway_holders[task['id']]
+        self.assertEqual((pid, holder.poll()), (holder.pid, None))
+        # The placeholder carries the outcome of the work session, so Coconut sees the outcome as running.
+        from coconut.work_workspace import process_outcomes
+        self.assertIn('work-1', process_outcomes())
+        # Also without a gateway (fixture mode), a claim holds a placeholder: Coconut starts no worker.
+        with patch.object(self.service, 'gateway_enabled', return_value=False):
+            pid = self.service.kanban_worker_pid('other', 'work-2')
+        self.assertEqual(pid, self.service.gateway_holders['other'].pid)
         self.service.stop_gateway_holder('other')
         self.service.stop_gateway_holder(task['id'])
         self.assertIsNotNone(holder.poll())
@@ -1991,8 +1980,8 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual((stored['status'], stored.get('_work_resume')), ('completed', None))
 
     def test_coconut_wait_sends_a_process_of_the_gateway_to_the_process_tool_of_hermes(self):
-        from coconut.card_tools import GATEWAY_PROCESS_WAIT, GATEWAY_WAIT_SCHEMA
-        self.assertNotIn('process_id', GATEWAY_WAIT_SCHEMA['parameters']['properties'])
+        from coconut.card_tools import GATEWAY_PROCESS_WAIT, WAIT_SCHEMA
+        self.assertNotIn('process_id', WAIT_SCHEMA['parameters']['properties'])
         task = self.send('Run the build and wait for it.')
         adapter = Adapter(self.service.gateway_bridge, self.home, [])
         adapter.start()

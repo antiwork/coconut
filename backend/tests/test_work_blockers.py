@@ -14,6 +14,7 @@ class WorkBlockerTests(unittest.TestCase):
     run_task = WorkFollowupTests.run_task
     prepare = WorkFollowupTests.prepare
     row = WorkFollowupTests.row
+    running_state = WorkFollowupTests.running_state
 
     def blocker(self, reported=False):
         blocked = dict(self.followup, id=str(uuid4()), status='completed' if reported else 'failed',
@@ -42,13 +43,13 @@ class WorkBlockerTests(unittest.TestCase):
         with self.service.transaction():
             artifact = self.service._all('artifacts')[0]
             artifact['head_sha'] = 'b' * 40; self.service._put('artifacts', artifact)
-        self.assertEqual(self.row()['activity_state'], 'working')
+        self.assertEqual(self.running_state(self.followup), 'working')
 
     def test_active_child_can_resolve_failed_parent(self):
         self.prepare()
         with self.service.transaction():
             self.root['status'] = 'failed'; self.service._put('tasks', self.root)
-        self.assertEqual(self.row()['activity_state'], 'working')
+        self.assertEqual(self.running_state(self.followup), 'working')
 
     def test_new_activity_is_visible_without_reassigning_review_ownership(self):
         import threading

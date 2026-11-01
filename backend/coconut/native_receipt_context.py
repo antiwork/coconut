@@ -1,21 +1,5 @@
 """Bounded views of the authoritative service receipt snapshot, never a new journal."""
 import json
-from functools import lru_cache
-
-
-def receipt_reader(receipts):
-    # One encoded record per immutable turn snapshot, not an unbounded cache of
-    # every large result. The TurnScope owns this reader and its lifetime.
-    snapshot = tuple(receipts)
-
-    @lru_cache(maxsize=1)
-    def encoded(index):
-        return json.dumps(snapshot[index], ensure_ascii=True)
-
-    def read(arguments):
-        return read_receipts(snapshot, arguments, _encoded=encoded)
-
-    return read
 
 
 PAGE_SIZE = 12

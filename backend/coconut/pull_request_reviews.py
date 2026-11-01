@@ -165,7 +165,7 @@ class PullRequestReviews:
         """
         candidates = [r for r in records if r.get('_wait_task_id') and not r.get('_process_delivery')
                       and r.get('state') == 'completed' and (r.get('action') or {}).get('name') == 'coconut_wait'
-                      and not (r.get('_relay_task_id') or r.get('_wait_process_receipt') or r.get('_wait_decision_id'))
+                      and not r.get('_wait_decision_id')
                       and r['task_id'] not in keep and r['task_id'] in tasks and r['_wait_task_id'] in tasks]
         if not candidates:
             return set()

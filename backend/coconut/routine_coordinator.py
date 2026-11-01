@@ -19,7 +19,7 @@ ROUTINE_DELIVERIES = "SELECT data FROM deliveries WHERE json_extract(data,'$.rec
 # The first delivery that names a request. The creation of a relayed request saves it.
 CREATION_DELIVERY = "SELECT data FROM deliveries WHERE json_extract(data,'$.receipt.task_id')=? ORDER BY rowid LIMIT 1"
 # Open intake of a waiting occurrence. Any of these means that the occurrence still works or has input to take.
-OPEN_INTAKE = ('_steering', '_live_messages', '_blocked_followup', '_native_reply_pending', '_return_pending',
+OPEN_INTAKE = ('_steering', '_live_messages', '_blocked_followup', '_return_pending',
                '_resume_decision', '_background_completion', '_pr_review', '_work_resume', '_routine_pending_bot_result')
 # Hermes outcomes of a run that ended without success. A completed run, or one that an archive reclaimed, is not one.
 # An archive reclaims only the current run, so an earlier reclaimed run comes from a restart.

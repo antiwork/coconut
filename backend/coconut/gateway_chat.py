@@ -26,6 +26,7 @@ the reason (routine_coordinator._pause_unserved_routines). GET /v1/setup lists s
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -37,8 +38,8 @@ import threading
 import time
 
 from . import hermes_runtime
-from .gateway_bridge import (WORKER_INPUTS, WORKER_MESSAGE_FIELDS, GatewayBridge, GatewayUnavailable, gateway_claim_turn,
-                             gateway_work_turn, worker_input, plain_chat_turn)
+from .gateway_bridge import (OTHER_PATHS, WORK_MESSAGE_FIELDS, WORK_SESSION_INPUTS, GatewayBridge, GatewayUnavailable,
+                             gateway_claim_turn, gateway_work_turn, plain_chat_turn)
 from .native_conversation import reaction_only_turn
 
 LOG = logging.getLogger(__name__)
@@ -75,7 +76,7 @@ PARKED = ('The Hermes profile of this bot is parked ({path}), so no Hermes gatew
 
 def gateway_turn_text(request) -> str | None:
     """The text of a chat turn for the gateway, with the context that the worker gives the same turn, or None for a
-    turn whose input the gateway cannot take yet (WORKER_MESSAGE_FIELDS) or a turn without input.
+    message about a Work item in a turn without that item (WORK_MESSAGE_FIELDS) or a turn without input.
 
     A quote, a reaction and a bot mention go into the text of each message (native_conversation.message_content). A
     reaction-only turn may stay silent. Earlier emoji feedback, the attached files and the work notes follow the
@@ -89,7 +90,7 @@ def gateway_turn_text(request) -> str | None:
     # A message about a Work item goes with the turn that has that item (work_context_note). A turn of a native outcome
     # has the native task of its item instead (tracked_note), as in the worker.
     if (not task.get('_work_context') and not task.get('_native_outcome_id')
-            and any(message.get(field) for message in messages for field in WORKER_MESSAGE_FIELDS)):
+            and any(message.get(field) for message in messages for field in WORK_MESSAGE_FIELDS)):
         return None
     text = '\n\n'.join(message_content(message) for message in messages)
     if task.get('_background_completion'):
@@ -179,8 +180,8 @@ def work_notes(request) -> str:
     from .work_progress import WORK_INSTRUCTIONS, work_enabled
     from .work_recovery import block_check_task
     task = request['task']
-    # A check of a blocked native task gets the check rules and coconut_record_pause, as in the worker. An answered card
-    # continues the same turn, and its answer replaces the check rules (hermes_worker.block_check_turn).
+    # A check of a blocked native task gets the check rules and coconut_record_pause. An answered card continues the
+    # same turn, and its answer replaces the check rules.
     check = block_check_task(task) and request['operation'] != 'resume'
     text = (work_context_note(task) + recovery_note(task, check) + recent_work_note(task) + direct_reply_note(task)
             + exchange_note(task) + source_activity_note(task) + dependencies_note(task) + tracked_note(task))
@@ -195,18 +196,33 @@ def work_notes(request) -> str:
         from .technical_lane import instructions
         text += '\n' + instructions(task['_technical_lane']) + json.dumps(task['_technical_lane'])
     if gateway_work_turn(task):
-        # The worker gives each turn of a work session this rule (hermes_worker). coconut_workspace serves it.
+        # Each turn of a work session gets this rule. coconut_workspace serves it.
         from .card_tools import WORKSPACE_INSTRUCTIONS
         text += '\n' + WORKSPACE_INSTRUCTIONS.strip()
     if request.get('bot') and request['operation'] in ('start', 'resume'):
-        # The bot changes that the person's messages in this turn can request, as the worker gives them.
-        from .hermes_worker import bot_creation_context, bot_deletion_context
+        # The bot changes that the person's messages in this turn can request.
+        from .bot_changes import bot_creation_context, bot_deletion_context
         text += bot_creation_context(request) + bot_deletion_context(request)
     if work_enabled(request['operation'], task):
         text += '\n' + WORK_INSTRUCTIONS
         if task.get('_work_todos'):
             text += '\nSaved task list of this assignment (data):\n' + json.dumps(task['_work_todos'])
     return text + pending_decisions_context(task)
+
+
+def kanban_arguments(args: dict, task_id: str, turn_id: str | None, bot_id: str, workspaces) -> dict:
+    """The arguments of kanban_create for a Coconut turn: the bot's tenant, a blocked card, an idempotency key of
+    the turn's input, and a folder of its own for a scratch workspace. `workspaces` is the workspace root of Coconut's
+    board."""
+    def fingerprint(value):
+        return hashlib.sha256(json.dumps(value, separators=(',', ':'), sort_keys=True).encode()).hexdigest()
+    intake_key = fingerprint([turn_id or task_id, args])
+    args = dict(args, assignee='default', tenant=bot_id, session_id=task_id, initial_status='blocked',
+                idempotency_key='coconut:' + task_id + ':' + intake_key)
+    if not args.get('workspace_kind') or args['workspace_kind'] == 'scratch':
+        args.update(workspace_kind='dir',
+                    workspace_path=str(Path(workspaces) / ('coconut-' + fingerprint([task_id, intake_key]))))
+    return args
 
 
 # A turn that only Coconut's worker could run. With the gateway on, Coconut runs no worker (gateway_unsupported).
@@ -225,11 +241,11 @@ def gateway_resume(task: dict, decision: dict, cron_session: str = '') -> bool:
 
     The task must be a chat turn that the gateway takes (plain_chat_turn), or a routine task of a gateway cron run
     whose Hermes session is known (`cron_session`): the answer continues that session, with the routine's prompt and
-    tool results. A command approval of a worker turn stays with the worker: it allows one exact tool call that the
-    worker recorded, and the worker repeats that call.
+    tool results. A command approval that an earlier worker recorded allows one exact tool call of that worker, so no
+    gateway turn continues it (gateway_unsupported).
     """
     chat = (plain_chat_turn(task) or gateway_claim_turn(task)
-            or (bool(cron_session) and not any(worker_input(task, key) for key in WORKER_INPUTS)))
+            or (bool(cron_session) and not any(task.get(key) for key in OTHER_PATHS + WORK_SESSION_INPUTS)))
     return chat and decision.get('action_type') != 'native_approval' and not decision.get('_receipt_id')
 
 
@@ -371,7 +387,7 @@ class GatewayChat:
                 if row.get('state') == 'active' and self.gateway_bridge.connected(row['home'])}
 
     def run_gateway_chat(self, task: dict, bot: dict, history: list, emit) -> bool:
-        """Run a turn through the gateway. False: the turn is of another type, and the worker runs it.
+        """Run a turn through the gateway. False: the gateway does not run this turn (gateway_unsupported).
 
         A chat turn runs in the bot's chat. A task with its own work session runs in the chat of that work session
         (work_chat). A status question runs without tools in a chat of its own (run_gateway_status).
@@ -571,16 +587,13 @@ class GatewayChat:
         """Whether a board tool of the running turn ended the run of its claim (RUN_ENDING_TOOLS)."""
         return task_id in self.gateway_finished_claims
 
-    def kanban_worker_pid(self, identity: str, task: dict, bot: dict, workspace: str, execution: str,
-                          native_id: str) -> int:
+    def kanban_worker_pid(self, identity: str, execution: str) -> int:
         """The process of a Kanban claim of a task or of a follow-up on its card (`identity`, the claim of a context).
 
-        With the gateway on, each claim holds a placeholder process instead of a prepared worker, because Hermes
-        records a process for each claim and can end it. Coconut starts no worker: a turn that the gateway does not run
-        fails with the reason (gateway_unsupported). Without a gateway (fixture mode), the provider prepares a worker."""
-        if self.gateway_enabled():
-            return self.start_gateway_holder(identity, execution)
-        return self.provider.prepare_kanban_worker(identity, bot, workspace, execution, native_id)
+        Each claim holds a placeholder process, because Hermes records a process for each claim and can end it
+        (start_gateway_holder). The gateway runs the turn of the claim, or the provider in fixture mode. Coconut starts
+        no worker: a turn that the gateway does not run fails with the reason (gateway_unsupported)."""
+        return self.start_gateway_holder(identity, execution)
 
     def start_gateway_holder(self, identity: str, outcome: str | None = None) -> int:
         """Start the placeholder process of the Kanban claim of a gateway work turn. It carries the outcome of the work
@@ -606,9 +619,10 @@ class GatewayChat:
                 process.kill()
 
     def run_gateway_resume(self, task: dict, bot: dict, history: list, decision: dict, emit) -> bool:
-        """Continue a task after an answered card in the gateway, as the worker resumes it. False: the worker does.
+        """Continue a task after an answered card in the gateway. False: the gateway does not continue it
+        (gateway_unsupported).
 
-        `decision` is the stored card. The turn text is the worker's text for the same answer. A dismissed card has no
+        `decision` is the stored card. The turn text is the text of the recorded answer. A dismissed card has no
         answer, so it continues nothing. The card of a gateway cron run continues the Hermes session of that run."""
         if decision.get('status') == 'dismissed':
             return True
@@ -629,13 +643,13 @@ class GatewayChat:
 
     def run_gateway_context(self, task: dict, request_task: dict, bot: dict, history: list, context: dict,
                             emit) -> bool:
-        """Answer a follow-up on a pending card in the gateway. False: the worker answers it.
+        """Answer a follow-up on a pending card in the gateway. False: the gateway does not answer it
+        (gateway_unsupported).
 
         An automatic check of the card (`_decision_refresh`) runs in mode `refresh`, and the service takes only
         coconut_refresh_decision from it (decision_freshness.refresh_decision). It sends no message to the chat.
-        A follow-up on a card of a task with its own work session runs in the chat of that session, as the worker
-        answers it in that session. The results of background research continue the follow-up, as the worker's text
-        says (context_prompt). The worker answers each follow-up on a task that the gateway does not run. The turn
+        A follow-up on a card of a task with its own work session runs in the chat of that session. The results of
+        background research continue the follow-up (context_prompt). The turn
         cannot make a card or act for the task: the plugin blocks the card tools, and the service takes only text and
         coconut_resolve_reply from a follow-up.
         """
@@ -710,7 +724,7 @@ class GatewayChat:
                 if self.gateway_bridge.connected(home):
                     self._gateway_wait_summary(task['id'], None)
                     try:
-                        # The worker resumes the chat of a bot from this root (native_conversation.NativeConversation).
+                        # The conversation of a bot's chat resumes from this root (hooks.join_conversation).
                         self.gateway_bridge.run_turn(
                             task['id'], home, chat or bot['id'], text, emit, chat_name=bot.get('name') or 'Coconut',
                             session_root=session or session_root(bot, epoch=task.get('_conversation_epoch')),
@@ -902,7 +916,6 @@ class GatewayChat:
         earlier run, as for a worker. A tool that ends the run (RUN_ENDING_TOOLS) also stops the placeholder of the
         claim, and the turn then continues without a claim (claim_finished).
         """
-        from .native_bridge import kanban_arguments
         from .service import ServiceError
         with self.lock:
             task = self._get('tasks', task_id)
@@ -1154,8 +1167,8 @@ class GatewayChat:
         """A question of a gateway turn becomes a decision card. The caller holds the transaction.
 
         The task stays working: the gateway turn waits for the answer and goes on after it. In a technical lane, the
-        question gets an answer at once and no card: Hermes denies an approval request, as the worker does
-        (native_bridge.NativeBridge.approval), and a clarify gets the hold of the lane.
+        question gets an answer at once and no card: Hermes denies an approval request, and a clarify gets the hold of
+        the lane.
         """
         from uuid import uuid4
         from .decision_inbox import decision_options

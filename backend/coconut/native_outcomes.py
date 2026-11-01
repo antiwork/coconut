@@ -26,17 +26,6 @@ def outcome_owner_id(origin_id, native_id):
     return str(uuid5(UUID(origin_id), 'kanban:' + native_id))
 
 
-CHAT_INSTRUCTIONS = (
-    'Reply directly to this conversation’s sender. '
-    'For work with an outcome beyond this reply, create one native kanban task before starting it. '
-    'Use kanban_create with a clear title, the complete request, scope, approval limits, and acceptance criteria in body. '
-    'Coconut supplies the bot, dispatch state, and a stable creation key. Hermes gives each outcome its own workspace. '
-    'Use kanban_list and kanban_show to find existing work before creating another task. '
-    'For an existing outcome, add new facts with kanban_comment. Do not create a second task for a retry or status question. '
-    'A task comment is context, not new permission. Preserve human decisions. '
-    'Create a separate native outcome for new work after a completed PR. Keep the earlier PR as context. '
-    'Use coconut_ask only for a concrete decision. '
-)
 WORK_INSTRUCTIONS = (
     'The native kanban task in the current message owns this outcome. Its comments and previous attempts are the work record. '
     'Use kanban_heartbeat for a short progress description at phase changes. '
@@ -333,7 +322,7 @@ class NativeOutcomes:
                             or card and (card.get('current_run_id') or card.get('worker_pid'))
                             or self._background_pending(task['id'], ignore_settled=True)
                             or (receipts and not stale_receipts)
-                            or task.get('_return_pending') or task.get('_native_reply_pending')):
+                            or task.get('_return_pending')):
                         raise ServiceError(409, 'Wait for the existing owner work and tool results before unlinking.')
                 if any(c['task_id'] in guarded and c['status'] in ('queued', 'working') for c in self._all('contexts')):
                     raise ServiceError(409, 'Wait for the existing owner context before unlinking.')
@@ -563,7 +552,7 @@ class NativeOutcomes:
                     or card.get('status') not in ('done', 'archived', 'blocked')
                     or card.get('block_kind') or card.get('current_run_id') or card.get('worker_pid')
                     or (worker and worker.is_alive()) or self._background_pending(task['id'])
-                    or any(task.get(key) for key in ('_waiting_on', '_return_pending', '_native_reply_pending',
+                    or any(task.get(key) for key in ('_waiting_on', '_return_pending',
                         '_steering', '_live_messages', '_blocked_followup'))):
                 return False
         claim = successor['_kanban_claim']
@@ -956,8 +945,7 @@ class NativeOutcomes:
                         if caller and caller['id'] in callers:
                             requester_chain.pop(caller['id'], None)
                         linked.update({key: value for key, value in requester_chain.items()
-                                       if value[0]['status'] not in ('failed', 'cancelled')
-                                       or value[0].get('_native_reply_pending') or not quiet(value[0])})
+                                       if value[0]['status'] not in ('failed', 'cancelled') or not quiet(value[0])})
                         # Unlike the original requester, this coordinator and its
                         # callbacks must finish too. Do not exempt the caller.
                         linked.update(self._work_chain(report_coordinator, tasks, records, include_continuations=True))
@@ -1036,7 +1024,6 @@ class NativeOutcomes:
                         or any((t['status'] != 'completed' and t['id'] != foreground and t['id'] not in historical)
                                or [i for i in t.get('_waiting_on') or [] if not (t['id'] == finished_root and i == owner['id'])]
                                or t.get('_return_pending')
-                               or ((linked_report or historical) and t.get('_native_reply_pending'))
                                or self._task_paused(t) or self._get('exchanges', t['exchange_id']).get('cancelled')
                                or (self._background_pending(t['id'], finishing_task_id=own_turn) if t['id'] == own_turn
                                    else self._background_pending(t['id']))
@@ -1044,8 +1031,7 @@ class NativeOutcomes:
                                or (t['id'] != foreground and self.running.get(t['id']) and self.running[t['id']].is_alive())
                                or (t['id'] not in historical and running_tool(t))
                                or ((t['id'] == foreground or historical or projection) and (self._task_work_is_paused(t)
-                                   or t.get('_steering') or t.get('_live_messages') or t.get('_blocked_followup')
-                                   or t.get('_native_reply_pending')))
+                                   or t.get('_steering') or t.get('_live_messages') or t.get('_blocked_followup')))
                                for t, _ in linked.values())
                         or any(d['status'] == 'pending' and d['task_id'] in linked for d in self._all('decisions'))
                         or any(c['status'] in ('queued', 'working') and c['task_id'] in linked
@@ -1177,7 +1163,6 @@ class NativeOutcomes:
     def _restore_native_work_owner(self, owner):
         """An older progress report could replace the visible owner without moving its execution."""
         from .service import ServiceError
-        from .background_processes import subscription
         from .work_capacity import execution_key
         if not owner.get('_work_context_id'):
             return
@@ -1193,8 +1178,8 @@ class NativeOutcomes:
         # A saved wait observes another task. It does not own this execution.
         executing = any(t['status'] in ('queued', 'working', 'needs_you', 'paused') for t in related)
         executing = executing or any(r['state'] == 'executing'
-            or (not r.get('_process_delivery') and (subscription(r)
-                or (r.get('_wait_decision_id') and self._decision_wait_pending(self._get('decisions', r['_wait_decision_id'])))))
+            or (not r.get('_process_delivery') and r.get('_wait_decision_id')
+                and self._decision_wait_pending(self._get('decisions', r['_wait_decision_id'])))
             for t in related for r in self._native_task_receipts(t['id']))
         history = [item.get('_work_origin_task_id'), *item.get('_work_previous_task_ids', [])]
         if (item['kind'] != 'work' or item['bot_id'] != owner['bot_id'] or owner['id'] not in history
@@ -1368,8 +1353,8 @@ class NativeOutcomes:
             if queued and scheduled:
                 # Coconut also holds it while a callback runs or still owes it a result (see _owed_helper_return).
                 if any(c['task_id'] in related_ids and c['status'] in ('queued', 'working') for c in self._all('contexts')) or any(
-                        t.get('_reply_to_task_id') in related_ids and (t['status'] in self.ACTIVE or t.get('_return_pending')
-                                                                       or t.get('_native_reply_pending')) for t in self._all('tasks')):
+                        t.get('_reply_to_task_id') in related_ids and (t['status'] in self.ACTIVE or t.get('_return_pending'))
+                        for t in self._all('tasks')):
                     raise ServiceError(409, 'This execution has active work. Wait for its result.')
                 # Advancing the input would drop an answer or review that the held turn has not read yet. A process
                 # result is held by _background_pending above. Fresh input replaces an automatic resume.

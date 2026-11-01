@@ -48,10 +48,13 @@ class WorkReadCostTests(unittest.TestCase):
                 self.service._put('native_receipts', dict(id=f'old-{index}', task_id=task['id'],
                     turn_id=task['_native_turn_id'], state='completed', created_at=now(),
                     action={'name': 'terminal', 'arguments': {}}, result=json.dumps({'output': str(index)})))
-            self.service._put('native_receipts', dict(id='waiting-process', task_id=task['id'],
+            # The task waits for another task (coconut_wait).
+            target = dict(task, id='target-task', status='waiting')
+            self.service._put('tasks', target)
+            self.service._put('native_receipts', dict(id='waiting-task', task_id=task['id'],
                 turn_id=task['_native_turn_id'], state='completed', created_at=now(),
-                action={'name': 'terminal', 'arguments': {}},
-                result=json.dumps({'session_id': 'process-1', 'notify_on_complete': True})))
+                action={'name': 'coconut_wait', 'arguments': {'task_id': target['id'], 'reason': 'Review'}},
+                result='{}', _wait_task_id=target['id'], _wait_session_id=task['session_id']))
         original = self.service._all
         def read(table):
             self.assertNotEqual(table, 'native_receipts', 'Work must not decode every saved tool result.')
@@ -63,9 +66,9 @@ class WorkReadCostTests(unittest.TestCase):
             context = self.service.work_context_input(item['id'])
             self.service._sync_automatic_work()
         self.assertEqual(context['work_state'], 'waiting')
-        self.assertEqual(context['work_dependencies'][0]['target_id'], 'process-1')
+        self.assertEqual(context['work_dependencies'][0]['target_id'], 'target-task')
         self.assertEqual([json.loads(r['result']) for r in context['recent_results']],
-                         [{'output': '3'}, {'output': '4'}, {'session_id': 'process-1', 'notify_on_complete': True}])
+                         [{'output': '3'}, {'output': '4'}, {}])
         self.assertEqual(len(original('native_receipts')), 6)
 
     def test_work_wait_and_cancel_do_not_scan_completed_tool_history(self):
@@ -76,16 +79,15 @@ class WorkReadCostTests(unittest.TestCase):
             self.service._put('native_receipts', dict(id='completed-history', task_id='unrelated',
                 turn_id='old', state='completed', created_at=now(), action={'name': 'terminal', 'arguments': {}},
                 result=json.dumps({'output': 'A retained tool result'})))
-            self.service._put('native_receipts', dict(id='current-process', task_id=task['id'],
-                turn_id=task.get('_native_turn_id'), state='completed', created_at=now(),
-                action={'name': 'terminal', 'arguments': {}},
-                result=json.dumps({'session_id': 'current-test', 'notify_on_complete': True})))
+            target = self.service._send(self.service._get('bots', task['bot_id']), {'text': 'Run the tests', 'mode': 'queue'},
+                                        exchange_id=task['exchange_id'], thread_id=task['thread_id'],
+                                        conversation_bot_id=task['conversation_bot_id'])
         original = self.service._all
         def read(table):
             self.assertNotEqual(table, 'native_receipts', 'A work action must not decode unrelated tool history.')
             return original(table)
         with patch.object(self.service, '_all', side_effect=read):
-            result = self.service.wait_for_task(task['id'], dict(process_id='current-test', reason='Waiting for tests'))
+            result = self.service.wait_for_task(task['id'], dict(task_id=target['id'], reason='Waiting for tests'))
             self.assertEqual(result['status'], 'waiting')
             self.write('POST', '/v1/work/items/' + item['id'] + '/cancel', {})
         self.assertEqual(self.service._get('tasks', task['id'])['status'], 'working')

@@ -190,7 +190,10 @@ BOT_WORKING_CONTEXT = ("SELECT 1 FROM contexts WHERE json_extract(data,'$.status
                        "AND json_extract(data,'$.bot_id')=? LIMIT 1")
 # Task fields that the dispatcher looks for on every pass. Each has a partial index, so a pass reads only the tasks
 # that carry the field and not the whole table.
-MARKS = ('_return_pending', '_native_reply_pending', '_work_status_only', '_respawn_guard')
+MARKS = ('_return_pending', '_work_status_only', '_respawn_guard')
+# Indexes that Coconut no longer reads: the reply of a worker's relay (_native_reply_pending), and the receipts that a
+# worker's process or relay completed (native_receipts_pending_wait replaces it).
+RETIRED_INDEXES = ('tasks_native_reply_pending', 'native_receipts_pending_completion')
 
 
 # The condition of the partial index messages_streaming: a reply that a turn still writes. The start ends each one.
@@ -301,9 +304,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         ''')
         migrate_device_peers(self.db)
         self._init_profiles(hermes_home)
-        self.db.execute('CREATE INDEX IF NOT EXISTS native_receipts_pending_completion ON native_receipts (id) WHERE ' + PENDING_COMPLETIONS)
+        self.db.execute('CREATE INDEX IF NOT EXISTS native_receipts_pending_wait ON native_receipts (id) WHERE ' + PENDING_COMPLETIONS)
         for field in MARKS:
             self.db.execute(f'CREATE INDEX IF NOT EXISTS tasks{field} ON tasks (id) WHERE ' + marked(field))
+        for name in RETIRED_INDEXES:
+            self.db.execute('DROP INDEX IF EXISTS ' + name)
         self.db.execute('CREATE INDEX IF NOT EXISTS tasks_native_job_open ON tasks (id) WHERE ' + OPEN_NATIVE_JOB)
         self.db.execute('CREATE INDEX IF NOT EXISTS tasks_routine_open ON tasks (id) WHERE ' + OPEN_ROUTINE_TASK)
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_source ON tasks (json_extract(data,'$.source_task_id'))")
@@ -340,12 +345,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._kanban_claim_bots = set()
         # Bots whose session store a VACUUM rewrites. A bot in this set starts no new turn (see session_maintenance).
         self._store_hold = set()
-        self._kanban_trimming = False
         self._dependency_unlinking = False
         self._kanban_dispatch_uncertain = False
         self.pr_poller: threading.Thread | None = None
         self.process_poller: threading.Thread | None = None
-        self.tool_checker: threading.Thread | None = None
         self.source_poller: threading.Thread | None = None
         from .push import PushDelivery
         self.push = PushDelivery(self)
@@ -364,12 +367,16 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             with self.transaction():
                 self._migrate_threads()
                 self._migrate_bot_exchanges()
-                self._migrate_process_deliveries()
                 self._migrate_activity_notices()
                 self._migrate_decision_link_notices()
                 self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
+                try:
+                    self._end_worker_tool_calls()
+                except Exception:
+                    # A repair of old receipts must never stop the start. The next start tries again.
+                    logging.getLogger(__name__).exception('Could not check the interrupted calls of earlier workers.')
                 migrate_notification_importance(self.db)
                 self._move_artifact_content()
                 if not getattr(self, '_workspace_recovery_hold', False):
@@ -1868,27 +1875,19 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     def _store_bot_message(self, source_task_id: str, payload: dict, *, returning: bool = False, record_message: bool = True) -> dict:
         target_id = require_text(payload, 'target_bot_id', 100)
         text = require_text(payload, 'text', None if returning else 20000)
-        native_id = payload.get('native_envelope_id')
-        if native_id is not None and (not isinstance(native_id, str) or len(native_id) != 32 or any(c not in '0123456789abcdef' for c in native_id)):
-            raise ServiceError(400, 'The native envelope ID is invalid.')
-        try:
-            delivery_key = [source_task_id, target_id, text]
-            continuation_id = require_text(payload, 'continuation_task_id', 100) if 'continuation_task_id' in payload else None
-            if continuation_id:
-                delivery_key.append(continuation_id)
-            if returning and payload.get('return_id'):
-                delivery_key.append(payload['return_id'])
-            delivery_id = digest(encoded([source_task_id, native_id])) if native_id else digest(encoded(delivery_key))
-            source = self._get('tasks', source_task_id)
-            existing = self.db.execute('SELECT data FROM deliveries WHERE id=?', (delivery_id,)).fetchone()
-            if existing:
-                receipt = json.loads(existing[0])['receipt']
-                return receipt | {'status': 'duplicate' if receipt['task_id'] else receipt['status']}
-            continuation_owner = self._bot_continuation_owner(source, target_id, continuation_id) if continuation_id else None
-        except ServiceError as error:
-            if not native_id:
-                raise
-            return {'status': 'rejected', 'error': str(error), 'target_bot_id': target_id}
+        delivery_key = [source_task_id, target_id, text]
+        continuation_id = require_text(payload, 'continuation_task_id', 100) if 'continuation_task_id' in payload else None
+        if continuation_id:
+            delivery_key.append(continuation_id)
+        if returning and payload.get('return_id'):
+            delivery_key.append(payload['return_id'])
+        delivery_id = digest(encoded(delivery_key))
+        source = self._get('tasks', source_task_id)
+        existing = self.db.execute('SELECT data FROM deliveries WHERE id=?', (delivery_id,)).fetchone()
+        if existing:
+            receipt = json.loads(existing[0])['receipt']
+            return receipt | {'status': 'duplicate' if receipt['task_id'] else receipt['status']}
+        continuation_owner = self._bot_continuation_owner(source, target_id, continuation_id) if continuation_id else None
         progress_only = False
         exchange = self._get('exchanges', source['exchange_id'])
         cancellation_result = returning and source.get('_dependency_cancelled')
@@ -1910,17 +1909,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         sender = self._get('bots', source['bot_id'])
         owner_id = assignment.get('_reply_to_task_id') or assignment.get('source_task_id')
         owner = self._assignment(self._get('tasks', owner_id)) if target_id == assignment.get('source_bot_id') and owner_id else None
-        callback = self._get('tasks', source['_relay_callback_owner']) if source.get('_relay_callback_owner') else source
-        native_reply = bool(not returning and source.get('_is_return') and callback.get('_native_relay', {}).get('sender_bot_id') == target_id
-                            and not callback.get('_native_relay_result') and self.db.execute(
-                                "SELECT 1 FROM native_receipts WHERE json_extract(data, '$.task_id')=? "
-                                "AND json_extract(data, '$._relay_task_id')=? AND json_extract(data, '$._process_delivery') IS NULL LIMIT 1",
-                                (callback.get('source_task_id'), callback['id'])).fetchone())
         # Helper questions retain a separate callback while the native owner waits for that helper.
         native_return = bool(owner and owner.get('_native_outcome_id') and not progress_only)
         bot_message = {'sender_bot_id': sender['id'], 'sender_name': sender['name'], 'text': text, 'result_status': payload.get('result_status'), 'progress_only': progress_only}
         if continuation_owner:
-            # Keep the native envelope's return route while restoring the saved execution.
+            # Restore the saved execution.
             task = self._send(target, {'text': text, 'mode': 'queue'}, thread_id=continuation_owner['thread_id'],
                               parent_task_id=continuation_owner['id'], conversation_bot_id=origin['id'],
                               exchange_id=source['exchange_id'], source_task=source, record_message=False)
@@ -1969,14 +1962,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     self._put('artifacts', artifact)
                     self._event('artifact.updated', self._public(artifact), artifact['bot_id'], artifact.get('task_id'))
             self._put('tasks', continuation_owner)
-            native_reply = native_return = False
-        elif native_reply:
-            # Reply to the waiting sender through its existing Hermes envelope.
-            # A new delegation would make both workers wait for each other.
-            reply = dict(callback['_native_relay'], text=text, failed=payload.get('result_status') == 'failed')
-            callback.update(_native_reply_pending=reply, _native_relay_result=reply, _native_explicit_reply=True)
-            self._put('tasks', callback)
-            task = self._get('tasks', callback['source_task_id'])
+            native_return = False
         elif native_return:
             # A dependency result resumes the native owner, including its claim and workspace.
             task = owner
@@ -2023,7 +2009,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     task['_continued_from'] = self._continued_context(previous)
             # The message or the return is bot traffic. It runs in a work session of the target bot (the dispatchers
             # give it one), never as a turn of the person's chat (gateway_chat.join_conversation).
-        if native_reply or native_return:
+        if native_return:
             pass
         elif not continuation_owner and target_id == assignment.get('source_bot_id') and owner_id:
             owner = self._assignment(self._get('tasks', owner_id))
@@ -2034,13 +2020,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 task['_resolved_dependency_id'] = dependency_id
         elif not task['_is_return']:
             task['_reply_to_task_id'] = assignment['id']
-            callback_owner = source.get('_relay_callback_owner') or (source['id'] if source.get('_native_relay') else None)
-            if callback_owner:
-                task['_requester_reply_task_id'] = callback_owner
+            if source.get('_relay_callback_owner'):
+                task['_requester_reply_task_id'] = source['_relay_callback_owner']
             assignment['_waiting_on'] = list(dict.fromkeys([*assignment.get('_waiting_on', []), task['id']]))
             self._put('tasks', assignment)
-        if native_id and not native_reply:
-            task['_native_relay'] = {'sender_bot_id': source['bot_id'], 'envelope_id': native_id}
         self._put('tasks', task)
         returned_message = next((m for m in reversed(self._all('messages'))
                                  if returning and m.get('task_id') == source.get('_result_task_id', source['id'])
@@ -2057,9 +2040,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             exchange['deliveries'] += 1
         self._put('exchanges', exchange)
         receipt = {'task_id': task['id'], 'target_bot_id': target_id, 'thread_id': task['thread_id'], 'status': 'paused' if task['status'] == 'paused' else 'queued'}
-        if native_reply:
-            receipt['disposition'] = 'reply'
-        self._event('bot_message.delivered', {'source_task_id': source['id'], 'source_bot_id': sender['id'], 'target_bot_id': target_id, 'task_id': task['id'], 'thread_id': task['thread_id'], 'conversation_bot_id': origin['id'], 'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'is_return': native_reply or native_return or task.get('_is_return', False)}, origin['id'], task['id'])
+        self._event('bot_message.delivered', {'source_task_id': source['id'], 'source_bot_id': sender['id'], 'target_bot_id': target_id, 'task_id': task['id'], 'thread_id': task['thread_id'], 'conversation_bot_id': origin['id'], 'exchange_id': exchange['id'], 'deliveries': exchange['deliveries'], 'is_return': native_return or task.get('_is_return', False)}, origin['id'], task['id'])
         self._put('deliveries', dict(id=delivery_id, source_task_id=source['id'], target_bot_id=target_id, text=text, receipt=receipt, created_at=now(), _progress_only=progress_only))
         return receipt
 
@@ -2115,7 +2096,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 return
         if result_status == 'failed':
             self._hold_failed_followup(task)
-        if not self._prepare_native_reply(task, text, result_status, finishing=finishing):
+        if not self._callbacks_ready(task, result_status, finishing=finishing):
             return
         if result_key:
             task['_native_return_prepared'] = list(result_key)
@@ -2154,7 +2135,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         task['summary'] += ' Your follow-up is saved. Reply to continue.'
 
     def _drain_returns(self):
-        self._restore_saved_delegation_results()
         # A result can arrive after the owner failed on an unrelated tool.
         # Consume only the exact persisted delivery; never restart that tool.
         with self.lock:
@@ -2167,20 +2147,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 task = self._get('tasks', task_id)
                 if task['status'] == 'failed' and task.get('_is_return'):
                     self._consume_stopped_dependency_result(task, self._assignment(task))
-        with self.lock:
-            native_replies = [(task['id'], task['_native_reply_pending']) for task in self._marked_tasks('_native_reply_pending')]
-        for task_id, reply in native_replies:
-            sender = self._get('bots', reply['sender_bot_id'])
-            if not sender.get('_deleted') and hasattr(self.provider, 'native_settings'):
-                try:
-                    self.provider.native_settings('relay_reply', [sender], bot_id=sender['id'],
-                                                  envelope_id=reply['envelope_id'], text=reply['text'], failed=reply['failed'])
-                except (OSError, ValueError, RuntimeError):
-                    continue
-            with self.transaction():
-                task = self._get('tasks', task_id)
-                task.pop('_native_reply_pending', None)
-                self._put('tasks', task)
         with self.lock:
             returns = [task['id'] for task in self._marked_tasks('_return_pending')]
         for task_id in returns:
@@ -2926,9 +2892,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.pr_poller.start()
         self.process_poller = threading.Thread(target=self._poll_processes, name='coconut-process-poll', daemon=True)
         self.process_poller.start()
-        # Tool checks scan every process with ps and lsof, so they run apart from result delivery.
-        self.tool_checker = threading.Thread(target=self._check_ended_tool_calls, name='coconut-tool-check', daemon=True)
-        self.tool_checker.start()
         self.source_poller = threading.Thread(target=self._poll_work_sources, name='coconut-source-poll', daemon=True)
         self.source_poller.start()
         self._start_profile_watcher()
@@ -3722,18 +3685,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 emit = lambda kind, payload: self.emit(task_id, kind, payload)
                 if decision:
                     if not self.run_gateway_resume(provider_task, bot, history, decision, emit):
-                        if self.gateway_unsupported(emit):
-                            pass
-                        elif self.await_prepared_worker(provider_task):
-                            return
-                        else:
+                        if not self.gateway_unsupported(emit):
                             self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
                 elif not self.run_gateway_chat(provider_task, bot, history, emit):
-                    if self.gateway_unsupported(emit):
-                        pass
-                    elif self.await_prepared_worker(provider_task):
-                        return
-                    else:
+                    if not self.gateway_unsupported(emit):
                         self.provider.start_task(provider_task, self._public(bot), history, emit)
                 with self.lock:
                     current = self._get('tasks', task_id)
@@ -3853,8 +3808,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             return self._delete_bot_from_chat(task_id, payload)
         if kind == 'bot_create':
             return self._create_bot_from_chat(task_id, payload)
-        if kind == 'native_bot_message':
-            return self.native_relay_delivery(task_id, payload)
         if kind == 'bot_message':
             return self._deliver_bot_message(task_id, payload)
         if kind == 'artifact' and payload.get('kind') == 'work':
@@ -4265,9 +4218,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             self._event('transcript.updated', {})
 
     def _recover(self):
-        self.recover_native_relays()
-        if self.kanban is not None:
-            self._recover_unprepared_workers()
         # The status indexes find the working contexts and tasks, and a partial index the streaming messages. The start
         # parses no whole table here. No ORDER BY: it makes SQLite scan the table. The rows sort here.
         for context in self._rows_in_order("SELECT rowid, data FROM contexts WHERE json_extract(data,'$.status')='working'"):
@@ -4470,8 +4420,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             self.pr_poller.join(timeout=2)
         if self.process_poller:
             self.process_poller.join(timeout=20)
-        if self.tool_checker:
-            self.tool_checker.join(timeout=20)
         if self.source_poller:
             self.source_poller.join(timeout=65)
         if getattr(self, 'profile_watcher', None):

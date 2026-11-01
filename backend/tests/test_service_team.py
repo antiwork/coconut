@@ -6,7 +6,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.service import Service, ServiceError, YieldForDecision, digest
-from coconut.hermes_worker import conversation_input
+from turn_text import turn_input
 from test_push import pair_phone
 from test_service import ControlledProvider
 
@@ -74,7 +74,7 @@ class TeamServiceTests(unittest.TestCase):
             emit('completed', {'summary': 'Complete.'})
         self.provider.start_task = receive
         self.service._run_task(returned['id'])
-        prompt = conversation_input(dict(operation='start', task=captured[0], history=[]))[0]
+        prompt = turn_input(dict(operation='start', task=captured[0], history=[]))[0]
         self.assertIn('Publish the approved draft PR', prompt)
         self.assertNotIn('Unrelated private request', prompt)
         self.assertNotIn(self.b['instructions'], prompt)
@@ -109,7 +109,7 @@ class TeamServiceTests(unittest.TestCase):
         self.assertEqual(context['return_to_bot_id'], self.a['id'])
         self.assertEqual(context['waiting_on_task_ids'], [])
         self.assertEqual(captured[0]['_outgoing_bot_messages'][0]['status'], 'completed')
-        prompt = conversation_input(dict(operation='start', task=captured[0], history=[]))[0]
+        prompt = turn_input(dict(operation='start', task=captured[0], history=[]))[0]
         self.assertIn(assignment_text, prompt)
         self.assertIn('finish the remaining authorized work', prompt)
         self.restart()
@@ -226,28 +226,6 @@ class TeamServiceTests(unittest.TestCase):
         self.assertEqual(jobs, [(root['id'], 'completed', stored.get('_native_turn_id') or stored['updated_at'])])
         alert = notification_alert(self.service, {'kind': 'completed'}, self.a, stored, None)
         self.assertEqual(alert['body'], 'The complete result is ready.')
-
-    def test_explicit_native_reply_records_its_own_receipt_after_restart(self):
-        root = self.working(self.send(self.a))
-        child = self.working(self.service._get('tasks', self.deliver(root, self.b)['task_id']))
-        self.finish(root)
-        envelope = uuid4().hex
-        receipt = self.service._deliver_bot_message(child['id'], dict(target_bot_id=self.a['id'],
-                                                    text='The dependency is ready.', native_envelope_id=envelope))
-        self.finish(child)
-        self.service._run_task(receipt['task_id'])
-        self.assertEqual(self.service._get('tasks', receipt['task_id'])['_native_reply_pending']['envelope_id'], envelope)
-        self.restart()
-        native = []
-        self.provider.native_settings = lambda operation, bots, **payload: native.append((operation, payload)) or {'ok': True}
-        self.service._drain_returns()
-        self.service._drain_returns()
-        self.assertEqual(len(native), 1)
-        self.assertEqual(native[0][0], 'relay_reply')
-        self.assertEqual(native[0][1]['envelope_id'], envelope)
-        self.assertEqual(native[0][1]['bot_id'], self.b['id'])
-        self.assertFalse(native[0][1]['failed'])
-        self.assertEqual(len(self.service._all('tasks')), 3)
 
     def test_dependency_reply_waits_for_original_decision_before_running(self):
         root = self.working(self.send(self.a))
@@ -687,13 +665,9 @@ class TeamServiceTests(unittest.TestCase):
     def test_archived_origin_keeps_a_pending_result(self):
         self.check_archived_return_waits_for_restoration(archive_origin=True)
 
-    def test_long_delegated_results_return_completely_through_both_transports(self):
+    def test_long_delegated_results_return_completely(self):
         root = self.working(self.send(self.a))
         child = self.deliver(root, self.b)
-        with self.service.transaction():
-            task = self.service._get('tasks', child['task_id'])
-            task['_native_relay'] = {'sender_bot_id': self.a['id'], 'envelope_id': uuid4().hex}
-            self.service._put('tasks', task)
         result = 'Details. ' * 15000 + 'The required final instruction is: keep the blue label.'
 
         def finish(task, bot, history, emit):
@@ -703,19 +677,14 @@ class TeamServiceTests(unittest.TestCase):
         self.provider.start_task = finish
         self.service._run_task(child['task_id'])
         self.restart()
-        native = []
-        self.provider.native_settings = lambda operation, bots, **payload: native.append((operation, payload)) or {'ok': True}
         self.service._drain_returns()
         self.service._drain_returns()
         returned = [task for task in self.service._all('tasks') if task.get('_is_return')]
         self.assertEqual(len(returned), 1)
         self.assertEqual(returned[0]['_bot_messages'][0]['text'], result)
-        self.assertEqual(len(native), 1)
-        self.assertEqual(native[0][0], 'relay_reply')
-        self.assertEqual(native[0][1]['text'], result)
         prompts = []
         self.provider.start_task = lambda task, bot, history, emit: prompts.append(
-            conversation_input(dict(operation='start', task=task, history=history))[0])
+            turn_input(dict(operation='start', task=task, history=history))[0])
         self.service._run_task(returned[0]['id'])
         self.assertIn(result, prompts[0])
 
@@ -746,9 +715,6 @@ class TeamServiceTests(unittest.TestCase):
         root = self.working(self.send(self.a))
         child = self.deliver(root, self.b)
         task = self.working(self.service._get('tasks', child['task_id']))
-        with self.service.transaction():
-            task['_native_relay'] = {'sender_bot_id': self.a['id'], 'envelope_id': uuid4().hex}
-            self.service._put('tasks', task)
         if failure == 'file':
             with self.assertRaises(YieldForDecision):
                 self.service.emit(task['id'], 'decision', {'title': 'Save?', 'action_type': 'create_file',
@@ -773,18 +739,13 @@ class TeamServiceTests(unittest.TestCase):
         self.assertEqual(self.provider.starts, [])
         if failure != 'file':
             self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'executing')
-        replies = []
-        self.provider.native_settings = lambda operation, bots, **payload: replies.append((operation, payload)) or {'ok': True}
         self.service._drain_returns()
         self.service._drain_returns()
         returns = [t for t in self.service._all('tasks') if t.get('_is_return')]
         self.assertEqual(len(returns), 1)
         self.assertEqual(returns[0]['_bot_messages'][0]['result_status'], 'failed')
-        self.assertEqual(len(replies), 1)
-        self.assertTrue(replies[0][1]['failed'])
-        self.assertEqual(replies[0][1]['text'], returns[0]['_bot_messages'][0]['text'])
+        # The failure returns only once, also after a restart.
         self.restart()
-        self.provider.native_settings = lambda *args, **kwargs: self.fail('The failure must return only once.')
         self.service._drain_returns()
         self.assertEqual(len([t for t in self.service._all('tasks') if t.get('_is_return')]), 1)
 

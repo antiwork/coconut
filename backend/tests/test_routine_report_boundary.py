@@ -6,17 +6,12 @@ measure existing gates; they are deliberately not proposed implementations.
 """
 import copy
 import json
-import os
-from pathlib import Path
-from types import MethodType
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from coconut.providers import HermesProvider
 from coconut.service import ServiceError
 import test_native_work_continuation as fixtures
-import test_provider
 
 
 class RoutingBoundaryTests(unittest.TestCase):
@@ -127,34 +122,17 @@ class RoutingBoundaryTests(unittest.TestCase):
         self.assertEqual(result['task_id'], owner['id'])
         self.assertEqual(self.service._get('tasks', owner['id'])['_execution_session_id'], owner['_execution_session_id'])
 
-    def test_provider_returns_actionable_rejection_for_incident(self):
+    def test_continuation_returns_actionable_rejection_for_incident(self):
         owner, source, checkpoint, coordinator, care, _ = self.incident()
         self.service._put('tasks', dict(coordinator, status='working'))
-        self.root = Path(self.temp.name) / 'provider-fixture'
         payload = dict(task_id='t_existing', message='Restore the original owner.')
-        transport = test_provider.ProviderTests.fake_hermes(self,
-            "result = json.loads(registry.dispatch('coconut_continue_work', " + repr(payload) + "))\n"
-            "return {'completed': True, 'final_response': json.dumps(result)}\n")
-        # Route journaling through the real service, not the fixture acknowledger.
-        transport._run = MethodType(HermesProvider._run, transport)
-        transport.catalog.private_home = self.root / 'private'
-        self.assertTrue(transport.catalog.root.is_relative_to(self.root))
-        self.assertTrue(transport.catalog.private_home.is_relative_to(self.root))
-        events = []
-        def emit(kind, data):
-            if kind in ('work_continue', 'native_call', 'native_result'):
-                return self.service.emit(coordinator['id'], kind, data)
-            events.append((kind, data))
         before = self.service._get('tasks', owner['id'])
-        task = {k: coordinator[k] for k in ('id', 'bot_id', 'title')}
-        with patch.dict(os.environ, ANTHROPIC_API_KEY='test-only'):
-            transport.start_task(task, self.service._get('bots', coordinator['bot_id']), [], emit)
-        result = json.loads(''.join(d['text'] for k, d in events if k == 'text_delta'))
-        self.assertEqual(result['status'], 'rejected')
-        self.assertIn('another execution', result['error'])
+        # The turn's coconut_continue_work reaches the service as the work_continue event.
+        with self.assertRaisesRegex(ServiceError, 'another execution') as raised:
+            self.service.emit(coordinator['id'], 'work_continue', payload)
+        self.assertTrue(400 <= raised.exception.status < 500, raised.exception)
         self.assertEqual(self.service._get('tasks', owner['id']), before)
-        # Rejected request_receipt replies are returned by the provider pipe;
-        # they do not create a successful continuation delivery or native receipt.
+        # A rejected continuation creates no continuation delivery.
         self.assertFalse(any(d.get('source_task_id') == coordinator['id']
                              and d.get('receipt', {}).get('task_id') == owner['id']
                              for d in self.service._all('deliveries')))

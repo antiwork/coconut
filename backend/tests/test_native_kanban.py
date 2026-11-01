@@ -19,24 +19,15 @@ setUpModule, tearDownModule = legacy_work_sync.scope()
 
 
 class Provider(FixtureProvider):
+    # The board runs in a Kanban runtime of the local Hermes, and the fixture runs the turns.
+    native_board = True
+
     def __init__(self, root):
         super().__init__(root)
         self.hermes_root, self.python = Path(SOURCE), PYTHON
-        self.processes = []
         self.started = []
-        self.prepared = []
         self.release = threading.Event()
         self.release.set()
-
-    def has_prepared_worker(self, identity):
-        # As the provider of the worker: a claim has a worker when Coconut prepared one for it.
-        return any(prepared[0] == identity for prepared in self.prepared)
-
-    def prepare_kanban_worker(self, identity, bot, workspace, execution_id, worker_id=None):
-        self.prepared.append((identity, str(workspace), execution_id, worker_id))
-        process = subprocess.Popen(['sleep', '90'])
-        self.processes.append(process)
-        return process.pid
 
     def start_task(self, task, bot, history, emit):
         self.started.append(task['id'])
@@ -45,10 +36,6 @@ class Provider(FixtureProvider):
 
     def close(self):
         self.release.set()
-        for process in self.processes:
-            if process.poll() is None:
-                process.terminate()
-            process.wait(timeout=5)
 
 
 @needs_hermes
@@ -77,6 +64,17 @@ class NativeKanbanTests(unittest.TestCase):
             if predicate():
                 return
         self.fail('The native queue did not settle.')
+
+    def count_claims(self):
+        """Record the task or context of each placeholder process that a claim starts (kanban_worker_pid)."""
+        claims = []
+        start = self.service.start_gateway_holder
+
+        def counted(identity, outcome=None):
+            claims.append(identity)
+            return start(identity, outcome)
+        self.service.start_gateway_holder = counted
+        return claims
 
     def native_program(self, program, *args):
         result = subprocess.run([PYTHON, '-c', "import sys\nfrom coconut.kanban_runtime import Board\nboard = Board(sys.argv[1])\n" + program,
@@ -386,8 +384,8 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
                     and self.service._get('tasks', owner['id'])['status'] == 'completed')
         work = [turn for turn in turns if turn['chat_id'] != self.bot['id']]
         self.assertEqual([turn['mode'] for turn in work], ['outcome', 'outcome'])
-        # No worker ran the outcome, and no claim prepared one.
-        self.assertEqual((self.provider.started, self.provider.prepared), ([], []))
+        # No worker ran the outcome.
+        self.assertEqual(self.provider.started, [])
         # The tools acted for each claim on Coconut's board: the heartbeat and the show of the claimed card.
         self.assertTrue(all(value.get('ok') for name, value in results if name == 'kanban_heartbeat'), results)
         self.assertTrue(all((value.get('task') or {}).get('id') == identity
@@ -418,8 +416,7 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
         self.settle(lambda: any(d['task_id'] == audit['id'] for d in self.service._all('decisions')))
         card = next(d for d in self.service._all('decisions') if d['task_id'] == audit['id'])
         self.settle(lambda: self.service._get('tasks', audit['id'])['status'] == 'needs_you')
-        # The claim held the gateway's placeholder, and the board comment is a receipt of the turn.
-        self.assertEqual(self.provider.prepared, [])
+        # The board comment is a receipt of the turn.
         self.assertTrue(any(r['action']['name'] == 'kanban_comment' for r in self.service._all('native_receipts')
                             if r['task_id'] == audit['id']))
         self.service.mutate('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'refund', 'revision': 1},
@@ -449,56 +446,7 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
             self.settle(lambda: self.service._get('tasks', task['id'])['status'] in ('failed', 'completed'))
         stored = self.service._get('tasks', task['id'])
         self.assertEqual((stored['status'], stored['summary']), ('failed', UNSUPPORTED))
-        self.assertEqual((ran, self.provider.prepared), ([], []))
-
-    def test_a_task_that_failed_without_a_prepared_worker_runs_again_with_its_answer(self):
-        failed = 'Work stopped: The native claim has no prepared worker.'
-        with self.service.transaction():
-            task = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Review open assignment',
-                                      'mode': 'queue'}, human_authored=False)
-            other = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Other work',
-                                       'mode': 'queue'}, human_authored=False)
-        # The scheduler claims both tasks, and the worker refuses them, as before the fix.
-        def refuse(started, bot, history, emit):
-            if started['id'] == task['id']:
-                raise RuntimeError('The native claim has no prepared worker.')
-            raise RuntimeError('another error.')
-        self.provider.start_task = refuse
-        self.settle(lambda: all(self.service._get('tasks', t['id'])['status'] == 'failed' for t in (task, other)))
-        self.assertEqual(self.service._get('tasks', task['id'])['summary'], failed)
-        # The person had answered a card of the task, and the failure failed the answer too.
-        with self.service.transaction():
-            card = dict(id=str(uuid4()), task_id=task['id'], bot_id=self.bot['id'], status='failed', outcome=failed,
-                        title='Refund the buyer?', action_type='question', revision=2, _native=True,
-                        created_at=task['created_at'], options=[dict(id='refund', label='Verify and refund')])
-            self.service._put('decisions', card)
-            self.service._put('tasks', dict(self.service._get('tasks', task['id']), _resume_decision=card['id']))
-            # The first start after the update runs the recovery. This service started before the failure.
-            self.service.db.execute("DELETE FROM settings WHERE key='recovered.unprepared_workers'")
-        self.service.close()
-        self.provider.close()
-        self.provider = Provider(self.tmp.name)
-        self.service = Service(self.tmp.name, self.provider, start_workers=False)
-        self.assertEqual(self.service._get('decisions', card['id'])['status'], 'approved')
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'queued')
-        self.assertEqual(self.service._get('tasks', other['id'])['status'], 'failed')
-        # The scheduler claims the task again, and its turn continues with the person's answer, once.
-        resumed = []
-        def resume(started, bot, history, decision, emit):
-            resumed.append((started['id'], decision['id'], decision['status'], started.get('_kanban_external_id')))
-            emit('text_delta', {'text': 'Refunded the buyer.'})
-            emit('completed', {'summary': 'Refunded.'})
-        self.provider.resume_task = resume
-        self.settle(lambda: self.service._get('tasks', task['id'])['status'] == 'completed')
-        for _ in range(3):
-            self.tick()
-        self.assertEqual(resumed, [(task['id'], card['id'], 'approved', task['id'])])
-        self.assertEqual(self.service._get('tasks', task['id'])['summary'], 'Refunded.')
-        self.assertEqual(self.service._get('tasks', other['id'])['status'], 'failed')
-        # The recovery runs once: a later start leaves a new failure alone.
-        self.service._put('tasks', dict(self.service._get('tasks', task['id']), status='failed', summary=failed))
-        self.service._recover_unprepared_workers()
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'failed')
+        self.assertEqual(ran, [])
 
     def test_source_urgency_orders_audits_without_lowering_returned_work(self):
         expected = {}
@@ -898,8 +846,7 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
             self.service._migrate_native_work()
             self.assertNotIn('_native_outcome_id', self.service._get('tasks', task['id']))
 
-    def test_migration_waits_for_completed_alias_process(self):
-        import json
+    def test_migration_waits_for_the_wait_of_a_completed_alias(self):
         for link in ('_same_outcome_as', '_work_parent_id'):
             task, item = self.legacy_work()
             alias = self.task('Read the returned result')
@@ -910,8 +857,9 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
                     owner['status'] = 'completed'
                     self.service._put('tasks', owner)
                 self.service._put('artifacts', dict(item, id=str(uuid4()), task_id=alias['id'], **{link: item['id']}))
-                record = dict(id=str(uuid4()), task_id=alias['id'], state='completed',
-                    action=dict(name='terminal', arguments={}), result=json.dumps(dict(session_id='pending-process', notify_on_complete=True)))
+                # The alias waits for another task that has no result yet.
+                record = dict(id=str(uuid4()), task_id=alias['id'], state='completed', result='{}',
+                    action=dict(name='coconut_wait', arguments={}), _wait_task_id=str(uuid4()), _wait_session_id='session')
                 self.service._put('native_receipts', record)
                 self.service._migrate_native_work()
                 self.assertNotIn('_native_outcome_id', self.service._get('tasks', task['id']))
@@ -984,18 +932,17 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
             self.assertEqual(migrated['status'], 'queued')
 
     def test_migration_defers_a_wait_with_an_unknown_tool_result(self):
-        import json
         task, item = self.legacy_work()
         self.provider.supports_native_outcomes = True
         with self.service.transaction():
             owner = self.service._get('tasks', task['id'])
             owner.update(status='failed', _native_turn_id='interrupted-turn')
             self.service._put('tasks', owner)
-            for state, result in [('executing', None), ('completed', json.dumps(dict(
-                    session_id='saved-process', notify_on_complete=True)))]:
-                self.service._put('native_receipts', dict(id=str(uuid4()), task_id=owner['id'],
-                    turn_id='interrupted-turn', state=state, result=result,
-                    action=dict(name='terminal', arguments={})))
+            self.service._put('native_receipts', dict(id=str(uuid4()), task_id=owner['id'],
+                turn_id='interrupted-turn', state='executing', result=None, action=dict(name='terminal', arguments={})))
+            self.service._put('native_receipts', dict(id=str(uuid4()), task_id=owner['id'],
+                turn_id='interrupted-turn', state='completed', result='{}', action=dict(name='coconut_wait', arguments={}),
+                _wait_task_id=str(uuid4()), _wait_session_id='session'))
             self.service._migrate_native_work()
             saved = self.service._get('tasks', owner['id'])
             self.assertNotIn('_native_outcome_id', saved)
@@ -1003,7 +950,6 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
             self.assertEqual(saved['status'], 'failed')
 
     def test_saved_wait_defers_uncertain_results_from_linked_attempts(self):
-        import json
         task, item = self.legacy_work()
         alias = self.task('Read the saved result')
         self.provider.supports_native_outcomes = True
@@ -1016,16 +962,15 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
             self.service._put('tasks', child)
             self.service._put('artifacts', dict(item, id=str(uuid4()), task_id=child['id'], _same_outcome_as=item['id']))
             self.service._put('native_receipts', dict(id=str(uuid4()), task_id=owner['id'], state='completed',
-                result=json.dumps(dict(session_id='saved-process', notify_on_complete=True)),
-                action=dict(name='terminal', arguments={})))
+                result='{}', action=dict(name='coconut_wait', arguments={}), _wait_task_id=str(uuid4()),
+                _wait_session_id='session'))
             self.service._put('native_receipts', dict(id=str(uuid4()), task_id=child['id'], state='executing',
                 action=dict(name='terminal', arguments={'command': 'publish the prepared artifact'})))
             self.service._migrate_native_work()
             self.assertNotIn('_native_outcome_id', self.service._get('tasks', owner['id']))
 
     def test_migration_preserves_waits_from_a_previous_owner(self):
-        import json
-        for wait in ('process', 'question', 'working'):
+        for wait in ('wait', 'question', 'working'):
             task, item = self.legacy_work()
             previous = self.task('Previous attempt')
             self.provider.supports_native_outcomes = True
@@ -1038,10 +983,10 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
                 self.service._put('tasks', old)
                 item['_work_previous_task_ids'] = [old['id']]
                 self.service._put('artifacts', item)
-                if wait == 'process':
+                if wait == 'wait':
                     self.service._put('native_receipts', dict(id=str(uuid4()), task_id=old['id'], state='completed',
-                        action=dict(name='terminal', arguments={}),
-                        result=json.dumps(dict(session_id='saved-process', notify_on_complete=True))))
+                        action=dict(name='coconut_wait', arguments={}), result='{}', _wait_task_id=str(uuid4()),
+                        _wait_session_id='session'))
                 elif wait == 'question':
                     self.service._put('decisions', dict(id=str(uuid4()), task_id=old['id'], bot_id=old['bot_id'], status='pending'))
                 self.service._migrate_native_work()
@@ -1120,8 +1065,7 @@ board.dispatch.heartbeat_worker(board.conn, sys.argv[2], note='Checking the expo
             source['status'] = 'working'
             self.service._put('tasks', source)
             origin = self.service._store_bot_message(source['id'],
-                dict(target_bot_id=developer['id'], text='Implement the accepted result', require_response=True,
-                     native_envelope_id=uuid4().hex))
+                dict(target_bot_id=developer['id'], text='Implement the accepted result', require_response=True))
         identity = self.native_program("""
 print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve the approved scope', assignee='default',
     tenant=sys.argv[2], session_id=sys.argv[3], initial_status='blocked'))
@@ -1144,7 +1088,6 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
             self.service._finish_assignment_turn(intake, 'I started the work', 'completed')
             self.service._put('tasks', intake)
         self.assertNotIn('_return_pending', intake)
-        self.assertNotIn('_native_relay_result', intake)
         self.service._drain_returns()
         self.assertFalse(any(d['source_task_id'] == intake['id'] for d in self.service._all('deliveries')))
         self.service.kanban.call({'op': 'snapshot'})
@@ -1158,7 +1101,6 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
             intake['status'] = 'completed'
             self.service._finish_assignment_turn(intake, 'I started the work', 'completed')
             self.service._put('tasks', intake)
-        self.assertNotIn('_native_relay_result', intake)
         self.assertNotIn('_return_pending', intake)
         self.service._drain_returns()
         self.assertFalse(any(d['source_task_id'] == intake['id'] for d in self.service._all('deliveries')))
@@ -1203,13 +1145,9 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
             self.service._prepare_return(owner, owner['summary'], 'completed')
             self.service._put('tasks', owner)
         self.assertNotIn('_return_pending', owner)
-        self.assertTrue(self.service._get('tasks', origin['task_id'])['_native_relay_result']['failed'])
         self.native_program("board.kb.complete_task(board.conn, sys.argv[2], summary='The requested result is ready')", identity)
         self.service.kanban.call({'op': 'snapshot'})
         self.service._reconcile_kanban()
-        callback = self.service._get('tasks', origin['task_id'])
-        self.assertEqual(callback['_native_reply_pending']['text'], 'The requested result is ready')
-        self.assertFalse(callback['_native_reply_pending']['failed'])
         self.service._drain_returns()
         returned = [d for d in self.service._all('deliveries')
                     if d['source_task_id'] == owner['id'] and d['target_bot_id'] == self.bot['id']]
@@ -1249,7 +1187,7 @@ print(board.kb.create_task(board.conn, title='Accepted result', body='Preserve t
             source['status'] = 'working'
             self.service._put('tasks', source)
             request = self.service._store_bot_message(source['id'], dict(target_bot_id=developer['id'],
-                text='Implement both results', require_response=True, native_envelope_id=uuid4().hex))
+                text='Implement both results', require_response=True))
         identities = self.native_program("""
 for title in ('First result', 'Second result'):
     print(board.kb.create_task(board.conn, title=title, assignee='default', tenant=sys.argv[2],
@@ -1441,14 +1379,13 @@ for title in ('First defect', 'Second defect'):
         self.service._put('tasks', owner)
         peer = dict(report, id=str(uuid4()), task_id=source['id'], _review_task_id=source['id'])
         self.service._put('artifacts', peer)
-        import json
-        receipt = dict(id=str(uuid4()), task_id=source['id'], state='completed',
-            action=dict(name='terminal', arguments={}),
-            result=json.dumps(dict(session_id='separate-writer', notify_on_complete=True)))
+        # The coordinator waits for another task that has no result yet.
+        receipt = dict(id=str(uuid4()), task_id=source['id'], state='completed', result='{}',
+            action=dict(name='coconut_wait', arguments={}), _wait_task_id=str(uuid4()), _wait_session_id='session')
         self.service._put('native_receipts', receipt)
         self.service._migrate_native_work()
         self.assertNotIn('_native_outcome_id', self.service._get('tasks', owner['id']))
-        receipt['_process_delivery'] = 'consumed'
+        receipt['_process_delivery'] = 'delivered'
         self.service._put('native_receipts', receipt)
         self.service._migrate_native_work()
         migrated = self.service._get('tasks', owner['id'])
@@ -1688,7 +1625,7 @@ for title in ('First defect', 'Second defect'):
         requester, review = self.exchange_review()
         dev = self.service._get('bots', review['bot_id'])
         starts = self.claimed_starts()
-        prepare = self.provider.prepare_kanban_worker
+        prepare = self.service.kanban_worker_pid
         chats, during_claim = [], []
         def claimed(identity, *args):
             pid = prepare(identity, *args)
@@ -1700,7 +1637,7 @@ for title in ('First defect', 'Second defect'):
                     self.service._dispatch_chat(4)
                     during_claim.append(set(self.service.running))
             return pid
-        self.provider.prepare_kanban_worker = claimed
+        self.service.kanban_worker_pid = claimed
         self.settle(lambda: chats and self.service.kanban.tasks[review['id']]['status'] == 'done'
                     and self.service._get('tasks', chats[0]['id'])['status'] == 'completed')
         chat = self.service._get('tasks', chats[0]['id'])
@@ -1931,9 +1868,9 @@ print(board.kb.create_task(board.conn, title='Build the customer record', body='
         self.provider.start_task = lambda task, bot, history, emit: (
             task['id'] == owner['id'] and captured.append(task), original(task, bot, history, emit))
         self.settle(lambda: captured and not (self.service.running.get(owner['id']) and self.service.running[owner['id']].is_alive()))
-        from coconut.hermes_worker import conversation_input
+        from turn_text import turn_input
         from coconut.work_recovery import BLOCKED_WORK_INSTRUCTIONS
-        self.assertIn(BLOCKED_WORK_INSTRUCTIONS, conversation_input(dict(operation='start', task=captured[0], history=[]))[0])
+        self.assertIn(BLOCKED_WORK_INSTRUCTIONS, turn_input(dict(operation='start', task=captured[0], history=[]))[0])
         # Starting the check turn unblocks the task. The backoff survives until the turn ends.
         self.assertEqual(self.service._get('tasks', owner['id'])['_block_check']['attempt'], 1)
 
@@ -2059,171 +1996,6 @@ print(board.kb.create_task(board.conn, title='Check result', body='Verify the re
         self.service.kanban.call({'op': 'snapshot'})
         self.service._reconcile_kanban()
         self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'completed')
-
-    def test_default_native_intake_retains_files_after_completion(self):
-        self.native_program("""
-import json
-from pathlib import Path
-from coconut.native_bridge import NativeBridge
-bridge = NativeBridge({'operation': 'start', 'bot': {'id': 'bot'}, 'task': {'id': 'origin'}},
-    lambda *args: None, lambda *args: {'status': 'recorded', 'id': 'receipt'})
-bridge.install(None)
-try:
-    result = bridge.recorded('kanban_create', {'title': 'Write report', 'body': 'Save the report'},
-        lambda args: board.kb.create_task(board.conn, **args))
-    task = board.kb.get_task(board.conn, result)
-    directory = board.workspace.resolve_workspace(task)
-    report = directory / 'report.txt'
-    report.write_text('Verified evidence')
-    board.kb.complete_task(board.conn, result, summary='Report saved')
-    assert report.read_text() == 'Verified evidence'
-    assert task.workspace_kind == 'dir'
-    repeated = bridge.recorded('kanban_create', {'title': 'Write report', 'body': 'Save the report'},
-        lambda args: board.kb.create_task(board.conn, **args))
-    assert repeated == result
-    bridge.request['task']['_native_turn_id'] = 'second-input'
-    next_task = bridge.recorded('kanban_create', {'title': 'Write report', 'body': 'Save the report'},
-        lambda args: board.kb.create_task(board.conn, **args))
-    assert next_task != result
-finally:
-    bridge.close()
-""")
-
-    def test_tool_receipts_do_not_block_the_native_start_order(self):
-        self.native_tool_batch('chat')
-
-    def test_routine_tools_keep_the_claim_after_the_native_start_gate(self):
-        self.native_tool_batch('routine')
-
-    def test_native_batch_stops_after_a_card(self):
-        self.native_tool_batch('pause')
-
-    def test_native_batch_stops_when_the_routine_loses_its_claim(self):
-        self.native_tool_batch('lost')
-
-    def test_native_callback_stops_on_a_claim_storage_error(self):
-        self.native_tool_batch('claim_error')
-
-    def test_routine_call_stops_if_a_card_arrives_while_it_waits_for_the_claim(self):
-        self.native_tool_batch('routine_pause')
-
-    def test_routine_handler_errors_remain_tool_errors(self):
-        self.native_tool_batch('tool_error')
-
-    def native_tool_batch(self, mode):
-        self.native_program("""
-import contextvars
-from contextlib import contextmanager
-import threading
-from types import SimpleNamespace
-from pathlib import Path
-from agent.tool_executor import _StartOrderGate, _WorkerStartOnce, _run_agent_tool_execution_middleware
-from coconut.native_bridge import NativeBridge, TurnPaused
-from coconut.native_turn_scope import TurnScope, current
-from tools.file_tools import read_file_tool
-
-mode = sys.argv[2]
-folder = Path(sys.argv[1])
-for name in ('first.txt', 'later.txt'):
-    (folder / name).write_text('Content of ' + name)
-later_entered = threading.Event()
-paused = threading.Event()
-later_claim = threading.Event()
-started, results, errors, receipts = [], [], [], []
-def receipt(kind, payload):
-    receipts.append((kind, payload))
-    if kind == 'native_call' and Path(payload['arguments']['path']).name == 'later.txt':
-        later_entered.set()
-    return {'status': 'recorded', 'id': str(len(receipts))}
-bridge = NativeBridge({'operation': 'start', 'task': {'id': 'origin'}},
-    lambda kind, data: kind == 'phase' or paused.set(), receipt)
-agent = SimpleNamespace(session_id='origin', _touch_activity=lambda *args: None,
-    quiet_mode=True, tool_progress_callback=None, _checkpoint_mgr=SimpleNamespace(enabled=False),
-    tool_start_callback=lambda identity, *args: started.append(identity),
-    _tool_guardrails=SimpleNamespace(before_call=lambda *args: SimpleNamespace(allows_execution=True)))
-if mode in ('routine', 'lost', 'claim_error', 'routine_pause', 'tool_error'):
-    from cron import jobs
-    job = jobs.create_job(prompt='Read two files', schedule='every 1h')
-    bridge.request['task']['_native_job'] = jobs.claim_job_for_fire(job['id'], manual=True, return_job=True)
-    if mode == 'routine_pause':
-        original_fence = jobs.fire_claim_fence
-        @contextmanager
-        def observed_fence(*args, **kwargs):
-            call = getattr(bridge.local, 'call', None)
-            if call and Path(call['action']['arguments']['path']).name == 'later.txt':
-                later_claim.set()
-            with original_fence(*args, **kwargs) as owns:
-                yield owns
-        jobs.fire_claim_fence = observed_fence
-scope = TurnScope('origin')
-scope.agent = agent
-current.set(scope)
-bridge.install(None)
-gate = _StartOrderGate(0.3)
-concurrent_reads = threading.Barrier(2)
-attempted, executed = [], []
-def execute(args):
-    name = Path(args['path']).name
-    attempted.append(name)
-    if mode in ('routine', 'tool_error'):
-        assert jobs._fire_fence_lock_state.__dict__.get('held'), 'The file ran outside the native claim fence'
-    if mode == 'tool_error':
-        raise ValueError('The tool failed')
-    if mode == 'chat':
-        concurrent_reads.wait(2)
-    if mode in ('pause', 'routine_pause'):
-        assert name == 'first.txt', 'The later tool ran after the card'
-        if mode == 'routine_pause':
-            assert later_claim.wait(2)
-        bridge.pause('native_question', {})
-    executed.append(name)
-    return read_file_tool(args['path'], task_id='origin')
-def run(index):
-    try:
-        start = _WorkerStartOnce(gate, index, 'read_file')
-        def begin(callback):
-            if mode == 'pause' and index == 1:
-                assert paused.wait(2)
-            if mode == 'lost' and index == 0:
-                assert jobs.remove_job(job['id'])
-            if mode == 'claim_error' and index == 0:
-                def unavailable(*args, **kwargs):
-                    raise OSError('The claim store is unavailable')
-                jobs.fire_claim_fence = unavailable
-            start.advance(callback)
-        result = _run_agent_tool_execution_middleware(agent, function_name='read_file',
-            function_args={'path': str(folder / ['first.txt', 'later.txt'][index])}, effective_task_id='origin',
-            tool_call_id=str(index), begin_execution=begin,
-            execute=execute)
-        results.append(result.result)
-    except BaseException as error:
-        errors.append(error)
-try:
-    later = threading.Thread(target=contextvars.copy_context().run, args=(run, 1))
-    later.start()
-    assert later_entered.wait(2)
-    first = threading.Thread(target=contextvars.copy_context().run, args=(run, 0))
-    first.start()
-    first.join(4)
-    later.join(4)
-    assert not first.is_alive() and not later.is_alive()
-    if mode in ('pause', 'lost', 'claim_error', 'routine_pause'):
-        assert len(errors) == 2 and all(isinstance(error, TurnPaused) for error in errors), errors
-        assert executed == []
-        assert attempted == (['first.txt'] if mode in ('pause', 'routine_pause') else []), attempted
-    elif mode == 'tool_error':
-        assert len(errors) == 2 and all(type(error) is ValueError for error in errors), errors
-        assert sorted(attempted) == ['first.txt', 'later.txt']
-    else:
-        assert not errors, errors
-        assert started == ['0', '1'], started
-        assert len(results) == 2 and all('Content of ' in result for result in results), results
-        assert len([r for r in receipts if r[0] == 'native_result']) == 2
-finally:
-    bridge.close()
-    from tools.terminal_tool import cleanup_all_environments
-    cleanup_all_environments()
-""", mode)
 
     def test_native_completion_survives_restart_and_keeps_saved_followup(self):
         import json
@@ -2433,7 +2205,9 @@ board.kb.block_task(board.conn, sys.argv[4], reason='Worker setup failed')
         self.assertEqual(current['status'], 'ready')
         self.assertEqual(current['workspace_path'], str(workspace))
         self.settle(lambda: owner['id'] in self.provider.started)
-        self.assertIn((owner['id'], str(workspace), owner['id'], current['id']), self.provider.prepared)
+        # The claim of the continued owner is the current card in the original workspace.
+        claim = self.service._get('tasks', owner['id'])['_kanban_claim']
+        self.assertEqual((claim['native_id'], claim['workspace']), (current['id'], str(workspace)))
         self.assertEqual((workspace / 'receipt.txt').read_text(), 'Original Dev execution')
         self.assertEqual(self.service._get('artifacts', work['id']), work)
         self.assertEqual(self.service._get('artifacts', pr['id'])['work_outcome_id'], work['id'])
@@ -2710,6 +2484,7 @@ print(board.kb.create_task(board.conn, title='Follow-up outcome', body='Keep the
 
 
     def test_review_reply_resumes_same_claimed_task_once(self):
+        claims = self.count_claims()
         task = self.task('Draft a note.md')
         self.settle(lambda: self.service.kanban.tasks.get(task['id'], {}).get('status') == 'review')
         native_id = self.service.kanban.tasks[task['id']]['id']
@@ -2725,9 +2500,10 @@ print(board.kb.create_task(board.conn, title='Follow-up outcome', body='Keep the
         self.settle(lambda: self.service.kanban.tasks[task['id']]['status'] == 'done')
         self.assertEqual(self.service.kanban.tasks[task['id']]['id'], native_id)
         self.assertEqual(self.service.db.execute('SELECT count(*) FROM receipts').fetchone()[0], 1)
-        self.assertEqual(len(self.provider.processes), 2)
+        self.assertEqual(claims, [task['id'], task['id']])
 
     def test_pr_card_answer_resumes_original_review_once(self):
+        claims = self.count_claims()
         task = self.task('Draft a note.md')
         self.settle(lambda: self.service.kanban.tasks.get(task['id'], {}).get('status') == 'review')
         native_id = self.service.kanban.tasks[task['id']]['id']
@@ -2740,7 +2516,7 @@ print(board.kb.create_task(board.conn, title='Follow-up outcome', body='Keep the
         self.settle(lambda: self.service.kanban.tasks[task['id']]['status'] == 'done')
         self.tick()
         self.assertEqual(self.service.kanban.tasks[task['id']]['id'], native_id)
-        self.assertEqual(len(self.provider.processes), 2)
+        self.assertEqual(claims, [task['id'], task['id']])
 
     def test_native_pr_followup_preserves_capacity_owner_and_saved_work(self):
         self.native_program("""
@@ -2940,6 +2716,7 @@ assert started == [identities['followup']], started
         self.assertTrue(self.service.take_service_restart())
 
     def test_lost_dispatch_reply_uses_saved_claim(self):
+        claims = self.count_claims()
         task = self.task('Calculate one item')
         original = self.service.kanban.call
         lost = []
@@ -2955,7 +2732,7 @@ assert started == [identities['followup']], started
         self.assertFalse(self.provider.started)
         self.settle(lambda: self.service.kanban.tasks.get(task['id'], {}).get('status') == 'done')
         self.assertEqual(self.provider.started, [task['id']])
-        self.assertEqual(len(self.provider.processes), 1)
+        self.assertEqual(claims, [task['id']])
 
     def test_lost_finish_reply_does_not_repeat_work(self):
         task = self.task('Calculate one item')
@@ -3105,7 +2882,7 @@ finally:
         task = self.task('Calculate one item')
         row = self.service._kanban_rows()[0]
         self.service.kanban.call(dict(op='tick', rows=[row], capacity=1),
-            lambda claim: self.provider.prepare_kanban_worker(task['id'], self.bot, row['workspace'], task['id']))
+            lambda claim: self.service.kanban_worker_pid(task['id'], task['id']))
         native = self.service.kanban.tasks[task['id']]
         program = '''
 import sys
@@ -3163,7 +2940,7 @@ raise RuntimeError('The interruption did not run')
             self.assertEqual(native['status'], 'scheduled')
             row['state'] = 'ready'
             self.service.kanban.call(dict(op='tick', rows=[row], capacity=1),
-                lambda claim: self.provider.prepare_kanban_worker(task['id'], self.bot, row['workspace'], task['id']))
+                lambda claim: self.service.kanban_worker_pid(task['id'], task['id']))
             native = self.service.kanban.tasks[task['id']]
             self.assertEqual(native['status'], 'running')
             self.assertEqual(native['block_recurrences'], 0)
@@ -3291,7 +3068,7 @@ print(_handle_complete(dict(task_id=claim['native_id'], summary='Dependencies ch
         self.settle(lambda: self.service._get('tasks', child['id'])['status'] == 'completed'
                     and self.service._get('tasks', parent['id'])['status'] == 'waiting')
         self.assertEqual([reply['status'] for reply in replies], ['waiting'])
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         resumed = self.service._get('tasks', parent['id'])
         self.assertEqual(resumed['status'], 'queued')
         self.assertIn('Dependencies checked', resumed['_background_completion'][0])
@@ -3299,7 +3076,7 @@ print(_handle_complete(dict(task_id=claim['native_id'], summary='Dependencies ch
         self.assertEqual(replies[1], {'status': 'completed', 'task_id': child['id'],
                                       'result': f"Task {child['id']} completed: Dependencies checked"})
         for _ in range(3):
-            self.service._drain_process_completions()
+            self.service._drain_task_completions()
             self.tick()
         finished = self.service._get('tasks', parent['id'])
         self.assertEqual((finished['status'], finished['_native_turn_id']), ('completed', resumed['_native_turn_id']))
@@ -3330,14 +3107,14 @@ print(_handle_complete(dict(task_id=claim['native_id'], summary='Dependencies ch
     def test_native_permission_guard_enters_recovery_instead_of_staying_queued(self):
         task = self.task('Inspect this repository')
         def refused(*_args):
-            raise PermissionError('Permission denied: worker executable')
-        self.provider.prepare_kanban_worker = refused
+            raise PermissionError('Permission denied: placeholder executable')
+        self.service.start_gateway_holder = refused
         self.settle(lambda: self.service._get('tasks', task['id'])['status'] == 'failed')
         saved = self.service._get('tasks', task['id'])
         self.assertEqual(saved['error_code'], 'native_dispatch_failed')
         self.assertFalse(self.provider.started)
 
-    def test_failed_dispatch_records_both_delegation_returns(self):
+    def test_failed_dispatch_records_the_delegation_return(self):
         dev = self.write('/v1/bots', {'name': 'Dev', 'role': ''})
         parent = self.task('Check this change with Dev')
         with self.service.transaction():
@@ -3345,33 +3122,19 @@ print(_handle_complete(dict(task_id=claim['native_id'], summary='Dependencies ch
             saved['status'] = 'working'
             self.service._put('tasks', saved)
             receipt = self.service._store_bot_message(parent['id'], dict(target_bot_id=dev['id'],
-                text='Check this change', native_envelope_id=uuid4().hex))
+                text='Check this change'))
             saved = self.service._get('tasks', parent['id'])
             saved['status'] = 'waiting'
             self.service._put('tasks', saved)
         def refused(*_args):
-            raise PermissionError('Permission denied: worker executable')
-        self.provider.prepare_kanban_worker = refused
+            raise PermissionError('Permission denied: placeholder executable')
+        self.service.start_gateway_holder = refused
         self.settle(lambda: self.service._get('tasks', receipt['task_id'])['status'] == 'failed')
         child = self.service._get('tasks', receipt['task_id'])
         self.assertEqual(child['_return_pending']['target_bot_id'], self.bot['id'])
         self.assertEqual(child['_return_pending']['result_status'], 'failed')
-        self.assertTrue(child['_native_reply_pending']['failed'])
-        self.assertEqual(child['_native_relay_result'], child['_native_reply_pending'])
         self.service._reconcile_kanban()
-        self.assertEqual(self.service._get('tasks', child['id'])['_native_relay_result'], child['_native_relay_result'])
-
-    def test_cancelled_receipt_owner_does_not_retain_a_runtime(self):
-        task = self.task('Wait for the server')
-        with self.service.transaction():
-            saved = self.service._get('tasks', task['id'])
-            saved['status'] = 'cancelled'
-            self.service._put('tasks', saved)
-        self.service._pending_completion_receipts = lambda: [dict(task_id=task['id'])]
-        kept = []
-        self.provider.trim_kanban_workers = lambda identities: kept.append(identities)
-        self.tick()
-        self.assertEqual(kept, [set()])
+        self.assertEqual(self.service._get('tasks', child['id'])['_return_pending'], child['_return_pending'])
 
 
 if __name__ == '__main__':

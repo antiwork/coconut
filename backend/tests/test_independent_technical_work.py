@@ -2,7 +2,6 @@
 import copy
 import json
 import os
-import threading
 import unittest
 from unittest.mock import Mock, patch
 from uuid import uuid4
@@ -12,7 +11,6 @@ from coconut.service import ServiceError, YieldForDecision
 from coconut.technical_lane import SYSTEM_DECIDERS, held_action, instructions
 import test_native_claim_continuation as native_claims
 import test_native_work_continuation as continuation
-import test_provider as provider_fixtures
 from test_work_progress import progress
 from hermes_env import needs_hermes
 
@@ -533,7 +531,6 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
 
     def resume_after_gate(self, owner):
         """The dispatcher builds rows, then the resumed provider turn runs. Returns its exact provider input."""
-        from coconut.native_bridge import NativeBridge
         self.service._kanban_rows()
         captured = {}
         def resume_task(task, bot, history, decision, emit):
@@ -549,9 +546,7 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         self.service.provider.resume_task, self.service.provider.start_task = resume_task, start_task
         self.service._run_task(owner['id'])
         self.finish_resumed_outcome(owner, captured)
-        bridge = NativeBridge(dict(operation='resume', task=captured['task'], decision=captured['decision'],
-                                   bot={'id': owner['bot_id']}), lambda *a: None, lambda *a: None)
-        return captured, bridge
+        return captured
 
     def finish_resumed_outcome(self, owner, captured):
         """The real result route after the resumed turn. Hermes records its kanban_complete on the same card."""
@@ -581,20 +576,18 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
     def lane_receipts(self, owner, lane_turn):
         return [r for r in self.service._native_task_receipts(owner['id']) if r['turn_id'] == lane_turn]
 
-    def assert_resumed_from_the_gate(self, owner, lane_turns, captured, bridge, pre_lane, expect=('approved', 'accept')):
+    def assert_resumed_from_the_gate(self, owner, lane_turns, captured, pre_lane, expect=('approved', 'accept')):
         lane_turns = [lane_turns] if isinstance(lane_turns, str) else list(lane_turns)
         task = captured['task']
         self.assertNotIn(task['_native_turn_id'], [pre_lane['turn_id'], *lane_turns])
         # Only the decision turn's completed effects are carried. The lane's results are history, never this turn's.
         self.assertEqual([r['id'] for r in task['_native_receipts']], ['pre-lane'])
-        self.assertEqual(set(bridge.completed), {pre_lane['action_hash']})
         from coconut.native_receipt_context import receipt_prompt
         self.assertIn('"total": 1', receipt_prompt(task['_native_receipts']))
         lane = [r for turn in lane_turns for r in self.lane_receipts(owner, turn)]
         self.assertTrue(all(self.lane_receipts(owner, turn) for turn in lane_turns), 'Every lane turn ran a tool')
         # No output of any lane turn is an input or a cached result of the resumed decision turn.
         self.assertFalse({r['id'] for r in lane} & {r['id'] for r in task['_native_receipts']})
-        self.assertFalse({r['action_hash'] for r in lane} & set(bridge.completed))
         # The provider receives the person's actual answer as the resumed decision.
         self.assertEqual((captured['resume_decision'], captured['decision']['id'], captured['decision']['status'],
                           captured['decision']['selected_option_id']), ('gate', 'gate', *expect))
@@ -632,8 +625,8 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
             later = self.service._message(owner['bot_id'], 'Also check the mobile layout.', task_id=owner['id'],
                                           role='user', human_authored=True)
         self.answer_gate()
-        captured, bridge = self.resume_after_gate(owner)
-        self.assert_resumed_from_the_gate(owner, lane_turn, captured, bridge, pre_lane)
+        captured = self.resume_after_gate(owner)
+        self.assert_resumed_from_the_gate(owner, lane_turn, captured, pre_lane)
         self.assertEqual(captured['task']['_turn_message_ids'], [later['id']])
         self.assertFalse(set(lane_messages) & set(captured['task']['_turn_message_ids']))
 
@@ -650,8 +643,8 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         # The same held-in-flight state that the real-kernel case asserts in CI.
         self.assertEqual(self.service._technical_lane(answered)['turn_id'], lane_turn)
         self.assertIsNone(self.service._technical_gate(answered)[0])
-        captured, bridge = self.resume_after_gate(owner)
-        self.assert_resumed_from_the_gate(owner, lane_turn, captured, bridge, pre_lane)
+        captured = self.resume_after_gate(owner)
+        self.assert_resumed_from_the_gate(owner, lane_turn, captured, pre_lane)
 
     def test_an_automatic_gate_end_also_resumes_without_lane_replays(self):
         owner, source = self.lane_native()
@@ -794,8 +787,8 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         turns = self.lane_turns(owner)
         self.assertEqual(len(turns), 2)
         self.answer_gate()
-        captured, bridge = self.resume_after_gate(owner)
-        self.assert_resumed_from_the_gate(owner, turns, captured, bridge, pre_lane)
+        captured = self.resume_after_gate(owner)
+        self.assert_resumed_from_the_gate(owner, turns, captured, pre_lane)
 
     def test_completed_follow_ups_run_as_lane_turns_and_the_answer_resumes_the_gate(self):
         owner, source = self.lane_native()
@@ -816,8 +809,8 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         turns = self.lane_turns(owner)
         self.assertEqual(len(set(turns)), 3)
         self.answer_gate()
-        captured, bridge = self.resume_after_gate(owner)
-        self.assert_resumed_from_the_gate(owner, turns, captured, bridge, pre_lane)
+        captured = self.resume_after_gate(owner)
+        self.assert_resumed_from_the_gate(owner, turns, captured, pre_lane)
 
     def test_an_answer_during_a_follow_up_lane_turn_resumes_the_gate(self):
         owner, source = self.lane_native()
@@ -828,8 +821,8 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         running = self.drive(owner, tools=2, answer='after_tool')
         self.assertEqual(running['refused'], [409])
         self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'queued')
-        captured, bridge = self.resume_after_gate(owner)
-        self.assert_resumed_from_the_gate(owner, turns, captured, bridge, pre_lane)
+        captured = self.resume_after_gate(owner)
+        self.assert_resumed_from_the_gate(owner, turns, captured, pre_lane)
 
     def test_an_automatic_gate_end_after_follow_ups_resumes_the_gate(self):
         owner, source = self.lane_native()
@@ -984,8 +977,8 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         self.assertEqual((withdrawn['status'], withdrawn['resolution']), ('resolved', 'work_scope_changed'))
         self.assertEqual(seen['refused'], [], 'Local tools keep running in the old lane turn')
         self.assert_ended_lane_turn_held(owner, lane_turn, seen)
-        captured, bridge = self.resume_after_gate(owner)
-        self.assert_resumed_from_the_gate(owner, [lane_turn], captured, bridge, pre_lane, expect=('resolved', None))
+        captured = self.resume_after_gate(owner)
+        self.assert_resumed_from_the_gate(owner, [lane_turn], captured, pre_lane, expect=('resolved', None))
         self.assertEqual(captured['decision']['resolution_context'], withdrawn['resolution_context'])
 
     def test_a_real_shared_work_cancel_during_a_follow_up_lane_turn_resumes_with_its_stop_message(self):
@@ -1013,8 +1006,8 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         self.assertEqual((gate['status'], gate['resolution']), ('resolved', 'work_scope_changed'))
         stop = next(m for m in self.service._task_messages(owner['id']) if m.get('text', '').startswith('Stop work on'))
         self.assert_ended_lane_turn_held(owner, follow_up_turn, seen)
-        captured, bridge = self.resume_after_gate(owner)
-        self.assert_resumed_from_the_gate(owner, [first['task']['_native_turn_id'], follow_up_turn], captured, bridge,
+        captured = self.resume_after_gate(owner)
+        self.assert_resumed_from_the_gate(owner, [first['task']['_native_turn_id'], follow_up_turn], captured,
                                           pre_lane, expect=('resolved', None))
         self.assertIn(stop['id'], captured['task']['_turn_message_ids'], 'The unconsumed stop message reaches the resume')
         self.assertNotIn(consumed['id'], captured['task']['_turn_message_ids'], 'A live message the lane turn read is not repeated')
@@ -1075,8 +1068,8 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         requeued = self.service._get('tasks', owner['id'])
         self.assertEqual((requeued['status'], requeued['_native_turn_id']), ('queued', lane_turn))
         self.assertNotIn('_resume_decision', requeued)
-        captured, bridge = self.resume_after_gate(owner)
-        self.assert_resumed_from_the_gate(owner, [lane_turn], captured, bridge, pre_lane, expect=('resolved', None))
+        captured = self.resume_after_gate(owner)
+        self.assert_resumed_from_the_gate(owner, [lane_turn], captured, pre_lane, expect=('resolved', None))
         self.assertEqual(captured['decision']['resolution_context'], withdrawn['resolution_context'])
 
     def test_an_old_lane_worker_failing_after_an_answer_keeps_the_answer_for_the_next_turn(self):
@@ -1097,8 +1090,8 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         queued = self.service._get('tasks', owner['id'])
         self.assertEqual((queued['status'], queued['_resume_decision'], queued['_native_turn_id']), ('queued', 'gate', lane_turn))
         self.assertNotIn('_return_pending', queued)
-        captured, bridge = self.resume_after_gate(owner)
-        self.assert_resumed_from_the_gate(owner, [lane_turn], captured, bridge, pre_lane)
+        captured = self.resume_after_gate(owner)
+        self.assert_resumed_from_the_gate(owner, [lane_turn], captured, pre_lane)
 
     def test_a_resumed_turn_that_fails_still_fails_its_own_decision(self):
         owner, source = self.lane_native()
@@ -2405,105 +2398,6 @@ class TechnicalLanePolicyTests(unittest.TestCase):
                                 ('cronjob_manage', {}), ('clarify', {})):
             with self.subTest(held=name):
                 self.assertIsNotNone(held_action(dict(name=name, arguments=arguments), 't_own'))
-
-
-class TechnicalLaneProviderTests(unittest.TestCase):
-    """The real Hermes worker, bridge, and provider receipt route with fake Hermes tools."""
-    setUp = provider_fixtures.ProviderTests.setUp
-    tearDown = provider_fixtures.ProviderTests.tearDown
-    fake_hermes = provider_fixtures.ProviderTests.fake_hermes
-
-    BEHAVIOR = """
-        import json, tools.approval as approval
-        ran = []
-        def terminal(args):
-            ran.append(args['command'])
-            for callback in list(approval.callbacks.values()):
-                callback({'request_id': 'r1', 'command': args['command'], 'description': 'Delete build output'})
-            return json.dumps({'output': 'ok', 'exit_code': 0})
-        registry.handlers['terminal'] = terminal
-        registry.handlers['kanban_complete'] = lambda args: ran.append('kanban_complete') or json.dumps({'ok': True})
-        assert ('Independent technical work' in prompt) == LANE
-        assert ('Do not change product code.' in prompt) == (LANE and not HELD)
-        assert ('read-only diagnosis' in prompt) == HELD
-        assert ('Leave #8669 open' in prompt) == HELD
-        if LANE:
-            held = json.loads(registry.dispatch('kanban_complete', {'summary': 'Fixed.'}))
-            assert held['error'].startswith('Independent technical work holds this native action.'), held
-            assert ran == []
-        tested = json.loads(registry.dispatch('terminal', {'command': 'rm -rf tmp/build && claude -p "Run the tests"'}))
-        assert tested['exit_code'] == 0 and ran == ['rm -rf tmp/build && claude -p "Run the tests"']
-        assert approval.resolutions == [('deny', REASON)], approval.resolutions
-        assert ('The person declined this recorded decision' in prompt) == DECLINED
-        assert ('#8661' in prompt) == DECLINED
-        return {'completed': True, 'final_response': 'Tests pass locally.'}
-    """
-
-    def run_worker(self, lane, declined=False, held=False):
-        from coconut.providers import HermesProvider
-        reason = ('The held decision and its pause stay.' if held else 'The declined decision and its pause stay.'
-                  if declined else 'The original decision remains pending.')
-        provider = self.fake_hermes(self.BEHAVIOR.replace('LANE', repr(bool(lane))).replace('DECLINED', repr(declined))
-                                    .replace('HELD', repr(held)).replace('REASON', repr(reason)))
-        (self.root / 'source' / 'tools' / 'approval.py').write_text(
-            'callbacks = {}\nresolutions = []\n'
-            'def register_gateway_notify(key, callback): callbacks[key] = callback\n'
-            'def unregister_gateway_notify(key): callbacks.pop(key, None)\n'
-            'def resolve_gateway_approval(key, choice, **kwargs):\n'
-            '    resolutions.append((choice, kwargs.get("reason")))\n    return 1\n')
-        provider.__class__ = HermesProvider  # Send receipts to the service route instead of acknowledging them.
-        if lane:
-            self.task['_technical_lane'] = dict(decision_id='gate', decision_revision=2, scope=['diagnosis', 'tests'],
-                                                native_task_id='t_own')
-        if declined:
-            self.task['_technical_lane'].update(decision_id='declined', decision_revision=1,
-                declined_merge_pr_url=DECLINED_PR, hold=dict(status='completed', summary='Complete.'),
-                declined=dict(decision_id='declined', title='Approve the migration and merge #8661?', merge_pr_url=DECLINED_PR))
-        if held:
-            self.task['_technical_lane'].update(HELD_LANE, native_task_id='t_own',
-                hold=dict(status='completed', summary='Verified.'), held=dict(decision_id='held', revision=1,
-                    title='Mark Gumroad #8669 ready and merge it?', merge_pr_url=HELD_PR,
-                    selected_option=dict(id='leave_open', label='Leave #8669 open', answer='approve', explanation='')))
-        events = []
-        def emit(kind, data):
-            events.append((kind, data))
-            if kind == 'native_call':
-                # The same refusal that NativeExecution.native_event raises for this lane.
-                reason = held_action(dict(name=data['name'], arguments=data['arguments']), 't_own') if lane else None
-                if reason:
-                    raise ServiceError(403, 'Independent technical work holds this native action. ' + reason)
-                return {'status': 'recorded', 'id': str(uuid4())}
-            if kind == 'native_result':
-                return {'status': 'recorded'}
-        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], emit)
-        return events
-
-    def test_worker_holds_native_actions_and_new_permissions_but_runs_local_tools(self):
-        events = self.run_worker(lane=True)
-        kinds = [kind for kind, _ in events]
-        self.assertEqual(kinds[-1], 'completed', events)
-        self.assertNotIn('native_approval', kinds)
-        self.assertNotIn('failed', kinds)
-
-    def test_a_declined_merge_lane_holds_the_same_actions_and_names_the_kept_refusal(self):
-        events = self.run_worker(lane=True, declined=True)
-        kinds = [kind for kind, _ in events]
-        self.assertEqual(kinds[-1], 'completed', events)
-        self.assertNotIn('native_approval', kinds)
-        self.assertNotIn('failed', kinds)
-
-    def test_a_held_merge_lane_holds_the_same_actions_and_names_the_kept_hold(self):
-        events = self.run_worker(lane=True, held=True)
-        kinds = [kind for kind, _ in events]
-        self.assertEqual(kinds[-1], 'completed', events)
-        self.assertNotIn('native_approval', kinds)
-        self.assertNotIn('failed', kinds)
-
-    def test_without_the_lane_the_same_dangerous_command_requests_approval(self):
-        # Negative control: the denial above comes from the lane, not from the fake approval module.
-        events = self.run_worker(lane=False)
-        self.assertIn('native_approval', [kind for kind, _ in events], events)
 
 
 @needs_hermes

@@ -21,13 +21,9 @@ from unittest.mock import Mock
 from uuid import UUID, uuid4, uuid5
 
 from coconut.kanban_scheduler import SETTLE_SECONDS
-from coconut.native_bridge import NativeBridge, TurnPaused
-from coconut.native_routine_execution import finished_occurrence
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError
 import legacy_work_sync
-import test_failed_routine_continuation as failed_fixtures
-import test_finished_routine_workspace as workspace_fixtures
 import test_native_kanban as native_fixtures
 import hermes_env
 
@@ -262,9 +258,6 @@ class ArchivedScheduledRoutineAdmissionTests(ScheduledOccurrence, unittest.TestC
         working = self.dispatch(owner, 't_next', 26700)
         proof = self.store.native_routine_completion_input(working)
         self.assertEqual(proof['continuation']['native_task_id'], 't_next')
-        self.assertTrue(finished_occurrence(working | {'_native_job_completion': proof}, working['_native_job']))
-        stale = dict(working, _native_job_completion=dict(proof, continuation=dict(proof['continuation'], native_task_id='t_scheduled')))
-        self.assertFalse(finished_occurrence(stale, working['_native_job']))
         self.assertEqual(self.cancellations(owner), [])
 
     def test_repeated_scheduled_continuations_continue_in_order(self):
@@ -284,7 +277,6 @@ class ArchivedScheduledRoutineAdmissionTests(ScheduledOccurrence, unittest.TestC
                 proof = self.store.native_routine_completion_input(working)
                 self.assertEqual(proof['completion'], dict(SUCCESS, native_confirmed=True))
                 self.assertEqual(proof['continuation']['native_task_id'], successor)
-                self.assertTrue(finished_occurrence(working | {'_native_job_completion': proof}, working['_native_job']))
                 self.schedule(owner)
                 settled = self.settle(owner)
                 self.assertEqual(settled['status'], 'completed')
@@ -427,7 +419,7 @@ class ArchivedScheduledRoutineAdmissionTests(ScheduledOccurrence, unittest.TestC
                                           status='rejected', decided_by='archive', outcome='Task archived.'))
         self.assertRejected(owner)
 
-    def test_open_input_decision_waits_background_and_unknown_effects_hold(self):
+    def test_open_input_decision_waits_and_unknown_effects_hold(self):
         owner = self.saved()
         self.store._put('decisions', dict(id='pending', task_id=owner['id'], bot_id=owner['bot_id'], status='pending'))
         self.assertRejected(owner)
@@ -442,11 +434,11 @@ class ArchivedScheduledRoutineAdmissionTests(ScheduledOccurrence, unittest.TestC
         self.store._put('tasks', owner)
         base = dict(task_id=owner['id'], turn_id=owner['_native_turn_id'], action_hash='hash',
                     created_at='2026-10-16T20:16:00Z')
-        self.store._put('native_receipts', dict(base, id='process', state='completed',
-            action={'name': 'terminal', 'arguments': {}},
-            result=json.dumps({'notify_on_complete': True, 'session_id': 'proc-1'})))
+        # A wait for another task that has no result yet.
+        self.store._put('native_receipts', dict(base, id='wait', state='completed', result='{}',
+            action={'name': 'coconut_wait', 'arguments': {}}, _wait_task_id='dependency', _wait_session_id='session'))
         self.assertRejected(owner)
-        self.store.db.execute("DELETE FROM native_receipts WHERE id='process'")
+        self.store.db.execute("DELETE FROM native_receipts WHERE id='wait'")
         self.store._put('native_receipts', dict(base, id='unknown', state='executing',
                                                 action={'name': 'write_file', 'arguments': {}}))
         self.assertRejected(owner)
@@ -466,97 +458,6 @@ class ArchivedScheduledRoutineAdmissionTests(ScheduledOccurrence, unittest.TestC
         self.assertRejected(self.store._get('tasks', owner['id']), 'not blocked or completed')
         self.assertFalse(self.store.keeps_settled_failure(self.store._get('tasks', owner['id']),
                                                           self.store.kanban.tasks[owner['id']]))
-
-
-class ArchivedScheduledRoutineBridgeTests(ScheduledOccurrence, unittest.TestCase):
-    """The worker's claim check accepts the successor's success proof and nothing else."""
-
-    def setUp(self):
-        ScheduledOccurrence.setUp(self)
-        self.native = failed_fixtures.FailedClaimTests()
-        self.native.setUp()
-        self.addCleanup(self.native.doCleanups)
-        # The native fixture names its job 'job' and its owner 'owner'. This occurrence succeeded.
-        self.assertTrue(self.native.finish()['ok'])
-
-    def test_successor_proof_runs_tools_without_rewriting_the_success(self):
-        job = dict(saved_job(self.workdir), id='job', fire_claim={'by': 'owner'})
-        routine_id = str(uuid5(UUID(self.dev['id']), 'cron:job'))
-        owner = self.occurrence(job)
-        self.update(owner['id'], _native_job_completion_receipt=dict(job_id='job', owner='owner', success=True))
-        self.resume('t_original', 'Validate the bank details again.')
-        first = self.store._get('tasks', owner['id'])['_native_turn_id']
-        self.dispatch(owner, 't_scheduled', 26559, key='coconut-followup:' + owner['id'] + ':' + first)
-        self.schedule(owner)
-        self.settle(owner)
-        self.resume('t_scheduled', 'Finish the bank validation.')
-        turn = self.store._get('tasks', owner['id'])['_native_turn_id']
-        continued = self.dispatch(owner, 't_next', 26700, key='coconut-followup:' + owner['id'] + ':' + turn)
-        self.assertEqual(continued['routine_id'], routine_id)
-        proof = self.store.native_routine_completion_input(continued)
-        self.assertEqual(proof['completion'], dict(job_id='job', owner='owner', success=True, native_confirmed=True))
-        before = copy.deepcopy(self.native.job)
-        bridge = NativeBridge({'task': dict(continued, _native_job_completion=proof)}, None, None)
-        self.assertEqual(self.native.run_tool(bridge), 'executed')
-        self.assertEqual(self.native.job, before)
-        self.assertTrue(self.native.job['_coconut_completion']['success'])
-        # Hermes' success of this job and owner authorizes the tools. Without a native receipt another owner has none.
-        job = dict(continued['_native_job'], fire_claim={'by': 'later-owner'})
-        forged = dict(proof, owner='later-owner', completion=dict(job_id='job', owner='later-owner', success=True))
-        with self.assertRaises(TurnPaused):
-            self.native.run_tool(NativeBridge({'task': dict(continued, _native_job=job, _native_job_completion=forged)}, None, None))
-        self.assertEqual(self.native.job, before)
-
-
-class ArchivedScheduledRoutineWorkerTests(ScheduledOccurrence, unittest.TestCase):
-    """The provider starts a real worker process for the successor turn. Its native modules are the shared stub."""
-
-    fixture = workspace_fixtures.FinishedRoutineWorkspaceTests
-    run_turn = fixture.run_turn
-    routine_scope = fixture.routine_scope
-    assertPreparationFailed = fixture.assertPreparationFailed
-
-    def setUp(self):
-        self.fixture.setUp(self)
-        ScheduledOccurrence.setUp(self)
-
-    def continued(self):
-        workdir = self.workdir
-        self.workdir = self.retired
-        owner = self.occurrence(saved_job(self.retired))
-        self.workdir = workdir
-        self.resume('t_original', 'Validate the bank details again.')
-        first = self.store._get('tasks', owner['id'])['_native_turn_id']
-        self.dispatch(owner, 't_scheduled', 26559, key='coconut-followup:' + owner['id'] + ':' + first)
-        self.schedule(owner)
-        self.settle(owner)
-        self.resume('t_scheduled', 'Finish the bank validation.')
-        turn = self.store._get('tasks', owner['id'])['_native_turn_id']
-        return self.dispatch(owner, 't_next', 26700, key='coconut-followup:' + owner['id'] + ':' + turn)
-
-    def provider_task(self, continued, proof):
-        task = self.fixture.task(self, proof=None)
-        task.update(id=continued['id'], _native_job=continued['_native_job'], _native_turn_id=continued['_native_turn_id'],
-                    _native_outcome_id=continued['_native_outcome_id'], _kanban_external_id=continued['id'],
-                    _native_job_completion=proof)
-        return task
-
-    def test_successor_turn_prepares_in_its_execution_workspace(self):
-        continued = self.continued()
-        proof = self.store.native_routine_completion_input(continued)
-        self.assertEqual(proof['continuation']['native_task_id'], 't_next')
-        events, rows = self.run_turn(self.provider_task(continued, proof))
-        self.assertIn(('completed', {'summary': 'Complete.'}), events)
-        self.assertEqual(self.routine_scope(rows), [str(self.workspace)])
-
-    def test_successor_turn_without_its_proof_still_fails_preparation(self):
-        continued = self.continued()
-        self.store.kanban.tasks[continued['id']]['idempotency_key'] = 'coconut-followup:' + continued['id'] + ':other'
-        proof = self.store.native_routine_completion_input(continued)
-        self.assertEqual(proof, dict(SUCCESS, native_confirmed=True))
-        # The success of the occurrence alone does not reach its retired directory through another card.
-        self.assertPreparationFailed(*self.run_turn(self.provider_task(continued, dict(proof, continuation=dict(
-            task_id=continued['id'], turn_id=continued['_native_turn_id'], native_task_id='t_scheduled', delivery_id='d')))))
 
 
 class ArchivedScheduledRoutineNativeTests(unittest.TestCase):
@@ -691,14 +592,12 @@ class ArchivedScheduledRoutineNativeTests(unittest.TestCase):
         self.assertEqual(native['parents'], [scheduled])
         self.assertEqual(native['key'], 'coconut-followup:' + owner['id'] + ':' + continued['_native_turn_id'])
         self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
-        self.assertEqual(self.provider.prepared[-1][1:], (workspace, owner['id'], successor))
         # The archived card and the original card keep their history. Hermes runs only the successor.
         self.assertEqual((self.native(scheduled), self.native(original)), history)
         proof = task['_native_job_completion']
         self.assertEqual(proof['completion'], dict(SUCCESS, native_confirmed=True))
         self.assertEqual(proof['continuation']['native_task_id'], successor)
         self.assertEqual(proof['continuation']['turn_id'], continued['_native_turn_id'])
-        self.assertTrue(finished_occurrence(task, task['_native_job']))
         self.assertEqual(task['_native_job'], owner['_native_job'])
         self.assertEqual(task['_kanban_workspace'], workspace)
         self.assertFalse(any(json.loads(row[0]).get('status') == 'cancelled' for row in self.service.db.execute(

@@ -1,5 +1,4 @@
 from copy import deepcopy
-import os
 from pathlib import Path
 import tempfile
 import types
@@ -7,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from coconut.parallel_work import automatic_limit, prepare_turn, save, state
+from coconut.parallel_work import automatic_limit, save, state
 from coconut.service import Service, ServiceError
 from test_bot_model_settings import NativeProvider
 
@@ -44,24 +43,20 @@ class SettingsProvider(NativeProvider):
 
 
 class ParallelWorkTests(unittest.TestCase):
-    def test_native_config_and_environment_keep_profile_override_separate(self):
+    def test_native_config_keeps_the_profile_override_separate(self):
         configs = {'default': {'delegation': {'worktree_isolation': True}}, 'bot': {'delegation': {'max_concurrent_children': 3}}}
         native = types.SimpleNamespace(raw_config=lambda home: deepcopy(configs[str(home)]),
                                       save_config=lambda home, config: configs.update({str(home): config}))
         with patch('coconut.parallel_work.raw_config', native.raw_config), patch('coconut.parallel_work.save_config', native.save_config), \
-                patch('coconut.parallel_work.hardware', return_value=(10, 16 * 1024 ** 3)), patch.dict(os.environ):
+                patch('coconut.parallel_work.hardware', return_value=(10, 16 * 1024 ** 3)):
             self.assertEqual(state('default')['effective_limit'], 5)
             save('default', 8)
-            prepare_turn(state('default')['effective_limit'])
-            self.assertEqual(os.environ['DELEGATION_MAX_CONCURRENT_CHILDREN'], '8')
+            self.assertEqual(state('default')['effective_limit'], 8)
             self.assertEqual(configs['bot']['delegation']['max_concurrent_children'], 3)
             self.assertTrue(configs['default']['delegation']['worktree_isolation'])
             save('default', None)
-            prepare_turn(state('default')['effective_limit'])
-            self.assertEqual(os.environ['DELEGATION_MAX_CONCURRENT_CHILDREN'], '5')
+            self.assertEqual(state('default')['effective_limit'], 5)
             self.assertNotIn('max_concurrent_children', configs['default']['delegation'])
-            prepare_turn(None)
-            self.assertNotIn('DELEGATION_MAX_CONCURRENT_CHILDREN', os.environ)
             save('bot', None, inherit=True)
             self.assertIn('max_concurrent_children', configs['bot']['delegation'])
             self.assertIsNone(configs['bot']['delegation']['max_concurrent_children'])

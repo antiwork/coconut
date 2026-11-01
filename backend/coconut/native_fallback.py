@@ -99,24 +99,3 @@ def entry_key(entry):
     if not key and entry.get('provider') == 'openai-api':
         key = resolve_api_key_provider_credentials('openai-api').get('api_key')
     return key if key and not _ENV_REF_RE.search(key) else None
-
-
-def for_turn():
-    """Read the native fallback routes of this profile for each turn."""
-    from hermes_constants import get_hermes_home
-    home = get_hermes_home()
-    config = raw_config(home)
-    if not any(key in config for key in ('fallback_providers', 'fallback_model')):
-        return None
-    with configuration(home) as expanded:
-        entries = chain(expanded)
-        for entry in entries:
-            # Bind the initial route. Hermes retains the bot's configured credential-pool recovery.
-            if key := entry_key(entry):
-                entry['api_key'] = key
-            else:
-                entry.pop('api_key', None)
-            if entry.get('provider') == 'openai-api':
-                entry['base_url'] = entry_url(entry)
-        # An OpenAI API route without its key must not fall through to other credentials.
-        return [entry for entry in entries if entry.get('provider') != 'openai-api' or entry.get('api_key')] or None

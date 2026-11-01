@@ -20,7 +20,7 @@ class UnlinkDispatchIdleTests(unittest.TestCase):
     setup_edge = fixtures.DependencyUnlinkTests.setup_edge
     unlink = fixtures.DependencyUnlinkTests.unlink
 
-    def check_stage(self, stage, *, restart=False, lost_response=False, restart_during_trim=False):
+    def check_stage(self, stage, *, restart=False, lost_response=False):
         child, parent, source = self.setup_edge()
         entered, release = threading.Event(), threading.Event()
         errors = []
@@ -42,10 +42,6 @@ class UnlinkDispatchIdleTests(unittest.TestCase):
                     hold()
                 return {}
             return adapter_call(request)
-
-        def trim(keep):
-            if stage == 'trim':
-                hold()
 
         def idle(timeout=None):
             wait_timeouts.append(timeout)
@@ -70,7 +66,6 @@ class UnlinkDispatchIdleTests(unittest.TestCase):
                          '_dispatch_chat', '_publish_kanban_changes'):
                 stack.enter_context(patch.object(self.service, name))
             stack.enter_context(patch.object(self.service, '_kanban_rows', return_value=[]))
-            trim_mock = stack.enter_context(patch.object(self.service.provider, 'trim_kanban_workers', side_effect=trim, create=True))
             stack.enter_context(patch.object(self.service.changed, 'wait', side_effect=idle))
             if lost_response:
                 with self.assertRaisesRegex(RuntimeError, 'Lost native tick response'):
@@ -86,12 +81,6 @@ class UnlinkDispatchIdleTests(unittest.TestCase):
             worker.start()
             try:
                 self.assertTrue(entered.wait(5), errors)
-                if restart_during_trim:
-                    with self.service.changed:
-                        self.service.restart_pending = True
-                        self.service.restart_deadline = time.monotonic() + 60
-                    self.assertFalse(self.service.take_service_restart())
-                    self.assertFalse(self.service.stopping.is_set())
                 if stage == 'claim':
                     self.assertEqual(self.service._kanban_claiming, 1)
                     self.assertTrue(self.service._kanban_dispatch_uncertain)
@@ -115,22 +104,15 @@ class UnlinkDispatchIdleTests(unittest.TestCase):
                 worker.join(5)
             self.assertFalse(worker.is_alive())
             self.assertEqual(errors, [])
-            self.assertEqual(trim_mock.call_count, 0 if restart else 1)
-            if restart or restart_during_trim:
+            if restart:
                 self.assertEqual(wait_timeouts, [.2])
             else:
                 # The pass rests first, so the wait is what remains of one second.
                 self.assertEqual(len(wait_timeouts), 1)
                 self.assertTrue(0 <= wait_timeouts[0] <= 1, wait_timeouts)
-            if restart_during_trim:
-                self.assertTrue(self.service.take_service_restart())
-                self.assertTrue(self.service.stopping.is_set())
         self.assertEqual(self.service._kanban_claiming, 0)
         self.assertFalse(self.service._kanban_dispatch_uncertain)
         self.assertFalse(self.service._kanban_dispatching)
-
-    def test_unlink_during_slow_idle_worker_trim(self):
-        self.check_stage('trim')
 
     def test_unlink_during_actual_dispatcher_condition_wait(self):
         self.check_stage('idle')
@@ -138,17 +120,11 @@ class UnlinkDispatchIdleTests(unittest.TestCase):
     def test_unlink_during_reconciled_restart_idle(self):
         self.check_stage('idle', restart=True)
 
-    def test_restart_waits_for_trim_while_unlink_remains_available(self):
-        self.check_stage('trim', restart_during_trim=True)
-
-    def test_stopping_skips_trim_and_uses_short_idle_wait(self):
+    def test_stopping_uses_short_idle_wait(self):
         self.service.stopping.set()
-        with patch.object(self.service.provider, 'trim_kanban_workers', create=True) as trim, \
-                patch.object(self.service.changed, 'wait') as wait:
+        with patch.object(self.service.changed, 'wait') as wait:
             self.service._idle_kanban()
-        trim.assert_not_called()
         wait.assert_called_once_with(.2)
-        self.assertFalse(self.service._kanban_trimming)
 
     def test_native_claim_keeps_the_gate_closed(self):
         self.check_stage('claim')

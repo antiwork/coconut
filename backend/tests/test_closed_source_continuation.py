@@ -520,10 +520,11 @@ class OtherEndingsStayFinalTests(ClosedSource, unittest.TestCase):
             self.store._put('native_receipts', dict(id='unknown', task_id=owner['id'], turn_id=TURN, state='executing',
                 action_hash='hash', action={'name': 'terminal', 'arguments': {}}, created_at='2026-09-24T14:02:00Z'))
 
-        def background_process(owner):
-            self.store._put('native_receipts', dict(id='process', task_id=owner['id'], turn_id=CLAIMED, state='completed',
-                action_hash='hash', action={'name': 'terminal', 'arguments': {}}, created_at='2026-09-24T13:50:00Z',
-                result=json.dumps({'notify_on_complete': True, 'session_id': 'proc-1'})))
+        def open_wait(owner):
+            # A wait for another task that has no result yet.
+            self.store._put('native_receipts', dict(id='wait', task_id=owner['id'], turn_id=CLAIMED, state='completed',
+                action_hash='hash', action={'name': 'coconut_wait', 'arguments': {}}, created_at='2026-09-24T13:50:00Z',
+                result='{}', _wait_task_id='dependency', _wait_session_id='session'))
 
         def active_helper(owner):
             helper = dict(owner, id=str(uuid4()), status='working', _assignment_task_id=owner['id'])
@@ -543,7 +544,7 @@ class OtherEndingsStayFinalTests(ClosedSource, unittest.TestCase):
         def live_worker(owner):
             self.store.running[owner['id']] = Mock(is_alive=Mock(return_value=True))
         cases = dict(
-            pending_decision=pending_decision, unknown_tool=unknown_tool, background_process=background_process,
+            pending_decision=pending_decision, unknown_tool=unknown_tool, open_wait=open_wait,
             active_helper=active_helper, source_decision=source_decision, live_worker=live_worker,
             recorded_unknown=lambda owner: self.update(owner['id'], _self_recovery=dict(unknown_tools=[dict(id='earlier-write')])),
             steering=lambda owner: self.update(owner['id'], _steering=['Use the other checkout.']),

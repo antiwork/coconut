@@ -1,7 +1,7 @@
 """A mention identifies a bot without sharing the chat or assigning work."""
 from test_service_team import TeamServiceTests
 import unittest
-from coconut.hermes_worker import conversation_input
+from turn_text import turn_input
 from coconut.service import ServiceError
 
 
@@ -22,7 +22,7 @@ class BotReferenceTests(unittest.TestCase):
         self.assertEqual(message['bot_mentions'], [dict(id=self.b['id'], name='Lin')])
         self.assertEqual(self.service._history(self.b['id']), [])
         self.assertEqual(len(self.service.snapshot()['tasks']), 1)
-        prompt, _ = conversation_input(dict(operation='start', task=task,
+        prompt, _ = turn_input(dict(operation='start', task=task,
                                             history=self.service._history(self.a['id'])))
         self.assertIn(self.b['id'], prompt)
         self.assertIn('The person is addressing this chat', prompt)
@@ -51,7 +51,7 @@ class BotReferenceTests(unittest.TestCase):
         self.assertEqual(message['bot_mentions'][0]['id'], self.b['id'])
         self.assertEqual(message['decision_id'], decision['id'])
         context = self.service._all('contexts')[-1]
-        prompt, _ = conversation_input(dict(operation='context', question=context['question'],
+        prompt, _ = turn_input(dict(operation='context', question=context['question'],
             task=dict(pending_decision=decision, _context_message_id=context['_message_id']),
             history=self.service._history(self.a['id'])))
         self.assertIn(self.b['id'], prompt)

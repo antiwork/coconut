@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import test_native_execution as native_tests
 from coconut.service import ServiceError
-from coconut.hermes_worker import conversation_input
+from turn_text import turn_input
 
 
 class MessageDraftTests(unittest.TestCase):
@@ -115,7 +115,7 @@ class MessageDraftTests(unittest.TestCase):
         draft = self.draft()
         approved = self.answer(draft)
         request = dict(operation='resume', decision=approved, bot=self.bot, task=self.task, history=[])
-        prompt, history = conversation_input(request)
+        prompt, history = turn_input(request)
         self.assertIn('Send its body, subject, and destination exactly as recorded', prompt)
         self.assertIn(json.dumps(approved['draft']['body']), prompt)
         self.assertIn('sarah@example.com', prompt)

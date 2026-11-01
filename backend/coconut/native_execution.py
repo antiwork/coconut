@@ -1,4 +1,4 @@
-"""Persist native tool receipts and human decisions across worker restarts."""
+"""Persist native tool receipts and human decisions across turns and restarts."""
 from __future__ import annotations
 
 import json
@@ -12,61 +12,6 @@ class NativeExecution:
                 "SELECT 1 FROM native_receipts WHERE json_extract(data, '$.state')='executing' "
                 "AND json_extract(data, '$.task_id')=? AND json_extract(data, '$.turn_id') IS ? LIMIT 1",
                 (task_id, turn_id)).fetchone() is not None
-
-    def native_relay_delivery(self, task_id, payload):
-        with self.transaction():
-            return self._store_native_relay_delivery(task_id, payload)
-
-    def _store_native_relay_delivery(self, task_id, payload):
-        from .service import ServiceError, now
-        record = self._get('native_receipts', payload['native_call_id'])
-        action = record['action']
-        arguments = action['arguments']
-        if record['task_id'] != task_id or action['name'] != 'message_agent':
-            raise ServiceError(409, 'The relay receipt does not match this task.')
-        target = str(arguments.get('target', '')).lstrip('@').split('@')[0]
-        if (target != payload['target_bot_id'] or arguments.get('message') != payload['text']
-                or arguments.get('continuation_task_id') != payload.get('continuation_task_id')):
-            raise ServiceError(409, 'The relay envelope does not match this tool call.')
-        if record['state'] == 'completed':
-            return json.loads(record['result'])
-        if record['state'] != 'executing':
-            raise ServiceError(409, 'This tool cannot deliver a message.')
-        receipt = self._store_bot_message(task_id, payload)
-        native_reply = receipt.pop('disposition', None) == 'reply'
-        receipt = {key: value for key, value in receipt.items() if isinstance(value, str)}
-        receipt['delivery_id'] = payload['native_envelope_id']
-        if receipt.get('task_id') and not native_reply:
-            recipient = self._get('tasks', receipt['task_id'])
-            if any(message.get('progress_only') for message in recipient.get('_bot_messages', [])):
-                # Normal handoffs already have a return route. A message back to the
-                # requester needs its own callback, even while the parent waits.
-                record['_relay_task_id'] = recipient['id']
-        record.update(state='completed', result=json.dumps(receipt, sort_keys=True), completed_at=now())
-        self._put('native_receipts', record)
-        return receipt
-
-    def recover_native_relays(self):
-        if not hasattr(self.provider, 'native_settings'):
-            return
-        # Startup runs this in its transaction. Select the few executing relays, not the whole receipt journal. Without
-        # INDEXED BY, SQLite scanned all receipts (940 MB on the Mac mini): 2.9 s on a laptop, most of a slow start on
-        # the mini. No ORDER BY: it makes SQLite scan the table. The few rows sort here.
-        rows = self.db.execute(
-            "SELECT rowid, data FROM native_receipts INDEXED BY native_receipts_executing "
-            "WHERE json_extract(data, '$.state')='executing' AND json_extract(data, '$.action.name')='message_agent'").fetchall()
-        for record in [json.loads(row[1]) for row in sorted(rows)]:
-            task = self._get('tasks', record['task_id'])
-            if task['status'] != 'working':
-                continue
-            bot = self._get('bots', task['bot_id'])
-            payload = self.provider.native_settings('relay_recover', [bot], bot_id=bot['id'], call_id=record['id'])
-            if payload:
-                from .service import ServiceError
-                try:
-                    self._store_native_relay_delivery(task['id'], payload)
-                except ServiceError:
-                    continue
 
     def native_event(self, task_id, kind, payload, context_id=None):
         from .service import ServiceError, YieldForDecision, now, digest, encoded
@@ -121,11 +66,7 @@ class NativeExecution:
                     return {'status': 'recorded'}
                 if record['task_id'] != task_id or record['state'] != 'executing':
                     raise ServiceError(409, 'The tool receipt does not match this task.')
-                self._record_consumed_processes(record, payload)
                 record.update(state='completed', result=payload['result'], completed_at=now())
-                from .background_processes import subscription
-                if subscription(record):
-                    record['_process_registered'] = True
                 self._put('native_receipts', record)
                 if record['action']['name'] == 'kanban_comment':
                     try:

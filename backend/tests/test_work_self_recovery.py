@@ -1,17 +1,13 @@
 import copy
-import os
-from pathlib import Path
-import subprocess
-import sys
-import tempfile
 import unittest
 
 import test_automatic_work as fixtures
-from coconut.hermes_worker import conversation_input
+from turn_text import turn_input
 from coconut.service import Service
 import legacy_work_sync
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
+
 
 class WorkSelfRecoveryTests(unittest.TestCase):
     setUp = fixtures.AutomaticWorkTests.setUp
@@ -56,46 +52,6 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         self.recover()
         self.assertEqual(len(self.service._all('tasks')), count)
 
-    def recovery_process(self):
-        import json
-        self.stranded()
-        recovery = self.recover()
-        self.assertNotEqual(recovery['exchange_id'], self.task['exchange_id'])
-        original = self.start()
-        self.service.running.clear()
-        receipt = self.service.native_event(original['id'], 'native_call',
-            dict(name='terminal', arguments={'command': 'run existing tests'}))
-        self.service.native_event(original['id'], 'native_result', dict(id=receipt['id'],
-            result=json.dumps(dict(session_id='existing-test', status='running', notify_on_complete=True))))
-        recovery.update(status='working', _native_turn_id='recovery-test')
-        self.service._put('tasks', recovery)
-        return original, recovery, receipt
-
-    def test_recovery_reuses_original_process_across_exchanges(self):
-        original, recovery, receipt = self.recovery_process()
-        listed = self.service.wait_for_task(recovery['id'], {})
-        self.assertIn('existing-test', {p['process_id'] for p in listed['processes']})
-        result = self.service.wait_for_task(recovery['id'],
-            dict(process_id='existing-test', reason='Waiting for existing tests'))
-        self.assertEqual(result['status'], 'waiting')
-        unrelated = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages',
-            dict(text='Unrelated work', mode='queue'))
-        from coconut.service import ServiceError
-        with self.assertRaises(ServiceError):
-            self.service.wait_for_task(recovery['id'], dict(task_id=unrelated['id'], reason='Unrelated'))
-        recovery.update(status='waiting')
-        self.service._put('tasks', recovery)
-        source = self.service._get('native_receipts', receipt['id'])
-        source['_completion_text'] = 'The existing tests passed.'
-        self.service._put('native_receipts', source)
-        self.service._drain_task_completions()
-        resumed = self.service._get('tasks', recovery['id'])
-        self.assertEqual(resumed['status'], 'queued')
-        self.assertIn('existing tests passed', resumed['_background_completion'][0])
-        turn = resumed['_native_turn_id']
-        self.service._drain_task_completions()
-        self.assertEqual(self.service._get('tasks', recovery['id'])['_native_turn_id'], turn)
-
     def test_recovery_rejects_circular_wait_between_exchanges(self):
         from coconut.service import ServiceError
         self.stranded()
@@ -110,50 +66,6 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         with self.assertRaises(ServiceError) as error:
             self.service.wait_for_task(second['id'], dict(task_id=first['id'], reason='Wait for recovery'))
         self.assertEqual(error.exception.status, 409)
-
-    def test_cancelling_original_process_owner_wakes_recovery(self):
-        from coconut.service import ServiceError
-        original, recovery, receipt = self.recovery_process()
-        self.service.wait_for_task(recovery['id'], dict(process_id='existing-test', reason='Waiting for tests'))
-        recovery['status'] = 'waiting'
-        self.service._put('tasks', recovery)
-        self.write('POST', '/v1/tasks/' + original['id'] + '/cancel', {})
-        self.assertEqual(self.service._get('tasks', recovery['id'])['status'], 'waiting')
-        self.service._drain_task_completions()
-        resumed = self.service._get('tasks', recovery['id'])
-        self.assertEqual(resumed['status'], 'queued')
-        self.assertIn('cancelled', resumed['_background_completion'][0])
-        resumed['status'] = 'working'
-        self.service._put('tasks', resumed)
-        with self.assertRaises(ServiceError):
-            self.service.wait_for_task(recovery['id'], dict(process_id='existing-test', reason='Waiting for tests'))
-
-    def test_second_pr_recovery_retains_first_recovery_process(self):
-        import json
-        from test_service_pr import URL
-        self.start()
-        self.service._register_pr_artifact(self.task['id'], dict(url=URL))
-        self.start(status='failed')
-        self.service.running.clear()
-        first = self.recover()
-        first.update(status='working', _native_turn_id='first-recovery')
-        self.service._put('tasks', first)
-        receipt = self.service.native_event(first['id'], 'native_call',
-            dict(name='terminal', arguments={'command': 'existing check'}))
-        self.service.native_event(first['id'], 'native_result', dict(id=receipt['id'],
-            result=json.dumps(dict(session_id='pr-check', status='running', notify_on_complete=True))))
-        # The old callback has been delivered; its saved process remains available to recovery.
-        source = self.service._get('native_receipts', receipt['id'])
-        source['_process_delivery'] = 'delivered'
-        self.service._put('native_receipts', source)
-        first.update(status='failed')
-        self.service._put('tasks', first)
-        second = self.recover()
-        self.assertNotEqual(first['id'], second['id'])
-        second.update(status='working', _native_turn_id='second-recovery')
-        self.service._put('tasks', second)
-        listed = self.service.wait_for_task(second['id'], {})
-        self.assertIn('pr-check', {p['process_id'] for p in listed['processes']})
 
     def test_completed_turn_without_outcome_gets_a_check_not_false_completion(self):
         item = self.stranded()
@@ -289,7 +201,7 @@ class WorkSelfRecoveryTests(unittest.TestCase):
     def test_recovery_prompt_keeps_verification_and_decision_instructions(self):
         self.stranded()
         task = self.recover()
-        prompt, _ = conversation_input(dict(operation='start', task=task, history=[]))
+        prompt, _ = turn_input(dict(operation='start', task=task, history=[]))
         self.assertIn('Never repeat a write while its effect remains unknown', prompt)
         self.assertIn('coconut_ask', prompt)
         self.assertIn('not a new human instruction or approval', prompt)
@@ -338,7 +250,7 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         message = dict(id='new', task_id=task['id'], role='user', kind='text', text='Only inspect; do not push')
         task['_background_completion'] = ['Existing command completed with receipt 123']
         task['_work_context'] = {'title': 'Current work title'}
-        prompt, _ = conversation_input(dict(operation='start', task=task, history=[message]))
+        prompt, _ = turn_input(dict(operation='start', task=task, history=[message]))
         for text in ('Only inspect; do not push', 'receipt 123', 'Current work title', 'Never repeat a write'):
             self.assertIn(text, prompt)
 
@@ -347,7 +259,7 @@ class WorkSelfRecoveryTests(unittest.TestCase):
             dict(id='original', role='user', kind='text', text='Check the result')],
             task=dict(id='task', title='Check record', _context_message_id='original',
                 _context_recovery='Verify unknown receipt 456 before repeating its write.', pending_decision={}))
-        prompt, _ = conversation_input(request)
+        prompt, _ = turn_input(request)
         self.assertIn('Check the result', prompt)
         self.assertIn('Verify unknown receipt 456', prompt)
 
@@ -426,21 +338,3 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         self.assertEqual(len(recovery['_self_recovery']['work']), 1)
         self.recover()
         self.assertEqual(len(self.service._all('tasks')), count + 1)
-
-
-class WorkerRecoveryLaunchTests(unittest.TestCase):
-    def test_recovery_prompt_loads_in_worker_script_environment(self):
-        worker_directory = Path(__file__).resolve().parents[1] / 'coconut'
-        program = """
-import sys
-sys.path.insert(0, sys.argv[1])
-from hermes_worker import conversation_input
-prompt, _ = conversation_input(dict(operation='start', history=[],
-    task=dict(title='Resume existing work', _self_recovery=dict(previous_status='failed'))))
-assert 'Saved recovery context:' in prompt
-assert 'Never repeat a write while its effect remains unknown.' in prompt
-"""
-        with tempfile.TemporaryDirectory() as directory:
-            environment = dict(os.environ, PYTHONPATH=directory)
-            subprocess.run([sys.executable, '-c', program, str(worker_directory)],
-                cwd=directory, env=environment, check=True, capture_output=True, text=True)

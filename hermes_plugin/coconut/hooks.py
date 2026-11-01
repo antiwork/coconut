@@ -5,9 +5,8 @@ from a root session ID and records the newest session as the tip in the `state_m
 (backend/coconut/native_conversation.py, TIP_KEY). Before the gateway runs a Coconut turn, `join_conversation` points
 the gateway session of the chat at that same tip with the session store that the `pre_gateway_dispatch` hook receives.
 When the bot has no conversation for this root yet, the gateway session becomes the tip: a new session when the chat's
-session holds an earlier conversation, for example after a restart of the bots. Both runtimes then write to the same
-session, and each follows the compression lineage of Hermes from it, so a worker turn and a gateway turn see the same
-history.
+session holds an earlier conversation, for example after a restart of the bots. Each turn then writes to the same
+session and follows the compression lineage of Hermes from it, so the turns of a chat see the same history.
 
 Cron runs. A cron run of the gateway in a bot's profile reports to a Coconut turn through the session hooks
 (cron.py).

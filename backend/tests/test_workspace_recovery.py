@@ -6,7 +6,6 @@ disposable fixtures. No installed service state or model credentials are used.
 import copy
 import hashlib
 import http.client
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import sqlite3
@@ -21,7 +20,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from coconut.providers import FixtureProvider, HermesProvider
+from coconut.providers import FixtureProvider
 from coconut.server import APIServer
 from coconut.service import Service, ServiceError
 from coconut.work_workspace import acquire, git, preferred
@@ -1271,17 +1270,18 @@ print(identity)
         self.assertFalse(self.service.restart_pending)
         self.assertIsNone(self.service.restart_deadline)
 
-    def test_request_serializes_with_real_native_preparation(self):
+    def test_request_serializes_with_a_real_native_claim(self):
         other = self.write('/v1/bots/' + self.bot['id'] + '/messages', {'text': 'Already accepted work'})
         entered, release = threading.Event(), threading.Event()
         self.provider.release.clear()
-        prepare = self.provider.prepare_kanban_worker
-        def preparing(*args):
+        # The claim starts its placeholder process while the native pass holds the claim.
+        hold = self.service.start_gateway_holder
+        def holding(*args):
             entered.set()
             if not release.wait(10):
-                raise AssertionError('Preparation was not released')
-            return prepare(*args)
-        self.provider.prepare_kanban_worker = preparing
+                raise AssertionError('The claim was not released')
+            return hold(*args)
+        self.service.start_gateway_holder = holding
         tick = threading.Thread(target=self.service._dispatch_pending)
         tick.start()
         self.addCleanup(lambda: (release.set(), self.provider.release.set(), tick.join(15)))
@@ -1829,19 +1829,6 @@ print(parent)
         self.service._dispatch_pending()
         self.assertEqual(self.program('print(board.kb.get_task(board.conn, sys.argv[2]).worker_pid)', self.native_id), str(os.getpid()))
 
-    def test_unrecorded_worker_from_older_source_blocks_startup(self):
-        old = self.root / 'old-source' / 'hermes_worker.py'
-        old.parent.mkdir()
-        old.write_text('import time\ntime.sleep(90)\n')
-        process = subprocess.Popen([sys.executable, str(old)], env=dict(os.environ,
-            HERMES_HOME=str(self.data / 'bots' / self.bot['id'] / 'home')))  # A worker of an earlier version.
-        self.addCleanup(lambda: (process.terminate(), process.wait(timeout=5)))
-        self.assertEqual(self.request()[0], 200)
-        self.restart()
-        self.assertEqual(self.receipt()['state'], 'held')
-        self.assertIsNone(process.poll())
-        self.assertEqual(self.manifest.read_bytes(), self.before)
-
     def test_repair_does_not_answer_pending_native_approval(self):
         from coconut.service import YieldForDecision
         task = self.service._get('tasks', self.task['id'])
@@ -1858,110 +1845,6 @@ print(parent)
         self.assertEqual(self.http(self.receipt()['resume_path'], {'text': 'Continue without answering approval'})[0], 409)
         self.assertEqual(self.service._all('decisions'), decisions)
         self.assertEqual(self.provider.started, [])
-
-    def test_original_task_reaches_real_provider_preferred_path_and_native_completion(self):
-        calls = []
-        class Model(BaseHTTPRequestHandler):
-            def log_message(self, *_):
-                pass
-
-            def do_POST(self):
-                request = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                if 'messages' not in request:
-                    self.send_error(400, 'This fixture supports chat completions.')
-                    return
-                calls.append(request)
-                tools = [m for m in request['messages'] if m['role'] == 'tool']
-                if not tools:
-                    function = dict(name='kanban_complete', arguments=json.dumps({'summary': 'Verified retained local result.'}))
-                    offered = {t.get('function', t).get('name') for t in request.get('tools', [])}
-                    if function['name'] not in offered:
-                        function = dict(name='tool_call', arguments=json.dumps({'calls': [dict(name='kanban_complete', arguments={'summary': 'Verified retained local result.'})]}))
-                    message = dict(role='assistant', content=None, tool_calls=[dict(id='call_fixture', type='function', function=function)])
-                else:
-                    message = dict(role='assistant', content='The retained result is verified.')
-                response = dict(id='fixture', object='chat.completion', created=int(time.time()), model='local-fixture',
-                    choices=[dict(index=0, message=message, finish_reason='tool_calls' if not tools else 'stop')],
-                    usage=dict(prompt_tokens=1, completion_tokens=1, total_tokens=2))
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/event-stream' if request.get('stream') else 'application/json')
-                self.end_headers()
-                if request.get('stream'):
-                    if message.get('tool_calls'):
-                        message['tool_calls'][0]['index'] = 0
-                    response['choices'][0]['delta'] = response['choices'][0].pop('message')
-                    self.wfile.write(('data: ' + json.dumps(response) + '\n\ndata: [DONE]\n\n').encode())
-                else:
-                    self.wfile.write(json.dumps(response).encode())
-
-        model = ThreadingHTTPServer(('127.0.0.1', 0), Model)
-        thread = threading.Thread(target=model.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(lambda: (model.shutdown(), model.server_close(), thread.join()))
-        address = f'http://127.0.0.1:{model.server_port}/v1'
-        class Catalog:
-            root = self.root / 'model-default'
-            def resolve_runtime(self, *_, **__):
-                return dict(provider='custom', api_mode='chat_completions', base_url=address, api_key='synthetic-local')
-            def worker_limit(self):
-                return None
-        Catalog.root.mkdir()
-        (Catalog.root / 'config.yaml').write_text('{}')
-        class Provider(HermesProvider):
-            def migrate_model_default(self, *_): pass
-            def subscribe_model_catalog(self, *_): pass
-            def native_settings(self, *_args, **_kwargs): return {'routines': []}
-            def observe_bot(self, bot): return bot
-            def model_catalog(self): return {'default': self.resolve_task_model({}, {}), 'models': []}
-            def resolve_model(self, bot, catalog=None): return self.resolve_task_model(bot, {})
-            def resolve_task_model(self, bot, task):
-                return dict(model='local-fixture', provider='custom', base_url=address, reasoning_effort=None)
-            def environment(self, bot_id):
-                env, cwd = super().environment(bot_id)
-                env['PYTHONDONTWRITEBYTECODE'] = '1'
-                for key in ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY'):
-                    env.pop(key, None)
-                return env, cwd
-
-        # The operator can request recovery even though the original worker has
-        # never started. The branch guard itself remains unmodified.
-        self.assertEqual(self.request()[0], 200)
-        self.service._dispatch_pending()
-        with self.assertRaises(KeyboardInterrupt):
-            self.server.service_actions()
-        self.restart(Provider(self.data, python=hermes_env.PYTHON, hermes_root=Path(hermes_env.SOURCE), catalog=Catalog()))
-        before = len(self.service._all('tasks'))
-        result = self.write(self.receipt()['resume_path'], {'text': 'Verify the retained result within its original approvals.'})
-        self.assertEqual(result['id'], self.task['id'])
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline:
-            self.service._dispatch_pending()
-            if self.service.kanban.tasks[self.task['id']]['status'] == 'done':
-                break
-        self.assertEqual(self.service.kanban.tasks[self.task['id']]['status'], 'done', self.service._get('tasks', self.task['id']))
-        self.assertTrue(calls)
-        self.assertEqual(len(self.service._all('tasks')), before)
-        self.assertEqual(self.service.kanban.tasks[self.task['id']]['id'], self.native_id)
-        self.assertEqual(self.service.kanban.tasks[self.task['id']]['workspace_path'], str(self.workspace))
-        self.assertEqual((self.workspace / 'retained.patch').read_text(), 'Original approved Gumroad patch fixture\n')
-        runtime = self.provider._kanban_runtimes[self.native_id]
-        env, cwd = self.provider._runtime_envs[runtime]
-        self.assertEqual(cwd, self.workspace)
-        self.assertEqual(env['HOME'], os.environ['HOME'])
-        self.assertEqual(env['HERMES_HOME'], str(self.service.profiles.home(self.bot)))
-        # Tools use the Mac account folders. A profile .env can still select its own.
-        self.assertNotIn('CODEX_HOME', env)
-        self.assertNotIn('CLAUDE_CONFIG_DIR', env)
-        for worker in self.service.running.values():
-            worker.join(5)
-        # A real cached native runtime can drain without being killed to prove
-        # quiescence. Its native resource probe must positively report idle.
-        git(self.workspace, 'branch', '-m', 'second-reviewed-branch')
-        self.payload.update(old_branch='reviewed-local-branch', new_branch='second-reviewed-branch')
-        self.key = str(uuid4())
-        self.assertEqual(self.request()[0], 200)
-        self.assertTrue(self.service.take_service_restart(), self.receipt())
-        self.assertIsNone(runtime.poll())
 
 
 if __name__ == '__main__':

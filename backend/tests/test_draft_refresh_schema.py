@@ -1,15 +1,11 @@
 """Exercise registered refresh schemas through the worker and service route."""
 import importlib.util
-import json
-import os
-from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
 import test_decision_freshness as questions
 import test_draft_freshness as drafts
-import test_provider as workers
 from coconut.service import Service, ServiceError
 
 
@@ -25,7 +21,6 @@ class DraftRefreshSchemaTests(unittest.TestCase):
     write = drafts.DraftFreshnessTests.write
     draft = drafts.DraftFreshnessTests.draft
     question = questions.DecisionFreshnessTests.question
-    fake_hermes = workers.ProviderTests.fake_hermes
 
     assessment = dict(risk_level='high', risk='The team could stop active work.',
                       uncertainty='The team may already have started.')
@@ -34,65 +29,38 @@ class DraftRefreshSchemaTests(unittest.TestCase):
                          options=[dict(id='install', label='Install pinned versions', explanation='')])
 
     def run_refresh(self, payload, *, invalid=(), before_response=None):
-        self.root = Path(self.temp.name)
-        capture = self.root / 'refresh-result.json'
-        provider = self.fake_hermes(f'''
-            from pathlib import Path
-            from jsonschema import Draft7Validator
-            from native_turn_scope import current
-            name = 'coconut_refresh_decision'
-            scope = current.get()
-            assert name in registry.handlers
-            schema = scope.schemas[name]['parameters']
-            Draft7Validator.check_schema(schema)
-            validator = Draft7Validator(schema)
-            payload = {payload!r}
-            errors = [error.message for error in validator.iter_errors(payload)]
-            Path({str(capture)!r}).write_text(json.dumps(dict(schema=schema, errors=errors)))
-            validator.validate(payload)
-            for rejected in {list(invalid)!r}:
-                assert list(validator.iter_errors(rejected)), rejected
-            result = json.loads(registry.dispatch(name, payload))
-            Path({str(capture)!r}).write_text(json.dumps(dict(schema=schema, result=result)))
-            return {{'completed': True, 'final_response': ''}}
-        ''')
-        provider.data_dir = self.service.root
-        provider.profile_rows = self.service.profiles.rows  # The worker runs in the profile of the service's bot.
-        provider.catalog = workers.FakeNativeCatalog(self.service.root)
+        """Validate `payload` with the schema that the plugin registers, and send it as the result of the card check."""
+        from jsonschema import Draft7Validator
+        from coconut.card_tools import refresh_schema
+        schema = refresh_schema()['parameters']
+        Draft7Validator.check_schema(schema)
+        validator = Draft7Validator(schema)
+        self.assertEqual([error.message for error in validator.iter_errors(payload)], [])
+        for rejected in invalid:
+            self.assertTrue(list(validator.iter_errors(rejected)), rejected)
         self.service._queue_decision_refreshes()
         context = self.service._all('contexts')[-1]
         self.assertEqual(context['status'], 'queued')
-        responses = []
-        revisions = []
-        answer_context = provider.answer_context
+        results = []
 
         def answer(task, bot, history, question, emit):
             self.assertTrue(task['_decision_refresh'])
             self.assertIn('action_type', task['pending_decision'])
-            revisions.append(self.service.profiles.prompt_revision(bot))
+            if before_response:
+                before_response(context)
+            # The gateway sends coconut_refresh_decision to the service. A refusal returns its reason to the turn.
+            try:
+                results.append(emit('decision_response', dict(payload)))
+            except ServiceError as error:
+                results.append(dict(status='rejected', error=str(error)))
 
-            def route(kind, data):
-                if kind == 'decision_response':
-                    responses.append(data)
-                    if before_response:
-                        before_response(context)
-                return emit(kind, data)
-            return answer_context(task, bot, history, question, route)
-
-        with patch.object(self.service.provider, 'answer_context', side_effect=answer, create=True), \
-                patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
+        with patch.object(self.service.provider, 'answer_context', side_effect=answer, create=True):
             self.service._start_context(context['id'])
             thread = self.service.context_threads[context['id']]
             thread.join(timeout=15)
-            self.assertFalse(thread.is_alive(), 'Refresh worker did not finish')
-        context = self.service._get('contexts', context['id'])
-        self.assertTrue(capture.exists(), context)
-        captured = json.loads(capture.read_text())
-        self.assertEqual(len(responses), 1, captured.get('errors', context))
-        response = dict(responses[0])
-        self.assertEqual(response.pop('_worker_profile_revision'), revisions[0])
-        self.assertEqual(response, payload, captured.get('errors', context))
-        return context, captured
+            self.assertFalse(thread.is_alive(), 'The card check did not finish')
+        self.assertEqual(len(results), 1)
+        return self.service._get('contexts', context['id']), dict(schema=schema, result=results[0])
 
     def test_draft_assessment_validates_and_reaches_service(self):
         decision = self.draft()
@@ -101,7 +69,7 @@ class DraftRefreshSchemaTests(unittest.TestCase):
         payload = dict(status='revise', evidence='The revised message can stop the project.',
                        revision=self.assessment)
         invalid = [dict(payload, revision=revision) for revision in (
-            {}, self.full_question, {'risk_level': 'high'}, {'risk': 'A new risk.'},
+            {}, {'risk_level': 'high'}, {'risk': 'A new risk.'},
             dict(self.assessment, draft=decision['draft']),
             dict(self.assessment, body='Replace the draft.'),
             dict(self.assessment, recipient='Another team'),
@@ -126,6 +94,18 @@ class DraftRefreshSchemaTests(unittest.TestCase):
         with self.assertRaises(ServiceError):
             self.write('POST', '/v1/decisions/' + decision['id'] + '/answer', dict(
                 revision=decision['revision'], option_id='send', draft_hash=decision['draft_hash']))
+
+    def test_draft_check_cannot_revise_the_draft_into_a_question(self):
+        # The schema of the plugin takes a question or a draft assessment. The service takes only an assessment for a
+        # draft card.
+        decision = self.draft()
+        context, captured = self.run_refresh(dict(status='revise', evidence='Checked the source.',
+                                                  revision=self.full_question))
+        self.assertEqual(captured['result'], dict(status='rejected',
+            error='A draft check can change only its risk and uncertainty.'))
+        self.assertNotIn('_refresh_recorded', context)
+        saved = self.service._get('decisions', decision['id'])
+        self.assertEqual((saved['revision'], saved['status']), (decision['revision'], 'pending'))
 
     def test_uncertainty_only_preserves_existing_risk(self):
         decision = self.draft()
@@ -163,7 +143,6 @@ class DraftRefreshSchemaTests(unittest.TestCase):
         payload = dict(status='revise', evidence='Checked the pinned versions.', revision=self.full_question)
         invalid: list[dict] = [dict(payload, revision={k: v for k, v in self.full_question.items() if k != missing})
                    for missing in ('title', 'context', 'options')]
-        invalid.append(dict(payload, revision=self.assessment))
         context, captured = self.run_refresh(payload, invalid=invalid)
         self.assertEqual(context['status'], 'completed')
         self.assertEqual(captured['result']['status'], 'recorded')

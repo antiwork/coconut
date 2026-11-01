@@ -1,5 +1,4 @@
 import time
-from datetime import datetime, timezone
 import json
 import unittest
 from unittest.mock import patch
@@ -74,7 +73,7 @@ class WorkSourceRetryTests(unittest.TestCase):
         prompts = []
 
         def start(task, bot, history, emit):
-            prompt = fixtures.conversation_input(dict(operation='start', task=task, history=history))
+            prompt = fixtures.turn_input(dict(operation='start', task=task, history=history))
             prompts.append(prompt)
             saved = json.loads((self.root / 'coverage.json').read_text())
             saved[self.item['id']]['task_ids'] = [task['id']]
@@ -141,25 +140,6 @@ class WorkSourceRetryTests(unittest.TestCase):
             self.assertEqual(self.audit()['task_id'], first)
             with self.service.transaction():
                 self.service._put('decisions', dict(id='card', task_id=child['id'], status='executed'))
-            self.assertNotEqual(self.audit()['task_id'], first)
-
-    def test_process_receipt_wait_preserves_running_and_saved_results(self):
-        first = self.audit()['task_id']
-        self.finish(first, 'waiting')
-        process = dict(id='process', task_id='other-task', state='completed', action={'name': 'terminal'},
-                       result={'session_id': 'process-one', 'notify_on_complete': True},
-                       _process_status='running', _process_observed_at=datetime.now(timezone.utc).isoformat())
-        with self.service.transaction():
-            self.service._put('native_receipts', process)
-            self.service._put('native_receipts', dict(id='wait', task_id=first, state='completed',
-                action={'name': 'coconut_wait'}, _wait_process_receipt='process'))
-        with patch('coconut.work_sources.time.time', return_value=time.time() + 4000):
-            self.assertEqual(self.audit()['task_id'], first)
-            process.update(_process_status='exited', _completion_text='Evidence returned')
-            self.service._put('native_receipts', process)
-            self.assertEqual(self.audit()['task_id'], first)
-            process['_process_delivery'] = 'consumed'
-            self.service._put('native_receipts', process)
             self.assertNotEqual(self.audit()['task_id'], first)
 
 

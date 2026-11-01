@@ -4,7 +4,6 @@ import hashlib
 import json
 from contextlib import contextmanager
 from pathlib import Path
-from uuid import uuid4
 
 
 def runs_directory(home):
@@ -110,39 +109,6 @@ def completed(home, identity, owner, jobs, provenance=None):
 
 def continuation_id(identity):
     return 'continuing-' + hashlib.sha256(identity.encode()).hexdigest()
-
-
-@contextmanager
-def continued_failure(home, identity, owner, jobs, provenance, continuation):
-    """Reserve a closed occurrence until this exact tool scope has unwound."""
-    expected = dict(job_id=identity, owner=owner, success=False)
-    reservation = dict(completion=expected, continuation=continuation)
-    token = str(uuid4())
-    admitted = False
-    key = continuation_id(identity)
-    with locked(home, identity):
-        with jobs._fire_job_lock(identity) as acquired:
-            if acquired:
-                job = jobs.get_job(identity) or {}
-                confirmed = (provenance == dict(expected, native_confirmed=True)
-                             or read(home, completion_id(identity, owner)) == expected
-                             or job.get('_coconut_completion') == expected)
-                pending = read(home, key)
-                if (confirmed and not job.get('fire_claim')
-                        and all(value == reservation for value in pending.values())):
-                    save(home, key, dict(pending, **{token: reservation}))
-                    admitted = True
-    # Never retain native or receipt locks across a service receipt. A process
-    # death leaves the reservation fenced rather than guessing that tools stopped.
-    try:
-        yield admitted
-    finally:
-        if admitted:
-            with locked(home, identity):
-                pending = read(home, key)
-                if pending.get(token) == reservation:
-                    del pending[token]
-                    save(home, key, pending)
 
 
 def finish(home, identity, jobs, *, owner, success, output='', failure=None):

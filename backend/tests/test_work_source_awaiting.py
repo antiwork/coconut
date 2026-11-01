@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
-from coconut.hermes_worker import conversation_input
+from turn_text import turn_input
 from coconut.providers import FixtureProvider
 from coconut.service import Service
 from coconut.work_sources import ANSWER_STEPS, awaiting_user, card_answer_steps, coverage
@@ -182,10 +182,10 @@ class AwaitingAuditTests(unittest.TestCase):
         task = dict(task, _source_answer_steps=card_answer_steps(task, question))
         for status in ('approved', 'replied'):
             card = dict(id='card', title='Payout', action_type='question', status=status, correction='Use option B.')
-            prompt, _ = conversation_input(dict(operation='resume', task=task, decision=card, history=[]))
+            prompt, _ = turn_input(dict(operation='resume', task=task, decision=card, history=[]))
             self.assertIn('This card asks about a source that waits for the person. ' + ANSWER_STEPS, prompt)
         card = dict(id='card', title='Payout', action_type='question', status='modified', correction='Ask again.')
-        prompt, _ = conversation_input(dict(operation='resume', task=task, decision=card, history=[]))
+        prompt, _ = turn_input(dict(operation='resume', task=task, decision=card, history=[]))
         self.assertNotIn(ANSWER_STEPS, prompt)
 
     def test_no_label_waits_for_the_person_unless_the_source_names_one(self):

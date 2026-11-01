@@ -251,15 +251,15 @@ class WorkQueuePositionTests(unittest.TestCase):
         card = self.service.snapshot()['decisions'][0]
         self.assertEqual(card['status'], 'resolved')
         self.assertEqual(card['outcome'], 'Work cancelled.')
-        from coconut.hermes_worker import conversation_input
-        prompt, _ = conversation_input(dict(operation='resume', task=self.task, decision=card, history=[]))
+        from turn_text import turn_input
+        prompt, _ = turn_input(dict(operation='resume', task=self.task, decision=card, history=[]))
         self.assertIn('Do not execute the cancelled action', prompt)
         self.assertNotIn('GitHub confirms', prompt)
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'queued')
 
     def test_shared_unlinked_decision_is_rechecked_after_work_scope_changes(self):
         from coconut.service import YieldForDecision
-        from coconut.hermes_worker import conversation_input
+        from turn_text import turn_input
         first = self.track()
         second = self.track(key='second', title='Export a second account')
         try:
@@ -275,7 +275,7 @@ class WorkQueuePositionTests(unittest.TestCase):
         rows = {a['id']:a for a in self.service.snapshot()['artifacts']}
         self.assertEqual(rows[first['id']]['work_state'], 'cancelled')
         self.assertEqual(rows[second['id']]['work_state'], 'queued')
-        prompt, _ = conversation_input(dict(operation='resume', task=self.task, decision=card, history=[]))
+        prompt, _ = turn_input(dict(operation='resume', task=self.task, decision=card, history=[]))
         self.assertIn('Continue the other requested work', prompt)
         self.assertIn('Withdrawal is not approval', prompt)
 

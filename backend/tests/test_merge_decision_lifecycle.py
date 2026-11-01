@@ -128,37 +128,13 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
         self.assertEqual(decision['status'], 'pending')
         self.assertIn(review['task_id'], self.service._get('tasks', task['id'])['_waiting_on'])
 
-    def test_merge_card_can_follow_the_returned_process_review(self):
-        receipt = self.emit(self.task['id'], 'native_call',
-            dict(name='terminal', arguments={'background': True}))
-        self.emit(self.task['id'], 'native_result', dict(id=receipt['id'],
-            result=json.dumps({'session_id': 'proc_review', 'notify_on_complete': True, 'status': 'running'})))
-        with self.assertRaisesRegex(ServiceError, 'pending worker'):
-            self.question(merge_pr_url=URL)
-        task = self.service._get('tasks', self.task['id'])
-        task['status'] = 'waiting'
-        self.service._put('tasks', task)
-        record = self.service._get('native_receipts', receipt['id'])
-        with self.service.transaction():
-            self.service._resume_process_task(task['id'], [(record, 'The review passed.')])
-        task = self.service._get('tasks', task['id'])
-        self.assertTrue(task['_background_completion'])
-        task['status'] = 'working'
-        self.service._put('tasks', task)
-        decision, _ = self.question(merge_pr_url=URL)
-        self.assertEqual(decision['status'], 'pending')
-
     def test_merge_request_does_not_wait_for_its_own_card(self):
         coordinator = self.write('/v1/bots', {'name': 'Coordinator', 'role': ''})
         owner = self.task
         request = self.service._store_bot_message(owner['id'],
             dict(target_bot_id=coordinator['id'], text='The review passed. Offer the merge decision.',
-                 require_response=True, native_envelope_id=uuid4().hex))
-        receipt = self.emit(owner['id'], 'native_call', dict(name='send_message', arguments={}))
+                 require_response=True))
         with self.service.transaction():
-            record = self.service._get('native_receipts', receipt['id'])
-            record.update(state='completed', _relay_task_id=request['task_id'])
-            self.service._put('native_receipts', record)
             task = self.service._get('tasks', request['task_id'])
             task['status'] = 'working'
             self.service._put('tasks', task)
@@ -173,19 +149,9 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
             parent = self.service._get('tasks', owner['id'])
             parent['_waiting_on'].remove(other['task_id'])
             self.service._put('tasks', parent)
-        process = self.emit(owner['id'], 'native_call', dict(name='terminal', arguments={}))
-        self.emit(owner['id'], 'native_result', dict(id=process['id'],
-            result=json.dumps(dict(session_id='independent-review', notify_on_complete=True))))
-        with self.assertRaisesRegex(ServiceError, 'pending worker'):
-            self.question(merge_pr_url=URL)
-        with self.service.transaction():
-            record = self.service._get('native_receipts', process['id'])
-            record['_process_delivery'] = 'consumed'
-            self.service._put('native_receipts', record)
         decision, _ = self.question(merge_pr_url=URL)
         self.assertEqual(decision['status'], 'pending')
         self.assertIn(task['id'], self.service._get('tasks', owner['id'])['_waiting_on'])
-        self.assertNotIn('_process_delivery', self.service._get('native_receipts', receipt['id']))
 
     def test_cancelled_review_dependencies_do_not_block_the_current_review(self):
         old = self.service._get('tasks', self.task['id'])

@@ -2,7 +2,6 @@ import json
 import unittest
 from uuid import uuid4
 
-from coconut.service import now
 import test_service_pr as fixtures
 import legacy_work_sync
 
@@ -25,49 +24,31 @@ class WorkFollowupTests(unittest.TestCase):
         self.callback = dict(self.root, id=str(uuid4()), status='completed')
         self.followup = dict(self.root, id=str(uuid4()), _native_turn_id='fix-turn',
                              _requester_reply_task_id=self.callback['id'])
-        self.relay = dict(id=str(uuid4()), task_id=self.root['id'],
-                          _relay_task_id=self.callback['id'], state='completed',
-                          action={'name': 'coconut_message_bot'}, result='{}')
-        self.process = dict(id=str(uuid4()), task_id=self.followup['id'],
-                            action={'name': 'terminal'}, state='completed',
-                            result=json.dumps(dict(session_id='fix-process', notify_on_complete=True)),
-                            turn_id='fix-turn', _process_status='running', _process_observed_at=now())
+        # The root waits for the callback (coconut_wait).
+        self.wait = dict(id=str(uuid4()), task_id=self.root['id'],
+                         _wait_task_id=self.callback['id'], _wait_session_id=self.root['session_id'],
+                         state='completed', action={'name': 'coconut_wait'}, result='{}')
         with self.service.transaction():
             for task in (self.root, self.callback, self.followup):
                 self.service._put('tasks', task)
-            for record in (self.relay, self.process):
-                self.service._put('native_receipts', record)
+            self.service._put('native_receipts', self.wait)
 
     def row(self):
         return self.service.snapshot()['artifacts'][0]
 
+    def running_state(self, task):
+        """The activity state of the Work row while the turn of `task` runs."""
+        import threading
+        self.service.running[task['id']] = threading.current_thread()
+        try:
+            return self.row()['activity_state']
+        finally:
+            self.service.running.clear()
+
     def test_live_followup_without_activity_report(self):
         self.prepare()
-        self.assertEqual(self.row()['activity'], 'Waiting for worker output')
-        self.assertEqual(self.row()['activity_state'], 'working')
+        self.assertEqual(self.running_state(self.followup), 'working')
         self.assertEqual(self.service._tracked_work_input(self.followup), [fixtures.URL])
-
-    def test_original_process_without_activity_report(self):
-        self.prepare()
-        self.process.update(task_id=self.root['id'], turn_id='review-turn')
-        with self.service.transaction():
-            self.service._put('native_receipts', self.process)
-        self.assertEqual(self.row()['activity'], 'Waiting for worker output')
-
-    def test_stale_and_delivered_processes_are_not_live(self):
-        self.prepare()
-        for change in ({'_process_observed_at': '2000-01-01T00:00:00Z'},
-                       {'_process_delivery': 'delivered'}):
-            with self.subTest(change=change):
-                with self.service.transaction():
-                    self.service._put('native_receipts', dict(self.process, **change))
-                self.assertNotEqual(self.row()['activity_state'], 'working')
-
-    def test_live_process_survives_a_later_turn(self):
-        self.prepare()
-        self.process['turn_id'] = 'previous-turn'
-        self.service._put('native_receipts', self.process)
-        self.assertEqual(self.row()['activity_state'], 'working')
 
     def test_unrelated_and_reset_tasks_do_not_supply_activity_or_context(self):
         self.prepare()
@@ -85,19 +66,17 @@ class WorkFollowupTests(unittest.TestCase):
         self.followup['_waiting_on'] = [self.root['id']]
         with self.service.transaction():
             self.service._put('tasks', self.followup)
-        self.assertEqual(self.row()['activity'], 'Waiting for worker output')
+        self.assertEqual(self.running_state(self.followup), 'working')
 
     def test_completed_followup_needs_outcome_evidence(self):
         self.prepare()
         self.root['status'] = 'completed'
         self.followup['status'] = 'completed'
-        self.process['_process_delivery'] = 'delivered'
-        self.relay['_process_delivery'] = 'delivered'
+        self.wait['_process_delivery'] = 'delivered'
         with self.service.transaction():
-            self.service._put('native_receipts', self.relay)
+            self.service._put('native_receipts', self.wait)
             self.service._put('tasks', self.root)
             self.service._put('tasks', self.followup)
-            self.service._put('native_receipts', self.process)
         self.assertEqual(self.row()['work_state'], 'needs_recovery')
 
     def test_new_queued_task_has_no_epoch_until_execution(self):

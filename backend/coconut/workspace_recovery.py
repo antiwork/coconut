@@ -58,7 +58,7 @@ def lifecycle_homes(root):
             yield home
 
 
-def check_writers(root, allowed=()):
+def check_writers(root):
     """Read before native orphan recovery, which may otherwise erase evidence."""
     database = root / 'kanban' / 'kanban.db'
     if database.is_symlink() or not database.is_file():
@@ -115,32 +115,6 @@ def check_writers(root, allowed=()):
             # or treat an absent wrapper/group as evidence that it is empty.
             if entry.get('systemd_unit', '') != '':
                 raise ValueError('A background systemd scope requires quiescence inspection.')
-    listing = subprocess.run(['ps', '-axo', 'pid=,command='], capture_output=True, text=True,
-                             timeout=10, check=True).stdout
-    script = str(Path(__file__).with_name('hermes_worker.py'))
-    for line in listing.splitlines():
-        fields = line.strip().split(None, 1)
-        if len(fields) != 2 or 'hermes_worker.py' not in fields[1]:
-            continue
-        pid = int(fields[0])
-        if pid in allowed:
-            continue
-        # Also recognize workers from an earlier installed source location. Read
-        # environment only into memory; never log it or read profile credentials.
-        result = subprocess.run(['ps', 'eww', '-p', str(pid), '-o', 'command='],
-                                capture_output=True, text=True, timeout=10)
-        if result.returncode:
-            if alive(pid):
-                raise ValueError('An orphan worker cannot be inspected.')
-            continue
-        # A bot's HERMES_HOME is a Hermes profile that the person's own processes share. COCONUT_DATA_DIR marks a worker.
-        if (f'COCONUT_WORKSPACE_ROOT={root}/workspaces ' in result.stdout + ' '
-                or f'COCONUT_PROCESS_HOME={root}/runtimes/' in result.stdout
-                or f'COCONUT_DATA_DIR={root} ' in result.stdout + ' '
-                or f'HERMES_HOME={root}/bots/' in result.stdout):
-            raise ValueError('An unaccounted Coconut worker requires inspection.')
-        if script in fields[1] and not any(marker in result.stdout for marker in ('COCONUT_WORKSPACE_ROOT=', 'COCONUT_DATA_DIR=', 'HERMES_HOME=')):
-            raise ValueError('An unscoped Coconut worker requires inspection.')
 
 
 @contextlib.contextmanager
@@ -649,15 +623,10 @@ class WorkspaceRecovery:
     def _pending_workspace_recovery(self):
         return next((r for r in self._all('workspace_recoveries') if r['state'] in ('draining', 'held', 'admitting')), None)
 
-    def _check_recovery_writers(self, *, startup=False):
+    def _check_recovery_writers(self):
         if any(self._background_pending(task['id']) for task in self._all('tasks')):
             raise ValueError('A background completion is pending; inspect its writer before recovery.')
-        allowed = ()
-        if not startup:
-            probe = getattr(self.provider, 'workspace_recovery_idle_pids', None)
-            if probe:
-                allowed = probe()
-        check_writers(self.root, allowed)
+        check_writers(self.root)
 
     def _refuse_workspace_recovery(self, receipt, error):
         with self.transaction():
@@ -670,7 +639,7 @@ class WorkspaceRecovery:
         from .service import ServiceError
         request = receipt['request']
         try:
-            self._check_recovery_writers(startup=True)
+            self._check_recovery_writers()
             scope = self._checkout_scope(request)
             self._check_checkout_consent(receipt, scope)
             if (scope['scope'] != receipt['task_scope'] or scope['task'] != receipt['task_input']
@@ -742,7 +711,7 @@ class WorkspaceRecovery:
         if not receipt or 'merge_commit' not in receipt or receipt['state'] != 'admitting':
             return
         try:
-            self._check_recovery_writers(startup=True)
+            self._check_recovery_writers()
             request = receipt['request']
             with workspace_lock(self.root):
                 manifest = self.root / 'workspaces' / 'worktrees.json'
@@ -800,7 +769,7 @@ class WorkspaceRecovery:
             self._recover_checkout_binding(receipt)
             return
         try:
-            self._check_recovery_writers(startup=True)
+            self._check_recovery_writers()
             if self._recovery_task_scope(receipt['request']) != receipt['task_scope']:
                 raise ValueError('The authorized task input changed before repair.')
             with workspace_lock(self.root):

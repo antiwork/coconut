@@ -1,10 +1,6 @@
-import json
-import os
 import unittest
-from unittest.mock import patch
 
 import test_message_drafts as drafts
-import test_provider as providers
 from coconut.service import ServiceError, YieldForDecision
 
 
@@ -16,7 +12,6 @@ class DecisionCallRecoveryTests(unittest.TestCase):
     event = drafts.MessageDraftTests.event
     draft = drafts.MessageDraftTests.draft
     answer = drafts.MessageDraftTests.answer
-    fake_hermes = providers.ProviderTests.fake_hermes
 
     def question(self, previous):
         return dict(title='Proceed to the next step?', context='The earlier step has its own approval.',
@@ -56,7 +51,7 @@ class DecisionCallRecoveryTests(unittest.TestCase):
         self.assertEqual(draft['status'], 'pending')
 
     def test_draft_schema_requires_explicit_followup_link(self):
-        from coconut.native_bridge import SUGGEST_SCHEMA
+        from coconut.card_tools import SUGGEST_SCHEMA
         description = SUGGEST_SCHEMA['parameters']['properties']['previous_decision_id']['description']
         self.assertIn('For a draft, always supply previous_decision_id', description)
         self.assertIn('unrelated drafts must omit it', description)
@@ -89,26 +84,6 @@ class DecisionCallRecoveryTests(unittest.TestCase):
         self.assertEqual(len(self.service._all('decisions')), 1)
         self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'working')
 
-    def test_invalid_link_is_corrected_in_the_same_worker_turn(self):
-        provider = self.fake_hermes('''
-            args = {'title': 'Continue?', 'context': 'One new choice.',
-                    'previous_decision_id': 'missing', 'options': [{'id': 'yes', 'label': 'Yes'}]}
-            result = json.loads(registry.dispatch('coconut_ask', args))
-            assert result['status'] == 'validation_failed', result
-            assert 'error' in result
-            del args['previous_decision_id']
-            registry.dispatch('coconut_ask', args)
-            raise AssertionError('Accepted decisions must stop the tool batch')
-        ''')
-        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            with self.assertRaises(YieldForDecision):
-                provider.start_task(self.task, self.bot, [], self.event)
-        decisions = self.service._all('decisions')
-        self.assertEqual(len(decisions), 1)
-        self.assertEqual(decisions[0]['status'], 'pending')
-        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'needs_you')
-        self.assertFalse(any('Work stopped:' in m['text'] for m in self.service._all('messages')))
-
     def test_restart_collapses_old_link_failures_and_keeps_other_messages(self):
         text = 'Work stopped: Link an answered question from this conversation.'
         with self.service.transaction():
@@ -125,19 +100,6 @@ class DecisionCallRecoveryTests(unittest.TestCase):
         self.assertEqual(sum(m['text'] == text for m in self.service._all('messages')), 4)
         self.restart()
         self.assertEqual(self.service.snapshot()['messages'], messages)
-
-    def test_invalid_suggestion_returns_rejection_without_creating_a_card(self):
-        provider = self.fake_hermes('''
-            result = json.loads(registry.dispatch('coconut_suggest', {
-                'key': 'next', 'title': 'Continue?', 'context': 'A new choice.',
-                'previous_decision_id': 'missing', 'options': [{'id': 'yes', 'label': 'Yes'}]}))
-            assert result['status'] == 'rejected', result
-            return {'completed': True, 'final_response': 'I can correct that link.'}
-        ''')
-        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], self.event)
-        self.assertEqual(self.service._all('decisions'), [])
-        self.assertEqual(self.service._get('tasks', self.task['id'])['status'], 'completed')
 
 
 if __name__ == '__main__':

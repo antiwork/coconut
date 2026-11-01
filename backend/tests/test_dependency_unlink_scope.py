@@ -85,7 +85,7 @@ class DependencyUnlinkScopeTests(unittest.TestCase):
             self.unlink(source)
         self.assertEqual(self.requests, [])
 
-    def test_related_background_and_both_undelivered_return_shapes_block(self):
+    def test_related_background_and_an_undelivered_return_block(self):
         child, parent, source = self.setup_edge()
         helper = self.other(child, _assignment_task_id=child['id'])
         self.service._put('native_receipts', dict(id='wait', task_id=helper['id'], state='completed',
@@ -94,10 +94,9 @@ class DependencyUnlinkScopeTests(unittest.TestCase):
             self.unlink(source)
         self.service._put('native_receipts', dict(id='wait', task_id=helper['id'], state='completed',
                          _process_delivery='consumed', action={'name': 'coconut_wait'}))
-        for key in ('_return_pending', '_native_reply_pending'):
-            self.service._put('tasks', helper | {key: True})
-            with self.subTest(key=key), self.assertRaisesRegex(ServiceError, 'owner work'):
-                self.unlink(source)
+        self.service._put('tasks', helper | {'_return_pending': True})
+        with self.assertRaisesRegex(ServiceError, 'owner work'):
+            self.unlink(source)
         self.service._put('tasks', helper)
         self.assertEqual(self.unlink(source)['status'], 'unlinked')
 

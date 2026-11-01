@@ -3,7 +3,6 @@ import copy
 import json
 import re
 import threading
-import time
 
 ROOT_ID = 'coconut-assignment'
 WORK_INSTRUCTIONS = (
@@ -15,8 +14,7 @@ WORK_INSTRUCTIONS = (
     'Mark work completed only after verifying the outcome. A plan, status reply, or handoff is not completion. '
     'Keep blocked or delegated steps pending. Launch a real process or message_agent handoff before saying work is running or queued. '
     'If another existing task owns the next step, use coconut_wait to record that dependency, then finish this turn. '
-    'Call coconut_wait without arguments to list tasks and processes in this exchange. '
-    'For an existing background process, use process_id to wait for its result without waiting for its owner task. '
+    'Call coconut_wait without arguments to list the tasks and decisions in this exchange. '
     'For an existing human decision in this exchange, use decision_id to wait for its answer without waiting for its owner task. '
     'Do not start a duplicate review or watcher. '
     'Do not add later work outside this assignment to its task list. The completed coconut-assignment item closes this assignment. '
@@ -133,46 +131,6 @@ class WorkProgress:
             return False
         return any(t['status'] in ('pending', 'in_progress') for t in items)
 
-    def _restore_saved_delegation_results(self):
-        """Deliver a saved final result when only an earlier progress reply reached its owner."""
-        with self.transaction():
-            if self.stopping.is_set() or self.restart_pending:
-                return
-            if time.monotonic() < getattr(self, '_saved_return_check_at', 0):
-                return
-            self._saved_return_check_at = time.monotonic() + 60
-            # The kept task map spares a parse of the whole task table under the service lock. Its objects are shared,
-            # so a changed child is a copy.
-            with self._shared_reads():
-                self._restore_saved_results(dict(self._task_map()))
-
-    def _restore_saved_results(self, tasks):
-        from .service import digest, encoded
-        returning = {t['_return_dependency_id'] for t in tasks.values()
-                     if t.get('_return_dependency_id') and t.get('_return_pending')}
-        for parent in tasks.values():
-            if parent['status'] != 'waiting' or not self._process_observation_current(parent, self._get('bots', parent['bot_id'])):
-                continue
-            for identity in parent.get('_waiting_on', []):
-                child = tasks.get(identity)
-                result = child.get('_native_relay_result') if child else None
-                if (not child or child['status'] not in ('completed', 'failed') or not result or not result.get('text')
-                        or result.get('sender_bot_id') != parent['bot_id'] or child.get('_return_pending') or identity in returning
-                        or bool(result.get('failed')) != (child['status'] == 'failed')
-                        or not self._process_observation_current(child, self._get('bots', child['bot_id']))
-                        or (child['status'] == 'completed' and self._unfinished_work(child))
-                        or self._background_pending(child['id'])):
-                    continue
-                owner = tasks.get(child.get('_reply_to_task_id') or child.get('source_task_id'), {})
-                if owner.get('_assignment_task_id', owner.get('id')) != parent['id']:
-                    continue
-                if any(t.get('_resolved_dependency_id') == child['id'] and t.get('_assignment_task_id') == parent['id']
-                       and t['created_at'] >= child.get('_background_return_after', '') for t in tasks.values()):
-                    continue
-                child = tasks[identity] = dict(child, _return_pending=dict(target_bot_id=parent['bot_id'], text=result['text'],
-                    result_status=child['status'], return_id='saved-final:' + digest(encoded(result))))
-                self._put('tasks', child)
-
     def _exchange_peers(self, task):
         """Read tasks in this exchange and the assignment's recorded Work history."""
         tasks = self._task_map()
@@ -238,8 +196,8 @@ class WorkProgress:
             decisions = {d['id']: d for d in (json.loads(row[0]) for row in self.db.execute(
                 "SELECT data FROM decisions WHERE json_extract(data,'$.task_id') IN (SELECT value FROM json_each(?)) ORDER BY rowid",
                 (json.dumps(sorted(process_owners)),)))}
-            if sum(bool(payload.get(key)) for key in ('task_id', 'process_id', 'decision_id')) > 1:
-                raise ServiceError(400, 'Choose one task, process, or decision.')
+            if sum(bool(payload.get(key)) for key in ('task_id', 'decision_id')) > 1:
+                raise ServiceError(400, 'Choose one task or decision.')
             if payload.get('decision_id'):
                 identity = require_text(payload, 'decision_id', 100)
                 reason = require_text(payload, 'reason', 80)
@@ -256,44 +214,9 @@ class WorkProgress:
                         created_at=now(), completed_at=now(), _wait_decision_id=identity,
                         _wait_session_id=process_owners[decision['task_id']]['session_id']))
                 return {'status': 'waiting', 'decision_id': identity, 'reason': reason}
-            from .background_processes import subscription
-            processes = {}
-            maintenance = {c['id'] for c in self._all_shared('contexts') if c.get('_decision_refresh')}
-            for record in (r for identity in process_owners for r in self._native_task_receipts(identity)):
-                process_id = subscription(record)
-                owner = process_owners.get(record['task_id'])
-                if (record.get('turn_id') not in maintenance and process_id and owner and owner['bot_id'] == task['bot_id']
-                        and owner['status'] != 'cancelled' and not self._get('exchanges', owner['exchange_id']).get('cancelled')):
-                    processes[process_id] = record
-            if payload.get('process_id'):
-                process_id = require_text(payload, 'process_id', 100)
-                reason = require_text(payload, 'reason', 80)
-                if payload.get('task_id') or process_id not in processes or '\n' in reason:
-                    raise ServiceError(400, 'Choose one process from this exchange and give one short reason.')
-                source = processes[process_id]
-                identity = digest(json.dumps([task_id, source['id']]))
-                row = self.db.execute('SELECT data FROM native_receipts WHERE id=?', (identity,)).fetchone()
-                existing = json.loads(row[0]) if row else None
-                if source.get('_completion_text') or (existing and existing.get('_process_delivery')):
-                    return {'status': 'completed', 'process_id': process_id,
-                            'result': source.get('_completion_text') or (existing or {}).get('_completion_text', 'The result was already received.')}
-                # The owner's native receipt already registers its completion callback.
-                if source['task_id'] == task_id:
-                    if source.get('_process_delivery'):
-                        return {'status': 'completed', 'process_id': process_id,
-                                'result': 'The process finished, but its saved output is unavailable.'}
-                    return {'status': 'waiting', 'process_id': process_id, 'reason': reason}
-                if not existing:
-                    action = {'name': 'coconut_wait', 'arguments': {'process_id': process_id, 'reason': reason}}
-                    self._put('native_receipts', dict(id=identity, task_id=task_id, turn_id=task.get('_native_turn_id'),
-                        action=action, action_hash=digest(encoded(action)), state='completed', result='{}',
-                        created_at=now(), completed_at=now(), _wait_process_receipt=source['id'],
-                        _wait_session_id=process_owners[source['task_id']]['session_id']))
-                return {'status': 'waiting', 'process_id': process_id, 'reason': reason}
             if not payload.get('task_id'):
                 return {'decisions': [{k: d.get(k) for k in ('id', 'task_id', 'title', 'status')} for d in decisions.values()],
-                        'processes': [{'process_id': identity, 'task_id': r['task_id']} for identity, r in processes.items()], 'tasks': [{k: t.get(k) for k in ('id', 'bot_id', 'title', 'status')}
-                                  for t in peers.values()]}
+                        'tasks': [{k: t.get(k) for k in ('id', 'bot_id', 'title', 'status')} for t in peers.values()]}
             target_id = require_text(payload, 'task_id', 100)
             reason = require_text(payload, 'reason', 80)
             if target_id not in peers or '\n' in reason:
@@ -308,7 +231,7 @@ class WorkProgress:
             # The assignment of a task is the task that its _assignment_task_id names, else the task itself.
             turn_ids = {t['id'] for t in tasks.values() if (t.get('_assignment_task_id') or t['id']) == assignment['id']}
             existing_dependency = (target_id in assignment.get('_waiting_on', [])
-                or any(r['task_id'] in turn_ids and target_id in (r.get('_relay_task_id'), r.get('_wait_task_id'))
+                or any(r['task_id'] in turn_ids and r.get('_wait_task_id') == target_id
                        and not r.get('_process_delivery') for r in records))
             if existing_dependency:
                 assignment['_explicit_work_waits'] = list(dict.fromkeys(assignment.get('_explicit_work_waits', []) + [target_id]))
@@ -360,7 +283,7 @@ class WorkProgress:
             return dependencies
 
     def _final_task_result(self, target):
-        """The result of a completed task when no process, dependency, unfinished step, or native run can change it."""
+        """The result of a completed task when no wait, dependency, unfinished step, or native run can change it."""
         if (target['status'] != 'completed' or self._background_pending(target['id']) or target.get('_waiting_on')
                 or self._unfinished_work(target)):
             return None
@@ -372,9 +295,8 @@ class WorkProgress:
         return f"Task {target['id']} completed: {target['summary']}"
 
     def _wait_completion(self, record, task):
-        source = self._get('native_receipts', record['_wait_process_receipt']) if record.get('_wait_process_receipt') else None
         decision = self._get('decisions', record['_wait_decision_id']) if record.get('_wait_decision_id') else None
-        target = self._get('tasks', decision['task_id'] if decision else source['task_id'] if source else record['_wait_task_id'])
+        target = self._get('tasks', decision['task_id'] if decision else record['_wait_task_id'])
         target_bot = self._get('bots', target['bot_id'])
         reset = (target_bot.get('_deleted') or target['session_id'] != target_bot['session_id']
                  or target['session_id'] != record['_wait_session_id']
@@ -384,13 +306,6 @@ class WorkProgress:
             return 'The task you waited for is no longer in the current conversation.'
         if decision:
             return None if self._decision_wait_pending(decision) else self._decision_wait_result(decision)
-        if source:
-            if (not source.get('_completion_text') and (target['status'] == 'cancelled'
-                    or self._get('exchanges', target['exchange_id']).get('cancelled'))):
-                return 'The process owner was cancelled. Check its saved result before repeating work.'
-            return source.get('_completion_text') or (
-                'The process finished earlier. Its output is unavailable in this saved record. Check the existing result before repeating work.'
-                if source.get('_process_delivery') else None)
         if self._native_wait_cycle(task['id'], target['id']):
             return ('This saved wait conflicts with a Hermes dependency: the target task waits for your result. '
                     'Read your saved results and finish your assigned scope, or wait for the specific decision. '
@@ -404,7 +319,7 @@ class WorkProgress:
     def _drain_task_completions(self):
         with self.lock:
             bot_ids = {self._get('tasks', r['task_id'])['bot_id'] for r in self._pending_completion_receipts()
-                       if (r.get('_wait_task_id') or r.get('_wait_process_receipt') or r.get('_wait_decision_id')) and not r.get('_process_delivery')}
+                       if (r.get('_wait_task_id') or r.get('_wait_decision_id')) and not r.get('_process_delivery')}
         for bot_id in bot_ids:
             with self.lock:
                 bot_lock = self.bot_locks.setdefault(bot_id, threading.Lock())
@@ -416,7 +331,7 @@ class WorkProgress:
                         return
                     grouped = {}
                     for record in self._pending_completion_receipts():
-                        if not (record.get('_wait_task_id') or record.get('_wait_process_receipt') or record.get('_wait_decision_id')) or record.get('_process_delivery'):
+                        if not (record.get('_wait_task_id') or record.get('_wait_decision_id')) or record.get('_process_delivery'):
                             continue
                         task = self._get('tasks', record['task_id'])
                         if task['bot_id'] != bot_id or not self._can_resume_process(task, self._get('bots', bot_id)):

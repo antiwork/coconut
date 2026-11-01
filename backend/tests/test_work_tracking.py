@@ -83,25 +83,3 @@ class FollowPRTests(PRServiceTests):
         self.assertEqual(repeated['id'], result['id'])
         self.assertEqual(len(self.tracker.urls), 1)
         self.assertEqual(before['messages'], self.service.snapshot()['messages'])
-
-
-class NativePRToolTests(unittest.TestCase):
-    def test_native_tool_waits_for_artifact_receipt(self):
-        from test_provider import ProviderTests
-        fixture = ProviderTests()
-        fixture.setUp()
-        try:
-            provider = fixture.fake_hermes("import json\nresult = json.loads(registry.dispatch('coconut_track_pr', {'url': 'https://github.com/example/project/pull/42'}))\nassert result['id'] == 'saved-pr'\nreturn {'completed': True, 'final_response': 'Tracked.'}\n")
-            events = []
-            def emit(kind, data):
-                if kind == 'phase':
-                    return
-                events.append((kind, data))
-                return {'id': 'saved-pr', 'status': 'checks_running'} if kind == 'artifact' else None
-            with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-                provider.start_task(fixture.task, fixture.bot, [], emit)
-            self.assertEqual(events[0], ('artifact', {'kind': 'pr', 'url': URL}))
-            self.assertEqual(events[-1][0], 'completed')
-        finally:
-            fixture.tearDown()
-            fixture.doCleanups()

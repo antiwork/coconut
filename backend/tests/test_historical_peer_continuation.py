@@ -9,7 +9,6 @@ import copy
 import json
 import unittest
 from unittest.mock import Mock, patch
-from uuid import uuid4
 
 from coconut.service import ServiceError
 import test_native_work_continuation as fixtures
@@ -58,12 +57,8 @@ class HistoricalPeerContinuationTests(unittest.TestCase):
         coordinator = self.service._get('tasks', coordinator['id'])
         coordinator['status'] = 'working'
         self.service._put('tasks', coordinator)
-        arguments = dict(target=care['id'], message='Continue the same recovery',
-                         continuation_task_id=previous['id'])
-        call = self.service.emit(coordinator['id'], 'native_call', dict(name='message_agent', arguments=arguments))
-        sent = self.service.emit(coordinator['id'], 'native_bot_message', dict(native_call_id=call['id'],
-            native_envelope_id=uuid4().hex, target_bot_id=care['id'], text=arguments['message'],
-            continuation_task_id=previous['id']))
+        sent = self.linked_report_message(coordinator, care['id'], 'Continue the same recovery',
+                                          continuation_task_id=previous['id'])
         self.assertEqual(sent['status'], 'queued')
         successor = self.service._get('tasks', sent['task_id'])
         successor.update(status='working', _native_outcome_id='t_recovered', _native_turn_id='recovered-turn',
@@ -213,7 +208,7 @@ class HistoricalPeerContinuationTests(unittest.TestCase):
     def test_wait_decision_context_and_live_worker_remain_guarded(self):
         _, source, previous, successor, _, _, coordinator = self.saved_shape()
         for task in (previous, successor, coordinator):
-            for field in ('_waiting_on', '_return_pending', '_native_reply_pending', '_steering',
+            for field in ('_waiting_on', '_return_pending', '_steering',
                           '_live_messages', '_blocked_followup'):
                 with self.subTest(task=task['id'], field=field):
                     self.service._put('tasks', dict(task, **{field: ['pending']}))

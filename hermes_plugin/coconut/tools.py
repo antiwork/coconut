@@ -69,7 +69,7 @@ TRACK_PR = {'name': 'coconut_track_pr', 'description': (
     'does not create, edit, push or merge a PR.'),
     'parameters': {'type': 'object', 'properties': {
         'url': {'type': 'string', 'description': 'The exact https://github.com/owner/repo/pull/number URL.'},
-        # As the worker's tool for a native outcome (hermes_worker): the PR then belongs to the outcome it delivers.
+        # In a native outcome, the PR then belongs to the outcome that it delivers.
         'work_id': {'type': 'string', 'description': (
             'Native task ID or Work item ID of the outcome that this PR delivers. Supply it only when the PR delivers '
             'that outcome. Omit it for a separate PR.')}},
@@ -196,7 +196,7 @@ def register(ctx):
                             (module.SUGGEST_SCHEMA, _service_tool('suggest')),
                             (reply_schema(), _service_tool('resolve_reply')),
                             (module.refresh_schema(), _service_tool('refresh_decision')),
-                            (module.GATEWAY_WAIT_SCHEMA, _service_tool('wait')),
+                            (module.WAIT_SCHEMA, _service_tool('wait')),
                             (module.CORRECTION_SCHEMA, _service_tool('correct_withdrawal')),
                             (module.BOT_CREATION_SCHEMA, _service_tool('create_bot')),
                             (module.BOT_DELETION_SCHEMA, _service_tool('delete_bot')),

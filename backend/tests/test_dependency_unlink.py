@@ -2,8 +2,6 @@
 import contextlib
 import copy
 import json
-import os
-from pathlib import Path
 import sqlite3
 import sys
 import tempfile
@@ -16,7 +14,6 @@ from uuid import uuid4
 from coconut.kanban_runtime import Board
 from coconut.service import ServiceError
 import test_targeted_bot_continuation as fixtures
-import test_provider as provider_fixtures
 
 
 class DependencyUnlinkTests(unittest.TestCase):
@@ -96,45 +93,6 @@ class DependencyUnlinkTests(unittest.TestCase):
         self.service._put('tasks', source)
         second = self.unlink(source)
         self.assertNotEqual(first['request_id'], second['request_id'])
-
-    def test_registered_provider_calls_the_authenticated_service(self):
-        child, parent, source = self.setup_edge()
-        self.root = Path(self.temp.name) / 'provider'
-        provider = provider_fixtures.ProviderTests.fake_hermes(self,
-            "receipt = json.loads(registry.dispatch('coconut_unlink_dependency', " + repr(self.arguments) + "))\n"
-            "assert receipt['status'] == 'unlinked', receipt\n"
-            "return {'completed': True, 'final_response': 'Unlinked exactly one dependency.'}\n")
-        seen, events = [], []
-        def emit(kind, data):
-            events.append((kind, data))
-            if kind == 'dependency_unlink':
-                result = self.service.emit(source['id'], kind, data)
-                seen.append(result)
-                return result
-        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(source, self.desk, [], emit)
-        self.assertEqual(len(seen), 1, events)
-        self.assertEqual(seen[0]['child_id'], child['_native_outcome_id'])
-        self.assertEqual(self.requests[0]['source_bot_id'], self.desk['id'])
-
-    def test_provider_reports_real_service_authorization_denial(self):
-        child, parent, source = self.setup_edge('Care')
-        self.root = Path(self.temp.name) / 'provider'
-        provider = provider_fixtures.ProviderTests.fake_hermes(self,
-            "receipt = json.loads(registry.dispatch('coconut_unlink_dependency', " + repr(self.arguments) + "))\n"
-            "assert receipt['status'] == 'rejected', receipt\n"
-            "assert 'Only the child owner' in receipt['error'], receipt\n"
-            "return {'completed': True, 'final_response': 'Authorization rejection verified.'}\n")
-        events = []
-        def emit(kind, data):
-            events.append((kind, data))
-            if kind == 'dependency_unlink':
-                return self.service.emit(source['id'], kind, data)
-        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(source, self.service._get('bots', source['bot_id']), [], emit)
-        self.assertEqual(self.requests, [])
-        self.assertIn(('text_delta', {'text': 'Authorization rejection verified.'}), events)
-        self.assertFalse(any(kind == 'failed' for kind, _ in events))
 
     def test_care_and_foreign_requester_are_denied(self):
         child, parent, source = self.setup_edge('Care')
@@ -296,26 +254,6 @@ class DependencyUnlinkTests(unittest.TestCase):
         self.assertFalse(self.service._background_pending(child['id'], ignore_settled=True))
         # The plain check still counts the undelivered wait.
         self.assertTrue(self.service._background_pending(child['id']))
-
-    def test_a_relay_wait_is_settled_only_by_a_returned_result_and_a_process_never(self):
-        child, parent, source = self.setup_edge()
-        recipient = dict(child, id=str(uuid4()), status='working', _native_outcome_id='t_44444444')
-        recipient['_execution_session_id'] = recipient['id']
-        self.service._put('tasks', recipient)
-        relay = dict(id=str(uuid4()), task_id=child['id'], state='completed', action={'name': 'message_agent'},
-                     _relay_task_id=recipient['id'])
-        self.service._put('native_receipts', relay)
-        self.assertFalse(self.service._wait_settled(relay))
-        self.assertTrue(self.service._background_pending(child['id'], ignore_settled=True))
-        self.service._put('tasks', recipient | {'_native_relay_result': {'text': 'Verified.', 'failed': False}})
-        self.assertTrue(self.service._wait_settled(relay))
-        self.assertFalse(self.service._background_pending(child['id'], ignore_settled=True))
-        # A process subscription has no answer to read here, so it always blocks.
-        process = dict(id=str(uuid4()), task_id=child['id'], state='completed', action={'name': 'terminal'},
-                       result=json.dumps({'notify_on_complete': True, 'session_id': 'proc_1'}))
-        self.service._put('native_receipts', process)
-        self.assertFalse(self.service._wait_settled(process))
-        self.assertTrue(self.service._background_pending(child['id'], ignore_settled=True))
 
     def test_a_tool_call_of_an_earlier_turn_does_not_keep_a_queued_owner_busy(self):
         child, parent, source = self.setup_edge()
@@ -791,31 +729,6 @@ class DependencyAdapterSerializationTests(unittest.TestCase):
             self.assertEqual(errors, [])
             self.assertEqual(writes, ['unlink_dependency', 'bind'])
             self.assertEqual(results, [{'status': 'unlinked'}, {'ok': True}])
-
-
-class DependencyUnlinkProviderTests(unittest.TestCase):
-    setUp = provider_fixtures.ProviderTests.setUp
-    tearDown = provider_fixtures.ProviderTests.tearDown
-    fake_hermes = provider_fixtures.ProviderTests.fake_hermes
-
-    def test_registered_tool_transport_preserves_success_and_actionable_error(self):
-        arguments = dict(parent_id='t_11111111', child_id='t_22222222', reason='Resource released.')
-        provider = self.fake_hermes(
-            "receipt = json.loads(registry.dispatch('coconut_unlink_dependency', " + repr(arguments) + "))\n"
-            "assert receipt['status'] == 'unlinked', receipt\n"
-            "receipt = json.loads(registry.dispatch('coconut_unlink_dependency', " + repr(arguments) + "))\n"
-            "assert receipt == {'status': 'rejected', 'error': 'Only the child owner or its requesting bot can unlink this dependency.'}, receipt\n"
-            "return {'completed': True, 'final_response': 'Receipt verified.'}\n")
-        seen = []
-        def emit(kind, data):
-            if kind == 'dependency_unlink':
-                seen.append(data)
-                if len(seen) == 1:
-                    return {'status': 'unlinked', **arguments}
-                raise ServiceError(403, 'Only the child owner or its requesting bot can unlink this dependency.')
-        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], emit)
-        self.assertEqual(seen, [arguments, arguments])
 
 
 if __name__ == '__main__':

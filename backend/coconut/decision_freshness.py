@@ -330,10 +330,8 @@ class DecisionFreshness:
                      or d.get('previous_decision_id') == decision['id']
                      or decision.get('previous_decision_id') == d['id'])]
 
-    def _decision_evidence(self, decision, tasks, records, artifacts, *, profile_revision,
-                           ignore_context_id=None, own_receipts=True):
+    def _decision_evidence(self, decision, tasks, records, artifacts, *, profile_revision, ignore_context_id=None):
         from .service import digest, encoded
-        from .background_processes import subscription
         task = tasks[decision['task_id']]
         ids, work = self._decision_scope(decision, tasks, records, artifacts)
         contexts = self._all_shared('contexts')
@@ -355,7 +353,7 @@ class DecisionFreshness:
             receipts=[(r['id'], r.get('state'), r.get('completed_at'), r.get('_process_delivery'),
                        r.get('_completion_text'), r.get('_process_status'))
                       for r in records if r['task_id'] in ids and r.get('turn_id') != ignore_context_id
-                      and (r.get('turn_id') not in refresh_turns or own_receipts and subscription(r))])
+                      and r.get('turn_id') not in refresh_turns])
         return digest(encoded(facts)), work
 
     def _initialize_decision_freshness(self, decision, *, profile_revision=_PROFILE_REVISION_UNSET):
@@ -457,7 +455,6 @@ class DecisionFreshness:
         return any(json.loads(row[0]).get('_human_device_id') for row in rows)
 
     def _human_reply_pending(self, task, contexts):
-        from .background_processes import subscription
         # Only a queued, working or waiting task of the bot can hold a reply. An index finds these few tasks, so the check
         # reads neither the whole task table nor every message.
         with self.lock:
@@ -469,9 +466,7 @@ class DecisionFreshness:
                    and (t.get('_turn_preference_source_ids') or self._has_human_message(self._assignment(t)['id'])))
                for t in active):
             return True
-        pending = {r.get('turn_id') for r in self._shared_pending_receipts()
-                   if not r.get('_process_delivery') and (subscription(r) or r.get('_relay_task_id'))}
-        return any(not c.get('_decision_refresh') and (c['status'] in ('queued', 'working') or c['id'] in pending)
+        return any(not c.get('_decision_refresh') and c['status'] in ('queued', 'working')
                    and self._decision_visible_to_task(self._get('decisions', c['decision_id']), task) for c in contexts)
 
     @contextlib.contextmanager
@@ -581,7 +576,6 @@ class DecisionFreshness:
             writes.event('context.cancelled', {'id': context['id'], 'decision_id': decision['id']}, task['bot_id'], task['id'])
 
     def _refresh_recovery_records(self, source, contexts, records):
-        from .background_processes import subscription
         origin = source.get('_refresh_origin_id', source.get('id'))
         chain = {c['id']: c for c in contexts if c.get('_decision_refresh')
                  and c.get('_refresh_origin_id', c['id']) == origin}
@@ -596,7 +590,6 @@ class DecisionFreshness:
             interrupted = chain[r['turn_id']]
             if ((interrupted['status'] in ('cancelled', 'failed') and not interrupted.get('_refresh_recorded'))
                     or r['state'] == 'executing'
-                    or ((subscription(r) or r.get('_relay_task_id')) and not r.get('_process_delivery'))
                     or (destination.get('status') in ('cancelled', 'failed') and not destination.get('_refresh_recorded'))):
                 selected.append(r)
         return list({r['id']: r for r in inherited + selected}.values())
@@ -717,20 +710,14 @@ class DecisionFreshness:
             unfinished = prior and not prior.get('_refresh_recorded') and prior.get('status') in ('failed', 'cancelled', 'completed')
             if not changed and not unfinished and not decision.get('assessment_stale'):
                 continue
-            from .background_processes import subscription
             origin = prior.get('_refresh_origin_id', prior.get('id'))
             chain_contexts = [c for c in contexts if c.get('_decision_refresh') and c.get('_refresh_origin_id', c['id']) == origin]
-            chain = {c['id'] for c in chain_contexts}
-            external = None
             failed = self._unrecorded_refresh_failures(chain_contexts)
             if failed:
-                # Count the failures against the external evidence, without the receipts of the checks themselves.
-                # A check that starts a background process changes the full fingerprint, and that must not restart the count.
-                external = self._decision_evidence(decision, tasks, records, artifacts, own_receipts=False,
-                                                   profile_revision=profile_revision)[0]
+                # Count the failures against the evidence, which leaves out the receipts of the checks themselves.
                 failures = 0
                 for context in failed:
-                    if context.get('_external_fingerprint') != external:
+                    if context.get('_external_fingerprint') != fingerprint:
                         break
                     failures += 1
                 waited = age(failed[0].get('_failed_at') or previous.get('queued_at'), current)
@@ -738,16 +725,10 @@ class DecisionFreshness:
                                  or waited < RETRY_SECONDS * 2 ** (failures - 1)):
                     # New external evidence starts the count and the wait again. The card stays open for a person meanwhile.
                     continue
-            prior_records = [r for r in records if r.get('turn_id') in chain]
-            outstanding = [r for r in prior_records if (subscription(r) or r.get('_relay_task_id')) and not r.get('_process_delivery')]
-            if any(self._can_resume_completion(task, self._get('bots', task['bot_id']), r) for r in outstanding):
-                continue
             question = self._decision_refresh_prompt(decision, task, work, decisions)
             context = dict(id=uid(), bot_id=task['bot_id'], task_id=task['id'], decision_id=decision['id'],
                 question=question, status='queued', _decision_refresh=True, _evidence_fingerprint=fingerprint,
-                _external_fingerprint=(external if external is not None
-                                       else self._decision_evidence(decision, tasks, records, artifacts, own_receipts=False,
-                                                                     profile_revision=profile_revision)[0]),
+                _external_fingerprint=fingerprint,
                 _decision_revision=decision['revision'], _conversation_epoch=task.get('_conversation_epoch'),
                 _preference_source_ids=[], _human_input_ids=[m['id'] for m in self._decision_human_messages(task, decision)])
             if origin:

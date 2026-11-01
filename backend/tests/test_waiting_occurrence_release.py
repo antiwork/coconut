@@ -10,18 +10,35 @@ import sqlite3
 import tempfile
 import threading
 import unittest
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import UUID, uuid4, uuid5
 
 from coconut import native_routine_receipts as receipts, native_routines
-from coconut.native_bridge import NativeBridge
 from coconut.providers import FixtureProvider
 from coconut.service import Service
-import test_failed_routine_continuation as native_fixtures
+import test_native_recovery as recovery_fixtures
 
 SUMMARY = 'Completed bounded fast intake. Retained the existing owner and recorded an active dependency.'
+
+
+class NativeJob(unittest.TestCase):
+    """The native cron job of an occurrence, as Hermes keeps it, without a model call."""
+    setUp = recovery_fixtures.NativeCompletionReceiptTests.setUp
+    get_job = recovery_fixtures.NativeCompletionReceiptTests.get_job
+    _hermes_now = recovery_fixtures.NativeCompletionReceiptTests._hermes_now
+    _under_fire_fence = recovery_fixtures.NativeCompletionReceiptTests._under_fire_fence
+    _with_job = recovery_fixtures.NativeCompletionReceiptTests._with_job
+    save_job_output = recovery_fixtures.NativeCompletionReceiptTests.save_job_output
+    save_jobs = recovery_fixtures.NativeCompletionReceiptTests.save_jobs
+    _record_run_outcome = recovery_fixtures.NativeCompletionReceiptTests._record_run_outcome
+    _advance_after_run = recovery_fixtures.NativeCompletionReceiptTests._advance_after_run
+    finish = recovery_fixtures.NativeCompletionReceiptTests.finish
+
+    @contextmanager
+    def _fire_job_lock(self, identity):
+        yield True
 
 
 class Kanban:
@@ -48,7 +65,7 @@ class WaitingOccurrenceTests(unittest.TestCase):
         self.service = Service(self.tmp.name, FixtureProvider(self.tmp.name), start_workers=False)
         self.addCleanup(self.service.close)
         self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
-        self.native = native_fixtures.FailedClaimTests()
+        self.native = NativeJob()
         self.native.setUp()
         self.addCleanup(self.native.doCleanups)
         self.calls, self.routine, self.view = [], None, None
@@ -254,11 +271,6 @@ class WaitingOccurrenceTests(unittest.TestCase):
         self.assertEqual(task['_native_job_completion_receipt'], dict(job_id='job', owner='owner', success=True))
         proof = self.service.native_routine_completion_input(task)
         self.assertEqual(proof, dict(job_id='job', owner='owner', success=True, native_confirmed=True))
-        bridge = NativeBridge({'task': dict(task, _native_job_completion=proof)}, None, None)
-        self.assertEqual(self.native.run_tool(bridge), 'executed')
-        # An unrelated owner never gets this provenance.
-        with self.assertRaises(BaseException):
-            self.native.run_tool(self.native.bridge(owner='another-owner'))
         self.assertEqual(self.operations(), ['routine_finish', 'routine_heartbeat'][:1])
 
     def test_capture_at_completion_keeps_the_original_card_when_the_successor_completes(self):
@@ -440,7 +452,7 @@ class WaitingOccurrenceTests(unittest.TestCase):
             'assignment': lambda: self.update(_assignment_task_id=str(uuid4())),
             'paused by an archived bot': lambda: self.service._put('bots', dict(self.service._get('bots', self.bot['id']), archived=True)),
         }
-        for field in ('_steering', '_live_messages', '_blocked_followup', '_native_reply_pending', '_return_pending',
+        for field in ('_steering', '_live_messages', '_blocked_followup', '_return_pending',
                       '_resume_decision', '_background_completion', '_pr_review', '_work_resume'):
             cases['open ' + field] = lambda field=field: self.update(**{field: [dict(text='next')] if field.endswith('s') else dict(text='next')})
         for name, mutate in cases.items():
@@ -559,10 +571,9 @@ class WaitingOccurrenceTests(unittest.TestCase):
             self.assertEqual(task['_native_turn_id'], 'turn-continuation')
             self.assertNotEqual(task.get('summary'), 'The routine lost its native execution claim.')
             self.assertEqual(self.event_count('routine.reconciliation_required'), 0)
-            # The turn started before the commit and still treats the claim as released. Its tools run once Hermes confirms.
+            # The turn started before the commit and still treats the claim as released.
             self.assertEqual(len(started), 1)
             self.assertTrue(started[0]['_native_job_finished'])
-            self.assertEqual(self.native.run_tool(NativeBridge({'task': started[0]}, None, None)), 'executed')
             # The next passes neither finish nor heartbeat it, and do not cancel it for a lost claim.
             self.tick()
             self.tick()
@@ -594,7 +605,6 @@ class WaitingOccurrenceTests(unittest.TestCase):
         with patch.object(service.provider, 'start_task', lambda task, bot, history, emit: started.append(task)):
             service._run_task(self.task_id)
         self.assertTrue(started[0]['_native_job_finished'])
-        self.assertEqual(self.native.run_tool(NativeBridge({'task': started[0]}, None, None)), 'executed')
 
     def test_a_continuation_does_not_release_on_a_stale_proof(self):
         # The proof was read while waiting. A continuation then took the task before the lock was held again.

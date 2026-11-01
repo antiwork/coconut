@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from coconut.hermes_worker import conversation_input
+from turn_text import turn_input
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError, now
 from coconut.work_recovery import BLOCKED_WORK_INSTRUCTIONS, WORK_PAUSE_INSTRUCTIONS, block_check_delay
@@ -392,18 +392,18 @@ class BlockedWorkCheckTests(unittest.TestCase):
     def test_only_the_check_turn_requires_a_card_or_a_recheck(self):
         self.check(self.blocked(), 0)
         task = self.check(self.blocked(), 10 ** 9)
-        prompt = conversation_input(dict(operation='start', task=task, history=[]))[0]
+        prompt = turn_input(dict(operation='start', task=task, history=[]))[0]
         self.assertIn(BLOCKED_WORK_INSTRUCTIONS, prompt)
         # The check records a pause before it blocks. The Work pause rule would skip that record.
         self.assertNotIn(WORK_PAUSE_INSTRUCTIONS, prompt)
         # A later message rotates the turn ID, so it is not treated as a check.
         later = dict(task, _native_turn_id='new-human-input')
-        later_prompt = conversation_input(dict(operation='start', task=later, history=[]))[0]
+        later_prompt = turn_input(dict(operation='start', task=later, history=[]))[0]
         self.assertNotIn(BLOCKED_WORK_INSTRUCTIONS, later_prompt)
         self.assertIn(WORK_PAUSE_INSTRUCTIONS, later_prompt)
         # An answer to the check's card resumes the same turn without the check instructions.
         answer = dict(operation='resume', task=task, history=[], decision=dict(id='d', title='Free space?', status='approved', action_type='question', options=[]))
-        self.assertNotIn(BLOCKED_WORK_INSTRUCTIONS, conversation_input(answer)[0])
+        self.assertNotIn(BLOCKED_WORK_INSTRUCTIONS, turn_input(answer)[0])
 
 
 if __name__ == '__main__':

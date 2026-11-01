@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from coconut.hermes_worker import conversation_input
+from turn_text import turn_input
 from coconut.providers import FixtureProvider
 from coconut.service import Service
 from coconut.work_sources import answered_decisions, coverage
@@ -155,7 +155,7 @@ class WorkSourceTests(unittest.TestCase):
         self.assertEqual(len(self.service._all('messages')), 0)
         captured = []
         def start(task, bot, history, emit):
-            captured.append(conversation_input(dict(operation='start', task=task, history=history)))
+            captured.append(turn_input(dict(operation='start', task=task, history=history)))
             emit('completed', {'summary': 'Coverage reviewed'})
         self.provider.start_task = start
         self.service._run_task(task['id'])
@@ -414,7 +414,7 @@ class WorkSourceTests(unittest.TestCase):
         self.service.mutate('POST', f"/v1/tasks/{state['task_id']}/replies", {'text': 'Check issue 7 first'}, str(uuid4()))
         captured = []
         def start(task, bot, history, emit):
-            captured.append(conversation_input(dict(operation='start', task=task, history=history)))
+            captured.append(turn_input(dict(operation='start', task=task, history=history)))
             emit('completed', {'summary': 'Done'})
         self.provider.start_task = start
         self.service._run_task(state['task_id'])
@@ -448,13 +448,8 @@ class WorkSourceTests(unittest.TestCase):
         tasks = {'parent': dict(status='waiting', _waiting_on=[]),
                  'continuation': dict(status='working', _assignment_task_id='parent')}
         self.assertTrue(coverage(self.item, binding, tasks, {}, {}, current))
-        tasks['continuation']['status'] = 'waiting'
-        receipt = dict(task_id='continuation', state='completed', action={'name': 'terminal'},
-                       result={'session_id': 'process', 'notify_on_complete': True},
-                       _process_status='running', _process_observed_at=current.isoformat())
-        self.assertTrue(coverage(self.item, binding, tasks, {}, {'receipt': receipt}, current))
-        receipt['_process_delivery'] = 'consumed'
-        self.assertFalse(coverage(self.item, binding, tasks, {}, {'receipt': receipt}, current))
+        tasks['continuation']['status'] = 'completed'
+        self.assertFalse(coverage(self.item, binding, tasks, {}, {}, current))
 
     def test_expired_reminder_reuses_live_pr_work(self):
         from test_service_pr import Tracker, observation, URL

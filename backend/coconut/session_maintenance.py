@@ -8,7 +8,7 @@ from .work_capacity import execution_key
 from .worktree_retirement import ACTIVE_STATUSES
 
 # Hermes deletes an ended session after it has been inactive this long. Coconut's own messages and the native
-# card keep the record, and a resumed outcome gets its visible conversation again (see NativeConversation).
+# card keep the record. A resumed outcome continues in a new session.
 SESSION_RETENTION_DAYS = 7
 # Other ended Coconut sessions, such as the compressed parts of a chat, stay searchable this long.
 SESSION_HISTORY_DAYS = 30

@@ -6,20 +6,17 @@ Only that verified wait makes the delegate's answer eligible. An ancestor, sibli
 The delegate's outcome has its own owner when the relay intake created it with kanban_create, or the intake owns it.
 """
 import json
-import os
-from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.kanban_scheduler import KanbanScheduler
-from coconut.native_bridge import kanban_arguments
+from coconut.gateway_chat import kanban_arguments
 from coconut.native_outcomes import outcome_owner_id
-from coconut.providers import FixtureProvider, HermesProvider
-from coconut.service import Service, ServiceError, YieldForDecision, now
+from coconut.providers import FixtureProvider
+from coconut.service import Service, ServiceError, YieldForDecision, digest, encoded, now
 from coconut.work_recovery import block_check_delay
-import test_provider as fixtures
 
 ANSWER = 'delegate-answer'
 # The public answer fields a check may show of another bot's card.
@@ -62,12 +59,21 @@ class DelegatedBlockPauseTests(unittest.TestCase):
         return self.intake
 
     def relay(self, sender, target, native_id, *, bind=True):
-        """The sender's message_agent call delivered through the audited native relay route."""
+        """The saved state of the sender's message_agent call that an earlier Coconut delivered through its audited
+        native relay: the call's receipt with the delivery, the delivery under its envelope ID, and the relay of the
+        delegate. Coconut no longer makes this state, but it still reads it (_block_check_relay_lineage)."""
         saved = self.working(sender['id'], 'sender-turn-' + native_id)
         text = 'Check the payout record ' + native_id
+        envelope = uuid4().hex
         call = self.service.emit(sender['id'], 'native_call', dict(name='message_agent', arguments=dict(target=target['id'], message=text)))
-        receipt = self.service.native_relay_delivery(sender['id'], dict(
-            native_call_id=call['id'], native_envelope_id=uuid4().hex, target_bot_id=target['id'], text=text))
+        with self.service.transaction():
+            receipt = self.service._store_bot_message(sender['id'], dict(target_bot_id=target['id'], text=text))
+            delivery = next(d for d in reversed(self.service._all('deliveries')) if d['receipt']['task_id'] == receipt['task_id'])
+            self.service.db.execute('DELETE FROM deliveries WHERE id=?', (delivery['id'],))
+            self.service._put('deliveries', dict(delivery, id=digest(encoded([sender['id'], envelope]))))
+            delegate = self.service._get('tasks', receipt['task_id'])
+            self.service._put('tasks', dict(delegate, _native_relay=dict(sender_bot_id=saved['bot_id'], envelope_id=envelope)))
+        self.service.emit(sender['id'], 'native_result', dict(id=call['id'], result=json.dumps(dict(receipt, delivery_id=envelope))))
         self.service._put('tasks', dict(self.service._get('tasks', sender['id']), status='completed'))
         delegate = self.service._get('tasks', receipt['task_id'])
         self.assertEqual(delegate['_native_relay']['sender_bot_id'], saved['bot_id'])
@@ -428,7 +434,8 @@ class AdoptedDelegateBlockPauseTests(DelegatedBlockPauseTests):
         saved = self.working(intake['id'], 'intake-turn-' + native_id)
         arguments = kanban_arguments(dict(title='Check the payout record', body='Check it read-only.', workspace_kind='dir',
                                           workspace_path=str(self.service.root / 'workspaces' / native_id)),
-                                     intake['id'], saved.get('_native_turn_id') or 'intake-turn-' + native_id, intake['bot_id'])
+                                     intake['id'], saved.get('_native_turn_id') or 'intake-turn-' + native_id, intake['bot_id'],
+                                     self.service.root / 'kanban' / 'kanban' / 'workspaces')
         call = self.service.emit(intake['id'], 'native_call', dict(name='kanban_create', arguments=arguments))
         self.service.emit(intake['id'], 'native_result', dict(id=call['id'], result=json.dumps(
             dict(ok=True, task_id=native_id, status='blocked'))))
@@ -509,101 +516,6 @@ class AdoptedDelegateBlockPauseTests(DelegatedBlockPauseTests):
                 self.assertNotIn(ANSWER, self.offered(queued))
                 with self.assertRaisesRegex(ServiceError, 'answered human decision'):
                     self.record()
-
-
-class DelegatedBlockPauseProviderTests(unittest.TestCase):
-    """The check turn records the delegate's answer through the exposed coconut_record_pause tool."""
-    setUp = fixtures.ProviderTests.setUp
-    tearDown = fixtures.ProviderTests.tearDown
-    fake_hermes = fixtures.ProviderTests.fake_hermes
-    for name in ('message', 'working', 'relay', 'bind', 'tool', 'link', 'answer', 'blocked', 'check', 'state'):
-        locals()[name] = getattr(DelegatedBlockPauseTests, name)
-    adopt = AdoptedDelegateBlockPauseTests.adopt
-    del name
-
-    def test_check_turn_records_the_delegate_answer_through_the_tool(self):
-        self.run_check_turn(adopted=False)
-
-    def test_check_turn_records_the_typed_answer_of_an_adopted_outcome(self):
-        self.run_check_turn(adopted=True)
-
-    def run_check_turn(self, *, adopted):
-        typed = 'Keep it open until Friday.' if adopted else ''
-        fixture = self.fake_hermes('''
-            import json
-            names = set(registry.handlers)
-            assert 'coconut_record_pause' in names, names
-            assert 'Coconut queued this check because the native task stayed blocked' in prompt
-            assert 'an answered card of a delegate' in prompt
-            assert ANSWER in prompt and SIBLING not in prompt
-            assert 'Private delegate notes' not in prompt
-            assert TYPED in prompt
-            denied = json.loads(registry.dispatch('coconut_record_pause', {'decision_id': SIBLING}))
-            assert denied['status'] == 'rejected' and 'answered human decision' in denied['error'], denied
-            receipt = json.loads(registry.dispatch('coconut_record_pause', {'decision_id': ANSWER}))
-            assert receipt == {'status': 'recorded', 'decision_id': ANSWER}, receipt
-            return {'completed': True, 'final_response': 'The delegate answer still controls this block.'}
-        '''.replace('SIBLING', repr('sibling-answer')).replace('ANSWER', repr(ANSWER)).replace('TYPED', repr(typed)))
-        # A native claim runs in its workspace. The shared stub has no workspace override.
-        with (self.root / 'source' / 'tools' / 'terminal_tool.py').open('a') as stub:
-            stub.write('def register_task_env_overrides(task_id, overrides): pass\n')
-        self.service = Service(str(self.root / 'service'), FixtureProvider(str(self.root / 'service')), start_workers=False)
-        self.addCleanup(self.service.close)
-        self.service.provider = HermesProvider(fixture.data_dir, python=fixture.python,
-                                               hermes_root=fixture.hermes_root, catalog=fixture.catalog)
-        self.addCleanup(self.service.provider.close)
-        # The board snapshot only. This test starts no Kanban adapter process.
-        self.service.kanban = KanbanScheduler(self.service.provider, str(self.root / 'service'))
-        self.desk = self.service.mutate('POST', '/v1/bots', {'name': 'Desk', 'role': ''}, str(uuid4()))
-        self.dev = self.service.mutate('POST', '/v1/bots', {'name': 'Dev', 'role': ''}, str(uuid4()))
-        sender = self.message(self.desk, 'Ask Dev to check the payout record')
-        if adopted:
-            # The relay intake created the outcome with kanban_create, and adoption gave it its own owner.
-            intake = self.relay(sender, self.dev, 't_delegate', bind=False)
-            delegate = self.adopt(intake, 't_delegate')
-            sibling = self.adopt(intake, 't_sibling')
-        else:
-            delegate = self.relay(sender, self.dev, 't_delegate')
-            sibling = self.relay(sender, self.dev, 't_sibling')
-        self.task_id = self.message(self.desk, 'Settle the payout case')['id']
-        self.bind(self.task_id, 't_checked')
-        self.link('t_delegate')
-        if adopted:
-            self.answer(delegate['id'], status='replied', selected_option_id=None, selected_option_label=None, correction=typed)
-        else:
-            self.answer(delegate['id'])
-        self.answer(sibling['id'], 'sibling-answer')
-        with self.service.transaction():
-            saved = self.service._get('tasks', self.task_id)
-            saved['_kanban_claim'] = dict(native_id='t_checked', run_id=1, claim_lock='claim-checked', external_id=self.task_id,
-                                          context='# Kanban task t_checked: Settle the payout case')
-            self.service._put('tasks', saved)
-        # The sibling's edge on the board came from elsewhere, so it does not make the sibling eligible.
-        self.service.kanban.tasks[self.task_id] = dict(external_id=self.task_id, id='t_checked', status='blocked',
-                                                      block_kind='needs_input', parent_ids=['t_delegate', 't_sibling'])
-        before = {table: len(self.service._all(table)) for table in ('decisions', 'messages', 'deliveries')}
-        answer = self.service._get('decisions', ANSWER)
-        self.check(0)
-        self.assertEqual(self.check(10 ** 9)['status'], 'queued')
-        self.check(10 ** 9 + 1, dict(self.blocked(), status='running', current_run_id=1))
-        workspace = self.root / 'workspace'
-        workspace.mkdir()
-        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            self.service.provider.prepare_kanban_worker(self.task_id, self.service._public(self.desk), str(workspace), self.task_id)
-            self.service._run_task(self.task_id)
-        finished = self.service._get('tasks', self.task_id)
-        self.assertNotIn(finished['status'], ('failed', 'queued', 'working'), (finished.get('summary'), finished.get('_error_detail')))
-        check = finished['_block_check']
-        self.assertEqual(check['paused_by_decision_id'], ANSWER)
-        self.assertTrue(check['pause_fingerprint'])
-        # The worker blocked the task again. The next check waits for the person.
-        armed = self.check(2 * 10 ** 9)['_block_check']
-        self.assertEqual(armed['paused_by_decision_id'], ANSWER)
-        self.assertEqual(self.check(armed['next_at'])['status'], finished['status'])
-        self.assertEqual(self.service._get('decisions', ANSWER), answer)
-        # Replies of the worker turn are its own. No card, delivery, or relay was added.
-        after = {table: len(self.service._all(table)) for table in ('decisions', 'messages', 'deliveries')}
-        self.assertEqual((after['decisions'], after['deliveries']), (before['decisions'], before['deliveries']))
 
 
 if __name__ == '__main__':

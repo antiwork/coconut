@@ -13,13 +13,9 @@ import unittest
 from unittest.mock import Mock
 from uuid import UUID, uuid4, uuid5
 
-from coconut.native_bridge import NativeBridge, TurnPaused
-from coconut.native_routine_execution import finished_occurrence
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError
 import legacy_work_sync
-import test_failed_routine_continuation as failed_fixtures
-import test_finished_routine_workspace as workspace_fixtures
 import test_native_kanban as native_fixtures
 from hermes_env import needs_hermes
 
@@ -167,7 +163,6 @@ class ArchivedFailedRoutineAdmissionTests(ArchivedOccurrence, unittest.TestCase)
         self.assertEqual(proof['completion'], dict(job_id=JOB, owner=OWNER, success=False, native_confirmed=True))
         self.assertEqual(proof['continuation']['native_task_id'], 't_archived')
         self.assertEqual(proof['continuation']['turn_id'], continued['_native_turn_id'])
-        self.assertTrue(finished_occurrence(continued | {'_native_job_completion': proof}, continued['_native_job']))
         self.assertIn({'op': 'completion', 'id': 't_archived'}, self.calls)
 
     def test_successor_of_the_archived_task_keeps_the_continuation(self):
@@ -178,7 +173,6 @@ class ArchivedFailedRoutineAdmissionTests(ArchivedOccurrence, unittest.TestCase)
         self.assertEqual(proof['completion'], dict(job_id=JOB, owner=OWNER, success=False, native_confirmed=True))
         self.assertEqual(proof['continuation']['task_id'], owner['id'])
         self.assertEqual(proof['continuation']['native_task_id'], 't_successor')
-        self.assertTrue(finished_occurrence(continued | {'_native_job_completion': proof}, continued['_native_job']))
         self.assertEqual(self.store._active_routine_task(owner['routine_id'])['id'], owner['id'])
 
     def test_successor_waiting_for_dispatch_keeps_the_routine_busy(self):
@@ -352,10 +346,6 @@ class ArchivedFailedRoutineAdmissionTests(ArchivedOccurrence, unittest.TestCase)
         self.store.kanban.tasks[owner['id']].update(status='running', current_run_id=43, worker_pid=4343)
         proof = self.store.native_routine_completion_input(queued)
         self.assertEqual(proof['continuation']['native_task_id'], 't_successor_2')
-        self.assertTrue(finished_occurrence(queued | {'_native_job_completion': proof}, queued['_native_job']))
-        stale = dict(queued, _native_job_completion=dict(proof, continuation=dict(
-            proof['continuation'], native_task_id='t_successor')))
-        self.assertFalse(finished_occurrence(stale, queued['_native_job']))
 
     def test_reconciliation_still_cancels_other_archived_results(self):
         cases = dict(
@@ -419,7 +409,7 @@ class ArchivedFailedRoutineAdmissionTests(ArchivedOccurrence, unittest.TestCase)
                                           bot_id=owner['bot_id'], status='rejected', decided_by='archive'))
         self.assertRejected(owner, source)
 
-    def test_open_input_decision_background_and_unknown_effects_hold(self):
+    def test_open_input_decision_wait_and_unknown_effects_hold(self):
         owner, source = self.archived()
         self.store._put('decisions', dict(id='pending', task_id=owner['id'], bot_id=owner['bot_id'], status='pending'))
         self.assertRejected(owner, source, 'decision must be answered')
@@ -433,11 +423,11 @@ class ArchivedFailedRoutineAdmissionTests(ArchivedOccurrence, unittest.TestCase)
         self.store._put('tasks', owner)
         base = dict(task_id=owner['id'], turn_id=owner['_native_turn_id'], action_hash='hash',
                     created_at='2026-10-16T16:54:55Z')
-        self.store._put('native_receipts', dict(base, id='process', state='completed',
-            action={'name': 'terminal', 'arguments': {}},
-            result=json.dumps({'notify_on_complete': True, 'session_id': 'proc-1'})))
+        # A wait for another task that has no result yet.
+        self.store._put('native_receipts', dict(base, id='wait', state='completed', result='{}',
+            action={'name': 'coconut_wait', 'arguments': {}}, _wait_task_id='dependency', _wait_session_id='session'))
         self.assertRejected(owner, source)
-        self.store.db.execute("DELETE FROM native_receipts WHERE id='process'")
+        self.store.db.execute("DELETE FROM native_receipts WHERE id='wait'")
         self.store._put('native_receipts', dict(base, id='unknown', state='executing',
                                                 action={'name': 'write_file', 'arguments': {}}))
         self.assertRejected(owner, source)
@@ -453,78 +443,6 @@ class ArchivedFailedRoutineAdmissionTests(ArchivedOccurrence, unittest.TestCase)
         peer.update(status='working', _execution_session_id=owner['id'])
         self.store._put('tasks', peer)
         self.assertRejected(owner, source, 'active work')
-
-
-class ArchivedFailedRoutineBridgeTests(ArchivedOccurrence, unittest.TestCase):
-    """The worker's claim check accepts the successor's proof and nothing else."""
-
-    def setUp(self):
-        ArchivedOccurrence.setUp(self)
-        self.native = failed_fixtures.FailedClaimTests()
-        self.native.setUp()
-        self.addCleanup(self.native.doCleanups)
-        # The native fixture names its job 'job' and its owner 'owner'.
-        self.native.request['success'] = False
-        self.assertTrue(self.native.finish()['ok'])
-
-    def test_successor_proof_runs_tools_without_rewriting_the_failed_result(self):
-        job = dict(saved_job(self.retired), fire_claim={'by': 'owner'})
-        owner, source = self.archived(job)
-        owner['_native_job_completion_receipt'] = dict(job_id=JOB, owner='owner', success=False)
-        self.store._put('tasks', owner)
-        self.resume(source)
-        continued = self.successor(owner)
-        proof = self.store.native_routine_completion_input(continued)
-        before = copy.deepcopy(self.native.job)
-        bridge = NativeBridge({'task': dict(continued, _native_job_completion=proof)}, None, None)
-        self.assertEqual(self.native.run_tool(bridge), 'executed')
-        self.assertEqual(self.native.job, before)
-        self.assertFalse(self.native.job['_coconut_completion']['success'])
-        for field, value in (('_native_outcome_id', 't_archived'), ('_native_turn_id', 'foreign'), ('id', 'foreign')):
-            with self.subTest(field=field):
-                with self.assertRaises(TurnPaused):
-                    self.native.run_tool(NativeBridge({'task': dict(continued, **{field: value},
-                                                                    _native_job_completion=proof)}, None, None))
-
-
-class ArchivedFailedRoutineWorkerTests(ArchivedOccurrence, unittest.TestCase):
-    """The provider starts a real worker process for the successor turn. Its native modules are the shared stub."""
-
-    fixture = workspace_fixtures.FinishedRoutineWorkspaceTests
-    task = fixture.task
-    run_turn = fixture.run_turn
-    routine_scope = fixture.routine_scope
-    assertPreparationFailed = fixture.assertPreparationFailed
-
-    def setUp(self):
-        self.fixture.setUp(self)
-        ArchivedOccurrence.setUp(self)
-
-    def provider_task(self, continued, proof):
-        task = self.task(proof=None)
-        job = dict(continued['_native_job'], workdir=str(self.retired))
-        task.update(id=continued['id'], _native_job=job, _native_turn_id=continued['_native_turn_id'],
-                    _native_outcome_id=continued['_native_outcome_id'], _kanban_external_id=continued['id'],
-                    _native_job_completion=proof)
-        return task
-
-    def test_successor_turn_prepares_in_its_execution_workspace(self):
-        owner, source = self.archived()
-        self.resume(source)
-        continued = self.successor(owner)
-        proof = self.store.native_routine_completion_input(continued)
-        events, rows = self.run_turn(self.provider_task(continued, proof))
-        self.assertIn(('completed', {'summary': 'Complete.'}), events)
-        self.assertEqual(self.routine_scope(rows), [str(self.workspace)])
-
-    def test_successor_turn_without_its_proof_still_fails_preparation(self):
-        owner, source = self.archived()
-        self.resume(source)
-        continued = self.successor(owner)
-        self.store.kanban.tasks[owner['id']]['idempotency_key'] = 'coconut-followup:' + owner['id'] + ':other'
-        proof = self.store.native_routine_completion_input(continued)
-        self.assertEqual(proof, {})
-        self.assertPreparationFailed(*self.run_turn(self.provider_task(continued, proof)))
 
 
 @needs_hermes
@@ -617,14 +535,12 @@ class ArchivedFailedRoutineNativeTests(unittest.TestCase):
         self.assertEqual(native['parents'], [archived])
         self.assertEqual(native['key'], 'coconut-followup:' + owner['id'] + ':' + continued['_native_turn_id'])
         self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
-        self.assertEqual(self.provider.prepared[-1][1:], (workspace, owner['id'], successor))
         # The archived task keeps its own history. Hermes runs only the successor.
         self.assertEqual(self.native(archived), history)
         proof = task['_native_job_completion']
         self.assertEqual(proof['completion'], dict(job_id=JOB, owner=OWNER, success=False, native_confirmed=True))
         self.assertEqual(proof['continuation']['native_task_id'], successor)
         self.assertEqual(proof['continuation']['turn_id'], continued['_native_turn_id'])
-        self.assertTrue(finished_occurrence(task, task['_native_job']))
         self.assertEqual(task['_native_job'], owner['_native_job'])
         self.assertEqual(task['_kanban_workspace'], workspace)
 
@@ -663,7 +579,6 @@ class ArchivedFailedRoutineNativeTests(unittest.TestCase):
         self.assertEqual(proof['completion'], dict(job_id=JOB, owner=OWNER, success=False, native_confirmed=True))
         self.assertEqual(proof['continuation']['native_task_id'], latest)
         self.assertEqual(proof['continuation']['turn_id'], continued['_native_turn_id'])
-        self.assertTrue(finished_occurrence(second, second['_native_job']))
         self.assertEqual(second['_kanban_workspace'], workspace)
 
     def test_cancelled_occurrence_stays_archived(self):

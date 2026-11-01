@@ -1,11 +1,6 @@
-import json
 import tempfile
 import unittest
 from uuid import uuid4
-from types import SimpleNamespace
-from unittest.mock import patch
-
-from coconut.native_bridge import NativeBridge
 
 from coconut.providers import FixtureProvider
 from coconut.service import Service
@@ -60,62 +55,3 @@ class WorkQueueIsolationTests(unittest.TestCase):
             intake.update(status='working', _native_job_finished=False)
             self.service._put('tasks', intake)
         self.assertEqual(self.service._active_routine_task('intake')['id'], intake['id'])
-
-    def test_bot_can_wait_for_its_own_notified_process_without_duplicate_subscription(self):
-        task = self.task('Watch the published review')
-        with self.service.transaction():
-            task = self.service._get('tasks', task['id'])
-            task['status'] = 'working'
-            self.service._put('tasks', task)
-        receipt = self.service.emit(task['id'], 'native_call', {'name': 'terminal', 'arguments': {}})
-        self.service.emit(task['id'], 'native_result', {'id': receipt['id'], 'result': json.dumps(
-            {'session_id': 'review-watch', 'notify_on_complete': True})})
-        listed = self.service.wait_for_task(task['id'], {})
-        self.assertIn('review-watch', [p['process_id'] for p in listed['processes']])
-        for _ in range(2):
-            result = self.service.wait_for_task(task['id'], {'process_id': 'review-watch', 'reason': 'Review checks'})
-            self.assertEqual(result['status'], 'waiting')
-        self.assertEqual(len(self.service._all('native_receipts')), 1)
-        self.service.emit(task['id'], 'completed', {'summary': 'Waiting for review checks.'})
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'waiting')
-
-    def test_native_run_uses_the_coconut_queue_and_records_one_receipt(self):
-        caller = self.task('Run intake now')
-        routine_id = str(uuid4())
-        job = dict(id='native-intake', fire_claim={'by': 'owner'}, prompt='Check new assignments')
-        def native(operation, bots, **arguments):
-            self.assertEqual(operation, 'routine_claim')
-            return {'job': job}
-        self.service.provider.native_settings = native
-        with self.service.transaction():
-            caller = self.service._get('tasks', caller['id'])
-            caller['status'] = 'working'
-            self.service._put('tasks', caller)
-            self.service._put('routines', dict(id=routine_id, bot_id=self.bot['id'], _native_id=job['id'], name='Intake', enabled=True))
-        middleware = {}
-        class Context:
-            def __init__(self, *args): pass
-            def register_middleware(self, kind, callback):
-                middleware['call'] = callback
-                return SimpleNamespace(dispose=lambda: None)
-        modules = {
-            'tools.approval': SimpleNamespace(register_gateway_notify=lambda *a: None),
-            'hermes_cli.plugins': SimpleNamespace(PluginContext=Context, PluginManifest=lambda **kw: None, get_plugin_manager=lambda: None),
-            'hermes_cli.middleware': SimpleNamespace(TOOL_EXECUTION_MIDDLEWARE='tool'),
-        }
-        bridge = NativeBridge({'operation': 'start', 'task': caller}, None,
-                              lambda kind, data: self.service.emit(caller['id'], kind, data))
-        with patch.dict('sys.modules', modules):
-            bridge.install(None)
-            result = middleware['call']('cronjob_manage', {'action': 'run', 'job_id': job['id']},
-                                        lambda args: self.fail('The standalone runner must not execute.'))
-        queued = json.loads(result)
-        self.assertTrue(queued['success'])
-        self.assertEqual(queued['scheduler'], 'coconut')
-        self.assertEqual(self.service._get('tasks', queued['task_id'])['routine_id'], routine_id)
-        record = self.service._all('native_receipts')[0]
-        self.assertEqual(record['state'], 'completed')
-        self.assertEqual(record['result'], result)
-        again = self.service.emit(caller['id'], 'native_call', {'name': 'cronjob_manage', 'arguments': {'action': 'run', 'job_id': job['id']}})
-        self.assertEqual(json.loads(again['routine_result'])['task_id'], queued['task_id'])
-        self.assertEqual(len([t for t in self.service._all('tasks') if t.get('routine_id') == routine_id]), 1)

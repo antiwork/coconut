@@ -41,25 +41,25 @@ class WorkDecisionWaitTests(unittest.TestCase):
         card = self.card()
         self.wait(card)
         self.assertIn(card['id'], {d['id'] for d in self.listing['decisions']})
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertEqual(self.service._get('tasks', self.child)['status'], 'waiting')
         self.service.close()
         self.service = Service(self.temp.name, self.provider, start_workers=False)
         self.write(f"/v1/decisions/{card['id']}/answer", {'option_id': 'revise', 'revision': card['revision']})
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         task = self.service._get('tasks', self.child)
         self.assertEqual(task['status'], 'queued')
         self.assertIn('revise', task['_background_completion'][0])
         self.assertIn('does not approve publication', task['_background_completion'][0])
         after = task['_background_return_id']
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertEqual(self.service._get('tasks', self.child)['_background_return_id'], after)
 
     def test_cancelled_waiter_stays_cancelled(self):
         card = self.card(); self.wait(card)
         self.write(f'/v1/tasks/{self.child}/cancel', {})
         self.assertNotEqual(self.service._get('decisions', card['id'])['status'], 'pending')
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertEqual(self.service._get('tasks', self.child)['status'], 'cancelled')
 
     def test_dismissal_undo_preserves_delivery_of_the_later_answer(self):
@@ -67,14 +67,14 @@ class WorkDecisionWaitTests(unittest.TestCase):
         path = f"/v1/decisions/{card['id']}/inbox"
         dismissed = self.write(path, {'action': 'dismiss', 'revision': card['revision']})
         self.wait(card)
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertEqual(self.service._get('tasks', self.child)['status'], 'waiting')
         restored = self.write(path, {'action': 'restore', 'revision': card['revision'],
                                      'swipe_id': dismissed['inbox_swipe_id']})
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertEqual(self.service._get('tasks', self.child)['status'], 'waiting')
         self.write(f"/v1/decisions/{card['id']}/answer", {'option_id': 'revise', 'revision': restored['revision']})
-        self.service._drain_process_completions()
+        self.service._drain_task_completions()
         self.assertIn('revise', self.service._get('tasks', self.child)['_background_completion'][0])
 
     def test_wait_rejects_other_exchange_and_multiple_targets(self):

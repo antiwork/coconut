@@ -165,12 +165,12 @@ class PRReviewTests(unittest.TestCase):
         self.assertEqual(len(self.service.snapshot()['decisions']), 1)
 
     def test_external_merge_resumes_original_owner_once(self):
-        from coconut.hermes_worker import conversation_input
+        from turn_text import turn_input
         self.green(pr_state='merged', checks_state='unknown')
         task = self.service._get('tasks', self.child_id)
         self.assertEqual(task['status'], 'queued')
         self.assertEqual(task['_pr_review']['pr_state'], 'merged')
-        prompt, _ = conversation_input({'operation': 'start', 'task': task, 'history': []})
+        prompt, _ = turn_input({'operation': 'start', 'task': task, 'history': []})
         self.assertIn('Verify whether the accepted outcome is complete', prompt)
         self.assertIn('Do not merge, reopen, publish, or deploy', prompt)
         task['status'] = 'completed'
@@ -316,8 +316,8 @@ class PRReviewTests(unittest.TestCase):
         self.assertEqual(self.provider.starts[-1]['_pr_review']['url'],URL)
 
     def test_native_prompt_keeps_verification_and_approval_boundaries(self):
-        from coconut.hermes_worker import conversation_input
-        prompt,_=conversation_input({'operation':'start','task':{'title':'Check PR','_pr_review':{'url':URL,'head_sha':'a'*40}},'history':[]})
+        from turn_text import turn_input
+        prompt,_=turn_input({'operation':'start','task':{'title':'Check PR','_pr_review':{'url':URL,'head_sha':'a'*40}},'history':[]})
         self.assertIn('not permission to merge',prompt)
         self.assertIn('required checks',prompt)
         from coconut.pull_request_reviews import PR_MERGE_INSTRUCTIONS
@@ -637,8 +637,8 @@ class PRReviewTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks',request['id'])['status'],'queued')
 
     def test_recorded_merge_answer_does_not_repeat_initial_review_request(self):
-        from coconut.hermes_worker import conversation_input
-        prompt,_=conversation_input({'operation':'resume','task':{'title':'Check PR','_pr_review':{'url':URL,'head_sha':'a'*40}},
+        from turn_text import turn_input
+        prompt,_=turn_input({'operation':'resume','task':{'title':'Check PR','_pr_review':{'url':URL,'head_sha':'a'*40}},
             'decision':{'action_type':'question','status':'answered','answer':'merge'},'history':[]})
         self.assertIn('using this recorded answer',prompt)
         self.assertNotIn('Do not merge now',prompt)

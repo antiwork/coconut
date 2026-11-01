@@ -1,18 +1,16 @@
 """Bot continuations keep the saved execution without changing worktree ownership."""
-import copy
 import json
-import os
 from pathlib import Path
 import sys
 import unittest
 from unittest.mock import patch
 from uuid import uuid4
 
-from coconut.native_relay import delivery_payload, message_tool_schema
 from coconut.service import Service, ServiceError, YieldForDecision
 import test_work_progress as fixtures
 from test_work_progress import progress
 import legacy_work_sync
+from turn_text import turn_input
 from hermes_env import needs_hermes, SOURCE
 
 setUpModule, tearDownModule = legacy_work_sync.scope()
@@ -34,23 +32,18 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.service._put('tasks', source)
         return previous, source
 
-    def send(self, source, previous, **changes):
-        arguments = dict(target=self.dev['id'], message='Continue the approved correction.',
-                         continuation_task_id=previous['id']) | changes
-        call = self.service.emit(source['id'], 'native_call', dict(name='message_agent', arguments=arguments))
-        payload = dict(native_call_id=call['id'], native_envelope_id=uuid4().hex,
-                       target_bot_id=arguments['target'], text=arguments['message'],
-                       continuation_task_id=arguments['continuation_task_id'])
-        return payload, self.service.emit(source['id'], 'native_bot_message', payload)
+    def send(self, source, previous, message='Continue the approved correction.', **changes):
+        """A message of the bot that continues the failed task `previous` (continuation_task_id)."""
+        payload = dict(target_bot_id=self.dev['id'], text=message, continuation_task_id=previous['id']) | changes
+        return payload, self.service.emit(source['id'], 'bot_message', payload)
 
     def assert_rejected(self, source, previous, reason):
-        payload, receipt = self.send(source, previous)
-        self.assertEqual(receipt['status'], 'rejected')
-        self.assertIn(reason, receipt['error'])
-        self.assertEqual(self.service._get('native_receipts', payload['native_call_id'])['state'], 'completed')
+        before = len(self.service._all('tasks'))
+        # A message with new text, so the check does not find the delivery of an earlier message.
+        with self.assertRaisesRegex(ServiceError, reason):
+            self.send(source, previous, message='Continue the approved correction: ' + str(uuid4()))
+        self.assertEqual(len(self.service._all('tasks')), before)
         self.assertEqual(self.service._get('tasks', source['id'])['status'], 'working')
-        self.assertEqual(self.service.emit(source['id'], 'native_bot_message', payload), receipt)
-        return payload, receipt
 
     def test_target_survives_an_unrelated_helper_callback_and_restart(self):
         previous, source = self.prepare()
@@ -70,12 +63,12 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.assertEqual(continued['_preference_source_ids'], ['saved-human-source'])
         self.assertEqual(continued['_bot_messages'][-1]['sender_bot_id'], self.desk['id'])
         self.assertEqual(continued['source_task_id'], source['id'])
-        self.assertEqual(continued['_native_relay']['envelope_id'], payload['native_envelope_id'])
         self.assertEqual(len([m for m in self.service._all('messages') if m['role'] == 'user']), before_users)
-        self.assertEqual(self.service.emit(source['id'], 'native_bot_message', payload), receipt)
+        # A repeated delivery of the same message finds the same task, also after a restart.
+        self.assertEqual(self.service.emit(source['id'], 'bot_message', payload)['task_id'], receipt['task_id'])
         self.service.close()
         self.service = Service(self.temp.name, self.provider, start_workers=False)
-        self.assertEqual(self.service.emit(source['id'], 'native_bot_message', payload), receipt)
+        self.assertEqual(self.service.emit(source['id'], 'bot_message', payload)['task_id'], receipt['task_id'])
         self.assertEqual(self.service._get('tasks', continued['id'])['_execution_session_id'], self.child)
         self.service._put('tasks', dict(self.service._get('tasks', source['id']), status='working'))
         self.assert_rejected(source, previous, 'already has active work')
@@ -120,41 +113,17 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', receipt['task_id'])['_execution_session_id'], self.child)
         self.assertEqual(self.service._get('decisions', 'optional')['status'], 'pending')
 
-    def test_receipt_rejects_target_substitution(self):
-        previous, source = self.prepare()
-        payload, receipt = self.send(source, previous)
-        for identity in (None, source['id']):
-            with self.subTest(identity=identity), self.assertRaisesRegex(ServiceError, 'does not match'):
-                self.service.emit(source['id'], 'native_bot_message', dict(payload, continuation_task_id=identity))
-
-    def test_malformed_continuation_id_returns_a_completed_rejection(self):
+    def test_malformed_continuation_id_is_rejected(self):
         previous, source = self.prepare()
         for value in (' ', '', None, 42, 'x' * 101):
             with self.subTest(value=value):
-                payload, receipt = self.send(source, previous, continuation_task_id=value)
-                self.assertEqual(receipt['status'], 'rejected')
-                self.assertIn('continuation_task_id', receipt['error'])
-                self.assertEqual(self.service._get('native_receipts', payload['native_call_id'])['state'], 'completed')
-                self.assertEqual(self.service.emit(source['id'], 'native_bot_message', payload), receipt)
+                before = len(self.service._all('tasks'))
+                with self.assertRaisesRegex(ServiceError, 'continuation_task_id'):
+                    self.send(source, previous, continuation_task_id=value)
+                self.assertEqual(len(self.service._all('tasks')), before)
                 self.assertEqual(self.service._get('tasks', source['id'])['status'], 'working')
 
-    def test_schema_and_saved_delivery_keep_optional_task_target(self):
-        native = {'name': 'message_agent', 'description': 'Send a message.', 'parameters': {
-            'type': 'object', 'properties': {'target': {'type': 'string'}, 'message': {'type': 'string'}},
-            'required': ['target', 'message']}}
-        original = copy.deepcopy(native)
-        schema = message_tool_schema(native)
-        self.assertEqual(native, original)
-        self.assertIn('continuation_task_id', schema['parameters']['properties'])
-        self.assertNotIn('continuation_task_id', schema['parameters']['required'])
-        intent = dict(call_id='call', target_bot_id='bot', text='Continue', envelope={'id': 'envelope'},
-                      continuation_task_id='original')
-        self.assertEqual(delivery_payload(intent)['continuation_task_id'], 'original')
-        del intent['continuation_task_id']
-        self.assertNotIn('continuation_task_id', delivery_payload(intent))
-
     def test_unknown_effects_use_existing_recovery_context_before_retry(self):
-        from coconut.hermes_worker import conversation_input
         previous, source = self.prepare()
         self.service._put('tasks', dict(previous, status='working'))
         unknown = self.service.emit(previous['id'], 'native_call', {
@@ -170,7 +139,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.service._run_task(receipt['task_id'])
         recovery = captured[0]['_self_recovery']
         self.assertEqual({r['id'] for r in recovery['unknown_tools']}, {'older', unknown['id']})
-        prompt = conversation_input(dict(operation='start', task=captured[0], history=[]))[0]
+        prompt = turn_input(dict(operation='start', task=captured[0], history=[]))[0]
         self.assertIn('Never repeat a write while its effect remains unknown', prompt)
         self.assertIn('git push', prompt)
         self.assertEqual(self.service._get('native_receipts', unknown['id'])['state'], 'executing')
@@ -190,7 +159,6 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', continued['id'])['status'], 'completed')
 
     def test_rejected_decision_survives_failure_before_provider_receives_it(self):
-        from coconut.hermes_worker import conversation_input
         previous, source = self.prepare()
         self.service._put('tasks', dict(previous, status='working'))
         with self.assertRaises(YieldForDecision):
@@ -216,14 +184,13 @@ class TargetedBotContinuationTests(unittest.TestCase):
         saved = captured[0]['_self_recovery']['decisions']
         self.assertEqual(saved[0]['id'], decision['id'])
         self.assertEqual(saved[0]['status'], 'rejected')
-        prompt = conversation_input(dict(operation='start', task=captured[0], history=[]))[0]
+        prompt = turn_input(dict(operation='start', task=captured[0], history=[]))[0]
         self.assertIn('Publish the correction?', prompt)
         self.assertIn('rejected', prompt)
         self.assertIn('This is not a new human instruction or approval', prompt)
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'rejected')
 
     def test_undelivered_human_followup_reaches_the_continued_session(self):
-        from coconut.hermes_worker import conversation_input
         previous, source = self.prepare()
         self.service._put('tasks', dict(previous, status='working', _turn_message_ids=[]))
         self.write('/v1/tasks/' + previous['id'] + '/replies', {'text': 'Do not publish. Keep the correction local.'})
@@ -239,12 +206,11 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.service._run_task(receipt['task_id'])
         task, history = captured[0]
         self.assertTrue(set(pending['message_ids']).issubset(task['_turn_message_ids']))
-        prompt = conversation_input(dict(operation='start', task=task, history=history))[0]
+        prompt = turn_input(dict(operation='start', task=task, history=history))[0]
         self.assertIn('Do not publish. Keep the correction local.', prompt)
         self.assertNotIn('_blocked_followup', self.service._get('tasks', previous['id']))
 
     def test_selected_human_followup_survives_provider_failure(self):
-        from coconut.hermes_worker import conversation_input
         previous, source = self.prepare()
         self.service._put('tasks', dict(previous, status='queued'))
         restriction = 'Do not publish. Keep the correction local.'
@@ -267,73 +233,9 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.service._run_task(receipt['task_id'])
         task, history = captured[0]
         self.assertTrue(set(previous['_turn_message_ids']).issubset(task['_turn_message_ids']))
-        self.assertIn(restriction, conversation_input(dict(operation='start', task=task, history=history))[0])
-
-    @needs_hermes
-    def test_completed_result_survives_failure_and_prevents_repeated_write(self):
-        from coconut.hermes_worker import conversation_input
-        from coconut.native_bridge import NativeBridge
-        from coconut.native_turn_scope import current, TurnScope
-        previous, source = self.prepare()
-        self.service._put('tasks', dict(previous, status='working', _native_turn_id='older-turn'))
-        older = self.service.emit(previous['id'], 'native_call', dict(name='terminal', arguments={'command': 'git status'}))
-        self.service.emit(previous['id'], 'native_result', dict(id=older['id'], result='Earlier status'))
-        self.service._put('tasks', dict(previous, status='queued', _native_turn_id='failed-turn'))
-        saved = []
-        action = dict(name='terminal', arguments={'command': 'git push origin HEAD'})
-        def fail_after_result(task, bot, history, emit):
-            record = emit('native_call', action)
-            emit('native_result', dict(id=record['id'], result='Push accepted'))
-            saved.append(record['id'])
-            raise RuntimeError('Native session commit failed after the tool returned')
-        self.provider.start_task = fail_after_result
-        self.service._run_task(previous['id'])
-        previous = self.service._get('tasks', previous['id'])
-        self.assertEqual(previous['status'], 'failed')
-        _, receipt = self.send(source, previous)
-        # A second interruption before input must retain the first saved result.
-        def fail_before_input(*args, **kwargs):
-            raise RuntimeError('Provider unavailable before input')
-        self.provider.start_task = fail_before_input
-        self.service._run_task(receipt['task_id'])
-        continued = self.service._get('tasks', receipt['task_id'])
-        _, receipt = self.send(source, continued)
-        captured = []
-        def verify_result(task, bot, history, emit):
-            captured.append((task, history))
-            emit('completed', {'summary': 'The push already succeeded.', '_work_todos': progress('completed')})
-        self.provider.start_task = verify_result
-        self.service._run_task(receipt['task_id'])
-        task, history = captured[0]
-        self.assertEqual([r['id'] for r in task['_native_receipts']], saved)
-        request = dict(operation='start', bot=self.dev, task=task, history=history)
-        self.assertIn('coconut_read_receipts', conversation_input(request)[0])
-        from coconut.native_receipt_context import read_receipts
-        recovered = read_receipts(task['_native_receipts'], {'receipt_id': saved[0]})
-        self.assertEqual(json.loads(recovered['json_chunk'])['result'], 'Push accepted')
-        calls = []
-        token = current.set(TurnScope(task['id']))
-        home = Path(self.temp.name) / 'bridge-home'
-        try:
-            with patch.dict(os.environ, HERMES_HOME=str(home)), patch.object(
-                    sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]):
-                bridge = NativeBridge(request, lambda *args: None, lambda *args: None)
-                bridge.install(None)
-                try:
-                    result = bridge.recorded(action['name'], action['arguments'], lambda args: calls.append(args))
-                    self.assertEqual(result, 'Push accepted')
-                    self.assertEqual(calls, [])
-                finally:
-                    bridge.close()
-        finally:
-            current.reset(token)
-        final = self.service._get('tasks', task['id'])
-        self.service._advance_input(final)
-        self.assertNotIn('_continuation_receipt_ids', final)
-        self.assertEqual(self.service._get('native_receipts', saved[0])['task_id'], previous['id'])
+        self.assertIn(restriction, turn_input(dict(operation='start', task=task, history=history))[0])
 
     def test_bot_correction_survives_failure_before_provider_input(self):
-        from coconut.hermes_worker import conversation_input
         previous, source = self.prepare()
         _, receipt = self.send(source, previous, message='Keep this change local. Do not publish.')
         def fail_before_input(*args, **kwargs):
@@ -350,13 +252,12 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.provider.start_task = check_context
         self.service._run_task(receipt['task_id'])
         task, history = captured[0]
-        prompt = conversation_input(dict(operation='start', task=task, history=history))[0]
+        prompt = turn_input(dict(operation='start', task=task, history=history))[0]
         self.assertIn('Keep this change local. Do not publish.', prompt)
         self.assertIn('Continue from the saved results.', prompt)
         self.assertEqual(task['_bot_messages'][-2]['sender_bot_id'], self.desk['id'])
 
     def test_background_result_survives_failure_before_provider_input(self):
-        from coconut.hermes_worker import conversation_input
         previous, source = self.prepare()
         self.service._put('tasks', dict(previous, status='working', _native_turn_id='process-start'))
         record = self.service.emit(previous['id'], 'native_call', dict(name='terminal', arguments={'background': True}))
@@ -379,57 +280,9 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.provider.start_task = check_result
         self.service._run_task(receipt['task_id'])
         task, history = captured[0]
-        self.assertIn('Review completed. Fix the currency label.', conversation_input(dict(operation='start', task=task, history=history))[0])
-
-    @needs_hermes
-    def test_completed_kanban_creation_keeps_its_original_replay_identity(self):
-        from coconut.native_bridge import NativeBridge
-        from coconut.native_turn_scope import current, TurnScope
-        previous, source = self.prepare()
-        previous.update(status='working', _native_turn_id='first-intake')
-        self.service._put('tasks', previous)
-        root = Path(self.temp.name)
-        arguments = dict(title='Review the approved correction', body='Use the existing scope')
-        calls = []
-        def execute(task, args, repeats=1):
-            token = current.set(TurnScope(task['id']))
-            bridge = NativeBridge(dict(operation='start', bot=self.dev, task=task), lambda *a: None,
-                                  lambda kind, data: self.service.emit(task['id'], kind, data))
-            bridge.install(None)
-            def create(payload):
-                calls.append(payload)
-                return create_task(conn, **payload)
-            try:
-                results = [bridge.recorded('kanban_create', args, create) for _ in range(repeats)]
-                return results[0] if repeats == 1 else results
-            finally:
-                bridge.close()
-                current.reset(token)
-        with patch.dict(os.environ, HERMES_HOME=str(root / 'kanban-home')), patch.object(
-                sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]):
-            from hermes_cli.kanban_db import create_task
-            from hermes_cli.kanban_db_connect import connect
-            conn = connect(root / 'kanban.db')
-            try:
-                original = execute(previous, arguments)
-                previous.update(status='failed')
-                self.service._put('tasks', previous)
-                _, receipt = self.send(source, previous)
-                captured = []
-                def verify(task, bot, history, emit):
-                    captured.extend(execute(task, arguments, repeats=2))
-                    emit('completed', {'summary': 'The existing outcome is retained.', '_work_todos': progress('completed')})
-                self.provider.start_task = verify
-                self.service._run_task(receipt['task_id'])
-                self.assertEqual(captured, [original, original])
-                self.assertEqual(len(calls), 2)
-                self.assertEqual(conn.execute('SELECT count(*) FROM tasks').fetchone()[0], 1)
-                self.assertEqual(conn.execute('SELECT session_id FROM tasks WHERE id=?', (original,)).fetchone()[0], previous['id'])
-            finally:
-                conn.close()
+        self.assertIn('Review completed. Fix the currency label.', turn_input(dict(operation='start', task=task, history=history))[0])
 
     def test_pending_pr_review_survives_provider_failure(self):
-        from coconut.hermes_worker import conversation_input
         previous, source = self.prepare()
         review = dict(url='https://github.com/example/repo/pull/1', head_sha='current-head',
                       checks_state='failed', check_failures='The currency regression failed')
@@ -449,7 +302,7 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.service._run_task(receipt['task_id'])
         task, history = captured[0]
         self.assertEqual(task['_pr_review'], review)
-        prompt = conversation_input(dict(operation='start', task=task, history=history))[0]
+        prompt = turn_input(dict(operation='start', task=task, history=history))[0]
         self.assertIn('The currency regression failed', prompt)
         self.assertIn('current-head', prompt)
 
@@ -591,58 +444,6 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.assertEqual(self.service._get('artifacts', work['id'])['task_id'], receipt['task_id'])
 
     @needs_hermes
-    def test_native_delivery_race_returns_a_terminal_error_to_the_sender(self):
-        from coconut.native_relay import NativeRelay, recover_delivery
-        previous, source = self.prepare()
-        arguments = dict(target=self.dev['id'], message='Continue the correction.', continuation_task_id=previous['id'])
-        call = self.service.emit(source['id'], 'native_call', dict(name='message_agent', arguments=arguments))
-        home = self.service.profiles.home(self.desk)
-        request = dict(operation='start', bot=self.desk, task=dict(source, _available_bots=[self.dev]))
-        with patch.dict(os.environ, HERMES_HOME=str(home)), patch.object(
-                sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]):
-            relay = NativeRelay(request, lambda kind, payload: self.service.emit(source['id'], kind, payload))
-            relay.sync_roster()
-            def resume_before_delivery(args):
-                result = relay.enqueue(args)
-                other = dict(source, id=str(uuid4()))
-                self.service._put('tasks', other)
-                self.send(other, previous)
-                return result
-            result = json.loads(relay.deliver(arguments, resume_before_delivery, call['id']))
-            payload = recover_delivery(home, call['id'])
-        self.assertEqual(result['status'], 'rejected')
-        self.assertIn('already has active work', result['error'])
-        self.assertEqual(self.service._get('tasks', source['id'])['status'], 'working')
-        self.assertEqual(self.service._get('native_receipts', call['id'])['state'], 'completed')
-        self.assertEqual(self.service.emit(source['id'], 'native_bot_message', payload), result)
-
-    @needs_hermes
-    def test_native_envelope_round_trip_keeps_target_after_interruption(self):
-        from coconut.native_relay import NativeRelay, recover_delivery
-        previous, source = self.prepare()
-        arguments = dict(target=self.dev['id'], message='Continue the correction.', continuation_task_id=previous['id'])
-        call = self.service.emit(source['id'], 'native_call', dict(name='message_agent', arguments=arguments))
-        home = self.service.profiles.home(self.desk)
-        request = dict(operation='start', bot=self.desk,
-                       task=dict(source, _available_bots=[self.dev]))
-        with patch.dict(os.environ, HERMES_HOME=str(home)), patch.object(
-                sys, 'path', [str(Path(__file__).parents[1] / 'coconut'), SOURCE, *sys.path]):
-            relay = NativeRelay(request, lambda kind, payload: self.service.emit(source['id'], kind, payload))
-            relay.sync_roster()
-            result = json.loads(relay.deliver(arguments, relay.enqueue, call['id']))
-            payload = recover_delivery(home, call['id'])
-            self.assertEqual(payload['continuation_task_id'], previous['id'])
-            self.assertEqual(self.service.emit(source['id'], 'native_bot_message', payload), result)
-            self.assertEqual(len(list((home / 'bot_relay/claimed').glob('*.json'))), 1)
-        continued = self.service._get('tasks', result['task_id'])
-        self.assertEqual(continued['_execution_session_id'], self.child)
-        self.provider.mode = 'done'
-        self.service._run_task(continued['id'])
-        final = self.service._get('tasks', continued['id'])
-        self.assertEqual(final['status'], 'completed')
-        self.assertEqual(final['_native_reply_pending']['envelope_id'], payload['native_envelope_id'])
-
-    @needs_hermes
     def test_continuation_reopens_real_dirty_worktree_without_rebinding(self):
         from coconut.work_workspace import acquire, git
         previous, source = self.prepare()
@@ -664,53 +465,5 @@ class TargetedBotContinuationTests(unittest.TestCase):
                 acquire(root / 'workspaces', continued['id'], str(repo), binding['path'])
 
 
-class TargetedContinuationProviderTests(unittest.TestCase):
-    import test_provider as provider_fixtures
-    setUp = provider_fixtures.ProviderTests.setUp
-    tearDown = provider_fixtures.ProviderTests.tearDown
-    fake_hermes = provider_fixtures.ProviderTests.fake_hermes
-    configure_peer = provider_fixtures.ProviderTests.configure_peer
-
-    def test_rejected_continuation_reaches_native_bot_without_stopping_it(self):
-        peer = self.configure_peer()
-        arguments = repr(dict(target=peer['id'], message='Continue.', continuation_task_id='old-task'))
-        provider = self.fake_hermes(
-            "import json\nresult = json.loads(registry.dispatch('message_agent', " + arguments + "))\n"
-            "assert result['status'] == 'rejected'\n"
-            "assert result['error'] == 'This execution already has active work.'\n"
-            "assert 'private_memory' not in result\n"
-            "return {'completed': True, 'final_response': 'The existing worker is active.'}\n")
-        events = []
-        def emit(kind, data):
-            events.append((kind, data))
-            if kind == 'native_call':
-                return dict(status='recorded', id='call')
-            if kind == 'native_bot_message':
-                self.assertEqual(data['continuation_task_id'], 'old-task')
-                return dict(status='rejected', error='This execution already has active work.',
-                            target_bot_id=peer['id'], private_memory='Do not forward this.')
-        with patch.dict(os.environ, ANTHROPIC_API_KEY='test-only'):
-            provider.start_task(self.task, self.bot, [], emit)
-        self.assertEqual(events[-1][0], 'completed', events)
-        self.assertNotIn('failed', [kind for kind, data in events])
-
-    def test_work_validation_error_allows_the_bot_to_correct_its_request(self):
-        provider = self.fake_hermes(
-            "import json\nresult = json.loads(registry.dispatch('coconut_track_pr', {'url': 'https://github.com/example/repo/pull/1', 'work_id': 'pr-artifact'}))\n"
-            "assert result == {'status': 'rejected', 'error': 'Choose a Work outcome to attach this pull request.'}\n"
-            "fixed = json.loads(registry.dispatch('coconut_track_pr', {'url': 'https://github.com/example/repo/pull/1'}))\n"
-            "assert fixed['id'] == 'pr-artifact'\n"
-            "return {'completed': True, 'final_response': 'The PR is tracked.'}\n")
-        requests, events = [], []
-        def emit(kind, data):
-            events.append((kind, data))
-            if kind == 'artifact':
-                requests.append(data)
-                if data.get('work_id'):
-                    raise ServiceError(400, 'Choose a Work outcome to attach this pull request.')
-                return dict(id='pr-artifact', kind='pr', url=data['url'])
-        with patch.dict(os.environ, ANTHROPIC_API_KEY='test-only'):
-            provider.start_task(self.task, self.bot, [], emit)
-        self.assertEqual(len(requests), 2)
-        self.assertNotIn('work_id', requests[-1])
-        self.assertEqual(events[-1][0], 'completed', events)
+if __name__ == '__main__':
+    unittest.main()

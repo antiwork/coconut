@@ -37,7 +37,7 @@ class ModelSelectionTests(unittest.TestCase):
             catalog = HermesModelCatalog(directory, source=source, python=sys.executable)
             with patch.object(model_catalog.subprocess, 'run',
                               return_value=subprocess.CompletedProcess([], 0, '{"result": {}}', '')) as run:
-                catalog._call('runtime')
+                catalog._call('get')
             from coconut.runtime_environment import profile_environment
             environment = run.call_args.kwargs['env']
             self.assertEqual(environment['HOME'], profile_environment(Path(directory) / 'bot')['HOME'])
@@ -92,9 +92,6 @@ class ModelSelectionTests(unittest.TestCase):
 
     def test_large_routine_output_reaches_the_native_worker_without_truncation(self):
         self.check_large_native_text('routine_finish', 'output')
-
-    def test_large_bot_reply_reaches_the_native_worker_without_truncation(self):
-        self.check_large_native_text('relay_reply', 'text')
 
     def test_oversized_settings_request_rejects_before_dispatch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -371,7 +368,7 @@ class ModelSelectionTests(unittest.TestCase):
             completed = subprocess.CompletedProcess([], 1, 'private-token', 'private-token')
             with patch('coconut.model_catalog.subprocess.run', return_value=completed):
                 with self.assertRaises(ModelCatalogError) as error:
-                    catalog._call('runtime', selection={})
+                    catalog._call('get')
             self.assertNotIn('private-token', str(error.exception))
 
     def test_cached_reads_continue_while_native_discovery_waits(self):
@@ -605,11 +602,6 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
         result = self.run_native("m._write_default({'model': 'second', 'provider': 'provider-b'}, request)\nfrom hermes_cli.config import load_config\nfrom hermes_constants import resolve_reasoning_config\nconfig = load_config()\nresult = [resolve_reasoning_config(config, 'second'), resolve_reasoning_config(config, 'unrelated')]", example_catalog())
         self.assertEqual(result, [None, {'enabled': True, 'effort': 'low'}])
 
-    def test_private_native_runtime_keeps_only_constructor_arguments(self):
-        result = self.run_native("from unittest.mock import patch\nwith patch('hermes_cli.runtime_provider.resolve_runtime_provider', return_value={'provider': 'openai-codex', 'api_mode': 'codex_responses', 'api_key': 'private-test-token', 'base_url': 'https://chatgpt.com/backend-api/codex', 'credential_pool': object(), 'source': 'private-source'}):\n    private = m._native_runtime({'model': 'gpt-6-astra', 'provider': 'openai-codex'})\nresult = {'keys': sorted(private), 'private_token_preserved': private['api_key'] == 'private-test-token'}")
-        self.assertTrue(result['private_token_preserved'])
-        self.assertEqual(result['keys'], ['api_key', 'api_mode', 'base_url', 'provider'])
-
     def test_native_profile_selection_and_reset_preserve_unrelated_settings(self):
         profile = self.root / 'bot'
         profile.mkdir()
@@ -633,15 +625,6 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
         self.assertEqual(result['model_override']['reasoning_effort'], 'none')
         self.assertEqual(result['effective_model']['base_url'], 'http://localhost:9911/v1')
 
-    def test_native_profile_auth_uses_the_store_of_the_profile(self):
-        profile = self.root / 'bot'
-        profile.mkdir()
-        (profile / 'auth.json').write_text(json.dumps({'providers': {'openai-codex': {'access_token': 'profile-test'}}}))
-        (self.home / 'auth.json').write_text(json.dumps({'providers': {'openai-codex': {'access_token': 'default-test'}}}))
-        result = self.run_native("from unittest.mock import patch\nfrom hermes_cli import auth\ndef resolve(**kwargs):\n    state, origin = auth._load_provider_state_with_source(auth._load_auth_store(), 'openai-codex')\n    return {'provider': 'openai-codex', 'api_mode': 'codex_responses', 'api_key': state['access_token'], 'base_url': 'https://chatgpt.com/backend-api/codex'}\nwith patch('hermes_cli.runtime_provider.resolve_runtime_provider', side_effect=resolve):\n    private = m._native_runtime({'model': 'gpt-6-astra', 'provider': 'openai-codex'}, request['profile'])\nresult = private['api_key']", {'profile': str(profile)})
-        # Hermes reads and refreshes the sign-in of the profile itself. Coconut does not redirect it to another home.
-        self.assertEqual(result, 'profile-test')
-
     def test_invalid_profile_does_not_hide_another_bot(self):
         (self.home / 'config.yaml').write_text('model: {default: gpt-6-astra, provider: openai-codex}\n')
         good, bad = self.root / 'good', self.root / 'bad'
@@ -659,10 +642,6 @@ with open(os.devnull, 'w') as quiet, contextlib.redirect_stdout(quiet), contextl
         self.assertFalse(result['default']['supported'])
         self.assertTrue(result['default']['unavailable_reason'])
         self.assertEqual(result['models'], [])
-
-    def test_required_custom_fields_and_callable_keys_reject_before_filtering(self):
-        result = self.run_native("from unittest.mock import patch\nresult = []\nfor field in ['extra_headers', 'extra_body', 'request_overrides', 'capabilities', 'key_cmd', 'api_key']:\n    runtime = {'provider': 'openai-codex', 'api_mode': 'codex_responses', 'api_key': 'private-test-token'}\n    runtime[field] = (lambda: 'private-test-token') if field == 'api_key' else {'required': 'private-test-token'}\n    with patch('hermes_cli.runtime_provider.resolve_runtime_provider', return_value=runtime):\n        try:\n            m._native_runtime({'model': 'gpt-6-astra', 'provider': 'openai-codex'})\n            result.append(False)\n        except m.UnsupportedModelRoute as error:\n            result.append('private-test-token' not in str(error))")
-        self.assertEqual(result, [True] * 6)
 
     def test_builtin_route_with_required_private_headers_is_not_offered(self):
         result = self.run_native("config = {'model': {'provider': 'anthropic', 'default': 'native-model', 'default_headers': {'Authorization': 'private-test-token'}}}\nresult = m._catalog(config, 'native-model', 'anthropic', None, [{'slug': 'anthropic', 'models': ['native-model']}])")

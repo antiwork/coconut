@@ -10,7 +10,6 @@ import json
 import unittest
 from uuid import UUID, uuid5
 
-import test_failed_routine_continuation as native_fixtures
 import test_native_kanban as fixtures
 import test_waiting_occurrence_release as waiting
 import hermes_env
@@ -34,7 +33,7 @@ class NativeOccurrenceCompletionTests(unittest.TestCase):
     def setUp(self):
         hermes_env.require(self)
         fixtures.NativeKanbanTests.setUp(self)
-        self.native = native_fixtures.FailedClaimTests()
+        self.native = waiting.NativeJob()
         self.native.setUp()
         self.addCleanup(self.native.doCleanups)
         self.calls, self.routine, self.view = [], None, None

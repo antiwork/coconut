@@ -1,32 +1,12 @@
 import base64
-import copy
 import tempfile
 import unittest
 from uuid import uuid4
 
-from coconut.hermes_worker import conversation_input
-from coconut.native_conversation import NativeConversation, current_message, seed_messages, missing_prefix
+from turn_text import turn_input
+from coconut.gateway_chat import gateway_turn_own
 from coconut.service import Service
 from test_service import ControlledProvider
-
-
-class NativeStore:
-    def __init__(self):
-        self.meta, self.sessions, self.tips = {}, {}, {}
-        self.replacements = 0
-
-    def get_meta(self, key): return self.meta.get(key)
-    def set_meta(self, key, value): self.meta[key] = value
-    def create_session(self, session_id, **kwargs): self.sessions.setdefault(session_id, [])
-    def get_session(self, session_id): return {'id': session_id} if session_id in self.sessions else None
-    def end_session(self, session_id, reason): pass
-    def resolve_resume_session_id(self, root): return self.tips.get(root, root)
-    def get_resume_conversations(self, session_id):
-        return copy.deepcopy(self.sessions[session_id]), copy.deepcopy(self.sessions[session_id])
-    def replace_messages(self, session_id, messages, **kwargs):
-        self.replacements += 1
-        self.sessions[session_id] = copy.deepcopy(messages)
-    def close(self): pass
 
 
 class ConversationInputTests(unittest.TestCase):
@@ -38,214 +18,48 @@ class ConversationInputTests(unittest.TestCase):
                                 self.message('old-answer', 'earlier', 'assistant', 'I will use blue.'),
                                 self.message('current-user', 'current', 'user', 'Which label?'),
                                 self.message('queued-user', 'queued', 'user', 'Do a different task later.')])
-        self.db = NativeStore()
 
     def message(self, identity, task, role, text, **kwargs):
         return dict(id=identity, task_id=task, role=role, kind='text', text=text, **kwargs)
 
     def test_new_task_keeps_earlier_bot_conversation_and_ignores_later_queue(self):
-        prompt, history = conversation_input(self.request)
-        self.assertEqual(prompt, 'Which label?')
-        self.assertEqual([row['content'] for row in history], ['Use the blue label.', 'I will use blue.'])
+        prompt, _ = turn_input(self.request)
+        # The turn's own text is the current message. The notes of the turn follow it.
+        self.assertEqual(gateway_turn_own(self.request), 'Which label?')
+        self.assertTrue(prompt.startswith('Which label?'))
+        self.assertNotIn('Do a different task later.', prompt)
 
-    def test_old_card_keeps_exact_request_after_native_compaction(self):
-        original = 'Detailed request. ' * 400 + 'Keep the final filename: annual-report.md'
-        self.request['history'][0]['text'] = original
-        decision = dict(id='old-card', task_id='earlier', action_type='question', status='approved',
-                        title='Which format?', request_message_id='old-user', request_text=original[:4000],
-                        selected_option_id='markdown', selected_option_label='Markdown')
-        self.db.meta['coconut.history-context.' + self.root] = 'complete'
-        self.db.sessions[self.root] = [{'role': 'user', 'content': 'Native summary of unrelated recent work.'}]
-        for operation in ('resume', 'context'):
-            with self.subTest(operation=operation):
-                request = dict(self.request, operation=operation, decision=decision, question='Use the original filename?',
-                               task=dict(self.request['task'], pending_decision=decision, _decision_reply=True))
-                prompt, _ = conversation_input(request)
-                self.assertIn(original, prompt)
-                self.assertNotIn('Do a different task later.', prompt)
-                self.assertEqual(NativeConversation(request, self.db).history, self.db.sessions[self.root])
-                self.assertEqual(self.db.replacements, 0)
-        self.assertEqual(decision['request_text'], original[:4000])
+    def test_all_queued_messages_enter_the_prompt_in_order(self):
+        self.request['history'].append(self.message('follow-up', 'current', 'user', 'Keep it short.'))
+        prompt, _ = turn_input(self.request)
+        self.assertEqual(gateway_turn_own(self.request), 'Which label?\n\nKeep it short.')
+        self.assertTrue(prompt.startswith('Which label?\n\nKeep it short.'))
 
-    def test_foreground_reply_keeps_the_visible_parallel_answer_after_native_compaction(self):
-        self.request['task'].update(_chat_session=True, _turn_message_ids=['current-user'])
-        self.request['history'][1]['text'] = 'The finance-alert card remains pending.'
-        self.request['task']['_visible_reply_contexts'] = {'current-user': dict(message_id='old-answer', text=self.request['history'][1]['text'])}
-        self.request['history'][2]['text'] = 'Incorrect there is no card pending'
-        self.request['history'].append(self.message('later-answer', 'queued', 'assistant', 'A later unrelated answer.'))
-        self.db.meta['coconut.history-context.' + self.root] = 'complete'
-        self.db.sessions[self.root] = [{'role': 'assistant', 'content': 'Run the Stripe test is recommended.'}]
-        prompt, _ = conversation_input(self.request)
-        self.assertIn('The finance-alert card remains pending.', prompt)
-        self.assertIn('Incorrect there is no card pending', prompt)
-        self.assertNotIn('A later unrelated answer.', prompt)
-        self.assertIn('does not confirm current state or authorize an action', prompt)
-        self.assertEqual(NativeConversation(self.request, self.db).history, self.db.sessions[self.root])
-        self.assertEqual(self.db.replacements, 0)
+    def test_background_work_text_has_its_audit_and_not_the_chat(self):
+        self.request['task'].update(id='audit', _execution_session_id='audit', _turn_message_ids=[],
+                                   _source_audit_prompt='Check the assigned launch issue.')
+        prompt, _ = turn_input(self.request)
+        self.assertIn('Check the assigned launch issue.', prompt)
+        self.assertNotIn('Which label?', prompt)
+        self.assertNotIn('Do a different task later.', prompt)
 
     def test_old_input_without_a_visibility_snapshot_does_not_infer_context_later(self):
         self.request['task']['_chat_session'] = True
-        prompt, _ = conversation_input(self.request)
+        prompt, _ = turn_input(self.request)
         self.assertNotIn('I will use blue.', prompt)
-
-    def test_batched_messages_keep_their_own_snapshot_and_explicit_reference(self):
-        self.request['task'].update(_chat_session=True, _turn_message_ids=['current-user', 'queued-user'],
-            _visible_reply_contexts={
-                'current-user': dict(message_id='first-answer', text='The finance card is pending.'),
-                'queued-user': dict(message_id='second-answer', text='The Stripe test is ready.')})
-        self.request['history'][2]['text'] = 'Incorrect there is no card pending'
-        self.request['history'][3]['text'] = 'How long will that test take?'
-        prompt, _ = conversation_input(self.request)
-        self.assertLess(prompt.index('The finance card is pending.'), prompt.index('Incorrect there is no card pending'))
-        self.assertLess(prompt.index('Incorrect there is no card pending'), prompt.index('The Stripe test is ready.'))
-        self.assertLess(prompt.index('The Stripe test is ready.'), prompt.index('How long will that test take?'))
-        self.request['history'][2]['reply_to'] = dict(message_id='quoted', text='An older finance answer.',
-            author='Desk', role='assistant', author_bot_id=self.request['bot']['id'])
-        prompt, _ = conversation_input(self.request)
-        self.assertIn('An older finance answer.', prompt)
-        self.assertNotIn('The finance card is pending.', prompt)
-        self.assertIn('The Stripe test is ready.', prompt)
 
     def test_explicit_reply_and_background_work_keep_their_own_context(self):
         self.request['task']['_chat_session'] = True
         self.request['task']['_visible_reply_contexts'] = {'current-user': dict(message_id='old-answer', text='I will use blue.')}
         self.request['history'][2]['reply_to'] = dict(message_id='quoted', text='A specific older reply.',
             author='Desk', role='assistant', author_bot_id=self.request['bot']['id'])
-        prompt, _ = conversation_input(self.request)
+        prompt, _ = turn_input(self.request)
         self.assertIn('A specific older reply.', prompt)
         self.assertNotIn('I will use blue.', prompt)
         self.request['history'][2].pop('reply_to')
         self.request['task']['_execution_session_id'] = 'background-work'
-        prompt, _ = conversation_input(self.request)
+        prompt, _ = turn_input(self.request)
         self.assertNotIn('I will use blue.', prompt)
-
-    def test_old_reply_and_reaction_keep_reference_after_native_continuation(self):
-        source = self.request['history'][1]
-        source['text'] = 'The original recommendation has a unique detail: cobalt-17.'
-        current = self.request['history'][2]
-        current['reply_to'] = dict(message_id=source['id'], text=source['text'], author='Desk', role='assistant', author_bot_id=self.request['bot']['id'])
-        child = str(uuid4())
-        self.db.meta['coconut.history-context.' + self.root] = 'complete'
-        self.db.tips[self.root] = child
-        self.db.sessions[child] = [{'role': 'user', 'content': 'Recent work summary.'}]
-        for reaction in (False, True):
-            with self.subTest(reaction=reaction):
-                if reaction:
-                    current['reaction_event'] = dict(emoji='👍', action='added')
-                    current['text'] = 'Reaction added: 👍'
-                prompt, _ = conversation_input(self.request)
-                self.assertIn(source['text'], prompt)
-                active = NativeConversation(self.request, self.db)
-                self.assertEqual(active.session_id, child)
-                self.assertEqual(active.history, self.db.sessions[child])
-                self.assertEqual(self.db.replacements, 0)
-                if reaction:
-                    self.assertIn('does not approve, reject, or select a pending decision', prompt)
-
-    def test_all_queued_messages_enter_the_prompt_in_order(self):
-        self.request['history'].append(self.message('follow-up', 'current', 'user', 'Keep it short.'))
-        prompt, history = conversation_input(self.request)
-        self.assertEqual(prompt, 'Which label?\n\nKeep it short.')
-        self.assertEqual([row['content'] for row in history], ['Use the blue label.', 'I will use blue.'])
-        self.assertEqual([row['content'] for row in seed_messages(self.request)],
-                         ['Use the blue label.', 'I will use blue.'])
-
-    def test_background_work_does_not_import_an_unrelated_unanswered_chat(self):
-        self.request['task'].update(id='audit', _execution_session_id='audit', _turn_message_ids=[],
-                                   _source_audit_prompt='Check the assigned launch issue.')
-        history = NativeConversation(self.request, self.db).history
-        prompt, _ = conversation_input(self.request)
-        self.assertEqual(history, [])
-        self.assertIn('Check the assigned launch issue.', prompt)
-        self.assertNotIn('Which label?', prompt)
-        self.assertNotIn('Do a different task later.', prompt)
-
-    def test_work_history_keeps_the_owner_and_explicit_assignment(self):
-        self.request['task'].update(_execution_session_id='earlier')
-        self.assertEqual([row['content'] for row in seed_messages(self.request)],
-                         ['Use the blue label.', 'I will use blue.'])
-        self.request['task'].update(_execution_session_id='new-owner', _handoff_assignment={'task_id': 'earlier'})
-        self.assertEqual([row['content'] for row in seed_messages(self.request)],
-                         ['Use the blue label.', 'I will use blue.'])
-
-    def test_import_runs_once_and_never_replaces_native_tool_history(self):
-        first = NativeConversation(self.request, self.db)
-        self.assertEqual(len(first.history), 2)
-        self.db.sessions[self.root].append({'role': 'tool', 'content': 'Durable native result', 'tool_call_id': 'tool-1'})
-        second = NativeConversation(self.request, self.db)
-        self.assertEqual(second.history[-1]['content'], 'Durable native result')
-        self.assertEqual(self.db.replacements, 1)
-
-    def test_native_compaction_tip_resumes_without_regrowing_old_messages(self):
-        NativeConversation(self.request, self.db)
-        tip = str(uuid4())
-        self.db.tips[self.root] = tip
-        self.db.sessions[tip] = [{'role': 'user', 'content': 'Native summary', '_compressed_summary': True}]
-        resumed = NativeConversation(self.request, self.db)
-        self.assertEqual(resumed.session_id, tip)
-        self.assertEqual(resumed.history, self.db.sessions[tip])
-        self.assertNotIn('Use the blue label.', str(resumed.history))
-
-    def test_restart_uses_fresh_native_root_and_preserves_old_history(self):
-        NativeConversation(self.request, self.db)
-        self.request['task']['_conversation_epoch'] = str(uuid4())
-        fresh = NativeConversation(self.request, self.db)
-        self.assertNotEqual(fresh.session_id, self.root)
-        self.assertEqual(fresh.history, [])
-        self.assertEqual(len(self.db.sessions[self.root]), 2)
-        self.assertEqual(NativeConversation(self.request, self.db).session_id, fresh.session_id)
-
-    def test_import_retry_does_not_duplicate_a_committed_batch(self):
-        self.db.create_session(self.root)
-        self.db.replace_messages(self.root, seed_messages(self.request))
-        imported = NativeConversation(self.request, self.db)
-        self.assertEqual(len(imported.history), 2)
-        self.assertEqual(self.db.replacements, 1)
-
-    def test_missing_app_prefix_enters_active_context_without_losing_native_tools(self):
-        self.db.sessions[self.root] = [{'role': 'assistant', 'content': 'Existing native reply',
-                                       'tool_calls': [{'id': 'native-call'}],
-                                       'reasoning_details': [{'type': 'reasoning.encrypted', 'data': 'opaque'}]}]
-        original = copy.deepcopy(self.db.sessions[self.root])
-        resumed = NativeConversation(self.request, self.db)
-        self.assertEqual(resumed.session_id, self.root)
-        self.assertEqual(resumed.history[0]['content'], 'Use the blue label.')
-        self.assertEqual(resumed.history[2:], original)
-        self.assertEqual(set(self.db.sessions), {self.root})
-        NativeConversation(self.request, self.db)
-        self.assertEqual(self.db.replacements, 1)
-
-    def test_searchable_only_legacy_import_is_repaired_once_in_current_session(self):
-        archived = str(uuid4())
-        self.db.sessions[archived] = seed_messages(self.request)
-        self.db.set_meta('coconut.history-import.' + self.root, 'complete')
-        self.db.set_meta('coconut.history-import.' + self.root + '.target', archived)
-        self.db.sessions[self.root] = [{'role': 'user', 'content': 'Which label?'}]
-        repaired = NativeConversation(self.request, self.db)
-        self.assertEqual([row['content'] for row in repaired.history],
-                         ['Use the blue label.', 'I will use blue.', 'Which label?'])
-        self.assertEqual(len(self.db.sessions[archived]), 2)
-        self.assertEqual(NativeConversation(self.request, self.db).history, repaired.history)
-        self.assertEqual(self.db.replacements, 1)
-
-    def test_migration_does_not_duplicate_the_overlapping_native_tail(self):
-        saved = seed_messages(self.request)
-        native = dict(saved[1], message_id=saved[1]['platform_message_id'])
-        self.assertEqual(missing_prefix(saved, [native]), saved[:1])
-
-    def test_repeated_text_uses_native_timestamp_to_find_the_boundary(self):
-        saved = [{'role': 'user', 'content': 'Hello', 'timestamp': stamp} for stamp in (10, 20, 30)]
-        self.assertEqual(missing_prefix(saved, [{'role': 'user', 'content': 'Hello', 'timestamp': 21}]), saved[:1])
-
-    def test_no_overlap_imports_only_messages_before_native_history(self):
-        saved = [{'role': 'user', 'content': str(stamp), 'timestamp': stamp} for stamp in (10, 30)]
-        self.assertEqual(missing_prefix(saved, [{'role': 'user', 'content': 'Native start', 'timestamp': 20}]), saved[:1])
-
-    def test_import_excludes_hidden_deleted_and_partial_responses(self):
-        self.request['history'][:0] = [self.message('hidden', 'old', 'assistant', 'Hidden', _hidden=True),
-                                      self.message('deleted', 'old', 'assistant', 'Deleted', _deleted=True),
-                                      self.message('partial', 'old', 'assistant', 'Partial', streaming=True)]
-        self.assertEqual(len(seed_messages(self.request)), 2)
 
 
 class BotConversationTests(unittest.TestCase):
@@ -287,11 +101,9 @@ class BotConversationTests(unittest.TestCase):
         self.service.close()
         self.service = Service(self.temp.name, self.provider, start_workers=False)
         self.service._run_task(task['id'])
-        sent_task, sent_bot, history = self.provider.starts[-1]
-        prompt, _ = conversation_input(dict(operation='start', task=sent_task, bot=sent_bot, history=history))
-        self.assertIn('The finance-alert card remains pending.', prompt)
-        self.assertNotIn('The Stripe card is ready.', prompt)
-        self.assertNotIn('Excluded reply.', prompt)
+        sent_task, _, _ = self.provider.starts[-1]
+        # The turn gets the reply that was visible when the person sent the message, not a later one.
+        self.assertEqual(sent_task['_visible_reply_contexts'][source['id']]['text'], 'The finance-alert card remains pending.')
 
     def test_chat_skips_redundant_completion_but_keeps_completion_without_a_result(self):
         bot = self.bot('Desk')
@@ -316,12 +128,10 @@ class BotConversationTests(unittest.TestCase):
             self.service._message(bot['id'], 'The Stripe test is ready.')
         self.write('POST', f'/v1/tasks/{task["id"]}/replies', {'text': 'How long will that test take?'})
         self.service._run_task(task['id'])
-        sent_task, sent_bot, history = self.provider.starts[-1]
-        prompt, _ = conversation_input(dict(operation='start', task=sent_task, bot=sent_bot, history=history))
-        self.assertEqual(len(sent_task['_visible_reply_contexts']), 2)
-        self.assertLess(prompt.index('The finance card is pending.'), prompt.index('Incorrect there is no card pending'))
-        self.assertLess(prompt.index('Incorrect there is no card pending'), prompt.index('The Stripe test is ready.'))
-        self.assertLess(prompt.index('The Stripe test is ready.'), prompt.index('How long will that test take?'))
+        sent_task, _, _ = self.provider.starts[-1]
+        # Each message keeps the reply that was visible when it arrived.
+        self.assertEqual(sorted(context['text'] for context in sent_task['_visible_reply_contexts'].values()),
+                         ['The Stripe test is ready.', 'The finance card is pending.'])
 
     def check_failed_turn_preserves_replies(self, route, uncertain=False):
         bot = self.bot('Writer')
@@ -353,7 +163,7 @@ class BotConversationTests(unittest.TestCase):
         self.assertNotEqual(continuation['id'], task['id'])
         self.assertEqual(continuation['thread_id'], task['thread_id'])
         captured = []
-        self.provider.start_task = lambda task, bot, history, emit: captured.append((task, conversation_input(dict(operation='start', task=task, history=history))[0]))
+        self.provider.start_task = lambda task, bot, history, emit: captured.append((task, turn_input(dict(operation='start', task=task, history=history))[0]))
         self.service.close()
         self.service = Service(self.temp.name, self.provider, start_workers=False)
         self.service._run_task(continuation['id'])
@@ -385,7 +195,7 @@ class BotConversationTests(unittest.TestCase):
         prompts = []
 
         def start(task, bot, history, emit):
-            prompt, _ = conversation_input(dict(operation='start', task=task, history=history))
+            prompt, _ = turn_input(dict(operation='start', task=task, history=history))
             prompts.append(prompt)
             if len(prompts) == 1:
                 self.write('POST', route, {'text': 'Use the blue label.'})
@@ -410,7 +220,7 @@ class BotConversationTests(unittest.TestCase):
                                  'content_base64': base64.b64encode(b'Updated label details').decode()})
 
         def start(task, bot, history, emit):
-            prompt, _ = conversation_input(dict(operation='start', task=task, history=history))
+            prompt, _ = turn_input(dict(operation='start', task=task, history=history))
             prompts.append(prompt)
             files.append([a['id'] for a in task.get('attachments', [])])
             if len(prompts) == 1:
@@ -438,7 +248,7 @@ class BotConversationTests(unittest.TestCase):
         prompts = []
 
         def start(task, bot, history, emit):
-            prompts.append(conversation_input(dict(operation='start', task=task, history=history))[0])
+            prompts.append(turn_input(dict(operation='start', task=task, history=history))[0])
             if len(prompts) == 1:
                 self.service.stopping.set()
             else:
@@ -465,7 +275,7 @@ class BotConversationTests(unittest.TestCase):
         self.assertEqual(self.service._get('tasks', task['id'])['status'], 'queued')
         prompts = []
         self.provider.start_task = lambda task, bot, history, emit: prompts.append(
-            conversation_input(dict(operation='start', task=task, history=history))[0])
+            turn_input(dict(operation='start', task=task, history=history))[0])
         self.service._run_task(task['id'])
         self.assertEqual(prompts, ['Explain the totals.'])
 
@@ -482,17 +292,17 @@ class BotConversationTests(unittest.TestCase):
 
         def start(task, bot, history, emit):
             request = dict(operation='start', task=task, history=history)
-            received[bot['id']] = (conversation_input(request)[0], current_message(request))
+            received[bot['id']] = (turn_input(request)[0], gateway_turn_own(request))
             emit('completed', {'summary': 'Complete.'})
 
         self.provider.start_task = start
         for task_id in result['dispatched_task_ids']:
             self.service._run_task(task_id)
         for bot, expected in ((first, shared), (second, shared + '\n\nKeep it short.')):
-            prompt, persisted = received[bot['id']]
+            prompt, own = received[bot['id']]
             self.assertEqual(prompt, expected)
-            self.assertIsNotNone(persisted)
-            self.assertEqual(persisted['text'], expected)
+            # Hermes saves the same messages as the turn's own text.
+            self.assertEqual(own, expected)
 
     def test_context_questions_keep_their_attachment_binding_after_restart(self):
         bot = self.bot('Writer')
@@ -547,7 +357,7 @@ class BotConversationTests(unittest.TestCase):
         self.write('POST', route, data, key)
         received = []
         self.provider.start_task = lambda task, bot, history, emit: received.append(
-            conversation_input(dict(operation='start', task=task, history=history))[0])
+            turn_input(dict(operation='start', task=task, history=history))[0])
         self.service._run_task(task['id'])
         self.service._run_task(task['id'])
         self.assertEqual(received, ['Explain the totals.'])

@@ -97,36 +97,5 @@ class ConcurrentWorkTests(unittest.TestCase):
                 service.close()
 
 
-class TurnCleanupTests(unittest.TestCase):
-    import test_provider as fixtures
-    setUp = fixtures.ProviderTests.setUp
-    tearDown = fixtures.ProviderTests.tearDown
-    fake_hermes = fixtures.ProviderTests.fake_hermes
-
-    def test_cleanup_failure_releases_the_channel_without_repeating_the_result(self):
-        import os
-        from unittest.mock import patch
-        provider = self.fake_hermes("def broken_cleanup(): raise RuntimeError('PRIVATE_CLEANUP_ERROR')\nself.release_clients = broken_cleanup\nreturn {'completed': True, 'final_response': 'Finished'}\n")
-        events = []
-        errors = []
-        def run():
-            try:
-                with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-                    provider.start_task(self.task, self.bot, [], lambda kind, data: events.append((kind, data)))
-            except Exception as error:
-                errors.append(error)
-        thread = threading.Thread(target=run, daemon=True)
-        thread.start()
-        thread.join(3)
-        try:
-            self.assertFalse(thread.is_alive(), 'The queue slot stayed occupied after cleanup failed.')
-            self.assertFalse(errors)
-            self.assertEqual([kind for kind, _ in events if kind in ('completed', 'failed')], ['completed'])
-            self.assertNotIn('PRIVATE_CLEANUP_ERROR', str(events))
-        finally:
-            provider.close()
-            thread.join(2)
-
-
 if __name__ == '__main__':
     unittest.main()

@@ -115,7 +115,7 @@ class WorkQuestionTests(unittest.TestCase):
         self.assertFalse(saved['_work_status_only'])
 
     def test_next_chat_turn_receives_the_visible_update(self):
-        from coconut.hermes_worker import conversation_input
+        from turn_text import turn_input
         item = self.track()
         question = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages',
             dict(text='How is this going?', work_artifact_id=item['id'], work_status_only=True))
@@ -125,7 +125,7 @@ class WorkQuestionTests(unittest.TestCase):
         followup = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', dict(text='Why?', mode='queue'))
         seen = []
         def start(task, bot, history, emit):
-            prompt, _ = conversation_input(dict(operation='start', task=task, bot=bot, history=history))
+            prompt, _ = turn_input(dict(operation='start', task=task, bot=bot, history=history))
             seen.append(prompt)
             emit('completed', {'summary': 'Complete.'})
         self.provider.start_task = start
@@ -150,101 +150,12 @@ class WorkQuestionTests(unittest.TestCase):
 
 
 import test_work_waits as waits
-from test_work_progress import progress
 
 
-class ProcessWaitTests(unittest.TestCase):
+class FailureTitleTests(unittest.TestCase):
     setUp = waits.WorkWaitTests.setUp
     tearDown = waits.WorkWaitTests.tearDown
     write = waits.WorkWaitTests.write
-
-    def test_waits_on_review_process_without_creating_a_task_cycle(self):
-        import json
-        self.provider.mode = 'process'
-        self.service._run_task(self.child)
-        with self.service.transaction():
-            followup = self.service._send(self.dev, {'text': 'Use the saved review snapshot', 'mode': 'queue'},
-                exchange_id=self.parent['exchange_id'], thread_id=self.parent['thread_id'],
-                conversation_bot_id=self.desk['id'])
-            owner = self.service._get('tasks', self.child)
-            owner['_waiting_on'] = [followup['id']]
-            self.service._put('tasks', owner)
-        def start(task, bot, history, emit):
-            with self.assertRaises(ServiceError):
-                emit('work_wait', {'task_id': self.child, 'reason': 'Await review'})
-            listing = emit('work_wait', {})
-            self.assertEqual(listing['processes'][0]['process_id'], 'proc_test')
-            emit('work_wait', {'process_id': 'proc_test', 'reason': 'Await review'})
-            emit('completed', {'summary': 'Waiting for the review.', '_work_todos': progress()})
-        self.provider.start_task = start
-        self.service._run_task(followup['id'])
-        waiting = self.service._get('tasks', followup['id'])
-        self.assertEqual(waiting['status'], 'waiting')
-        self.assertNotIn('_work_retry', waiting)
-        source = next(r for r in self.service._all('native_receipts') if r['action']['name'] == 'terminal')
-        with self.service.transaction():
-            self.service._resume_process_task(self.child, [(source, 'Review finished: no findings.')])
-        self.service._drain_task_completions()
-        resumed = self.service._get('tasks', followup['id'])
-        self.assertEqual(resumed['status'], 'queued')
-        self.assertIn('Review finished: no findings.', resumed['_background_completion'])
-        turn = resumed['_native_turn_id']
-        self.service._drain_task_completions()
-        self.assertEqual(self.service._get('tasks', followup['id'])['_native_turn_id'], turn)
-        with self.service.transaction():
-            task = self.service._get('tasks', followup['id'])
-            task['status'] = 'working'; self.service._put('tasks', task)
-            count = len(self.service._all('native_receipts'))
-        result = self.service.wait_for_task(task['id'], {'process_id': 'proc_test', 'reason': 'Check again'})
-        self.assertEqual(result['status'], 'completed')
-        self.assertEqual(result['result'], 'Review finished: no findings.')
-        self.assertEqual(len(self.service._all('native_receipts')), count)
-
-    def test_process_result_arrives_while_its_owner_waits_for_a_decision(self):
-        self.provider.mode = 'process'; self.service._run_task(self.child)
-        with self.service.transaction():
-            followup = self.service._send(self.dev, {'text': 'Use the review result', 'mode': 'queue'},
-                exchange_id=self.parent['exchange_id'], thread_id=self.parent['thread_id'],
-                conversation_bot_id=self.desk['id'])
-            owner = self.service._get('tasks', self.child)
-            owner['status'] = 'needs_you'; self.service._put('tasks', owner)
-        def start(task, bot, history, emit):
-            emit('work_wait', {'process_id': 'proc_test', 'reason': 'Await review'})
-            emit('completed', {'summary': 'Waiting.', '_work_todos': progress()})
-        self.provider.start_task = start
-        self.service._run_task(followup['id'])
-        self.provider.results['proc_test'] = 'Review complete. No findings.'
-        self.service._drain_process_completions()
-        self.service._drain_task_completions()
-        self.assertEqual(self.service._get('tasks', self.child)['status'], 'needs_you')
-        resumed = self.service._get('tasks', followup['id'])
-        self.assertEqual(resumed['status'], 'queued')
-        self.assertIn('Review complete. No findings.', resumed['_background_completion'])
-        # The owner still receives its result when its decision is resolved.
-        self.provider.results.clear()
-        with self.service.transaction():
-            owner = self.service._get('tasks', self.child)
-            owner['status'] = 'completed'; self.service._put('tasks', owner)
-        self.service._drain_process_completions()
-        self.assertIn('Review complete. No findings.', self.service._get('tasks', self.child)['_background_completion'])
-
-    def test_old_consumed_process_returns_an_explicit_missing_result(self):
-        self.provider.mode = 'process'; self.service._run_task(self.child)
-        with self.service.transaction():
-            followup = self.service._send(self.dev, {'text': 'Check the review', 'mode': 'queue'},
-                exchange_id=self.parent['exchange_id'], thread_id=self.parent['thread_id'],
-                conversation_bot_id=self.desk['id'])
-            source = next(r for r in self.service._all('native_receipts') if r['action']['name'] == 'terminal')
-            source['_process_delivery'] = 'consumed'; self.service._put('native_receipts', source)
-        def start(task, bot, history, emit):
-            emit('work_wait', {'process_id': 'proc_test', 'reason': 'Await review'})
-            emit('completed', {'summary': 'Waiting.', '_work_todos': progress()})
-        self.provider.start_task = start
-        self.service._run_task(followup['id'])
-        self.service._drain_task_completions()
-        resumed = self.service._get('tasks', followup['id'])
-        self.assertEqual(resumed['status'], 'queued')
-        self.assertIn('output is unavailable', resumed['_background_completion'][0])
 
     def test_internal_path_does_not_become_the_failure_title(self):
         with self.service.transaction():
@@ -258,48 +169,5 @@ class ProcessWaitTests(unittest.TestCase):
         self.assertIn('Ask for an update', summary)
 
 
-import test_provider as provider_fixtures
-
-
-class IsolatedUpdateTests(unittest.TestCase):
-    setUp = provider_fixtures.ProviderTests.setUp
-    tearDown = provider_fixtures.ProviderTests.tearDown
-    fake_hermes = provider_fixtures.ProviderTests.fake_hermes
-
-    def test_update_uses_a_separate_worker_and_keeps_the_bot_runtime(self):
-        import os
-        import threading
-        from unittest.mock import patch
-        from uuid import uuid4
-        provider = self.fake_hermes("""
-            if 'Answer a work status question' in self.system_prompt:
-                assert self.skip_memory
-                assert kwargs['conversation_history'] == []
-                assert json.loads(prompt)['title'] == 'Export account data'
-                return {'completed': True, 'final_response': 'The export needs its final check.'}
-            return {'completed': True, 'final_response': 'Original work.'}
-        """)
-        with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-            provider.start_task(self.task, self.bot, [], lambda *_: None)
-            original = provider._runtimes[self.bot['id']]
-            question = dict(self.task, id=str(uuid4()), _work_status_only=True,
-                            _work_context={'title': 'Export account data'})
-            events, errors = [], []
-            def run():
-                try:
-                    provider.start_task(question, self.bot, [], lambda kind, data: events.append((kind, data)))
-                except Exception as error:
-                    errors.append(error)
-            lock = provider._bot_locks[self.bot['id']]
-            lock.acquire()
-            worker = threading.Thread(target=run)
-            try:
-                worker.start(); worker.join(5)
-                self.assertFalse(worker.is_alive(), 'The update waited for the active runtime.')
-            finally:
-                lock.release(); worker.join(5)
-            self.assertEqual(errors, [])
-            self.assertIs(provider._runtimes[self.bot['id']], original)
-            self.assertIsNone(original.poll())
-            self.assertIn(('text_delta', {'text': 'The export needs its final check.'}), events)
-            self.assertEqual(events[-1], ('completed', {'summary': 'Complete.'}))
+if __name__ == '__main__':
+    unittest.main()

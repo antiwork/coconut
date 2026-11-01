@@ -93,7 +93,6 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
             from coconut.kanban_scheduler import KanbanRequestError
             from coconut.service import ServiceError
             from test_dependency_unlink_epoch import MissingEpochUnlinkTests
-            from test_provider import ProviderTests
             fixture = MissingEpochUnlinkTests()
             fixture.setUp()
             try:
@@ -150,23 +149,12 @@ class NativeDependencyUnlinkTests(unittest.TestCase):
                 assert [tuple(r) for r in conn.execute('SELECT * FROM task_links')] == graph_before_claim
                 assert kb.complete_task(conn, related_id, summary='Related review completed',
                     expected_run_id=late_claim[0].current_run_id)
-                fixture.root = Path(fixture.temp.name) / 'provider'
-                provider = ProviderTests.fake_hermes(fixture,
-                    "receipt = json.loads(registry.dispatch('coconut_unlink_dependency', " + repr(arguments) + "))\\n"
-                    "assert receipt['status'] == 'unlinked', receipt\\n"
-                    "return {'completed': True, 'final_response': 'Exact dependency removed.'}\\n")
                 before = {table: service._all(table) for table in ('tasks', 'messages', 'artifacts', 'decisions', 'contexts')}
                 bindings = [tuple(r) for r in conn.execute('SELECT * FROM coconut_bindings')]
                 graph = [tuple(r) for r in conn.execute('SELECT * FROM task_links')]
-                receipts = []
-                def emit(kind, data):
-                    if kind == 'dependency_unlink':
-                        result = service.emit(source['id'], kind, data)
-                        receipts.append(result)
-                        return result
-                with patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-only'}):
-                    provider.start_task(source, fixture.desk, [], emit)
-                assert len(receipts) == 1 and receipts[0]['status'] == 'unlinked', receipts
+                # The turn's call of coconut_unlink_dependency reaches the service as this event.
+                receipt = service.emit(source['id'], 'dependency_unlink', arguments)
+                assert receipt['status'] == 'unlinked', receipt
                 assert before == {table: service._all(table) for table in before}
                 assert bindings == [tuple(r) for r in conn.execute('SELECT * FROM coconut_bindings')]
                 assert [tuple(r) for r in conn.execute('SELECT * FROM task_links')] == [r for r in graph if r[:2] != (parent_id, child_id)]

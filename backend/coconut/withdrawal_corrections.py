@@ -301,12 +301,9 @@ class WithdrawalCorrections:
     @staticmethod
     def _unresolved_effect(record, contexts):
         """Whether a receipt of this card's checks leaves an effect or result unknown. A missing receipt counts as unknown."""
-        from .background_processes import subscription
         if not record or record.get('state') != 'completed':
             return True
         delivery = record.get('_process_delivery')
-        if (subscription(record) or record.get('_relay_task_id')) and not delivery:
-            return True
         destination = contexts.get(delivery, {})
         return destination.get('status') in ('cancelled', 'failed') and not destination.get('_refresh_recorded')
 

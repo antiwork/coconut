@@ -87,10 +87,7 @@ class ConversationOutcomeDispatchTests(unittest.TestCase):
         self.assertFalse(gateway_work_turn(review))
         self.assertTrue(conversation_outcome_turn(review))
         self.service.gateway_enabled = lambda: True
-        with patch.object(self.provider, 'prepare_kanban_worker', create=True,
-                          side_effect=AssertionError('Coconut starts no worker.')):
-            pid = self.service.kanban_worker_pid(review['id'], review, self.dev, self.tmp.name, self.dev['id'],
-                                                 't_review')
+        pid = self.service.kanban_worker_pid(review['id'], self.dev['id'])
         # The claim holds the placeholder process of a gateway turn.
         self.assertEqual(pid, self.service.gateway_holders[review['id']].pid)
         claim = dict(native_id='t_review', external_id=review['id'], run_id=7, claim_lock='lock',

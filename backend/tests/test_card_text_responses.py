@@ -1,13 +1,11 @@
 import json
 import unittest
-from unittest.mock import Mock, patch
-from types import SimpleNamespace
-from coconut.native_bridge import NativeBridge
+from unittest.mock import Mock
 from uuid import uuid4
 
 import test_decision_inbox as inbox_tests
 import test_message_drafts as draft_tests
-from coconut.hermes_worker import conversation_input
+from turn_text import turn_input
 from coconut.service import ServiceError, YieldForDecision
 import legacy_work_sync
 
@@ -78,7 +76,7 @@ class CardTextResponseTests(unittest.TestCase):
         self.assertEqual(reply['status'], 'replied')
         self.assertEqual(self.service._all('native_receipts')[0]['state'], 'awaiting_approval')
         self.assertIsNone(reply['selected_option_id'])
-        prompt, _ = conversation_input(dict(operation='resume', decision=reply, task={}, history=[]))
+        prompt, _ = turn_input(dict(operation='resume', decision=reply, task={}, history=[]))
         self.assertIn('A native approval still requires its exact choice.', prompt)
 
     def test_draft_reply_closes_without_authorizing_a_send(self):
@@ -87,7 +85,7 @@ class CardTextResponseTests(unittest.TestCase):
         self.assertEqual(reply['status'], 'replied')
         self.assertEqual(reply['draft'], decision['draft'])
         self.assertIsNone(reply['selected_option_id'])
-        prompt, _ = conversation_input(dict(operation='resume', decision=reply, task={}, history=[]))
+        prompt, _ = turn_input(dict(operation='resume', decision=reply, task={}, history=[]))
         self.assertIn('A message draft still requires Send on the current draft.', prompt)
         self.assertEqual(len(self.service._all('tasks')), 2)
 
@@ -114,34 +112,6 @@ class CardTextResponseTests(unittest.TestCase):
             self.respond(dict(decision, revision=0))
         self.assertEqual(self.service._get('decisions', decision['id'])['status'], 'pending')
         self.assertFalse(self.service._all('contexts'))
-
-    def test_exact_native_action_requests_new_permission_without_execution(self):
-        decision = self.approval()
-        self.respond(decision)
-        decision = self.service._get('decisions', decision['id'])
-        with self.service.transaction():
-            task = self.service._get('tasks', self.task['id'])
-            task['status'] = 'working'
-            self.service._put('tasks', task)
-        modules = {
-            'tools.approval': SimpleNamespace(register_gateway_notify=lambda *a: None, unregister_gateway_notify=lambda *a: None),
-            'hermes_cli.plugins': SimpleNamespace(PluginContext=lambda *a: SimpleNamespace(register_middleware=lambda *a: SimpleNamespace(dispose=lambda: None)),
-                PluginManifest=lambda **kw: None, get_plugin_manager=lambda: None),
-            'hermes_cli.middleware': SimpleNamespace(TOOL_EXECUTION_MIDDLEWARE='tool'),
-        }
-        request = dict(operation='resume', task=self.task, decision=dict(decision, action=decision['_action']))
-        with patch.dict('sys.modules', modules):
-            bridge = NativeBridge(request, self.event, self.event)
-            bridge.install(None)
-            try:
-                with self.assertRaises(YieldForDecision):
-                    bridge.recorded(decision['_action']['name'], decision['_action']['arguments'],
-                        lambda args: self.fail('The tool must wait for a fresh approval.'))
-            finally:
-                bridge.close()
-        cards = self.service._all('decisions')
-        self.assertEqual([d['status'] for d in cards], ['replied', 'pending'])
-        self.assertEqual(cards[1]['_action'], decision['_action'])
 
     def test_text_pause_survives_automatic_recovery(self):
         work = self.service._register_work(self.task['id'], dict(key='report', title='Check the report', activity='Checking', status='working'))

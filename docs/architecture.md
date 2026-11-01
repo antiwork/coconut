@@ -1,7 +1,8 @@
 # Architecture
 
 The SwiftUI app consumes a versioned HTTP API through an end-to-end encrypted relay tunnel. It never parses Hermes CLI output.
-The Mac service owns coordination and runs separate Hermes worker processes.
+The Mac service owns coordination. The person's Hermes gateway runs each turn of a bot, through Coconut's `coconut`
+gateway plugin (`hermes_plugin/coconut`).
 A future execution provider can move work to another host without changing bot, task, decision, or artifact IDs.
 
 ## Ownership
@@ -22,7 +23,7 @@ A future execution provider can move work to another host without changing bot, 
 
 Coconut retains small projections for phone display. Native files own behavior.
 Inbox threads group decisions. They do not restrict a bot's recall of its own conversation.
-Workers resume native history and compression continuations. The phone never displays those internal boundaries.
+The gateway resumes native history and compression continuations. The phone never displays those internal boundaries.
 Model and access defaults resolve from the active native default profile.
 Each bot stores its MCP servers, approval settings and API fallback in its own native configuration, as in Hermes. A bot without its own model uses the default model.
 
@@ -30,19 +31,12 @@ Each bot stores its MCP servers, approval settings and API fallback in its own n
 
 Coconut installs no files into the Hermes source checkout.
 Coconut ships its `coconut` skill in `skills/` of the install folder. Hermes loads it through `skills.external_dirs`: setup adds that folder to the person's Hermes profiles, which are also the bots, and a profile that Coconut creates gets it at creation. The person's other Hermes surfaces, such as the Telegram gateway, then know how to update, pair, and repair Coconut. See [the coconut skill](install-and-update.md#the-coconut-skill-for-hermes).
-The worker loads `AIAgent`, native CLI tool configuration, profile context, memory, and skill discovery.
-The worker records a revision of native identity and memory files in the session metadata.
-Each file must contain valid UTF-8 in a regular file of at most 1 MiB.
-When those files change, the worker clears the saved prompt through `SessionDB.update_system_prompt`.
-Hermes rebuilds the prompt from current native files once.
-Unchanged turns keep the saved prompt and native session hooks.
-The same session retains its full history and tool receipts.
+The gateway of the person's Hermes runs each turn with the bot's profile: its tools, context, memory and skills.
+The `coconut` plugin adds Coconut's tools and hooks through Hermes's plugin API.
+The service records the board tools of a turn as receipts of the turn.
 The recorded card choice keeps its exact action scope.
-The worker attaches its captured revision to card and tool requests.
-The service checks that revision before it records a current assessment.
-Changes during a turn leave its cards stale until another check.
-A runtime plugin registers middleware through Hermes's plugin API.
-The middleware records tool intent and result through the parent service.
+A card check records the revision of native identity and memory files of the bot. The service checks that revision
+before it records a current assessment. Changes during a turn leave its cards stale until another check.
 Coconut adapts native approvals through the gateway callback. Each profile's own approval settings apply.
 
 Native `off`, `smart`, and `manual` modes retain their Hermes meaning.
@@ -56,21 +50,16 @@ Other bots continue. Context requests produce linked answers while preserving th
 Pending card checks include the current profile revision.
 A change to identity or memory schedules a new assessment of the same card.
 This check does not answer the card.
-After an answer, the service starts a continuation with the recorded choice and prior completed tool receipts.
-A completed tool result can satisfy its matching replay call once. New turns use new receipt generations.
+After an answer, the service starts a continuation with the recorded choice and the index of the completed tool
+receipts (`coconut_read_receipts`). A turn does not repeat a completed effect.
 
 Native tool execution is not a transaction with SQLite.
 If a process dies between an effect and its completion receipt, Coconut marks the task failed for inspection.
 It does not promise exactly-once execution for arbitrary shell commands or external services.
-Native bot deliveries commit their task and receipt together.
-A local journal recovers a native envelope when the service loses its response.
+Bot deliveries commit their task and receipt together.
 The explicit Coconut file executor reconciles output identity and content before retrying.
 
-Routines use native jobs and native execution claims.
-A small receipt bridges a native claim to its Coconut task and reuses the same claim after a restart.
-An interrupted, unconfirmed claim produces a visible error. It does not dispatch again automatically.
-Native claim fences protect routine tool calls against an owner change.
-Advanced native jobs that Coconut cannot preserve do not execute through its dispatcher.
+Routines are native jobs. The gateway of the bot's profile runs them (see "Phase 4: routines in the gateway").
 
 ## Isolation and routing
 
@@ -82,7 +71,7 @@ Each bot is one Hermes profile of the person, keyed by the profile name. `defaul
 
 - The service scans the profiles at its start and when `<Hermes home>/profiles` changes. A new profile folder becomes a new bot.
 - A folder that disappears makes its bot `missing`. The bot keeps its history and returns with a folder of the same name. Coconut does not follow renames: a renamed folder is a missing bot and a new bot.
-- A worker runs with `HERMES_HOME` set to the profile. Coconut chats, `hermes -p <name>`, and the gateway share the same skills, memories, config, and cron jobs. A worker belongs to one `HERMES_HOME`, so a changed folder starts a new worker.
+- Coconut chats, `hermes -p <name>`, and the gateway share the same skills, memories, config, and cron jobs of the profile.
 - Settings are native. The default settings are those of `<Hermes home>/config.yaml`. Each other profile uses its own config.
 - Coconut creates a profile only through the Hermes profile API, once. A failure fails the request. A folder that Hermes left behind becomes a bot at the next scan.
 - A settings write to a missing profile fails. Coconut never creates a profile folder itself.
@@ -96,11 +85,11 @@ Its configuration overrides remain unset so Claude Code and Hermes use the same 
 These paths organize data; they do not restrict a full-access process from reading other paths.
 Browser tools must use the intended profile. Shared desktop control needs serialized ownership.
 
-Homebrew packages and trust share one scope across Coconut bots. Workers set `HOMEBREW_XDG_CONFIG_HOME` to `<data-dir>/shared`. Homebrew owns `shared/homebrew/trust.json` and its write lock. Hermes profiles, browser profiles, and supported tool settings remain separate. Keep the inherited `HOME` and tool configuration paths. Existing trust grants need an explicit move to this scope; Coconut does not merge private trust files automatically.
+Homebrew packages and trust share one scope across Coconut bots. The processes of a bot set `HOMEBREW_XDG_CONFIG_HOME` to `<data-dir>/shared`. Homebrew owns `shared/homebrew/trust.json` and its write lock. Hermes profiles, browser profiles, and supported tool settings remain separate. Keep the inherited `HOME` and tool configuration paths. Existing trust grants need an explicit move to this scope; Coconut does not merge private trust files automatically.
 Coconut does not provide an operating system sandbox or universal desktop lock.
 
-Hermes `message_agent` produces native relay envelopes.
-The Mac adapter routes these envelopes with stable IDs and durable delivery receipts.
+A bot sends a message to another bot with `coconut_message_bot`. The service delivers it with a stable ID and a
+durable delivery receipt.
 A delivery confirms queuing, not completion. Exchanges limit new requests and propagate cancellation.
 Results can return after the request limit is reached.
 An assignment waits while its dependencies run. Each reply resumes the original scope in the same Hermes conversation.
@@ -284,7 +273,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - An audit of a work source (`_source_audit_prompt`, `_source_answer_steps`) now runs in the gateway, in the chat of its work session. The turn text is the worker's audit text, with a note that names the board tools of this chat (`gateway_chat.AUDIT_BOARD_TOOLS`). An audit that becomes a native outcome stays with the worker.
 - The audit text tells the bot to record facts with `kanban_comment` and to create a task with `kanban_create` on Coconut's own board. The worker binds the Hermes tools to that board (`HERMES_KANBAN_DB`). The gateway's own board tools write to another board, so the hooks block every `kanban_` tool in an audit turn (mode `audit`).
 - The plugin offers `coconut_kanban_list` and `coconut_kanban_show`, which read only the tasks of the bot, so an audit finds the existing task of an outcome before it acts. It also offers `coconut_kanban_create` and `coconut_kanban_comment`. The service records each write as a receipt of the turn, the Kanban runtime runs the Hermes tool on Coconut's board for the bot's profile (`kanban_runtime.board_tool`), and the service records the result (`gateway_chat.gateway_kanban_tool`). `kanban_create` gets the worker's arguments (`native_bridge.kanban_arguments`): the bot's tenant, a blocked task and an idempotency key of the turn's input. The receipts then adopt a created task as an outcome and record a comment, as for a worker turn.
-- The receipts of these board tools are no worker input (`gateway_bridge.worker_input`), so the continuation of an audit after a card answer runs in the gateway too. The claim of the task and its turn then agree: the claim holds the gateway's placeholder, and the gateway runs the turn.
+- The receipts of these board tools do not route a turn to the worker, so the continuation of an audit after a card answer runs in the gateway too. The claim of the task and its turn then agree: the claim holds the gateway's placeholder, and the gateway runs the turn.
 - When a claimed task still goes to the worker, but its claim has no prepared worker, the task waits instead of failing (`kanban_scheduler.await_prepared_worker`). The placeholder stops, and the next claim prepares a worker (`_needs_worker`). Once, at a start, Coconut runs again the tasks that failed this way before the fix, with the person's card answer (`_recover_unprepared_workers`).
 - Audits have their own capacity. The Kanban pass bounds them, and an audit that the gateway runs does not take a slot of the person's chats (`native_outcomes._dispatch_chat`).
 
@@ -362,6 +351,43 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - A run of a routine that the person starts ("Run now") is a trigger in Hermes (`jobs.trigger_job`, `native_routines` operation `routine_trigger`). The gateway's cron runs the job at its next tick. Until then, the routine's task waits (`_gateway_trigger`), and the cron run of the gateway takes that task as its turn (`gateway_chat.gateway_cron`). A task that no run takes in 5 minutes fails with the reason (`routine_coordinator._expire_routine_triggers`). Coconut no longer claims a scheduled routine: the gateway fires it.
 - Fixture mode has no gateway, so its provider still runs every turn and every routine.
 
+### The worker is gone
+
+Coconut has no worker runtime of its own. The gateway runs each turn, and a turn that it does not run fails with the
+reason (`gateway_unsupported`).
+
+- Deleted: the worker (`hermes_worker.py`), its transport and protocol (`worker_transport.py`, `worker_protocol.py`,
+  `worker_cli.py`, `worker_activity.py`), the worker parts of `providers.py`, and the modules that only served worker
+  turns (`native_bridge.py`, `native_turn_scope.py`, `native_compression_head.py`, `native_routine_execution.py`,
+  `native_processes.py`, `native_relay.py`, `live_messages.py`).
+- `HermesProvider` keeps the settings, the models, the profiles and the routines of Hermes. Its turn methods refuse a
+  turn. `FixtureProvider` runs each turn of fixture mode and the tests.
+- Each Kanban claim holds a placeholder process (`kanban_worker_pid`), also in fixture mode. The placeholder ends with
+  the service (`HOLDER`, `_close_gateway_chat`). The board runs when the provider has a Hermes Kanban runtime
+  (`HermesProvider.native_board`).
+- The relay of the worker is gone: its envelope delivery, its recovery and the reply into an envelope
+  (`_native_reply_pending`). The service keeps the saved `_native_relay` of earlier tasks as history, for the proofs that
+  read it (`_completed_peer_continuation`, `_block_check_relay_lineage`, `routine_reports`).
+- The watch of a worker's background processes is gone: the process subscriptions of its receipts, their delivery,
+  the waits for a process, and the periodic check of interrupted tool calls. A local command that an earlier worker of
+  a native task left without a result ends at a service start when it started an hour ago, no process carries its
+  outcome, and lsof
+  shows no process in a workspace of the outcome (`_end_worker_tool_calls`). Its receipt keeps the state `executing`,
+  so its effect stays unknown. Hermes watches the processes of a gateway turn and
+  delivers their results itself. `coconut_wait` waits for a task or a card (`card_tools.WAIT_SCHEMA`), and the index of
+  pending waits is `native_receipts_pending_wait`.
+- The bot change context of a turn moved to `bot_changes.py`. The routing of a turn has no worker inputs:
+  `gateway_bridge.WORK_SESSION_INPUTS` and `OTHER_PATHS` choose its chat.
+- The Hermes contract checks only the interfaces that Coconut still uses (`hermes_contract.verify_contract`).
+
+Known gaps of the gateway, which the worker covered and no turn covers now:
+- No plugin tool for `coconut_continue_work` (and so for the opt-in of a technical lane), `coconut_unlink_dependency`,
+  `coconut_restart_service` and `coconut_track_work`. The service handlers and the schemas stay.
+- No live steering of a running turn (`steer_task`), no `continuation_task_id` in `coconut_message_bot`, and no receipt
+  index in the text of a follow-up on a card.
+- The global limit of parallel helpers of the Coconut settings does not reach a profile that inherits it.
+- A work session that session maintenance ended as idle is not reopened. Its next turn starts a new Hermes session.
+
 ### Kanban: not yet
 
 Coconut keeps its private board in `<data>/kanban/kanban.db` and dispatches it itself (`kanban_scheduler`, `kanban_runtime`). Its spawn function makes a Coconut task for each claim, so the work has Coconut cards, receipts and workspaces. The embedded dispatcher of the gateway calls `dispatch_once` with the default spawn of Hermes (`gateway/kanban_watchers_dispatcher.py`, `tick_once_for_board`), which starts a plain `hermes -p <assignee>` worker, and a plugin cannot give it another spawn function. It dispatches the boards of the Hermes home, not `<data>/kanban`. So the gateway does not serve Coconut's board, and the two dispatchers never share one. Upstream ask: a spawn hook for the embedded dispatcher.
@@ -379,8 +405,11 @@ A task that a guard holds for more than an hour shows: Coconut logs a warning on
 
 ### What phase 5 deletes
 
-- The worker turn types, one group at a time, after the gateway runs them: attachments and reactions; card answers, work items and claims, and recovery turns; bot exchanges and returns; GitHub source activity and PR reviews, and bot creation and deletion confirmations.
-- Then the worker runtime: `hermes_worker.py`, `worker_protocol.py`, `worker_transport.py`, `worker_cli.py`, `worker_activity.py`, the worker parts of `providers.py`, and the `native_*` modules that serve worker turns.
+- Done: the worker turn types, one group at a time, after the gateway ran them, and then the worker runtime (see "The
+  worker is gone").
+- Next: Coconut's own claims of routines (`native_routines` operations `routine_claim`, `routine_heartbeat`,
+  `routine_finish`, and `native_routine_receipts`). The gateway fires each routine now, so only routine tasks of
+  earlier versions use them.
 - `kanban_scheduler.py` and `kanban_runtime.py` only after Hermes gives its dispatcher a spawn hook. Until then they stay.
 
 ## Transport and future providers

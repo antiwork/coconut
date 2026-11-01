@@ -403,25 +403,13 @@ def coverage(item, binding, tasks, decisions, receipts, current, seen=None, *, i
             return True
         if any(active(identity) for identity, child in tasks.items() if child.get('_assignment_task_id') == key):
             return True
-        from .background_processes import subscription
         for receipt in receipts.values():
             if receipt.get('task_id') != key or receipt.get('_process_delivery'):
                 continue
             if receipt.get('_wait_decision_id') in decisions:
                 return True
-            if any(active(receipt[field]) for field in ('_wait_task_id', '_relay_task_id') if receipt.get(field)):
+            if receipt.get('_wait_task_id') and active(receipt['_wait_task_id']):
                 return True
-            receipt = receipts.get(receipt.get('_wait_process_receipt'), receipt)
-            if receipt.get('_process_delivery') or not subscription(receipt):
-                continue
-            if receipt.get('_completion_text'):
-                return True
-            try:
-                observed = datetime.fromisoformat(receipt.get('_process_observed_at', '').replace('Z', '+00:00'))
-                if receipt.get('_process_status') == 'running' and 0 <= (current - observed).total_seconds() < 300:
-                    return True
-            except (ValueError, TypeError):
-                continue
         return False
 
     if any(active(key) for key in binding.get('task_ids', [])):
