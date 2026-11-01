@@ -117,6 +117,12 @@ class GatewayUnavailable(RuntimeError):
     """No adapter took the turn. Nothing ran, so the turn can wait for another adapter."""
 
 
+class GatewayBusy(RuntimeError):
+    """The gateway did not run the turn, because it already ran another turn in the session of the chat, for example
+    its own turn for a finished background delegation (hooks.join_conversation). Nothing of the turn ran, so it can
+    wait until the session is free."""
+
+
 class _Turn:
     def __init__(self, task_id, home, chat_id, text, chat_name, session_root=None):
         self.id = str(uuid.uuid4())
@@ -446,6 +452,11 @@ class TurnEvents:
         elif kind == 'delete' and event['message_id'] == self.stream:
             self.emit('text_delta', {'text': '', 'replace': True})
             self.stream, self.text = None, ''
+        elif kind == 'done' and event.get('outcome') == 'busy':
+            if self.stream is not None:
+                # Text of the other turn that reached this turn before the gateway skipped it.
+                self.emit('text_delta', {'text': '', 'replace': True})
+            raise GatewayBusy('The Hermes gateway runs another turn in the session of this chat.')
         elif kind == 'done':
             # Hermes sends no reply when the model chose silence. The plugin may have streamed the marker, or only its
             # start, which Hermes holds back.
