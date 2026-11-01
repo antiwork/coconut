@@ -75,7 +75,7 @@ Each bot is one Hermes profile of the person, keyed by the profile name. `defaul
 - Settings are native. The default settings are those of `<Hermes home>/config.yaml`. Each other profile uses its own config.
 - Coconut creates a profile only through the Hermes profile API, once. A failure fails the request. A folder that Hermes left behind becomes a bot at the next scan.
 - A settings write to a missing profile fails. Coconut never creates a profile folder itself.
-- Coconut keeps its own files of a bot in `<data-dir>/bots/<uuid>`: workspace, browser, temporary files, routine receipts, and terminal scripts.
+- Coconut keeps its own files of a bot in `<data-dir>/bots/<uuid>`: workspace, browser, temporary files, and terminal scripts.
 - Deleting a bot means "Remove from Coconut": the folder stays, and a scan does not add it again. To delete the Hermes profile itself, the person sends `POST /v1/bots/<id>/profile/delete` with `{"confirm": "<profile name>"}`. Coconut uses Hermes's `delete_profile` and never deletes `default`. A bot cannot request this deletion.
 `HOME` remains the Mac account home so macOS Keychain works.
 `USER` identifies the Mac account so Claude Code selects its saved Keychain login.
@@ -159,7 +159,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 ### Phase 4: routines in the gateway
 
 - Evidence. Every Hermes gateway ticks the cron store of each profile that it serves, also with one profile only (`gateway/run_bootstrap.py`, `_start_gateway_start_cron_and_housekeeping` and `_cron_tick_profile_homes`). Hermes has no setting that keeps a served profile or a job out of these ticks. A `cron.provider` of a plugin cannot replace the ticker of a multiplexing gateway (`cron/scheduler_provider.py`, `scheduler_for_profile_mode`). A cron run executes in a Hermes cron session, often in a separate worker process, never as an inbound turn of a platform. So the gateway cannot deliver a cron run "as a Coconut turn" through `deliver=coconut`: delivery carries only the final text.
-- One firing owner. A gateway that serves a bot's profile fires the bot's routines. Since phase 5, the evidence is the connected coconut adapter of the profile (`gateway_chat.gateway_served_bots`), not the config. The routines of a bot whose profile no gateway serves are paused (see phase 5). Coconut fires a routine that the person runs now. The native fire claim decides a race at a switch, so a routine never fires twice.
+- One firing owner. A gateway that serves a bot's profile fires the bot's routines. Since phase 5, the evidence is the connected coconut adapter of the profile (`gateway_chat.gateway_served_bots`), not the config. The routines of a bot whose profile no gateway serves are paused (see phase 5). A run that the person starts is a trigger in Hermes, which the gateway runs too. Coconut fires no routine itself.
 - A cron run is a Coconut turn. The plugin's session hooks see a cron run through `cron.execution_identity.current_cron_execution`. At its start (`on_session_start`) the plugin opens a turn with `POST /v1/gateway/cron`, and the service makes a routine task in the bot's chat. The run reports to that turn: streamed text, commentary (`on_interim_message`), the answer (`post_llm_call`) and the end (`on_session_end`). The coconut tools act for that task. A card of `coconut_ask` ends the run, and its answer continues the run's Hermes session in a gateway turn (phase 5, group 2a).
 - Model keys. Each profile reads its provider keys from its own `.env`, as Hermes keeps them. The Hermes entries of each update and start copy the provider keys of the default profile to each bot profile that does not have them (#284).
 
@@ -287,7 +287,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - The service runs each tool on Coconut's board (`gateway_chat.gateway_kanban_tool`). It first checks that the turn holds the claim of its outcome. Then the Kanban runtime runs Hermes's tool with the worker env of that claim (`HERMES_KANBAN_TASK`, `HERMES_KANBAN_RUN_ID`, `HERMES_KANBAN_CLAIM_LOCK`, `kanban_runtime.board_tool`), so Hermes refuses a call for another task or for an earlier run, as for a worker. The runtime takes one request at a time, so the env of one call never reaches another. `kanban_list` and `kanban_unblock` route the board, and Hermes refuses them in a worker. They run without the claim: `kanban_list` shows only the tasks of the bot, and `kanban_unblock` changes only a task of the bot.
 - A tool that ends the run (`kanban_complete`, `kanban_block`, `kanban_schedule`, `kanban_request_review`) also stops the placeholder of the claim. The turn then finishes its reply without a claim, and the stopped placeholder is no lost claim (`claim_finished`).
 - A turn of an outcome that ends without one of these tools is a failed run, as for a worker: Coconut finishes the run as a protocol violation (`Board.finish`), and Hermes runs the card again.
-- Each write is a receipt of the turn, so adoption, completion proofs and routine reports read it as before.
+- Each write is a receipt of the turn, so adoption and completion proofs read it as before.
 - When Nous merges the spawn hook of the Hermes dispatcher (NousResearch/hermes-agent#146543), the dispatcher can start these turns itself, and the placeholder and the claim plumbing go.
 
 ### The technical lane in the gateway
@@ -349,7 +349,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - A turn of the bot's conversation that owns a native outcome (`gateway_bridge.conversation_outcome_turn`) runs in the gateway, in the bot's chat, as the worker ran it in the bot's conversation. It has the outcome rules, the workspace of its claim and the board tools of its claim, but no worktree, as in the worker. Its card answers and follow-ups run there too. A follow-up with a Kanban claim runs in the workspace of that claim, in any chat (`run_gateway_context`).
 - A turn that the gateway does not run, a continuation after its card answer, and a follow-up on its card fail at once with the reason (`gateway_chat.gateway_unsupported`, `UNSUPPORTED`). Examples: a task from an earlier version that waits for a worker (`_native_job`), and a command approval that a worker recorded. Before, such a turn went to the worker.
 - A run of a routine that the person starts ("Run now") is a trigger in Hermes (`jobs.trigger_job`, `native_routines` operation `routine_trigger`). The gateway's cron runs the job at its next tick. Until then, the routine's task waits (`_gateway_trigger`), and the cron run of the gateway takes that task as its turn (`gateway_chat.gateway_cron`). A task that no run takes in 5 minutes fails with the reason (`routine_coordinator._expire_routine_triggers`). Coconut no longer claims a scheduled routine: the gateway fires it.
-- Fixture mode has no gateway, so its provider still runs every turn and every routine.
+- Fixture mode has no gateway, so its provider still runs every turn. It runs no routine: only the gateway runs one, and Coconut refuses a run that the person starts there (`ROUTINES_NEED_GATEWAY`).
 
 ### The worker is gone
 
@@ -367,8 +367,7 @@ reason (`gateway_unsupported`).
   (`HermesProvider.native_board`).
 - The relay of the worker is gone: its envelope delivery, its recovery and the reply into an envelope
   (`_native_reply_pending`). The service keeps the saved `_native_relay` of earlier tasks as history, for the proofs that
-  read it (`_completed_peer_continuation`, `_block_check_relay_lineage`, `routine_reports.scopes`,
-  `_settled_original_card`). Each of these proofs also accepts a message of `coconut_message_bot`. That message has no
+  read it (`_completed_peer_continuation`, `_block_check_relay_lineage`, `_settled_original_card`). Each of these proofs also accepts a message of `coconut_message_bot`. That message has no
   envelope, so its proof is the service's own record of the delivery: from the sending task to the bot, with the
   receiving task in its receipt, and not a progress note. `_block_check_message_intake` proves the intake of the
   delegated block check this way.
@@ -421,9 +420,13 @@ A task that a guard holds for more than an hour shows: Coconut logs a warning on
 
 - Done: the worker turn types, one group at a time, after the gateway ran them, and then the worker runtime (see "The
   worker is gone").
-- Next: Coconut's own claims of routines (`native_routines` operations `routine_claim`, `routine_heartbeat`,
-  `routine_finish`, and `native_routine_receipts`). The gateway fires each routine now, so only routine tasks of
-  earlier versions use them.
+- Done: Coconut's own claims of routines. The `native_routines` operations `routine_claim`, `routine_heartbeat`,
+  `routine_finish` and `routine_prune_completions`, `native_routine_receipts.py`, the release of a waiting occurrence,
+  the interception of a worker's `cronjob_manage` run, and the reports of routines that an owner created
+  (`routine_reports.py`) are gone. The gateway fires each routine, and a gateway cron run records no `cronjob_manage`
+  receipt that such a report needs. Tasks of earlier claims keep their `_native_job` as history, and the continuation
+  guards still read it. The receipt files of earlier claims in `<data-dir>/bots/<uuid>/runs` stay, and nothing reads
+  them.
 - `kanban_scheduler.py` and `kanban_runtime.py` only after Hermes gives its dispatcher a spawn hook. Until then they stay.
 
 ## Transport and future providers

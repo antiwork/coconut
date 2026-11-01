@@ -296,7 +296,7 @@ class HermesProvider(FixtureProvider):
         return result
 
     def native_routines(self, bots):
-        """Read the native routines and completion receipts of these bots. The routine tick reads them every 15 seconds.
+        """Read the native routines of these bots. The routine tick reads them every 15 seconds.
 
         Each read starts a Hermes process. A saved result of a bot stays valid while the files that the read uses are
         unchanged (see routines_signature).
@@ -318,16 +318,13 @@ class HermesProvider(FixtureProvider):
         missing = [bot for bot in bots if bot['id'] not in saved]
         if missing:
             snapshot = self.native_settings('routines_read', missing)
-            completions = snapshot.get('completions', {})
             with self._routines_lock:
                 for bot in missing:
-                    value = dict(routines=[r for r in snapshot['routines'] if r['bot_id'] == bot['id']],
-                                 completions=completions.get(bot['id'], {}))
+                    value = dict(routines=[r for r in snapshot['routines'] if r['bot_id'] == bot['id']])
                     self._routines[bot['id']] = (signatures[bot['id']], deepcopy(value))
                     saved[bot['id']] = value
         # The read returns the routines of each bot in the order of the bots.
-        return {'routines': [routine for bot in bots for routine in saved[bot['id']]['routines']],
-                'completions': {bot['id']: saved[bot['id']]['completions'] for bot in bots}}
+        return {'routines': [routine for bot in bots for routine in saved[bot['id']]['routines']]}
 
     def set_bot_model(self, bot, selection):
         return self.catalog.set_profile(bot['id'], selection)

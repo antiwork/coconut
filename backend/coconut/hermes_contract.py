@@ -57,20 +57,13 @@ def verify_contract():
     from agent.reasoning_effort import codex_supported_efforts
     from utils import atomic_roundtrip_yaml_save
     from hermes_yaml import roundtrip_yaml
-    # The routines of a bot (native_routines, native_routine_receipts) and the silence of a cron run (silent_responses).
+    # The routines of a bot (native_routines) and the silence of a cron run (silent_responses).
     from cron import jobs
     from cron.scheduler import _is_cron_silence_response
     require_keywords(_is_cron_silence_response, {'text'})
     from tools import approval_context
-    require_keywords(jobs.claim_job_for_fire, {'job_id', 'force', 'return_job'})
-    require_keywords(jobs.heartbeat_fire_claim, {'job_id', 'expected_owner'})
-    require_keywords(jobs._record_run_outcome, {'job', 'success', 'error', 'delivery_error', 'status', 'now'})
-    require_keywords(jobs._advance_after_run, {'job', 'now'})
-    require_keywords(jobs._under_fire_fence, {'job_id', 'fn'})
-    require_keywords(jobs._with_job, {'job_id', 'fn', 'missing'})
     require_keywords(jobs.trigger_job, {'job_id'})
-    for function in (jobs.create_job, jobs.update_job, jobs.get_job, jobs.list_jobs, jobs.pause_job,
-                     jobs.resume_job, jobs.remove_job, jobs.claim_dispatch, jobs.save_job_output, jobs.save_jobs, jobs._hermes_now,
+    for function in (jobs.create_job, jobs.update_job, jobs.list_jobs, jobs.pause_job, jobs.resume_job, jobs.remove_job,
                      profiles.read_profile_meta, profiles.write_profile_meta, approval_context._get_approval_config):
         if not callable(function):
             raise ValueError('Hermes removed a required profile or scheduling interface.')

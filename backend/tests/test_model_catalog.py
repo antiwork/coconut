@@ -1,5 +1,4 @@
 import importlib.util
-import io
 import json
 import os
 from pathlib import Path
@@ -65,34 +64,6 @@ class ModelSelectionTests(unittest.TestCase):
                 with self.assertRaises(ModelCatalogError):
                     catalog._call('native', native_operation='snapshot_read')
 
-    def check_large_native_text(self, operation, field):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'source'
-            source.mkdir()
-            (source / 'run_agent.py').touch()
-            catalog = HermesModelCatalog(directory, source=source, python=sys.executable)
-            received, files = [], []
-            output = '结果\n' * 100_000
-
-            def run(args, *, input, env, **kwargs):
-                files.extend((catalog.private_home / 'tmp').iterdir())
-                response = io.StringIO()
-                with patch.object(model_catalog.sys, 'stdin', io.StringIO(input)), \
-                     patch.object(model_catalog.sys, 'stdout', response), \
-                     patch.dict(os.environ, {'TMPDIR': env['TMPDIR']}), \
-                     patch.object(model_catalog, '_worker', side_effect=lambda request: received.append(request) or {'ok': True}):
-                    model_catalog.main()
-                return subprocess.CompletedProcess(args, 0, response.getvalue(), '')
-
-            with patch.object(model_catalog.subprocess, 'run', side_effect=run):
-                result = catalog._call('native', native_operation=operation, **{field: output})
-            self.assertTrue(result['ok'])
-            self.assertEqual(received[0][field], output)
-            self.assertTrue(all(not path.exists() for path in files))
-
-    def test_large_routine_output_reaches_the_native_worker_without_truncation(self):
-        self.check_large_native_text('routine_finish', 'output')
-
     def test_oversized_settings_request_rejects_before_dispatch(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'source'
@@ -103,42 +74,6 @@ class ModelSelectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(ModelCatalogError, 'too large'):
                     catalog._call('native', native_operation='update_profile', changes={'instructions': 'x' * 200_000})
                 run.assert_not_called()
-
-    def test_routine_output_file_is_private_and_removed_after_a_timeout(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / 'source'
-            source.mkdir()
-            (source / 'run_agent.py').touch()
-            catalog = HermesModelCatalog(directory, source=source, python=sys.executable)
-            files = []
-
-            def run(*args, **kwargs):
-                files.extend((catalog.private_home / 'tmp').iterdir())
-                self.assertEqual(len(files), 1)
-                self.assertEqual(files[0].stat().st_mode & 0o777, 0o600)
-                raise subprocess.TimeoutExpired('worker', 30)
-
-            with patch.object(model_catalog.subprocess, 'run', side_effect=run):
-                with self.assertRaises(ModelCatalogError):
-                    catalog._call('native', native_operation='routine_finish', output='Private result.')
-            self.assertFalse(files[0].exists())
-
-    def test_worker_rejects_linked_and_unrelated_routine_output_files(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / 'outside').write_text('Private result.')
-            spool = root / 'tmp'
-            spool.mkdir()
-            (spool / 'coconut-native-linked').symlink_to(root / 'outside')
-            for name in ('../outside', 'outside', 'coconut-native-linked'):
-                request = {'operation': 'native', 'native_operation': 'routine_finish', 'native_text_file': name}
-                response = io.StringIO()
-                with self.subTest(name=name), patch.dict(os.environ, {'TMPDIR': str(spool)}), \
-                     patch.object(model_catalog.sys, 'stdin', io.StringIO(json.dumps(request))), \
-                     patch.object(model_catalog.sys, 'stdout', response), patch.object(model_catalog, '_worker') as worker:
-                    model_catalog.main()
-                    worker.assert_not_called()
-                    self.assertIn('error', json.loads(response.getvalue()))
 
     def test_default_inherits_current_native_selection(self):
         catalog = example_catalog()

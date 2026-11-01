@@ -16,19 +16,6 @@ class RoutineChatPrivacyTests(unittest.TestCase):
         self.job = dict(id='native-job', prompt=self.prompt, fire_claim={'by': 'owner'})
         self.routine = dict(id=str(uuid4()), bot_id=self.bot['id'], name='Work refresh', _native_id='native-job')
 
-    def test_claim_keeps_full_instructions_in_job_without_a_user_bubble(self):
-        self.service.provider.native_settings = lambda operation, *args, **kwargs: {'routines': [self.routine]} if operation == 'routines_read' else {'job': self.job}
-        with self.service.transaction():
-            self.service._put('routines', self.routine)
-            task = self.service.claim_native_routine(self.routine)
-        del self.service.provider.native_settings
-        self.assertEqual(self.service.snapshot()['messages'], [])
-        stored = self.service._get('tasks', task['id'])
-        self.assertEqual(stored['_native_job']['prompt'], self.prompt)
-        self.assertEqual(stored['title'], 'Work refresh')
-        self.assertEqual(stored['status'], 'queued')
-        self.assertEqual(stored['_native_job']['fire_claim']['by'], 'owner')
-
     def test_restart_hides_only_generated_routine_instructions(self):
         task = self.service.mutate('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'My real request'}, str(uuid4()))
         with self.service.transaction():

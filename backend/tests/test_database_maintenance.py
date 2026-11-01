@@ -240,10 +240,10 @@ class ReceiptRetentionTests(ServiceCase):
     def test_an_idle_outcome_loses_its_receipts_except_the_named_ones(self):
         idle, other = self.task(), self.task()
         routine = lambda call: dict(action={'name': 'cronjob_manage', 'arguments': {'action': call}})
-        # A list of every job has no reader. A created or run routine does.
-        gone = {self.receipt(idle), self.receipt(idle, **routine('list'))}
+        # A list of every job, and a created routine, have no reader. A run routine does.
+        gone = {self.receipt(idle), self.receipt(idle, **routine('list')), self.receipt(idle, **routine('create'))}
         kept = {self.receipt(idle, state='executing', result=None), self.receipt(idle, 'kanban_create'),
-                self.receipt(idle, **routine('create')), self.receipt(idle, **routine(' Run_Now '))}
+                self.receipt(idle, **routine(' Run_Now '))}
         decided, carried = self.receipt(idle), self.receipt(idle)
         kept |= {decided, carried}
         with self.service.transaction():
@@ -254,7 +254,7 @@ class ReceiptRetentionTests(ServiceCase):
         waiter = self.task()
         kept |= {self.receipt(waiter, 'coconut_wait', result='{}', _wait_task_id=other['id'], _wait_session_id='session'),
                  self.receipt(waiter)}
-        self.assertEqual(self.service._prune_receipts(NOW), 2)
+        self.assertEqual(self.service._prune_receipts(NOW), 3)
         self.assertEqual(self.remaining(), kept)
         self.assertFalse(gone & self.remaining())
 
@@ -399,9 +399,9 @@ class HistoryRetentionTests(ServiceCase):
         # Chat tasks share the execution session of their bot, so the bot's live task keeps the outcome busy.
         retired, recent = self.task(), self.task(updated_at=OLD)
         self.task(status='working', updated_at=RECENT)
-        gone = self.receipt(retired)
+        gone = {self.receipt(retired), self.receipt(retired, action={'name': 'cronjob_manage', 'arguments': {'action': 'create'}})}
         kept = {self.receipt(retired, state='executing'), self.receipt(retired, 'kanban_create'), self.receipt(recent),
-                self.receipt(retired, action={'name': 'cronjob_manage', 'arguments': {'action': 'create'}})}
+                self.receipt(retired, action={'name': 'cronjob_manage', 'arguments': {'action': 'run'}})}
         named = self.receipt(retired)
         kept.add(named)
         with self.service.transaction():
@@ -409,9 +409,9 @@ class HistoryRetentionTests(ServiceCase):
                                                 status='approved', _receipt_id=named))
         # Without the retirement the busy outcome keeps every receipt.
         self.assertEqual(self.service._prune_receipts(NOW), 0)
-        self.assertEqual(self.service._prune_receipts(NOW, retire=True), 1)
+        self.assertEqual(self.service._prune_receipts(NOW, retire=True), 2)
         self.assertEqual(self.receipts(), kept)
-        self.assertNotIn(gone, self.receipts())
+        self.assertFalse(gone & self.receipts())
 
     def test_a_retired_task_that_runs_again_between_batches_keeps_its_receipts(self):
         first, second = self.task(), self.task()

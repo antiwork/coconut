@@ -158,7 +158,7 @@ from .pull_request_reviews import PENDING_CARDS, PR_ARTIFACTS, PR_URL_INDEX, Pul
 from .work_progress import WorkProgress, work_enabled
 
 
-from .routine_coordinator import (CHILD_TASKS, NativeRoutines, OPEN_NATIVE_JOB, OPEN_ROUTINE_TASK, OPEN_ROUTINE_TASKS,
+from .routine_coordinator import (CHILD_TASKS, NativeRoutines, OPEN_ROUTINE_TASK, OPEN_ROUTINE_TASKS,
                                   RUNNING_ROUTINE_TASKS)
 from .approval_updates import ApprovalUpdates
 from .parallel_work_updates import ParallelWorkUpdates
@@ -194,9 +194,10 @@ BOT_WORKING_CONTEXT = ("SELECT 1 FROM contexts WHERE json_extract(data,'$.status
 # Task fields that the dispatcher looks for on every pass. Each has a partial index, so a pass reads only the tasks
 # that carry the field and not the whole table.
 MARKS = ('_return_pending', '_work_status_only', '_respawn_guard')
-# Indexes that Coconut no longer reads: the reply of a worker's relay (_native_reply_pending), and the receipts that a
-# worker's process or relay completed (native_receipts_pending_wait replaces it).
-RETIRED_INDEXES = ('tasks_native_reply_pending', 'native_receipts_pending_completion')
+# Indexes that Coconut no longer reads: the reply of a worker's relay (_native_reply_pending), the receipts that a
+# worker's process or relay completed (native_receipts_pending_wait replaces it), and the routine tasks whose claim
+# Coconut held in Hermes.
+RETIRED_INDEXES = ('tasks_native_reply_pending', 'native_receipts_pending_completion', 'tasks_native_job_open')
 
 
 # The condition of the partial index messages_streaming: a reply that a turn still writes. The start ends each one.
@@ -312,7 +313,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             self.db.execute(f'CREATE INDEX IF NOT EXISTS tasks{field} ON tasks (id) WHERE ' + marked(field))
         for name in RETIRED_INDEXES:
             self.db.execute('DROP INDEX IF EXISTS ' + name)
-        self.db.execute('CREATE INDEX IF NOT EXISTS tasks_native_job_open ON tasks (id) WHERE ' + OPEN_NATIVE_JOB)
         self.db.execute('CREATE INDEX IF NOT EXISTS tasks_routine_open ON tasks (id) WHERE ' + OPEN_ROUTINE_TASK)
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_source ON tasks (json_extract(data,'$.source_task_id'))")
         self.db.execute("CREATE INDEX IF NOT EXISTS tasks_relay_callback_owner ON tasks (json_extract(data,'$._relay_callback_owner'))")
@@ -3580,14 +3580,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     provider_task['_pr_review'] = task['_pr_review']
                 if task.get('_native_job'):
                     provider_task['_native_job'] = task['_native_job']
-                    # A release in progress counts as finished. If Hermes clears the claim during this turn, the
-                    # bridge then confirms the native completion instead of pausing the turn.
-                    release = task.get('_native_release') or {}
-                    provider_task['_native_job_finished'] = task.get('_native_job_finished', False) or (
-                        release.get('job_id') == task['_native_job'].get('id')
-                        and release.get('owner') == (task['_native_job'].get('fire_claim') or {}).get('by'))
-                    with self.lock:
-                        provider_task['_native_job_completion'] = self.native_routine_completion_input(task)
+                    provider_task['_native_job_finished'] = task.get('_native_job_finished', False)
                 with self.lock:
                     provider_task['_native_receipts'] = [json.loads(row[0]) for row in self.db.execute(
                         "SELECT data FROM native_receipts WHERE json_extract(data, '$.task_id')=? "

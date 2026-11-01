@@ -438,8 +438,9 @@ class NativeGatewayChatTests(unittest.TestCase):
             # The gateway fires the routine, so a pass of Coconut claims none.
             service.provider.native_settings = routine_settings
             service._native_cron_next = 0
+            cursor = service._cursor()
             service.tick_native_routines()
-            self.assertFalse(service._native_cron_error)
+            self.assertNotIn('routines.unavailable', [e['type'] for e in service.events(cursor)['events']])
             with service.lock:
                 routine = next(r for r in service._all('routines') if r['_native_id'] == json.loads(job.stdout))
                 self.assertFalse(any(t.get('routine_id') == routine['id'] for t in service._all('tasks')))

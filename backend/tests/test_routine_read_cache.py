@@ -30,8 +30,7 @@ class RoutineReadCacheTests(unittest.TestCase):
             self.assertEqual(operation, 'routines_read')
             self.reads.append([bot['id'] for bot in bots])
             return {'routines': [{'id': bot['id'] + '-job', 'bot_id': bot['id'],
-                                  'jobs': (self.home(bot) / 'cron' / 'jobs.json').read_text()} for bot in bots],
-                    'completions': {bot['id']: {} for bot in bots}}
+                                  'jobs': (self.home(bot) / 'cron' / 'jobs.json').read_text()} for bot in bots]}
         patcher = patch.object(self.provider, 'native_settings', side_effect=native_settings)
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -45,18 +44,14 @@ class RoutineReadCacheTests(unittest.TestCase):
         second = self.provider.native_routines(list(reversed(self.bots)))
         self.assertEqual([r['bot_id'] for r in second['routines']], [self.bots[1]['id'], self.bots[0]['id']])
         self.assertEqual(second['routines'][1]['jobs'], '{"jobs": []}')
-        self.assertEqual(second['completions'], {bot['id']: {} for bot in self.bots})
         self.assertEqual(self.reads, [[bot['id'] for bot in self.bots]])
 
     def test_each_file_of_the_read_makes_its_bot_read_again(self):
         self.provider.native_routines(self.bots)
         bot = self.bots[1]
-        for name in ('cron/jobs.json', 'cron/executions.db', 'cron/executions.db-wal', 'config.yaml', '.env',
-                     'runs/job.json', 'runs/completed-1.json'):
+        for name in ('cron/jobs.json', 'cron/executions.db', 'cron/executions.db-wal', 'config.yaml', '.env'):
             with self.subTest(name=name):
-                # Coconut keeps the receipts beside the profile home, in its own runs folder.
-                path = (self.home(bot).parent if name.startswith('runs/') else self.home(bot)) / name
-                path.parent.mkdir(exist_ok=True)
+                path = self.home(bot) / name
                 path.write_text(name + ' changed')
                 self.reads.clear()
                 routines = self.provider.native_routines(self.bots)['routines']
