@@ -45,28 +45,8 @@ class KanbanScheduler:
         self.closed = False
         self.frames = None
 
-    @contextlib.contextmanager
-    def _request_fence(self, request):
-        try:
-            yield
-        except KanbanRequestError:
-            # The adapter confirmed it finished handling this request.
-            raise
-        except BaseException:
-            # Unlink's service-state fence must outlive the adapter, including
-            # a lost or malformed response. Stop/reap it before releasing the
-            # request lock; the durable native event reconciles partial success.
-            if request['op'] == 'unlink_dependency' and self.process and self.process.poll() is None:
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    self.process.kill()
-                    self.process.wait()
-            raise
-
     def call(self, request, spawn=None):
-        with self.lock, self._request_fence(request):
+        with self.lock:
             if self.closed:
                 raise RuntimeError('The Hermes Kanban adapter is closed.')
             if self.process is None or self.process.poll() is not None:

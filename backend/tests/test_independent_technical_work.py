@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
-from coconut.native_outcomes import CONTINUE_SCHEMA
+from coconut.technical_lane import CONTINUE_SCHEMA
 from coconut.service import ServiceError, YieldForDecision
 from coconut.technical_lane import SYSTEM_DECIDERS, held_action, instructions
 import test_native_claim_continuation as native_claims
@@ -305,7 +305,6 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
                               ('native_proposal', dict(key='ready', title='Mark ready?', options=[])),
                               ('native_approval', dict(receipt_id='x')), ('decision', dict(title='Write a file')),
                               ('work_continue', dict(task_id='t_desk', message='Merge it.')), ('work_wait', dict(task_id='t_desk')),
-                              ('dependency_unlink', dict(parent_id='t_existing', child_id='t_desk', reason='x')),
                               ('withdrawal_correction', {}), ('artifact', dict(kind='pr', url='https://github.com/antiwork/gumroad/pull/8541')),
                               ('bot_message', dict(target_bot_id=source['bot_id'], text='Merge it.'))):
             with self.subTest(event=kind), self.assertRaises(ServiceError) as raised:

@@ -333,7 +333,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.generation = uid()
         self.restart_enabled = False
         self.restart_pending = False
-        self.restart_deadline = None
         self.running: dict[str, threading.Thread] = {}
         self.bot_locks: dict[str, threading.Lock] = {}
         self.context_threads: dict[str, threading.Thread] = {}
@@ -345,7 +344,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._kanban_claim_bots = set()
         # Bots whose session store a VACUUM rewrites. A bot in this set starts no new turn (see session_maintenance).
         self._store_hold = set()
-        self._dependency_unlinking = False
         self._kanban_dispatch_uncertain = False
         self.pr_poller: threading.Thread | None = None
         self.process_poller: threading.Thread | None = None
@@ -432,10 +430,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         import sys
         from .turn_timings import timed_lock
         with timed_lock(self.lock, sys._getframe(2).f_code.co_name):
-            # Unlink validates service guards, then calls the adapter without
-            # this lock. Defer writes until that short native operation ends.
-            while getattr(self, '_dependency_unlinking', False):
-                self.changed.wait()
             self.db.execute('BEGIN IMMEDIATE')
             self._profile_pending = {}
             try:
@@ -3189,7 +3183,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
 
     def _dispatch_foreground(self):
         # Caller holds the service lock. Native admission reserves background slots.
-        if (self.restart_pending or self.stopping.is_set() or self._dependency_unlinking
+        if (self.restart_pending or self.stopping.is_set()
                 or getattr(self, '_workspace_recovery_hold', False)):
             return
         self.running = {k: v for k, v in self.running.items() if v.is_alive()}
@@ -3788,8 +3782,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 if payload.get('turn_id') != self._get('tasks', task_id).get('_native_turn_id'):
                     return
             return self._deliver_live_messages(task_id)
-        if kind == 'dependency_unlink':
-            return self.unlink_native_dependency(task_id, payload)
         if kind == 'block_pause':
             return self.record_block_pause(task_id, payload)
         if kind == 'work_continue':
@@ -3798,8 +3790,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             return self.wait_for_task(task_id, payload)
         if kind == 'decision_response':
             return self.resolve_chat_decision(task_id, payload)
-        if kind == 'service_restart':
-            return self.request_service_restart(task_id, payload)
         if kind == 'withdrawal_correction':
             return self.correct_withdrawal(task_id, payload)
         if kind in ('native_call', 'native_result', 'native_approval', 'native_question', 'native_proposal'):

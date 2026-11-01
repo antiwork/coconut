@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import Mock
 from uuid import uuid4
 
-from coconut import native_outcomes
+from coconut import native_outcomes, technical_lane
 from coconut.service import ServiceError
 import test_native_claim_continuation as native_fixtures
 import test_native_work_continuation as fixtures
@@ -738,11 +738,11 @@ class SelectedFinishedPrTests(unittest.TestCase):
         self.assertEqual(len([d for d in self.service._all('deliveries') if d.get('receipt') == receipt]), 1)
 
     def test_the_schema_offers_an_optional_choice(self):
-        schema = native_outcomes.CONTINUE_SCHEMA['parameters']
+        schema = technical_lane.CONTINUE_SCHEMA['parameters']
         self.assertFalse(schema['additionalProperties'])
         self.assertEqual(schema['required'], ['task_id', 'message'])
         self.assertEqual({k: schema['properties']['retained_pr_url'][k] for k in ('type', 'maxLength')},
-                         dict(type='string', maxLength=native_outcomes.RETAINED_PR_URL_LIMIT))
+                         dict(type='string', maxLength=technical_lane.RETAINED_PR_URL_LIMIT))
 
     def test_the_original_requester_receives_the_result_once(self):
         owner, requester, work, prs, report = self.finished()
@@ -848,7 +848,7 @@ class SelectedFinishedPrTests(unittest.TestCase):
 
     def test_a_malformed_choice_is_refused(self):
         owner, requester, work, prs, report = self.finished()
-        for value in ('', '   ', 7, None, ['x'], 'x' * (native_outcomes.RETAINED_PR_URL_LIMIT + 1)):
+        for value in ('', '   ', 7, None, ['x'], 'x' * (technical_lane.RETAINED_PR_URL_LIMIT + 1)):
             with self.subTest(value=value):
                 self.assert_no_writes(lambda: self.choose(requester, value), 'retained_pr_url must contain')
 

@@ -1418,6 +1418,47 @@ class ServiceRoutingTests(unittest.TestCase):
                                       human_authored=False)
         return self.read('tasks', task['id'])
 
+    def running_turn(self, task, **fields):
+        """A gateway turn of `task`, which runs now, with these task fields."""
+        with self.service.transaction():
+            stored = self.service._get('tasks', task['id'])
+            stored.update(status='working', **fields)
+            self.service._put('tasks', stored)
+        return self.service.gateway_bridge.open_turn(task['id'], self.home, self.bot['id'])
+
+    def test_a_work_session_tracks_its_work_and_continues_an_outcome_with_the_gateway_tools(self):
+        from coconut.gateway_chat import TRACK_WORK_CHAT, TRACK_WORK_OUTCOME
+        task = self.audit()
+        turn = self.running_turn(task, _execution_session_id=task['id'])
+        tracked = self.service.gateway_tool({'turn_id': turn, 'tool': 'track_work', 'arguments': {
+            'key': 'account-export', 'title': 'Export the accounts', 'activity': 'Writing the export',
+            'status': 'working'}})
+        with self.service.lock:
+            item = next(a for a in self.service._all('artifacts') if a['kind'] == 'work')
+        self.assertEqual((item['title'], item['task_id']), ('Export the accounts', task['id']))
+        self.assertEqual(tracked['id'], item['id'])
+        # coconut_continue_work goes to the service with its arguments, which checks the outcome and the owner.
+        arguments = {'task_id': 't_export', 'message': 'The person added the missing column.'}
+        with patch.object(self.service, 'continue_native_work', return_value={'status': 'queued'}) as continued:
+            self.assertEqual(self.service.gateway_tool({'turn_id': turn, 'tool': 'continue_work', 'arguments': arguments}),
+                             {'status': 'queued'})
+        self.assertEqual(continued.call_args.args, (task['id'], arguments))
+        # A turn of the bot's chat records an outcome on the board, and a native outcome reports on its card.
+        chat = self.running_turn(self.send('Track the export.'))
+        with self.assertRaisesRegex(ServiceError, 'coconut_kanban_create'):
+            self.service.gateway_tool({'turn_id': chat, 'tool': 'track_work', 'arguments': {}})
+        self.assertIn('coconut_kanban_create', TRACK_WORK_CHAT)
+        outcome = self.running_turn(self.audit(), _execution_session_id='work-2', _native_outcome_id='t_export')
+        with self.assertRaisesRegex(ServiceError, 'coconut_kanban_heartbeat'):
+            self.service.gateway_tool({'turn_id': outcome, 'tool': 'track_work', 'arguments': {}})
+        self.assertIn('coconut_kanban_heartbeat', TRACK_WORK_OUTCOME)
+        # A technical lane holds both tools, as it holds the card tools.
+        lane = self.running_turn(self.audit(), _execution_session_id='work-3', _technical_lane={'scope': ['diagnosis']})
+        for tool in ('continue_work', 'track_work'):
+            with self.subTest(tool=tool), self.assertRaises(ServiceError) as raised:
+                self.service.gateway_tool({'turn_id': lane, 'tool': tool, 'arguments': {}})
+            self.assertEqual(raised.exception.status, 403)
+
     def test_a_task_with_its_own_work_session_runs_in_the_gateway_in_the_chat_of_that_session(self):
         from coconut.native_conversation import session_root
         task = self.audit()

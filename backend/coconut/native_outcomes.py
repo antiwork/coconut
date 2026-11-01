@@ -5,13 +5,8 @@ import time
 from datetime import datetime, timezone
 from uuid import UUID, uuid5
 
-if __package__:
-    from .technical_lane import (SCHEMA as TECHNICAL_LANE_SCHEMA, parked as technical_lane_parked,
-                                 requested as technical_lane_request)
-else:
-    # Hermes workers import this module from the package directory for its tool schemas.
-    from technical_lane import (SCHEMA as TECHNICAL_LANE_SCHEMA, parked as technical_lane_parked,
-                                requested as technical_lane_request)
+from .technical_lane import (RETAINED_PR_URL_LIMIT, parked as technical_lane_parked,
+                             requested as technical_lane_request)
 
 
 # A block check offers a delegate's answer with only these public fields, including the person's typed reply.
@@ -39,44 +34,14 @@ WORK_INSTRUCTIONS = (
     'Use a native dependency or scheduled check for a valid external wait. Do not create a recovery task. '
 )
 
-UNLINK_SCHEMA = {
-    'name': 'coconut_unlink_dependency',
-    'description': 'Remove one obsolete native parent→child dependency. You must be the child’s owner or requesting bot. '
-        'The child must be TODO and both outcomes quiescent. Give the exact IDs from kanban_show and a reason. '
-        'This preserves other dependencies, workspaces, results and decisions; it does not approve or complete work.',
-    'parameters': {'type': 'object', 'additionalProperties': False,
-        'properties': {'parent_id': {'type': 'string'}, 'child_id': {'type': 'string'},
-                       'reason': {'type': 'string', 'maxLength': 4000}},
-        'required': ['parent_id', 'child_id', 'reason']},
-}
 
 
-RETAINED_PR_URL_LIMIT = 500
 # The refusal when the owner's delegated PRs of one Work all finished and the call names none of them.
 FINISHED_PRS_AMBIGUOUS = ('Choose one retained Work item for this native outcome. Its delegated PRs of the same Work '
                           'have all finished. Name one of them with retained_pr_url.')
 SELECTION_REFUSED = ('retained_pr_url names no finished delegated PR that this continuation can choose. Use it only '
                      'when every delegated PR of the Work finished and the plain call asks for it.')
 
-CONTINUE_SCHEMA = {
-    'name': 'coconut_continue_work',
-    'description': 'Continue a quiescent queued, scheduled, review, blocked, failed, or completed Hermes outcome with new facts. Use the native task ID from kanban_show. '
-        'You must own the work or be its requesting bot. This keeps its task, workspace, decisions, and result route. '
-        'Hermes preserves completed results and creates a linked follow-up with the same workspace. '
-        'This does not approve actions. The result goes to the original requester.',
-    'parameters': {'type': 'object', 'additionalProperties': False,
-        'properties': {'task_id': {'type': 'string'}, 'message': {'type': 'string', 'maxLength': 16000},
-                       'independent_technical_work': TECHNICAL_LANE_SCHEMA,
-                       'retained_pr_url': {'type': 'string', 'maxLength': RETAINED_PR_URL_LIMIT,
-                           'description': 'Only when the plain call refuses because every delegated PR of the Work '
-                               'finished: the URL of the one finished PR that this continuation keeps as its Work item. '
-                               'It chooses the presentation only. It approves nothing and changes no task or Work.'},
-                       'continue_closed_source': {'type': 'boolean',
-                           'description': 'Only when the plain call refuses because Coconut ended this work after every '
-                               'GitHub item that it works on closed, and the person or requester still needs this same work: '
-                               'true continues the same execution. It approves nothing.'}},
-        'required': ['task_id', 'message']},
-}
 CLOSED_SOURCE_REFUSED = ('Coconut ended this work because every GitHub item that it works on closed. Repeat the call with '
                          'continue_closed_source: true only when this same work must still continue.')
 
@@ -178,185 +143,6 @@ class NativeOutcomes:
                    for m in messages):
                 return True
         return False
-
-    def _dependency_unlink_tasks(self, tasks, parent, child):
-        from .work_capacity import execution_key
-
-        def scope(task):
-            return execution_key(task) if task.get('_execution_session_id') else task['id']
-
-        by_id = {t['id']: t for t in tasks}
-        linked, _ = self._work_links(by_id, self._pending_completion_receipts(), True)
-        executions = {}
-        for task in tasks:
-            executions.setdefault(scope(task), set()).add(task['id'])
-            # Legacy delegated helpers predate native relay/assignment markers.
-            # Follow their authenticated source downward, never requester siblings.
-            source = by_id.get(task.get('source_task_id'))
-            if source and task.get('source_bot_id') == source['bot_id']:
-                linked.setdefault(source['id'], set()).add(task['id'])
-        found, pending = {}, [parent['id'], child['id']]
-        while pending:
-            identity = pending.pop()
-            if identity in found or identity not in by_id:
-                continue
-            task = found[identity] = by_id[identity]
-            pending.extend(executions[scope(task)] - found.keys())
-            pending.extend(linked.get(identity, set()) - found.keys())
-        # Follow saved helpers and returns even across sessions, but never walk
-        # up to a requester and pull in that bot's unrelated assignments.
-        return found
-
-    def unlink_native_dependency(self, source_id, payload):
-        import re
-        from .service import ServiceError, digest, encoded, require_text
-        from .work_capacity import execution_key
-
-        def native_identity(task):
-            return task.get('_native_outcome_id') or (task.get('_kanban_claim') or {}).get('native_id')
-
-        if set(payload) != {'parent_id', 'child_id', 'reason'}:
-            raise ServiceError(400, 'Supply only parent_id, child_id, and reason.')
-        parent_id, child_id = (payload[key] for key in ('parent_id', 'child_id'))
-        if any(not isinstance(value, str) or not re.fullmatch(r't_[0-9a-f]{8}', value) for value in (parent_id, child_id)):
-            raise ServiceError(400, 'Use exact native task IDs from kanban_show.')
-        if parent_id == child_id:
-            raise ServiceError(400, 'Choose two different native outcomes.')
-        reason = require_text(payload, 'reason', 4000)
-        if not self.kanban or not self.dispatch_gate.acquire(timeout=5):
-            raise ServiceError(409, 'Native dispatch is in progress or unavailable. Retry after it finishes.')
-        fenced = False
-        try:
-            # Never query the adapter under self.lock: a preceding tick can
-            # need that lock to finish spawn bookkeeping.
-            with self.lock:
-                tasks = self._all('tasks')
-                identities = [t['id'] for t in tasks if native_identity(t) in (parent_id, child_id)]
-                owners = {identity: [t for t in tasks if native_identity(t) == identity]
-                          for identity in (parent_id, child_id)}
-                parent_owner = owners[parent_id][0] if len(owners[parent_id]) == 1 else None
-                child_owner = owners[child_id][0] if len(owners[child_id]) == 1 else None
-                # Done cards fall out of the default snapshot. Refresh the exact
-                # execution/helper scope, without adding unrelated bot history.
-                observed = []
-                if parent_owner and child_owner:
-                    observed = list(self._dependency_unlink_tasks(tasks, parent_owner, child_owner))
-            snapshots = {t['external_id']: t for t in self.kanban.call(
-                {'op': 'snapshot', 'external_ids': list(dict.fromkeys(identities + observed))})['tasks']}
-            def authorize():
-                source = self._get('tasks', source_id)
-                if source['status'] != 'working' or self._task_paused(source):
-                    raise ServiceError(409, 'This task cannot unlink a dependency now.')
-                # Only exact task bindings, never context aliases or inferred owners.
-                owners = []
-                for identity in (parent_id, child_id):
-                    candidates = [t for t in self._all('tasks') if
-                        (t.get('_native_outcome_id') or (t.get('_kanban_claim') or {}).get('native_id')) == identity]
-                    if len(candidates) != 1 or snapshots.get(candidates[0]['id'], {}).get('id') != identity:
-                        raise ServiceError(409, 'Choose an exact retained native dependency from kanban_show.')
-                    owners.append(candidates[0])
-                parent, child = owners
-                if source['bot_id'] not in (child['bot_id'], child.get('source_bot_id')):
-                    raise ServiceError(403, 'Only the child owner or its requesting bot can unlink this dependency.')
-                request = dict(op='unlink_dependency', parent_id=parent_id, child_id=child_id, reason=reason,
-                    parent_external_id=parent['id'], parent_bot_id=parent['bot_id'],
-                    child_external_id=child['id'], child_bot_id=child['bot_id'],
-                    source_task_id=source_id, source_bot_id=source['bot_id'], source_turn_id=source.get('_native_turn_id'),
-                    source_native_id=source.get('_native_outcome_id') or (source.get('_kanban_claim') or {}).get('native_id'),
-                    guarded_native_ids=sorted({snapshots[identity]['id'] for identity in observed
-                        if identity in snapshots and (identity != source_id or identity in (parent['id'], child['id']))}),
-                    request_id=digest(encoded(['unlink_dependency', source_id, source.get('_native_turn_id'), parent_id, child_id, reason])))
-                return source, parent, child, request
-
-            with self.transaction():
-                source, parent, child, request = authorize()
-                admission = (child, self._setting('conversation_epoch'))
-            try:
-                saved = self.kanban.call(request | {'op': 'unlink_receipt'})['receipt']
-            except RuntimeError as error:
-                raise ServiceError(409, str(error)) from error
-            with self.transaction():
-                source, parent, child, current = authorize()
-                if current != request:
-                    raise ServiceError(409, 'The unlink authority changed. Read current work before retrying.')
-                if saved is not None:
-                    return saved
-                if self._kanban_claiming or self._kanban_dispatch_uncertain:
-                    raise ServiceError(409, 'Native dispatch is in progress. Retry after it finishes.')
-                if admission != (child, self._setting('conversation_epoch')):
-                    raise ServiceError(409, 'The child input changed. Read current work before retrying.')
-                tasks = self._all('tasks')
-                related = [t for t in tasks if execution_key(t) == execution_key(child)]
-                child_ids = {t['id'] for t in related}
-                bot = self._get('bots', child['bot_id'])
-                if (bot['archived'] or bot.get('_deleted') or child['session_id'] != bot['session_id']
-                        or not self._unlink_conversation_current(child)
-                        or self._continuation_blocked(child)
-                        or any(self._task_paused(t) or self._task_work_is_paused(t) or t['status'] in ('paused', 'cancelled', 'needs_you')
-                               or self._get('exchanges', t['exchange_id']).get('cancelled') for t in related)):
-                    raise ServiceError(409, 'The child work is paused, cancelled, or belongs to an earlier conversation.')
-                if any(d['task_id'] in child_ids and d['status'] == 'pending' for d in self._all('decisions')):
-                    raise ServiceError(409, 'The child’s existing decision must be answered before unlinking.')
-                # Parent appearance/decision state is deliberately not interpreted
-                # as permission for the child, or changed by this operation.
-                guarded = self._dependency_unlink_tasks(tasks, parent, child)
-                if guarded.keys() - set(observed):
-                    raise ServiceError(409, 'The related work changed. Read current work before retrying.')
-                for task in guarded.values():
-                    if task['id'] == source_id and task['id'] not in (parent['id'], child['id']):
-                        continue
-                    worker = self.running.get(task['id'])
-                    receipts = self._native_task_receipts(task['id'], state='executing')
-                    card = snapshots.get(task['id'])
-                    # A missing card is not proof the run stopped. A returned quiet card is.
-                    # A live worker, native run, or local command that has not ended is still owner work.
-                    # A queued task has no worker yet. A tool call of an earlier turn cannot still run, for example a
-                    # process wait that the turn never closed.
-                    stale_receipts = ((task['status'] in ('completed', 'failed')
-                                       or task['status'] == 'queued' and all(r.get('turn_id') != task.get('_native_turn_id') for r in receipts))
-                                      and card is not None
-                                      and not (card.get('current_run_id') or card.get('worker_pid'))
-                                      and not any((r.get('action') or {}).get('name') in LOCAL_COMMAND_TOOLS
-                                                  and not r.get('_process_ended_at') for r in receipts))
-                    if (task['status'] == 'working' or worker and worker.is_alive()
-                            or card and (card.get('current_run_id') or card.get('worker_pid'))
-                            or self._background_pending(task['id'], ignore_settled=True)
-                            or (receipts and not stale_receipts)
-                            or task.get('_return_pending')):
-                        raise ServiceError(409, 'Wait for the existing owner work and tool results before unlinking.')
-                if any(c['task_id'] in guarded and c['status'] in ('queued', 'working') for c in self._all('contexts')):
-                    raise ServiceError(409, 'Wait for the existing owner context before unlinking.')
-                # Native tool starts take a service transaction. Drain already
-                # accepted graph calls before fencing new starts during unlink.
-                if any(r['state'] == 'executing' and r.get('action', {}).get('name') in ('kanban_link', 'kanban_create')
-                       for r in self._all('native_receipts')):
-                    raise ServiceError(409, 'Wait for the existing native graph operation before unlinking.')
-                self._dependency_unlinking = True
-                fenced = True
-            try:
-                return self.kanban.call(request)
-            except Exception as error:
-                from .kanban_scheduler import KanbanRequestError
-                # A native commit can precede an adapter error. Only an intact
-                # journal read can distinguish rejection from an unknown effect.
-                try:
-                    saved = self.kanban.call(request | {'op': 'unlink_receipt'})['receipt']
-                except Exception:
-                    saved, confirmed = None, False
-                else:
-                    confirmed = isinstance(error, KanbanRequestError)
-                if saved is not None:
-                    return saved
-                if confirmed:
-                    raise ServiceError(409, str(error)) from error
-                return dict(status='unconfirmed', request_id=request['request_id'], parent_id=parent_id,
-                            child_id=child_id, error='The adapter did not confirm the unlink. Read the current dependencies before retrying.')
-        finally:
-            if fenced:
-                with self.changed:
-                    self._dependency_unlinking = False
-                    self.changed.notify_all()
-            self.dispatch_gate.release()
 
     def _requester_callback_foreground(self, caller, requester, tasks, snapshots):
         """Qualify only the authenticated caller's recorded requester continuation."""

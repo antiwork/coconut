@@ -1208,8 +1208,6 @@ print(identity)
         self.token = token
         with self.assertRaises(ServiceError):
             self.service.request_workspace_recovery(self.payload, self.key, 'local')
-        with self.assertRaises(ServiceError):
-            self.service.emit(self.task['id'], 'service_restart', self.payload)
         for field, value in (('expected_owner', str(uuid4())), ('native_task_id', 't_wrong'),
                              ('old_branch', 'stale'), ('new_branch', 'nonexistent'),
                              ('repository', str(self.root)), ('path', str(self.repo)), ('extra', 'forbidden')):
@@ -1237,38 +1235,6 @@ print(identity)
         worker_done.set()
         worker.join()
         self.assertTrue(self.service.take_service_restart())
-
-    def test_ordinary_restart_deadline_cannot_release_workspace_recovery_drain(self):
-        from coconut.service_restart import RESTART_DRAIN_SECONDS
-        worker_done = threading.Event()
-        worker = threading.Thread(target=worker_done.wait)
-        worker.start()
-        self.addCleanup(lambda: (worker_done.set(), worker.join()))
-        self.service.running[self.task['id']] = worker
-        task = self.service._get('tasks', self.task['id'])
-        task['status'] = 'working'
-        self.service._put('tasks', task)
-        self.assertEqual(self.request()[0], 200)
-        with patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
-            self.assertEqual(self.service.request_service_restart(task['id'], {})['status'], 'queued')
-            clock.return_value += RESTART_DRAIN_SECONDS + 1
-            for _ in range(2):
-                self.assertFalse(self.service.take_service_restart())
-                self.assertTrue(self.service.restart_pending)
-                self.service._dispatch_pending()
-        self.assertTrue(worker.is_alive())
-        self.assertEqual(self.provider.started, [])
-        self.assertEqual(self.manifest.read_bytes(), self.before)
-        self.assertEqual(self.receipt()['state'], 'draining')
-        self.assertEqual(self.service.db.execute(
-            "SELECT count(*) FROM events WHERE type='service.restart_deferred'").fetchone()[0], 0)
-        worker_done.set()
-        worker.join()
-        self.assertTrue(self.service.take_service_restart())
-        self.restart()
-        self.assertEqual(self.receipt()['state'], 'applied')
-        self.assertFalse(self.service.restart_pending)
-        self.assertIsNone(self.service.restart_deadline)
 
     def test_request_serializes_with_a_real_native_claim(self):
         other = self.write('/v1/bots/' + self.bot['id'] + '/messages', {'text': 'Already accepted work'})

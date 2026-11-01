@@ -381,12 +381,22 @@ reason (`gateway_unsupported`).
 - The Hermes contract checks only the interfaces that Coconut still uses (`hermes_contract.verify_contract`).
 
 Known gaps of the gateway, which the worker covered and no turn covers now:
-- No plugin tool for `coconut_continue_work` (and so for the opt-in of a technical lane), `coconut_unlink_dependency`,
-  `coconut_restart_service` and `coconut_track_work`. The service handlers and the schemas stay.
 - No live steering of a running turn (`steer_task`), no `continuation_task_id` in `coconut_message_bot`, and no receipt
   index in the text of a follow-up on a card.
 - The global limit of parallel helpers of the Coconut settings does not reach a profile that inherits it.
 - A work session that session maintenance ended as idle is not reopened. Its next turn starts a new Hermes session.
+
+### The tools of the worker in the gateway
+
+- `coconut_continue_work` continues a quiescent native outcome with new facts, and its `independent_technical_work`
+  opens a technical lane (`native_outcomes.continue_native_work`). The plugin loads its schema from `technical_lane`.
+- `coconut_track_work` tracks the work of a work session in Coconut Work (`tracked_work`). A turn of the bot's chat
+  records an outcome with `coconut_kanban_create`, and a native outcome reports on its card, so the service refuses the
+  tool there with that rule (`TRACK_WORK_CHAT`, `TRACK_WORK_OUTCOME`), as the worker did not offer it there.
+- A follow-up on a card and a technical lane refuse both tools, as they refuse the card tools.
+- `coconut_unlink_dependency` and `coconut_restart_service` are gone, with their service handlers: the unlink of a native
+  dependency and its fence, and the restart that a bot asked for. A new Hermes, an update drain and a workspace
+  recovery still restart the service.
 
 ### Kanban: not yet
 
