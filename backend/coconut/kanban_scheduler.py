@@ -428,10 +428,9 @@ class NativeKanban(NativeOutcomes):
                         or row['id'] in self.running or row['id'] in self.context_threads):
                     raise ValueError('This request stopped before dispatch.')
                 bot = self._get('bots', task['bot_id'])
-            # A task, or a follow-up on its card, that the gateway runs holds a placeholder process instead of a
-            # prepared worker.
+            # With the gateway on, the claim holds a placeholder process instead of a prepared worker.
             pid = self.kanban_worker_pid(row['id'], task, bot, claim['workspace'], execution_key(task),
-                                         claim['native_id'], follow_up=bool(context))
+                                         claim['native_id'])
             with self.transaction():
                 table = 'contexts' if context else 'tasks'
                 item = self._get(table, row['id'])

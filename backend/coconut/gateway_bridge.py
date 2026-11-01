@@ -95,6 +95,23 @@ def gateway_work_turn(task: dict) -> bool:
             and not any(worker_input(task, key) for key in WORKER_INPUTS if key not in WORK_SESSION_INPUTS))
 
 
+def conversation_outcome_turn(task: dict) -> bool:
+    """Whether a turn of the bot's conversation (`_chat_session`) that owns a native outcome runs in the gateway.
+
+    Such a turn starts from the Kanban claim of its outcome (work_capacity.chat_turn). It has no work session, so it
+    runs in the bot's chat, as the worker runs it in the bot's conversation. It acts on its card with the board tools
+    of its claim (gateway_chat.gateway_kanban_tool), but it has no worktree (gateway_chat.gateway_workspace).
+    """
+    return (bool(task.get('_chat_session')) and bool(task.get('_native_outcome_id'))
+            and not any(worker_input(task, key) for key in WORKER_INPUTS if key not in WORK_SESSION_INPUTS))
+
+
+def gateway_claim_turn(task: dict) -> bool:
+    """Whether the gateway runs a task that a Kanban claim starts: a task of a work session (gateway_work_turn) or a
+    turn of the bot's conversation that owns a native outcome (conversation_outcome_turn)."""
+    return gateway_work_turn(task) or conversation_outcome_turn(task)
+
+
 def plain_chat_turn(task: dict) -> bool:
     """Whether a turn can run in the gateway: a turn of the bot's conversation (`_chat_session`) without a worker input.
 

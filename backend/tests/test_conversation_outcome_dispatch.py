@@ -79,28 +79,74 @@ class ConversationOutcomeDispatchTests(unittest.TestCase):
         # During a native pass only one foreground slot remains. A claimed outcome turn does not use it.
         self.assertEqual(started, [chat['id']])
 
-    def test_with_the_gateway_a_claimed_outcome_turn_runs_in_the_worker(self):
-        from coconut.gateway_bridge import gateway_work_turn, plain_chat_turn
+    def test_with_the_gateway_a_claimed_outcome_turn_runs_in_the_bot_chat(self):
+        from coconut.gateway_bridge import conversation_outcome_turn, gateway_work_turn, plain_chat_turn
+        from test_gateway_chat import Adapter
         review = self.turn(self.dev, 'Check the saved review result', _native_outcome_id='t_review')
         self.assertFalse(plain_chat_turn(review))
         self.assertFalse(gateway_work_turn(review))
-        prepared = []
-        with patch.object(self.service, 'gateway_enabled', return_value=True), \
-             patch.object(self.provider, 'prepare_kanban_worker', create=True,
-                          side_effect=lambda *args: prepared.append(args) or 4242):
-            pid = self.service.kanban_worker_pid(review['id'], review, self.dev, 'workspace', self.dev['id'], 't_review')
-        # The claim prepares a worker, not the placeholder process of a gateway turn.
-        self.assertEqual((pid, prepared[0][0], self.service.gateway_holders), (4242, review['id'], {}))
-        claim = dict(native_id='t_review', external_id=review['id'], run_id=7, claim_lock='lock', workspace='workspace',
-                     input=review['id'], pid=pid)
+        self.assertTrue(conversation_outcome_turn(review))
+        self.service.gateway_enabled = lambda: True
+        with patch.object(self.provider, 'prepare_kanban_worker', create=True,
+                          side_effect=AssertionError('Coconut starts no worker.')):
+            pid = self.service.kanban_worker_pid(review['id'], review, self.dev, self.tmp.name, self.dev['id'],
+                                                 't_review')
+        # The claim holds the placeholder process of a gateway turn.
+        self.assertEqual(pid, self.service.gateway_holders[review['id']].pid)
+        claim = dict(native_id='t_review', external_id=review['id'], run_id=7, claim_lock='lock',
+                     workspace=self.tmp.name, input=review['id'], pid=pid, context='Review the saved result.')
         self.service._put('tasks', dict(self.service._get('tasks', review['id']), _kanban_claim=claim))
-        outcomes = []
-        with patch.object(self.service, 'gateway_enabled', return_value=True), \
-             patch.object(self.service, '_run_in_gateway', side_effect=AssertionError('The gateway must not run it.')), \
-             patch.object(self.provider, 'start_task', side_effect=lambda task, *args: outcomes.append(task['_native_outcome'])):
+        adapter = Adapter(self.service.gateway_bridge, self.service.profiles.home(self.dev), [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'The saved review is clean.'},
+            {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        with patch.object(self.provider, 'start_task', side_effect=AssertionError('The worker must not run it.')):
             self.service._run_task(review['id'])
-        self.assertEqual(outcomes, [claim])
+        adapter.join(5)
+        # The turn runs in the bot's chat, as the worker ran it in the bot's conversation, with the rules of an outcome
+        # and in the workspace of its claim.
+        turn = adapter.turns[0]
+        self.assertEqual((turn['chat_id'], turn['mode'], turn['folder']), (self.dev['id'], 'outcome', self.tmp.name))
+        self.assertIn('kanban_complete', turn['text'])
         self.assertEqual(self.service._get('tasks', review['id'])['status'], 'completed')
+        # It acts for the run of its card with the board tools of its claim, but it has no worktree.
+        from coconut.service import ServiceError
+        self.service._put('tasks', dict(self.service._get('tasks', review['id']), status='working'))
+        calls = []
+        self.service.kanban.call = lambda request: calls.append(request) or {'result': '{"ok": true}'}
+        self.assertEqual(self.service.gateway_kanban_tool(review['id'], 'kanban_heartbeat', {'note': 'Checking.'}),
+                         {'ok': True})
+        self.assertEqual(calls[0]['claim'], {'native_id': 't_review', 'run_id': 7, 'claim_lock': 'lock'})
+        with self.assertRaisesRegex(ServiceError, 'only in a turn of a work session'):
+            self.service.gateway_workspace(review['id'])
+        self.service.stop_gateway_holder(review['id'])
+
+    def test_with_the_gateway_a_follow_up_on_a_card_of_an_outcome_turn_runs_in_the_workspace_of_its_claim(self):
+        from test_gateway_chat import Adapter
+        review = self.turn(self.dev, 'Check the saved review result', _native_outcome_id='t_review',
+                           status='needs_you')
+        card = dict(id=str(uuid4()), task_id=review['id'], bot_id=self.dev['id'], status='pending', revision=1,
+                    title='Merge the PR?', action_type='question', _native=True, created_at=review['created_at'],
+                    options=[dict(id='merge', label='Merge it')])
+        self.service._put('decisions', card)
+        self.write(f'/v1/decisions/{card["id"]}/context', {'question': 'Which checks passed?'})
+        context = next(c for c in self.service._all('contexts') if c['decision_id'] == card['id'])
+        # The Kanban dispatch gives the follow-up a claim, with the workspace of the outcome.
+        self.service._put('contexts', dict(context, _kanban_claim=dict(
+            native_id='t_review', external_id=context['id'], run_id=8, claim_lock='lock', workspace=self.tmp.name)))
+        self.service.gateway_enabled = lambda: True
+        adapter = Adapter(self.service.gateway_bridge, self.service.profiles.home(self.dev), [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'All checks passed.'},
+            {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        with patch.object(self.provider, 'answer_context', side_effect=AssertionError('The worker must not answer.')):
+            self.service._start_context(context['id'])
+            adapter.join(5)
+            self.service.context_threads[context['id']].join(5)
+        # The follow-up stays in the bot's chat, and its terminal runs in the workspace of its claim.
+        turn = adapter.turns[0]
+        self.assertEqual((turn['chat_id'], turn['mode'], turn['folder']), (self.dev['id'], 'context', self.tmp.name))
+        self.assertEqual(self.service._get('contexts', context['id'])['status'], 'completed')
 
     def test_an_outcome_turn_without_its_claim_waits_queued_and_does_not_fail(self):
         # The live loop: the chat dispatcher started the turn without the claim, the turn failed on the missing claim,

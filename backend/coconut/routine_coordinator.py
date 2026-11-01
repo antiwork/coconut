@@ -1,5 +1,5 @@
 """Dispatch native schedules while Coconut owns their durable conversation tasks."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import time
 import json
 from uuid import UUID, uuid5
@@ -30,6 +30,11 @@ FAILED_TURN_INPUT = ('_background_completion', '_pr_review')
 # (RoutineCoordinator._pause_unserved_routines). The phone shows it with the routine, as a chat shows its refusal.
 ROUTINES_PARKED = ('The Hermes profile of this bot is parked ({path}), so no Hermes gateway runs its routines. Remove '
                    'that file to run them again on their schedule.')
+# A run that the person starts waits for the next tick of the gateway's cron (RoutineCoordinator._trigger_routine).
+TRIGGER_SECONDS = 5 * 60
+TRIGGER_WAITING = 'Waiting for the Hermes gateway to run this routine.'
+TRIGGER_EXPIRED = ('The Hermes gateway did not run this routine within 5 minutes. Check that the gateway runs, then run '
+                   'the routine again.')
 ROUTINES_UNSERVED = ('No Hermes gateway serves the profile of this bot now, so its routines are paused. They run again on '
                      'their schedule when the gateway serves the profile.')
 # Records that only a routine occurrence has. A request that has any of them, even an empty one, follows the routine
@@ -927,6 +932,10 @@ class NativeRoutines:
             if manual:
                 raise ServiceError(409, pause)
             return None
+        if hasattr(self, 'gateway_enabled') and self.gateway_enabled():
+            # Only the gateway runs routines (_pause_unserved_routines). It fires a scheduled routine itself, and a run
+            # that the person starts is a trigger in Hermes, which the gateway's cron runs at its next tick.
+            return self._trigger_routine(routine, bot) if manual else None
         result = self.provider.native_settings('routine_claim', [bot], bot_id=bot['id'], native_id=routine['_native_id'], manual=manual)
         job = result['job']
         if not job:
@@ -945,6 +954,47 @@ class NativeRoutines:
         self._put('routines', routine)
         self._event('routine.triggered', {'routine_id': routine['id'], 'task_id': task['id']}, bot['id'], task['id'])
         return self._public(task)
+
+    def _trigger_routine(self, routine, bot):
+        """Ask Hermes to run the routine now, and return the routine task that waits for the run. The caller holds the
+        transaction.
+
+        The gateway's cron runs the job at its next tick, and its cron run takes this task as its Coconut turn
+        (gateway_chat.gateway_cron). A task that no run takes in TRIGGER_SECONDS fails with the reason
+        (_expire_routine_triggers)."""
+        from .service import now
+        waiting = next((t for t in self._waiting_triggers() if t.get('routine_id') == routine['id']), None)
+        if waiting:
+            return self._public(waiting)
+        job = self.provider.native_settings('routine_trigger', [bot], bot_id=bot['id'], native_id=routine['_native_id'])
+        task = self._send(bot, {'text': routine['name'], 'mode': 'queue'}, record_message=False, human_authored=False)
+        task = self._get('tasks', task['id'])
+        task.update(routine_id=routine['id'], status='waiting', summary=TRIGGER_WAITING, updated_at=now(),
+                    _native_job_finished=True, _gateway_trigger=dict(job_id=routine['_native_id'], at=now()))
+        self._put('tasks', task)
+        routine.update(last_task_id=task['id'], next_run_at=job.get('next_run_at') or routine.get('next_run_at'))
+        self._put('routines', routine)
+        self._event('task.updated', self._public(task), bot['id'], task['id'])
+        self._event('routine.triggered', {'routine_id': routine['id'], 'task_id': task['id']}, bot['id'], task['id'])
+        return self._public(task)
+
+    def _waiting_triggers(self):
+        """The routine tasks that wait for a run of the gateway (_trigger_routine). The status index finds them."""
+        return [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM tasks WHERE json_extract(data,'$.status')='waiting' "
+            "AND json_extract(data,'$._gateway_trigger') IS NOT NULL ORDER BY rowid")]
+
+    def _expire_routine_triggers(self):
+        """Fail each routine task that waits for a run of the gateway longer than TRIGGER_SECONDS. The caller holds
+        the transaction."""
+        from .service import now
+        limit = datetime.now(timezone.utc) - timedelta(seconds=TRIGGER_SECONDS)
+        for task in self._waiting_triggers():
+            if datetime.fromisoformat(task['_gateway_trigger']['at'].replace('Z', '+00:00')) > limit:
+                continue
+            task.update(status='failed', summary=TRIGGER_EXPIRED, updated_at=now())
+            self._put('tasks', task)
+            self._event('task.updated', self._public(task), task['bot_id'], task['id'])
 
     def tick_native_routines(self):
         from .service import now
@@ -1045,6 +1095,7 @@ class NativeRoutines:
             # A service without a gateway (fixture mode) fires the routines of each bot itself.
             served = self.gateway_served_bots() if hasattr(self, 'gateway_served_bots') else set()
             with self.transaction():
+                self._expire_routine_triggers()
                 # A change of the gateway since the last read of Hermes shows here, before any claim.
                 for routine in self._pause_unserved_routines(self._all('routines'), served):
                     self._put('routines', routine)

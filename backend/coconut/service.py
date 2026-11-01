@@ -3722,13 +3722,19 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 emit = lambda kind, payload: self.emit(task_id, kind, payload)
                 if decision:
                     if not self.run_gateway_resume(provider_task, bot, history, decision, emit):
-                        if self.await_prepared_worker(provider_task):
+                        if self.gateway_unsupported(emit):
+                            pass
+                        elif self.await_prepared_worker(provider_task):
                             return
-                        self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
+                        else:
+                            self.provider.resume_task(provider_task, self._public(bot), history, self._public(decision) | {'action': decision.get('_action')}, emit)
                 elif not self.run_gateway_chat(provider_task, bot, history, emit):
-                    if self.await_prepared_worker(provider_task):
+                    if self.gateway_unsupported(emit):
+                        pass
+                    elif self.await_prepared_worker(provider_task):
                         return
-                    self.provider.start_task(provider_task, self._public(bot), history, emit)
+                    else:
+                        self.provider.start_task(provider_task, self._public(bot), history, emit)
                 with self.lock:
                     current = self._get('tasks', task_id)
                 # A worker can fail before it constructs or receives the prompt.
@@ -4411,7 +4417,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         chunks.append(text)
                 try:
                     if not self.run_gateway_context(task, provider_task, bot, history, context, emit):
-                        self.provider.answer_context(provider_task, self._public(bot), history, context['question'], emit)
+                        if not self.gateway_unsupported(emit):
+                            self.provider.answer_context(provider_task, self._public(bot), history, context['question'], emit)
                     answer = context_failure.get('summary') or ''.join(chunks).strip('\r\n') or 'No further context was returned. The decision remains available.'
                     status = 'failed' if context_failure else 'completed'
                 except Exception:

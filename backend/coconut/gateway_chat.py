@@ -37,9 +37,8 @@ import threading
 import time
 
 from . import hermes_runtime
-from .gateway_bridge import (WORKER_INPUTS, WORKER_MESSAGE_FIELDS, GatewayBridge, GatewayUnavailable, gateway_work_turn,
-                             worker_input,
-                             plain_chat_turn)
+from .gateway_bridge import (WORKER_INPUTS, WORKER_MESSAGE_FIELDS, GatewayBridge, GatewayUnavailable, gateway_claim_turn,
+                             gateway_work_turn, worker_input, plain_chat_turn)
 from .native_conversation import reaction_only_turn
 
 LOG = logging.getLogger(__name__)
@@ -210,10 +209,15 @@ def work_notes(request) -> str:
     return text + pending_decisions_context(task)
 
 
+# A turn that only Coconut's worker could run. With the gateway on, Coconut runs no worker (gateway_unsupported).
+UNSUPPORTED = ('Coconut no longer runs this kind of turn: it needed Coconut\'s worker, and the Hermes gateway runs each '
+               'turn now. Send the request again as a new message.')
+
+
 def gateway_context_turn(task: dict) -> bool:
-    """Whether the gateway answers a follow-up on a card of this task: a task of the bot's conversation or a task of a
-    work session (run_gateway_context). The Kanban claim of such a follow-up holds a placeholder."""
-    return plain_chat_turn(task) or gateway_work_turn(task)
+    """Whether the gateway answers a follow-up on a card of this task: a task of the bot's conversation or a task that
+    a Kanban claim starts (run_gateway_context). The Kanban claim of such a follow-up holds a placeholder."""
+    return plain_chat_turn(task) or gateway_claim_turn(task)
 
 
 def gateway_resume(task: dict, decision: dict, cron_session: str = '') -> bool:
@@ -224,7 +228,7 @@ def gateway_resume(task: dict, decision: dict, cron_session: str = '') -> bool:
     tool results. A command approval of a worker turn stays with the worker: it allows one exact tool call that the
     worker recorded, and the worker repeats that call.
     """
-    chat = (plain_chat_turn(task) or gateway_work_turn(task)
+    chat = (plain_chat_turn(task) or gateway_claim_turn(task)
             or (bool(cron_session) and not any(worker_input(task, key) for key in WORKER_INPUTS)))
     return chat and decision.get('action_type') != 'native_approval' and not decision.get('_receipt_id')
 
@@ -370,7 +374,7 @@ class GatewayChat:
             return False
         if task.get('_work_status_only') and task.get('_work_context'):
             return self.run_gateway_status(task, bot, emit)
-        work = gateway_work_turn(task)
+        work = gateway_claim_turn(task)
         if not (plain_chat_turn(task) or work):
             return False
         request = dict(operation='start', task=task, history=history, bot=self._public(bot))
@@ -488,9 +492,11 @@ class GatewayChat:
                 session_root(bot, execution=execution, epoch=task.get('_conversation_epoch')))
 
     def _run_work_turn(self, task: dict, bot: dict, text: str, emit, own: str | None = None) -> bool:
-        """Run a turn of a work session in its own chat. A Kanban claim of the task holds a placeholder process for the
-        turn (kanban_worker_pid). When Hermes ends that process, for example after its run limit, the turn stops."""
-        chat, root = self.work_chat(bot, task)
+        """Run a turn that a Kanban claim starts (gateway_claim_turn): a turn of a work session in its own chat, or a
+        turn of the bot's conversation that owns a native outcome in the bot's chat. The claim holds a placeholder
+        process for the turn (kanban_worker_pid). When Hermes ends that process, for example after its run limit, the
+        turn stops."""
+        chat, root = self.work_chat(bot, task) if gateway_work_turn(task) else (None, None)
         holder, ended, lost = self._watch_claim(task['id'], task['id'])
 
         def wanted():
@@ -547,18 +553,26 @@ class GatewayChat:
         return self._run_in_gateway(task, bot, text, emit, session=session_root(bot, execution=identity),
                                     chat=bot['id'] + STATUS_CHAT + task['id'], mode='status')
 
+    def gateway_unsupported(self, emit) -> bool:
+        """With the gateway on, end a turn that the gateway does not run with the reason, and return True. Without a
+        gateway (fixture mode), return False: the provider runs the turn."""
+        if not self.gateway_enabled():
+            return False
+        emit('failed', {'summary': UNSUPPORTED, 'error_code': 'gateway_unsupported'})
+        return True
+
     def claim_finished(self, task_id: str) -> bool:
         """Whether a board tool of the running turn ended the run of its claim (RUN_ENDING_TOOLS)."""
         return task_id in self.gateway_finished_claims
 
     def kanban_worker_pid(self, identity: str, task: dict, bot: dict, workspace: str, execution: str,
-                          native_id: str, follow_up: bool = False) -> int:
-        """The process of a Kanban claim. A task that the gateway runs holds a placeholder process instead of a
-        prepared worker, because Hermes records a process for each claim and can end it. So does a follow-up on a card
-        of a task (`follow_up`, the claim of a context) that the gateway answers (gateway_context_turn). The provider
-        prepares a worker for each other claim."""
-        runs = gateway_context_turn(task) if follow_up else gateway_work_turn(task)
-        if self.gateway_enabled() and runs and not task.get('_needs_worker'):
+                          native_id: str) -> int:
+        """The process of a Kanban claim of a task or of a follow-up on its card (`identity`, the claim of a context).
+
+        With the gateway on, each claim holds a placeholder process instead of a prepared worker, because Hermes
+        records a process for each claim and can end it. Coconut starts no worker: a turn that the gateway does not run
+        fails with the reason (gateway_unsupported). Without a gateway (fixture mode), the provider prepares a worker."""
+        if self.gateway_enabled():
             return self.start_gateway_holder(identity, execution)
         return self.provider.prepare_kanban_worker(identity, bot, workspace, execution, native_id)
 
@@ -603,7 +617,7 @@ class GatewayChat:
         own = resume_prompt(request)
         with self.lock:
             text = own + work_notes(request) + self.cards_note(task)
-        if gateway_work_turn(task):
+        if gateway_claim_turn(task):
             return self._run_work_turn(task, bot, text, emit, own=own)
         return self._run_in_gateway(task, bot, text, emit, session=cron_session or None, own=own)
 
@@ -648,11 +662,12 @@ class GatewayChat:
                     and self._get('contexts', context['id'])['status'] == 'working')
         # A check that finds nothing to change ends without a reply, as REFRESH_INSTRUCTIONS asks.
         check = bool(context.get('_decision_refresh'))
-        chat = root = folder = None
+        chat = root = None
         if gateway_work_turn(task):
             chat, root = self.work_chat(bot, task)
-            # The terminal of the follow-up runs in the workspace of its claim, as the worker's TERMINAL_CWD.
-            folder = (context.get('_kanban_claim') or {}).get('workspace')
+        # The terminal of a follow-up with a Kanban claim runs in the workspace of that claim, as the worker's
+        # TERMINAL_CWD. This also applies in the bot's chat, for a card of a conversation turn that owns an outcome.
+        folder = (context.get('_kanban_claim') or {}).get('workspace')
         try:
             self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted,
                                  mode='refresh' if check else None, silent=check, session=root, chat=chat,
@@ -885,7 +900,7 @@ class GatewayChat:
         from .service import ServiceError
         with self.lock:
             task = self._get('tasks', task_id)
-            outcome = bool(task.get('_native_outcome_id')) and gateway_work_turn(task)
+            outcome = bool(task.get('_native_outcome_id')) and gateway_claim_turn(task)
             if task['status'] != 'working':
                 raise ServiceError(409, 'This turn no longer runs.')
             if name in RUN_TOOLS and not outcome:
@@ -1251,10 +1266,13 @@ class GatewayChat:
             bot = self._get('bots', row['bot_id'])
             if bot['archived'] or bot.get('_deleted'):
                 return {'skip': True}
-            task = self._get('tasks', self._send(bot, {'text': name, 'mode': 'queue'}, record_message=False,
-                                                 human_authored=False)['id'])
-            turn = self.gateway_bridge.open_turn(task['id'], home, bot['id'])
             routine_id = str(uuid5(UUID(bot['id']), 'cron:' + job_id))
+            # A run that the person started waits for this run (routine_coordinator._trigger_routine). The run takes
+            # that task, so the phone keeps the task that it got.
+            waiting = next((t for t in self._waiting_triggers() if t.get('routine_id') == routine_id), None)
+            task = waiting or self._get('tasks', self._send(bot, {'text': name, 'mode': 'queue'}, record_message=False,
+                                                            human_authored=False)['id'])
+            turn = self.gateway_bridge.open_turn(task['id'], home, bot['id'])
             # The gateway owns the native claim of this run, so Coconut has no native job to finish.
             task.update(status='working', summary='Working', title=name, routine_id=routine_id,
                         _native_job_finished=True, _turn_started_at=now(), _native_turn_id=uid(),

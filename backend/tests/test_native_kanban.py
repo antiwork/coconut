@@ -431,10 +431,10 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
         self.assertTrue(turns[-1]['text'].startswith('Continue the original task using this recorded answer.'))
         self.assertEqual(self.provider.started, [])
 
-    def test_a_claimed_task_without_a_prepared_worker_waits_for_one(self):
-        # A task that the worker must run, with a claim that holds only the gateway's placeholder. The worker would
-        # refuse it. The task waits, and its next claim prepares a worker, which runs it once.
-        from coconut.kanban_scheduler import WAITING_FOR_WORKER
+    def test_with_the_gateway_a_claimed_task_that_the_gateway_does_not_run_fails_with_the_reason(self):
+        # A task that only the worker could run. With the gateway on, its claim holds only the gateway's placeholder,
+        # and Coconut starts no worker: the task fails at once with the reason.
+        from coconut.gateway_chat import UNSUPPORTED
         with self.service.transaction():
             task = self.service._send(self.service._get('bots', self.bot['id']), {'text': 'Run the export.',
                                       'mode': 'queue'}, human_authored=False)
@@ -444,15 +444,12 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
             ran.append(started.get('_kanban_external_id'))
             emit('completed', {'summary': 'Done.'})
         self.provider.start_task = run
-        # The gateway takes no turn here, so the turn goes to the worker.
+        # The gateway takes no turn here.
         with patch.object(self.service, 'run_gateway_chat', return_value=False):
-            self.settle(lambda: self.service._get('tasks', task['id']).get('_needs_worker')
-                        or self.service._get('tasks', task['id'])['status'] == 'completed')
-            self.assertEqual(self.service._get('tasks', task['id'])['summary'], WAITING_FOR_WORKER)
-            self.assertEqual(ran, [])
-            self.settle(lambda: self.service._get('tasks', task['id'])['status'] == 'completed')
-        self.assertEqual(ran, [task['id']])
-        self.assertEqual([p[0] for p in self.provider.prepared], [task['id']])
+            self.settle(lambda: self.service._get('tasks', task['id'])['status'] in ('failed', 'completed'))
+        stored = self.service._get('tasks', task['id'])
+        self.assertEqual((stored['status'], stored['summary']), ('failed', UNSUPPORTED))
+        self.assertEqual((ran, self.provider.prepared), ([], []))
 
     def test_a_task_that_failed_without_a_prepared_worker_runs_again_with_its_answer(self):
         failed = 'Work stopped: The native claim has no prepared worker.'

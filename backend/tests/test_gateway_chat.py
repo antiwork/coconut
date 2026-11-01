@@ -808,7 +808,7 @@ class ServiceRoutingTests(unittest.TestCase):
         # The Kanban claim of such a follow-up holds a placeholder, not a prepared worker.
         with patch.object(self.provider, 'prepare_kanban_worker', create=True, return_value=4321) as prepare:
             pid = self.service.kanban_worker_pid(context['id'], stored, self.read('bots', self.bot['id']),
-                                                 self.temp.name, 'work-1', 'native-1', follow_up=True)
+                                                 self.temp.name, 'work-1', 'native-1')
             self.assertEqual(pid, self.service.gateway_holders[context['id']].pid)
             prepare.assert_not_called()
         self.service.stop_gateway_holder(context['id'])
@@ -1760,11 +1760,50 @@ class ServiceRoutingTests(unittest.TestCase):
             # The placeholder carries the outcome of the work session, as a prepared worker does.
             from coconut.work_workspace import process_outcomes
             self.assertIn('work-1', process_outcomes())
-            # A task that the worker runs gets a prepared worker, as before.
+            # With the gateway on, a claim of any task holds a placeholder: Coconut starts no worker.
             other = dict(stored, _native_job={'id': 'job-1'})
-            self.assertEqual(self.service.kanban_worker_pid('other', other, bot, self.temp.name, 'work-2', 'native-2'), 4321)
+            pid = self.service.kanban_worker_pid('other', other, bot, self.temp.name, 'work-2', 'native-2')
+            self.assertEqual(pid, self.service.gateway_holders['other'].pid)
+            prepare.assert_not_called()
+            # Without a gateway (fixture mode), the provider prepares a worker.
+            with patch.object(self.service, 'gateway_enabled', return_value=False):
+                self.assertEqual(self.service.kanban_worker_pid('third', other, bot, self.temp.name, 'work-3', 'native-3'), 4321)
+        self.service.stop_gateway_holder('other')
         self.service.stop_gateway_holder(task['id'])
         self.assertIsNotNone(holder.poll())
+
+    def test_a_turn_that_only_the_worker_could_run_fails_with_the_reason(self):
+        from coconut.gateway_chat import UNSUPPORTED
+        task, card, _ = self.ask_in_gateway()
+        # A task that an earlier version gave to the worker: the gateway runs no turn of it.
+        with self.service.transaction():
+            stored = self.service._get('tasks', task['id'])
+            stored['_native_job'] = {'id': 'job-1'}
+            self.service._put('tasks', stored)
+        # A follow-up on its card.
+        self.write('POST', f'/v1/decisions/{card["id"]}/context', {'question': 'Why now?'})
+        context = next(c for c in self.service._all('contexts') if c['decision_id'] == card['id'])
+        self.service._start_context(context['id'])
+        self.service.context_threads[context['id']].join(5)
+        stored = self.read('contexts', context['id'])
+        self.assertEqual((stored['status'], stored['error_code']), ('failed', 'gateway_unsupported'))
+        self.assertEqual(self.provider.contexts, [])
+        # The answer to its card.
+        self.write('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'ship', 'revision': 1})
+        self.service._run_task(task['id'])
+        stored = self.read('tasks', task['id'])
+        self.assertEqual((stored['status'], stored['summary']), ('failed', UNSUPPORTED))
+        self.assertEqual(self.provider.resumes, [])
+        # A new turn of such a task.
+        other = self.send('Check the queue.')
+        with self.service.transaction():
+            stored = self.service._get('tasks', other['id'])
+            stored['_native_job'] = {'id': 'job-2'}
+            self.service._put('tasks', stored)
+        self.service._run_task(other['id'])
+        stored = self.read('tasks', other['id'])
+        self.assertEqual((stored['status'], stored['summary']), ('failed', UNSUPPORTED))
+        self.assertEqual(self.provider.starts, [])
 
     def test_a_work_turn_stops_when_hermes_ends_its_kanban_claim(self):
         task = self.audit()

@@ -195,6 +195,18 @@ class NativeGatewayChatTests(unittest.TestCase):
             def start_task(self, task, bot, history, emit):
                 raise AssertionError('The worker must not run this turn.')
 
+        def routine_settings(operation, bots=(), **request):
+            # The routine operations with this Hermes, as the settings process of HermesProvider runs them.
+            homes = {bot['id']: str(service.profiles.home(bot)) for bot in bots}
+            code = ('import json, sys; sys.path[:0] = sys.argv[1:3]; from native_routines import worker; '
+                    'print(json.dumps(worker(sys.argv[3], json.loads(sys.argv[4]), json.loads(sys.argv[5]))))')
+            run = subprocess.run([PYTHON, '-c', code, SOURCE, str(ROOT / 'backend/coconut'), operation,
+                                  json.dumps(request), json.dumps(homes)],
+                                 env=environment, capture_output=True, text=True, timeout=120)
+            if run.returncode:
+                raise RuntimeError(run.stderr[-4000:])
+            return json.loads(run.stdout.splitlines()[-1])
+
         os.environ['HERMES_DISABLE_LAZY_INSTALLS'] = '1'
         service = Service(data, Provider(data), start_workers=False, hermes_home=home)
         server = APIServer(('127.0.0.1', 0), service)
@@ -419,14 +431,23 @@ class NativeGatewayChatTests(unittest.TestCase):
             # A routine of the bot: the gateway's cron fires it, and the run is a Coconut turn in the bot's chat.
             job = subprocess.run([PYTHON, '-c', 'import json, sys; sys.path.insert(0, sys.argv[1]); '
                                   'from cron.jobs import create_job; '
-                                  'print(json.dumps(create_job("Run the routine check.", "every 1m", '
+                                  'print(json.dumps(create_job("Run the routine check.", "every 1h", '
                                   'name="Routine check", deliver="local")["id"]))', SOURCE],
                                  env=environment, capture_output=True, text=True, timeout=120)
             self.assertEqual(job.returncode, 0, job.stderr[-4000:])
             # The gateway fires the routine, so a pass of Coconut claims none.
+            service.provider.native_settings = routine_settings
             service._native_cron_next = 0
             service.tick_native_routines()
             self.assertFalse(service._native_cron_error)
+            with service.lock:
+                routine = next(r for r in service._all('routines') if r['_native_id'] == json.loads(job.stdout))
+                self.assertFalse(any(t.get('routine_id') == routine['id'] for t in service._all('tasks')))
+            # The person runs it now. Hermes's trigger asks the gateway's cron to run it at its next tick, and the run
+            # takes the task that waits for it.
+            queued = service.mutate('POST', f'/v1/routines/{routine["id"]}/run', {}, str(uuid4()), 'phone')
+            del service.provider.native_settings
+            self.assertEqual(queued['status'], 'waiting')
             deadline = time.monotonic() + 240
             routine_task = None
             while time.monotonic() < deadline:
@@ -437,6 +458,7 @@ class NativeGatewayChatTests(unittest.TestCase):
                     break
                 time.sleep(1)
             self.assertIsNotNone(routine_task, diagnostics())
+            self.assertEqual(routine_task['id'], queued['id'])
             self.assertEqual((routine_task['status'], routine_task['title']), ('completed', 'Routine check'), diagnostics())
             with service.lock:
                 routine_replies = [m['text'] for m in service._task_messages(routine_task['id'])
