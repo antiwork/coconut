@@ -273,7 +273,7 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - An audit of a work source (`_source_audit_prompt`, `_source_answer_steps`) now runs in the gateway, in the chat of its work session. The turn text is the worker's audit text, with a note that names the board tools of this chat (`gateway_chat.AUDIT_BOARD_TOOLS`). An audit that becomes a native outcome stays with the worker.
 - The audit text tells the bot to record facts with `kanban_comment` and to create a task with `kanban_create` on Coconut's own board. The worker binds the Hermes tools to that board (`HERMES_KANBAN_DB`). The gateway's own board tools write to another board, so the hooks block every `kanban_` tool in an audit turn (mode `audit`).
 - The plugin offers `coconut_kanban_list` and `coconut_kanban_show`, which read only the tasks of the bot, so an audit finds the existing task of an outcome before it acts. It also offers `coconut_kanban_create` and `coconut_kanban_comment`. The service records each write as a receipt of the turn, the Kanban runtime runs the Hermes tool on Coconut's board for the bot's profile (`kanban_runtime.board_tool`), and the service records the result (`gateway_chat.gateway_kanban_tool`). `kanban_create` gets the worker's arguments (`native_bridge.kanban_arguments`): the bot's tenant, a blocked task and an idempotency key of the turn's input. The receipts then adopt a created task as an outcome and record a comment, as for a worker turn.
-- The receipts of these board tools are no worker input (`gateway_bridge.worker_input`), so the continuation of an audit after a card answer runs in the gateway too. The claim of the task and its turn then agree: the claim holds the gateway's placeholder, and the gateway runs the turn.
+- The receipts of these board tools do not route a turn to the worker, so the continuation of an audit after a card answer runs in the gateway too. The claim of the task and its turn then agree: the claim holds the gateway's placeholder, and the gateway runs the turn.
 - When a claimed task still goes to the worker, but its claim has no prepared worker, the task waits instead of failing (`kanban_scheduler.await_prepared_worker`). The placeholder stops, and the next claim prepares a worker (`_needs_worker`). Once, at a start, Coconut runs again the tasks that failed this way before the fix, with the person's card answer (`_recover_unprepared_workers`).
 - Audits have their own capacity. The Kanban pass bounds them, and an audit that the gateway runs does not take a slot of the person's chats (`native_outcomes._dispatch_chat`).
 
@@ -351,6 +351,39 @@ Coconut moves its bot turns from its own worker processes to the person's Hermes
 - A run of a routine that the person starts ("Run now") is a trigger in Hermes (`jobs.trigger_job`, `native_routines` operation `routine_trigger`). The gateway's cron runs the job at its next tick. Until then, the routine's task waits (`_gateway_trigger`), and the cron run of the gateway takes that task as its turn (`gateway_chat.gateway_cron`). A task that no run takes in 5 minutes fails with the reason (`routine_coordinator._expire_routine_triggers`). Coconut no longer claims a scheduled routine: the gateway fires it.
 - Fixture mode has no gateway, so its provider still runs every turn and every routine.
 
+### The worker is gone
+
+Coconut has no worker runtime of its own. The gateway runs each turn, and a turn that it does not run fails with the
+reason (`gateway_unsupported`).
+
+- Deleted: the worker (`hermes_worker.py`), its transport and protocol (`worker_transport.py`, `worker_protocol.py`,
+  `worker_cli.py`, `worker_activity.py`), the worker parts of `providers.py`, and the modules that only served worker
+  turns (`native_bridge.py`, `native_turn_scope.py`, `native_compression_head.py`, `native_routine_execution.py`,
+  `native_processes.py`, `native_relay.py`, `live_messages.py`).
+- `HermesProvider` keeps the settings, the models, the profiles and the routines of Hermes. Its turn methods refuse a
+  turn. `FixtureProvider` runs each turn of fixture mode and the tests.
+- Each Kanban claim holds a placeholder process (`kanban_worker_pid`), also in fixture mode. The placeholder ends with
+  the service (`HOLDER`, `_close_gateway_chat`). The board runs when the provider has a Hermes Kanban runtime
+  (`HermesProvider.native_board`).
+- The relay of the worker is gone: its envelope delivery, its recovery and the reply into an envelope
+  (`_native_reply_pending`). The service keeps the saved `_native_relay` of earlier tasks as history, for the proofs that
+  read it (`_completed_peer_continuation`, `_block_check_relay_lineage`, `routine_reports`).
+- The watch of a worker's background processes is gone: the process subscriptions of its receipts, their delivery, the
+  waits for a process, and the check of interrupted tool calls. Hermes watches the processes of a gateway turn and
+  delivers their results itself. `coconut_wait` waits for a task or a card (`card_tools.WAIT_SCHEMA`), and the index of
+  pending waits is `native_receipts_pending_wait`.
+- The bot change context of a turn moved to `bot_changes.py`. The routing of a turn has no worker inputs:
+  `gateway_bridge.WORK_SESSION_INPUTS` and `OTHER_PATHS` choose its chat.
+- The Hermes contract checks only the interfaces that Coconut still uses (`hermes_contract.verify_contract`).
+
+Known gaps of the gateway, which the worker covered and no turn covers now:
+- No plugin tool for `coconut_continue_work` (and so for the opt-in of a technical lane), `coconut_unlink_dependency`,
+  `coconut_restart_service` and `coconut_track_work`. The service handlers and the schemas stay.
+- No live steering of a running turn (`steer_task`), no `continuation_task_id` in `coconut_message_bot`, and no receipt
+  index in the text of a follow-up on a card.
+- The global limit of parallel helpers of the Coconut settings does not reach a profile that inherits it.
+- A work session that session maintenance ended as idle is not reopened. Its next turn starts a new Hermes session.
+
 ### Kanban: not yet
 
 Coconut keeps its private board in `<data>/kanban/kanban.db` and dispatches it itself (`kanban_scheduler`, `kanban_runtime`). Its spawn function makes a Coconut task for each claim, so the work has Coconut cards, receipts and workspaces. The embedded dispatcher of the gateway calls `dispatch_once` with the default spawn of Hermes (`gateway/kanban_watchers_dispatcher.py`, `tick_once_for_board`), which starts a plain `hermes -p <assignee>` worker, and a plugin cannot give it another spawn function. It dispatches the boards of the Hermes home, not `<data>/kanban`. So the gateway does not serve Coconut's board, and the two dispatchers never share one. Upstream ask: a spawn hook for the embedded dispatcher.
@@ -368,8 +401,11 @@ A task that a guard holds for more than an hour shows: Coconut logs a warning on
 
 ### What phase 5 deletes
 
-- The worker turn types, one group at a time, after the gateway runs them: attachments and reactions; card answers, work items and claims, and recovery turns; bot exchanges and returns; GitHub source activity and PR reviews, and bot creation and deletion confirmations.
-- Then the worker runtime: `hermes_worker.py`, `worker_protocol.py`, `worker_transport.py`, `worker_cli.py`, `worker_activity.py`, the worker parts of `providers.py`, and the `native_*` modules that serve worker turns.
+- Done: the worker turn types, one group at a time, after the gateway ran them, and then the worker runtime (see "The
+  worker is gone").
+- Next: Coconut's own claims of routines (`native_routines` operations `routine_claim`, `routine_heartbeat`,
+  `routine_finish`, and `native_routine_receipts`). The gateway fires each routine now, so only routine tasks of
+  earlier versions use them.
 - `kanban_scheduler.py` and `kanban_runtime.py` only after Hermes gives its dispatcher a spawn hook. Until then they stay.
 
 ## Transport and future providers

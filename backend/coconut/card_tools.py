@@ -1,10 +1,10 @@
 """The card tools, the wait tool, the card correction tool and the bot change tools of a bot turn: their schemas,
 and the rules for cards, merges and bot changes.
 
-The worker (native_bridge, hermes_worker) and the coconut plugin of the Hermes gateway (hermes_plugin/coconut/tools.py)
-offer the same tools with these schemas. The plugin loads this file by its path, so it imports nothing.
+The coconut plugin of the Hermes gateway (hermes_plugin/coconut/tools.py) offers the tools with these schemas. The
+plugin loads this file by its path, so it imports nothing.
 
-coconut_wait records that the work of a turn waits for another task, a background process or a card
+coconut_wait records that the work of a turn waits for another task or a card
 (work_progress.wait_for_task). A card that needs an answer (coconut_ask) ends the turn. The answer resumes the work in a later turn. An optional
 proposal (coconut_suggest) does not end the turn. coconut_resolve_reply records a typed answer to a pending card.
 coconut_refresh_decision records the result of an automatic check of a pending card. coconut_workspace gives a turn of
