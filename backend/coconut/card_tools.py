@@ -53,14 +53,31 @@ QUESTION_SCHEMA['parameters']['properties']['risk_level'] = {
 QUESTION_SCHEMA['parameters']['properties']['needs_attention_now'] = {
     'type': 'boolean',
     'description': 'Optional. Set true only when waiting for the person’s next work hours would cause harm or a missed deadline. Coconut decides when to notify for every other card. This is not risk_level and does not change the card or its approval.'}
+# A choice has the risk fields of the card. Their rules are on the card fields, so a choice names them only.
 QUESTION_SCHEMA['parameters']['properties']['options']['items']['properties'].update({
-    key: QUESTION_SCHEMA['parameters']['properties'][key] for key in ('risk_level', 'risk')})
+    key: dict({k: v for k, v in QUESTION_SCHEMA['parameters']['properties'][key].items() if k != 'description'},
+              description=f'The {key} of this choice, by the rules of the card field {key}.')
+    for key in ('risk_level', 'risk')})
+
+
+def bare(schema):
+    """`schema` without the descriptions of its fields, for a copy of fields whose rules another tool already gives.
+    The model gets every Coconut tool in each call, so the copy repeats nothing."""
+    if isinstance(schema, list):
+        return [bare(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    return {key: ({name: bare(field) for name, field in value.items()} if key == 'properties' else bare(value))
+            for key, value in schema.items() if key != 'description'}
 
 SUGGEST_SCHEMA = {
     'name': 'coconut_suggest',
-    'description': 'Create an optional proposal card in chat and Inbox while continuing authorized work. Use for offers such as investigating, fixing, or doing something extra instead of offering only in prose. Do not execute the proposal until authorized. Reuse the same key when retrying. Do not recreate a dismissed proposal.',
+    'description': 'Create an optional proposal card in chat and Inbox while continuing authorized work. Use for offers such as investigating, fixing, or doing something extra instead of offering only in prose. Do not execute the proposal until authorized. Reuse the same key when retrying. Do not recreate a dismissed proposal. The card fields follow the rules of the same fields of coconut_ask.',
+    # The card fields have the rules of coconut_ask. Only the link to an earlier card has a rule of its own for a draft.
     'parameters': dict(QUESTION_SCHEMA['parameters'],
-                       properties=dict(QUESTION_SCHEMA['parameters']['properties'], key={'type': 'string'}, draft=DRAFT_SCHEMA),
+                       properties=dict(bare(QUESTION_SCHEMA['parameters']['properties']),
+                                       previous_decision_id=QUESTION_SCHEMA['parameters']['properties']['previous_decision_id'],
+                                       key={'type': 'string'}, draft=DRAFT_SCHEMA),
                        required=['key', 'title'],
                        anyOf=[{'required': ['options']}, {'required': ['draft']}]),
 }
@@ -70,8 +87,11 @@ REPLY_SCHEMA = {
     'parameters': {'type': 'object', 'properties': {
         'choice': {'type': 'string', 'enum': ['approve', 'reject', 'modify']},
         'option_id': {'type': 'string', 'description': 'The current option ID for an explicit selection.'},
-        'revision': dict(QUESTION_SCHEMA['parameters'],
-                         properties=dict({k: v for k, v in QUESTION_SCHEMA['parameters']['properties'].items() if k != 'needs_attention_now'}, draft=DRAFT_SCHEMA),
+        'revision': dict(bare(QUESTION_SCHEMA['parameters']),
+                         properties=dict(bare({k: v for k, v in QUESTION_SCHEMA['parameters']['properties'].items()
+                                               if k != 'needs_attention_now'}), draft=bare(DRAFT_SCHEMA)),
+                         description=('For modify: the revised card. Its fields follow the rules of the same fields of '
+                                      'coconut_ask, and draft those of coconut_suggest.'),
                          required=[], anyOf=[{'required': ['title', 'options']}, {'required': ['draft']}]),
         'quote': {'type': 'string', 'description': 'Exact words from this human reply that give the instruction.'},
     }, 'required': ['choice', 'quote']},
@@ -133,7 +153,8 @@ def refresh_schema(action_type=None):
 
     The worker names the action type of the card that it checks. The plugin of the gateway registers one tool for each
     card, so it passes None: `revision` is then a revised question or a revised draft assessment."""
-    question = QUESTION_SCHEMA['parameters']
+    # The fields of a revised question follow the rules of the same fields of coconut_ask.
+    question = bare(QUESTION_SCHEMA['parameters'])
     draft = {'type': 'object', 'additionalProperties': False, 'minProperties': 1,
              'description': ('Update risk_level and risk together, or uncertainty, or all three. Omitted fields are '
                              'preserved. Never change draft content.'),
@@ -145,8 +166,9 @@ def refresh_schema(action_type=None):
     elif action_type is not None:
         revision = question
     else:
-        revision = {'description': ('For revise. A question card: the complete revised question. A draft_message card: '
-                                    'only risk_level, risk and uncertainty.'), 'anyOf': [question, draft]}
+        revision = {'description': ('For revise. A question card: the complete revised question, whose fields follow '
+                                    'the rules of the same fields of coconut_ask. A draft_message card: only '
+                                    'risk_level, risk and uncertainty.'), 'anyOf': [question, draft]}
     parameters = REFRESH_SCHEMA['parameters']
     return dict(REFRESH_SCHEMA, parameters=dict(parameters, properties=dict(parameters['properties'], revision=revision)))
 

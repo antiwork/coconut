@@ -194,37 +194,57 @@ CONTEXT_HEADER = ('Context of this turn from Coconut. It is current for this tur
 
 
 def add_turn_context(request=None, **_):
-    """llm_request middleware: give a model call of a Coconut turn the whole turn text.
+    """llm_request middleware: give a model call of a Coconut turn the whole turn text, and only the tools it can use.
 
     Hermes saves the user message of the turn, which is the turn's own text (the person's message, or a title). The
     notes, the rules and the live state of the turn go to the last user message of each request only, so the session
-    does not keep them, and later calls do not send each earlier one again. Return None for any other request.
+    does not keep them, and later calls do not send each earlier one again.
+
+    Only an automatic check of a card (mode `refresh`) can call coconut_refresh_decision (guard_tool), so the other
+    turns do not get its schema. Hermes registers a plugin tool for every turn. Return None for any other request.
     """
-    from .adapter import CONTEXTS
+    from .adapter import CONTEXTS, MODES
     holder, turn = _turn()
-    context = CONTEXTS.get(turn) if turn is not None else None
-    if not context or not isinstance(request, dict):
+    if turn is None or not isinstance(request, dict):
         return None
+    changes, reasons = {}, []
+    tools = request.get('tools')
+    if isinstance(tools, list) and MODES.get(turn) != 'refresh':
+        kept = [tool for tool in tools if _tool_name(tool) != REFRESH_TOOL]
+        if len(kept) != len(tools):
+            changes['tools'], reasons = kept, ['tools of the turn']
+    context = CONTEXTS.get(turn)
     key = next((name for name in ('messages', 'input') if isinstance(request.get(name), list)), None)
-    if key is None:
-        return None
-    items = list(request[key])
+    items = list(request[key]) if context and key else []
     index = next((i for i in range(len(items) - 1, -1, -1)
                   if isinstance(items[i], dict) and items[i].get('role') == 'user'), None)
-    if index is None:
+    if index is not None:
+        item = dict(items[index])
+        note = CONTEXT_HEADER + context
+        content = item.get('content')
+        if isinstance(content, str):
+            item['content'] = content + '\n\n' + note
+        elif isinstance(content, list):
+            # The Responses API names its text parts input_text, and the chat formats name them text.
+            item['content'] = content + [{'type': 'input_text' if key == 'input' else 'text', 'text': note}]
+        else:
+            item = None
+        if item is not None:
+            items[index] = item
+            changes[key] = items
+            reasons.insert(0, 'turn context')
+    if not changes:
         return None
-    item = dict(items[index])
-    note = CONTEXT_HEADER + context
-    content = item.get('content')
-    if isinstance(content, str):
-        item['content'] = content + '\n\n' + note
-    elif isinstance(content, list):
-        # The Responses API names its text parts input_text, and the chat formats name them text.
-        item['content'] = content + [{'type': 'input_text' if key == 'input' else 'text', 'text': note}]
-    else:
+    return {'request': dict(request, **changes), 'source': 'coconut', 'reason': ' and '.join(reasons)}
+
+
+def _tool_name(tool):
+    """The name of a tool in a model request: the Anthropic and Responses formats name it, and the chat format names
+    its function."""
+    if not isinstance(tool, dict):
         return None
-    items[index] = item
-    return {'request': dict(request, **{key: items}), 'source': 'coconut', 'reason': 'turn context'}
+    function = tool.get('function')
+    return function.get('name') if isinstance(function, dict) else tool.get('name')
 
 
 def compression_threshold(context_length):
