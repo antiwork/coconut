@@ -611,19 +611,24 @@ def board_tool(name, arguments, profile=None, claim=None):
 # The comments of a native task that a claim gives its turn, newest last, and the length of each.
 CLAIM_COMMENTS = 50
 CLAIM_COMMENT_CHARACTERS = 4000
-# The heading of the comment thread in Hermes's worker context (kanban_db_context._ctx_comments). It is the last part.
-COMMENT_THREAD = '\n## Comment thread\n'
 
 
 def worker_context(board, identity):
     """Hermes's worker context of a native task without its comment thread, and the comments of the task with their
-    IDs. A turn gets the comments as records, which its Hermes session keeps once (native_conversation.turn_records)."""
-    text = board.kb.build_worker_context(board.conn, identity)
-    head = text.split(COMMENT_THREAD, 1)[0].rstrip() + '\n'
-    comments = [dict(id=comment.id, author=comment.author, at=comment.created_at,
-                     body=(comment.body or '')[:CLAIM_COMMENT_CHARACTERS])
-                for comment in board.kb.list_comments(board.conn, identity)][-CLAIM_COMMENTS:]
-    return head, comments
+    IDs. A turn gets the comments as records, which its Hermes session keeps once (native_conversation.turn_records).
+
+    Hermes builds the context with the comments that list_comments of its Kanban module returns, so the context
+    without the thread is the context of a task without comments. The adapter handles one request at a time, so the
+    swap of that function reaches no other caller."""
+    kb, original = board.kb, board.kb.list_comments
+    comments = original(board.conn, identity)
+    try:
+        kb.list_comments = lambda conn, task_id: []
+        context = kb.build_worker_context(board.conn, identity)
+    finally:
+        kb.list_comments = original
+    return context, [dict(id=comment.id, author=comment.author, at=comment.created_at,
+                          body=(comment.body or '')[:CLAIM_COMMENT_CHARACTERS]) for comment in comments][-CLAIM_COMMENTS:]
 
 
 def main():

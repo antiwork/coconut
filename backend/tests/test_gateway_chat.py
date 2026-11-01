@@ -72,12 +72,16 @@ class TurnRecordTests(unittest.TestCase):
         from coconut import kanban_runtime
         comments = [SimpleNamespace(id=number, author='default', created_at=number, body='Comment %d' % number)
                     for number in range(kanban_runtime.CLAIM_COMMENTS + 2)]
-        kb = SimpleNamespace(
-            build_worker_context=lambda conn, identity: ('# Kanban task n1\n## Body\nShip it.\n\n## Comment thread\n'
-                                                         'comment from worker `default` at 5m ago:\nComment 51\n'),
-            list_comments=lambda conn, identity: comments)
+        # As Hermes builds the context: the body, then the comments that list_comments of its module returns. The body
+        # holds the heading of the comment thread, as pasted Markdown may.
+        body = '# Kanban task n1\n## Body\nShip it.\n## Comment thread\nPasted.\n'
+        kb = SimpleNamespace(list_comments=lambda conn, identity: comments)
+        kb.build_worker_context = lambda conn, identity: body + ''.join(
+            c.body + '\n' for c in kb.list_comments(conn, identity))
+        original = kb.list_comments
         context, records = kanban_runtime.worker_context(SimpleNamespace(kb=kb, conn=None), 'n1')
-        self.assertEqual(context, '# Kanban task n1\n## Body\nShip it.\n')
+        self.assertEqual(context, body)
+        self.assertIs(kb.list_comments, original)
         self.assertEqual(len(records), kanban_runtime.CLAIM_COMMENTS)
         self.assertEqual(records[-1], {'id': 51, 'author': 'default', 'at': 51, 'body': 'Comment 51'})
 
