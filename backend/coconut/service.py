@@ -372,7 +372,11 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
-                self._end_worker_tool_calls()
+                try:
+                    self._end_worker_tool_calls()
+                except Exception:
+                    # A repair of old receipts must never stop the start. The next start tries again.
+                    logging.getLogger(__name__).exception('Could not check the interrupted calls of earlier workers.')
                 migrate_notification_importance(self.db)
                 self._move_artifact_content()
                 if not getattr(self, '_workspace_recovery_hold', False):

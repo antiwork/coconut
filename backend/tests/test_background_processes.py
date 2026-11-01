@@ -34,6 +34,13 @@ class BackgroundProcessTests(unittest.TestCase):
         return dict(id=str(uuid4()), task_id=task_id, turn_id=None, state='executing', created_at='2026-09-21T20:17:08Z',
                     action={'name': name, 'arguments': {'command': command}})
 
+    def native(self, task_id):
+        """Give the task the Kanban claim of a native outcome, as a worker of the claim ran it."""
+        with self.service.transaction():
+            task = self.service._get('tasks', task_id)
+            task['_kanban_claim'] = dict(native_id='t_' + task_id[:8], external_id=task_id, run_id=1)
+            self.service._put('tasks', task)
+
     def restart(self, outcomes, holders=None, listing_fails=False):
         """Start the service again while the process scan finds `outcomes` (None: the scan cannot see environments),
         and lsof finds `holders` (path: {pid: only its cwd}) in the workspaces, or fails."""
@@ -55,6 +62,7 @@ class BackgroundProcessTests(unittest.TestCase):
         from pathlib import Path
         from coconut.work_capacity import execution_key
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Run the tests'})
+        self.native(task['id'])
         old, recent = self.worker_call(task['id']), self.worker_call(task['id'])
         recent['created_at'] = datetime.now(timezone.utc).isoformat()
         with self.service.transaction():
@@ -80,10 +88,17 @@ class BackgroundProcessTests(unittest.TestCase):
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Run the tests'})
         other = self.write('POST', '/v1/bots', {'name': 'Care', 'role': 'Support'})
         running = self.write('POST', f'/v1/bots/{other["id"]}/messages', {'text': 'Build the app'})
+        chat = self.write('POST', f'/v1/bots/{other["id"]}/messages', {'text': 'Check the logs'})
+        self.native(task['id'])
+        self.native(running['id'])
         calls = dict(gone=self.worker_call(task['id']), running=self.worker_call(running['id']),
                      privileged=self.worker_call(task['id'], 'bash -c "sudo make install"'),
                      delegated=self.worker_call(task['id'], name='delegate_task'),
-                     other=self.worker_call(task['id'], name='read_file'))
+                     other=self.worker_call(task['id'], name='read_file'),
+                     # A chat worker carried no outcome, so no scan can prove that its call ended.
+                     chat=self.worker_call(chat['id']))
+        # Some earlier receipts have a time without a zone. It is UTC.
+        calls['delegated']['created_at'] = '2026-09-21T20:17:08.125000'
         with self.service.transaction():
             for call in calls.values():
                 self.service._put('native_receipts', call)
@@ -104,6 +119,18 @@ class BackgroundProcessTests(unittest.TestCase):
         with self.service.lock:
             self.assertTrue(self.service._get('native_receipts', calls['running']['id']).get('_process_ended_at'))
             self.assertFalse(self.service._get('native_receipts', calls['privileged']['id']).get('_process_ended_at'))
+
+    def test_a_failed_repair_of_worker_calls_does_not_stop_the_start(self):
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Run the tests'})
+        self.native(task['id'])
+        with self.service.transaction():
+            self.service._put('native_receipts', self.worker_call(task['id']))
+        self.service.close()
+        with patch('coconut.work_workspace.process_outcomes', side_effect=RuntimeError('ps failed')), \
+                self.assertLogs('coconut.service', 'ERROR') as logs:
+            self.service = Service(self.temp.name, self.provider, start_workers=False)
+        self.assertIn('Could not check the interrupted calls of earlier workers.', logs.output[0])
+        self.assertTrue(self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Still here'}))
 
     def test_pending_check_reads_only_the_assignment_receipts(self):
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Run the review'})

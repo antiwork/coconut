@@ -369,8 +369,9 @@ reason (`gateway_unsupported`).
   (`_native_reply_pending`). The service keeps the saved `_native_relay` of earlier tasks as history, for the proofs that
   read it (`_completed_peer_continuation`, `_block_check_relay_lineage`, `routine_reports`).
 - The watch of a worker's background processes is gone: the process subscriptions of its receipts, their delivery,
-  the waits for a process, and the periodic check of interrupted tool calls. A local command that an earlier worker
-  left without a result ends at a service start when it started an hour ago, no process carries its outcome, and lsof
+  the waits for a process, and the periodic check of interrupted tool calls. A local command that an earlier worker of
+  a native task left without a result ends at a service start when it started an hour ago, no process carries its
+  outcome, and lsof
   shows no process in a workspace of the outcome (`_end_worker_tool_calls`). Its receipt keeps the state `executing`,
   so its effect stays unknown. Hermes watches the processes of a gateway turn and
   delivers their results itself. `coconut_wait` waits for a task or a card (`card_tools.WAIT_SCHEMA`), and the index of

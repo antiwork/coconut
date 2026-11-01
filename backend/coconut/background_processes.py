@@ -122,6 +122,9 @@ class BackgroundProcesses:
                 started = datetime.fromisoformat(record['created_at'].replace('Z', '+00:00'))
             except (KeyError, TypeError, ValueError, AttributeError):
                 return False
+            if started.tzinfo is None:
+                # The service saves UTC times. Some earlier receipts have no zone.
+                started = started.replace(tzinfo=timezone.utc)
             return (datetime.now(timezone.utc) - started).total_seconds() >= ENDED_TOOL_MIN_AGE_SECONDS
         records = [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM native_receipts INDEXED BY native_receipts_executing "
@@ -140,12 +143,19 @@ class BackgroundProcesses:
         candidates = []
         for record in records:
             row = self.db.execute('SELECT data FROM tasks WHERE id=?', (record['task_id'],)).fetchone()
-            task = json.loads(row[0]) if row else {}
-            key = execution_key(task) if task else None
+            # Only a worker of a Kanban claim carried COCONUT_WORKSPACE_OUTCOME, so only the call of a native task can be
+            # proved ended, as the earlier check did. A call of a follow-up on a card belongs to that follow-up, and a
+            # call without its task has no workspace to check. These stay as they are.
+            if not row or self.db.execute('SELECT 1 FROM contexts WHERE id=?', (record.get('turn_id'),)).fetchone():
+                continue
+            task = json.loads(row[0])
+            if not (task.get('_kanban_claim') or {}).get('native_id'):
+                continue
+            key = execution_key(task)
             if key in outcomes:
                 continue
             # The workspaces of the outcome: its scratch folder, its worktrees, and the workspace of its claim.
-            places = {str(root / key)} if key else set()
+            places = {str(root / key)}
             places |= {b['path'] for b in saved.values() if isinstance(b, dict) and b.get('outcome') == key
                        and isinstance(b.get('path'), str)}
             if (task.get('_kanban_claim') or {}).get('workspace'):
