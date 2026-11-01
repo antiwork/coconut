@@ -662,11 +662,12 @@ class GatewayChat:
                     and self._get('contexts', context['id'])['status'] == 'working')
         # A check that finds nothing to change ends without a reply, as REFRESH_INSTRUCTIONS asks.
         check = bool(context.get('_decision_refresh'))
-        chat = root = folder = None
+        chat = root = None
         if gateway_work_turn(task):
             chat, root = self.work_chat(bot, task)
-            # The terminal of the follow-up runs in the workspace of its claim, as the worker's TERMINAL_CWD.
-            folder = (context.get('_kanban_claim') or {}).get('workspace')
+        # The terminal of a follow-up with a Kanban claim runs in the workspace of that claim, as the worker's
+        # TERMINAL_CWD. This also applies in the bot's chat, for a card of a conversation turn that owns an outcome.
+        folder = (context.get('_kanban_claim') or {}).get('workspace')
         try:
             self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted,
                                  mode='refresh' if check else None, silent=check, session=root, chat=chat,

@@ -121,6 +121,33 @@ class ConversationOutcomeDispatchTests(unittest.TestCase):
             self.service.gateway_workspace(review['id'])
         self.service.stop_gateway_holder(review['id'])
 
+    def test_with_the_gateway_a_follow_up_on_a_card_of_an_outcome_turn_runs_in_the_workspace_of_its_claim(self):
+        from test_gateway_chat import Adapter
+        review = self.turn(self.dev, 'Check the saved review result', _native_outcome_id='t_review',
+                           status='needs_you')
+        card = dict(id=str(uuid4()), task_id=review['id'], bot_id=self.dev['id'], status='pending', revision=1,
+                    title='Merge the PR?', action_type='question', _native=True, created_at=review['created_at'],
+                    options=[dict(id='merge', label='Merge it')])
+        self.service._put('decisions', card)
+        self.write(f'/v1/decisions/{card["id"]}/context', {'question': 'Which checks passed?'})
+        context = next(c for c in self.service._all('contexts') if c['decision_id'] == card['id'])
+        # The Kanban dispatch gives the follow-up a claim, with the workspace of the outcome.
+        self.service._put('contexts', dict(context, _kanban_claim=dict(
+            native_id='t_review', external_id=context['id'], run_id=8, claim_lock='lock', workspace=self.tmp.name)))
+        self.service.gateway_enabled = lambda: True
+        adapter = Adapter(self.service.gateway_bridge, self.service.profiles.home(self.dev), [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'All checks passed.'},
+            {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        with patch.object(self.provider, 'answer_context', side_effect=AssertionError('The worker must not answer.')):
+            self.service._start_context(context['id'])
+            adapter.join(5)
+            self.service.context_threads[context['id']].join(5)
+        # The follow-up stays in the bot's chat, and its terminal runs in the workspace of its claim.
+        turn = adapter.turns[0]
+        self.assertEqual((turn['chat_id'], turn['mode'], turn['folder']), (self.dev['id'], 'context', self.tmp.name))
+        self.assertEqual(self.service._get('contexts', context['id'])['status'], 'completed')
+
     def test_an_outcome_turn_without_its_claim_waits_queued_and_does_not_fail(self):
         # The live loop: the chat dispatcher started the turn without the claim, the turn failed on the missing claim,
         # and its retry failed the same way. Now a start without the claim leaves the task queued for its claim.
