@@ -1726,6 +1726,24 @@ class ServiceRoutingTests(unittest.TestCase):
             receipts = [r['action']['name'] for r in self.service._all('native_receipts') if r['task_id'] == task['id']]
         self.assertEqual(receipts, ['kanban_heartbeat', 'kanban_unblock', 'kanban_complete'])
 
+    def test_a_stop_of_the_service_ends_the_wait_for_a_busy_chat(self):
+        from coconut import gateway_bridge as bridge_module
+        task = self.service.mutate('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Hello'}, str(uuid4()))
+        with self.service.transaction():
+            stored = self.service._get('tasks', task['id'])
+            stored['status'] = 'working'
+            self.service._put('tasks', stored)
+        self.service.gateway_bridge.poll({'home': str(self.home), 'wait': 0})
+        self.service.stopping.set()
+        from coconut import gateway_chat
+        with patch.object(self.service.gateway_bridge, 'run_turn', side_effect=bridge_module.GatewayBusy('busy')) as run_turn, \
+                patch.object(gateway_chat, 'BUSY_WAIT_SECONDS', 1):
+            started = time.monotonic()
+            with self.assertRaisesRegex(RuntimeError, 'service stops'):
+                self.service._run_in_gateway(stored, self.bot, 'Hello', lambda *_: None)
+        self.assertEqual(run_turn.call_count, 1)
+        self.assertLess(time.monotonic() - started, 2)
+
     def test_a_turn_waits_while_hermes_runs_another_turn_in_its_chat(self):
         # After a restart, Hermes runs its own turn in the chat of a work session, for example for a finished
         # background delegation. The plugin then skips the Coconut turn and reports it as busy. The turn must not end

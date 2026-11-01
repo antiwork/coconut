@@ -755,7 +755,9 @@ class GatewayChat:
                             raise RuntimeError(BUSY_TOO_LONG.format(minutes=BUSY_WAIT_SECONDS // 60)) from None
                         LOG.info('Hermes runs another turn in the chat of task %s. The turn waits.', task['id'])
                         self._gateway_wait_summary(task['id'], BUSY_WAITING)
-                        self.stopping.wait(BUSY_RETRY_SECONDS)
+                        if self.stopping.wait(BUSY_RETRY_SECONDS):
+                            # The service stops, so the turn gives up at once, as while it waits for a gateway.
+                            raise RuntimeError('The Coconut service stops.')
                         deadline = time.monotonic() + GATEWAY_WAIT_SECONDS
                         continue
                 parked = Path(home) / 'gateway.parked'
