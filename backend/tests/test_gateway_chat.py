@@ -1746,6 +1746,43 @@ class ServiceRoutingTests(unittest.TestCase):
             self.service._dispatch_chat(1)
         self.assertEqual(started, [chat['id']])
 
+    def test_the_placeholders_of_claims_end_with_the_service(self):
+        # A service that stops ends the claims of its turns, so Hermes runs their cards again after the restart.
+        with tempfile.TemporaryDirectory() as folder:
+            service = Service(folder, Provider(), start_workers=False)
+            service.start_gateway_holder('claim-1', 'work-1')
+            holder = service.gateway_holders['claim-1']
+            self.assertIsNone(holder.poll())
+            service.close()
+            self.assertIsNotNone(holder.poll())
+            self.assertEqual(service.gateway_holders, {})
+
+    def test_a_placeholder_ends_when_its_service_process_is_gone(self):
+        # A service that crashed cannot stop its placeholders. Each one sees that its service is gone and ends, so
+        # Hermes does not keep the claim of a turn that no longer runs.
+        service = ('import os, subprocess, sys\n'
+                   'holder = subprocess.Popen([sys.executable, "-c", sys.argv[1], str(os.getpid())],'
+                   ' stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,'
+                   ' start_new_session=True)\n'
+                   'print(holder.pid, flush=True)\n')
+        started = subprocess.run([sys.executable, '-c', service, gateway_chat.HOLDER], capture_output=True, text=True,
+                                 timeout=30, check=True)
+        holder = int(started.stdout)
+
+        def alive():
+            # A system without a reaper of orphans keeps an exited holder as a zombie (state Z). It has exited.
+            state = subprocess.run(['ps', '-o', 'stat=', '-p', str(holder)], capture_output=True, text=True).stdout
+            return bool(state.strip()) and not state.strip().startswith('Z')
+
+        def stop():
+            if alive():
+                os.kill(holder, 9)
+        self.addCleanup(stop)
+        deadline = time.monotonic() + 15
+        while alive() and time.monotonic() < deadline:
+            time.sleep(.1)
+        self.assertFalse(alive())
+
     def test_a_kanban_claim_of_a_gateway_turn_holds_a_placeholder_process(self):
         task = self.audit()
         with self.service.transaction():
