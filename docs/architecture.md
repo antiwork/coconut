@@ -368,8 +368,10 @@ reason (`gateway_unsupported`).
 - The relay of the worker is gone: its envelope delivery, its recovery and the reply into an envelope
   (`_native_reply_pending`). The service keeps the saved `_native_relay` of earlier tasks as history, for the proofs that
   read it (`_completed_peer_continuation`, `_block_check_relay_lineage`, `routine_reports`).
-- The watch of a worker's background processes is gone: the process subscriptions of its receipts, their delivery, the
-  waits for a process, and the check of interrupted tool calls. Hermes watches the processes of a gateway turn and
+- The watch of a worker's background processes is gone: the process subscriptions of its receipts, their delivery,
+  the waits for a process, and the periodic check of interrupted tool calls. A local command that an earlier worker
+  left without a result ends at a service start once no process of its outcome runs (`_end_worker_tool_calls`); its
+  receipt keeps the state `executing`, so its effect stays unknown. Hermes watches the processes of a gateway turn and
   delivers their results itself. `coconut_wait` waits for a task or a card (`card_tools.WAIT_SCHEMA`), and the index of
   pending waits is `native_receipts_pending_wait`.
 - The bot change context of a turn moved to `bot_changes.py`. The routing of a turn has no worker inputs:

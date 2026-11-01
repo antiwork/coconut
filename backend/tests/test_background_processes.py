@@ -29,6 +29,47 @@ class BackgroundProcessTests(unittest.TestCase):
                     action={'name': 'coconut_wait', 'arguments': {'task_id': target_id, 'reason': 'Review'}},
                     _wait_task_id=target_id, _wait_session_id=self.bot['session_id'])
 
+    def worker_call(self, task_id, command='npm test', name='terminal'):
+        """A local command of an earlier worker turn that stopped before its result."""
+        return dict(id=str(uuid4()), task_id=task_id, turn_id=None, state='executing', created_at='2026-09-21T20:17:08Z',
+                    action={'name': name, 'arguments': {'command': command}})
+
+    def restart(self, outcomes):
+        """Start the service again while the process scan finds `outcomes` (None: the scan cannot see environments)."""
+        self.service.close()
+        with patch('coconut.work_workspace.process_outcomes', return_value=outcomes):
+            self.service = Service(self.temp.name, self.provider, start_workers=False)
+
+    def test_a_start_ends_the_calls_of_earlier_workers_whose_processes_are_gone(self):
+        from coconut.work_capacity import execution_key
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Run the tests'})
+        other = self.write('POST', '/v1/bots', {'name': 'Care', 'role': 'Support'})
+        running = self.write('POST', f'/v1/bots/{other["id"]}/messages', {'text': 'Build the app'})
+        calls = dict(gone=self.worker_call(task['id']), running=self.worker_call(running['id']),
+                     privileged=self.worker_call(task['id'], 'bash -c "sudo make install"'),
+                     delegated=self.worker_call(task['id'], name='delegate_task'),
+                     other=self.worker_call(task['id'], name='read_file'))
+        with self.service.transaction():
+            for call in calls.values():
+                self.service._put('native_receipts', call)
+            key = execution_key(self.service._get('tasks', running['id']))
+        # A system that hides process environments proves nothing, so no call ends.
+        self.restart(None)
+        with self.service.lock:
+            self.assertFalse(any(self.service._get('native_receipts', c['id']).get('_process_ended_at')
+                                 for c in calls.values()))
+        self.restart({key})
+        with self.service.lock:
+            saved = {name: self.service._get('native_receipts', call['id']) for name, call in calls.items()}
+        # Only the calls without a process end. Each keeps its state, so its effect stays unknown to the next turn.
+        self.assertEqual({name for name, call in saved.items() if call.get('_process_ended_at')}, {'gone', 'delegated'})
+        self.assertEqual({call['state'] for call in saved.values()}, {'executing'})
+        # A later start ends the call whose process stopped meanwhile.
+        self.restart(set())
+        with self.service.lock:
+            self.assertTrue(self.service._get('native_receipts', calls['running']['id']).get('_process_ended_at'))
+            self.assertFalse(self.service._get('native_receipts', calls['privileged']['id']).get('_process_ended_at'))
+
     def test_pending_check_reads_only_the_assignment_receipts(self):
         task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Run the review'})
         target = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'The review'})

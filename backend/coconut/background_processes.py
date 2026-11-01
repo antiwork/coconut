@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 
 # The receipts of waits that have no delivery yet. The partial index native_receipts_pending_wait has this condition.
@@ -19,6 +20,10 @@ PENDING_COMPLETIONS = """
 """
 # A work description that changed no longer shows after this.
 WORK_DESCRIPTION_SECONDS = 120
+# A call that names a privileged program anywhere never ends here. Its process runs as another user, so no process scan
+# can show that it ended. `bash -c 'sudo ...'` or `xargs sudo` hide the program from a command-position match, so a call
+# that only mentions one also stays blocked.
+PRIVILEGED = re.compile(r'\b(?:sudo|doas|su|pkexec|runas)\b')
 
 
 def result_value(record):
@@ -89,6 +94,44 @@ class BackgroundProcesses:
             except Exception:
                 logging.getLogger(__name__).exception('Could not deliver the result of a wait.')
             self.stopping.wait(1)
+
+    def _end_worker_tool_calls(self):
+        """Mark the local commands of earlier worker turns that have no result as ended, once no process of them runs.
+
+        A worker could stop before a terminal, execute_code or delegate_task call returned. Its receipt then stays
+        executing, and the owner's work counts it as a running writer (native_outcomes, `_process_ended_at`). Coconut has
+        no worker since #347, and a gateway turn records no such call, so no new call of this kind starts. A call ends
+        when no process carries the outcome of its execution (COCONUT_WORKSPACE_OUTCOME). The receipt keeps its state, so
+        the owner's next turn still sees the unknown effect. The service start runs this, so a call whose process still
+        runs ends at a later start. The caller holds the transaction.
+        """
+        from .native_outcomes import LOCAL_COMMAND_TOOLS
+        from .service import now
+        from .work_capacity import execution_key
+        from . import work_workspace
+        records = [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM native_receipts INDEXED BY native_receipts_executing "
+            "WHERE json_extract(data,'$.state')='executing'")]
+        records = [r for r in records if (r.get('action') or {}).get('name') in LOCAL_COMMAND_TOOLS
+                   and not r.get('_process_ended_at')
+                   and not PRIVILEGED.search(json.dumps((r.get('action') or {}).get('arguments')))]
+        if not records:
+            return []
+        outcomes = work_workspace.process_outcomes(getattr(self.provider, 'python', None))
+        if outcomes is None:
+            # This system hides process environments, so no call can be proved ended.
+            return []
+        ended = []
+        for record in records:
+            row = self.db.execute('SELECT data FROM tasks WHERE id=?', (record['task_id'],)).fetchone()
+            if row and execution_key(json.loads(row[0])) in outcomes:
+                continue
+            record['_process_ended_at'] = now()
+            self._put('native_receipts', record)
+            ended.append(record['id'])
+        if ended:
+            logging.getLogger(__name__).warning('Coconut found no process for the interrupted worker calls %s.', ended)
+        return ended
 
     def _expire_work_descriptions(self):
         from datetime import datetime, timezone
