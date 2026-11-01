@@ -1,12 +1,7 @@
 import base64
 import json
 import os
-import subprocess
-import sys
 import tempfile
-import textwrap
-import threading
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -14,7 +9,6 @@ from uuid import uuid4
 
 from coconut.bot_changes import bot_creation_receipt
 from coconut.providers import FixtureProvider, HermesProvider
-from coconut.service import ServiceError
 from turn_text import turn_input
 
 
@@ -175,12 +169,6 @@ class ProviderTests(unittest.TestCase):
         prompt, _ = turn_input({'operation': 'start', 'task': self.task, 'history': []})
         self.assertIn('Private task input', prompt)
         self.assertIn('This attachment is binary', prompt)
-
-    def wait_for_path(self, path):
-        deadline = time.monotonic() + 3
-        while not path.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        self.assertTrue(path.exists(), 'The model did not reach the test checkpoint.')
 
     def configure_peer(self, *, budget=8):
         peer = {'id': str(uuid4()), 'name': 'Lin', 'role': 'Check calculations'}

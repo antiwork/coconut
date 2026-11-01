@@ -4,7 +4,6 @@ import time
 import unittest
 from unittest.mock import patch
 
-from coconut.native_failure import native_failure
 from coconut.service import ServiceError
 from coconut.work_sources import NO_CARD_MAX, retry_delay
 import test_work_source_awaiting as awaiting
@@ -170,14 +169,6 @@ class ProviderLimitTests(unittest.TestCase):
     def fail(self, task_id, payload):
         self.provider.start_task = lambda task, bot, history, emit: emit('failed', payload)
         self.service._run_task(task_id)
-
-    def test_reset_time_comes_from_the_provider_error_only(self):
-        error = 'HTTP 429 {"type": "usage_limit_reached", "resets_in_seconds": 7200, "token": "private-key"}'
-        failure = native_failure(dict(failure_reason='rate_limit', error=error))
-        self.assertEqual(failure['retry_after'], 7200)
-        self.assertNotIn('private-key', json.dumps(failure))
-        self.assertNotIn('retry_after', native_failure(dict(failure_reason='rate_limit', error='HTTP 429')))
-        self.assertNotIn('retry_after', native_failure(dict(failure_reason='timeout', error=error)))
 
     def test_rate_limit_holds_audits_until_its_reset(self):
         first = self.audit()['task_id']

@@ -2,7 +2,6 @@ import copy
 import json
 import unittest
 
-from coconut.native_failure import native_failure
 from coconut.native_receipt_context import CHUNK_SIZE, PAGE_SIZE, read_receipts, receipt_prompt
 from turn_text import turn_input
 
@@ -82,15 +81,3 @@ class ReceiptContextTests(unittest.TestCase):
         self.assertEqual(read_receipts(saved, {'offset': 100})['receipts'], [])
         self.assertEqual(read_receipts(saved, {'receipt_index': 0, 'offset': 100000})['json_chunk'], '')
         self.assertEqual(receipt_prompt([]), '')
-
-
-class NativeFailureTests(unittest.TestCase):
-    def test_allowlisted_native_reasons_never_echo_private_result(self):
-        for reason in ('context_overflow', 'rate_limit', 'auth', 'billing', 'timeout', 'session_busy'):
-            result = native_failure({'failure_reason': reason, 'error': 'private-key',
-                                     'final_response': 'private-key', 'provider': 'private-key'})
-            self.assertEqual(result['error_code'], 'native_' + reason)
-            self.assertNotIn('private-key', json.dumps(result))
-        for reason in ('private-key', {'private-key': True}, None):
-            self.assertEqual(native_failure({'failure_reason': reason})['error_code'], 'native_turn_failed')
-        self.assertEqual(native_failure({'interrupted': True})['error_code'], 'native_interrupted')

@@ -4,7 +4,7 @@ import json
 import re
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 from uuid import uuid4
 
 from coconut import native_outcomes

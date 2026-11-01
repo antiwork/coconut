@@ -1,6 +1,4 @@
 """Static public failure copy. Never forward native error text or request details."""
-import re
-
 
 _FAILURES = {
     'context_overflow': 'The saved conversation exceeds the model context limit. It needs context recovery before retrying.',
@@ -36,20 +34,3 @@ TRANSIENT_ERROR_CODES = frozenset('native_' + reason for reason in (
 # The text that Hermes stores for such a failure. It must not contain a word that the respawn guard reads as an
 # authorization blocker (quota, rate limit, auth, billing, and so on).
 TRANSIENT_NATIVE_ERROR = 'The model provider stopped this turn. Coconut retries it later.'
-
-
-# A provider limit error, such as usage_limit_reached, can say when the limit resets. Only that number leaves the worker.
-_RESETS_IN = re.compile(r'resets_in_seconds\W{0,3}(\d{1,9})')
-
-
-def native_failure(result):
-    reason = result.get('failure_reason')
-    if isinstance(reason, str) and reason in _FAILURES:
-        failure = {'summary': _FAILURES[reason], 'error_code': 'native_' + reason}
-        resets = _RESETS_IN.search(str(result.get('error') or '')) if reason in ('rate_limit', 'billing') else None
-        if resets:
-            failure['retry_after'] = int(resets.group(1))
-        return failure
-    if result.get('interrupted'):
-        return {'summary': 'The reply was interrupted before completion.', 'error_code': 'native_interrupted'}
-    return {'summary': 'Hermes could not finish this reply.', 'error_code': 'native_turn_failed'}

@@ -150,7 +150,6 @@ jobs:
           cat .runtime/native-gateway-idle-exit.log
           grep -qx 'OK' .runtime/native-gateway-idle-exit.log # Real client-started gateways must run, so the check must not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_api_fallback.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_compression_fallback.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_receipt_context.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py 2> .runtime/native-kanban.log || { cat .runtime/native-kanban.log; exit 1; }
           cat .runtime/native-kanban.log
