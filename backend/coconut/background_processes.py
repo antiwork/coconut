@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from pathlib import Path
 import re
 
 
@@ -24,6 +25,9 @@ WORK_DESCRIPTION_SECONDS = 120
 # can show that it ended. `bash -c 'sudo ...'` or `xargs sudo` hide the program from a command-position match, so a call
 # that only mentions one also stays blocked.
 PRIVILEGED = re.compile(r'\b(?:sudo|doas|su|pkexec|runas)\b')
+# macOS hides the environment of system programs, such as /bin/sh and git. Such an orphan that left its workspace
+# escapes both checks of _end_worker_tool_calls, so a call counts as ended only after it started this long ago.
+ENDED_TOOL_MIN_AGE_SECONDS = 60 * 60
 
 
 def result_value(record):
@@ -101,19 +105,29 @@ class BackgroundProcesses:
         A worker could stop before a terminal, execute_code or delegate_task call returned. Its receipt then stays
         executing, and the owner's work counts it as a running writer (native_outcomes, `_process_ended_at`). Coconut has
         no worker since #347, and a gateway turn records no such call, so no new call of this kind starts. A call ends
-        when no process carries the outcome of its execution (COCONUT_WORKSPACE_OUTCOME). The receipt keeps its state, so
-        the owner's next turn still sees the unknown effect. The service start runs this, so a call whose process still
-        runs ends at a later start. The caller holds the transaction.
+        when it started ENDED_TOOL_MIN_AGE_SECONDS ago, no process carries the outcome of its execution
+        (COCONUT_WORKSPACE_OUTCOME), and lsof shows no process in a workspace of that outcome. A check that cannot
+        complete ends no call. The receipt keeps its state, so the owner's next turn still sees the unknown effect. The
+        service start runs this before any turn, so a call whose process still runs ends at a later start. The caller
+        holds the transaction.
         """
+        from datetime import datetime, timezone
         from .native_outcomes import LOCAL_COMMAND_TOOLS
         from .service import now
         from .work_capacity import execution_key
         from . import work_workspace
+
+        def old(record):
+            try:
+                started = datetime.fromisoformat(record['created_at'].replace('Z', '+00:00'))
+            except (KeyError, TypeError, ValueError, AttributeError):
+                return False
+            return (datetime.now(timezone.utc) - started).total_seconds() >= ENDED_TOOL_MIN_AGE_SECONDS
         records = [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM native_receipts INDEXED BY native_receipts_executing "
             "WHERE json_extract(data,'$.state')='executing'")]
         records = [r for r in records if (r.get('action') or {}).get('name') in LOCAL_COMMAND_TOOLS
-                   and not r.get('_process_ended_at')
+                   and not r.get('_process_ended_at') and old(r)
                    and not PRIVILEGED.search(json.dumps((r.get('action') or {}).get('arguments')))]
         if not records:
             return []
@@ -121,10 +135,33 @@ class BackgroundProcesses:
         if outcomes is None:
             # This system hides process environments, so no call can be proved ended.
             return []
-        ended = []
+        root = self.root / 'workspaces'
+        saved = work_workspace.unlocked_registry(root)
+        candidates = []
         for record in records:
             row = self.db.execute('SELECT data FROM tasks WHERE id=?', (record['task_id'],)).fetchone()
-            if row and execution_key(json.loads(row[0])) in outcomes:
+            task = json.loads(row[0]) if row else {}
+            key = execution_key(task) if task else None
+            if key in outcomes:
+                continue
+            # The workspaces of the outcome: its scratch folder, its worktrees, and the workspace of its claim.
+            places = {str(root / key)} if key else set()
+            places |= {b['path'] for b in saved.values() if isinstance(b, dict) and b.get('outcome') == key
+                       and isinstance(b.get('path'), str)}
+            if (task.get('_kanban_claim') or {}).get('workspace'):
+                places.add(task['_kanban_claim']['workspace'])
+            candidates.append((record, {p for p in places if Path(p).exists()}))
+        paths = set().union(*(places for _, places in candidates))
+        try:
+            held = work_workspace.holders_by_path(paths, detail=True) if paths else {}
+            table = work_workspace.process_table() if any(held.values()) else {}
+        except ValueError as error:
+            # Without a complete listing, no call can end. The next start checks again.
+            logging.getLogger(__name__).warning('Coconut could not check interrupted worker calls: %s', error)
+            return []
+        ended = []
+        for record, places in candidates:
+            if any(work_workspace.blocking(held[p], p, table) for p in places):
                 continue
             record['_process_ended_at'] = now()
             self._put('native_receipts', record)

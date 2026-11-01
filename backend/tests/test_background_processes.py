@@ -34,11 +34,46 @@ class BackgroundProcessTests(unittest.TestCase):
         return dict(id=str(uuid4()), task_id=task_id, turn_id=None, state='executing', created_at='2026-09-21T20:17:08Z',
                     action={'name': name, 'arguments': {'command': command}})
 
-    def restart(self, outcomes):
-        """Start the service again while the process scan finds `outcomes` (None: the scan cannot see environments)."""
+    def restart(self, outcomes, holders=None, listing_fails=False):
+        """Start the service again while the process scan finds `outcomes` (None: the scan cannot see environments),
+        and lsof finds `holders` (path: {pid: only its cwd}) in the workspaces, or fails."""
         self.service.close()
-        with patch('coconut.work_workspace.process_outcomes', return_value=outcomes):
+
+        def listing(paths, detail=False):
+            if listing_fails:
+                raise ValueError('lsof did not list all open files.')
+            return {str(path): dict((holders or {}).get(str(path), {})) for path in paths}
+        with patch('coconut.work_workspace.process_outcomes', return_value=outcomes), \
+                patch('coconut.work_workspace.holders_by_path', side_effect=listing), \
+                patch('coconut.work_workspace.process_table', return_value={}):
             self.service = Service(self.temp.name, self.provider, start_workers=False)
+
+    def test_a_call_ends_only_when_no_process_holds_a_workspace_of_its_outcome(self):
+        # macOS can hide the environment of a /bin/sh or git child, so the scan of outcomes can miss it. A process
+        # in a workspace of the outcome keeps the call, and so does a listing that cannot complete.
+        from datetime import datetime, timezone
+        from pathlib import Path
+        from coconut.work_capacity import execution_key
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Run the tests'})
+        old, recent = self.worker_call(task['id']), self.worker_call(task['id'])
+        recent['created_at'] = datetime.now(timezone.utc).isoformat()
+        with self.service.transaction():
+            self.service._put('native_receipts', old)
+            self.service._put('native_receipts', recent)
+            workspace = self.service.root / 'workspaces' / execution_key(self.service._get('tasks', task['id']))
+        workspace.mkdir(parents=True)
+
+        def ended():
+            with self.service.lock:
+                return {name for name, call in (('old', old), ('recent', recent))
+                        if self.service._get('native_receipts', call['id']).get('_process_ended_at')}
+        self.restart(set(), holders={str(workspace): {4242: False}})
+        self.assertEqual(ended(), set())
+        self.restart(set(), listing_fails=True)
+        self.assertEqual(ended(), set())
+        # The workspace is free. A call that started less than an hour ago still waits.
+        self.restart(set())
+        self.assertEqual(ended(), {'old'})
 
     def test_a_start_ends_the_calls_of_earlier_workers_whose_processes_are_gone(self):
         from coconut.work_capacity import execution_key
