@@ -117,15 +117,33 @@ class DecisionInboxTests(unittest.TestCase):
         for properties in (common, SUGGEST_SCHEMA['parameters']['properties'],
                            REPLY_SCHEMA['parameters']['properties']['revision']['properties']):
             self.assertEqual(properties['risk_level']['enum'], ['low', 'medium', 'high', 'not_assessed'])
-            self.assertEqual(properties['options']['items']['properties']['risk_level'], common['risk_level'])
+            option = properties['options']['items']['properties']
+            self.assertEqual(option['risk_level']['enum'], common['risk_level']['enum'])
+            self.assertEqual(option['risk']['maxLength'], common['risk']['maxLength'])
         self.assertNotIn('risk_level', QUESTION_SCHEMA['parameters']['required'])
+
+    def test_card_tools_give_each_card_rule_once(self):
+        # coconut_ask carries the rules of the card fields. The other card tools refer to them, so each model call
+        # sends each rule once (the gateway offers every Coconut tool in each call).
+        import json
+        from coconut.card_tools import CHAT_REPLY_SCHEMA, QUESTION_SCHEMA, SUGGEST_SCHEMA, refresh_schema
+        rule = QUESTION_SCHEMA['parameters']['properties']['context']['description']
+        risk = QUESTION_SCHEMA['parameters']['properties']['risk_level']['description']
+        self.assertEqual(json.dumps(QUESTION_SCHEMA).count(json.dumps(risk)), 1)
+        for schema in (SUGGEST_SCHEMA, CHAT_REPLY_SCHEMA, refresh_schema()):
+            text = json.dumps(schema)
+            self.assertNotIn(json.dumps(rule), text, schema['name'])
+            self.assertNotIn(json.dumps(risk), text, schema['name'])
+            self.assertIn('coconut_ask', text, schema['name'])
+        self.assertLess(sum(len(json.dumps(schema)) for schema in (
+            QUESTION_SCHEMA, SUGGEST_SCHEMA, CHAT_REPLY_SCHEMA, refresh_schema())), 17000)
 
     def test_card_tools_expose_needs_attention_now_apart_from_risk(self):
         from coconut.card_tools import QUESTION_SCHEMA, SUGGEST_SCHEMA, REPLY_SCHEMA
+        self.assertIn('next work hours', QUESTION_SCHEMA['parameters']['properties']['needs_attention_now']['description'])
         for schema in (QUESTION_SCHEMA, SUGGEST_SCHEMA):
             properties = schema['parameters']['properties']
             self.assertEqual(properties['needs_attention_now']['type'], 'boolean')
-            self.assertIn('next work hours', properties['needs_attention_now']['description'])
             self.assertNotIn('notification_importance', properties)
             self.assertNotIn('needs_attention_now', schema['parameters']['required'])
             self.assertNotIn('needs_attention_now', properties['options']['items']['properties'])

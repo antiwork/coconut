@@ -31,7 +31,10 @@ Work. coconut_track_work tracks the work of a work session in Coconut Work (back
 the bot's chat records an outcome on the board instead, and a native outcome reports on its card.
 
 Card checks. coconut_refresh_decision records the result of an automatic check of a pending card. Only a check turn
-(mode `refresh`) can call it, and a check turn can call no other Coconut tool (hooks.guard_tool).
+(mode `refresh`) can call it, and a check turn can call no other Coconut tool (hooks.guard_tool). The model calls of
+the other turns do not get its schema (hooks.add_turn_context). coconut_suggest, coconut_resolve_reply and the revision of
+coconut_refresh_decision refer to the rules of the card fields of coconut_ask instead of repeating them
+(card_tools.bare).
 """
 from __future__ import annotations
 

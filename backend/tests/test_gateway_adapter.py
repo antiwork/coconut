@@ -764,6 +764,25 @@ class GatewayAdapterTests(unittest.TestCase):
                              {'type': 'text', 'text': hooks.CONTEXT_HEADER + turn['text']})
             responses = hooks.add_turn_context(request={'input': [{'role': 'user', 'content': [{'type': 'input_text', 'text': 'Hey'}]}]})
             self.assertEqual(responses['request']['input'][0]['content'][-1]['type'], 'input_text')
+        # Only a check of a card gets coconut_refresh_decision, in each tool format of a model request.
+        named = [{'name': 'coconut_ask'}, {'name': hooks.REFRESH_TOOL},
+                 {'type': 'function', 'function': {'name': hooks.REFRESH_TOOL}}, {'type': 'function', 'name': 'other'}]
+        request = {'messages': [{'role': 'user', 'content': 'Hey'}], 'tools': named}
+        self.addCleanup(adapter.MODES.clear)
+        for turn_id, mode, kept in (('turn-c', None, [named[0], named[3]]), ('turn-other', None, [named[0], named[3]]),
+                                    ('turn-r', 'refresh', None)):
+            if mode:
+                adapter.MODES[turn_id] = mode
+            with self.subTest(turn=turn_id), patch.object(hooks, '_turn', return_value=(None, turn_id)):
+                result = hooks.add_turn_context(request=request)
+                if kept is None:
+                    self.assertIsNone(result)
+                else:
+                    self.assertEqual(result['request']['tools'], kept)
+                    self.assertEqual(result['request']['messages'][0]['content'] != 'Hey', turn_id == 'turn-c')
+        self.assertEqual(len(request['tools']), 4)
+        with patch.object(hooks, '_turn', return_value=(None, None)):
+            self.assertIsNone(hooks.add_turn_context(request=request))
         # Another turn, or no Coconut turn, keeps its request.
         with patch.object(hooks, '_turn', return_value=(None, 'turn-other')):
             self.assertIsNone(hooks.add_turn_context(request={'messages': [{'role': 'user', 'content': 'x'}]}))
