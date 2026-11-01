@@ -1726,6 +1726,38 @@ class ServiceRoutingTests(unittest.TestCase):
             receipts = [r['action']['name'] for r in self.service._all('native_receipts') if r['task_id'] == task['id']]
         self.assertEqual(receipts, ['kanban_heartbeat', 'kanban_unblock', 'kanban_complete'])
 
+    def test_a_turn_waits_while_hermes_runs_another_turn_in_its_chat(self):
+        # After a restart, Hermes runs its own turn in the chat of a work session, for example for a finished
+        # background delegation. The plugin then skips the Coconut turn and reports it as busy. The turn must not end
+        # as a reply: its Kanban claim stays held, and the turn starts again when the chat is free.
+        from coconut import gateway_chat
+        task, _ = self.native_outcome()
+        holder = self.service.gateway_holders[task['id']]
+        busy = Adapter(self.service.gateway_bridge, self.home, [{'kind': 'done', 'outcome': 'busy'}])
+        busy.start()
+        with patch.object(gateway_chat, 'BUSY_RETRY_SECONDS', 0.2):
+            runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+            runner.start()
+            busy.join(5)
+            self.assertEqual(busy.answers, [{'ok': True}])
+            deadline = time.monotonic() + 5
+            while self.read('tasks', task['id']).get('summary') != gateway_chat.BUSY_WAITING and time.monotonic() < deadline:
+                time.sleep(0.05)
+            waiting = self.read('tasks', task['id'])
+            self.assertEqual((waiting['status'], waiting['summary']), ('working', gateway_chat.BUSY_WAITING))
+            self.assertIsNone(holder.poll())
+            # The chat is free: the gateway takes the same turn again, and it runs.
+            free = Adapter(self.service.gateway_bridge, self.home, [
+                {'kind': 'send', 'message_id': 'm:1', 'text': 'Scheduled the next check.'},
+                {'kind': 'done', 'outcome': 'success'}])
+            free.start()
+            free.join(10)
+            runner.join(10)
+        self.assertEqual(free.turns[0]['chat_id'], busy.turns[0]['chat_id'])
+        self.assertNotEqual(free.turns[0]['id'], busy.turns[0]['id'])
+        replies = [m['text'] for m in self.service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
+        self.assertEqual(replies, ['Scheduled the next check.'])
+
     def test_a_native_outcome_turn_gets_its_worktree_proof_its_receipts_and_a_pause_only_in_a_block_check(self):
         import json as _json
         from coconut.work_capacity import execution_key

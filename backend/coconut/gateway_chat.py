@@ -38,8 +38,8 @@ import threading
 import time
 
 from . import hermes_runtime
-from .gateway_bridge import (OTHER_PATHS, WORK_MESSAGE_FIELDS, WORK_SESSION_INPUTS, GatewayBridge, GatewayUnavailable,
-                             gateway_claim_turn, gateway_work_turn, plain_chat_turn)
+from .gateway_bridge import (OTHER_PATHS, WORK_MESSAGE_FIELDS, WORK_SESSION_INPUTS, GatewayBridge, GatewayBusy,
+                             GatewayUnavailable, gateway_claim_turn, gateway_work_turn, plain_chat_turn)
 from .native_conversation import reaction_only_turn
 
 LOG = logging.getLogger(__name__)
@@ -67,6 +67,13 @@ OUTSIDE_GROUP_SECONDS = 10 * 60
 CRON_DELIVERY_SECONDS = 24 * 3600
 # A chat turn waits this long for an adapter of the bot's profile, for example while the gateway starts again.
 GATEWAY_WAIT_SECONDS = 5 * 60
+# A turn waits this long, at most, while the gateway runs another turn in the session of its chat (GatewayBusy), and
+# tries again after each pause.
+BUSY_WAIT_SECONDS = 30 * 60
+BUSY_RETRY_SECONDS = 5
+BUSY_WAITING = 'Waiting for Hermes to finish another turn in this chat.'
+BUSY_TOO_LONG = ('Hermes ran another turn in the chat of this task for more than {minutes} minutes, so this turn did '
+                 'not start. Send the request again.')
 WAITING = 'Waiting for the Hermes gateway. See Settings > Hermes when this takes long.'
 NOT_CONNECTED = ('The Hermes gateway did not connect for this bot in {minutes} minutes. Send the message again after '
                  'the gateway runs. See GET /v1/setup and {log}.')
@@ -718,6 +725,7 @@ class GatewayChat:
         from .native_conversation import session_root
         home = self.profiles.home(bot)
         deadline = time.monotonic() + GATEWAY_WAIT_SECONDS
+        busy_deadline = time.monotonic() + BUSY_WAIT_SECONDS
         if wanted is None:
             def wanted():
                 return self._get('tasks', task['id'])['status'] == 'working'
@@ -740,6 +748,16 @@ class GatewayChat:
                     except GatewayUnavailable:
                         # No adapter took the turn, so nothing ran. Wait for the next adapter.
                         LOG.warning('No Hermes gateway took chat turn %s. It waits for the gateway.', task['id'])
+                    except GatewayBusy:
+                        # Hermes runs its own turn in this chat. Steering that turn with this one would end this turn
+                        # at once without its work, for example without the outcome of a Kanban claim.
+                        if time.monotonic() >= busy_deadline:
+                            raise RuntimeError(BUSY_TOO_LONG.format(minutes=BUSY_WAIT_SECONDS // 60)) from None
+                        LOG.info('Hermes runs another turn in the chat of task %s. The turn waits.', task['id'])
+                        self._gateway_wait_summary(task['id'], BUSY_WAITING)
+                        self.stopping.wait(BUSY_RETRY_SECONDS)
+                        deadline = time.monotonic() + GATEWAY_WAIT_SECONDS
+                        continue
                 parked = Path(home) / 'gateway.parked'
                 if parked.exists():
                     # The person parked the profile in Hermes, so no gateway serves it. Waiting does not help.

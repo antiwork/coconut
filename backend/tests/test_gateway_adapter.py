@@ -386,6 +386,48 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual((result.success, result.retryable), (False, True))
         self.assertEqual(self.outside(), [])
 
+    def test_a_turn_waits_while_the_gateway_runs_another_turn_in_its_session(self):
+        # Hermes would steer its running turn with the Coconut turn, send its busy notice as the reply, and end the
+        # Coconut turn at once. The hook skips the Coconut turn instead, and the service gives it again later.
+        from coconut import gateway_chat
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        running, keys = [True], []
+
+        class Runner:
+            _startup_restore_in_progress = False
+            def _session_key_for_source(self, source):
+                return 'agent:coconut:dm:' + source.chat_id
+            def _is_session_running(self, session_key):
+                keys.append(session_key)
+                return running[0]
+        gateway = Runner()
+
+        async def runner(event):
+            # The gateway runs the pre_gateway_dispatch hook first. A skip drops the message without a reply.
+            result = hooks.join_conversation(event=event, gateway=gateway)
+            if (result or {}).get('action') == 'skip':
+                running[0] = False
+                return None
+            return 'Done after the other turn.'
+        self.connect(runner, gateway)
+        self.wait_connected()
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Check the build.'})
+        with patch.object(gateway_chat, 'BUSY_RETRY_SECONDS', 0.1):
+            self.service._run_task(task['id'])
+        self.assertEqual(len(self.adapter.events), 2)
+        self.assertEqual(keys, ['agent:coconut:dm:' + self.bot['id']] * 2)
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.replies(task), [('Done after the other turn.', False)])
+        self.assertEqual(self.adapter_module.BUSY, set())
+        # A command of the adapter, such as /compress, and a message outside a Coconut turn are no busy turn.
+        from gateway.platforms.event import MessageEvent, MessageType
+        source = self.adapter.build_source(chat_id=self.bot['id'], chat_type='dm', user_id='coconut')
+        running[0] = True
+        self.assertIsNone(hooks.join_conversation(event=MessageEvent(text='/compress', message_type=MessageType.COMMAND,
+                                                                     source=source), gateway=gateway))
+        self.assertIsNone(hooks.join_conversation(event=MessageEvent(text='[process finished]', source=source),
+                                                  gateway=gateway))
+
     def test_a_hermes_input_through_the_adapter_does_not_take_the_turn_of_the_chat(self):
         # Hermes runs some of its own inputs through the adapter, for example the completion of a background process
         # without a session authority. The reply goes to the bot's chat as a message outside a turn.

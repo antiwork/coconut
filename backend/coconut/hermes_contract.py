@@ -150,9 +150,9 @@ def verify_contract():
 def verify_gateway_contract():
     """The interfaces of the gateway that the `coconut` plugin uses (hermes_plugin/coconut).
 
-    Most are public plugin interfaces. Two are not: the startup restore flag of the runner, which has no public signal
-    (the adapter takes no turn before it ends), and the session store methods that the pre_gateway_dispatch hook
-    receives. A Hermes that changes them fails here instead of in a chat.
+    Most are public plugin interfaces. Three are not: the startup restore flag of the runner, which has no public signal
+    (the adapter takes no turn before it ends), the session check of the runner (a Coconut turn waits while the gateway
+    runs another turn in its session), and the session store methods that the pre_gateway_dispatch hook receives. A Hermes that changes them fails here instead of in a chat.
     """
     from gateway.platforms.base import BasePlatformAdapter
     from gateway.run import GatewayRunner
@@ -163,6 +163,9 @@ def verify_gateway_contract():
     from tools.clarify_gateway import resolve_gateway_clarify
     if not isinstance(getattr(GatewayRunner, '_startup_restore_in_progress', None), bool):
         raise ValueError('Hermes changed the startup restore of the gateway. Review the coconut adapter.')
+    # A Coconut turn waits while the gateway runs another turn in its session (hooks.session_busy).
+    require_keywords(GatewayRunner._is_session_running, ['session_key'])
+    require_keywords(GatewayRunner._session_key_for_source, ['source'])
     missing = {'pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end', 'on_session_start',
                'on_interim_message', 'post_llm_call', 'on_session_end', 'pre_tool_call', 'post_api_request',
                'on_session_reset'} - set(VALID_HOOKS)

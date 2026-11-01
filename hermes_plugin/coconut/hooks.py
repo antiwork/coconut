@@ -299,9 +299,17 @@ def follow_new_session(old_session_id=None, new_session_id=None, platform='', **
     return None
 
 
-def join_conversation(event=None, session_store=None, **_):
+def join_conversation(event=None, session_store=None, gateway=None, **_):
     source = getattr(event, 'source', None)
-    if source is None or getattr(source.platform, 'value', source.platform) != NAME or session_store is None:
+    if source is None or getattr(source.platform, 'value', source.platform) != NAME:
+        return None
+    if session_busy(event, gateway):
+        # Hermes would steer the running turn with this message, or redirect it, and end the Coconut turn at once
+        # without running it. The turn waits instead (adapter.BUSY).
+        from .adapter import BUSY
+        BUSY.add(str(event.message_id))
+        return {'action': 'skip', 'reason': 'coconut: the session of this chat runs another turn'}
+    if session_store is None:
         return None
     from .adapter import session_root_for_chat
     root = session_root_for_chat(source.chat_id)
@@ -336,6 +344,24 @@ def join_conversation(event=None, session_store=None, **_):
         # The turn still runs, in the gateway's own session of the chat.
         LOG.exception('Coconut: the gateway session did not join the conversation of the bot.')
     return None
+
+
+def session_busy(event, gateway) -> bool:
+    """Whether the gateway already runs a turn in the session of this Coconut turn.
+
+    Only a turn that the service gave counts (`CoconutAdapter._active`), not a command such as /stop or /compress.
+    The runner's session check has no public signal. The Coconut contract check requires it
+    (hermes_contract.verify_gateway_contract)."""
+    from .adapter import ADAPTERS
+    if getattr(getattr(event, 'message_type', None), 'value', None) == 'command' or gateway is None:
+        return False
+    if not any(str(event.message_id) in adapter._active for adapter in list(ADAPTERS)):
+        return False
+    try:
+        return bool(gateway._is_session_running(gateway._session_key_for_source(event.source)))
+    except Exception:
+        LOG.exception('Coconut: the gateway did not say whether the session of a chat runs a turn.')
+        return False
 
 
 def _turn():

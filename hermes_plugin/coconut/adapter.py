@@ -68,6 +68,10 @@ LANE_CHATS: set[str] = set()
 # task IDs of the turn whose terminal already has that folder.
 FOLDERS: dict[str, str] = {}
 FOLDER_TASKS: dict[str, set] = {}
+# The Coconut turns that the gateway did not run, because Hermes already ran another turn in the session of the chat,
+# for example its own turn for a finished background delegation (hooks.join_conversation). The adapter reports such a
+# turn as `busy`, and the service gives it again when the session is free.
+BUSY: set[str] = set()
 # The ID of a message outside a Coconut turn starts with this prefix. Its edits and its delete take the same route.
 OUTSIDE = 'outside:'
 # The chats whose last model call reached the compression threshold of Hermes (hooks.note_prompt_size). After the turn,
@@ -359,6 +363,9 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         self.drop_stream(event.message_id)
         # The turn stays active in the polls until the service has its end. Otherwise the service would fail a
         # finished turn after a short outage.
+        if event.message_id in BUSY:
+            BUSY.discard(event.message_id)
+            outcome = 'busy'
         for delay in (*RETRY_SECONDS, None):
             if await self._report(event.message_id, 'done', outcome=getattr(outcome, 'value', str(outcome))):
                 break
