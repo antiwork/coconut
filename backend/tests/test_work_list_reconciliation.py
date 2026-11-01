@@ -83,6 +83,19 @@ class WorkListReconciliationTests(unittest.TestCase):
         self.service._sync_automatic_work()
         self.assertEqual(self.service._get('artifacts', item['id'])['title'], 'Fix country fields')
 
+    def test_the_intake_of_a_message_of_coconut_message_bot_joins_the_chain(self):
+        # The service saves a message of coconut_message_bot as an intake without a relay (Service._store_bot_message).
+        parent = self.start()
+        child = dict(parent, id='child', source_task_id=parent['id'], _native_intake=True)
+        tasks = {parent['id']: parent, 'child': child}
+        for continuations in (False, True):
+            chain = self.service._work_chain(parent, tasks, [], include_continuations=continuations)
+            self.assertEqual(set(chain), {parent['id'], 'child'})
+        # A returned result is no intake.
+        returned = dict(child, _is_return=True)
+        chain = self.service._work_chain(parent, {parent['id']: parent, 'child': returned}, [], include_continuations=False)
+        self.assertEqual(set(chain), {parent['id']})
+
     def test_different_exchange_without_a_saved_wait_stays_separate(self):
         parent = self.start()
         child = dict(parent, id='child', exchange_id='unrelated', source_task_id=parent['id'],

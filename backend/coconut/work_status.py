@@ -329,7 +329,9 @@ class WorkStatus:
                     link(owner['id'], task['id'], continuation=True)
                     explicit_waits.setdefault(owner['id'], set()).add(task['id'])
             if task.get('source_task_id'):
-                if task.get('_native_relay') and not task.get('_is_return'):
+                # The intake of another bot's message: a message of coconut_message_bot (_native_intake), or the
+                # native relay of an earlier worker.
+                if (task.get('_native_relay') or task.get('_native_intake')) and not task.get('_is_return'):
                     link(task['source_task_id'], task['id'])
                 elif task.get('_is_return') and task.get('_assignment_task_id'):
                     link(task['source_task_id'], task['id'], continuation=True)
