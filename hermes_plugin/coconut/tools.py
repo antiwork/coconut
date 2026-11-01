@@ -24,7 +24,11 @@ write to another board, so the hooks block them in each Coconut turn. The schema
 are the schemas of Hermes's tools, without the board.
 
 Native outcomes. coconut_record_pause records a pause in a check of a blocked native task, and coconut_read_receipts
-reads the saved receipts of the turn, as in the worker.
+reads the saved receipts of the turn, as in the worker. coconut_continue_work continues a quiescent outcome with new
+facts, and can open a technical lane (backend/coconut/technical_lane.py).
+
+Work. coconut_track_work tracks the work of a work session in Coconut Work (backend/coconut/tracked_work.py). A turn of
+the bot's chat records an outcome on the board instead, and a native outcome reports on its card.
 
 Card checks. coconut_refresh_decision records the result of an automatic check of a pending card. Only a check turn
 (mode `refresh`) can call it, and a check turn can call no other Coconut tool (hooks.guard_tool).
@@ -208,5 +212,7 @@ def register(ctx):
                             (TRACK_PR, _service_tool('track_pr')), (MESSAGE_BOT, _service_tool('message_bot')),
                             (backend('work_recovery').BLOCK_PAUSE_SCHEMA, _service_tool('record_pause')),
                             (backend('native_receipt_context').SCHEMA, _service_tool('read_receipts')),
+                            (backend('technical_lane').CONTINUE_SCHEMA, _service_tool('continue_work')),
+                            (backend('tracked_work').TRACK_WORK_SCHEMA, _service_tool('track_work')),
                             *((schema, _service_tool(schema['name'][len('coconut_'):])) for schema in claim_schemas())):
         ctx.register_tool(name=schema['name'], toolset=TOOLSET, schema=schema, handler=handler, emoji='🥥')

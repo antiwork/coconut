@@ -298,7 +298,13 @@ LANE_QUESTION = ('Independent technical work cannot ask the person or get an app
 # these events as it refuses them for the worker (technical_lane.REFUSED_EVENTS). The other tools emit their event.
 LANE_EVENTS = {'ask': 'native_question', 'suggest': 'native_proposal', 'resolve_reply': 'decision_response',
                'wait': 'work_wait', 'correct_withdrawal': 'withdrawal_correction', 'create_bot': 'bot_create',
-               'delete_bot': 'bot_delete'}
+               'delete_bot': 'bot_delete', 'continue_work': 'work_continue', 'track_work': 'artifact'}
+# coconut_track_work tracks the work of a work session. A turn of the bot's chat records an outcome on Coconut's board,
+# and a native outcome reports its progress on its card, as for the worker.
+TRACK_WORK_CHAT = ('In the bot\'s chat, record an outcome with coconut_kanban_create. coconut_track_work tracks the work '
+                   'of a work session.')
+TRACK_WORK_OUTCOME = ('A native outcome reports its progress on its card with coconut_kanban_heartbeat, and its PRs with '
+                      'coconut_track_pr. coconut_track_work tracks the work of a work session.')
 # The board tools that a gateway turn runs on Coconut's board (kanban_runtime.BOARD_TOOLS).
 BOARD_TOOLS = ('kanban_create', 'kanban_comment', 'kanban_list', 'kanban_show', 'kanban_link', 'kanban_unblock',
                *RUN_TOOLS)
@@ -840,6 +846,17 @@ class GatewayChat:
         if tool == 'correct_withdrawal':
             # The service refuses a card outside the turn's execution, and a card that a person handled.
             return self.correct_withdrawal(task_id, arguments)
+        if tool == 'continue_work':
+            # The service checks that the turn owns or requested the outcome (native_outcomes.continue_native_work).
+            return self.emit(task_id, 'work_continue', arguments)
+        if tool == 'track_work':
+            with self.lock:
+                task = self._get('tasks', task_id)
+            if task.get('_native_outcome_id'):
+                raise ServiceError(409, TRACK_WORK_OUTCOME)
+            if task.get('_chat_session'):
+                raise ServiceError(409, TRACK_WORK_CHAT)
+            return self.emit(task_id, 'artifact', dict(arguments, kind='work'))
         if data.get('tool') == 'track_pr':
             artifact = {'kind': 'pr', 'url': require_text(arguments, 'url', 500)}
             if isinstance(arguments.get('work_id'), str) and arguments['work_id'].strip():

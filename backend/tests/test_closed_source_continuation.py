@@ -24,7 +24,8 @@ from uuid import uuid4
 
 from coconut import routine_coordinator
 from coconut.kanban_runtime import Board
-from coconut.native_outcomes import CLOSED_SOURCE_REFUSED, CONTINUE_SCHEMA
+from coconut.native_outcomes import CLOSED_SOURCE_REFUSED
+from coconut.technical_lane import CONTINUE_SCHEMA
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError, now
 from coconut.work_sources import STALE_IDLE_AGE, STALE_NOTE, stale_cards

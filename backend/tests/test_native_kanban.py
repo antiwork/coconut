@@ -546,8 +546,9 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
         self.assertNotIn('_return_pending', self.service._get('tasks', held['id']))
         self.assertEqual(len(self.service._all('deliveries')), 1)
 
-    def test_restart_drain_retries_adapter_failures_then_dispatches_after_deadline(self):
+    def test_an_update_drain_retries_adapter_failures_then_dispatches_after_it_ends(self):
         from contextlib import ExitStack
+        from coconut.service_restart import DRAIN_REQUEST_FILE
         active = self.task('Finish the current turn')
         with self.service.transaction():
             task = self.service._get('tasks', active['id'])
@@ -561,8 +562,11 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
         bot = self.write('/v1/bots', {'name': 'Queued work'})
         queued = self.write('/v1/bots/' + bot['id'] + '/messages',
                             {'text': 'Run after the restart pause', 'mode': 'queue'})
-        self.service.restart_enabled = True
-        self.assertEqual(self.service.request_service_restart(active['id'], {})['status'], 'queued')
+        # An update asks the service to drain, so dispatch pauses.
+        drain = self.service.root / DRAIN_REQUEST_FILE
+        drain.write_text(str(time.time() + 60))
+        self.service.poll_service_drain()
+        self.assertTrue(self.service.restart_pending)
 
         call = self.service.kanban.call
         failures = [BrokenPipeError('adapter pipe closed'), RuntimeError('The Hermes Kanban adapter did not respond.')]
@@ -594,10 +598,10 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
                 self.assertTrue(self.service.restart_pending)
                 self.assertEqual(self.service._get('tasks', queued['id'])['status'], 'queued')
 
-                self.service.restart_deadline = time.monotonic() - 1
+                # The drain ends, and the dispatcher resumes.
+                drain.write_text(str(time.time() - 1))
                 deadline = time.monotonic() + 5
                 while self.service.restart_pending and time.monotonic() < deadline:
-                    self.assertFalse(self.service.take_service_restart())
                     time.sleep(.01)
                 self.assertFalse(self.service.restart_pending)
                 deadline = time.monotonic() + 10
@@ -612,6 +616,10 @@ print(board.kb.create_task(board.conn, title=sys.argv[2], body='Acceptance', ass
                 self.assertTrue(worker.is_alive())
                 self.assertFalse(self.service.stopping.is_set())
                 self.assertEqual(self.service._get('tasks', active['id'])['status'], 'working')
+                # The next pass of the dispatcher runs the maintenance again.
+                deadline = time.monotonic() + 5
+                while not all(update.called for update in maintenance) and time.monotonic() < deadline:
+                    time.sleep(.01)
                 for update in maintenance:
                     update.assert_called()
             finally:
@@ -2691,29 +2699,6 @@ assert started == [identities['followup']], started
         self.settle(lambda: self.service.kanban.tasks[tasks[3]['id']]['status'] == 'done')
         self.assertNotIn(tasks[2]['id'], self.provider.started)
         self.assertEqual(self.service.kanban.tasks[tasks[2]['id']]['status'], 'archived')
-
-    def test_restart_deferral_reopens_native_dispatch_and_preserves_active_claim(self):
-        from coconut.service_restart import RESTART_DRAIN_SECONDS
-        self.service.restart_enabled = True
-        self.provider.release.clear()
-        active = self.task('Check the existing patch')
-        self.settle(lambda: active['id'] in self.provider.started)
-        original_claim = self.service._get('tasks', active['id'])['_kanban_claim'].copy()
-        queued = self.task('Check another patch')
-        with patch('coconut.service_restart.time.monotonic', return_value=100) as clock:
-            self.service.request_service_restart(active['id'], {})
-            self.tick()
-            self.assertNotIn(queued['id'], self.provider.started)
-            clock.return_value += RESTART_DRAIN_SECONDS
-            self.assertFalse(self.service.take_service_restart())
-        self.settle(lambda: queued['id'] in self.provider.started)
-        self.assertEqual(self.service._get('tasks', active['id'])['_kanban_claim'], original_claim)
-        self.assertFalse(self.service.take_service_restart())
-        self.provider.release.set()
-        self.settle(lambda: all(self.service.kanban.tasks[t['id']]['status'] == 'done' for t in (active, queued)))
-        self.assertEqual(self.provider.started.count(active['id']), 1)
-        self.assertEqual(self.provider.started.count(queued['id']), 1)
-        self.assertTrue(self.service.take_service_restart())
 
     def test_lost_dispatch_reply_uses_saved_claim(self):
         claims = self.count_claims()

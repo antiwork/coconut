@@ -81,6 +81,29 @@ SCHEMA = {
                'else': {'not': {'required': ['authorization_decision_id']}}}],
 }
 
+# coconut_continue_work (native_outcomes.continue_native_work). The coconut plugin loads this module by its path for the
+# schema, so the module imports only the standard library at its top.
+RETAINED_PR_URL_LIMIT = 500
+CONTINUE_SCHEMA = {
+    'name': 'coconut_continue_work',
+    'description': 'Continue a quiescent queued, scheduled, review, blocked, failed, or completed Hermes outcome with new facts. Use the native task ID from kanban_show. '
+        'You must own the work or be its requesting bot. This keeps its task, workspace, decisions, and result route. '
+        'Hermes preserves completed results and creates a linked follow-up with the same workspace. '
+        'This does not approve actions. The result goes to the original requester.',
+    'parameters': {'type': 'object', 'additionalProperties': False,
+        'properties': {'task_id': {'type': 'string'}, 'message': {'type': 'string', 'maxLength': 16000},
+                       'independent_technical_work': SCHEMA,
+                       'retained_pr_url': {'type': 'string', 'maxLength': RETAINED_PR_URL_LIMIT,
+                           'description': 'Only when the plain call refuses because every delegated PR of the Work '
+                               'finished: the URL of the one finished PR that this continuation keeps as its Work item. '
+                               'It chooses the presentation only. It approves nothing and changes no task or Work.'},
+                       'continue_closed_source': {'type': 'boolean',
+                           'description': 'Only when the plain call refuses because Coconut ended this work after every '
+                               'GitHub item that it works on closed, and the person or requester still needs this same work: '
+                               'true continues the same execution. It approves nothing.'}},
+        'required': ['task_id', 'message']},
+}
+
 SCOPE_INSTRUCTIONS = {
     'diagnosis': 'Diagnose the failures and findings, including CI logs.',
     'tests': 'Run the local tests and checks.',
@@ -132,7 +155,7 @@ KANBAN_NOTES = frozenset({'kanban_comment', 'kanban_heartbeat'})
 PENDING_RECEIPT_STATES = ('executing', 'awaiting_approval', 'awaiting_answer')
 # Provider events that change decisions, ownership, routes, or other bots. Each needs a normal turn.
 REFUSED_EVENTS = frozenset({'decision', 'artifact', 'bot_message', 'bot_create', 'bot_delete',
-                            'service_restart', 'withdrawal_correction', 'work_wait', 'work_continue', 'dependency_unlink',
+                            'withdrawal_correction', 'work_wait', 'work_continue',
                             'block_pause', 'native_approval', 'native_question', 'native_proposal', 'decision_response'})
 
 
