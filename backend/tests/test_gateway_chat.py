@@ -1767,11 +1767,9 @@ class ServiceRoutingTests(unittest.TestCase):
         holder = int(started.stdout)
 
         def alive():
-            try:
-                os.kill(holder, 0)
-            except ProcessLookupError:
-                return False
-            return True
+            # A system without a reaper of orphans keeps an exited holder as a zombie (state Z). It has exited.
+            state = subprocess.run(['ps', '-o', 'stat=', '-p', str(holder)], capture_output=True, text=True).stdout
+            return bool(state.strip()) and not state.strip().startswith('Z')
 
         def stop():
             if alive():
