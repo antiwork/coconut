@@ -2,7 +2,7 @@
 
 Every Hermes gateway ticks the cron store of each profile that it serves, and Hermes has no setting that keeps it
 away from a profile while it serves the profile's chats. So the gateway fires the routines of each bot that it serves,
-and the Coconut service fires only the routines of a bot that no gateway serves (gateway_chat.gateway_served_bots).
+and the routines of a bot that no gateway serves are paused (gateway_chat.gateway_served_bots).
 
 A cron run executes in a Hermes cron session, often in a separate worker process, outside a Coconut chat turn. When a
 run in a bot's profile starts, the hooks (hooks.py) open a Coconut turn for it with `POST /v1/gateway/cron`. The

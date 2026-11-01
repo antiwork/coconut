@@ -21,8 +21,8 @@ gateway that the service did not start already runs for that home, the service u
 GET /v1/setup says which gateway runs chats, or why none does.
 
 The gateway's cron fires the routines of each bot that it serves, and each run is a Coconut turn (gateway_cron). A bot
-whose profile no gateway serves, for example a profile that the person parked in Hermes, keeps its routines with
-Coconut's scheduler (routine_coordinator.tick_native_routines). GET /v1/setup lists such profiles.
+whose profile no gateway serves, for example a profile that the person parked in Hermes, has its routines paused, with
+the reason (routine_coordinator._pause_unserved_routines). GET /v1/setup lists such profiles.
 """
 from __future__ import annotations
 
@@ -71,7 +71,7 @@ WAITING = 'Waiting for the Hermes gateway. See Settings > Hermes when this takes
 NOT_CONNECTED = ('The Hermes gateway did not connect for this bot in {minutes} minutes. Send the message again after '
                  'the gateway runs. See GET /v1/setup and {log}.')
 PARKED = ('The Hermes profile of this bot is parked ({path}), so no Hermes gateway serves its chats. Remove that file '
-          'to chat with the bot. Its routines run with Coconut meanwhile.')
+          'to chat with the bot. Its routines are paused too.')
 
 
 def gateway_turn_text(request) -> str | None:
@@ -343,7 +343,7 @@ class GatewayChat:
         homes = set(self.gateway_bridge.connected_homes())
         profiles = sorted(row['name'] for row in self.profiles.rows.values()
                           if row.get('state') == 'active' and os.path.realpath(row['home']) in homes)
-        # A profile that no gateway serves has no chats. Coconut runs its routines (gateway_served_bots).
+        # A profile that no gateway serves has no chats, and its routines are paused (gateway_served_bots).
         unserved = sorted(row['name'] for row in self.profiles.rows.values()
                           if row.get('state') == 'active' and os.path.realpath(row['home']) not in homes)
         return dict(self.gateway_state, connected_profiles=profiles, unserved_profiles=unserved)
@@ -351,7 +351,7 @@ class GatewayChat:
     def gateway_served_bots(self) -> set[str]:
         """The bots whose profile a running gateway serves now: the coconut adapter of that home is connected.
 
-        The gateway fires the routines of these bots. Coconut fires the routines of the other bots. The adapter
+        The gateway fires the routines of these bots. The routines of the other bots are paused. The adapter
         connection is the evidence, not the config: a parked profile, a gateway that did not load the platform, or a
         gateway that starts again has no connected adapter.
         """
