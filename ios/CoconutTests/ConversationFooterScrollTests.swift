@@ -33,6 +33,20 @@ final class ConversationFooterScrollTests: XCTestCase {
         XCTAssertEqual(ConversationFooterScroll.offset(in: long), 0)
     }
 
+    func testHiddenBelowMeasuresTheTranscriptEndBelowTheScreen() {
+        var geometry = ScrollGeometry(contentOffset: CGPoint(x: 0, y: 900),
+            contentSize: CGSize(width: 390, height: 2_000), contentInsets: EdgeInsets(top: 100, leading: 0, bottom: 140, trailing: 0),
+            containerSize: CGSize(width: 390, height: 600))
+        XCTAssertEqual(ConversationFooterScroll.hiddenBelow(in: geometry), 400)
+        geometry.contentOffset.y = 1_300
+        XCTAssertEqual(ConversationFooterScroll.hiddenBelow(in: geometry), 0)
+        geometry.contentOffset.y = 1_400
+        XCTAssertEqual(ConversationFooterScroll.hiddenBelow(in: geometry), 0)
+        geometry.contentSize.height = 300
+        geometry.contentOffset.y = -100
+        XCTAssertEqual(ConversationFooterScroll.hiddenBelow(in: geometry), 0)
+    }
+
     func testSeparateShortGesturesDoNotAccumulate() {
         var scroll = ConversationFooterScroll()
         for offset in stride(from: 2_000, to: 1_000, by: -50) {

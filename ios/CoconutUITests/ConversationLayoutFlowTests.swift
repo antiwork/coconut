@@ -95,6 +95,44 @@ final class ConversationLayoutFlowTests: XCTestCase {
     }
 
     @MainActor
+    func testLatestButtonReturnsToLastMessage() throws {
+        guard let url = ProcessInfo.processInfo.environment["COCONUT_LAYOUT_TEST_URL"] else {
+            throw XCTSkip("Run scripts/test_conversation_layout.py --latest-button.")
+        }
+        continueAfterFailure = false
+        let app = XCUIApplication()
+        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "layout-test"]
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Bots"].tap()
+        let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
+        XCTAssertTrue(bot.waitForExistence(timeout: 15))
+        bot.tap()
+        let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        // Lazy rows below the screen stay in the tree, so the lowest text ends above the composer only at the end.
+        let texts = app.staticTexts.matching(NSPredicate(format: "identifier BEGINSWITH %@", "message-text-"))
+        let endVisible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (texts.allElementsBoundByIndex.map(\.frame.maxY).max() ?? .infinity) <= input.frame.minY
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [endVisible], timeout: 5), .completed, "The chat must open at its end.")
+        let jump = app.buttons["conversation-latest"]
+        XCTAssertTrue(jump.waitForNonExistence(timeout: 3), "A chat at its end needs no jump.")
+        let transcript = app.scrollViews["conversation-transcript"]
+        transcript.swipeDown()
+        transcript.swipeDown()
+        XCTAssertTrue(jump.waitForExistence(timeout: 5), "Newer messages below the screen must show the jump.")
+        jump.tap()
+        XCTAssertTrue(jump.waitForNonExistence(timeout: 5))
+        let returned = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (texts.allElementsBoundByIndex.map(\.frame.maxY).max() ?? .infinity) <= input.frame.minY
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [returned], timeout: 5), .completed, "The jump must show the end of the chat.")
+        let proof = XCTAttachment(screenshot: app.screenshot())
+        proof.name = "Jump to latest"; proof.lifetime = .keepAlways; add(proof)
+    }
+
+    @MainActor
     func testKeyboardKeepsBottomPinnedAndPreservesHistory() throws {
         guard let url = ProcessInfo.processInfo.environment["COCONUT_LAYOUT_TEST_URL"] else {
             throw XCTSkip("Run with scripts/test_conversation_layout.py.")

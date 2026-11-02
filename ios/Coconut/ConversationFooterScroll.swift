@@ -16,6 +16,11 @@ struct ConversationFooterScroll {
         return min(extent, max(0, geometry.contentOffset.y + geometry.contentInsets.top))
     }
 
+    /// How much of the transcript end is below the visible area. The container size excludes the bar and composer insets.
+    static func hiddenBelow(in geometry: ScrollGeometry) -> CGFloat {
+        max(0, geometry.contentSize.height - geometry.contentOffset.y - geometry.contentInsets.top - geometry.containerSize.height)
+    }
+
     mutating func phaseChanged(_ phase: ScrollPhase, offset: CGFloat) {
         if phase == .interacting { origin = offset }
         userScrolling = phase == .interacting || phase == .decelerating
