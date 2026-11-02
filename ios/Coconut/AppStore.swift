@@ -693,7 +693,10 @@ final class AppStore {
     }
 
     private func deliverOutgoing(_ id: String) async {
-        guard let outgoing = outgoingMessages.first(where: { $0.id == id }) else { return }
+        guard let index = outgoingMessages.firstIndex(where: { $0.id == id }) else { return }
+        // A retry of a failed message is on its way again, so Delete does not offer it while the Mac can receive it.
+        outgoingMessages[index].status = .sending
+        let outgoing = outgoingMessages[index]
         let result: AgentTask? = await write("bots/\(outgoing.botId)/messages", payload: outgoing.request,
             as: AgentTask.self, quiet: true, refreshInBackground: true, idempotencyKey: id, onFailure: { failure in
                 guard let index = self.outgoingMessages.firstIndex(where: { $0.id == id }),

@@ -138,6 +138,9 @@ final class DecisionDeliveryServer: @unchecked Sendable {
     private var count = 0
     private var requestKeys: [String] = []
     private var requestBodies: [Data] = []
+    private var requestHeads: [String] = []
+    /// The first line and the idempotency key of every request.
+    var requests: [String] { lock.withLock { requestHeads } }
     /// The JSON bodies of the answer requests.
     var bodies: [Data] { lock.withLock { requestBodies } }
     private let failFirst: Bool
@@ -157,6 +160,9 @@ final class DecisionDeliveryServer: @unchecked Sendable {
             connection.start(queue: queue)
             receiveRequest(connection, Data()) { [self] data in
                 guard let data else { connection.cancel(); return }
+                let lines = String(decoding: data, as: UTF8.self).components(separatedBy: "\r\n")
+                let head = lines[0] + " " + (lines.first { $0.lowercased().hasPrefix("idempotency-key:") } ?? "")
+                lock.withLock { requestHeads.append(head) }
                 let answer = String(decoding: data, as: UTF8.self).hasPrefix("POST /v1/decisions/")
                 let body: Data
                 let fail = answer && failFirst && answers < 2
