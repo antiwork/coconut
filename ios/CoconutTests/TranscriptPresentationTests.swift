@@ -33,6 +33,11 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertEqual(TranscriptPresentation.previewText(text),
                        "🏡 Heights/Dumbo scout: Mon, Nov 2 3 new listings, see StreetEasy Use rent filter code")
         XCTAssertEqual(TranscriptPresentation.previewText("Plain line\nand #hashtag 2 * 3"), "Plain line and #hashtag 2 * 3")
+        // Code in a fence keeps its marks, and a link or emphasis across a line break is still parsed.
+        XCTAssertEqual(TranscriptPresentation.previewText("Run:\n```\necho hi > output.txt\n# explanation\n```"),
+                       "Run: echo hi > output.txt # explanation")
+        XCTAssertEqual(TranscriptPresentation.previewText("See [Street\nEasy](https://streeteasy.com) and **very\nnew** ones"),
+                       "See Street Easy and very new ones")
     }
 
     func testCompletedCommentaryAppearsWhileFinalReplyRemainsPartial() {
