@@ -105,7 +105,7 @@ struct ConversationView: View {
                                 if entry.isExchange {
                                     BotExchangeRow(messages: entry.messages, botId: botId)
                                 } else {
-                                transcriptRow(message) { id in
+                                transcriptRow(message, photos: entry.photos) { id in
                                     Task { await loadAndScrollToMessage(id, proxy: proxy) }
                                 }
                                 }
@@ -279,8 +279,8 @@ struct ConversationView: View {
     }
 
     @ViewBuilder
-    private func transcriptRow(_ message: Message, scrollToDecision: @escaping (String) -> Void) -> some View {
-        TranscriptMessageRow(message: message, scrollToDecision: scrollToDecision, onReply: {
+    private func transcriptRow(_ message: Message, photos: [MessagePhoto], scrollToDecision: @escaping (String) -> Void) -> some View {
+        TranscriptMessageRow(message: message, photos: photos, scrollToDecision: scrollToDecision, onReply: {
             replyTo = store.messageReference(for: message)
             composerFocused = true
         })
@@ -322,6 +322,7 @@ private final class TranscriptCache {
 struct TranscriptMessageRow: View {
     @Environment(AppStore.self) private var store
     let message: Message
+    var photos: [MessagePhoto] = []
     var scrollToDecision: (String) -> Void = { _ in }
     var onReply: (() -> Void)? = nil
 
@@ -348,7 +349,9 @@ struct TranscriptMessageRow: View {
                 .frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, 14)
         }
         Group {
-        if message.kind == "decision", let id = message.decisionId,
+        if !photos.isEmpty {
+            PhotoCarousel(photos: photos)
+        } else if message.kind == "decision", let id = message.decisionId,
            let decision = store.decisions.first(where: { $0.id == id }) {
             DecisionCard(decision: decision, onViewPrevious: scrollToDecision)
         } else if message.kind == "artifact", let id = message.artifactId,

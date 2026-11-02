@@ -1,10 +1,44 @@
 import Foundation
 
+struct MessagePhoto: Equatable, Sendable {
+    let url: URL
+    let caption: String
+    var label: String { caption.isEmpty ? "Photo" : caption }
+    var preview: String { caption.isEmpty ? "Photo" : "Photo: " + caption }
+}
+
+extension Message {
+    /// The photo of a finished bot message that has nothing else to show, such as a quote or a card.
+    var photo: MessagePhoto? {
+        guard role == "assistant", kind == "text", !streaming, decisionId == nil, artifactId == nil, replyTo == nil,
+              workContext == nil else { return nil }
+        return TranscriptPresentation.photo(in: text)
+    }
+
+    /// Photo messages join one carousel only when the same bot sends them to the same recipients.
+    var photoSender: [String] { [senderBotId ?? botId] + (recipientBotIds ?? []) }
+}
+
 enum TranscriptPresentation {
     static func previewFallback(_ text: String, messages: [Message]) -> String {
         if messages.contains(where: \.streaming) || trimmed(text, equals: "[SILENT]")
             || isLegacySettingsNotice(text) { return "" }
         return text
+    }
+
+    private static let photoExtensions: Set<String> = ["jpg", "jpeg", "png", "gif", "webp", "heic"]
+
+    /// The photo of a message that is only an image address, or one caption line with an image address on the
+    /// next line. Hermes sends each image of a reply in this form when the chat cannot take the image itself.
+    static func photo(in text: String) -> MessagePhoto? {
+        // A long text is never a photo. The check keeps long replies cheap on every redraw.
+        guard text.utf8.count <= 2048 else { return nil }
+        let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        guard (1...2).contains(lines.count), let address = lines.last, !address.contains(" "),
+              let url = URL(string: address), url.scheme?.lowercased() == "https", url.host() != nil,
+              photoExtensions.contains(url.pathExtension.lowercased()) else { return nil }
+        return MessagePhoto(url: url, caption: lines.count == 2 ? lines[0] : "")
     }
 
     /// One line of plain text for a preview of a Markdown message: no heading, quote or list marks, no emphasis or

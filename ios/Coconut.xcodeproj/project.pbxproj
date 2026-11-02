@@ -10,6 +10,7 @@
 		016486051559722E16B22C2C /* PairingSetupTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04694F80EDA1ECAEDE50022C /* PairingSetupTests.swift */; };
 		02913C91F4994541DB0A1D2D /* BotSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCBA7E17655BED561202EC41 /* BotSettingsView.swift */; };
 		02A168DBF5C0F612F9B97558 /* MessageReplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C477A5B7A98B02989D56026 /* MessageReplay.swift */; };
+		038942CF80838ABA48FEECCC /* MessagePhotos.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3877D84229483E68BD05E5F0 /* MessagePhotos.swift */; };
 		04C381BBFC669860445B0445 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92F9D270338BED68C35CC516 /* Models.swift */; };
 		0545AB11DA641A8F94B7C860 /* MacEncryptedNotification.json in Resources */ = {isa = PBXBuildFile; fileRef = D06723F2DD7E138C71DBE073 /* MacEncryptedNotification.json */; };
 		061C88CB564F58F1D8B8D47F /* MCPSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BF9EE12E54B4787D2E6B806 /* MCPSettingsView.swift */; };
@@ -225,6 +226,7 @@
 		315FBF2217D4036990C750DE /* SettingsFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsFlowTests.swift; sourceTree = "<group>"; };
 		334802006423A1C089C7730D /* Coconut.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Coconut.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		36D624FBCAF3F69D37E5FA38 /* NotificationPlan.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationPlan.swift; sourceTree = "<group>"; };
+		3877D84229483E68BD05E5F0 /* MessagePhotos.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessagePhotos.swift; sourceTree = "<group>"; };
 		3E75185FFA8CEFCE940FFDE7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		400471E8AAF347FBC8EA7EBE /* BotMentionsFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotMentionsFlowTests.swift; sourceTree = "<group>"; };
 		402CFAB5390D37A21DC0D546 /* WorkTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkTests.swift; sourceTree = "<group>"; };
@@ -482,6 +484,7 @@
 				FCABC9E056D35D74FCE1B244 /* Info.plist */,
 				9BF9EE12E54B4787D2E6B806 /* MCPSettingsView.swift */,
 				78004F47AACBEB462A36AA3B /* MessageDraftView.swift */,
+				3877D84229483E68BD05E5F0 /* MessagePhotos.swift */,
 				7C477A5B7A98B02989D56026 /* MessageReplay.swift */,
 				02C28DCD356AB0A20D629F25 /* MessageReplyGesture.swift */,
 				766B7FAF417AC083D750B041 /* MessageText.swift */,
@@ -799,6 +802,7 @@
 				286E1291C725E9334164C467 /* InboxPresentation.swift in Sources */,
 				061C88CB564F58F1D8B8D47F /* MCPSettingsView.swift in Sources */,
 				F81B2F287511865444AD03F8 /* MessageDraftView.swift in Sources */,
+				038942CF80838ABA48FEECCC /* MessagePhotos.swift in Sources */,
 				02A168DBF5C0F612F9B97558 /* MessageReplay.swift in Sources */,
 				93FBA3F4E639718755AE45A0 /* MessageReplyGesture.swift in Sources */,
 				40F39421A4C40643F7F46927 /* MessageText.swift in Sources */,

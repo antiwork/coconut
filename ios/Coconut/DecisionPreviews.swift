@@ -7,12 +7,7 @@ private struct PreparedDecisionPreview: Sendable {
     let thumbnail: CGImage
 
     static func prepare(_ data: Data, id: String) throws -> Self {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceCreateThumbnailWithTransform: true,
-                kCGImageSourceThumbnailMaxPixelSize: 1000
-              ] as CFDictionary) else { throw ServiceError.invalidResponse }
+        guard let thumbnail = downsampledImage(data, largestSide: 1000) else { throw ServiceError.invalidResponse }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("CoconutPreviews", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let isPNG = data.starts(with: [0x89, 0x50, 0x4e, 0x47])

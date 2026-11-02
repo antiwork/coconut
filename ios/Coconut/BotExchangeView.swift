@@ -8,6 +8,8 @@ struct BotExchangeRoute: Hashable {
 struct TranscriptEntry: Identifiable {
     var messages: [Message]
     var isExchange: Bool = false
+    /// The photos of consecutive photo messages from one sender. They show as one carousel.
+    var photos: [MessagePhoto] = []
     var id: String { messages[0].id + (isExchange ? "-exchange" : "") }
     var message: Message { messages[0] }
 
@@ -15,7 +17,16 @@ struct TranscriptEntry: Identifiable {
         var entries: [TranscriptEntry] = []
         for message in messages {
             if !message.isBotExchange && (botId == nil || message.botId == botId) {
-                entries.append(TranscriptEntry(messages: [message]))
+                if let photo = message.photo {
+                    if let last = entries.last, !last.photos.isEmpty, last.message.photoSender == message.photoSender {
+                        entries[entries.count - 1].messages.append(message)
+                        entries[entries.count - 1].photos.append(photo)
+                    } else {
+                        entries.append(TranscriptEntry(messages: [message], photos: [photo]))
+                    }
+                } else {
+                    entries.append(TranscriptEntry(messages: [message]))
+                }
             }
             guard message.isBotExchange else { continue }
             if let last = entries.last, last.isExchange,

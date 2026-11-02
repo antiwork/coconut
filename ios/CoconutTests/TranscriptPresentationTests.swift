@@ -405,6 +405,36 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertEqual(TranscriptPresentation.recipientIDs(for: message), recipients)
     }
 
+    func testPhotoIsAnImageAddressAloneOrUnderOneCaptionLine() throws {
+        let address = "https://dq1niho2427i9.cloudfront.net/listing/-744100136.jpg"
+        XCTAssertEqual(TranscriptPresentation.photo(in: "30 Main St 2B great room\n\(address)"),
+                       MessagePhoto(url: try XCTUnwrap(URL(string: address)), caption: "30 Main St 2B great room"))
+        XCTAssertEqual(TranscriptPresentation.photo(in: " \(address)\n")?.caption, "")
+        XCTAssertEqual(TranscriptPresentation.photo(in: "Kitchen\nhttps://example.com/a.WEBP?width=800")?.caption, "Kitchen")
+        XCTAssertNil(TranscriptPresentation.photo(in: "See the room at \(address)"))
+        XCTAssertNil(TranscriptPresentation.photo(in: "One\nTwo\n\(address)"))
+        XCTAssertNil(TranscriptPresentation.photo(in: "Kitchen\nhttp://example.com/a.jpg"))
+        XCTAssertNil(TranscriptPresentation.photo(in: "Listing\nhttps://example.com/listing"))
+        XCTAssertEqual(message("photo", text: "Kitchen\n\(address)").photo?.preview, "Photo: Kitchen")
+        XCTAssertEqual(message("bare", text: address).photo?.preview, "Photo")
+        XCTAssertNil(message("user", role: "user", text: address).photo)
+    }
+
+    func testConsecutivePhotosFromOneBotShareOneEntry() {
+        let photos = (1...3).map { message("photo-\($0)", text: "Room \($0)\nhttps://example.com/\($0).jpg") }
+        let entries = TranscriptEntry.grouped([message("intro", text: "Here are the photos.")] + photos + [
+            message("other-sender", text: "Bath\nhttps://example.com/4.jpg", senderID: "helper"),
+            message("user", role: "user", text: "https://example.com/5.jpg"),
+            message("after", text: "Want more?"),
+        ], botId: "conversation-bot")
+        XCTAssertEqual(entries.map(\.id), ["intro", "photo-1", "other-sender", "user", "after"])
+        XCTAssertEqual(entries[1].messages.map(\.id), ["photo-1", "photo-2", "photo-3"])
+        XCTAssertEqual(entries[1].photos.map(\.caption), ["Room 1", "Room 2", "Room 3"])
+        XCTAssertEqual(entries[2].photos.map(\.caption), ["Bath"])
+        XCTAssertTrue(entries[3].photos.isEmpty)
+        XCTAssertTrue(entries[4].photos.isEmpty)
+    }
+
     private func visibleIDs(_ messages: [Message], artifacts: [Artifact] = []) -> [String] {
         TranscriptPresentation.visibleMessages(messages, artifacts: artifacts).map(\.id)
     }
