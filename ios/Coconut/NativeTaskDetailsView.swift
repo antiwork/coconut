@@ -192,13 +192,14 @@ struct TrackedPullRequest: Identifiable {
         tracked(in: artifacts).filter { !$0.isFinished }
     }
 
-    static func tracked(in artifacts: [Artifact], visibility: [String: Bool] = [:]) -> [Self] {
+    static func tracked(in artifacts: [Artifact]) -> [Self] {
         let grouped = Dictionary(grouping: artifacts.filter { $0.kind == "pr" && location($0.url) != nil }) {
             location($0.url)!.url.absoluteString.lowercased()
         }
         return grouped.compactMap { url, copies in
             let identity = copies.first(where: { $0.workOutcomeId != nil })?.workIdentity ?? url
-            guard !(visibility[identity] ?? copies.contains { $0.workDismissalId != nil }) else { return nil }
+            // The Mac marks work that the person dismissed. Every copy of it stays hidden.
+            guard !copies.contains(where: { $0.workDismissalId != nil }) else { return nil }
             guard let latest = copies.max(by: {
                 let first = (($0.observedAt ?? $0.createdAt).apiDate ?? .distantPast, ($0.checkedAt ?? $0.createdAt).apiDate ?? .distantPast, $0.id)
                 let second = (($1.observedAt ?? $1.createdAt).apiDate ?? .distantPast, ($1.checkedAt ?? $1.createdAt).apiDate ?? .distantPast, $1.id)
