@@ -307,6 +307,22 @@ class GatewayCronTests(unittest.TestCase):
                 task = self.read('tasks', queued['id'])
                 self.assertEqual((task['status'], task['summary']), (status, summary))
                 self.assertEqual(self.provider.starts, [])
+        # A run that the gateway's cron took, and that now waits for another bot, stays waiting: neither the run's end
+        # nor the time limit of a trigger ends it. A later run does not take it as its waiting task.
+        with patch.object(self.provider, 'native_settings', create=True, return_value=dict(routine)):
+            queued = self.service.mutate('POST', f'/v1/routines/{routine["id"]}/run', {}, str(uuid4()), 'phone')
+        old = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        with self.service.transaction():
+            task = self.service._get('tasks', queued['id'])
+            task.update(status='waiting', _gateway_cron=dict(job_id='intake', execution_id='x', turn_id='t'),
+                        _gateway_trigger=dict(task['_gateway_trigger'], at=old))
+            self.service._put('tasks', task)
+        with patch.object(self.service, 'refresh_native_routines'):
+            self.service._native_cron_next = 0
+            self.service.tick_native_routines()
+        self.assertEqual(self.read('tasks', queued['id'])['status'], 'waiting')
+        with self.service.lock:
+            self.assertNotIn(queued['id'], [t['id'] for t in self.service._waiting_triggers()])
 
     def test_a_trigger_that_no_gateway_cron_run_takes_fails_with_the_reason(self):
         from coconut.routine_coordinator import TRIGGER_EXPIRED, TRIGGER_SECONDS

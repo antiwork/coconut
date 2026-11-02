@@ -781,10 +781,14 @@ class NativeRoutines:
         return self._public(task)
 
     def _waiting_triggers(self):
-        """The routine tasks that wait for a run of the gateway (_trigger_routine). The status index finds them."""
+        """The routine tasks that wait for a run of the gateway (_trigger_routine). The status index finds them.
+
+        A task that a gateway cron run took (`_gateway_cron`) no longer waits for a run. It can wait for its own work,
+        for example for another bot, and its run ends it."""
         return [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM tasks WHERE json_extract(data,'$.status')='waiting' "
-            "AND json_extract(data,'$._gateway_trigger') IS NOT NULL ORDER BY rowid")]
+            "AND json_extract(data,'$._gateway_trigger') IS NOT NULL "
+            "AND json_extract(data,'$._gateway_cron') IS NULL ORDER BY rowid")]
 
     def _expire_routine_triggers(self):
         """End each routine task that waits for a run of the gateway. The caller holds the transaction.
