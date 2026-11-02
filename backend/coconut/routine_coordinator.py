@@ -33,6 +33,10 @@ ROUTINES_PARKED = ('The Hermes profile of this bot is parked ({path}), so no Her
 # A run that the person starts waits for the next tick of the gateway's cron (RoutineCoordinator._trigger_routine).
 TRIGGER_SECONDS = 5 * 60
 TRIGGER_WAITING = 'Waiting for the Hermes gateway to run this routine.'
+# The results of a run that started no agent turn (_expire_routine_triggers).
+TRIGGER_QUIET = 'Hermes ran the script check of this routine. It found no work, so the bot did not run.'
+TRIGGER_NO_AGENT = 'Hermes ran the script of this routine.'
+TRIGGER_SCRIPT_FAILED = 'Hermes ran this routine, and it failed: {error}'
 TRIGGER_EXPIRED = ('The Hermes gateway did not run this routine within 5 minutes. Check that the gateway runs, then run '
                    'the routine again.')
 ROUTINES_UNSERVED = ('No Hermes gateway serves the profile of this bot now, so its routines are paused. They run again on '
@@ -59,6 +63,17 @@ EXECUTED_PROPOSAL = ("SELECT 1 FROM decisions WHERE json_extract(data,'$.task_id
                      "AND json_extract(data,'$._execution_task_id')=? AND json_extract(data,'$.inbox_kind')='proposal' "
                      "AND json_extract(data,'$.bot_id')=? "
                      "AND json_extract(data,'$.status') IN (" + ','.join('?' * len(ANSWERED)) + ") LIMIT 1")
+
+def _instant(value):
+    """A time of Hermes as an aware datetime, or None. A time without a zone counts as UTC."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    return moment if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
 
 class NativeRoutines:
     def _routine_continuation_input(self, task, job, owner):
@@ -766,18 +781,37 @@ class NativeRoutines:
         return self._public(task)
 
     def _waiting_triggers(self):
-        """The routine tasks that wait for a run of the gateway (_trigger_routine). The status index finds them."""
+        """The routine tasks that wait for a run of the gateway (_trigger_routine). The status index finds them.
+
+        A task that a gateway cron run took (`_gateway_cron`) no longer waits for a run. It can wait for its own work,
+        for example for another bot, and its run ends it."""
         return [json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM tasks WHERE json_extract(data,'$.status')='waiting' "
-            "AND json_extract(data,'$._gateway_trigger') IS NOT NULL ORDER BY rowid")]
+            "AND json_extract(data,'$._gateway_trigger') IS NOT NULL "
+            "AND json_extract(data,'$._gateway_cron') IS NULL ORDER BY rowid")]
 
     def _expire_routine_triggers(self):
-        """Fail each routine task that waits for a run of the gateway longer than TRIGGER_SECONDS. The caller holds
-        the transaction."""
+        """End each routine task that waits for a run of the gateway. The caller holds the transaction.
+
+        A run without an agent turn never takes the task: a script check that found no work ({"wakeAgent": false}),
+        or a script-only routine. When Hermes ran the job after the trigger, the task ends with that run's result.
+        A task that no run took in TRIGGER_SECONDS fails."""
         from .service import now
         limit = datetime.now(timezone.utc) - timedelta(seconds=TRIGGER_SECONDS)
+        routines = {r['id']: r for r in self._all('routines')}
         for task in self._waiting_triggers():
-            if datetime.fromisoformat(task['_gateway_trigger']['at'].replace('Z', '+00:00')) > limit:
+            triggered = datetime.fromisoformat(task['_gateway_trigger']['at'].replace('Z', '+00:00'))
+            job = routines.get(task.get('routine_id'), {}).get('_job') or {}
+            ran = _instant(job.get('last_run_at'))
+            if ran is not None and ran >= triggered:
+                failed = job.get('last_status') == 'error'
+                task.update(status='failed' if failed else 'completed', updated_at=now(), summary=(
+                    TRIGGER_SCRIPT_FAILED.format(error=str(job.get('last_error') or 'unknown')[:300]) if failed
+                    else TRIGGER_NO_AGENT if job.get('no_agent') else TRIGGER_QUIET))
+                self._put('tasks', task)
+                self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+                continue
+            if triggered > limit:
                 continue
             task.update(status='failed', summary=TRIGGER_EXPIRED, updated_at=now())
             self._put('tasks', task)

@@ -535,6 +535,8 @@ struct Routine: Codable, Identifiable, Equatable, Sendable {
     var createdAt: String
     var updatedAt: String
     var script: String? = nil
+    /// The script that Hermes runs before the agent of this routine. It can skip the run. Older Macs do not send it.
+    var scriptCheck: String? = nil
     var error: String? = nil
     /// True for a Hermes job that runs one time. Older Macs do not send it.
     var oneTime: Bool? = nil

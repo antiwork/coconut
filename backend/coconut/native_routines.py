@@ -17,8 +17,12 @@ def profile(home):
 
 
 def unsupported(job, config=None):
+    """The reason why Coconut cannot run this Hermes job as a routine, or None.
+
+    A script-only job (`no_agent`) and a job whose script gates its agent run (`script`: Hermes runs the script first,
+    and its last line {"wakeAgent": false} skips the agent) are routines like any other."""
     script_only = job.get('no_agent') is True and bool(job.get('script'))
-    fields = ('monitor_script', 'monitor_url') if script_only else ('script', 'no_agent', 'monitor_script', 'monitor_url', 'base_url', 'enabled_toolsets')
+    fields = ('monitor_script', 'monitor_url') if script_only else ('no_agent', 'monitor_script', 'monitor_url', 'base_url', 'enabled_toolsets')
     present = [field for field in fields if job.get(field)]
     cron_config = (config or {}).get('cron') or {}
     if not script_only:
@@ -38,6 +42,8 @@ def view(bot_id, job):
     one_time = schedule.get('kind') == 'once'
     return dict(id=identity, bot_id=bot_id, name=job.get('name') or 'Routine', prompt=job.get('prompt') or '',
                 script=job.get('script') if job.get('no_agent') else None,
+                # The script that gates the agent run of this routine. An edit of the routine keeps it.
+                script_check=Path(job['script']).name if job.get('script') and not job.get('no_agent') else None,
                 cron=schedule.get('expr') or schedule.get('display') or '',
                 timezone=config.get('timezone') or 'UTC',
                 enabled=job.get('enabled', True) and not job.get('paused_at'),

@@ -35,7 +35,7 @@ struct BotSettingsView: View {
                 let groups = RoutineGroups(store.routines.filter { $0.botId == botId })
                 Section("Routines") {
                     ForEach(groups.recurring) { routine in
-                        routineLink(routine, detail: routine.error ?? routine.scheduleLabel)
+                        routineLink(routine, detail: routine.error ?? routineLabel(routine))
                     }
                     Button("Add routine", systemImage: "plus") { routineOpen = true }.accessibilityIdentifier("add-routine")
                 }
@@ -90,6 +90,12 @@ struct BotSettingsView: View {
                 Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
             }.padding(.vertical, 3)
         }
+    }
+
+    // A routine with a script check names its script after the schedule.
+    private func routineLabel(_ routine: Routine) -> String {
+        guard let script = routine.scriptCheck else { return routine.scheduleLabel }
+        return routine.scheduleLabel + "\nScript check: " + script
     }
 
     // A one-time check shows its run time. A paused check that still has a future time says that it is paused.
@@ -242,6 +248,13 @@ private struct RoutineEditorView: View {
                 Section("Instructions") {
                     TextField("What should this bot do?", text: $prompt, axis: .vertical)
                         .lineLimit(4...12).accessibilityIdentifier("routine-prompt")
+                }
+                if let check = current?.scriptCheck {
+                    Section {
+                        LabeledContent("Script check", value: check).accessibilityIdentifier("routine-script-check")
+                    } footer: {
+                        Text("This script runs first, without model tokens. The bot runs only when the script finds work. An edit here keeps the script.")
+                    }
                 }
             }
             Section {

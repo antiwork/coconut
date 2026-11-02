@@ -51,7 +51,10 @@ class RoutineChangeTests(unittest.TestCase):
 
     def test_native_tool_job_with_skills_and_continuity_is_supported(self):
         self.assertIsNone(native_routines.unsupported(self.job))
-        for field in ('script', 'no_agent', 'monitor_url', 'enabled_toolsets'):
+        # A script that gates the agent run, and a script-only job, are routines too.
+        self.assertIsNone(native_routines.unsupported(dict(self.job, script='intake_gate.py')))
+        self.assertIsNone(native_routines.unsupported(dict(self.job, script='report.py', no_agent=True)))
+        for field in ('no_agent', 'monitor_url', 'enabled_toolsets'):
             with self.subTest(field=field):
                 self.assertIn(field, native_routines.unsupported(dict(self.job, **{field: 'configured'})))
 
@@ -104,6 +107,27 @@ class NativeRoutineViewTests(unittest.TestCase):
         self.assertEqual(routine['cron'], 'once in 15m')
         # A routine of Coconut's earlier claims has no claim to recover.
         self.assertNotIn('_recover_claim', routine)
+
+    def test_a_routine_with_a_script_check_shows_its_script_and_an_edit_keeps_it(self):
+        bot = str(uuid4())
+        gated = dict(self.job, script='/home/scripts/intake_gate.py', schedule={'kind': 'cron', 'expr': '*/5 * * * *'})
+        routine = native_routines.view(bot, gated)
+        self.assertEqual((routine['error'], routine['script_check'], routine['script']), (None, 'intake_gate.py', None))
+        self.assertEqual(routine['prompt'], 'Refresh')
+        # A script-only job shows its script as before, with no check.
+        alone = native_routines.view(bot, dict(gated, no_agent=True))
+        self.assertEqual((alone['script'], alone['script_check']), ('/home/scripts/intake_gate.py', None))
+        updates = []
+        jobs = SimpleNamespace(update_job=lambda identity, changes: updates.append(changes),
+                               list_jobs=lambda include_disabled: [gated], pause_job=lambda identity: None,
+                               resume_job=lambda identity: None, parse_schedule=lambda expression: {'expr': expression})
+        constants = SimpleNamespace(get_hermes_home=lambda: self.tmp.name, set_hermes_home_override=lambda home: None,
+                                    reset_hermes_home_override=lambda token: None)
+        with patch.dict('sys.modules', {'cron': SimpleNamespace(jobs=jobs), 'hermes_constants': constants}):
+            native_routines.worker('routine_update', {'bot_id': bot, 'native_id': 'job', 'changes': {
+                'name': 'Intake', 'prompt': 'Triage new events.', 'cron': '*/10 * * * *', 'enabled': True}},
+                {bot: self.tmp.name})
+        self.assertEqual(updates, [{'name': 'Intake', 'prompt': 'Triage new events.', 'schedule': {'expr': '*/10 * * * *'}}])
 
     def test_view_tells_a_recurring_job(self):
         daily = dict(self.job, schedule={'kind': 'cron', 'expr': '0 8 * * *', 'display': '0 8 * * *'},

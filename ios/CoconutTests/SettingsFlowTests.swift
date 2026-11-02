@@ -188,6 +188,20 @@ final class SettingsFlowTests: XCTestCase {
         XCTAssertEqual(RoutineGroups([decoded]).recurring.map(\.id), ["r"])
     }
 
+    func testARoutineWithAScriptCheckDecodesItsScriptName() throws {
+        let json = """
+        {"id": "r", "bot_id": "bot", "name": "Intake", "prompt": "Triage new events.", "cron": "*/5 * * * *",
+         "timezone": "UTC", "enabled": true, "next_run_at": null, "last_run_at": null, "last_task_id": null,
+         "created_at": "2026-10-29T12:00:00Z", "updated_at": "2026-10-29T12:00:00Z", "script": null,
+         "script_check": "intake_gate.py", "error": null}
+        """
+        let decoded = try APIJSON.decoder().decode(Routine.self, from: Data(json.utf8))
+        XCTAssertEqual(decoded.scriptCheck, "intake_gate.py")
+        XCTAssertNil(decoded.script)
+        XCTAssertNil(decoded.error)
+        XCTAssertEqual(RoutineGroups([decoded]).recurring.map(\.id), ["r"])
+    }
+
     private func routine(_ id: String, cron: String = "once in 15m", oneTime: Bool? = nil, state: String? = nil,
                          enabled: Bool = true, nextRunAt: String? = nil, runAt: String? = nil) -> Routine {
         Routine(id: id, botId: "bot", name: id, prompt: "", cron: cron, timezone: "UTC", enabled: enabled,
