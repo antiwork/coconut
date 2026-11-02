@@ -280,6 +280,34 @@ class GatewayCronTests(unittest.TestCase):
         with self.service.lock:
             self.assertEqual([t for t in self.service._all('tasks') if t.get('routine_id') == routine['id']], [])
 
+    def test_a_run_now_of_a_script_check_that_finds_no_work_ends_without_a_turn(self):
+        # Hermes runs the script of a gated routine first. When its last line is {"wakeAgent": false}, no agent runs,
+        # so no gateway cron run takes the waiting task. The task ends with that run instead of a false timeout.
+        from coconut.routine_coordinator import TRIGGER_QUIET, TRIGGER_SCRIPT_FAILED
+        routine = self.served_routine()
+        cases = (({'last_status': 'ok'}, 'completed', TRIGGER_QUIET),
+                 ({'last_status': 'error', 'last_error': 'The gate could not read the inbox.'}, 'failed',
+                  TRIGGER_SCRIPT_FAILED.format(error='The gate could not read the inbox.')))
+        for result, status, summary in cases:
+            with self.subTest(status=status):
+                with self.service.transaction():
+                    self.service._put('routines', dict(self.read('routines', routine['id']), _job=dict(id='intake')))
+                with patch.object(self.provider, 'native_settings', create=True, return_value=dict(routine)):
+                    queued = self.service.mutate('POST', f'/v1/routines/{routine["id"]}/run', {}, str(uuid4()), 'phone')
+                tick = lambda: (setattr(self.service, '_native_cron_next', 0), self.service.tick_native_routines())
+                with patch.object(self.service, 'refresh_native_routines'):
+                    tick()
+                    self.assertEqual(self.read('tasks', queued['id'])['status'], 'waiting')
+                    # Hermes ran the job after the trigger, without an agent turn.
+                    ran = (datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat()
+                    with self.service.transaction():
+                        self.service._put('routines', dict(self.read('routines', routine['id']), _job=dict(
+                            id='intake', script='intake_gate.py', last_run_at=ran, **result)))
+                    tick()
+                task = self.read('tasks', queued['id'])
+                self.assertEqual((task['status'], task['summary']), (status, summary))
+                self.assertEqual(self.provider.starts, [])
+
     def test_a_trigger_that_no_gateway_cron_run_takes_fails_with_the_reason(self):
         from coconut.routine_coordinator import TRIGGER_EXPIRED, TRIGGER_SECONDS
         routine = self.served_routine()
