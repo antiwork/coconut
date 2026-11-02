@@ -1,18 +1,18 @@
 ---
 name: coconut
-description: Update, pair, and repair the iPhone app's Mac service.
-version: 1.0.0
+description: Update, pair, and repair Coconut, and plan its routines.
+version: 1.1.0
 author: Coconut
 platforms: [macos]
 metadata:
   hermes:
-    tags: [coconut, iphone, mac, pairing, updates, troubleshooting]
+    tags: [coconut, iphone, mac, pairing, updates, troubleshooting, routines, cron]
     related_skills: [hermes-agent]
 ---
 
 # Coconut Skill
 
-Coconut is an iPhone app and a Mac service. The service runs on this Mac and runs bots, each with its own Hermes profile. The iPhone reaches the service through an end-to-end encrypted relay. This skill tells you how to update Coconut, pair an iPhone, and find the cause of a problem. It does not change Hermes itself.
+Coconut is an iPhone app and a Mac service. The service runs on this Mac and runs bots, each with its own Hermes profile. The iPhone reaches the service through an end-to-end encrypted relay. This skill tells you how to update Coconut, pair an iPhone, find the cause of a problem, and make a routine that spends model tokens only when there is work. It does not change Hermes itself.
 
 **This skill is a hub.** Before you answer a detail question, load the matching reference with `skill_view`.
 
@@ -22,6 +22,7 @@ Coconut is an iPhone app and a Mac service. The service runs on this Mac and run
 | Pair an iPhone, a new iPhone, an expired code, "the iPhone shows a message for Hermes" | `references/pairing.md` |
 | "Coconut is offline", the relay, `hermes_unavailable`, logs, data | `references/troubleshooting.md` |
 | Each `coconut` command and its output | `references/cli.md` |
+| A routine, a cron job, a script gate (`wakeAgent`), a check that should cost fewer tokens, waiting for delegated work | `references/routines.md` |
 
 ## When to Use
 
@@ -29,6 +30,8 @@ Coconut is an iPhone app and a Mac service. The service runs on this Mac and run
 - The person sends a message from the Coconut iPhone app that holds a pairing code.
 - The person says that Coconut is offline, slow, or shows an error.
 - The person asks how Coconut and Hermes work together on this Mac.
+- You create or change a routine, or a routine runs often and finds nothing new.
+- You want the result of a delegated task. Do not make a cron job for it: see `references/routines.md`.
 
 ## Prerequisites
 

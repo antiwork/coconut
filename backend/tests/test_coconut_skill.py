@@ -57,6 +57,17 @@ class SkillAuthoringTests(unittest.TestCase):
                 with self.subTest(file=path.name, reference=name):
                     self.assertTrue((SKILL / name).is_file())
 
+    def test_the_routines_reference_gives_the_gate_and_the_wait_for_delegated_work(self):
+        text = (SKILL / 'references/routines.md').read_text(encoding='utf-8')
+        self.assertIn('{"wakeAgent": false}', text)
+        self.assertIn('--no-agent', text)
+        self.assertIn('hermes cron edit <id> --script <file>', text)
+        self.assertIn('Wake the agent when in doubt', text)
+        self.assertIn('Do not create a cron job to poll', text)
+        self.assertIn('`coconut_wait`', text)
+        # The hub routes routine questions to it.
+        self.assertIn('`references/routines.md`', self.body.split('## When to Use')[1])
+
     def test_the_skill_names_hermes_tools_and_no_wrapped_shell_utilities(self):
         for path in SKILL.rglob('*.md'):
             text = path.read_text(encoding='utf-8')
