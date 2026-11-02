@@ -34,14 +34,14 @@ final class MessageInteractionFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["Reply"].exists)
         for name in ["Thumbs up", "Thumbs down"] {
-            XCTAssertTrue(app.buttons[name].exists, name)
+            XCTAssertTrue(app.buttons["React with \(name)"].exists, name)
         }
         for name in ["Laugh", "Celebrate", "Confused", "Heart", "Rocket", "Eyes"] {
-            XCTAssertFalse(app.buttons[name].exists, name)
+            XCTAssertFalse(app.buttons["React with \(name)"].exists, name)
         }
         let menu = XCTAttachment(screenshot: app.screenshot())
         menu.name = "Two reactions, Reply, and Copy"; menu.lifetime = .keepAlways; add(menu)
-        app.buttons["Thumbs up"].tap()
+        app.buttons["React with Thumbs up"].tap()
         XCTAssertTrue(app.buttons["Remove 👍 reaction"].waitForExistence(timeout: 3))
         app.buttons["Remove 👍 reaction"].tap()
         XCTAssertTrue(app.buttons["Remove 👍 reaction"].waitForNonExistence(timeout: 3))
