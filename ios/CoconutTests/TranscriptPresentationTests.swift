@@ -419,6 +419,8 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertEqual(TranscriptPresentation.photo(in: "![Render](https://v3.fal.media/files/abc)")?.caption, "Render")
         XCTAssertNil(TranscriptPresentation.photo(in: "![Local](http://example.com/a.jpg)"))
         XCTAssertNil(TranscriptPresentation.photo(in: "Look: ![Room](\(address))"))
+        XCTAssertNil(TranscriptPresentation.photo(in: "![A](https://example.com/a.jpg) ![B](https://example.com/b.jpg)"))
+        XCTAssertNil(TranscriptPresentation.photo(in: "![A](https://example.com/a.jpg) [listing](https://example.com/2b)"))
         XCTAssertNil(TranscriptPresentation.photo(in: "See the room at \(address)"))
         XCTAssertNil(TranscriptPresentation.photo(in: "One\nTwo\n\(address)"))
         XCTAssertNil(TranscriptPresentation.photo(in: "Kitchen\nhttp://example.com/a.jpg"))
