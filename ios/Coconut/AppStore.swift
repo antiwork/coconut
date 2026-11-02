@@ -711,6 +711,24 @@ final class AppStore {
         }
     }
 
+    /// Removes a message that did not send. A failed message holds the messages after it to the same bot, because they
+    /// go in order, so its removal lets them go. A message that reached the Mac before its answer was lost still shows
+    /// from the Mac.
+    @discardableResult
+    func deleteUnsent(_ id: String) -> Bool {
+        guard outgoingMessages.contains(where: { $0.id == id && [.failed, .rejected].contains($0.status) }) else { return false }
+        let previous = outgoingMessages
+        outgoingMessages.removeAll { $0.id == id }
+        // Save the removal first. A saved message that stayed in outgoing.json would send at the next launch.
+        do { try saveOutgoing() } catch {
+            outgoingMessages = previous
+            report(error)
+            return false
+        }
+        scheduleDelivery()
+        return true
+    }
+
     func replaceRejected(_ outgoing: OutgoingMessage, text: String) async {
         guard outgoingMessages.contains(where: { $0.id == outgoing.id && $0.status == .rejected }),
               let bot = bots.first(where: { $0.id == outgoing.botId }) else { return }
