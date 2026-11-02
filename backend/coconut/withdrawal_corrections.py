@@ -11,11 +11,8 @@ A later human message in the card's outcome refuses the correction on purpose; s
 import json
 
 
-# The schema of the tool. The worker and the coconut plugin of the gateway offer it (card_tools).
-try:
-    from .card_tools import CORRECTION_SCHEMA
-except ImportError:  # The worker imports this module from its folder.
-    from card_tools import CORRECTION_SCHEMA
+# The schema of the tool. The coconut plugin of the gateway offers it (card_tools).
+from .card_tools import CORRECTION_SCHEMA
 
 # The issue facts that GitHubPRTracker._issue_record reads. The baseline must hold all of them, and all must match.
 ISSUE_FACTS = ('state', 'state_reason', 'title', 'updated_at', 'comments')

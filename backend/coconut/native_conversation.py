@@ -139,10 +139,7 @@ def recovery_note(task, block_check=False):
     `block_check`: the turn is Coconut's check of a blocked native task (work_recovery.block_check_task)."""
     if not task.get('_self_recovery'):
         return ''
-    try:
-        from .work_recovery import BLOCKED_WORK_INSTRUCTIONS, recovery_instructions
-    except ImportError:  # The worker imports this module from its folder.
-        from work_recovery import BLOCKED_WORK_INSTRUCTIONS, recovery_instructions
+    from .work_recovery import BLOCKED_WORK_INSTRUCTIONS, recovery_instructions
     text = recovery_instructions(block_check) + '\nSaved recovery context:\n' + json.dumps(task['_self_recovery'])
     if block_check:
         text += '\n' + BLOCKED_WORK_INSTRUCTIONS
