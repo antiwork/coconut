@@ -420,7 +420,67 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertNil(message("user", role: "user", text: address).photo)
     }
 
-    func testConsecutivePhotosFromOneBotShareOneEntry() {
+    func testPreviewLinksAreDistinctPublicPagesInTextOrder() {
+        let text = """
+        See the [full listing](https://streeteasy.com/building/30-main-street-brooklyn/2b) and https://www.nytimes.com/a.
+        Again: https://streeteasy.com/building/30-main-street-brooklyn/2b. A photo https://example.com/room.jpg,
+        a plain http://example.com/page, a local https://mini.local/x, an address https://192.168.1.4/x,
+        and https://github.com/antiwork/coconut then https://apple.com.
+        """
+        XCTAssertEqual(TranscriptPresentation.previewLinks(in: text).map(\.absoluteString), [
+            "https://streeteasy.com/building/30-main-street-brooklyn/2b",
+            "https://www.nytimes.com/a",
+            "https://github.com/antiwork/coconut",
+        ])
+        XCTAssertEqual(TranscriptPresentation.previewLinks(in: "No links here."), [])
+    }
+
+    func testPageTagsPreferOpenGraphAndResolveTheImage() throws {
+        let page = try XCTUnwrap(URL(string: "https://www.example.com/listing/2b"))
+        let html = """
+        <html><head><title>Fallback title</title>
+        <meta content="30 Main St &amp; Water St" property="og:title">
+        <meta property='og:image' content='/photos/2b.jpg'/>
+        <meta name="description" content="Ignored">
+        </head>
+        """
+        XCTAssertEqual(PageTags(html: html, url: page), PageTags(title: "30 Main St & Water St", site: "example.com",
+                                                                 image: URL(string: "https://www.example.com/photos/2b.jpg")))
+        XCTAssertEqual(PageTags(html: "<title> Plain page </title>", url: page)?.title, "Plain page")
+        XCTAssertNil(PageTags(html: "<head></head>", url: page))
+    }
+
+        func testPageTagsReadQuotedAndUnquotedValuesAndEveryReference() throws {
+        let page = try XCTUnwrap(URL(string: "https://shop.example.com/item"))
+        let html = """
+        <meta property="og:title" content="Price > quality &mdash; Don&#8217;t miss &#x1F600;">
+        <meta property=og:site_name content=Shop>
+        <meta property="og:image" content="https://10.0.0.5/secret.png">
+        """
+        let tags = try XCTUnwrap(PageTags(html: html, url: page))
+        XCTAssertEqual(tags.title, "Price > quality — Don’t miss 😀")
+        XCTAssertEqual(tags.site, "Shop")
+        XCTAssertNil(tags.image)
+        XCTAssertEqual(PageTags.decoded("Fish &amp; chips &unknown; & more"), "Fish & chips &unknown; & more")
+    }
+
+    func testPageTextUsesTheDeclaredEncoding() {
+        let data = Data("<title>Caf\u{E9}</title>".data(using: .windowsCP1252)!)
+        XCTAssertEqual(PageTags.text(data, declared: "windows-1252"), "<title>Café</title>")
+        XCTAssertEqual(PageTags.text(data, declared: nil), "<title>Café</title>")
+        XCTAssertEqual(PageTags.text(Data("<title>Café</title>".utf8), declared: "utf-8"), "<title>Café</title>")
+    }
+
+    func testPublicWebAddressesExcludePrivateNetworks() {
+        let check = { (text: String) in TranscriptPresentation.isPublicWebAddress(URL(string: text)!) }
+        XCTAssertTrue(check("https://www.apple.com/iphone/"))
+        for address in ["http://apple.com", "https://192.168.1.4/x", "https://[::1]/x", "https://localhost/x",
+                        "https://mini.local/x", "https://coconut-mac-mini.tail361cbe.ts.net/x", "https://router.lan/"] {
+            XCTAssertFalse(check(address), address)
+        }
+    }
+
+        func testConsecutivePhotosFromOneBotShareOneEntry() {
         let photos = (1...3).map { message("photo-\($0)", text: "Room \($0)\nhttps://example.com/\($0).jpg") }
         let entries = TranscriptEntry.grouped([message("intro", text: "Here are the photos.")] + photos + [
             message("other-sender", text: "Bath\nhttps://example.com/4.jpg", senderID: "helper"),

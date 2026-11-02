@@ -494,6 +494,9 @@ struct MessageBubble: View {
                     .frame(width: min(actionsWidth, rowWidth))
                     .presentationCompactAdaptation(.popover)
             }
+                if !isUser && !message.streaming {
+                    LinkPreviewList(text: message.text)
+                }
                 MessageReactionList(message: message, enabled: onReply != nil)
             }
             if !isUser { Spacer(minLength: 18) }
