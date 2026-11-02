@@ -380,11 +380,9 @@ reason (`gateway_unsupported`).
   receiving task in its receipt, and not a progress note. `_block_check_message_intake` proves the intake of the
   delegated block check this way.
 - The watch of a worker's background processes is gone: the process subscriptions of its receipts, their delivery,
-  the waits for a process, and the periodic check of interrupted tool calls. A local command that an earlier worker of
-  a native task left without a result ends at a service start when it started an hour ago, no process carries its
-  outcome, and lsof
-  shows no process in a workspace of the outcome (`_end_worker_tool_calls`). Its receipt keeps the state `executing`,
-  so its effect stays unknown. Hermes watches the processes of a gateway turn and
+  the waits for a process, and the checks of interrupted tool calls. A local command that an earlier worker left
+  without a result keeps the state `executing`, so its effect stays unknown. Hermes watches the processes of a gateway
+  turn and
   delivers their results itself. `coconut_wait` waits for a task or a card (`card_tools.WAIT_SCHEMA`), and the index of
   pending waits is `native_receipts_pending_wait`.
 - The bot change context of a turn moved to `bot_changes.py`. The routing of a turn has no worker inputs:

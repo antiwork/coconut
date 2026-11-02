@@ -41,11 +41,8 @@ WITHDRAWAL_RESPONSE = ('Coconut withdrew an obsolete card after checking current
                        'No option was selected and no new approval was given. Continue only within the existing request. '
                        'Reuse an existing owner or pending question instead of duplicating work.\n')
 
-# The schema of the check tool. The worker and the coconut plugin of the gateway offer it (card_tools).
-try:
-    from .card_tools import REFRESH_SCHEMA  # noqa: F401
-except ImportError:  # The worker imports this module from its folder.
-    from card_tools import REFRESH_SCHEMA  # noqa: F401
+# The schema of the check tool. The coconut plugin of the gateway offers it (card_tools).
+from .card_tools import REFRESH_SCHEMA  # noqa: F401
 
 
 def age(value, current):
