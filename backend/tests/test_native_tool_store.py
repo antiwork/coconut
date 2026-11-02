@@ -3,7 +3,8 @@
 The official installer stamps its source folder, so Hermes reads the tool store of the installer's home by default. Each
 bot has its own HERMES_HOME, and the bot's terminal `hermes` installs tools into <HERMES_HOME>/tools. A process of the
 bot (HermesProvider.environment) and its terminal must agree with that store. No tool is downloaded or run: the test records the pinned
-agent-browser of this Hermes in a scratch bot home, as an install would.
+ripgrep of this Hermes in a scratch bot home, as an install would. Hermes 0.22.6 has no agent-browser package, and ripgrep
+is in every supported version.
 """
 import json
 import os
@@ -27,31 +28,29 @@ if sys.argv[1] == 'record':
     from pm.lock import Lockfile
     from pm.registry import get_package
     from pm.store import Store, current_target
-    package, lock, target = get_package('agent-browser'), Lockfile(paths.lockfile_path()), current_target()
-    version = lock.version('agent-browser')
+    package, lock, target = get_package('ripgrep'), Lockfile(paths.lockfile_path()), current_target()
+    version = lock.version('ripgrep')
     entry = package.store_entry(version, target)
     binary = package.binary(Store(home / 'tools').entry(entry), target)
     binary.parent.mkdir(parents=True)
     binary.write_text('#!/bin/sh\nexit 0\n')
     binary.chmod(0o755)
     fact = dict(entry=entry, version=version, target=target,
-                artifacts=[artifact['sha256'] for artifact in lock.artifacts('agent-browser', target)])
-    (home / 'tools/facts.json').write_text(json.dumps({'schema': 1, 'packages': {'agent-browser': fact}}))
+                artifacts=[artifact['sha256'] for artifact in lock.artifacts('ripgrep', target)])
+    (home / 'tools/facts.json').write_text(json.dumps({'schema': 1, 'packages': {'ripgrep': fact}}))
     print(json.dumps({'binary': str(binary)}))
     raise SystemExit
+import pm
 from pm import paths
-from tools.browser_tool_install import _find_agent_browser
 from tools.environments.local import LocalEnvironment
-try:
-    browser = _find_agent_browser(validate=False)
-except FileNotFoundError:
-    browser = None
+installed = pm.installed_package('ripgrep')
+tool = str(installed.binary) if installed and installed.binary is not None else None
 terminal = LocalEnvironment(cwd=os.getcwd(), timeout=30, persistent=True)
 try:
     shell = terminal.execute('printf "%s" "$HERMES_RUNTIME_DIR"')
 finally:
     terminal.cleanup()
-print(json.dumps({'store': str(paths.store_root()), 'browser': browser, 'shell': shell.get('output', '')}))
+print(json.dumps({'store': str(paths.store_root()), 'tool': tool, 'shell': shell.get('output', '')}))
 '''
 
 
@@ -75,13 +74,13 @@ class NativeToolStoreTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return json.loads(result.stdout.strip().splitlines()[-1]), env
 
-    def test_a_bot_process_selects_the_browser_that_the_bot_installed(self):
+    def test_a_bot_process_selects_the_tool_that_the_bot_installed(self):
         bot = str(uuid4())
         recorded, env = self.run_bot(bot, 'record')
         seen, _ = self.run_bot(bot, 'select')
         store = str(Path(env['HERMES_HOME']) / 'tools')
         self.assertEqual(seen['store'], store)
-        self.assertEqual(seen['browser'], recorded['binary'])
+        self.assertEqual(seen['tool'], recorded['binary'])
         # The terminal of the process, and a `hermes` started there, read the same store.
         self.assertEqual(seen['shell'], store)
 
@@ -90,7 +89,7 @@ class NativeToolStoreTests(unittest.TestCase):
         recorded, _ = self.run_bot(owner, 'record')
         seen, env = self.run_bot(other, 'select')
         self.assertEqual(seen['store'], str(Path(env['HERMES_HOME']) / 'tools'))
-        self.assertNotEqual(seen['browser'], recorded['binary'])
+        self.assertNotEqual(seen['tool'], recorded['binary'])
         self.assertNotIn(owner, json.dumps(seen))
 
 
