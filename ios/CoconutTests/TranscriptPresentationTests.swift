@@ -433,6 +433,9 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertEqual(entries[2].photos.map(\.caption), ["Bath"])
         XCTAssertTrue(entries[3].photos.isEmpty)
         XCTAssertTrue(entries[4].photos.isEmpty)
+        XCTAssertEqual(TranscriptEntry.rowId(for: "photo-3", in: entries), "photo-1")
+        XCTAssertEqual(TranscriptEntry.rowId(for: "photo-1", in: entries), "photo-1")
+        XCTAssertEqual(TranscriptEntry.rowId(for: "after", in: entries), "after")
     }
 
     private func visibleIDs(_ messages: [Message], artifacts: [Artifact] = []) -> [String] {

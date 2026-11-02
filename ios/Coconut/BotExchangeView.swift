@@ -13,6 +13,11 @@ struct TranscriptEntry: Identifiable {
     var id: String { messages[0].id + (isExchange ? "-exchange" : "") }
     var message: Message { messages[0] }
 
+    /// The row that shows a message. Photos that a bot sends one after another share the row of the first photo.
+    static func rowId(for id: String, in entries: [TranscriptEntry]) -> String {
+        entries.first { $0.photos.count > 1 && $0.messages.dropFirst().contains { $0.id == id } }?.id ?? id
+    }
+
     static func grouped(_ messages: [Message], botId: String? = nil) -> [TranscriptEntry] {
         var entries: [TranscriptEntry] = []
         for message in messages {

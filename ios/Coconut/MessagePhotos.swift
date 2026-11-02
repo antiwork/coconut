@@ -4,7 +4,11 @@ import UIKit
 
 /// A row of photos that a bot sent one after another. A tap opens the photos full screen.
 struct PhotoCarousel: View {
+    @Environment(AppStore.self) private var store
+    /// The message of each photo, in the same order. Reply and reactions act on it.
+    let messages: [Message]
     let photos: [MessagePhoto]
+    var onReply: ((Message) -> Void)? = nil
     @State private var viewerOpen = false
     @State private var viewing = 0
     @State private var scrolled: Int?
@@ -16,7 +20,7 @@ struct PhotoCarousel: View {
         ScrollView(.horizontal) {
             LazyHStack(alignment: .top, spacing: 8) {
                 ForEach(photos.indices, id: \.self) { index in
-                    tile(photos[index], index: index)
+                    tile(photos[index], message: messages[index], index: index)
                 }
             }
             .scrollTargetLayout()
@@ -36,26 +40,50 @@ struct PhotoCarousel: View {
         .onChange(of: viewing) { _, index in scrolled = index }
     }
 
-    private func tile(_ photo: MessagePhoto, index: Int) -> some View {
-        Button { viewing = index; viewerOpen = true } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                RemotePhoto(url: photo.url)
-                    .frame(width: width, height: height)
-                    .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-                    .matchedTransitionSource(id: index, in: zoom)
-                if !photo.caption.isEmpty {
-                    Text(photo.caption).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        .frame(width: width, alignment: .leading)
+    private func tile(_ photo: MessagePhoto, message: Message, index: Int) -> some View {
+        // A photo message takes Reply and reactions like a text message, from the long-press menu.
+        let canReply = onReply != nil && store.messageReference(for: message) != nil
+        let reactions = store.reactions(for: message)
+        return VStack(alignment: .leading, spacing: 4) {
+            Button { viewing = index; viewerOpen = true } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    RemotePhoto(url: photo.url)
+                        .frame(width: width, height: height)
+                        .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+                        .matchedTransitionSource(id: index, in: zoom)
+                    if !photo.caption.isEmpty {
+                        Text(photo.caption).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            .frame(width: width, alignment: .leading)
+                    }
                 }
             }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(photo.label)
-        .accessibilityHint("Opens the photo")
-        .accessibilityIdentifier("photo-\(index)")
-        .contextMenu {
-            Button("Copy link", systemImage: "link") { UIPasteboard.general.url = photo.url }
-            ShareLink(item: photo.url)
+            .buttonStyle(.plain)
+            .accessibilityLabel(photo.label)
+            .accessibilityHint("Opens the photo")
+            .accessibilityIdentifier("photo-\(index)")
+            .contextMenu {
+                if canReply {
+                    Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply?(message) }
+                    ForEach(MessageReactions.selectable, id: \.self) { emoji in
+                        Button("\(emoji) \(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))") {
+                            Task { await store.react(to: message, emoji: emoji) }
+                        }
+                    }
+                }
+                Button("Copy link", systemImage: "link") { UIPasteboard.general.url = photo.url }
+                ShareLink(item: photo.url)
+            }
+            .accessibilityActions {
+                if canReply {
+                    Button("Reply") { onReply?(message) }
+                    ForEach(MessageReactions.selectable, id: \.self) { emoji in
+                        Button("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))") {
+                            Task { await store.react(to: message, emoji: emoji) }
+                        }
+                    }
+                }
+            }
+            MessageReactionList(message: message, enabled: canReply)
         }
     }
 }
@@ -283,12 +311,30 @@ final class PhotoLoader: @unchecked Sendable {
     /// The disk cache keeps the downloaded data, so the second size of a photo does not download it again.
     func image(_ url: URL, size: PhotoSize) async -> UIImage? {
         if let image = cached(url, size: size) { return image }
-        guard let (data, response) = try? await session.data(from: url),
-              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false,
+        guard let data = await download(url),
               let image = downsampledImage(data, largestSide: size.rawValue).map(UIImage.init(cgImage:)) else { return nil }
         images.setObject(image, forKey: Self.key(url, size), cost: image.cgImage.map { $0.bytesPerRow * $0.height } ?? data.count)
         return image
     }
+
+    /// The data of a photo, or nil for a failed request or a file larger than `largestDownload`. The limit applies
+    /// while the data arrives, so a huge file never fills the memory.
+    private func download(_ url: URL) async -> Data? {
+        guard let (bytes, response) = try? await session.bytes(from: url),
+              (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false,
+              response.expectedContentLength <= Int64(Self.largestDownload) else { return nil }
+        var data = Data()
+        data.reserveCapacity(Int(max(response.expectedContentLength, 0)))
+        do {
+            for try await byte in bytes {
+                guard data.count < Self.largestDownload else { return nil }
+                data.append(byte)
+            }
+        } catch { return nil }
+        return data
+    }
+
+    private static let largestDownload = 20 << 20
 
     private static func key(_ url: URL, _ size: PhotoSize) -> NSString { "\(size.rawValue) \(url.absoluteString)" as NSString }
 }
