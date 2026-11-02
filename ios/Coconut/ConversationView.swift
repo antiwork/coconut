@@ -158,7 +158,7 @@ struct ConversationView: View {
                     .onScrollPhaseChange { previous, phase, context in
                         footerScroll.phaseChanged(phase, offset: ConversationFooterScroll.offset(in: context.geometry))
                         userScrolling = phase == .interacting || phase == .decelerating
-                        if phase == .interacting { rowHold.release() }
+                        rowHold.phaseChanged(phase)
                         if userScrolling || previous == .interacting || previous == .decelerating {
                             let geometry = context.geometry
                             nearBottom = geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 100
