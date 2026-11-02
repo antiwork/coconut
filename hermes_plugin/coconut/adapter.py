@@ -136,6 +136,17 @@ class Bridge:
             raise
 
 
+def markdown_image(url, caption=None) -> str:
+    """One Markdown image line for a photo: `![caption](url)`. The phone shows the line as a photo, and an app that
+    does not know photos shows the image in the text."""
+    alt = ' '.join(str(caption or '').split())
+    for character in '\\[]':
+        alt = alt.replace(character, '\\' + character)
+    url = str(url).strip()
+    # An address with a space or a parenthesis must stand in angle brackets.
+    return f'![{alt}](<{url}>)' if any(character in url for character in ' ()') else f'![{alt}]({url})'
+
+
 def turn_of(message_id) -> str:
     """The turn ID in a message ID that this adapter gave out (`<turn>:<number>`)."""
     return str(message_id).partition(':')[0]
@@ -474,6 +485,15 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
     def _send_retry_is_final(self, result) -> bool:
         # Hermes then neither tries again nor sends a plain text copy.
         return isinstance(getattr(result, 'raw_response', None), dict) and bool(result.raw_response.get('coconut_refused'))
+
+    async def send_image(self, chat_id: str, image_url: str, caption=None, reply_to=None, metadata=None) -> SendResult:
+        # Hermes takes each Markdown image out of a reply and sends it here. Without this method it sends the caption
+        # and the address as two lines of text, which the phone can only guess is a photo.
+        return await self.send(chat_id, markdown_image(image_url, caption), reply_to=reply_to, metadata=metadata)
+
+    async def send_animation(self, chat_id: str, animation_url: str, caption=None, reply_to=None,
+                             metadata=None) -> SendResult:
+        return await self.send(chat_id, markdown_image(animation_url, caption), reply_to=reply_to, metadata=metadata)
 
     async def send_private_notice(self, chat_id: str, user_id, content: str, reply_to=None, metadata=None) -> SendResult:
         # The phone shows the replies of Hermes, not its gateway notices. The gateway log keeps them.

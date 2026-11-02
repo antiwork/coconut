@@ -57,13 +57,24 @@ enum TranscriptPresentation {
         return links
     }
 
-    /// The photo of a message that is only an image address, or one caption line with an image address on the
-    /// next line. Hermes sends each image of a reply in this form when the chat cannot take the image itself.
+    /// The photo of a message that is one Markdown image line, `![caption](address)`, as the Coconut plugin sends it.
+    /// Older messages have the form that Hermes sends without the plugin: only an image address, or one caption line
+    /// with an image address on the next line. Both forms stay photos.
     static func photo(in text: String) -> MessagePhoto? {
         // A long text is never a photo. The check keeps long replies cheap on every redraw.
         guard text.utf8.count <= 2048 else { return nil }
         let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+        // The Coconut plugin sends a photo as one Markdown image line. Its address needs no photo extension.
+        // Exactly one image: an address in angle brackets may hold spaces, a bare address holds no space and no
+        // parenthesis. A line with more, such as two images, stays Markdown.
+        if lines.count == 1,
+           let match = lines[0].wholeMatch(of: #/!\[((?:\\.|[^\]\\])*)\]\((?:<([^<>]+)>|([^\s<>()]+))\)/#),
+           let address = match.output.2 ?? match.output.3,
+           let url = URL(string: String(address).replacingOccurrences(of: " ", with: "%20")),
+           url.scheme?.lowercased() == "https", url.host() != nil {
+            return MessagePhoto(url: url, caption: String(match.output.1).replacing(#/\\(.)/#) { String($0.output.1) })
+        }
         guard (1...2).contains(lines.count), let address = lines.last, !address.contains(" "),
               let url = URL(string: address), url.scheme?.lowercased() == "https", url.host() != nil,
               isPhotoAddress(url) else { return nil }
