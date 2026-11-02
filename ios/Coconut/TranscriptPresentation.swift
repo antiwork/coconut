@@ -4,6 +4,8 @@ struct MessagePhoto: Equatable, Sendable {
     let url: URL
     let caption: String
     var label: String { caption.isEmpty ? "Photo" : caption }
+    /// A photo that a bot saved on the Mac. The phone loads it through the paired Mac.
+    var isMacFile: Bool { url.scheme == "coconut-file" }
     var preview: String { caption.isEmpty ? "Photo" : "Photo: " + caption }
 }
 
@@ -72,7 +74,7 @@ enum TranscriptPresentation {
            let match = lines[0].wholeMatch(of: #/!\[((?:\\.|[^\]\\])*)\]\((?:<([^<>]+)>|([^\s<>()]+))\)/#),
            let address = match.output.2 ?? match.output.3,
            let url = URL(string: String(address).replacingOccurrences(of: " ", with: "%20")),
-           url.scheme?.lowercased() == "https", url.host() != nil {
+           ["https", "coconut-file"].contains(url.scheme?.lowercased()), url.host() != nil {
             return MessagePhoto(url: url, caption: String(match.output.1).replacing(#/\\(.)/#) { String($0.output.1) })
         }
         guard (1...2).contains(lines.count), let address = lines.last, !address.contains(" "),

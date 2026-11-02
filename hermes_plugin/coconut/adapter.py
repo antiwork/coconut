@@ -23,6 +23,7 @@ chat with the bot's native conversation. The tools (tools.py) reach the Coconut 
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -80,6 +81,8 @@ FOLDER_TASKS: dict[str, set] = {}
 BUSY: set[str] = set()
 # The ID of a message outside a Coconut turn starts with this prefix. Its edits and its delete take the same route.
 OUTSIDE = 'outside:'
+# The service keeps photos of at most 4 MB (gateway_chat.gateway_file).
+PHOTO_LIMIT = 4 * 1024 * 1024
 # The chats whose last model call reached the compression threshold of Hermes (hooks.note_prompt_size). After the turn,
 # the adapter compresses the chat's session (CoconutAdapter._compress).
 COMPRESS: set[str] = set()
@@ -494,6 +497,30 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
     async def send_animation(self, chat_id: str, animation_url: str, caption=None, reply_to=None,
                              metadata=None) -> SendResult:
         return await self.send(chat_id, markdown_image(animation_url, caption), reply_to=reply_to, metadata=metadata)
+
+    async def send_image_file(self, chat_id: str, image_path: str, caption=None, reply_to=None, metadata=None,
+                              **kwargs) -> SendResult:
+        """A photo that the bot saved on this Mac. The service keeps its bytes as an attachment of the bot, and the
+        phone loads them through Coconut, so the photo needs no public address."""
+        path = self.validate_media_delivery_path(image_path)
+        try:
+            content = Path(path).read_bytes() if path and os.path.getsize(path) <= PHOTO_LIMIT else None
+        except OSError:
+            content = None
+        if content is not None:
+            try:
+                answer = await self._request('/v1/gateway/files', {
+                    'home': self._home, 'chat_id': str(chat_id), 'filename': Path(path).name,
+                    'content_base64': base64.b64encode(content).decode()})
+            except Exception as error:
+                LOG.warning('Coconut: the service did not keep a photo for chat %s (%s).', chat_id, type(error).__name__)
+                answer = {}
+            if answer.get('id'):
+                return await self.send(chat_id, markdown_image(f'coconut-file://{answer["id"]}', caption),
+                                       reply_to=reply_to, metadata=metadata)
+        # A file that is not a photo, too large, or refused gets the notice of Hermes. It does not name the path.
+        return await super().send_image_file(chat_id, image_path, caption=caption, reply_to=reply_to,
+                                             metadata=metadata, **kwargs)
 
     async def send_private_notice(self, chat_id: str, user_id, content: str, reply_to=None, metadata=None) -> SendResult:
         # The phone shows the replies of Hermes, not its gateway notices. The gateway log keeps them.

@@ -4,7 +4,7 @@ import UIKit
 /// A held message over the blurred chat, as Messages shows one: its reactions above, the message, and short action
 /// rows below. Text messages and photos share it.
 struct HeldMessageView<Preview: View>: View {
-    enum Share { case url(URL), text(String) }
+    enum Share { case url(URL), text(String), image(UIImage, String) }
 
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -12,8 +12,9 @@ struct HeldMessageView<Preview: View>: View {
     let message: Message
     let onReply: ((Message) -> Void)?
     let copyTitle: String
-    let copy: () -> Void
-    let share: Share
+    /// Nil keeps Copy and Share off, for example while a photo from the Mac loads.
+    let copy: (() -> Void)?
+    let share: Share?
     /// The person's own messages stay on the right, as in the chat.
     var trailing = false
     /// The message, at most the given height.
@@ -53,8 +54,13 @@ struct HeldMessageView<Preview: View>: View {
                         action(copyTitle, systemImage: copyTitle == "Copy link" ? "link" : "doc.on.doc", perform: copy)
                         Group {
                             switch share {
+                            case nil: row("Share", systemImage: "square.and.arrow.up").foregroundStyle(.secondary)
                             case .url(let url): ShareLink(item: url) { row("Share", systemImage: "square.and.arrow.up") }
                             case .text(let text): ShareLink(item: text) { row("Share", systemImage: "square.and.arrow.up") }
+                            case .image(let image, let title):
+                                ShareLink(item: Image(uiImage: image), preview: SharePreview(title, image: Image(uiImage: image))) {
+                                    row("Share", systemImage: "square.and.arrow.up")
+                                }
                             }
                         }
                         .buttonStyle(.plain)
@@ -79,9 +85,11 @@ struct HeldMessageView<Preview: View>: View {
         .accessibilityAction(.escape) { close() }
     }
 
-    private func action(_ title: String, systemImage: String, perform: @escaping () -> Void) -> some View {
-        Button { close(then: perform) } label: { row(title, systemImage: systemImage) }
+    private func action(_ title: String, systemImage: String, perform: (() -> Void)?) -> some View {
+        Button { if let perform { close(then: perform) } } label: { row(title, systemImage: systemImage) }
             .buttonStyle(.plain)
+            .disabled(perform == nil)
+            .foregroundStyle(perform == nil ? .secondary : .primary)
     }
 
     private func row(_ title: String, systemImage: String) -> some View {

@@ -353,6 +353,13 @@ def live_gateway_pid(home) -> int | None:
         return None
 
 
+
+def is_photo_data(content: bytes) -> bool:
+    """Whether the bytes start as a PNG, JPEG, GIF, WebP or HEIC image does."""
+    return (content.startswith((b'\x89PNG\r\n\x1a\n', b'\xff\xd8\xff', b'GIF87a', b'GIF89a'))
+            or (content[:4] == b'RIFF' and content[8:12] == b'WEBP')
+            or (content[4:8] == b'ftyp' and content[8:12] in (b'heic', b'heix', b'mif1', b'msf1', b'avif')))
+
 class GatewayChat:
     gateway_process = None
     gateway_supervisor = None
@@ -1106,6 +1113,40 @@ class GatewayChat:
             payload = NativeWork(dict(operation='start', task=task)).from_state(state, inferred_root=True)
             self._save_work_progress(task, payload)
         return {'status': 'recorded', 'saved': bool(payload)}
+
+    def gateway_file(self, data: dict) -> dict:
+        """POST /v1/gateway/files: a photo that a bot of the adapter's profile saved on the Mac.
+
+        The service keeps the bytes as an attachment of the bot, as for a file from the phone, and returns its
+        artifact. The adapter then sends the photo as `![caption](coconut-file://<artifact id>)`, and the phone loads
+        the bytes through the artifact content route. Only PNG, JPEG, GIF, WebP and HEIC data of at most 4 MB count.
+        """
+        import base64
+        from .service import ServiceError, now, require_text, uid
+        home = os.path.realpath(require_text(data, 'home', 4096))
+        chat_id = chat_bot(require_text(data, 'chat_id', 200))
+        if (self._gateway_profile(home) or {}).get('bot_id') != chat_id:
+            raise ServiceError(404, 'This chat is not the bot of this Hermes profile.')
+        filename = os.path.basename(require_text(data, 'filename', 160)) or 'photo'
+        try:
+            content = base64.b64decode(data.get('content_base64', ''), validate=True)
+        except (ValueError, TypeError):
+            raise ServiceError(400, 'The photo must use base64 encoding.')
+        if not content or len(content) > 4 * 1024 * 1024:
+            raise ServiceError(413, 'A photo must contain between 1 byte and 4 MB.')
+        if not is_photo_data(content):
+            raise ServiceError(415, 'Send a PNG, JPEG, GIF, WebP or HEIC photo.')
+        with self.transaction():
+            bot = self._get('bots', chat_id)
+            if bot['archived'] or bot.get('_deleted'):
+                raise ServiceError(409, 'The bot is archived or deleted.')
+            artifact = dict(id=uid(), bot_id=chat_id, task_id=None, title=filename, kind='file', status='attached',
+                            preview=f'{len(content):,} bytes', url=None, created_at=now(), _attachment=True,
+                            _bot_photo=True)
+            self._put('artifacts', artifact)
+            self.store_artifact_content(artifact['id'], content)
+            self._event('artifact.created', self._public(artifact), chat_id)
+        return {'id': artifact['id']}
 
     def gateway_message(self, data: dict) -> dict:
         """POST /v1/gateway/messages: a send, an edit or a delete of the gateway outside a Coconut turn.
