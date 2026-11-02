@@ -387,11 +387,16 @@ final class PhotoLoader: @unchecked Sendable {
             // The bytes of an attachment never change, so both sizes and later launches reuse one transfer.
             guard let id = url.host(), UUID(uuidString: id) != nil else { return nil }
             let file = Self.macFiles.appendingPathComponent(id)
-            if let data = try? Data(contentsOf: file) { return data }
+            if let data = try? Data(contentsOf: file) {
+                // A read marks the photo as recently used, so the trim removes the photos nobody opens.
+                try? FileManager.default.setAttributes([.modificationDate: Date()], ofItemAtPath: file.path)
+                return data
+            }
             guard let macFile, let data = await macFile(id) else { return nil }
             try? FileManager.default.createDirectory(at: Self.macFiles, withIntermediateDirectories: true,
                                                      attributes: [.protectionKey: FileProtectionType.complete])
             try? data.write(to: file, options: [.atomic, .completeFileProtection])
+            Self.trimMacFiles()
             return data
         }
         // A redirect may go only to a public page, so an address cannot send the phone to a private service.
@@ -413,6 +418,24 @@ final class PhotoLoader: @unchecked Sendable {
 
     private static let macFiles = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("MacPhotos", isDirectory: true)
+
+    /// Above 200 MB of Mac photos, the oldest used ones go until 150 MB are left, as a URL cache keeps its size.
+    static func trimMacFiles(in folder: URL = macFiles, limit: Int = 200 << 20, target: Int = 150 << 20) {
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey]
+        guard let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys)
+        else { return }
+        var entries = files.compactMap { file -> (url: URL, size: Int, used: Date)? in
+            guard let values = try? file.resourceValues(forKeys: Set(keys)), let size = values.fileSize else { return nil }
+            return (file, size, values.contentModificationDate ?? .distantPast)
+        }
+        var total = entries.reduce(0) { $0 + $1.size }
+        guard total > limit else { return }
+        entries.sort { $0.used < $1.used }
+        for entry in entries where total > target {
+            try? FileManager.default.removeItem(at: entry.url)
+            total -= entry.size
+        }
+    }
 
     private static func key(_ url: URL, _ size: PhotoSize) -> NSString { "\(size.rawValue) \(url.absoluteString)" as NSString }
 }

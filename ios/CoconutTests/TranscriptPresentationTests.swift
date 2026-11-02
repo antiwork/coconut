@@ -458,7 +458,23 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertNil(none)
     }
 
-    func testPreviewLinksAreDistinctPublicPagesInTextOrder() {
+    func testTheMacPhotoCacheRemovesTheOldestPhotosAboveItsLimit() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let names = (0..<4).map { _ in UUID().uuidString }
+        for (index, name) in names.enumerated() {
+            let file = folder.appendingPathComponent(name)
+            try Data(count: 100).write(to: file)
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: Double(index - 10))],
+                                                  ofItemAtPath: file.path)
+        }
+        PhotoLoader.trimMacFiles(in: folder, limit: 350, target: 250)
+        let left = names.filter { FileManager.default.fileExists(atPath: folder.appendingPathComponent($0).path) }
+        XCTAssertEqual(left, Array(names.suffix(2)))
+    }
+
+        func testPreviewLinksAreDistinctPublicPagesInTextOrder() {
         let text = """
         See the [full listing](https://streeteasy.com/building/30-main-street-brooklyn/2b) and https://www.nytimes.com/a.
         Again: https://streeteasy.com/building/30-main-street-brooklyn/2b. A photo https://example.com/room.jpg,
