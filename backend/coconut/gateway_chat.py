@@ -41,6 +41,7 @@ from . import hermes_runtime
 from .gateway_bridge import (OTHER_PATHS, WORK_MESSAGE_FIELDS, WORK_SESSION_INPUTS, GatewayBridge, GatewayBusy,
                              GatewayUnavailable, gateway_claim_turn, gateway_work_turn, plain_chat_turn)
 from .native_conversation import reaction_only_turn
+from .work_capacity import bot_input_turn
 
 LOG = logging.getLogger(__name__)
 CHECK_SECONDS = 5
@@ -434,8 +435,9 @@ class GatewayChat:
         with self.lock:
             if self._get('tasks', task['id']).get('_preempted'):
                 text = PREEMPTED + text
-        self._run_in_gateway(task, bot, text, emit, silent=reaction_only_turn(request), own=own,
-                             command=gateway_command(request))
+        reaction = reaction_only_turn(request)
+        self._run_in_gateway(task, bot, text, emit, silent=reaction or bot_input_turn(task), commentary=not reaction,
+                             own=own, command=gateway_command(request))
         self._requeue_if_preempted(task['id'], emit)
         return True
 
@@ -555,7 +557,10 @@ class GatewayChat:
         # A native outcome runs in the workspace of its claim, as the worker runs it (TERMINAL_CWD).
         folder = claim.get('workspace') if mode in ('outcome', 'technical') and claim.get('workspace') else None
         try:
+            # No person waits on bot traffic, so it may end in silence, for example when the bot's own rules ask for
+            # silence when nothing needs the person.
             self._run_in_gateway(task, bot, text, emit, session=root, chat=chat, wanted=wanted, mode=mode, own=own,
+                                 silent=bot_input_turn(task),
                                  folder=folder if folder and os.path.isdir(folder) else None)
         finally:
             ended.set()
@@ -713,7 +718,8 @@ class GatewayChat:
         folder = (context.get('_kanban_claim') or {}).get('workspace')
         try:
             self._run_in_gateway(task, bot, text, follow_up, context_id=context['id'], wanted=wanted,
-                                 mode='refresh' if check else None, silent=check, session=root, chat=chat,
+                                 mode='refresh' if check else None, silent=check, commentary=not check,
+                                 session=root, chat=chat,
                                  folder=folder if folder and os.path.isdir(folder) else None)
         finally:
             ended.set()
@@ -725,7 +731,7 @@ class GatewayChat:
         return True
 
     def _run_in_gateway(self, task: dict, bot: dict, text: str, emit, *, silent: bool = False,
-                        context_id: str | None = None, wanted=None, session: str | None = None,
+                        commentary: bool = True, context_id: str | None = None, wanted=None, session: str | None = None,
                         chat: str | None = None, mode: str | None = None, own: str | None = None,
                         folder: str | None = None, command: str | None = None) -> bool:
         """Give a turn to the adapter of the bot's profile. Wait for one, at most GATEWAY_WAIT_SECONDS.
@@ -756,7 +762,7 @@ class GatewayChat:
                         self.gateway_bridge.run_turn(
                             task['id'], home, chat or bot['id'], text, emit, chat_name=bot.get('name') or 'Coconut',
                             session_root=session or session_root(bot, epoch=task.get('_conversation_epoch')),
-                            silent=silent, context_id=context_id, mode=mode, own=own, folder=folder,
+                            silent=silent, commentary=commentary, context_id=context_id, mode=mode, own=own, folder=folder,
                             command=command, records=records)
                         return True
                     except GatewayUnavailable:
