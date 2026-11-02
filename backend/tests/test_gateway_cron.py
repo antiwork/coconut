@@ -99,6 +99,13 @@ class GatewayCronTests(unittest.TestCase):
             bot = first.mutate('POST', '/v1/bots', {'name': 'Desk'}, str(uuid4()), 'phone')
             started = first.gateway_cron({'event': 'start', 'home': str(first.profiles.home(bot)), 'job_id': 'intake',
                                           'job_name': 'Desk fast work intake', 'execution_id': 'run-1'})
+            # A second routine task is in a continuation of Coconut, for example after an answered card.
+            continued = first.gateway_cron({'event': 'start', 'home': str(first.profiles.home(bot)), 'job_id': 'intake',
+                                            'job_name': 'Desk fast work intake', 'execution_id': 'run-2'})
+            with first.transaction():
+                task = first._get('tasks', continued['task_id'])
+                task['_gateway_cron'] = dict(task['_gateway_cron'], continued=True)
+                first._put('tasks', task)
             first.close()
             # The new service has no turn of the old one. Hermes owns the routine, so nothing runs it as a chat turn.
             service = Service(folder, Provider(), start_workers=False)
@@ -110,6 +117,8 @@ class GatewayCronTests(unittest.TestCase):
                 self.assertEqual(task['status'], 'failed')
                 self.assertIn('runs again at its next time', task['summary'])
                 self.assertIsNotNone(event)
+                with service.lock:
+                    self.assertEqual(service._get('tasks', continued['task_id'])['status'], 'queued')
             finally:
                 service.close()
 
@@ -152,6 +161,8 @@ class GatewayCronTests(unittest.TestCase):
         self.assertEqual(turn['session_root'], 'cron-session-1')
         self.assertTrue(turn['text'].startswith('Continue the original task using this recorded answer.'))
         self.assertEqual(self.read('tasks', started['task_id'])['status'], 'completed')
+        # A turn of Coconut continued the routine, so a restart during it queues it again like any other turn.
+        self.assertTrue(self.read('tasks', started['task_id'])['_gateway_cron']['continued'])
         self.assertEqual(self.messages(started['task_id'])[-1], ('Filed both items.', False))
         self.assertEqual(self.provider.resumes, [])
 
