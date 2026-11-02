@@ -4,7 +4,7 @@ import UIKit
 /// A held message over the blurred chat, as Messages shows one: its reactions above, the message, and short action
 /// rows below. Text messages and photos share it.
 struct HeldMessageView<Preview: View>: View {
-    enum Share { case url(URL), text(String) }
+    enum Share { case url(URL), text(String), image(UIImage, String) }
 
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -55,6 +55,10 @@ struct HeldMessageView<Preview: View>: View {
                             switch share {
                             case .url(let url): ShareLink(item: url) { row("Share", systemImage: "square.and.arrow.up") }
                             case .text(let text): ShareLink(item: text) { row("Share", systemImage: "square.and.arrow.up") }
+                            case .image(let image, let title):
+                                ShareLink(item: Image(uiImage: image), preview: SharePreview(title, image: Image(uiImage: image))) {
+                                    row("Share", systemImage: "square.and.arrow.up")
+                                }
                             }
                         }
                         .buttonStyle(.plain)

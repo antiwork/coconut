@@ -1,3 +1,4 @@
+import UIKit
 import XCTest
 @testable import Coconut
 
@@ -418,6 +419,11 @@ final class TranscriptPresentationTests: XCTestCase {
                        "https://cdn.example.com/a%20(1).gif")
         XCTAssertEqual(TranscriptPresentation.photo(in: "![Render](https://v3.fal.media/files/abc)")?.caption, "Render")
         XCTAssertNil(TranscriptPresentation.photo(in: "![Local](http://example.com/a.jpg)"))
+        // A photo that a bot saved on the Mac: the phone loads it through the paired Mac.
+        let file = try XCTUnwrap(TranscriptPresentation.photo(in: "![Weekly chart](coconut-file://0F5B2C1E-3D4A-4F6B-9C8D-7E6F5A4B3C2D)"))
+        XCTAssertTrue(file.isMacFile)
+        XCTAssertEqual(file.url.host(), "0F5B2C1E-3D4A-4F6B-9C8D-7E6F5A4B3C2D")
+        XCTAssertFalse(try XCTUnwrap(TranscriptPresentation.photo(in: "![Room](\(address))")).isMacFile)
         XCTAssertNil(TranscriptPresentation.photo(in: "Look: ![Room](\(address))"))
         XCTAssertNil(TranscriptPresentation.photo(in: "![A](https://example.com/a.jpg) ![B](https://example.com/b.jpg)"))
         XCTAssertNil(TranscriptPresentation.photo(in: "![A](https://example.com/a.jpg) [listing](https://example.com/2b)"))
@@ -428,6 +434,24 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertEqual(message("photo", text: "Kitchen\n\(address)").photo?.preview, "Photo: Kitchen")
         XCTAssertEqual(message("bare", text: address).photo?.preview, "Photo")
         XCTAssertNil(message("user", role: "user", text: address).photo)
+    }
+
+    func testAPhotoFromTheMacLoadsThroughThePairedMac() async throws {
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let png = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4), format: format).pngData { context in
+            UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        }
+        let id = UUID().uuidString
+        let previous = PhotoLoader.shared.macFile
+        defer { PhotoLoader.shared.macFile = previous }
+        PhotoLoader.shared.macFile = { requested in requested == id ? png : nil }
+        let url = try XCTUnwrap(URL(string: "coconut-file://\(id)"))
+        let image = await PhotoLoader.shared.image(url, size: .tile)
+        XCTAssertEqual(image?.size, CGSize(width: 4, height: 4))
+        let missing = try XCTUnwrap(URL(string: "coconut-file://\(UUID().uuidString)"))
+        let none = await PhotoLoader.shared.image(missing, size: .tile)
+        XCTAssertNil(none)
     }
 
     func testPreviewLinksAreDistinctPublicPagesInTextOrder() {

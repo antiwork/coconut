@@ -188,6 +188,7 @@ final class AppStore {
 
     init(demo: Bool = ProcessInfo.processInfo.arguments.contains("--demo")) {
         isDemo = demo
+        PhotoLoader.shared.macFile = { [weak self] id in await self?.macFileData(id: id) }
         if demo {
             setBadge = { _ in }
             apply(Self.previewSnapshot(), persist: false)
@@ -1561,6 +1562,12 @@ final class AppStore {
     func decisionPreviewData(id: String) async throws -> Data {
         guard let client else { throw ServiceError.configuration("Connect to your Mac to load the previews.") }
         return try await client.artifactContent(id: id)
+    }
+
+    /// The bytes of a photo that a bot saved on the Mac, or nil without a paired Mac.
+    func macFileData(id: String) async -> Data? {
+        guard let client else { return nil }
+        return try? await client.artifactContent(id: id)
     }
 
     func downloadArtifact(_ artifact: Artifact) async -> URL? {

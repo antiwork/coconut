@@ -13,6 +13,8 @@ the main listener, with the token of `<data>/gateway/bridge.json`:
   its events like those of a chat turn.
 - `POST /v1/gateway/messages` takes a send, an edit or a delete of the gateway outside a Coconut turn
   (gateway_chat.gateway_message).
+- `POST /v1/gateway/files` keeps a photo that a bot saved on the Mac as an attachment of the bot
+  (gateway_chat.gateway_file).
 
 A poll also returns the answers to the questions of the adapter's turns. A question is a decision card on the phone.
 

@@ -96,6 +96,13 @@ class BasePlatformAdapter:
     def __init__(self, config, platform):
         self.config, self.platform = config, platform
         self._message_handler, self.connected, self.events = None, False, []
+    @staticmethod
+    def validate_media_delivery_path(path, session_key=""):
+        import os
+        return os.path.realpath(path) if os.path.isfile(path) else None
+    async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None, metadata=None, **kwargs):
+        # Hermes sends a notice without the path when a platform cannot send the file.
+        return await self.send(chat_id, "The image could not be sent.", reply_to=reply_to, metadata=metadata)
     def _mark_connected(self):
         self.connected = True
     def _mark_disconnected(self):
@@ -391,6 +398,36 @@ class GatewayAdapterTests(unittest.TestCase):
         sent = self.complete(self.adapter.send_image(self.bot['id'], 'https://cdn.example.com/2b/bath.jpg', caption='Bath'))
         self.assertTrue(sent.success)
         self.assertEqual(self.outside(), [('![Bath](https://cdn.example.com/2b/bath.jpg)', False)])
+
+    def test_a_photo_file_on_the_mac_becomes_an_attachment_that_the_phone_loads(self):
+        png = b'\x89PNG\r\n\x1a\n' + b'\x00' * 64
+        folder = Path(self.temp.name)
+        (folder / 'chart.png').write_bytes(png)
+        (folder / 'notes.txt').write_text('Not a photo.')
+        async def runner(event):
+            chat = event.source.chat_id
+            await self.adapter.send_image_file(chat, str(folder / 'chart.png'), caption='Weekly chart')
+            await self.adapter.send_image_file(chat, str(folder / 'notes.txt'))
+            await self.adapter.send_image_file(chat, str(folder / 'missing.png'))
+            return None
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Send the chart.'})
+        self.service._run_task(task['id'])
+        texts = [text for text, _ in self.replies(task)]
+        # The two notices have the same text, so the turn keeps them as one message.
+        self.assertEqual(len(texts), 2)
+        self.assertRegex(texts[0], r'^!\[Weekly chart\]\(coconut-file://[0-9a-f-]{36}\)$')
+        artifact_id = texts[0].split('coconut-file://')[1].rstrip(')')
+        # The phone loads the photo through the content route of the artifact.
+        self.assertEqual(self.service.artifact_content(artifact_id), (png, 'chart.png'))
+        self.assertTrue(self.read('artifacts', artifact_id)['_attachment'])
+        # A file that is not a photo, and a missing file, get the notice of Hermes. It names no path.
+        self.assertEqual(texts[1:], ['The image could not be sent.'])
+        # Only the bot of the adapter's profile may keep a photo.
+        other = self.write('POST', '/v1/bots', {'name': 'Grace'})
+        with self.assertRaises(Exception):
+            self.service.gateway_file({'home': str(self.home), 'chat_id': other['id'], 'filename': 'x.png',
+                                       'content_base64': 'iVBORw0KGgo='})
 
     def test_a_send_outside_a_turn_to_another_chat_fails_without_a_retry(self):
         self.connect(None)

@@ -43,8 +43,12 @@ struct PhotoCarousel: View {
         .fullScreenCover(isPresented: Binding(get: { held != nil }, set: { if !$0 { held = nil } })) {
             if let held, held < photos.count {
                 let photo = photos[held]
-                HeldMessageView(message: messages[held], onReply: onReply, copyTitle: "Copy link",
-                                copy: { UIPasteboard.general.url = photo.url }, share: .url(photo.url)) { maxHeight in
+                // A photo from the Mac has no public address, so Copy and Share take its image.
+                let image = photo.isMacFile ? PhotoLoader.shared.cached(photo.url, size: .full)
+                    ?? PhotoLoader.shared.cached(photo.url, size: .tile) : nil
+                HeldMessageView(message: messages[held], onReply: onReply, copyTitle: photo.isMacFile ? "Copy" : "Copy link",
+                                copy: { if photo.isMacFile { UIPasteboard.general.image = image } else { UIPasteboard.general.url = photo.url } },
+                                share: image.map { .image($0, photo.label) } ?? (photo.isMacFile ? .text(photo.label) : .url(photo.url))) { maxHeight in
                     PhotoMenuPreview(url: photo.url, maxHeight: maxHeight)
                         .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
                         .accessibilityLabel(photo.label)
@@ -95,7 +99,7 @@ struct PhotoCarousel: View {
                         }
                     }
                 }
-                Button("Copy link") { UIPasteboard.general.url = photo.url }
+                if !photo.isMacFile { Button("Copy link") { UIPasteboard.general.url = photo.url } }
             }
             MessageReactionList(message: message, enabled: canReply)
         }
@@ -172,7 +176,7 @@ struct PhotoViewer: View {
                 if loaded.contains(photo.url), let image = PhotoLoader.shared.cached(photo.url, size: .full) {
                     ShareLink(item: Image(uiImage: image),
                               preview: SharePreview(photo.label, image: Image(uiImage: image)))
-                } else {
+                } else if !photo.isMacFile {
                     ShareLink(item: photo.url)
                 }
             }
@@ -328,6 +332,9 @@ final class PhotoLoader: @unchecked Sendable {
     // NSCache is safe to use from any thread.
     private let images = NSCache<NSString, UIImage>()
     private let session: URLSession
+    /// Loads a photo that a bot saved on the Mac, `coconut-file://<artifact id>`, through the paired Mac. The store
+    /// sets it.
+    var macFile: (@Sendable (String) async -> Data?)?
 
     private init() {
         images.totalCostLimit = 96 << 20
@@ -351,6 +358,10 @@ final class PhotoLoader: @unchecked Sendable {
     /// The data of a photo, or nil for a failed request or a file larger than `largestDownload`. The limit applies
     /// while the data arrives, so a huge file never fills the memory.
     private func download(_ url: URL) async -> Data? {
+        if url.scheme == "coconut-file" {
+            guard let id = url.host(), let macFile else { return nil }
+            return await macFile(id)
+        }
         // A redirect may go only to a public page, so an address cannot send the phone to a private service.
         guard let (bytes, response) = try? await session.bytes(from: url, delegate: PublicRedirects.shared),
               (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false,
