@@ -25,6 +25,7 @@ struct ConversationView: View {
     @State private var nearBottom = true
     @State private var userScrolling = false
     @State private var latestHidden = false
+    @State private var rowHold = ConversationRowHold()
     @State private var footerScroll = ConversationFooterScroll()
     @State private var isVisible = false
     @State private var transcript = TranscriptCache()
@@ -58,7 +59,12 @@ struct ConversationView: View {
         }
         await Task.yield()
         guard !Task.isCancelled else { return }
-        proxy.scrollTo(TranscriptEntry.rowId(for: store.displayedMessageId(for: id), in: current.entries), anchor: .top)
+        show(TranscriptEntry.rowId(for: store.displayedMessageId(for: id), in: current.entries), proxy: proxy)
+    }
+
+    private func show(_ row: String, proxy: ScrollViewProxy) {
+        proxy.scrollTo(row, anchor: .top)
+        rowHold.hold(row)
     }
 
     var body: some View {
@@ -78,7 +84,7 @@ struct ConversationView: View {
                                         await Task.yield()
                                         if let anchor, let entry = current.entries.first(where: { $0.messages.contains { $0.id == anchor } }) {
                                             let target = entry.message.kind == "decision" ? (entry.message.decisionId ?? entry.id) : entry.id
-                                            proxy.scrollTo(target, anchor: .top)
+                                            show(target, proxy: proxy)
                                         }
                                     }
                                 } label: {
@@ -144,9 +150,15 @@ struct ConversationView: View {
                     .onScrollGeometryChange(for: CGFloat.self) { ConversationFooterScroll.offset(in: $0) } action: { _, offset in
                         footerScroll.scroll(to: offset)
                     }
+                    .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { old, new in
+                        if let row = rowHold.rowToRestore(offsetChange: new - old, userScrolling: userScrolling, followsBottom: nearBottom) {
+                            proxy.scrollTo(row, anchor: .top)
+                        }
+                    }
                     .onScrollPhaseChange { previous, phase, context in
                         footerScroll.phaseChanged(phase, offset: ConversationFooterScroll.offset(in: context.geometry))
                         userScrolling = phase == .interacting || phase == .decelerating
+                        rowHold.phaseChanged(phase)
                         if userScrolling || previous == .interacting || previous == .decelerating {
                             let geometry = context.geometry
                             nearBottom = geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 100
@@ -160,6 +172,9 @@ struct ConversationView: View {
                         if !userScrolling && nearBottom && (focusTarget == nil || didFocusDecision) {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
+                    }
+                    .onChange(of: nearBottom) { _, following in
+                        if following { rowHold.release() }
                     }
                     .onChange(of: activity != nil) { _, _ in
                         if nearBottom { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
@@ -210,7 +225,7 @@ struct ConversationView: View {
                         nearBottom = false
                         await Task.yield()
                         guard !Task.isCancelled else { return }
-                        proxy.scrollTo(TranscriptEntry.rowId(for: focusTarget, in: current.entries), anchor: .top)
+                        show(TranscriptEntry.rowId(for: focusTarget, in: current.entries), proxy: proxy)
                         didFocusDecision = true
                     }
                 }
