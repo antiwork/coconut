@@ -404,10 +404,8 @@ struct MessageBubble: View {
     @Environment(AppStore.self) private var store
     @State private var editingOutgoing: OutgoingMessage?
     @State private var replyOffset: CGFloat = 0
-    @State private var actionsOpen = false
+    @State private var held = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ScaledMetric(relativeTo: .body) private var actionsWidth = 280
-    @State private var rowWidth: CGFloat = .infinity
     let message: Message
     var scrollToDecision: (String) -> Void = { _ in }
     var onReply: (() -> Void)? = nil
@@ -473,26 +471,26 @@ struct MessageBubble: View {
             .background(isUser ? BoardStyle.userBubble : BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
             .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                actionsOpen = true
+                // The held message fades in over the chat, without the slide of a full-screen cover.
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { held = true }
             })
-            .popover(isPresented: $actionsOpen, arrowEdge: .bottom) {
-                VStack(spacing: 8) {
-                    if onReply != nil, store.messageReference(for: message) != nil {
-                        HStack(spacing: 4) {
-                            ForEach(MessageReactions.selectable.indices, id: \.self) { reactionButton($0) }
-                        }
-                        Divider()
-                        Button { actionsOpen = false; onReply?() } label: {
-                            Label("Reply", systemImage: "arrowshape.turn.up.left").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        }
-                    }
-                    Button { UIPasteboard.general.string = message.text; actionsOpen = false } label: {
-                        Label("Copy", systemImage: "doc.on.doc").frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                    }
-                }.buttonStyle(.plain).padding(12)
-                    // Large text widens the menu, but never past the transcript.
-                    .frame(width: min(actionsWidth, rowWidth))
-                    .presentationCompactAdaptation(.popover)
+            .fullScreenCover(isPresented: $held) {
+                HeldMessageView(message: message, onReply: onReply.map { reply in { _ in reply() } }, copyTitle: "Copy",
+                                copy: { UIPasteboard.general.string = message.text }, share: .text(message.text),
+                                trailing: isUser) { maxHeight in
+                    // A long message shows its start.
+                    MessageText(text: displayText, linkColor: isUser ? BoardStyle.userBubbleLink : .blue,
+                                allowsTextSelection: false)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxHeight: maxHeight, alignment: .top)
+                        .background(isUser ? BoardStyle.userBubble : BoardStyle.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
+                        .frame(maxWidth: 340, alignment: isUser ? .trailing : .leading)
+                }
             }
                 if !isUser && !message.streaming {
                     LinkPreviewList(text: message.text)
@@ -501,7 +499,6 @@ struct MessageBubble: View {
             }
             if !isUser { Spacer(minLength: 18) }
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { rowWidth = $0 }
         .offset(x: replyOffset)
         .background(alignment: .leading) {
             Image(systemName: "arrowshape.turn.up.left.fill").font(.body)
@@ -528,13 +525,6 @@ struct MessageBubble: View {
         }
         .accessibilityLabel("\(isUser ? "You" : store.bots.first { $0.id == (message.senderBotId ?? message.botId) }?.name ?? "Deleted bot")")
         .sheet(item: $editingOutgoing) { RejectedMessageEditor(outgoing: $0) }
-    }
-    private func reactionButton(_ index: Int) -> some View {
-        let emoji = MessageReactions.selectable[index]
-        return Button { actionsOpen = false; Task { await store.react(to: message, emoji: emoji) } } label: {
-            Text(emoji).font(.largeTitle).frame(maxWidth: .infinity, minHeight: 56)
-                .background(store.reactions(for: message).contains(emoji) ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-        }.accessibilityLabel(MessageReactions.name(emoji))
     }
 }
 

@@ -34,14 +34,14 @@ final class MessageInteractionFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["Copy"].waitForExistence(timeout: 3))
         XCTAssertTrue(app.buttons["Reply"].exists)
         for name in ["Thumbs up", "Thumbs down"] {
-            XCTAssertTrue(app.buttons[name].exists, name)
+            XCTAssertTrue(app.buttons["React with \(name)"].exists, name)
         }
         for name in ["Laugh", "Celebrate", "Confused", "Heart", "Rocket", "Eyes"] {
-            XCTAssertFalse(app.buttons[name].exists, name)
+            XCTAssertFalse(app.buttons["React with \(name)"].exists, name)
         }
         let menu = XCTAttachment(screenshot: app.screenshot())
         menu.name = "Two reactions, Reply, and Copy"; menu.lifetime = .keepAlways; add(menu)
-        app.buttons["Thumbs up"].tap()
+        app.buttons["React with Thumbs up"].tap()
         XCTAssertTrue(app.buttons["Remove 👍 reaction"].waitForExistence(timeout: 3))
         app.buttons["Remove 👍 reaction"].tap()
         XCTAssertTrue(app.buttons["Remove 👍 reaction"].waitForNonExistence(timeout: 3))
@@ -53,5 +53,18 @@ final class MessageInteractionFlowTests: XCTestCase {
         XCTAssertTrue(paste.waitForExistence(timeout: 3))
         paste.tap()
         XCTAssertEqual(input.value as? String, "The blue folder has the complete report.")
+        // Reply in the held view closes it and puts the quote over the composer.
+        source.press(forDuration: 1)
+        app.buttons["Reply"].tap()
+        XCTAssertTrue(app.buttons["Cancel reply"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["React with Thumbs up"].exists)
+        app.buttons["Cancel reply"].tap()
+        // Share opens the share sheet with the message text.
+        source.press(forDuration: 1)
+        app.buttons["Share"].tap()
+        let sheet = app.otherElements["ActivityListView"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let shared = XCTAttachment(screenshot: app.screenshot())
+        shared.name = "Share sheet of a held message"; shared.lifetime = .keepAlways; add(shared)
     }
 }
