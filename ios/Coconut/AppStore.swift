@@ -2226,8 +2226,11 @@ final class AppStore {
         if target.decisionId == nil { return .conversation(target.conversationRoute) }
         // Without the Mac, the phone opens the card that it has, or the chat. Waiting would keep the Inbox busy
         // until the Mac answered again.
-        let offline = target.destination(pendingDecisionIds: Set(decisions.filter(\.isPending).map(\.id)), snapshotReady: true)
-        guard let client else { return offline }
+        // It reads the cards when it is used: a poll during the request can resolve the card.
+        func offline() -> NotificationDestination? {
+            target.destination(pendingDecisionIds: Set(decisions.filter(\.isPending).map(\.id)), snapshotReady: true)
+        }
+        guard let client else { return offline() }
         let epoch = snapshotEpoch
         do {
             if cachedState?.syncVersion == 1, let identity = target.decisionId {
@@ -2254,7 +2257,7 @@ final class AppStore {
             return target.destination(pendingDecisionIds: Set(decisions.filter(\.isPending).map(\.id)), snapshotReady: true)
         } catch {
             guard self.client === client, acceptsNotification(target) else { return nil }
-            return offline
+            return offline()
         }
     }
 
