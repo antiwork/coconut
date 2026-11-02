@@ -50,6 +50,8 @@ struct PhotoCarousel: View {
                     RemotePhoto(url: photo.url)
                         .frame(width: width, height: height)
                         .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+                        // One flat layer, so the press highlight keeps the crop of the photo.
+                        .compositingGroup()
                         .matchedTransitionSource(id: index, in: zoom)
                     if !photo.caption.isEmpty {
                         Text(photo.caption).font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -58,6 +60,7 @@ struct PhotoCarousel: View {
                 }
             }
             .buttonStyle(.plain)
+            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
             .accessibilityLabel(photo.label)
             .accessibilityHint("Opens the photo")
             .accessibilityIdentifier("photo-\(index)")
@@ -72,6 +75,9 @@ struct PhotoCarousel: View {
                 }
                 Button("Copy link", systemImage: "link") { UIPasteboard.general.url = photo.url }
                 ShareLink(item: photo.url)
+            } preview: {
+                // The lifted photo shows whole, as in Photos. A snapshot of the tile would lose its crop.
+                PhotoMenuPreview(url: photo.url)
             }
             .accessibilityActions {
                 if canReply {
@@ -84,6 +90,23 @@ struct PhotoCarousel: View {
                 }
             }
             MessageReactionList(message: message, enabled: canReply)
+        }
+    }
+}
+
+/// The whole photo, at its own shape, above the long-press menu.
+private struct PhotoMenuPreview: View {
+    let url: URL
+
+    var body: some View {
+        if let image = PhotoLoader.shared.cached(url, size: .full) ?? PhotoLoader.shared.cached(url, size: .tile),
+           image.size.width > 0, image.size.height > 0 {
+            // A tall photo stays short enough to leave room for the menu.
+            let scale = min(360 / image.size.width, 420 / image.size.height)
+            Image(uiImage: image).resizable()
+                .frame(width: image.size.width * scale, height: image.size.height * scale)
+        } else {
+            RemotePhoto(url: url).frame(width: 360, height: 240)
         }
     }
 }
