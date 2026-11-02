@@ -42,7 +42,13 @@ struct PhotoCarousel: View {
         .onChange(of: viewing) { _, index in scrolled = index }
         .fullScreenCover(isPresented: Binding(get: { held != nil }, set: { if !$0 { held = nil } })) {
             if let held, held < photos.count {
-                PhotoActions(photo: photos[held], message: messages[held], onReply: onReply)
+                let photo = photos[held]
+                HeldMessageView(message: messages[held], onReply: onReply, copyTitle: "Copy link",
+                                copy: { UIPasteboard.general.url = photo.url }, share: .url(photo.url)) { maxHeight in
+                    PhotoMenuPreview(url: photo.url, maxHeight: maxHeight)
+                        .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+                        .accessibilityLabel(photo.label)
+                }
             }
         }
     }
@@ -93,95 +99,6 @@ struct PhotoCarousel: View {
             }
             MessageReactionList(message: message, enabled: canReply)
         }
-    }
-}
-
-/// A held photo over the blurred chat: its reactions above, the photo whole, and its actions below.
-private struct PhotoActions: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let photo: MessagePhoto
-    let message: Message
-    let onReply: ((Message) -> Void)?
-    @State private var shown = false
-
-    var body: some View {
-        let canReply = onReply != nil && store.messageReference(for: message) != nil
-        let reactions = store.reactions(for: message)
-        GeometryReader { geometry in
-            // The photo takes the height that the reactions and the actions leave free. In landscape that can be
-            // little, so the photo stays at least 120 points tall and the view scrolls.
-            let photoHeight = min(380, max(120, geometry.size.height - 260))
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    if canReply {
-                        HStack(spacing: 2) {
-                            ForEach(MessageReactions.selectable, id: \.self) { emoji in
-                                Button { close { Task { await store.react(to: message, emoji: emoji) } } } label: {
-                                    Text(emoji).font(.system(size: 24)).frame(width: 40, height: 40)
-                                        .background(reactions.contains(emoji) ? Color.primary.opacity(0.12) : .clear, in: Circle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))")
-                            }
-                        }
-                        .padding(4)
-                        .background(.regularMaterial, in: Capsule())
-                    }
-                    PhotoMenuPreview(url: photo.url, maxHeight: photoHeight)
-                        .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-                        .accessibilityLabel(photo.label)
-                    VStack(alignment: .leading, spacing: 0) {
-                        if canReply {
-                            action("Reply", systemImage: "arrowshape.turn.up.left") { onReply?(message) }
-                        }
-                        action("Copy link", systemImage: "link") { UIPasteboard.general.url = photo.url }
-                        ShareLink(item: photo.url) { row("Share", systemImage: "square.and.arrow.up") }
-                            .buttonStyle(.plain)
-                    }
-                    .padding(.vertical, 6)
-                    .frame(width: 220, alignment: .leading)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
-                }
-                .padding(16)
-                .scaleEffect(shown || reduceMotion ? 1 : 0.94)
-                .opacity(shown ? 1 : 0)
-                // The content fills at least the screen, so it stays centered and a tap beside it closes the view.
-                .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture { close() }
-            }
-            .scrollBounceBehavior(.basedOnSize)
-        }
-        .background(Rectangle().fill(.ultraThinMaterial).ignoresSafeArea())
-        .presentationBackground(.clear)
-        .onAppear { withAnimation(.spring(duration: 0.3)) { shown = true } }
-        .accessibilityAction(.escape) { close() }
-    }
-
-    private func action(_ title: String, systemImage: String, perform: @escaping () -> Void) -> some View {
-        Button { close(then: perform) } label: { row(title, systemImage: systemImage) }
-            .buttonStyle(.plain)
-    }
-
-    private func row(_ title: String, systemImage: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: systemImage).frame(width: 22)
-            Text(title)
-        }
-        .font(.body)
-        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
-        .padding(.horizontal, 16)
-        .contentShape(Rectangle())
-    }
-
-    /// Closes at once, without the slide of a full-screen cover, then runs the chosen action in the chat.
-    private func close(then action: (() -> Void)? = nil) {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { dismiss() }
-        if let action { DispatchQueue.main.async(execute: action) }
     }
 }
 
