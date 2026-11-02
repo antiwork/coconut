@@ -24,6 +24,7 @@ struct ConversationView: View {
     @State private var didFocusDecision = false
     @State private var nearBottom = true
     @State private var userScrolling = false
+    @State private var latestHidden = false
     @State private var footerScroll = ConversationFooterScroll()
     @State private var isVisible = false
     @State private var transcript = TranscriptCache()
@@ -137,6 +138,9 @@ struct ConversationView: View {
                         // Only a user scroll changes whether new messages follow the bottom.
                         if userScrolling { nearBottom = value }
                     }
+                    .onScrollGeometryChange(for: Bool.self) { ConversationFooterScroll.hiddenBelow(in: $0) > 32 } action: { _, hidden in
+                        withAnimation(BoardStyle.fade(reduceMotion: reduceMotion)) { latestHidden = hidden }
+                    }
                     .onScrollGeometryChange(for: CGFloat.self) { ConversationFooterScroll.offset(in: $0) } action: { _, offset in
                         footerScroll.scroll(to: offset)
                     }
@@ -170,6 +174,28 @@ struct ConversationView: View {
                     }
                     .onChange(of: messages.last?.text) { _, _ in
                         if nearBottom { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        // Newer messages can be below the screen, for example when a focused card opens the chat.
+                        if latestHidden {
+                            Button {
+                                nearBottom = true
+                                footerScroll.reset()
+                                withAnimation(BoardStyle.fade(reduceMotion: reduceMotion)) {
+                                    proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                                }
+                            } label: {
+                                Image(systemName: "arrow.down").font(.body.weight(.semibold))
+                                    .frame(width: 44, height: 44)
+                                    .background(.regularMaterial, in: Circle())
+                                    .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.trailing, 16).padding(.bottom, 10)
+                            .transition(.opacity)
+                            .accessibilityLabel("Latest messages")
+                            .accessibilityIdentifier("conversation-latest")
+                        }
                     }
                     .background(BoardStyle.paper)
                     .task { await store.markRead(bot) }
