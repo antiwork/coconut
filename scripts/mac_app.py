@@ -10,6 +10,7 @@ The bundle:
   Contents/Resources/coconut-source.tar.gz    the source package of scripts/remote.py, which `coconut update` installs
   Contents/Resources/package.json             its package ID
   Contents/Resources/deploy.py                the scripts/deploy.py that installs it
+  Contents/Resources/Coconut.icns             the app icon, made from the iPhone icon (scripts/mac-icon.swift)
 
 Each binary is universal (arm64 and x86_64). Without --identity, the bundle has an ad-hoc signature.
 
@@ -47,6 +48,8 @@ ARCHIVE_LIMIT = 25 * 1024 * 1024
 FEED_URL = 'https://coconut-updates.gumroad.workers.dev/mac/appcast.xml'
 # The public half of the EdDSA key in the secret SPARKLE_ED_PRIVATE_KEY. Sparkle installs only archives that it signed.
 ED_PUBLIC_KEY = 'bsZLk/GXxQHmjyBDgQ/RY31DmKYvGBLPmJhzOFCkAWE='
+# The iPhone icon is the one source of the app icon.
+ICON_SOURCE = ROOT / 'ios/Coconut/Assets.xcassets/CoconutAppIcon.appiconset/CoconutAppIcon.png'
 
 
 def run(arguments: list, **options) -> subprocess.CompletedProcess:
@@ -67,6 +70,8 @@ def info_plist(version: str, build: str) -> dict:
         'CFBundleDevelopmentRegion': 'en',
         'CFBundleDisplayName': 'Coconut',
         'CFBundleExecutable': 'Coconut',
+        # Finder, System Settings and the login items list show this icon.
+        'CFBundleIconFile': 'Coconut',
         'CFBundleIdentifier': BUNDLE_ID,
         'CFBundleInfoDictionaryVersion': '6.0',
         'CFBundleName': 'Coconut',
@@ -124,6 +129,7 @@ def assemble(output: Path, version: str, build: str) -> Path:
         shutil.copy2(products / 'CoconutTool', contents / 'Helpers/coconut')
         add_sparkle(products / 'Sparkle.framework', contents / 'Frameworks/Sparkle.framework')
         compile_sidecar(contents / 'Helpers/tunnel-sidecar', scratch)
+        make_icon(contents / 'Resources/Coconut.icns', scratch)
     for agent in sorted((MAC / 'LaunchAgents').glob('*.plist')):
         shutil.copy2(agent, contents / 'Library/LaunchAgents' / agent.name)
     bundle_source(contents / 'Resources')
@@ -131,6 +137,12 @@ def assemble(output: Path, version: str, build: str) -> Path:
         plistlib.dump(info_plist(version, build), handle)
     (contents / 'PkgInfo').write_text('APPL????')
     return app
+
+
+def make_icon(output: Path, scratch: Path) -> None:
+    iconset = scratch / 'Coconut.iconset'
+    run(['xcrun', 'swift', ROOT / 'scripts/mac-icon.swift', ICON_SOURCE, iconset])
+    run(['iconutil', '-c', 'icns', iconset, '-o', output])
 
 
 def add_sparkle(framework: Path, destination: Path) -> None:
