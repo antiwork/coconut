@@ -32,8 +32,12 @@ def person_turn(task):
     exchange asked the card: it keeps the task and its reply route. A person's turn goes first in dispatch and in
     capacity (native_outcomes._dispatch_chat).
     """
-    if not chat_turn(task):
-        return False
-    return bool(task.get('_resume_decision')) or not (
+    return chat_turn(task) and not bot_input_turn(task)
+
+
+def bot_input_turn(task):
+    """Whether no person waits on a turn: its input is a bot exchange, the return of delegated work, or the result of a
+    background process, and not an answer of the person to a card. Such a turn may end in silence (gateway_chat)."""
+    return not task.get('_resume_decision') and bool(
         task.get('source_task_id') or task.get('_bot_messages') or task.get('_is_return')
         or task.get('_background_completion'))
