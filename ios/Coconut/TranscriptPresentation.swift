@@ -30,6 +30,18 @@ enum TranscriptPresentation {
 
     static func isPhotoAddress(_ url: URL) -> Bool { photoExtensions.contains(url.pathExtension.lowercased()) }
 
+    private static let privateHostSuffixes = [".local", ".localhost", ".internal", ".lan", ".home.arpa", ".corp",
+                                              ".ts.net"]
+
+    /// Whether the address is an https page on the public web: a host name with a dot and a letter in its last
+    /// part, not an IP address, and not a name that only a private network uses (such as a Tailscale name).
+    static func isPublicWebAddress(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https", let host = url.host()?.lowercased(), host.contains("."),
+              !host.contains(":"), let last = host.split(separator: ".").last,
+              last.rangeOfCharacter(from: .letters) != nil else { return false }
+        return !privateHostSuffixes.contains { host.hasSuffix($0) || host == $0.dropFirst() }
+    }
+
     /// The web pages that a bot message links to, for preview cards: Markdown links and bare addresses, in the
     /// order of the text, each once, at most three. Only public https pages count: no photo, no local address.
     static func previewLinks(in markdown: String) -> [URL] {
@@ -37,9 +49,7 @@ enum TranscriptPresentation {
         var links: [URL] = []
         var seen: Set<String> = []
         for match in detector.matches(in: markdown, range: NSRange(markdown.startIndex..., in: markdown)) {
-            guard let url = match.url, url.scheme?.lowercased() == "https", let host = url.host()?.lowercased(),
-                  host.contains("."), !host.hasSuffix(".local"), !host.hasSuffix(".internal"),
-                  host.rangeOfCharacter(from: CharacterSet.letters) != nil, !isPhotoAddress(url),
+            guard let url = match.url, isPublicWebAddress(url), !isPhotoAddress(url),
                   seen.insert(url.absoluteString).inserted else { continue }
             links.append(url)
             if links.count == 3 { break }

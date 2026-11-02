@@ -434,7 +434,8 @@ final class PhotoLoader: @unchecked Sendable {
     /// The data of a photo, or nil for a failed request or a file larger than `largestDownload`. The limit applies
     /// while the data arrives, so a huge file never fills the memory.
     private func download(_ url: URL) async -> Data? {
-        guard let (bytes, response) = try? await session.bytes(from: url),
+        // A redirect may go only to a public page, so an address cannot send the phone to a private service.
+        guard let (bytes, response) = try? await session.bytes(from: url, delegate: PublicRedirects.shared),
               (response as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? false,
               response.expectedContentLength <= Int64(Self.largestDownload) else { return nil }
         var data = Data()
