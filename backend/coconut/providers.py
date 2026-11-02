@@ -12,23 +12,7 @@ import subprocess
 import threading
 from copy import deepcopy
 from pathlib import Path
-from typing import Callable, Optional, Protocol
 from uuid import UUID
-
-Emit = Callable[[str, dict], Optional[dict]]
-
-
-class ExecutionProvider(Protocol):
-    name: str
-    ready: bool
-    model: str
-
-    def start_task(self, task: dict, bot: dict, history: list, emit: Emit) -> None: ...
-    def resume_task(self, task: dict, bot: dict, history: list, decision: dict, emit: Emit) -> None: ...
-    def answer_context(self, task: dict, bot: dict, history: list, question: str, emit: Emit) -> None: ...
-    def cancel_task(self, task_id: str) -> None: ...
-    def retrieve_artifact(self, artifact_id: str) -> bytes: ...
-
 
 class FixtureProvider:
     """Deterministic service fixture. This class never runs Hermes or a model."""
@@ -127,12 +111,6 @@ class FixtureProvider:
     def cancel_task(self, task_id):
         pass
 
-    def retrieve_artifact(self, artifact_id):
-        UUID(artifact_id)
-        path = self.data_dir / 'artifacts' / artifact_id
-        if path.is_symlink():
-            raise ValueError('Artifact links are not supported.')
-        return path.read_bytes()
 
 
 # The Hermes gateway runs each turn of a service with a Hermes home (gateway_chat). Coconut has no worker of its own.
