@@ -53,5 +53,18 @@ final class MessageInteractionFlowTests: XCTestCase {
         XCTAssertTrue(paste.waitForExistence(timeout: 3))
         paste.tap()
         XCTAssertEqual(input.value as? String, "The blue folder has the complete report.")
+        // Reply in the held view closes it and puts the quote over the composer.
+        source.press(forDuration: 1)
+        app.buttons["Reply"].tap()
+        XCTAssertTrue(app.buttons["Cancel reply"].waitForExistence(timeout: 3))
+        XCTAssertFalse(app.buttons["React with Thumbs up"].exists)
+        app.buttons["Cancel reply"].tap()
+        // Share opens the share sheet with the message text.
+        source.press(forDuration: 1)
+        app.buttons["Share"].tap()
+        let sheet = app.otherElements["ActivityListView"]
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5))
+        let shared = XCTAttachment(screenshot: app.screenshot())
+        shared.name = "Share sheet of a held message"; shared.lifetime = .keepAlways; add(shared)
     }
 }
