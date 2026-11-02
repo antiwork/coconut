@@ -166,11 +166,12 @@ struct BotContactRow: View {
     }
     private var preview: String {
         guard let message = latestMessage else {
-            return TranscriptPresentation.previewFallback(bot.lastMessage, messages: store.messages.filter { $0.botId == bot.id })
+            return TranscriptPresentation.previewText(
+                TranscriptPresentation.previewFallback(bot.lastMessage, messages: store.messages.filter { $0.botId == bot.id }))
         }
         let sender = message.senderBotId.flatMap { id in id == bot.id ? nil : store.bots.first { $0.id == id }?.name ?? "Deleted bot" }
         let prefix = message.role == "user" ? "You: " : sender.map { $0 + ": " } ?? ""
-        return prefix + message.text.replacingOccurrences(of: "\n", with: " ")
+        return prefix + TranscriptPresentation.previewText(message.text)
     }
     private var lastMessageDate: Date? {
         store.messages.filter { $0.botId == bot.id }.compactMap { $0.createdAt.apiDate }.max()
