@@ -37,6 +37,14 @@ class MacAppTests(unittest.TestCase):
         self.assertEqual(info['LSMinimumSystemVersion'], '14.0')
         self.assertIs(info['LSUIElement'], True)
 
+    def test_the_bundle_names_its_icon_and_makes_it_from_the_iphone_icon(self):
+        self.assertEqual(mac_app.info_plist('1.2.0', '512')['CFBundleIconFile'], 'Coconut')
+        self.assertTrue(mac_app.ICON_SOURCE.is_file())
+        with mock.patch.object(mac_app, 'run') as run:
+            mac_app.make_icon(self.folder / 'Coconut.icns', self.folder)
+        self.assertEqual([call.args[0][:2] for call in run.call_args_list], [['xcrun', 'swift'], ['iconutil', '-c']])
+        self.assertEqual(run.call_args_list[1].args[0][-1], self.folder / 'Coconut.icns')
+
     def test_the_bundle_carries_the_source_package_its_id_and_its_installer(self):
         resources = self.folder / 'Resources'
         resources.mkdir()
