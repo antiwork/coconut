@@ -372,6 +372,26 @@ class GatewayAdapterTests(unittest.TestCase):
                                                         metadata={'_interim_send': True})).success)
         self.assertEqual(len(self.outside()), 1)
 
+    def test_photos_reach_coconut_as_markdown_image_lines(self):
+        async def runner(event):
+            chat = event.source.chat_id
+            await self.adapter.send(chat, 'Here are the photos.')
+            # Hermes takes each Markdown image out of the reply and sends it with its alternative text.
+            await self.adapter.send_image(chat, 'https://cdn.example.com/2b/kitchen.jpg', caption='30 Main St [2B]\nkitchen')
+            await self.adapter.send_animation(chat, 'https://cdn.example.com/a (1).gif')
+            return None
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Send the photos.'})
+        self.service._run_task(task['id'])
+        self.assertEqual([text for text, _ in self.replies(task)], [
+            'Here are the photos.',
+            '![30 Main St \\[2B\\] kitchen](https://cdn.example.com/2b/kitchen.jpg)',
+            '![](<https://cdn.example.com/a (1).gif>)',
+        ])
+        sent = self.complete(self.adapter.send_image(self.bot['id'], 'https://cdn.example.com/2b/bath.jpg', caption='Bath'))
+        self.assertTrue(sent.success)
+        self.assertEqual(self.outside(), [('![Bath](https://cdn.example.com/2b/bath.jpg)', False)])
+
     def test_a_send_outside_a_turn_to_another_chat_fails_without_a_retry(self):
         self.connect(None)
         result = self.complete(self.adapter.send('not-a-bot', 'Hello.'))
