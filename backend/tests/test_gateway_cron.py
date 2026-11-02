@@ -93,6 +93,26 @@ class GatewayCronTests(unittest.TestCase):
         with self.service.lock:
             self.assertFalse(self.service._service_busy())
 
+    def test_a_restart_ends_a_running_routine_and_runs_no_chat_turn(self):
+        with tempfile.TemporaryDirectory() as folder:
+            first = Service(folder, Provider(), start_workers=False)
+            bot = first.mutate('POST', '/v1/bots', {'name': 'Desk'}, str(uuid4()), 'phone')
+            started = first.gateway_cron({'event': 'start', 'home': str(first.profiles.home(bot)), 'job_id': 'intake',
+                                          'job_name': 'Desk fast work intake', 'execution_id': 'run-1'})
+            first.close()
+            # The new service has no turn of the old one. Hermes owns the routine, so nothing runs it as a chat turn.
+            service = Service(folder, Provider(), start_workers=False)
+            try:
+                with service.lock:
+                    task = service._get('tasks', started['task_id'])
+                    event = service.db.execute("SELECT 1 FROM events WHERE type='task.updated' AND task_id=? "
+                                               "AND json_extract(data,'$.status')='failed'", (task['id'],)).fetchone()
+                self.assertEqual(task['status'], 'failed')
+                self.assertIn('runs again at its next time', task['summary'])
+                self.assertIsNotNone(event)
+            finally:
+                service.close()
+
     def test_a_cron_turn_without_its_thread_leaves_no_working_task(self):
         with patch.object(threading.Thread, 'start', side_effect=RuntimeError("can't start new thread")):
             with self.assertRaises(RuntimeError):

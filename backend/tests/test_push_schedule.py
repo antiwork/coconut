@@ -603,6 +603,8 @@ class DeliveryTimingTests(unittest.TestCase):
         self.deliver(self.MORNING)
         self.assertEqual(self.sent(), [])
         self.assertEqual(self.service.db.execute('SELECT status,reason FROM push_outbox').fetchall(), [('discarded', 'NoLongerRelevant')])
+        # Its item does not stay queued for a row that never sends.
+        self.assertEqual(self.service.db.execute('SELECT status,reason FROM push_items').fetchall(), [('dropped', 'NoLongerRelevant')])
 
     def test_weekend_items_wait_for_the_next_chosen_weekday(self):
         self.register(schedule=dict(weekdays=[1, 2, 3, 4, 5]))
