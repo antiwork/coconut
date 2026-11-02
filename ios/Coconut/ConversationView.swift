@@ -58,7 +58,7 @@ struct ConversationView: View {
         }
         await Task.yield()
         guard !Task.isCancelled else { return }
-        proxy.scrollTo(store.displayedMessageId(for: id), anchor: .top)
+        proxy.scrollTo(TranscriptEntry.rowId(for: store.displayedMessageId(for: id), in: current.entries), anchor: .top)
     }
 
     var body: some View {
@@ -106,7 +106,7 @@ struct ConversationView: View {
                                 if entry.isExchange {
                                     BotExchangeRow(messages: entry.messages, botId: botId)
                                 } else {
-                                transcriptRow(message) { id in
+                                transcriptRow(entry) { id in
                                     Task { await loadAndScrollToMessage(id, proxy: proxy) }
                                 }
                                 }
@@ -210,7 +210,7 @@ struct ConversationView: View {
                         nearBottom = false
                         await Task.yield()
                         guard !Task.isCancelled else { return }
-                        proxy.scrollTo(focusTarget, anchor: .top)
+                        proxy.scrollTo(TranscriptEntry.rowId(for: focusTarget, in: current.entries), anchor: .top)
                         didFocusDecision = true
                     }
                 }
@@ -305,8 +305,9 @@ struct ConversationView: View {
     }
 
     @ViewBuilder
-    private func transcriptRow(_ message: Message, scrollToDecision: @escaping (String) -> Void) -> some View {
-        TranscriptMessageRow(message: message, scrollToDecision: scrollToDecision, onReply: {
+    private func transcriptRow(_ entry: TranscriptEntry, scrollToDecision: @escaping (String) -> Void) -> some View {
+        TranscriptMessageRow(message: entry.message, photos: entry.photos, photoMessages: entry.messages,
+                             scrollToDecision: scrollToDecision, onReply: { message in
             replyTo = store.messageReference(for: message)
             composerFocused = true
         })
@@ -348,8 +349,12 @@ private final class TranscriptCache {
 struct TranscriptMessageRow: View {
     @Environment(AppStore.self) private var store
     let message: Message
+    var photos: [MessagePhoto] = []
+    /// The messages of the photos, in the same order.
+    var photoMessages: [Message] = []
     var scrollToDecision: (String) -> Void = { _ in }
-    var onReply: (() -> Void)? = nil
+    /// Takes the message to reply to, because a row of photos shows several messages.
+    var onReply: ((Message) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -374,14 +379,16 @@ struct TranscriptMessageRow: View {
                 .frame(maxWidth: .infinity, alignment: .trailing).padding(.horizontal, 14)
         }
         Group {
-        if message.kind == "decision", let id = message.decisionId,
+        if !photos.isEmpty {
+            PhotoCarousel(messages: photoMessages, photos: photos, onReply: onReply)
+        } else if message.kind == "decision", let id = message.decisionId,
            let decision = store.decisions.first(where: { $0.id == id }) {
             DecisionCard(decision: decision, onViewPrevious: scrollToDecision)
         } else if message.kind == "artifact", let id = message.artifactId,
                   let artifact = store.artifacts.first(where: { $0.id == id }) {
             ArtifactCard(artifact: artifact)
         } else {
-            MessageBubble(message: message, scrollToDecision: scrollToDecision, onReply: onReply)
+            MessageBubble(message: message, scrollToDecision: scrollToDecision, onReply: onReply.map { reply in { reply(message) } })
         }
         }
         .modifier(MessageTimestamp(createdAt: message.createdAt))
@@ -487,19 +494,7 @@ struct MessageBubble: View {
                     .frame(width: min(actionsWidth, rowWidth))
                     .presentationCompactAdaptation(.popover)
             }
-                let reactions = store.reactions(for: message)
-                if !reactions.isEmpty {
-                    HStack(spacing: 3) {
-                        ForEach(MessageReactions.all.filter { reactions.contains($0) }, id: \.self) { emoji in
-                            Button { Task { await store.react(to: message, emoji: emoji) } } label: {
-                                Text(emoji).font(.caption).frame(minWidth: 44, minHeight: 44)
-                            }.buttonStyle(.plain).accessibilityLabel("Remove \(emoji) reaction")
-                                .disabled(onReply == nil)
-                        }
-                    }.padding(.horizontal, 5)
-                        .background(BoardStyle.surface, in: Capsule()).overlay(Capsule().stroke(BoardStyle.line))
-                        .accessibilityIdentifier("message-reactions-\(message.id)")
-                }
+                MessageReactionList(message: message, enabled: onReply != nil)
             }
             if !isUser { Spacer(minLength: 18) }
         }
@@ -537,6 +532,29 @@ struct MessageBubble: View {
             Text(emoji).font(.largeTitle).frame(maxWidth: .infinity, minHeight: 56)
                 .background(store.reactions(for: message).contains(emoji) ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
         }.accessibilityLabel(MessageReactions.name(emoji))
+    }
+}
+
+/// The reactions on a message. A tap removes one.
+struct MessageReactionList: View {
+    @Environment(AppStore.self) private var store
+    let message: Message
+    let enabled: Bool
+
+    var body: some View {
+        let reactions = store.reactions(for: message)
+        if !reactions.isEmpty {
+            HStack(spacing: 3) {
+                ForEach(MessageReactions.all.filter { reactions.contains($0) }, id: \.self) { emoji in
+                    Button { Task { await store.react(to: message, emoji: emoji) } } label: {
+                        Text(emoji).font(.caption).frame(minWidth: 44, minHeight: 44)
+                    }.buttonStyle(.plain).accessibilityLabel("Remove \(emoji) reaction")
+                        .disabled(!enabled)
+                }
+            }.padding(.horizontal, 5)
+                .background(BoardStyle.surface, in: Capsule()).overlay(Capsule().stroke(BoardStyle.line))
+                .accessibilityIdentifier("message-reactions-\(message.id)")
+        }
     }
 }
 

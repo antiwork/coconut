@@ -734,7 +734,8 @@ final class AppStore {
         guard message.kind == "text", ["user", "assistant"].contains(message.role),
               !message.streaming, message.reactionEvent == nil, !message.isBotExchange,
               let saved = messages.first(where: { $0.id == message.id || (message.clientRequestId != nil && $0.clientRequestId == message.clientRequestId) }) else { return nil }
-        return MessageReference(messageId: saved.id, text: saved.text,
+        // A photo message quotes as "Photo: <caption>", not as its address.
+        return MessageReference(messageId: saved.id, text: saved.photo?.preview ?? saved.text,
             author: saved.role == "user" ? "You" : bots.first { $0.id == (saved.senderBotId ?? saved.botId) }?.name ?? "Bot",
             role: saved.role)
     }

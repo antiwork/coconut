@@ -139,8 +139,9 @@ class _Turn:
         self.silent_seconds = SILENT_SECONDS
         # A cron run of the gateway (open_turn). The adapter cannot stop it: it runs in a cron session, not in the chat.
         self.cron = False
-        # A turn that may end in silence, such as a reaction (TurnEvents).
-        self.silent = False
+        # A turn that may end in silence, such as a reaction or bot traffic, and whether it shows commentary
+        # (TurnEvents).
+        self.silent, self.commentary = False, True
         # The context (a follow-up on a pending card) that this turn answers, or None (gateway_chat.run_gateway_context).
         self.context_id = None
 
@@ -274,13 +275,13 @@ class GatewayBridge:
         return turn.id
 
     def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut',
-                 session_root: str | None = None, silent: bool = False, context_id: str | None = None,
-                 mode: str | None = None, own: str | None = None, folder: str | None = None,
-                 command: str | None = None, records: list | None = None) -> None:
+                 session_root: str | None = None, silent: bool = False, commentary: bool = True,
+                 context_id: str | None = None, mode: str | None = None, own: str | None = None,
+                 folder: str | None = None, command: str | None = None, records: list | None = None) -> None:
         """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends.
 
-        With `silent`, the turn may end in silence (TurnEvents). With `context_id`, the turn answers a follow-up on a
-        pending card: the plugin blocks the card tools in it. With `own`, the turn's own text, Hermes saves only `own`
+        With `silent`, the turn may end in silence. Without `commentary`, it shows no commentary (TurnEvents). With
+        `context_id`, the turn answers a follow-up on a pending card: the plugin blocks the card tools in it. With `own`, the turn's own text, Hermes saves only `own`
         in the session, and the plugin gives the whole `text` to the model calls of this turn (hooks.add_turn_context).
         With `folder`, the terminal commands of the turn run in that folder, as in a worker of a native outcome
         (hooks.guard_tool). With `command`, a command of Hermes that the person typed
@@ -295,7 +296,7 @@ class GatewayBridge:
             turn.request['command'] = command
         if records:
             turn.request['records'] = records
-        turn.silent = silent
+        turn.silent, turn.commentary = silent, commentary
         if context_id:
             turn.context_id = context_id
             # `refresh` for an automatic check of the card: the plugin then allows only its check tool of Coconut.
@@ -319,7 +320,7 @@ class GatewayBridge:
         """Translate the events of a registered turn with `emit` until the turn ends."""
         with self.lock:
             turn = self.turns[turn_id]
-        events = TurnEvents(emit, turn.id, silent=turn.silent)
+        events = TurnEvents(emit, turn.id, silent=turn.silent, commentary=turn.commentary)
         try:
             while True:
                 with self.lock:
@@ -392,15 +393,16 @@ class TurnEvents:
     the streamed segment of the same text. The first send that is not interim takes over from the streamed text: later
     deltas only repeat what the gateway sends and edits.
 
-    A `silent` turn, such as a reaction, shows no commentary. When Hermes sends no reply, or a reply that is a silence
-    marker, the turn ends without a message, as the worker ends it (silent_responses.is_silence_reply). Hermes drops a
-    reply that is only a marker, but the plugin streams its text, or only its start, before that.
+    A `silent` turn, such as a reaction or bot traffic, may end in silence: when Hermes sends no reply, or a reply that is
+    a silence marker, the turn ends without a message, as the worker ends it (silent_responses.is_silence_reply). Hermes drops a
+    reply that is only a marker, but the plugin streams its text, or only its start, before that. A turn without
+    `commentary`, such as a reaction, shows no commentary.
     """
 
-    def __init__(self, emit, turn_id=None, silent=False):
+    def __init__(self, emit, turn_id=None, silent=False, commentary=True):
         self.emit = emit
         self.turn_id = turn_id
-        self.silent = silent
+        self.silent, self.commentary = silent, commentary
         self.stream = None
         self.text = ''
         self.phase = None
@@ -432,7 +434,7 @@ class TurnEvents:
         elif kind == 'send' and text.strip():
             self._phase('writing')
             streamed = self.stream is not None and self.stream.startswith('stream:')
-            if event.get('interim') and self.silent:
+            if event.get('interim') and not self.commentary:
                 # A reaction turn shows no commentary, as in the worker. Take back the streamed text of the commentary.
                 if streamed:
                     self.emit('text_delta', {'text': '', 'replace': True})

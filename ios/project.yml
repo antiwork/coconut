@@ -68,6 +68,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSCameraUsageDescription: Coconut uses the camera only when you scan a pairing QR code.
+        NSPhotoLibraryAddUsageDescription: Coconut saves a photo from a chat to your library only when you choose Save Image.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
           NSExceptionDomains:

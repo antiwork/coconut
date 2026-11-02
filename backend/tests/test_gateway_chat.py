@@ -144,9 +144,11 @@ class WorkTurnRuleTests(unittest.TestCase):
 
 
 class TurnEventTests(unittest.TestCase):
-    def translate(self, *events, silent=False):
+    def translate(self, *events, silent=False, commentary=None):
         emitted = []
-        turn = TurnEvents(lambda kind, data: emitted.append((kind, data)), silent=silent)
+        # A reaction is silent without commentary, as most of these cases test.
+        turn = TurnEvents(lambda kind, data: emitted.append((kind, data)), silent=silent,
+                          commentary=not silent if commentary is None else commentary)
         return emitted, [turn.apply(event) for event in events]
 
     def test_a_silent_turn_shows_no_commentary_and_a_silence_marker_ends_it_without_a_message(self):
@@ -178,6 +180,15 @@ class TurnEventTests(unittest.TestCase):
             {'kind': 'send', 'message_id': 'm:1', 'text': 'Glad it helped. One more detail: the cache is warm.'},
             {'kind': 'done', 'outcome': 'success'}, silent=True)
         self.assertEqual(emitted[-1], ('completed', {'summary': 'Complete.'}))
+
+    def test_bot_traffic_keeps_its_commentary_and_may_end_in_silence(self):
+        emitted, _ = self.translate(
+            {'kind': 'send', 'message_id': 'c:1', 'text': 'Reading the report of Lin.', 'interim': True},
+            {'kind': 'delta', 'stream': 1, 'text': '[SILENT]'},
+            {'kind': 'done', 'outcome': 'success'}, silent=True, commentary=True)
+        self.assertIn(('interim_message', {'text': 'Reading the report of Lin.'}), emitted)
+        self.assertEqual(emitted[-1], ('completed', {'summary': 'Complete.', 'silent_response': True,
+                                                     'reaction_silent': True}))
 
     def test_segments_become_interim_messages_and_the_last_one_is_the_reply(self):
         emitted, done = self.translate(
@@ -1224,6 +1235,8 @@ class ServiceRoutingTests(unittest.TestCase):
         self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': 'I asked Lin.'})
         self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
         runner.join(5)
+        # The person waits on this turn, so Hermes must answer it (MessageEvent.reply_expected).
+        self.assertFalse(adapter.turns[0].get('silent'))
         # The message is bot traffic: Lin's task runs in a work session of Lin, in the chat of that session, not in
         # Lin's conversation with the person. The text has the delivered message, as the worker gives it.
         adapter = Adapter(self.service.gateway_bridge, other_home, [
@@ -1233,6 +1246,8 @@ class ServiceRoutingTests(unittest.TestCase):
         adapter.join(5)
         delivered = self.read('tasks', sent['task_id'])
         self.assertFalse(delivered.get('_chat_session'))
+        # No person waits on bot traffic, so its turn may end in silence.
+        self.assertTrue(adapter.turns[0].get('silent'))
         text = adapter.turns[0]['text']
         self.assertEqual(adapter.turns[0]['chat_id'], other['id'] + ':work:' + delivered['_execution_session_id'])
         # The delivered message is a record of the turn, which the session of the chat keeps once (turn_records).
@@ -1256,6 +1271,29 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(self.read('tasks', returned['id'])['status'], 'completed')
         self.assertFalse(self.read('tasks', returned['id']).get('_chat_session'))
         self.assertTrue(self.read('tasks', returned['id'])['_execution_session_id'])
+
+    def test_a_reply_of_the_person_to_bot_traffic_needs_a_reply(self):
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        task = self.send('Ask Lin to check the logs.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        sent = self.service.gateway_tool({'turn_id': turn, 'tool': 'message_bot',
+                                          'arguments': {'bot': 'Lin', 'text': 'Please check the error logs of today.'}})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        # The person writes to the queued task of the bot traffic before it runs.
+        self.write('POST', f'/v1/tasks/{sent["task_id"]}/replies', {'text': 'Also check the cron logs.'})
+        adapter = Adapter(self.service.gateway_bridge, self.service.profiles.home(other), [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'Both logs are clean.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.dispatch(sent['task_id'])
+        adapter.join(5)
+        self.assertIn('Also check the cron logs.', adapter.turns[0]['text'])
+        self.assertFalse(adapter.turns[0].get('silent'))
 
     def test_a_failed_exchange_can_be_asked_again_in_the_gateway(self):
         other = self.write('POST', '/v1/bots', {'name': 'Lin'})

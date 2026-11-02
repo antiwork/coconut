@@ -446,7 +446,4 @@ class DecisionInbox:
 
 
 # The card rules of every bot turn. The coconut plugin of the gateway gives them to its sessions too.
-try:
-    from .card_tools import DECISION_INSTRUCTIONS, RECOMMENDED_FIRST  # noqa: E402
-except ImportError:  # The worker imports this module from its folder.
-    from card_tools import DECISION_INSTRUCTIONS, RECOMMENDED_FIRST  # noqa: E402
+from .card_tools import DECISION_INSTRUCTIONS, RECOMMENDED_FIRST  # noqa: E402
