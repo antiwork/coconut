@@ -1974,8 +1974,11 @@ final class AppStore {
         cacheQueue.async { try? ProtectedCache.write(cache, name: "snapshot.json") }
     }
 
-    private func recordSyncFailure(_ failure: Error) {
+    func recordSyncFailure(_ failure: Error) {
         if failure is CancellationError || ((failure as? URLError)?.code == .cancelled && Task.isCancelled) { return }
+        // A pairing that needs repair stops polling until Reconnect or a new pairing. A later failure, for example of
+        // a write, must not hide the repair: the banner would lose its Pair button while nothing tries again.
+        if repairRequired { return }
         if let failure = failure as? TunnelError {
             // The poll repeats the same failure, so a view updates only when the state changes.
             if failure == .needsRepair { repairRequired = true }
@@ -2221,7 +2224,10 @@ final class AppStore {
         guard acceptsNotification(target) else { return nil }
         if target.group { return .inboxList }
         if target.decisionId == nil { return .conversation(target.conversationRoute) }
-        guard let client else { return nil }
+        // Without the Mac, the phone opens the card that it has, or the chat. Waiting would keep the Inbox busy
+        // until the Mac answered again.
+        let offline = target.destination(pendingDecisionIds: Set(decisions.filter(\.isPending).map(\.id)), snapshotReady: true)
+        guard let client else { return offline }
         let epoch = snapshotEpoch
         do {
             if cachedState?.syncVersion == 1, let identity = target.decisionId {
@@ -2246,7 +2252,10 @@ final class AppStore {
             guard self.client === client, acceptsNotification(target), epoch == snapshotEpoch else { return nil }
             if snapshot.cursor >= cursor { apply(snapshot, persist: true) }
             return target.destination(pendingDecisionIds: Set(decisions.filter(\.isPending).map(\.id)), snapshotReady: true)
-        } catch { return nil }
+        } catch {
+            guard self.client === client, acceptsNotification(target) else { return nil }
+            return offline
+        }
     }
 
     func acceptsNotification(_ target: NotificationTarget) -> Bool {
@@ -2254,6 +2263,8 @@ final class AppStore {
     }
 
     private func report(_ error: Error, updateConnection: Bool = true) {
+        // A request cut by a cancel or by the app going to the background has no message for the person.
+        if error is CancellationError { return }
         if let error = error as? URLError {
             self.error = "Couldn't complete this request. Try again."
             if updateConnection { syncIssue = Self.requestFailed }

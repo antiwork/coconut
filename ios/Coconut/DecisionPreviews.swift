@@ -81,8 +81,14 @@ struct DecisionPreviewStrip: View {
                     }.value
                     try Task.checkCancellation()
                     loaded[preview.id] = result
-                } catch is CancellationError { return }
-                catch { failed = true }
+                } catch is CancellationError where Task.isCancelled {
+                    // The view went away. Its next appearance loads again.
+                    return
+                } catch {
+                    // A read that the tunnel cut, when the app went to the background, is a failure too: Retry
+                    // loads it again.
+                    failed = true
+                }
             }
             loadedIds = Set(loaded.keys)
         }
