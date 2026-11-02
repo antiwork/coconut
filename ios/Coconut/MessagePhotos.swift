@@ -50,9 +50,28 @@ struct PhotoCarousel: View {
                     RemotePhoto(url: photo.url)
                         .frame(width: width, height: height)
                         .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-                        // One flat layer, so the press highlight keeps the crop of the photo.
-                        .compositingGroup()
+                        // The press highlight ignores a clip. One flat render keeps the crop and the corners.
+                        .drawingGroup()
                         .matchedTransitionSource(id: index, in: zoom)
+                        // The menu lifts only the photo, in its rounded shape, and not the caption under it.
+                        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+                        .contextMenu {
+                            if canReply {
+                                ControlGroup {
+                                    ForEach(MessageReactions.selectable, id: \.self) { emoji in
+                                        Button { Task { await store.react(to: message, emoji: emoji) } } label: { Text(emoji) }
+                                            .accessibilityLabel("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))")
+                                    }
+                                }
+                                .controlGroupStyle(.palette)
+                                Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply?(message) }
+                            }
+                            Button("Copy link", systemImage: "link") { UIPasteboard.general.url = photo.url }
+                            ShareLink(item: photo.url)
+                        } preview: {
+                            // The lifted photo shows whole, as in Photos.
+                            PhotoMenuPreview(url: photo.url)
+                        }
                     if !photo.caption.isEmpty {
                         Text(photo.caption).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                             .frame(width: width, alignment: .leading)
@@ -60,25 +79,9 @@ struct PhotoCarousel: View {
                 }
             }
             .buttonStyle(.plain)
-            .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
             .accessibilityLabel(photo.label)
             .accessibilityHint("Opens the photo")
             .accessibilityIdentifier("photo-\(index)")
-            .contextMenu {
-                if canReply {
-                    Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply?(message) }
-                    ForEach(MessageReactions.selectable, id: \.self) { emoji in
-                        Button("\(emoji) \(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))") {
-                            Task { await store.react(to: message, emoji: emoji) }
-                        }
-                    }
-                }
-                Button("Copy link", systemImage: "link") { UIPasteboard.general.url = photo.url }
-                ShareLink(item: photo.url)
-            } preview: {
-                // The lifted photo shows whole, as in Photos. A snapshot of the tile would lose its crop.
-                PhotoMenuPreview(url: photo.url)
-            }
             .accessibilityActions {
                 if canReply {
                     Button("Reply") { onReply?(message) }
