@@ -28,6 +28,25 @@ enum TranscriptPresentation {
 
     private static let photoExtensions: Set<String> = ["jpg", "jpeg", "png", "gif", "webp", "heic"]
 
+    static func isPhotoAddress(_ url: URL) -> Bool { photoExtensions.contains(url.pathExtension.lowercased()) }
+
+    /// The web pages that a bot message links to, for preview cards: Markdown links and bare addresses, in the
+    /// order of the text, each once, at most three. Only public https pages count: no photo, no local address.
+    static func previewLinks(in markdown: String) -> [URL] {
+        guard let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) else { return [] }
+        var links: [URL] = []
+        var seen: Set<String> = []
+        for match in detector.matches(in: markdown, range: NSRange(markdown.startIndex..., in: markdown)) {
+            guard let url = match.url, url.scheme?.lowercased() == "https", let host = url.host()?.lowercased(),
+                  host.contains("."), !host.hasSuffix(".local"), !host.hasSuffix(".internal"),
+                  host.rangeOfCharacter(from: CharacterSet.letters) != nil, !isPhotoAddress(url),
+                  seen.insert(url.absoluteString).inserted else { continue }
+            links.append(url)
+            if links.count == 3 { break }
+        }
+        return links
+    }
+
     /// The photo of a message that is only an image address, or one caption line with an image address on the
     /// next line. Hermes sends each image of a reply in this form when the chat cannot take the image itself.
     static func photo(in text: String) -> MessagePhoto? {
@@ -37,7 +56,7 @@ enum TranscriptPresentation {
             .filter { !$0.isEmpty }
         guard (1...2).contains(lines.count), let address = lines.last, !address.contains(" "),
               let url = URL(string: address), url.scheme?.lowercased() == "https", url.host() != nil,
-              photoExtensions.contains(url.pathExtension.lowercased()) else { return nil }
+              isPhotoAddress(url) else { return nil }
         return MessagePhoto(url: url, caption: lines.count == 2 ? lines[0] : "")
     }
 
