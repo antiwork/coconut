@@ -12,6 +12,8 @@ struct PhotoCarousel: View {
     @State private var viewerOpen = false
     @State private var viewing = 0
     @State private var scrolled: Int?
+    @State private var held: Int?
+    @State private var pressing: Int?
     @Namespace private var zoom
     private var width: CGFloat { photos.count == 1 ? 280 : 236 }
     private let height: CGFloat = 180
@@ -38,50 +40,46 @@ struct PhotoCarousel: View {
                 .navigationTransition(.zoom(sourceID: viewing, in: zoom))
         }
         .onChange(of: viewing) { _, index in scrolled = index }
+        .fullScreenCover(isPresented: Binding(get: { held != nil }, set: { if !$0 { held = nil } })) {
+            if let held, held < photos.count {
+                PhotoActions(photo: photos[held], message: messages[held], onReply: onReply)
+            }
+        }
     }
 
     private func tile(_ photo: MessagePhoto, message: Message, index: Int) -> some View {
-        // A photo message takes Reply and reactions like a text message, from the long-press menu.
         let canReply = onReply != nil && store.messageReference(for: message) != nil
         let reactions = store.reactions(for: message)
         return VStack(alignment: .leading, spacing: 4) {
-            Button { viewing = index; viewerOpen = true } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    RemotePhoto(url: photo.url)
-                        .frame(width: width, height: height)
-                        .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-                        // The press highlight ignores a clip. One flat render keeps the crop and the corners.
-                        .drawingGroup()
-                        .matchedTransitionSource(id: index, in: zoom)
-                        // The menu lifts only the photo, in its rounded shape, and not the caption under it.
-                        .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-                        .contextMenu {
-                            if canReply {
-                                ControlGroup {
-                                    ForEach(MessageReactions.selectable, id: \.self) { emoji in
-                                        Button { Task { await store.react(to: message, emoji: emoji) } } label: { Text(emoji) }
-                                            .accessibilityLabel("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))")
-                                    }
-                                }
-                                .controlGroupStyle(.palette)
-                                Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply?(message) }
-                            }
-                            Button("Copy link", systemImage: "link") { UIPasteboard.general.url = photo.url }
-                            ShareLink(item: photo.url)
-                        } preview: {
-                            // The lifted photo shows whole, as in Photos.
-                            PhotoMenuPreview(url: photo.url)
-                        }
-                    if !photo.caption.isEmpty {
-                        Text(photo.caption).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                            .frame(width: width, alignment: .leading)
-                    }
+            VStack(alignment: .leading, spacing: 4) {
+                RemotePhoto(url: photo.url)
+                    .frame(width: width, height: height)
+                    .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+                    .matchedTransitionSource(id: index, in: zoom)
+                    .scaleEffect(pressing == index ? 0.96 : 1)
+                    .animation(.spring(duration: 0.25), value: pressing)
+                if !photo.caption.isEmpty {
+                    Text(photo.caption).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        .frame(width: width, alignment: .leading)
                 }
             }
-            .buttonStyle(.plain)
+            .contentShape(Rectangle())
+            .onTapGesture { viewing = index; viewerOpen = true }
+            // A held photo shows its reactions and actions, as a held text message does.
+            .onLongPressGesture(minimumDuration: 0.4) {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                pressing = nil
+                // The actions fade in over the chat, without the slide of a full-screen cover.
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { held = index }
+            } onPressingChanged: { pressing = $0 ? index : nil }
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
             .accessibilityLabel(photo.label)
             .accessibilityHint("Opens the photo")
             .accessibilityIdentifier("photo-\(index)")
+            .accessibilityAction { viewing = index; viewerOpen = true }
             .accessibilityActions {
                 if canReply {
                     Button("Reply") { onReply?(message) }
@@ -91,25 +89,108 @@ struct PhotoCarousel: View {
                         }
                     }
                 }
+                Button("Copy link") { UIPasteboard.general.url = photo.url }
             }
             MessageReactionList(message: message, enabled: canReply)
         }
     }
 }
 
-/// The whole photo, at its own shape, above the long-press menu.
+/// A held photo over the blurred chat: its reactions above, the photo whole, and its actions below.
+private struct PhotoActions: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let photo: MessagePhoto
+    let message: Message
+    let onReply: ((Message) -> Void)?
+    @State private var shown = false
+
+    var body: some View {
+        let canReply = onReply != nil && store.messageReference(for: message) != nil
+        let reactions = store.reactions(for: message)
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
+                .onTapGesture { close() }
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 10) {
+                if canReply {
+                    HStack(spacing: 2) {
+                        ForEach(MessageReactions.selectable, id: \.self) { emoji in
+                            Button { close { Task { await store.react(to: message, emoji: emoji) } } } label: {
+                                Text(emoji).font(.system(size: 32)).frame(width: 52, height: 52)
+                                    .background(reactions.contains(emoji) ? Color.primary.opacity(0.12) : .clear, in: Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))")
+                        }
+                    }
+                    .padding(6)
+                    .background(.regularMaterial, in: Capsule())
+                }
+                PhotoMenuPreview(url: photo.url)
+                    .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+                    .accessibilityLabel(photo.label)
+                VStack(alignment: .leading, spacing: 0) {
+                    if canReply {
+                        action("Reply", systemImage: "arrowshape.turn.up.left") { onReply?(message) }
+                    }
+                    action("Copy link", systemImage: "link") { UIPasteboard.general.url = photo.url }
+                    ShareLink(item: photo.url) { row("Share", systemImage: "square.and.arrow.up") }
+                        .buttonStyle(.plain)
+                }
+                .padding(.vertical, 6)
+                .frame(width: 220, alignment: .leading)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .scaleEffect(shown || reduceMotion ? 1 : 0.94)
+            .opacity(shown ? 1 : 0)
+        }
+        .presentationBackground(.clear)
+        .onAppear { withAnimation(.spring(duration: 0.3)) { shown = true } }
+        .accessibilityAction(.escape) { close() }
+    }
+
+    private func action(_ title: String, systemImage: String, perform: @escaping () -> Void) -> some View {
+        Button { close(then: perform) } label: { row(title, systemImage: systemImage) }
+            .buttonStyle(.plain)
+    }
+
+    private func row(_ title: String, systemImage: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage).frame(width: 22)
+            Text(title)
+        }
+        .font(.body)
+        .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+        .padding(.horizontal, 16)
+        .contentShape(Rectangle())
+    }
+
+    /// Closes at once, without the slide of a full-screen cover, then runs the chosen action in the chat.
+    private func close(then action: (() -> Void)? = nil) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { dismiss() }
+        if let action { DispatchQueue.main.async(execute: action) }
+    }
+}
+
+/// The whole photo at its own shape, between the reactions and the actions of a held photo.
 private struct PhotoMenuPreview: View {
     let url: URL
 
     var body: some View {
         if let image = PhotoLoader.shared.cached(url, size: .full) ?? PhotoLoader.shared.cached(url, size: .tile),
            image.size.width > 0, image.size.height > 0 {
-            // A tall photo stays short enough to leave room for the menu.
-            let scale = min(360 / image.size.width, 420 / image.size.height)
+            // A tall photo stays short enough to leave room for the reactions and the actions.
+            let scale = min(340 / image.size.width, 380 / image.size.height)
             Image(uiImage: image).resizable()
                 .frame(width: image.size.width * scale, height: image.size.height * scale)
         } else {
-            RemotePhoto(url: url).frame(width: 360, height: 240)
+            RemotePhoto(url: url).frame(width: 340, height: 230)
         }
     }
 }
