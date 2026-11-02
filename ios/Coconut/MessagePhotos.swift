@@ -118,14 +118,14 @@ private struct PhotoActions: View {
                     HStack(spacing: 2) {
                         ForEach(MessageReactions.selectable, id: \.self) { emoji in
                             Button { close { Task { await store.react(to: message, emoji: emoji) } } } label: {
-                                Text(emoji).font(.system(size: 32)).frame(width: 52, height: 52)
+                                Text(emoji).font(.system(size: 24)).frame(width: 40, height: 40)
                                     .background(reactions.contains(emoji) ? Color.primary.opacity(0.12) : .clear, in: Circle())
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))")
                         }
                     }
-                    .padding(6)
+                    .padding(4)
                     .background(.regularMaterial, in: Capsule())
                 }
                 PhotoMenuPreview(url: photo.url)
