@@ -14,7 +14,7 @@ enum TranscriptPresentation {
         var parts: [String] = []
         var prose: [String] = []
         var fenced = false
-        // A run of prose lines is parsed together, so a link or an emphasis span can cross a line break.
+        // The lines of a paragraph are parsed together, so a link or an emphasis span can cross a line break.
         func flush() {
             let text = prose.joined(separator: "\n")
             prose = []
@@ -23,15 +23,22 @@ enum TranscriptPresentation {
             parts += plain.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
         }
         // A preview shows one or two lines, so the start of a long message is enough.
-        for line in markdown.prefix(1000).split(whereSeparator: \.isNewline) {
+        for line in markdown.prefix(1000).split(omittingEmptySubsequences: false, whereSeparator: \.isNewline) {
             let text = line.trimmingCharacters(in: .whitespaces)
             if text.hasPrefix("```") || text.hasPrefix("~~~") {
                 flush()
                 fenced.toggle()
             } else if fenced {
                 parts.append(text)
-            } else if text.wholeMatch(of: #/([-*_]\s*){3,}/#) == nil {
+            } else if text.isEmpty || text.wholeMatch(of: #/([-*_]\s*){3,}/#) != nil {
+                // A blank line or a rule ends a paragraph, and no span crosses it.
+                flush()
+            } else {
+                // A heading is a paragraph of its own line.
+                let heading = text.starts(with: #/#{1,6}\s/#)
+                if heading { flush() }
                 prose.append(text.replacing(#/^(#{1,6}\s+|>\s?|[-*+]\s+(\[[ xX]\]\s+)?|\d+[.)]\s+)+/#, with: ""))
+                if heading { flush() }
             }
         }
         flush()

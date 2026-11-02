@@ -38,6 +38,9 @@ final class TranscriptPresentationTests: XCTestCase {
                        "Run: echo hi > output.txt # explanation")
         XCTAssertEqual(TranscriptPresentation.previewText("See [Street\nEasy](https://streeteasy.com) and **very\nnew** ones"),
                        "See Street Easy and very new ones")
+        // No span crosses a paragraph or a heading, so literal marks stay.
+        XCTAssertEqual(TranscriptPresentation.previewText("First *literal\n\nsecond literal*"), "First *literal second literal*")
+        XCTAssertEqual(TranscriptPresentation.previewText("# A *star\nand more*"), "A *star and more*")
     }
 
     func testCompletedCommentaryAppearsWhileFinalReplyRemainsPartial() {
