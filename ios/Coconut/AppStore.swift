@@ -41,7 +41,10 @@ final class AppStore {
     var workCapacity: ParallelWorkSettings?
     var routines: [Routine] = []
     var learning: [LearningGroup] = []
-    var connection: ConnectionState = .unconfigured
+    var connection: ConnectionState = .unconfigured {
+        // A photo from the Mac that failed while the phone was offline loads again.
+        didSet { if connection == .connected, oldValue != .connected { NotificationCenter.default.post(name: .coconutMacConnected, object: nil) } }
+    }
     var lastSync: Date?
     var error: String?
     var syncIssue: String?

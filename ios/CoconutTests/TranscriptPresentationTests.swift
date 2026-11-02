@@ -449,6 +449,10 @@ final class TranscriptPresentationTests: XCTestCase {
         let url = try XCTUnwrap(URL(string: "coconut-file://\(id)"))
         let image = await PhotoLoader.shared.image(url, size: .tile)
         XCTAssertEqual(image?.size, CGSize(width: 4, height: 4))
+        // The bytes stay on the phone, so the full size loads without the Mac.
+        PhotoLoader.shared.macFile = { _ in nil }
+        let full = await PhotoLoader.shared.image(url, size: .full)
+        XCTAssertEqual(full?.size, CGSize(width: 4, height: 4))
         let missing = try XCTUnwrap(URL(string: "coconut-file://\(UUID().uuidString)"))
         let none = await PhotoLoader.shared.image(missing, size: .tile)
         XCTAssertNil(none)

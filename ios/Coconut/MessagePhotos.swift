@@ -42,17 +42,7 @@ struct PhotoCarousel: View {
         .onChange(of: viewing) { _, index in scrolled = index }
         .fullScreenCover(isPresented: Binding(get: { held != nil }, set: { if !$0 { held = nil } })) {
             if let held, held < photos.count {
-                let photo = photos[held]
-                // A photo from the Mac has no public address, so Copy and Share take its image.
-                let image = photo.isMacFile ? PhotoLoader.shared.cached(photo.url, size: .full)
-                    ?? PhotoLoader.shared.cached(photo.url, size: .tile) : nil
-                HeldMessageView(message: messages[held], onReply: onReply, copyTitle: photo.isMacFile ? "Copy" : "Copy link",
-                                copy: { if photo.isMacFile { UIPasteboard.general.image = image } else { UIPasteboard.general.url = photo.url } },
-                                share: image.map { .image($0, photo.label) } ?? (photo.isMacFile ? .text(photo.label) : .url(photo.url))) { maxHeight in
-                    PhotoMenuPreview(url: photo.url, maxHeight: maxHeight)
-                        .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-                        .accessibilityLabel(photo.label)
-                }
+                HeldPhoto(photo: photos[held], message: messages[held], onReply: onReply)
             }
         }
     }
@@ -102,6 +92,32 @@ struct PhotoCarousel: View {
                 if !photo.isMacFile { Button("Copy link") { UIPasteboard.general.url = photo.url } }
             }
             MessageReactionList(message: message, enabled: canReply)
+        }
+    }
+}
+
+/// A held photo. A photo from the Mac has no public address, so Copy and Share take its image, and they wait until it
+/// has loaded.
+private struct HeldPhoto: View {
+    let photo: MessagePhoto
+    let message: Message
+    let onReply: ((Message) -> Void)?
+    @State private var image: UIImage?
+
+    var body: some View {
+        let loaded = image
+        HeldMessageView(message: message, onReply: onReply, copyTitle: photo.isMacFile ? "Copy" : "Copy link",
+                        copy: photo.isMacFile ? loaded.map { image in { UIPasteboard.general.image = image } }
+                            : { UIPasteboard.general.url = photo.url },
+                        share: photo.isMacFile ? loaded.map { .image($0, photo.label) } : .url(photo.url)) { maxHeight in
+            PhotoMenuPreview(url: photo.url, maxHeight: maxHeight)
+                .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+                .accessibilityLabel(photo.label)
+        }
+        .task(id: photo.url) {
+            guard photo.isMacFile else { return }
+            image = PhotoLoader.shared.cached(photo.url, size: .full) ?? PhotoLoader.shared.cached(photo.url, size: .tile)
+            if image == nil { image = await PhotoLoader.shared.image(photo.url, size: .full) }
         }
     }
 }
@@ -196,6 +212,7 @@ private struct PhotoPage: View {
     let loaded: () -> Void
     @State private var image: UIImage?
     @State private var failed = false
+    @State private var attempt = 0
 
     var body: some View {
         ZStack {
@@ -208,7 +225,11 @@ private struct PhotoPage: View {
             }
         }
         .ignoresSafeArea()
-        .task(id: url) {
+        .onReceive(NotificationCenter.default.publisher(for: .coconutMacConnected)) { _ in
+            if failed && url.scheme == "coconut-file" { attempt += 1 }
+        }
+        .task(id: "\(url.absoluteString) \(attempt)") {
+            failed = false
             image = await PhotoLoader.shared.image(url, size: .full)
             failed = image == nil
             if image != nil { loaded() }
@@ -292,6 +313,7 @@ struct RemotePhoto: View {
     // A photo in the cache shows at once, without a frame of the placeholder.
     @State private var image: UIImage?
     @State private var failed = false
+    @State private var attempt = 0
 
     init(url: URL) {
         self.url = url
@@ -310,7 +332,10 @@ struct RemotePhoto: View {
                 }
             }
             .clipped()
-            .task(id: url) {
+            .onReceive(NotificationCenter.default.publisher(for: .coconutMacConnected)) { _ in
+                if failed && url.scheme == "coconut-file" { attempt += 1 }
+            }
+            .task(id: "\(url.absoluteString) \(attempt)") {
                 failed = false
                 image = PhotoLoader.shared.cached(url, size: .tile)
                 guard image == nil else { return }
@@ -359,8 +384,15 @@ final class PhotoLoader: @unchecked Sendable {
     /// while the data arrives, so a huge file never fills the memory.
     private func download(_ url: URL) async -> Data? {
         if url.scheme == "coconut-file" {
-            guard let id = url.host(), let macFile else { return nil }
-            return await macFile(id)
+            // The bytes of an attachment never change, so both sizes and later launches reuse one transfer.
+            guard let id = url.host(), UUID(uuidString: id) != nil else { return nil }
+            let file = Self.macFiles.appendingPathComponent(id)
+            if let data = try? Data(contentsOf: file) { return data }
+            guard let macFile, let data = await macFile(id) else { return nil }
+            try? FileManager.default.createDirectory(at: Self.macFiles, withIntermediateDirectories: true,
+                                                     attributes: [.protectionKey: FileProtectionType.complete])
+            try? data.write(to: file, options: [.atomic, .completeFileProtection])
+            return data
         }
         // A redirect may go only to a public page, so an address cannot send the phone to a private service.
         guard let (bytes, response) = try? await session.bytes(from: url, delegate: PublicRedirects.shared),
@@ -379,6 +411,9 @@ final class PhotoLoader: @unchecked Sendable {
 
     private static let largestDownload = 20 << 20
 
+    private static let macFiles = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("MacPhotos", isDirectory: true)
+
     private static func key(_ url: URL, _ size: PhotoSize) -> NSString { "\(size.rawValue) \(url.absoluteString)" as NSString }
 }
 
@@ -392,4 +427,9 @@ func downsampledImage(_ data: Data, largestSide: Int) -> CGImage? {
         kCGImageSourceShouldCacheImmediately: true,
         kCGImageSourceThumbnailMaxPixelSize: largestSide,
     ] as CFDictionary)
+}
+
+extension Notification.Name {
+    /// The phone reached the paired Mac again.
+    static let coconutMacConnected = Notification.Name("CoconutMacConnected")
 }
