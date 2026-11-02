@@ -20,6 +20,21 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertEqual(TranscriptPresentation.previewFallback("Saved complete reply", messages: []), "Saved complete reply")
     }
 
+    func testPreviewShowsMarkdownAsPlainText() {
+        let text = """
+        # 🏡 Heights/Dumbo scout: Mon, Nov 2
+        ---
+        - **3 new** listings, see [StreetEasy](https://streeteasy.com)
+        > 1. Use `rent` filter
+        ```
+        code
+        ```
+        """
+        XCTAssertEqual(TranscriptPresentation.previewText(text),
+                       "🏡 Heights/Dumbo scout: Mon, Nov 2 3 new listings, see StreetEasy Use rent filter code")
+        XCTAssertEqual(TranscriptPresentation.previewText("Plain line\nand #hashtag 2 * 3"), "Plain line and #hashtag 2 * 3")
+    }
+
     func testCompletedCommentaryAppearsWhileFinalReplyRemainsPartial() {
         let request = message("request", role: "user", text: "Check the merge action.")
         let commentary = message("commentary", text: "I will check the merge action and its tests.")

@@ -7,6 +7,22 @@ enum TranscriptPresentation {
         return text
     }
 
+    /// One line of plain text for a preview of a Markdown message: no heading, quote or list marks, no emphasis or
+    /// code marks, and link text without its address. Fence and rule lines are dropped, and lines join with spaces.
+    static func previewText(_ markdown: String) -> String {
+        var lines: [String] = []
+        // A preview shows one or two lines, so the start of a long message is enough.
+        for line in markdown.prefix(1000).split(whereSeparator: \.isNewline) {
+            var text = line.trimmingCharacters(in: .whitespaces)
+            if text.hasPrefix("```") || text.hasPrefix("~~~") || text.wholeMatch(of: #/([-*_]\s*){3,}/#) != nil { continue }
+            text = text.replacing(#/^(#{1,6}\s+|>\s?|[-*+]\s+(\[[ xX]\]\s+)?|\d+[.)]\s+)+/#, with: "")
+            let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+            if let inline = try? AttributedString(markdown: text, options: options) { text = String(inline.characters) }
+            if !text.isEmpty { lines.append(text) }
+        }
+        return lines.joined(separator: " ")
+    }
+
     private static let genericProgress: Set<String> = ["working", "working on your request", "preparing an answer"]
     private static let genericCompletion: Set<String> = [
         "ready to review",
