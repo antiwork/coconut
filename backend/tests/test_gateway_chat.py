@@ -1272,6 +1272,29 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertFalse(self.read('tasks', returned['id']).get('_chat_session'))
         self.assertTrue(self.read('tasks', returned['id'])['_execution_session_id'])
 
+    def test_a_reply_of_the_person_to_bot_traffic_needs_a_reply(self):
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        task = self.send('Ask Lin to check the logs.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        sent = self.service.gateway_tool({'turn_id': turn, 'tool': 'message_bot',
+                                          'arguments': {'bot': 'Lin', 'text': 'Please check the error logs of today.'}})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        # The person writes to the queued task of the bot traffic before it runs.
+        self.write('POST', f'/v1/tasks/{sent["task_id"]}/replies', {'text': 'Also check the cron logs.'})
+        adapter = Adapter(self.service.gateway_bridge, self.service.profiles.home(other), [
+            {'kind': 'send', 'message_id': 'm:1', 'text': 'Both logs are clean.'}, {'kind': 'done', 'outcome': 'success'}])
+        adapter.start()
+        self.dispatch(sent['task_id'])
+        adapter.join(5)
+        self.assertIn('Also check the cron logs.', adapter.turns[0]['text'])
+        self.assertFalse(adapter.turns[0].get('silent'))
+
     def test_a_failed_exchange_can_be_asked_again_in_the_gateway(self):
         other = self.write('POST', '/v1/bots', {'name': 'Lin'})
         other_home = self.service.profiles.home(other)

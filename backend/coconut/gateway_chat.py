@@ -40,7 +40,7 @@ import time
 from . import hermes_runtime
 from .gateway_bridge import (OTHER_PATHS, WORK_MESSAGE_FIELDS, WORK_SESSION_INPUTS, GatewayBridge, GatewayBusy,
                              GatewayUnavailable, gateway_claim_turn, gateway_work_turn, plain_chat_turn)
-from .native_conversation import reaction_only_turn
+from .native_conversation import current_messages, reaction_only_turn
 from .work_capacity import bot_input_turn
 
 LOG = logging.getLogger(__name__)
@@ -430,13 +430,16 @@ class GatewayChat:
         own = gateway_turn_own(request)
         with self.lock:
             text += self.cards_note(task)
+        # No person waits on bot traffic, so it may end in silence, for example when the bot's own rules ask for silence
+        # when nothing needs the person. A message or steering of the person in the turn needs a reply.
+        unattended = bot_input_turn(task) and not current_messages(request) and not task.get('_steering')
         if work:
-            return self._run_work_turn(task, bot, text, emit, own=own)
+            return self._run_work_turn(task, bot, text, emit, own=own, silent=unattended)
         with self.lock:
             if self._get('tasks', task['id']).get('_preempted'):
                 text = PREEMPTED + text
         reaction = reaction_only_turn(request)
-        self._run_in_gateway(task, bot, text, emit, silent=reaction or bot_input_turn(task), commentary=not reaction,
+        self._run_in_gateway(task, bot, text, emit, silent=reaction or unattended, commentary=not reaction,
                              own=own, command=gateway_command(request))
         self._requeue_if_preempted(task['id'], emit)
         return True
@@ -538,11 +541,13 @@ class GatewayChat:
         return (bot['id'] + WORK_CHAT + execution,
                 session_root(bot, execution=execution, epoch=task.get('_conversation_epoch')))
 
-    def _run_work_turn(self, task: dict, bot: dict, text: str, emit, own: str | None = None) -> bool:
+    def _run_work_turn(self, task: dict, bot: dict, text: str, emit, own: str | None = None,
+                       silent: bool = False) -> bool:
         """Run a turn that a Kanban claim starts (gateway_claim_turn): a turn of a work session in its own chat, or a
         turn of the bot's conversation that owns a native outcome in the bot's chat. The claim holds a placeholder
         process for the turn (kanban_worker_pid). When Hermes ends that process, for example after its run limit, the
-        turn stops."""
+        turn stops. With `silent`, the turn may end in silence. An answer of the person to a card always needs a reply
+        (run_gateway_resume)."""
         chat, root = self.work_chat(bot, task) if gateway_work_turn(task) else (None, None)
         holder, ended, lost = self._watch_claim(task['id'], task['id'])
 
@@ -557,10 +562,8 @@ class GatewayChat:
         # A native outcome runs in the workspace of its claim, as the worker runs it (TERMINAL_CWD).
         folder = claim.get('workspace') if mode in ('outcome', 'technical') and claim.get('workspace') else None
         try:
-            # No person waits on bot traffic, so it may end in silence, for example when the bot's own rules ask for
-            # silence when nothing needs the person.
             self._run_in_gateway(task, bot, text, emit, session=root, chat=chat, wanted=wanted, mode=mode, own=own,
-                                 silent=bot_input_turn(task),
+                                 silent=silent,
                                  folder=folder if folder and os.path.isdir(folder) else None)
         finally:
             ended.set()
