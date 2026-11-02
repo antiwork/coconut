@@ -109,45 +109,52 @@ private struct PhotoActions: View {
     var body: some View {
         let canReply = onReply != nil && store.messageReference(for: message) != nil
         let reactions = store.reactions(for: message)
-        ZStack {
-            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
-                .onTapGesture { close() }
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 10) {
-                if canReply {
-                    HStack(spacing: 2) {
-                        ForEach(MessageReactions.selectable, id: \.self) { emoji in
-                            Button { close { Task { await store.react(to: message, emoji: emoji) } } } label: {
-                                Text(emoji).font(.system(size: 24)).frame(width: 40, height: 40)
-                                    .background(reactions.contains(emoji) ? Color.primary.opacity(0.12) : .clear, in: Circle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))")
-                        }
-                    }
-                    .padding(4)
-                    .background(.regularMaterial, in: Capsule())
-                }
-                PhotoMenuPreview(url: photo.url)
-                    .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
-                    .accessibilityLabel(photo.label)
-                VStack(alignment: .leading, spacing: 0) {
+        GeometryReader { geometry in
+            // The photo takes the height that the reactions and the actions leave free. In landscape that can be
+            // little, so the photo stays at least 120 points tall and the view scrolls.
+            let photoHeight = min(380, max(120, geometry.size.height - 260))
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
                     if canReply {
-                        action("Reply", systemImage: "arrowshape.turn.up.left") { onReply?(message) }
+                        HStack(spacing: 2) {
+                            ForEach(MessageReactions.selectable, id: \.self) { emoji in
+                                Button { close { Task { await store.react(to: message, emoji: emoji) } } } label: {
+                                    Text(emoji).font(.system(size: 24)).frame(width: 40, height: 40)
+                                        .background(reactions.contains(emoji) ? Color.primary.opacity(0.12) : .clear, in: Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))")
+                            }
+                        }
+                        .padding(4)
+                        .background(.regularMaterial, in: Capsule())
                     }
-                    action("Copy link", systemImage: "link") { UIPasteboard.general.url = photo.url }
-                    ShareLink(item: photo.url) { row("Share", systemImage: "square.and.arrow.up") }
-                        .buttonStyle(.plain)
+                    PhotoMenuPreview(url: photo.url, maxHeight: photoHeight)
+                        .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
+                        .accessibilityLabel(photo.label)
+                    VStack(alignment: .leading, spacing: 0) {
+                        if canReply {
+                            action("Reply", systemImage: "arrowshape.turn.up.left") { onReply?(message) }
+                        }
+                        action("Copy link", systemImage: "link") { UIPasteboard.general.url = photo.url }
+                        ShareLink(item: photo.url) { row("Share", systemImage: "square.and.arrow.up") }
+                            .buttonStyle(.plain)
+                    }
+                    .padding(.vertical, 6)
+                    .frame(width: 220, alignment: .leading)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
                 }
-                .padding(.vertical, 6)
-                .frame(width: 220, alignment: .leading)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
+                .padding(16)
+                .scaleEffect(shown || reduceMotion ? 1 : 0.94)
+                .opacity(shown ? 1 : 0)
+                // The content fills at least the screen, so it stays centered and a tap beside it closes the view.
+                .frame(maxWidth: .infinity, minHeight: geometry.size.height, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { close() }
             }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .scaleEffect(shown || reduceMotion ? 1 : 0.94)
-            .opacity(shown ? 1 : 0)
+            .scrollBounceBehavior(.basedOnSize)
         }
+        .background(Rectangle().fill(.ultraThinMaterial).ignoresSafeArea())
         .presentationBackground(.clear)
         .onAppear { withAnimation(.spring(duration: 0.3)) { shown = true } }
         .accessibilityAction(.escape) { close() }
@@ -181,16 +188,16 @@ private struct PhotoActions: View {
 /// The whole photo at its own shape, between the reactions and the actions of a held photo.
 private struct PhotoMenuPreview: View {
     let url: URL
+    let maxHeight: CGFloat
 
     var body: some View {
         if let image = PhotoLoader.shared.cached(url, size: .full) ?? PhotoLoader.shared.cached(url, size: .tile),
            image.size.width > 0, image.size.height > 0 {
-            // A tall photo stays short enough to leave room for the reactions and the actions.
-            let scale = min(340 / image.size.width, 380 / image.size.height)
+            let scale = min(340 / image.size.width, maxHeight / image.size.height)
             Image(uiImage: image).resizable()
                 .frame(width: image.size.width * scale, height: image.size.height * scale)
         } else {
-            RemotePhoto(url: url).frame(width: 340, height: 230)
+            RemotePhoto(url: url).frame(width: 340, height: min(230, maxHeight))
         }
     }
 }
