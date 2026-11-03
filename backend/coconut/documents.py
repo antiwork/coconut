@@ -81,9 +81,20 @@ _SCRIPT_TOKENS = re.compile(r'("(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|`(?:\\
                             re.S)
 
 
+_TEMPLATE_EXPRESSION = re.compile(r'\$\{[^}]*\}')
+_COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
+
+
 def _script_code(script: str) -> str:
-    """A script without its comments."""
-    return _SCRIPT_TOKENS.sub(lambda match: match.group(1) or ' ', script)
+    """A script without its comments, also the comments of the ${...} expressions of a template string."""
+    def kept(match):
+        text = match.group(1)
+        if text is None:
+            return ' '
+        if text.startswith('`'):
+            return _TEMPLATE_EXPRESSION.sub(lambda expression: _COMMENT.sub(' ', expression.group(0)), text)
+        return text
+    return _SCRIPT_TOKENS.sub(kept, script)
 
 
 def _declarations(css: str) -> str:

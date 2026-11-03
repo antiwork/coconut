@@ -24,7 +24,8 @@ class PageRuleTests(unittest.TestCase):
         self.assertEqual(page_problems('<style>p { color: var(--text) } .red { margin: 0 }</style>'), [])
         # A comment and an address in a script are not colors, and a private field read is not a color.
         self.assertEqual(page_problems('<script>// Fixes #377\nconst total = this.#add + 1\n'
-                                       'const link = "https://github.com/antiwork/coconut"</script>'), [])
+                                       'const link = "https://github.com/antiwork/coconut"\n'
+                                       'const label = `${ /* PR #377 */ count } items`</script>'), [])
         # The text of a page is not code.
         self.assertEqual(page_problems('<p>Fixed in PR #377 (see #12, #345). Last fetch: 10:00. The lab (room 2) is '
                                        'red. Use style="color:red" here.</p><a href="#add">Up</a>'), [])
