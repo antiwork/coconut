@@ -164,9 +164,11 @@ def verify_gateway_contract():
                'on_session_reset'} - set(VALID_HOOKS)
     if missing:
         raise ValueError('Hermes removed plugin hooks of the coconut platform: ' + ', '.join(sorted(missing)))
-    # The card rules go into the system prompt of each Coconut session (hermes_plugin/coconut/hooks.py).
-    from hermes_cli.plugins import PluginContext
-    require_keywords(PluginContext.register_system_prompt_section, ['id', 'content', 'position', 'max_chars'])
+    # The card rules go into the system prompt of each Coconut session with the hint of the platform
+    # (hermes_plugin/coconut/__init__.py, platform_hint). The registration leaves out a field that Hermes does not know.
+    from gateway.platform_registry import PlatformEntry
+    if 'platform_hint' not in PlatformEntry.__dataclass_fields__:
+        raise ValueError('Hermes removed the platform hint of a plugin platform, which holds the card rules of Coconut.')
     require_keywords(BasePlatformAdapter.send_clarify, ['chat_id', 'question', 'choices', 'clarify_id', 'session_key'])
     require_keywords(BasePlatformAdapter.on_processing_complete, ['event', 'outcome'])
     require_keywords(SessionStore.get_or_create_session, ['source', 'force_new'])

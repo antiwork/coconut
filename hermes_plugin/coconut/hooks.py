@@ -19,9 +19,8 @@ Work. `save_todos` (post_tool_call) reports each todo list of a Coconut turn, an
 task. An unfinished list continues in a later turn, as with the worker.
 
 Cards. A card of coconut_ask ends its turn, and a follow-up on a pending card cannot make a card. `guard_tool`
-(pre_tool_call) blocks those tool calls. The card rules of the worker (card_tools.DECISION_INSTRUCTIONS) go into the
-system prompt of each Coconut session, in parts of at most 4000 characters, as Hermes allows. So do the worker's
-rules for a merge card and for bot changes.
+(pre_tool_call) blocks those tool calls. The card rules of the worker go into the system prompt of each Coconut session
+with the hint of the platform (coconut.platform_hint).
 
 Compression. `note_prompt_size` (post_api_request) marks a Coconut chat whose model call reached the compression
 threshold of Hermes, and the adapter compresses that chat after the turn. `follow_new_session` (on_session_reset) keeps
@@ -65,17 +64,8 @@ def register(ctx):
         from .adapter import CONTEXT_MIDDLEWARE
         ctx.register_middleware('llm_request', add_turn_context)
         CONTEXT_MIDDLEWARE['registered'] = True
-    from .tools import cards
-    module = cards()
-    for number, part in enumerate(prompt_parts(module.DECISION_INSTRUCTIONS)):
-        ctx.register_system_prompt_section(f'coconut.cards.{number}', _section(part), max_chars=SECTION_CHARS)
-    # The worker's rules for a merge card and for bot changes (card_tools).
-    rules = module.PR_MERGE_INSTRUCTIONS + module.BOT_CREATION_INSTRUCTIONS + module.BOT_DELETION_INSTRUCTIONS
-    for number, part in enumerate(prompt_parts(rules)):
-        ctx.register_system_prompt_section(f'coconut.rules.{number}', _section(part), max_chars=SECTION_CHARS)
 
 
-SECTION_CHARS = 4000
 # Tools that a follow-up on a pending card must not call: it answers a question and leaves the card as it is.
 CARD_TOOLS = ('coconut_ask', 'coconut_suggest', 'clarify', 'coconut_track_pr', 'coconut_message_bot',
               'coconut_wait', 'coconut_correct_withdrawal', 'coconut_create_bot', 'coconut_delete_bot',
@@ -100,26 +90,6 @@ STATUS_MESSAGE = 'Answer from the saved context in the message. This answer uses
 LANE_TOOLS = ('message_agent', 'cronjob_manage', 'clarify', 'send_message')
 LANE_MESSAGE = ('Independent technical work holds this tool while its decision is pending. Stay within the authorized '
                 'local scope, and record what needs the person with coconut_kanban_comment on your own task.')
-
-
-def prompt_parts(text, size=SECTION_CHARS):
-    """Split text at sentence ends into parts of at most `size` characters."""
-    parts, part = [], ''
-    for sentence in text.replace('. ', '.\n').split('\n'):
-        piece = sentence if not part else ' ' + sentence
-        if part and len(part) + len(piece) > size:
-            parts.append(part)
-            part, piece = '', sentence
-        part += piece
-    if part:
-        parts.append(part)
-    return parts
-
-
-def _section(text):
-    def render(session_info=None, **_):
-        return text if (session_info or {}).get('platform') == NAME else ''
-    return render
 
 
 # The todo tool of Hermes and its earlier names. Its result holds the whole list.
