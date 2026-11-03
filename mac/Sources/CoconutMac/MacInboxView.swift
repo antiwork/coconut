@@ -6,6 +6,9 @@ struct MacInboxView: View {
     @Environment(AppStore.self) private var store
     @Binding var selection: MacSelection?
     @State private var chosenId: String?
+    // What the card opened: its chat or an earlier answer. A new card from the Mac keeps it, so an open chat keeps its
+    // unsent message. A card that the person picks goes back to the card.
+    @State private var path = NavigationPath()
 
     private var pending: [Decision] {
         store.pendingDecisions.sorted { ($0.createdAt.apiDate ?? .distantPast) > ($1.createdAt.apiDate ?? .distantPast) }
@@ -29,7 +32,7 @@ struct MacInboxView: View {
             Group {
                 if let chosen {
                     // The card links to its chat and to an earlier answer. Those open in this column.
-                    NavigationStack {
+                    NavigationStack(path: $path) {
                         ScrollView {
                             DecisionCard(decision: chosen, showsBot: true)
                                 .id(chosen.id)
@@ -44,7 +47,6 @@ struct MacInboxView: View {
                         .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
                         .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
                     }
-                    .id(chosen.id)
                     .toolbar {
                         ToolbarItem(placement: .primaryAction) {
                             Button { selection = .bot(chosen.botId) } label: {
@@ -62,6 +64,7 @@ struct MacInboxView: View {
             .background(BoardStyle.paper)
         }
         .navigationTitle("Inbox")
+        .onChange(of: chosenId) { _, _ in path = NavigationPath() }
     }
 }
 

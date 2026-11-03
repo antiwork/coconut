@@ -75,6 +75,7 @@ struct MacMainWindow: View {
                         ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
                                          focusMessageId: route.messageId, attachedWork: route.workContext)
                     }
+                    .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
                     .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
             }
         case .bot(let botId):
