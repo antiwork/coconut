@@ -614,9 +614,13 @@ class GatewayAdapterTests(unittest.TestCase):
         class Prompt:
             chat_id, session_key, command, description = None, 'agent:main:coconut:dm', 'rm -rf build', 'Delete files?'
             # A Hermes without its text catalog gives the keys of its texts as labels.
+            # A readable label of an unknown choice stays.
             actions = [('gateway.exec_approval.action_once', 'once', 'primary'),
+                       ('gateway.exec_approval.action_session', 'session', 'secondary'),
+                       ('gateway.exec_approval.action_always', 'always', 'secondary'),
                        ('gateway.exec_approval.action_later', 'ask_later', 'secondary'),
-                       ('Deny', 'deny', 'danger')]
+                       ('Remind me tomorrow', 'snooze', 'secondary'),
+                       ('gateway.exec_approval.action_deny', 'deny', 'danger')]
         async def runner(event):
             Prompt.chat_id = event.source.chat_id
             sent = await self.adapter.send_clarify(event.source.chat_id, 'Which region?', ['Europe', 'America'],
@@ -644,7 +648,8 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(cards['Delete files?']['explanation'], 'rm -rf build')
         # The card names each choice in English, never with a text key of Hermes.
         self.assertEqual([option['label'] for option in cards['Delete files?']['options']],
-                         ['Allow once', 'Ask later', 'Deny'])
+                         ['Allow once', 'Allow for this session', 'Always allow', 'Ask later', 'Remind me tomorrow',
+                          'Deny'])
         self.assertEqual(self.replies(task), [('Done.', False)])
 
     def test_a_recorded_wait_ends_the_turn_in_the_gateway(self):
