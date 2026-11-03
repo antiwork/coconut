@@ -233,7 +233,7 @@ The app shows these connection states:
 | `relayUnreachable` | The phone cannot open a socket, a request times out, or the Mac sends data that is not valid. | A calm banner. The phone tries again. |
 | `needsRepair` | The relay refuses the token or route (401 or 404, or `revoked`), the Mac refuses the phone key or answers with another Mac key, or the backend answers 401. | A banner with Pair. The phone stops polling until it pairs again. |
 
-The phone's static key and the relay client token live in the Keychain (`local.coconut.tunnel`). Each pairing makes a new key. `pairing.json` holds `{version: 2, relay, route, macKey, deviceId, macName}`. A pending checkout recovery belongs to the route and the Mac key.
+The phone's static key and the relay client token live in the Keychain (`local.coconut.tunnel`). Each pairing makes a new key. `pairing.json` holds `{version: 2, relay, route, macKey, deviceId, macName}`.
 
 ## Backend listeners
 

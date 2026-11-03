@@ -190,16 +190,10 @@ private struct MacConnectionSettingsView: View {
             guard store.connection == .connected else { return }
             hermes = await store.loadHermesSetup(reportsErrors: false)?.hermes
         }
-        .confirmationDialog(store.checkoutConfirmation == nil ? "Unpair this iPhone?" : "Unpair with recovery unresolved?",
-                            isPresented: $disconnectOpen, titleVisibility: .visible) {
-            Button(store.checkoutConfirmation == nil ? "Unpair" : "Unpair anyway", role: .destructive) { store.disconnect() }
-            if store.checkoutConfirmation != nil {
-                Button("Keep pairing to check or stop recovery", role: .cancel) {}
-            }
+        .confirmationDialog("Unpair this iPhone?", isPresented: $disconnectOpen, titleVisibility: .visible) {
+            Button("Unpair", role: .destructive) { store.disconnect() }
         } message: {
-            Text(store.checkoutConfirmation == nil
-                 ? "Your Mac keeps the bots and their history. This iPhone needs a new pairing link to reconnect."
-                 : "Unpairing does not cancel recovery on your Mac. You will lose paired access to check its status or stop it. Keep this pairing to check or stop recovery, or unpair anyway if you cannot reach your Mac.")
+            Text("Your Mac keeps the bots and their history. This iPhone needs a new pairing link to reconnect.")
         }
     }
 }

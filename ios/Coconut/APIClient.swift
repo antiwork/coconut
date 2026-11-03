@@ -71,10 +71,9 @@ final class APIClient: @unchecked Sendable {
     #endif
 
     func request<Response: Decodable & Sendable>(_ path: String, method: String = "GET", body: Data? = nil,
-                                      idempotencyKey: String? = nil, retryTransient: Bool = true,
-                                      fullState: Bool = false) async throws -> Response {
+                                      idempotencyKey: String? = nil, retryTransient: Bool = true) async throws -> Response {
         let data = try await transfer(path, method: method, body: body, idempotencyKey: idempotencyKey,
-                                      retryTransient: retryTransient, fullState: fullState)
+                                      retryTransient: retryTransient)
         do { return try APIJSON.decoder().decode(Response.self, from: data) }
         catch { throw ServiceError.invalidResponse }
     }
@@ -85,21 +84,19 @@ final class APIClient: @unchecked Sendable {
     }
 
     // Short foreground reads fail fast. Writes, long polls, and full downloads get the longer budget.
-    static func isShortRead(_ path: String, method: String, fullState: Bool) -> Bool {
+    static func isShortRead(_ path: String, method: String) -> Bool {
         let wait = URLComponents(string: path)?.queryItems?.first(where: { $0.name == "wait" })?.value.flatMap(Double.init) ?? 0
-        return method == "GET" && ((path == "state" && !fullState) || path.hasPrefix("cards/")
+        return method == "GET" && (path == "state" || path.hasPrefix("cards/")
             || path.hasPrefix("history/") || path.hasPrefix("search?")
             || (path.hasPrefix("updates?") && wait <= 0))
     }
 
     private func transfer(_ path: String, method: String = "GET", body: Data? = nil,
-                          idempotencyKey: String? = nil, retryTransient: Bool = true,
-                          fullState: Bool = false) async throws -> Data {
-        let shortRead = Self.isShortRead(path, method: method, fullState: fullState)
+                          idempotencyKey: String? = nil, retryTransient: Bool = true) async throws -> Data {
+        let shortRead = Self.isShortRead(path, method: method)
         switch transport {
         case .tunnel(let tunnel):
-            let request = try makeTunnelRequest(path, method: method, body: body, idempotencyKey: idempotencyKey,
-                                                fullState: fullState)
+            let request = try makeTunnelRequest(path, method: method, body: body, idempotencyKey: idempotencyKey)
             for attempt in 0...1 {
                 do {
                     let response = try await tunnel.send(request, timeout: shortRead ? TunnelConnection.shortTimeout : TunnelConnection.longTimeout)
@@ -113,8 +110,7 @@ final class APIClient: @unchecked Sendable {
             }
         #if DEBUG && targetEnvironment(simulator)
         case .loopback(let baseURL, let session, let foregroundSession):
-            let request = try makeLoopbackRequest(baseURL, path, method: method, body: body, idempotencyKey: idempotencyKey,
-                                                  fullState: fullState)
+            let request = try makeLoopbackRequest(baseURL, path, method: method, body: body, idempotencyKey: idempotencyKey)
             for attempt in 0...1 {
                 do {
                     let (data, response) = try await (shortRead ? foregroundSession : session).data(for: request)
@@ -139,7 +135,7 @@ final class APIClient: @unchecked Sendable {
 
     #if DEBUG && targetEnvironment(simulator)
     private func makeLoopbackRequest(_ baseURL: URL, _ path: String, method: String, body: Data?,
-                                     idempotencyKey: String?, fullState: Bool) throws -> URLRequest {
+                                     idempotencyKey: String?) throws -> URLRequest {
         guard let url = URL(string: "/v1/" + path, relativeTo: baseURL)?.absoluteURL,
               url.host == baseURL.host, url.scheme == baseURL.scheme, url.port == baseURL.port else {
             throw ServiceError.configuration("The service route is invalid.")
@@ -147,7 +143,7 @@ final class APIClient: @unchecked Sendable {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.httpBody = body
-        for (name, value) in headers(path, method: method, body: body, idempotencyKey: idempotencyKey, fullState: fullState) {
+        for (name, value) in headers(path, method: method, body: body, idempotencyKey: idempotencyKey) {
             request.setValue(value, forHTTPHeaderField: name)
         }
         return request
@@ -159,7 +155,7 @@ final class APIClient: @unchecked Sendable {
     #endif
 
     func makeTunnelRequest(_ path: String, method: String = "GET", body: Data? = nil,
-                           idempotencyKey: String? = nil, fullState: Bool = false) throws -> TunnelRequest {
+                           idempotencyKey: String? = nil) throws -> TunnelRequest {
         // The path goes into the Mac's HTTP request line as it is, so it must be visible ASCII and stay on the Mac.
         let origin = URL(string: "http://mac.invalid")!
         guard path.utf8.allSatisfy({ (33...126).contains($0) }),
@@ -167,15 +163,15 @@ final class APIClient: @unchecked Sendable {
               url.scheme == origin.scheme, url.port == nil else {
             throw ServiceError.configuration("The service route is invalid.")
         }
-        var headers = headers(path, method: method, body: body, idempotencyKey: idempotencyKey, fullState: fullState)
+        var headers = headers(path, method: method, body: body, idempotencyKey: idempotencyKey)
         headers["Accept-Encoding"] = "gzip"
         return TunnelRequest(method: method, path: "/v1/" + path, headers: headers, body: body ?? Data())
     }
 
-    private func headers(_ path: String, method: String, body: Data?, idempotencyKey: String?, fullState: Bool) -> [String: String] {
+    private func headers(_ path: String, method: String, body: Data?, idempotencyKey: String?) -> [String: String] {
         var headers = ["Accept": "application/json"]
-        // Task details loads older finished Work on request, so recent content can leave it out.
-        if path == "state" && !fullState {
+        // The phone shows no older finished Work, so recent content leaves it out.
+        if path == "state" {
             headers["X-Coconut-State"] = "recent"
             headers["X-Coconut-Work"] = "recent"
         }

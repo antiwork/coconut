@@ -22,7 +22,6 @@ def main():
     parser.add_argument('--simulator', required=True)
     parser.add_argument('--result', type=Path, required=True)
     parser.add_argument('--slow-open', action='store_true')
-    parser.add_argument('--work-navigation', action='store_true')
     parser.add_argument('--settings-only', action='store_true', help='run only the work hours Settings UI test')
     args = parser.parse_args()
     state = json.loads((ROOT / 'ios/Coconut/Fixtures/PreviewState.json').read_text())
@@ -36,10 +35,6 @@ def main():
                    streaming=False, created_at=state['server_time'])
     state.update(bots=[bot], tasks=[task], decisions=[decision, deferred], messages=[message], artifacts=[],
                  cursor=50, push_configured=False)
-    if args.work_navigation:
-        state['artifacts'] = [dict(id=str(uuid4()), bot_id=bot['id'], task_id=task['id'],
-            kind='work', title='Export account data', activity='Ready for review', status='ready',
-            url=None, preview='', created_at=state['server_time'], observed_at=state['server_time'])]
     device = str(uuid4())
     hold_state = threading.Event()
     release_state = threading.Event()
@@ -112,7 +107,7 @@ def main():
             runfile.write_bytes(plistlib.dumps(document))
             result = subprocess.run(['xcodebuild', 'test-without-building', '-xctestrun', str(runfile),
                 '-destination', 'platform=iOS Simulator,id=' + args.simulator,
-                '-only-testing:CoconutUITests/' + ('WorkTabReturnTests' if args.work_navigation else 'NotificationOpenPerformanceTests' if args.slow_open else 'NotificationCategoryFlowTests' + ('/testWorkHoursSettings' if args.settings_only else '')), '-parallel-testing-enabled', 'NO',
+                '-only-testing:CoconutUITests/' + ('NotificationOpenPerformanceTests' if args.slow_open else 'NotificationCategoryFlowTests' + ('/testWorkHoursSettings' if args.settings_only else '')), '-parallel-testing-enabled', 'NO',
                 '-resultBundlePath', str(args.result)])
             raise SystemExit(result.returncode)
     finally:

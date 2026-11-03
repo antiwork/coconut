@@ -17,6 +17,21 @@ final class StateUpdatesTests: XCTestCase {
         XCTAssertEqual(current.snapshotForRestore.syncVersion, 1)
     }
 
+    func testSnapshotFromAnOlderMacIgnoresTheWorkFieldsThatThePhoneDoesNotRead() throws {
+        let snapshot = try PreviewStateFixture.load()
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: APIJSON.encoder().encode(snapshot)) as? [String: Any])
+        var artifacts = try XCTUnwrap(fields["artifacts"] as? [[String: Any]])
+        XCTAssertFalse(artifacts.isEmpty)
+        artifacts[0]["work_state"] = "cancelled"
+        artifacts[0]["native_task_id"] = "t_native"
+        artifacts[0]["checkout_recovery_stopped"] = true
+        fields["artifacts"] = artifacts
+        fields["older_work_bot_ids"] = [snapshot.bots[0].id]
+        let decoded = try APIJSON.decoder().decode(StateSnapshot.self, from: JSONSerialization.data(withJSONObject: fields))
+        XCTAssertEqual(decoded.artifacts, snapshot.artifacts)
+        XCTAssertEqual(decoded.bots.map(\.id), snapshot.bots.map(\.id))
+    }
+
     func testProtocolThreeCacheRequestsRecentHistorySnapshot() throws {
         var snapshot = try PreviewStateFixture.load()
         snapshot.syncVersion = 1
@@ -26,35 +41,6 @@ final class StateUpdatesTests: XCTestCase {
         let previous = try JSONDecoder().decode(SnapshotCache.self, from: JSONSerialization.data(withJSONObject: old))
         XCTAssertNil(previous.snapshotForRestore.syncVersion)
         XCTAssertEqual(previous.snapshotForRestore.decisions, snapshot.decisions)
-    }
-
-    func testNativeFreshnessKeepsUnchangedWorkVisibleWithoutReplacingArtifacts() throws {
-        var state = try PreviewStateFixture.load()
-        state.cursor = 10
-        var work = state.artifacts[0]
-        work.nativeTaskId = "t_native"
-        work.workState = "working"
-        work.activity = "Running tests"
-        work.activityObservedAt = "2026-09-18T12:00:00Z"
-        var legacy = work
-        legacy.id = "legacy"
-        legacy.nativeTaskId = nil
-        state.artifacts = [work, legacy]
-        let observed = "2026-09-18T12:05:00Z"
-        let page = StateUpdates(after: 10, cursor: 10, serverTime: observed,
-            collectionDeltas: true, nativeWorkObservedAt: observed)
-        let updated = try XCTUnwrap(page.applying(to: state))
-        let item = TrackedWorkItem(artifact: updated.artifacts[0], pullRequests: [])
-        let current = try XCTUnwrap(observed.apiDate)
-        XCTAssertEqual(item.activity(at: current), "Running tests")
-        XCTAssertTrue(item.isWorking(at: current))
-        XCTAssertEqual(updated.artifacts[1], legacy)
-        XCTAssertEqual(updated.artifacts[0].title, work.title)
-        XCTAssertFalse(item.isWorking(at: current.addingTimeInterval(61)))
-        let stale = StateUpdates(after: 10, cursor: 10, serverTime: "2026-09-18T12:10:00Z",
-            collectionDeltas: true, nativeWorkObservedAt: observed)
-        let staleState = try XCTUnwrap(stale.applying(to: updated))
-        XCTAssertEqual(staleState.artifacts[0].activityObservedAt, observed)
     }
 
     func testUpdatesAddTasksReplaceCardsAndRemoveHiddenMessages() throws {

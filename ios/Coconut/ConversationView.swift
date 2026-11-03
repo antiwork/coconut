@@ -19,7 +19,6 @@ struct ConversationView: View {
     @State private var messageScheduling = false
     @State private var messageScheduledAt = Date().addingTimeInterval(3600)
     @State private var messageMentions: [SelectedBotMention] = []
-    @State private var taskDetailsOpen = false
     @State private var stop = StopConfirmation<AgentTask>()
     @State private var didFocusDecision = false
     @State private var nearBottom = true
@@ -270,13 +269,6 @@ struct ConversationView: View {
                         .accessibilityIdentifier("bot-settings")
                         .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                     }
-                    ToolbarItem(placement: .trailingBar) {
-                        Button { composerFocused = false; taskDetailsOpen = true } label: {
-                            Image(systemName: "list.bullet.rectangle").frame(minWidth: 44, minHeight: 44)
-                        }
-                        .accessibilityLabel("Task details")
-                        .accessibilityIdentifier("chat-task-details")
-                    }
                 }
                 .confirmationDialog(StopCopy.title(executor: stop.item.map { executorName($0) } ?? bot.name),
                                     isPresented: $stop.isPresented, titleVisibility: .visible, presenting: stop.item) { task in
@@ -288,9 +280,6 @@ struct ConversationView: View {
             } else {
                 QuietEmptyState(symbol: "bubble.left", title: "Conversation unavailable", message: "This bot may have been deleted. Return to your team to continue.")
             }
-        }
-        .sheet(isPresented: $taskDetailsOpen) {
-            NavigationStack { NativeTaskDetailsView(botId: botId) }
         }
         .inlineNavigationTitle()
         .preference(key: ConversationFooterPreference.self,
