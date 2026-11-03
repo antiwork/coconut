@@ -61,7 +61,7 @@ The build makes the app with `xcodebuild` in `mac/.build/xcode`, the tool with `
 Coconut.app updates itself with Sparkle 2.10.0. The feed is `https://coconut-updates.gumroad.workers.dev/mac/appcast.xml`.
 `FEED_URL` in `scripts/mac_app.py` is the only place that names it. `SUPublicEDKey` names the key that signs each archive.
 
-- **Automatic updates** is on by default. Then the app checks the feed every six hours and installs an update without a question. The setting is Sparkle's `SUEnableAutomaticChecks` and `SUAutomaticallyUpdate`. Info.plist sets both, so Sparkle never asks at the first start, and a Mac that nobody watches never waits on a dialog.
+- **Automatic updates** is on by default. Then the app checks the feed every hour, the shortest interval that Sparkle allows, and installs an update without a question. The setting is Sparkle's `SUEnableAutomaticChecks` and `SUAutomaticallyUpdate`. Info.plist sets both, so Sparkle never asks at the first start, and a Mac that nobody watches never waits on a dialog.
 - The feed has one channel. Its items have no `sparkle:channel`, so every app sees every build, and Sparkle takes the newest one.
 - Sparkle replaces only the app. The service runs from `~/Coconut`, so it keeps running. After the relaunch, the new app runs `coconut install-source --if-needed`, which lets the running turns finish before it changes the service.
 
