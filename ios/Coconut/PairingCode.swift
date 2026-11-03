@@ -39,7 +39,18 @@ struct PairingCode: Equatable, Sendable {
 
     // The message that the person sends to Hermes. Resources/hermes-pairing-message.txt holds the text, so the
     // redaction test of the backend checks the same text (backend/tests/test_native_pairing_redaction.py).
-    var hermesMessage: String { Self.template.replacingOccurrences(of: "{code}", with: text) }
+    var hermesMessage: String {
+        Self.template.replacingOccurrences(of: "{code}", with: text).replacingOccurrences(of: "{device}", with: Self.device)
+    }
+
+    /// The device that pairs, as the message names it.
+    private static var device: String {
+        #if os(macOS)
+        "Mac"
+        #else
+        "iPhone"
+        #endif
+    }
 
     static let template: String = {
         guard let url = Bundle.main.url(forResource: "hermes-pairing-message", withExtension: "txt"),
