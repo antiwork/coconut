@@ -213,7 +213,7 @@ struct DecisionInboxView: View {
                     .offset(y: 10 * (1 - progress))
                     .allowsHitTesting(false).accessibilityHidden(true)
             }
-            DecisionCard(decision: decision, showsBot: true, replyFocus: $replyFocused, confirmingOptionId: confirmingChoice?.optionId, onRespond: clearUndo, onPreviewFrameChange: { previewFrame = $0; previewDecisionId = decision.id }, onChoose: { choice, optionId in
+            DecisionCard(decision: decision, showsBot: true, showsUndo: false, replyFocus: $replyFocused, confirmingOptionId: confirmingChoice?.optionId, onRespond: clearUndo, onPreviewFrameChange: { previewFrame = $0; previewDecisionId = decision.id }, onChoose: { choice, optionId in
                 choose(decision, choice: choice, optionId: optionId)
             })
                 .id(decision.id)

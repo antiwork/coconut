@@ -733,8 +733,10 @@ struct ConversationComposer: View {
                 TextField("Message \(bot.name)", text: $text, selection: $selection, axis: .vertical)
                     .lineLimit(1...5).font(.body)
                     #if os(macOS)
-                    // The composer draws the box. A Mac text field would draw a second one inside it.
+                    // The composer draws the box. A Mac text field would draw a second one inside it. Its line is
+                    // shorter than on an iPhone, so it gets the height of the buttons next to it.
                     .textFieldStyle(.plain)
+                    .frame(minHeight: 20)
                     #endif
                     .padding(.vertical, 12)
                     .focused($focused)
@@ -748,6 +750,7 @@ struct ConversationComposer: View {
                         .background(canSend ? BoardStyle.control : BoardStyle.ink.opacity(0.07), in: Circle())
                         .frame(minWidth: 44, minHeight: 44)
                 }
+                .buttonStyle(.plain)
                 .disabled(!canSend)
                 .accessibilityLabel(scheduling ? "Schedule task" : "Send message")
                 .accessibilityIdentifier("send-message")
@@ -755,18 +758,18 @@ struct ConversationComposer: View {
                     Button { onStop(task) } label: {
                         Image(systemName: "stop.fill").font(.footnote)
                             .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
-                    }.accessibilityLabel("Stop \(executorName)'s task").accessibilityIdentifier("stop-current-task")
+                            .contentShape(Rectangle())
+                    }.buttonStyle(.plain).accessibilityLabel("Stop \(executorName)'s task").accessibilityIdentifier("stop-current-task")
                 }
                 }
             }
                 .padding(.horizontal, 4)
-                .background(BoardStyle.surface.opacity(0.45), in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
-                .overlay(RoundedRectangle(cornerRadius: BoardStyle.Radius.large).stroke(BoardStyle.line))
+                .modifier(ComposerSurface())
         }
         .padding(.horizontal, 16)
         .padding(.top, 4)
         .padding(.bottom, 8)
-        .background(BoardStyle.paper)
+        .modifier(ComposerBackdrop())
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item]) { result in
             if case .success(let url) = result {
                 Task {
@@ -803,6 +806,32 @@ struct ConversationComposer: View {
                 text = submittedText; mentions = submittedMentions; attachments = submittedArtifacts
                 scheduling = submittedScheduling; scheduledAt = submittedDate; replyTo = submittedReply; workContext = submittedWork
             }
+        }
+    }
+}
+
+/// The field of the composer. With Liquid Glass (iOS 26, macOS 26) it is a glass shape that the chat scrolls under;
+/// before, a tinted shape with a hairline.
+private struct ComposerSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: BoardStyle.Radius.large)
+        if #available(iOS 26.0, macOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: shape)
+        } else {
+            content
+                .background(BoardStyle.surface.opacity(0.45), in: shape)
+                .overlay(shape.stroke(BoardStyle.line))
+        }
+    }
+}
+
+/// Behind the composer. Glass shows the chat through it, so only the earlier design paints the page there.
+private struct ComposerBackdrop: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            content
+        } else {
+            content.background(BoardStyle.paper)
         }
     }
 }
