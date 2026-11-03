@@ -1,4 +1,5 @@
-import UIKit
+import ImageIO
+import UniformTypeIdentifiers
 import XCTest
 @testable import Coconut
 
@@ -437,11 +438,17 @@ final class TranscriptPresentationTests: XCTestCase {
     }
 
     func testAPhotoFromTheMacLoadsThroughThePairedMac() async throws {
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        let png = UIGraphicsImageRenderer(size: CGSize(width: 4, height: 4), format: format).pngData { context in
-            UIColor.red.setFill(); context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
-        }
+        // A red PNG of 4 by 4 pixels, made with Core Graphics so the test runs on the iPhone and on the Mac.
+        let context = try XCTUnwrap(CGContext(data: nil, width: 4, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
+                                              space: CGColorSpaceCreateDeviceRGB(),
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 4, height: 4))
+        let buffer = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(buffer, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let png = buffer as Data
         let id = UUID().uuidString
         let previous = PhotoLoader.shared.macFile
         defer { PhotoLoader.shared.macFile = previous }

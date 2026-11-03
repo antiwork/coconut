@@ -2,6 +2,8 @@
 
 Coconut.app runs Coconut on the person's Mac. It is a menu bar app with three login items: the app itself and two agents.
 
+The app is the `CoconutMac` target of `ios/project.yml`. It compiles the views and state of the iPhone app (`ios/Coconut`) with the menu bar code in `mac/Sources/CoconutApp`, so the Mac can become a chat client too. The iPhone-only views, such as the QR scanner and the swipe gestures, stay behind `#if os(iOS)`. `ios/Coconut/Platform.swift` names the few UIKit and AppKit differences. This package (`mac/Package.swift`) has `CoconutKit` and the `coconut` tool.
+
 - The app (`SMAppService.mainApp`) opens at login. Then the menu bar icon shows, and Sparkle, which runs in the app, checks for updates after a restart of the Mac.
 - `com.gumroad.coconut.service` runs `coconut service`. The tool finds a Python 3.11 or later and starts `host.py serve` from the install folder. host.py then finds the person's Hermes and runs the service under its Python.
 - `com.gumroad.coconut.relay` runs `coconut sidecar`. The tool starts the bundled relay sidecar when the Mac has a relay route.
@@ -47,10 +49,12 @@ The iPhone can also start pairing: it shows a one-time code in a message for Her
 
 ```sh
 swift test --package-path mac
+xcodebuild -project ios/Coconut.xcodeproj -scheme CoconutMac -destination platform=macOS test
 python3 scripts/mac_app.py build
 ```
 
-The build writes `build/mac/Coconut.app` with an ad-hoc signature.
+The second command runs the logic tests of the iPhone app on the Mac (`CoconutMacTests`). After a change to `ios/project.yml`, run `xcodegen generate` in `ios/`.
+The build makes the app with `xcodebuild` in `mac/.build/xcode`, the tool with `swift build`, and writes `build/mac/Coconut.app` with an ad-hoc signature. It needs macOS 15 or later.
 
 ## Updates
 

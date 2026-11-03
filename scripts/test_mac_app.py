@@ -29,12 +29,13 @@ class MacAppTests(unittest.TestCase):
     def tearDown(self):
         subprocess.run(['rm', '-rf', str(self.folder)], check=True)
 
-    def test_the_bundle_is_a_menu_bar_app_for_macos_14(self):
+    def test_the_bundle_is_a_menu_bar_app_for_macos_15(self):
         info = mac_app.info_plist('1.2.0', '512')
         self.assertEqual(info['CFBundleIdentifier'], 'com.gumroad.coconut.mac')
         self.assertEqual(info['CFBundleExecutable'], 'Coconut')
         self.assertEqual((info['CFBundleShortVersionString'], info['CFBundleVersion']), ('1.2.0', '512'))
-        self.assertEqual(info['LSMinimumSystemVersion'], '14.0')
+        self.assertEqual(info['LSMinimumSystemVersion'], '15.0')
+        self.assertEqual(info['CoconutPushRelayURL'], 'https://coconut-push.gumroad.workers.dev')
         self.assertIs(info['LSUIElement'], True)
 
     def test_the_bundle_names_its_icon_and_makes_it_from_the_iphone_icon(self):

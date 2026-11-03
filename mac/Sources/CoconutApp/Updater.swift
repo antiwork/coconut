@@ -118,10 +118,12 @@ final class Updater: NSObject, ObservableObject, SPUUpdaterDelegate {
     nonisolated func updater(_ updater: SPUUpdater, willInstallUpdateOnQuit item: SUAppcastItem,
                              immediateInstallationBlock immediateInstallHandler: @escaping () -> Void) -> Bool {
         let version = "\(item.displayVersionString) (\(item.versionString))"
+        // Sparkle calls its delegate on the main thread and expects the handler there, so the main actor may call it.
+        nonisolated(unsafe) let install = immediateInstallHandler
         Task { @MainActor in
             self.record(.installing, version: version)
             self.endRequest()
-            immediateInstallHandler()
+            install()
         }
         return true
     }
