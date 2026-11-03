@@ -126,7 +126,7 @@ struct QuietEmptyState: View {
     }
 }
 
-/// The words of every Stop confirmation, so the chat and task details say the same thing.
+/// The words of the Stop confirmation in the chat.
 enum StopCopy {
     static let message = "The Mac records the stop request. An action that already runs can finish before it stops."
     static func title(executor: String) -> String { "Stop \(executor)'s task?" }

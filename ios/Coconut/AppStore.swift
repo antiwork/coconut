@@ -29,7 +29,6 @@ final class AppStore {
     }
     /// Only saved task answers change a transcript. Work cards change on most updates, so conversations do not read them.
     private(set) var transcriptArtifacts: [Artifact] = []
-    var checkoutConfirmation: CheckoutRecoveryConfirmation?
     var approvals: ApprovalSettings?
     var parallelWork: ParallelWorkSettings?
     var apiFallback: APIFallbackSettings?
@@ -94,9 +93,6 @@ final class AppStore {
     @ObservationIgnored private var nativeSettingsPending = false
     @ObservationIgnored private var nativeSettingsRequiredCursor = 0
     var historyLoading: Set<String> = []
-    /// Bots whose Task details can load finished Work that the Mac left out of the recent state.
-    var olderWorkBotIds: Set<String> = []
-    var olderWorkLoading: Set<String> = []
     var remoteSearchQuery = ""
     var remoteSearchBotIds: Set<String> = []
     @ObservationIgnored private var snapshotEpoch = UUID()
@@ -211,9 +207,6 @@ final class AppStore {
         #if DEBUG && targetEnvironment(simulator)
         configureFromLaunchEnvironment()
         #endif
-        if let pairing {
-            checkoutConfirmation = ProtectedCache.readPendingCheckout(for: pairing.checkoutIdentity)
-        }
     }
 
     func start() {
@@ -431,7 +424,6 @@ final class AppStore {
     }
 
     func disconnect() {
-        checkoutConfirmation = nil
         if let deviceId = pairing?.deviceId {
             PushRelayClient.shared.disable(deviceId: deviceId)
             NotificationKeys.forget(deviceId: deviceId)
@@ -470,10 +462,9 @@ final class AppStore {
             ProtectedCache.remove("pairing.json")
             cacheQueue.sync { ProtectedCache.remove("snapshot.json") }
             ProtectedCache.remove("outgoing.json")
-            ProtectedCache.remove("checkout-recovery.json")
         }
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
-        routines = []; olderWorkBotIds = []
+        routines = []
         approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
@@ -862,217 +853,6 @@ final class AppStore {
         return result != nil
     }
 
-    func resumeWork(_ item: TrackedWorkItem) async {
-        if isDemo {
-            for index in artifacts.indices where artifacts[index].id == item.artifact.id {
-                artifacts[index].workState = "queued"
-                artifacts[index].activity = "Queued"
-            }
-            return
-        }
-        let _: Acknowledgement? = await write("work/items/\(item.artifact.id)/resume", payload: EmptyRequest(), as: Acknowledgement.self)
-    }
-
-    func checkoutRecoveryPreview(_ item: TrackedWorkItem) async throws -> CheckoutRecoveryCheck {
-        guard !isDemo, let work = item.checkoutRecoveryWork, let taskId = work.taskId,
-              tasks.contains(where: { $0.id == taskId && $0.status == "cancelled" }),
-              let pairing, let token = PairingToken.read() else {
-            throw ServiceError.configuration("Pair with your Mac to check this task.")
-        }
-        let client = try makeClient(pairing, token: token)
-        let preview: CheckoutRecoveryPreview = try await client.request("tasks/\(taskId)/checkout-recovery")
-        guard self.pairing == pairing,
-              artifacts.first(where: { $0.id == work.id })?.workState == "cancelled",
-              tasks.contains(where: { $0.id == taskId && $0.status == "cancelled" }) else {
-            throw ServiceError.configuration("This task changed. Check it again.")
-        }
-        return CheckoutRecoveryCheck(preview: preview, pairing: pairing.checkoutIdentity,
-            workItemId: work.id)
-    }
-
-    func stageCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) throws {
-        guard !isDemo, checkoutConfirmation == nil, let pairing,
-              let workItemId = confirmation.workItemId,
-              artifacts.contains(where: { $0.id == workItemId && $0.kind == "work" &&
-                  ($0.workOutcomeId == nil || $0.workOutcomeId == $0.id) &&
-                  $0.taskId == confirmation.request.taskId && $0.workState == "cancelled" }),
-              tasks.contains(where: { $0.id == confirmation.request.taskId && $0.status == "cancelled" }),
-              confirmation.matches(pairing: pairing.checkoutIdentity),
-              PairingToken.read() != nil else {
-            throw ServiceError.configuration("The pairing or task changed. Check the task again.")
-        }
-        try ProtectedCache.write(confirmation, name: "checkout-recovery.json")
-        checkoutConfirmation = confirmation
-    }
-
-    func confirmCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) async -> CheckoutRecoveryConfirmationResult {
-        guard let pairing, confirmation.matches(pairing: pairing.checkoutIdentity),
-              PairingToken.read() != nil else {
-            return .rejected("The pairing changed. Check the task again.")
-        }
-        guard let pending = checkoutConfirmation, pending.matches(confirmation),
-              let saved = ProtectedCache.readPendingCheckout(for: confirmation.pairing),
-              saved.matches(confirmation) else {
-            return .notSent("The saved confirmation is unavailable. No request was sent. Check recovery status again.")
-        }
-        var intent = pending
-        intent.markUncertain()
-        do {
-            try ProtectedCache.write(intent, name: "checkout-recovery.json")
-        } catch {
-            return .notSent("The phone could not save the recovery retry warning. No request was sent. Keep this confirmation and key; retry when storage is available: \(error.localizedDescription)")
-        }
-        checkoutConfirmation = intent
-        var failure: CheckoutRecoveryConfirmationResult?
-        let receipt: CheckoutRecoveryReceipt? = await write("maintenance/checkout-recovery", payload: confirmation.request,
-            as: CheckoutRecoveryReceipt.self, idempotencyKey: confirmation.key,
-            expectedPairing: confirmation.pairing,
-            onFailure: { failure = CheckoutRecoveryConfirmationResult.classify(error: $0) })
-        guard let current = self.pairing, confirmation.matches(pairing: current.checkoutIdentity) else {
-            return .rejected("The pairing changed. Check the task again.")
-        }
-        if let receipt { return .classify(receipt: receipt) }
-        return failure ?? .uncertain("Recovery was not confirmed. Retry the same confirmation to check it.")
-    }
-
-    @discardableResult
-    func recordCheckoutRecoveryResult(_ result: CheckoutRecoveryConfirmationResult,
-                                      for confirmation: CheckoutRecoveryConfirmation,
-                                      in location: URL? = nil) -> String? {
-        guard checkoutConfirmation?.matches(confirmation) == true else { return nil }
-        switch result {
-        case .accepted(.applied), .rejected:
-            checkoutConfirmation = nil
-            if !isDemo || location != nil { ProtectedCache.remove("checkout-recovery.json", in: location) }
-        case .accepted(.accepted), .accepted(.draining):
-            var known = confirmation
-            known.clearUncertain()
-            if !isDemo || location != nil {
-                do { try ProtectedCache.write(known, name: "checkout-recovery.json", in: location) }
-                catch { return "The Mac accepted recovery, but the phone could not save its status. Keep this confirmation and key: \(error.localizedDescription)" }
-            }
-            checkoutConfirmation = known
-        case .notSent:
-            break
-        case .uncertain:
-            var uncertain = checkoutConfirmation ?? confirmation
-            uncertain.markUncertain()
-            checkoutConfirmation = uncertain
-            if !isDemo || location != nil {
-                do { try ProtectedCache.write(uncertain, name: "checkout-recovery.json", in: location) }
-                catch { return "The phone could not save the recovery retry warning. Keep this confirmation and key: \(error.localizedDescription)" }
-            }
-        }
-        return nil
-    }
-
-    @discardableResult
-    func stopPendingCheckoutRecovery(_ confirmation: CheckoutRecoveryConfirmation) async -> String? {
-        guard !isDemo, checkoutConfirmation?.matches(confirmation) == true,
-              let saved = ProtectedCache.readPendingCheckout(for: confirmation.pairing),
-              saved.matches(confirmation), let stop = CheckoutRecoveryStop(confirmation: confirmation) else {
-            return "The saved recovery request is unavailable. Check recovery status before stopping it."
-        }
-        var workFailure: Error?
-        let failure = await cancelWorkItem(path: stop.path, idempotencyKey: stop.key,
-            expectedPairing: confirmation.pairing, onFailure: { workFailure = $0 })
-        guard let failure, let workError = workFailure as? ServiceError,
-              case .response(409, _) = workError else { return failure }
-        guard let pairing, confirmation.matches(pairing: pairing.checkoutIdentity),
-              let token = PairingToken.read() else {
-            return "The pairing changed. Check the task again."
-        }
-        do {
-            let client = try makeClient(pairing, token: token)
-            let snapshot: StateSnapshot = try await client.request("state", fullState: true)
-            guard let current = self.pairing, confirmation.matches(pairing: current.checkoutIdentity) else {
-                return "The pairing changed. Check the task again."
-            }
-            guard let successor = stop.admittedSuccessor(in: snapshot.artifacts, tasks: snapshot.tasks) else { return failure }
-            var successorFailure: String?
-            let receipt: AgentTask? = await write("tasks/\(successor.id)/cancel", payload: EmptyRequest(),
-                as: AgentTask.self, refreshInBackground: true, idempotencyKey: UUID().uuidString,
-                expectedPairing: confirmation.pairing, onFailure: { successorFailure = $0.localizedDescription })
-            return receipt == nil ? successorFailure ?? "The resumed task was not confirmed stopped. Try again." : nil
-        } catch {
-            return "The Mac could not verify whether Work already resumed. No additional Stop was sent: \(error.localizedDescription)"
-        }
-    }
-
-    /// Archive idle Hermes tasks. Hermes archives only tasks that still wait for someone to act.
-    @discardableResult
-    func archiveIdleWork(_ items: [TrackedWorkItem]) async -> String? {
-        if isDemo {
-            let archived = Set(items.compactMap(\.nativeTaskId))
-            for index in artifacts.indices where artifacts[index].nativeTaskId.map(archived.contains) == true {
-                artifacts[index].workState = "cancelled"
-                artifacts[index].activity = "Stopped"
-            }
-            return nil
-        }
-        return await Self.archiveIdleRequests(items) { botId, batch in
-            var failure: String?
-            let response = await write("bots/\(botId)/work/archive-idle", payload: ArchiveIdleRequest(nativeTaskIds: batch),
-                                       as: ArchiveIdleResponse.self, refreshInBackground: true,
-                                       onFailure: { failure = $0.localizedDescription })
-            return response == nil ? failure ?? "The Mac did not confirm the archive. Try again." : nil
-        }
-    }
-
-    /// Send each idle task to the bot that owns it. `send` returns an error message, or nil when the Mac archived the batch.
-    static func archiveIdleRequests(_ items: [TrackedWorkItem],
-                                    send: (_ botId: String, _ batch: [String]) async -> String?) async -> String? {
-        // Hermes keeps each task under the bot of its Work item, and the Mac archives only that bot's tasks.
-        var owners: [String: Set<String>] = [:]
-        for item in items {
-            guard let owner = item.nativeOwnerBotId, let identity = item.nativeTaskId else { continue }
-            owners[owner, default: []].insert(identity)
-        }
-        // The Mac accepts at most 500 tasks in one request. A failure for one bot does not stop the other bots.
-        var failures: [String] = []
-        for (botId, identities) in owners.sorted(by: { $0.key < $1.key }) {
-            let identities = identities.sorted()
-            for start in stride(from: 0, to: identities.count, by: 500) {
-                if let failure = await send(botId, Array(identities[start..<min(start + 500, identities.count)])) {
-                    failures.append(failure)
-                    break
-                }
-            }
-        }
-        return failures.isEmpty ? nil : Array(Set(failures)).sorted().joined(separator: "\n")
-    }
-
-    @discardableResult
-    func cancelWork(_ item: TrackedWorkItem) async -> String? {
-        if isDemo {
-            for index in artifacts.indices where artifacts[index].id == item.artifact.id {
-                artifacts[index].workState = "cancelled"
-                artifacts[index].activity = "Stopped"
-            }
-            return nil
-        }
-        return await cancelWorkItem(path: "work/items/\(item.artifact.id)/cancel")
-    }
-
-    private func cancelWorkItem(path: String, idempotencyKey: String? = nil,
-                                expectedPairing: CheckoutRecoveryPairing? = nil,
-                                onFailure: ((Error) -> Void)? = nil) async -> String? {
-        let generation = connectionGeneration
-        var failure: String?
-        let receipt = await write(path, payload: EmptyRequest(), as: WorkCancellationReceipt.self,
-            refreshInBackground: true, idempotencyKey: idempotencyKey, expectedPairing: expectedPairing,
-            onFailure: { failure = $0.localizedDescription; onFailure?($0) })
-        guard let receipt, receipt.ok else { return failure ?? "Cancellation was not confirmed. Try again." }
-        guard generation == connectionGeneration else { return nil }
-        if let updated = receipt.applying(to: artifacts, after: cursor) {
-            // Discard reads that started before the cancellation receipt arrived.
-            snapshotEpoch = UUID()
-            snapshotRequest = nil
-            artifacts = updated
-            cachedState?.artifacts = updated
-        }
-        return nil
-    }
 
     func cancel(_ task: AgentTask) async {
         if isDemo {
@@ -1504,19 +1284,6 @@ final class AppStore {
         } catch { report(error); return nil }
     }
 
-    func refreshWork() async {
-        guard !isDemo, foreground, let client else { return }
-        let generation = connectionGeneration
-        do {
-            let _: WorkRefreshResponse = try await client.request("work/refresh", method: "POST",
-                body: Data("{}".utf8), idempotencyKey: UUID().uuidString)
-            guard generation == connectionGeneration else { return }
-            try await refresh(using: client)
-        } catch {
-            // Keep observed PR data. Its timestamp marks stale status in Work.
-        }
-    }
-
     func decisionPreviewData(id: String) async throws -> Data {
         guard let client else { throw ServiceError.configuration("Connect to your Mac to load the previews.") }
         return try await client.artifactContent(id: id)
@@ -1604,17 +1371,8 @@ final class AppStore {
         return true
     }
 
-    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, expectedPairing: CheckoutRecoveryPairing? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
-        if let expectedPairing,
-           pairing.map({ $0.checkoutIdentity }) != expectedPairing {
-            onFailure?(ServiceError.configuration("The pairing changed. Check the task again."))
-            return nil
-        }
+    private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
         guard let pairing, let token = PairingToken.read() else {
-            if expectedPairing != nil {
-                onFailure?(ServiceError.configuration("Pair with your Mac and check the task again."))
-                return nil
-            }
             if !quiet { error = "Pair with your Mac in Settings to continue." }
             return nil
         }
@@ -1645,7 +1403,6 @@ final class AppStore {
             let receiptFallback = apiFallback
             let receiptMessages = messages
             let receiptDecisions = decisions
-            let receiptArtifacts = artifacts
             let receiptBots = bots
             let receiptRoutines = routines
             let receiptNativeReadAt = nativeSettingsReadAt
@@ -1702,9 +1459,6 @@ final class AppStore {
                 callbackIsCurrent = receiptMessages.first(where: { $0.id == receipt.id })?.reactions == messages.first(where: { $0.id == receipt.id })?.reactions
             } else if let receipt = result as? Decision {
                 callbackIsCurrent = receiptDecisions.first(where: { $0.id == receipt.id }) == decisions.first(where: { $0.id == receipt.id })
-            } else if result is WorkRefreshResponse, path.hasSuffix("/dismiss") {
-                let identity = path.split(separator: "/").dropFirst(2).first.map(String.init)
-                callbackIsCurrent = receiptArtifacts.first(where: { $0.id == identity })?.workDismissalId == artifacts.first(where: { $0.id == identity })?.workDismissalId
             }
             if callbackIsCurrent { onSuccess?(result) }
             if refreshInBackground {
@@ -1899,7 +1653,6 @@ final class AppStore {
         assign(\.messages, snapshot.messages)
         assign(\.decisions, snapshot.decisions)
         assign(\.artifacts, snapshot.artifacts)
-        assign(\.olderWorkBotIds, Set(snapshot.olderWorkBotIds ?? []))
         assign(\.approvals, snapshot.approvals)
         let previewLimit = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4)
         assign(\.workCapacity, snapshot.workCapacity ?? (isDemo ? previewLimit : nil))
@@ -2173,25 +1926,6 @@ final class AppStore {
         } catch { report(error); return false }
     }
 
-    /// Load the finished Work that the Mac left out of the recent state for one bot's Task details.
-    func loadOlderWork(_ botId: String) async {
-        guard let client, olderWorkBotIds.contains(botId), !olderWorkLoading.contains(botId) else { return }
-        let generation = connectionGeneration
-        let epoch = snapshotEpoch
-        olderWorkLoading.insert(botId)
-        defer { olderWorkLoading.remove(botId) }
-        do {
-            let page: OlderWorkPage = try await client.request("bots/\(botId)/work/older")
-            guard self.client === client, generation == connectionGeneration, epoch == snapshotEpoch,
-                  var state = cachedState else { return }
-            // Current cards win if an update changes one while this request runs.
-            state.artifacts = StateUpdates.merge(state.artifacts, into: page.artifacts)
-            state.tasks = StateUpdates.merge(state.tasks, into: page.tasks)
-            state.olderWorkBotIds?.removeAll { $0 == botId }
-            apply(state, persist: true)
-        } catch { report(error) }
-    }
-
     /// Read what the Mac last delivered to this iPhone, for the notification settings. A failed read leaves no status,
     /// so the screen says that it is not available instead of showing an empty history.
     func refreshPushStatus() async {
@@ -2340,13 +2074,6 @@ struct PairingConfiguration: Codable, Equatable, Sendable {
               let macKey, let key = Data(base64Encoded: macKey), key.count == 32 else { return nil }
         return TunnelEndpoint(relay: url, route: route, macKey: key)
     }
-
-    // A pending checkout recovery belongs to one device on one Mac: the route and the Mac key, or for the loopback
-    // test pairing the address.
-    var checkoutIdentity: CheckoutRecoveryPairing {
-        usesTunnel ? CheckoutRecoveryPairing(deviceId: deviceId, route: route ?? "", macKey: macKey ?? "")
-            : CheckoutRecoveryPairing(deviceId: deviceId, route: serverURL ?? "", macKey: "")
-    }
 }
 struct SnapshotCache: Codable, Sendable {
     let snapshot: StateSnapshot
@@ -2364,8 +2091,6 @@ private struct PairRequest: Encodable { let code: String; let deviceName: String
 private struct PairResponse: Decodable, Sendable { let token: String; let deviceId: String }
 private struct EmptyRequest: Encodable {}
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
-private struct ArchiveIdleRequest: Encodable { let nativeTaskIds: [String] }
-private struct ArchiveIdleResponse: Decodable, Sendable { let archived: [String] }
 private struct BotRequest: Encodable { let name: String; let role: String; let avatar: String; let color: String; let instructions: String; let memory: String; let pinned: Bool? }
 private struct PinRequest: Encodable { let pinned: Bool }
 private struct InstructionsRequest: Encodable { let instructions: String }
@@ -2439,12 +2164,6 @@ enum ProtectedCache {
         return try? JSONDecoder().decode(T.self, from: data)
     }
 
-    static func readPendingCheckout(for pairing: CheckoutRecoveryPairing, in location: URL? = nil) -> CheckoutRecoveryConfirmation? {
-        guard let pending: CheckoutRecoveryConfirmation = read("checkout-recovery.json", in: location),
-              pending.matches(pairing: pairing) else { return nil }
-        return pending
-    }
-
     static func write<T: Encodable>(_ value: T, name: String, in location: URL? = nil) throws {
         var directory = location ?? directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.protectionKey: FileProtectionType.complete])
@@ -2481,5 +2200,4 @@ private struct BotApprovalRequest: Encodable {
     }
 }
 
-private struct WorkRefreshResponse: Decodable { let ok: Bool }
 

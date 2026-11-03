@@ -472,11 +472,6 @@ struct Artifact: Codable, Identifiable, Equatable, Sendable {
         return preview
     }
 
-    var workIdentity: String {
-        if kind == "work" || workOutcomeId != nil { return "work:" + (workOutcomeId ?? id) }
-        return url?.lowercased() ?? id
-    }
-
     var id: String
     var botId: String
     var taskId: String?
@@ -486,37 +481,12 @@ struct Artifact: Codable, Identifiable, Equatable, Sendable {
     var preview: String
     var url: String?
     var createdAt: String
-    var workOutcomeId: String? = nil
-    var nativeTaskId: String? = nil
-    var checkedAt: String? = nil
     var observedAt: String? = nil
     var headSha: String? = nil
     var refreshError: String? = nil
     var prState: String? = nil
     var draft: Bool? = nil
     var checksState: String? = nil
-    var activity: String? = nil
-    var activityState: String? = nil
-    var activityObservedAt: String? = nil
-    var activityBotId: String? = nil
-    var workDismissalId: String? = nil
-    var workState: String? = nil
-    var checkoutRecoveryStopped: Bool? = nil
-    var workNextStep: String? = nil
-    var workDecisionId: String? = nil
-    var workQueuePosition: Int? = nil
-    var completionCondition: String? = nil
-    var completionEvidence: String? = nil
-    var nativeStatus: String? = nil
-    var nativeLastActivityAt: String? = nil
-    var nativeDiagnostics: [NativeDiagnostic]? = nil
-}
-
-/// A distress signal that Hermes computes for a Kanban task, such as a task blocked for a day without a comment.
-struct NativeDiagnostic: Codable, Equatable, Sendable {
-    var kind: String
-    var severity: String
-    var title: String
 }
 
 
@@ -585,8 +555,6 @@ struct StateSnapshot: Codable, Sendable {
     var contentOnly: Bool? = nil
     var historyBefore: [String: Int]? = nil
     var confirmedRequestIds: [String]? = nil
-    /// Bots whose Task details can load finished Work that the Mac left out. The phone removes a bot when it loads it.
-    var olderWorkBotIds: [String]? = nil
     var bots: [Bot]
     var tasks: [AgentTask]
     var messages: [Message]

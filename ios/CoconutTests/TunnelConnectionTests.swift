@@ -441,9 +441,16 @@ final class TunnelConnectionTests: XCTestCase {
         for path in ["state\r\nX: y", "search?q=a b"] {
             XCTAssertThrowsError(try client.makeTunnelRequest(path), path)
         }
-        XCTAssertTrue(APIClient.isShortRead("updates?after=3", method: "GET", fullState: false))
-        XCTAssertFalse(APIClient.isShortRead("updates?after=3&wait=20", method: "GET", fullState: false))
-        XCTAssertFalse(APIClient.isShortRead("state", method: "GET", fullState: true))
+        XCTAssertTrue(APIClient.isShortRead("updates?after=3", method: "GET"))
+        XCTAssertFalse(APIClient.isShortRead("updates?after=3&wait=20", method: "GET"))
+        XCTAssertTrue(APIClient.isShortRead("state", method: "GET"))
+    }
+
+    func testRecentStateAndUpdatesAskForRecentWork() throws {
+        let client = APIClient.unconnected(token: "fixture-token")
+        XCTAssertEqual(try client.makeTunnelRequest("state").headers["X-Coconut-Work"], "recent")
+        XCTAssertEqual(try client.makeTunnelRequest("updates?after=3&wait=20").headers["X-Coconut-Work"], "recent")
+        XCTAssertNil(try client.makeTunnelRequest("cards/card").headers["X-Coconut-Work"])
     }
 
     func testGzipRejectsDamagedData() throws {

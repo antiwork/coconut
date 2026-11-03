@@ -1,16 +1,5 @@
 import Foundation
 
-struct WorkCancellationReceipt: Decodable, Sendable {
-    let ok: Bool
-    let artifacts: [Artifact]?
-    let cursor: Int?
-
-    func applying(to current: [Artifact], after appliedCursor: Int) -> [Artifact]? {
-        guard ok, let artifacts, let cursor, cursor > appliedCursor else { return nil }
-        return StateUpdates.merge(artifacts, into: current)
-    }
-}
-
 struct StateUpdates: Decodable, Sendable {
     let after: Int
     let cursor: Int
@@ -28,7 +17,6 @@ struct StateUpdates: Decodable, Sendable {
     var workCapacity: ParallelWorkSettings?
     var settingsChanged: Bool?
     var confirmedRequestIds: [String]?
-    var nativeWorkObservedAt: String?
 
     func applying(to snapshot: StateSnapshot) -> StateSnapshot? {
         guard after == snapshot.cursor else { return nil }
@@ -51,11 +39,6 @@ struct StateUpdates: Decodable, Sendable {
         } else {
             if let decisions { result.decisions = decisions }
             if let artifacts { result.artifacts = artifacts }
-        }
-        if let nativeWorkObservedAt, nativeWorkObservedAt.apiDate != nil {
-            for index in result.artifacts.indices where result.artifacts[index].nativeTaskId != nil {
-                result.artifacts[index].activityObservedAt = nativeWorkObservedAt
-            }
         }
         if let workCapacity { result.workCapacity = workCapacity }
         if let confirmedRequestIds { result.confirmedRequestIds = confirmedRequestIds }
@@ -135,11 +118,6 @@ struct HistoryPage: Decodable, Sendable {
     /// The cards that older messages show. Recent content leaves out old finished Work.
     let artifacts: [Artifact]?
     let before: Int?
-}
-
-struct OlderWorkPage: Decodable, Sendable {
-    let artifacts: [Artifact]
-    let tasks: [AgentTask]
 }
 
 struct CardSnapshot: Decodable, Sendable {
