@@ -8,8 +8,23 @@ import SwiftUI
 struct CoconutApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var updater = Updater()
+    // The chat client: the same state as the iPhone app. A Mac app keeps running without a window, so it keeps its
+    // connection to the paired Mac and shows each new card at once.
+    @State private var store = AppStore()
 
     var body: some Scene {
+        Window("Coconut", id: "main") {
+            MacMainWindow(model: model)
+                .environment(store)
+                .tint(.primary)
+                .task { store.start() }
+                .onOpenURL { url in
+                    // A Hermes agent sends this link. Coconut shows the Mac name before it pairs.
+                    if PairingSetup.isLink(url) { store.setupLink = url.absoluteString }
+                }
+        }
+        .defaultSize(width: 1100, height: 760)
+
         MenuBarExtra {
             MenuContent(model: model, updater: updater)
         } label: {
@@ -60,6 +75,10 @@ struct MenuContent: View {
             Button("Allow Coconut in Login Items…") { model.openLoginItemsSettings() }
         }
         Divider()
+        Button("Open Coconut") {
+            openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
+        }
         Button("Pair iPhone…") {
             openWindow(id: "pair")
             NSApp.activate(ignoringOtherApps: true)

@@ -57,6 +57,7 @@ struct OnboardingView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            #if os(iOS)
             HStack {
                 Spacer()
                 Button { close() } label: {
@@ -68,8 +69,15 @@ struct OnboardingView: View {
                 .accessibilityLabel("Close")
             }
             .padding(.top, 4)
+            #endif
             ScrollView {
                 VStack(spacing: 14) {
+                    #if os(macOS)
+                    // A Mac window centers a narrow column, as the setup pages of macOS do.
+                    Image(nsImage: NSApplication.shared.applicationIconImage)
+                        .resizable().frame(width: 72, height: 72)
+                        .accessibilityHidden(true)
+                    #endif
                     Text("Connect your Mac")
                         .font(.system(.title, design: .serif).weight(.medium))
                         .multilineTextAlignment(.center)
@@ -86,8 +94,15 @@ struct OnboardingView: View {
                     actions
                     status.padding(.top, 10)
                 }
+                #if os(macOS)
+                .frame(maxWidth: 440)
+                .padding(.vertical, 32)
+                .frame(maxWidth: .infinity)
+                .containerRelativeFrame(.vertical, alignment: .center)
+                #else
                 .padding(.top, 20)
                 .frame(maxWidth: .infinity)
+                #endif
             }
             .scrollBounceBehavior(.basedOnSize)
             Button("Need help?") { helpOpen = true }
@@ -150,7 +165,28 @@ struct OnboardingView: View {
             .accessibilityIdentifier("hermes-message")
     }
 
-    private var actions: some View {
+    @ViewBuilder private var actions: some View {
+        #if os(macOS)
+        // Standard Mac buttons at their own size. Return copies the message.
+        HStack(spacing: 10) {
+            ShareLink(item: messageText) { Label("Share…", systemImage: "square.and.arrow.up") }
+                .accessibilityIdentifier("share-hermes-message")
+            Button {
+                Pasteboard.copy(messageText)
+                copied = true
+            } label: {
+                Label(copied ? "Copied" : "Copy Message", systemImage: copied ? "checkmark" : "doc.on.doc")
+            }
+            .buttonStyle(.borderedProminent)
+            // The window tints its controls black and white. The one action of the page keeps the system blue.
+            .tint(.accentColor)
+            .keyboardShortcut(.defaultAction)
+            .accessibilityIdentifier("copy-hermes-message")
+        }
+        .controlSize(.large)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .disabled(pending == nil)
+        #else
         HStack(spacing: 12) {
             Button {
                 Pasteboard.copy(messageText)
@@ -176,6 +212,7 @@ struct OnboardingView: View {
         }
         .disabled(pending == nil)
         .opacity(pending == nil ? 0.4 : 1)
+        #endif
     }
 
     @ViewBuilder private var status: some View {

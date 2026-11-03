@@ -145,6 +145,16 @@ extension View {
         #endif
     }
 
+    /// A text field whose section header names it. A Mac form shows a field label beside the field and pushes the
+    /// text to the right, so there the field hides its label and fills the row.
+    func fieldUnderHeader() -> some View {
+        #if os(macOS)
+        labelsHidden().multilineTextAlignment(.leading)
+        #else
+        self
+        #endif
+    }
+
     /// Turns off automatic capital letters in a text field. A Mac does not add them.
     func noAutocapitalization() -> some View {
         #if os(iOS)

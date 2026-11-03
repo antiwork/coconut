@@ -723,11 +723,19 @@ struct ConversationComposer: View {
                     Image(systemName: uploading ? "hourglass" : "plus").font(.title2)
                         .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
                 }
+                #if os(macOS)
+                // A Mac draws a menu as a pull-down button with an arrow. The composer shows only its icon.
+                .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                #endif
                 .disabled(!connected || uploading)
                 .accessibilityLabel("More options")
                 HStack(alignment: .bottom, spacing: 4) {
                 TextField("Message \(bot.name)", text: $text, selection: $selection, axis: .vertical)
                     .lineLimit(1...5).font(.body)
+                    #if os(macOS)
+                    // The composer draws the box. A Mac text field would draw a second one inside it.
+                    .textFieldStyle(.plain)
+                    #endif
                     .padding(.vertical, 12)
                     .focused($focused)
                     .accessibilityIdentifier("message-input")
