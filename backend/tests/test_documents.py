@@ -21,6 +21,7 @@ class PageRuleTests(unittest.TestCase):
     def test_a_page_with_tokens_and_the_given_libraries_passes(self):
         self.assertEqual(page_problems(TREEMAP), [])
         self.assertEqual(page_problems('<style>#bad { margin: 0 } #add, #fed .x:hover { padding: 0 }</style>'), [])
+        self.assertEqual(page_problems('<style>p { color: var(--text) } .red { margin: 0 }</style>'), [])
         # A comment and an address in a script are not colors, and a private field read is not a color.
         self.assertEqual(page_problems('<script>// Fixes #377\nconst total = this.#add + 1\n'
                                        'const link = "https://github.com/antiwork/coconut"</script>'), [])
@@ -56,10 +57,18 @@ class PageRuleTests(unittest.TestCase):
                  '<script>Object.assign(document.body.style, {font: "16px serif"})</script>': 'font',
                  '<script>el.style.backgroundImage = "url(https://example.com/chart.png)"</script>': 'network',
                  '<style>.badge::after { content: "}"; color:#fff }</style>': 'hex value',
-                 '<script>el.style.color = `\n#fff\n`</script>': 'hex value'}
+                 '<script>el.style.color = `\n#fff\n`</script>': 'hex value',
+                 '<script>const label = "A // B"; el.style.color = "#fff";</script>': 'hex value',
+                 '<script>const label = \'/* x */\'; fetch("/a")</script>': 'network'}
         for page, reason in cases.items():
             with self.subTest(page=page):
                 self.assertIn(reason, ' '.join(page_problems(page)))
+
+    def test_a_large_stylesheet_is_read_in_one_pass(self):
+        import time
+        started = time.perf_counter()
+        self.assertEqual(page_problems('<style>' + '#abc, ' * 40000 + '#def { margin: 0 }</style>'), [])
+        self.assertLess(time.perf_counter() - started, 0.5)
 
     def test_an_end_date_is_the_end_of_that_day_and_must_come_within_a_year(self):
         current = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)

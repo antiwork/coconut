@@ -53,18 +53,17 @@ _COLOR_ATTRIBUTES = {'fill', 'stroke', 'color', 'bgcolor', 'stop-color', 'flood-
 _FILE_TAGS = {'link', 'iframe', 'object', 'embed', 'base', 'frame', 'applet'}
 _LOAD_ATTRIBUTES = {'src', 'srcset', 'poster', 'action', 'data', 'href', 'xlink:href', 'background'}
 _REMOTE = re.compile(r'^\s*(?:[a-z][a-z0-9+.-]*:)?//', re.I)
-# (the part of the page, the pattern, the reason). "css" is the text of each <style> element and style attribute,
-# and "scripts" the text of each script and event attribute without its comments. "code" is both. The rules are wide
+# (the part of the page, the pattern, the reason). "css" is the text of each <style> element and style attribute
+# without its selectors, and "scripts" the text of each script and event attribute without its comments. "code" is both. The rules are wide
 # on purpose: a refused page costs the bot one fix, and a page with its own colors breaks the look of the Library.
 HTML_RULES = (
     ('code', re.compile(r'font-family|fontFamily|\bfont\s*:', re.I), _FONT),
-    # A hex value in CSS is a color unless it is in a selector, which a { ends before a ; or a }.
-    ('css', re.compile(_HEX + r'(?![^{};]*\{)', re.I), _HEX_REASON),
+    ('css', re.compile(_HEX, re.I), _HEX_REASON),
     ('scripts', re.compile(_HEX, re.I),
      _HEX_REASON + ' If it is an element ID or a number, write it another way, for example "No. 377".'),
     ('code', re.compile(r'\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color-mix)\s*\(', re.I),
      'The page writes a color as a function. ' + _COLOR_ADVICE),
-    ('code', re.compile(_COLOR_PROPERTY + r'\s*:[^;]*?\b(?:' + _COLOR_NAMES + r')\b|[\'"`]\s*(?:' + _COLOR_NAMES
+    ('code', re.compile(_COLOR_PROPERTY + r'\s*:[^;{}]*?\b(?:' + _COLOR_NAMES + r')\b|[\'"`]\s*(?:' + _COLOR_NAMES
                         + r')\s*[\'"`]', re.I), _NAME_REASON),
     ('scripts', re.compile(r'\bd3\.(?:scheme|interpolate(?:Rgb|Hsl|Lab|Hcl|Cubehelix|Turbo|Viridis|Inferno|Magma|'
                            r'Plasma|Warm|Cool|Rainbow|Sinebow|Blues|Greens|Greys|Oranges|Purples|Reds|Spectral|RdBu|'
@@ -77,8 +76,22 @@ HTML_RULES = (
                            r'\bimport\s*\('),
      'The page script uses the network. Pages have no network access. Put the data in the page.'),
 )
-# The comments of a script. A // after a colon or a quote begins an address, not a comment.
-_SCRIPT_COMMENTS = re.compile(r'/\*.*?\*/|(?<![:\'"`\\])//[^\n]*', re.S)
+# A string or a comment of a script. The strings stay, so a // in a string is not a comment.
+_SCRIPT_TOKENS = re.compile(r'("(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|`(?:\\.|[^`\\])*`)|//[^\n]*|/\*.*?(?:\*/|$)',
+                            re.S)
+
+
+def _script_code(script: str) -> str:
+    """A script without its comments."""
+    return _SCRIPT_TOKENS.sub(lambda match: match.group(1) or ' ', script)
+
+
+def _declarations(css: str) -> str:
+    """CSS without its selectors, in one pass: the text before each { goes. An ID selector such as #add is not a
+    color, and a class such as .red is not a color name."""
+    parts = re.split(r'([{};])', css)
+    return ''.join('' if index + 1 < len(parts) and parts[index + 1] == '{' else part
+                   for index, part in enumerate(parts))
 
 SAVE_SCHEMA = {'name': 'coconut_save_document', 'description': (
     'Save a document in the Library of Coconut, where the person reads it on the phone. A save with an existing key '
@@ -133,9 +146,9 @@ class _PageCode(HTMLParser):
         for name, value in attributes:
             value = value or ''
             if name == 'style':
-                self.parts['css'].append(value)
+                self.parts['css'].append(_declarations(value))
             elif name.startswith('on'):
-                self.parts['scripts'].append(_SCRIPT_COMMENTS.sub(' ', value))
+                self.parts['scripts'].append(_script_code(value))
             elif name in _COLOR_ATTRIBUTES:
                 self.parts['colors'].append(value)
             elif name in _LOAD_ATTRIBUTES and name != 'href' and any(
@@ -151,9 +164,9 @@ class _PageCode(HTMLParser):
 
     def handle_data(self, data):
         if self.element == 'script':
-            self.parts['scripts'].append(_SCRIPT_COMMENTS.sub(' ', data))
+            self.parts['scripts'].append(_script_code(data))
         elif self.element == 'style':
-            self.parts['css'].append(data)
+            self.parts['css'].append(_declarations(data))
 
 
 def page_problems(content: str) -> list[str]:
