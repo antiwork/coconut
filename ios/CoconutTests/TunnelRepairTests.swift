@@ -52,6 +52,10 @@ final class TunnelRepairTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertEqual(mac.socketCount, sockets, "Automatic polling used the rejected pairing.")
         XCTAssertEqual(store.connection, .needsRepair)
+        // A later failure, for example of a write while the relay is away, keeps the repair and its Pair button.
+        store.recordSyncFailure(TunnelError.macOffline)
+        store.recordSyncFailure(URLError(.notConnectedToInternet))
+        XCTAssertEqual(store.connection, .needsRepair)
 
         // Reconnect is the person's choice, so it tries once more.
         await store.reconnect()
