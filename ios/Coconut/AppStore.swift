@@ -93,8 +93,6 @@ final class AppStore {
     @ObservationIgnored private var nativeSettingsPending = false
     @ObservationIgnored private var nativeSettingsRequiredCursor = 0
     var historyLoading: Set<String> = []
-    var remoteSearchQuery = ""
-    var remoteSearchBotIds: Set<String> = []
     @ObservationIgnored private var snapshotEpoch = UUID()
     @ObservationIgnored private var snapshotRequest: (id: UUID, generation: UUID, epoch: UUID, client: APIClient, task: Task<StateSnapshot, Error>)?
 
@@ -477,8 +475,6 @@ final class AppStore {
         nativeSettingsReadAt = nil
         nativeSettingsAttemptAt = nil
         nativeSettingsRequiredCursor = 0
-        remoteSearchQuery = ""
-        remoteSearchBotIds = []
         provider = ""
         connection = .unconfigured
     }
@@ -1884,22 +1880,6 @@ final class AppStore {
                 }
             } catch { /* Content remains usable while native settings are unavailable. */ }
         }
-    }
-
-    func searchConversations(_ text: String) async {
-        remoteSearchQuery = text
-        remoteSearchBotIds = []
-        guard cachedState?.syncVersion == 1, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let client else { return }
-        do {
-            try await Task.sleep(for: .milliseconds(200))
-            var query = URLComponents()
-            query.queryItems = [URLQueryItem(name: "q", value: text)]
-            struct SearchResult: Decodable, Sendable { let botIds: [String] }
-            let result: SearchResult = try await client.request("search?" + (query.percentEncodedQuery ?? "").replacingOccurrences(of: "+", with: "%2B"))
-            guard !Task.isCancelled, self.client === client, remoteSearchQuery == text else { return }
-            remoteSearchBotIds = Set(result.botIds)
-        } catch { /* Keep local search results when the Mac is unavailable. */ }
     }
 
     func hasOlderMessages(_ botId: String) -> Bool { cachedState?.historyBefore?[botId] != nil }

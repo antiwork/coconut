@@ -19,7 +19,6 @@ struct MacMainWindow: View {
     @Environment(AppStore.self) private var store
     @ObservedObject var model: AppModel
     @State private var selection: MacSelection? = .inbox
-    @State private var search = ""
     @State private var inspectorShown = true
     @State private var inspectorTab = InspectorTab.details
     @State private var createOpen = false
@@ -29,7 +28,7 @@ struct MacMainWindow: View {
         Group {
             if store.hasPairing || store.isDemo {
                 NavigationSplitView {
-                    MacSidebar(selection: $selection, search: search)
+                    MacSidebar(selection: $selection)
                         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
                         .toolbar {
                             ToolbarItem {
@@ -38,7 +37,6 @@ struct MacMainWindow: View {
                                     .help("Create a bot")
                             }
                         }
-                        .searchable(text: $search, placement: .sidebar, prompt: "Search")
                 } detail: {
                     detail
                 }
@@ -89,6 +87,9 @@ struct MacMainWindow: View {
                     .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
                     .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
             }
+            // The pill over the chat names the bot, so the window shows no title of its own. Without this, the title of
+            // the bot settings in the inspector repeats the bot name.
+            .toolbar(removing: .title)
             .inspector(isPresented: $inspectorShown) {
                 VStack(spacing: 0) {
                     Picker("Show", selection: $inspectorTab) {
@@ -127,10 +128,9 @@ struct MacMainWindow: View {
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Binding var selection: MacSelection?
-    let search: String
 
     private var activeBots: [Bot] {
-        store.bots.filter { !$0.archived && matches($0) }.sorted { lastActivity($0) > lastActivity($1) }
+        store.bots.filter { !$0.archived }.sorted { lastActivity($0) > lastActivity($1) }
     }
     private var pinned: [Bot] { activeBots.filter(\.pinned) }
     private var others: [Bot] { activeBots.filter { !$0.pinned } }
@@ -173,10 +173,6 @@ struct MacSidebar: View {
                 Button(bot.pinned ? "Unpin" : "Pin") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
-    }
-
-    private func matches(_ bot: Bot) -> Bool {
-        search.isEmpty || bot.name.localizedCaseInsensitiveContains(search)
     }
 
     private func lastActivity(_ bot: Bot) -> Date {
