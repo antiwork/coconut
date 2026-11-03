@@ -5,6 +5,7 @@ struct DecisionCard: View {
     @Environment(AppStore.self) private var store
     let decision: Decision
     var showsBot = false
+    var showsUndo = true
     var replyFocus: FocusState<Bool>.Binding? = nil
     var confirmingOptionId: String? = nil
     var onRespond: () -> Void = {}
@@ -98,8 +99,9 @@ struct DecisionCard: View {
                     .accessibilityIdentifier("dismiss-card-\(decision.id)")
                 }
             }
-            if let waiting = store.waitingAnswer(for: decision.id), let sendAt = waiting.sendAt {
-                AnswerUndoRow(answer: waiting, sendAt: sendAt) { store.undoAnswer(decisionId: decision.id) }
+            // Inbox has its own Undo and moves on at once, so a row here would only shift the card while it leaves.
+            if showsUndo, let waiting = store.waitingAnswer(for: decision.id) {
+                AnswerUndoRow(answer: waiting) { store.undoAnswer(decisionId: decision.id) }
             }
             if let previews = decision.previews, !previews.isEmpty {
                 DecisionPreviewStrip(previews: previews, loadedIds: $loadedPreviewIds, onFrameChange: onPreviewFrameChange)
@@ -460,26 +462,21 @@ struct ArtifactCard: View {
 /// An answer that the app holds for its Undo window: "Sending in 8 s" and Undo.
 struct AnswerUndoRow: View {
     let answer: OutgoingAnswer
-    let sendAt: Date
     let undo: () -> Void
 
+    // The answer shows as sent at once. While the app holds it, Undo takes it back, and nothing reaches the Mac.
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            let seconds = max(0, Int(sendAt.timeIntervalSince(context.date).rounded(.up)))
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(answer.text).font(.subheadline.weight(.semibold)).lineLimit(2)
-                    Text("Sending in \(seconds) s").font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                }
+        HStack(spacing: 12) {
+            Label(answer.text, systemImage: "checkmark.circle.fill")
+                .font(.subheadline.weight(.semibold)).lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Button("Undo", action: undo)
-                    .buttonStyle(.bordered)
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("undo-answer-\(answer.decisionId)")
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(answer.text). Sending in \(seconds) seconds")
-            .accessibilityAction(named: "Undo", undo)
+            Button("Undo", action: undo)
+                .buttonStyle(.bordered)
+                .frame(minHeight: 44)
+                .accessibilityIdentifier("undo-answer-\(answer.decisionId)")
         }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Answered: \(answer.text)")
+        .accessibilityAction(named: "Undo", undo)
     }
 }

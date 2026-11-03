@@ -10,8 +10,9 @@ struct MacInboxView: View {
     // unsent message. A card that the person picks goes back to the card.
     @State private var path = NavigationPath()
 
+    // An answered card leaves at once. The app holds the answer for a few seconds, and Undo in the toolbar takes it back.
     private var pending: [Decision] {
-        store.pendingDecisions.sorted { ($0.createdAt.apiDate ?? .distantPast) > ($1.createdAt.apiDate ?? .distantPast) }
+        store.pendingDecisions.filter { !store.answeringDecisionIds.contains($0.id) }.sorted { ($0.createdAt.apiDate ?? .distantPast) > ($1.createdAt.apiDate ?? .distantPast) }
     }
     private var chosen: Decision? { pending.first { $0.id == chosenId } ?? pending.first }
 
@@ -29,41 +30,56 @@ struct MacInboxView: View {
                 }
             }
             Divider()
-            Group {
-                if let chosen {
-                    // The card links to its chat and to an earlier answer. Those open in this column.
-                    NavigationStack(path: $path) {
+            // The card links to its chat and to an earlier answer. Those open in this column. The stack stays when the
+            // list empties, so a chat that a card opened keeps its unsent message; only its root changes.
+            NavigationStack(path: $path) {
+                Group {
+                    if let chosen {
                         ScrollView {
-                            DecisionCard(decision: chosen, showsBot: true)
+                            DecisionCard(decision: chosen, showsBot: true, showsUndo: false)
                                 .id(chosen.id)
                                 .frame(maxWidth: 560)
                                 .padding(24)
                                 .frame(maxWidth: .infinity)
                         }
-                        .navigationDestination(for: ConversationRoute.self) { route in
-                            ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
-                                             focusMessageId: route.messageId, attachedWork: route.workContext)
-                        }
-                        .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
-                        .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
-                    }
-                    .toolbar {
-                        ToolbarItem(placement: .primaryAction) {
-                            Button { selection = .bot(chosen.botId) } label: {
-                                Label("Open chat", systemImage: "bubble.left.and.bubble.right")
+                        .toolbar {
+                            ToolbarItem(placement: .primaryAction) {
+                                Button { selection = .bot(chosen.botId) } label: {
+                                    Label("Open chat", systemImage: "bubble.left.and.bubble.right")
+                                }
+                                .keyboardShortcut("o", modifiers: .command)
+                                .help("Open the chat of this card")
                             }
-                            .keyboardShortcut("o", modifiers: .command)
-                            .help("Open the chat of this card")
                         }
+                    } else {
+                        Color.clear
                     }
-                } else {
-                    Color.clear
                 }
+                .navigationDestination(for: ConversationRoute.self) { route in
+                    ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
+                                     focusMessageId: route.messageId, attachedWork: route.workContext)
+                }
+                .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
+                .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
             }
             .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
             .background(BoardStyle.paper)
         }
         .navigationTitle("Inbox")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    if let waiting = store.latestWaitingAnswer(at: context.date) {
+                        Button {
+                            store.undoAnswer(decisionId: waiting.decisionId)
+                            chosenId = waiting.decisionId
+                        } label: { Label("Undo", systemImage: "arrow.uturn.backward") }
+                            .keyboardShortcut("z", modifiers: .command)
+                            .help("Undo the answer \(waiting.text)")
+                    }
+                }
+            }
+        }
         .onChange(of: chosenId) { _, _ in path = NavigationPath() }
     }
 }
