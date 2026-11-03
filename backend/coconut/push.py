@@ -249,7 +249,8 @@ class PushDelivery:
         return self.stored_preferences(device_id) or dict(LEGACY_PREFERENCES)
 
     def unregister_jobs(self, device_id):
-        self.service.db.execute("UPDATE push_items SET status='dropped',reason='Disabled' WHERE device_id=? AND status='waiting'", (device_id,))
+        # Items of a queued notification go with it, so no item stays queued for an outbox row that no longer sends.
+        self.service.db.execute("UPDATE push_items SET status='dropped',reason='Disabled' WHERE device_id=? AND status IN ('waiting','queued')", (device_id,))
         self.service.db.execute("UPDATE push_outbox SET status='discarded',reason='Disabled' WHERE device_id=? AND status='queued'", (device_id,))
 
     def unregister(self, device_id):
@@ -561,6 +562,8 @@ class PushDelivery:
             # Every send checks again, so a muted bot or category stops a retry too. A sealed retry keeps its bytes.
             if job['expires'] <= time.time() or not device or not device[2] or not live:
                 service.db.execute("UPDATE push_outbox SET status='discarded',reason='NoLongerRelevant' WHERE id=?", (job['id'],))
+                service.db.execute("UPDATE push_items SET status='dropped',reason='NoLongerRelevant' WHERE delivery_id=? AND status='queued'",
+                                   (job['id'],))
                 return True
             if not job['envelope']:
                 items = live
@@ -602,9 +605,11 @@ class PushDelivery:
             else:
                 state = 'failed'
             delay = min(3600, 30 * 2 ** min(job['attempts'], 7))
-            service.db.execute("UPDATE push_outbox SET status=?,reason=?,not_before=?,sent=? WHERE id=? AND status='queued'",
-                               (state, reason, time.time() + delay, time.time() if state == 'accepted' else None, job['id']))
-            if state != 'queued':
+            moved = service.db.execute("UPDATE push_outbox SET status=?,reason=?,not_before=?,sent=? WHERE id=? AND status='queued'",
+                                       (state, reason, time.time() + delay, time.time() if state == 'accepted' else None, job['id'])).rowcount
+            # The items follow their outbox row. A row that changed during the send, for example when the phone
+            # turned notifications off, keeps the state that it got then, and so do its items.
+            if moved and state != 'queued':
                 service.db.execute("UPDATE push_items SET status=? WHERE delivery_id=?", ('sent' if state == 'accepted' else 'failed', job['id']))
         return True
 

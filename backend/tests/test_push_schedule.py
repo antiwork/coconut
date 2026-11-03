@@ -603,6 +603,26 @@ class DeliveryTimingTests(unittest.TestCase):
         self.deliver(self.MORNING)
         self.assertEqual(self.sent(), [])
         self.assertEqual(self.service.db.execute('SELECT status,reason FROM push_outbox').fetchall(), [('discarded', 'NoLongerRelevant')])
+        # Its item does not stay queued for a row that never sends.
+        self.assertEqual(self.service.db.execute('SELECT status,reason FROM push_items').fetchall(), [('dropped', 'NoLongerRelevant')])
+
+    def test_notifications_turned_off_during_a_send_keep_the_row_and_its_items_dropped(self):
+        test = self
+
+        class TurnsOffDuringSend(RecordingTransport):
+            def send(self, *args):
+                # The phone turns notifications off while the send is on its way.
+                with test.service.transaction():
+                    test.service.push.unregister_jobs(test.device)
+                return super().send(*args)
+
+        self.service.push.transport = TurnsOffDuringSend()
+        self.decision(ts=self.NOON)
+        self.deliver(self.NOON + 30)
+        self.assertEqual(len(self.service.push.transport.calls), 1)
+        # The relay accepted the send, but the row changed during it. The row and its items keep that change.
+        self.assertEqual(self.service.db.execute('SELECT status,reason FROM push_outbox').fetchall(), [('discarded', 'Disabled')])
+        self.assertEqual(self.service.db.execute('SELECT status,reason FROM push_items').fetchall(), [('dropped', 'Disabled')])
 
     def test_weekend_items_wait_for_the_next_chosen_weekday(self):
         self.register(schedule=dict(weekdays=[1, 2, 3, 4, 5]))

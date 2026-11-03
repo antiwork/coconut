@@ -3523,6 +3523,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     TurnTrace(task, 'dispatch').mark('dispatch',
                         queue_age_ms=max(0, round((datetime.now(timezone.utc) - queued_at).total_seconds() * 1000, 1)))
                     task.update(status='working', summary='Working', updated_at=now())
+                    if task.get('_gateway_cron'):
+                        # A turn of Coconut continues the routine, for example after an answered card. A restart
+                        # queues it again like any other turn (_recover).
+                        task['_gateway_cron'] = dict(task['_gateway_cron'], continued=True)
                     self._put('tasks', task)
                     self._event('task.updated', self._public(task), bot['id'], task_id)
                     self._refresh_bot(bot['id'])
@@ -4205,6 +4209,16 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             if task['status'] == 'working':
                 self._withdraw_stream(task['id'])
                 uncertain = self._has_uncertain_receipt(task['id'], task.get('_native_turn_id'))
+                if task.get('_gateway_cron') and not task['_gateway_cron'].get('continued'):
+                    # Hermes runs a routine, and its turn ended with the old service. Coconut never continues a
+                    # routine itself: a queued routine task would run its name as a chat turn. Its next run starts
+                    # at its next time.
+                    task.update(status='failed', updated_at=now(), summary=(
+                        'A tool stopped without a receipt. Check its result before starting new work.' if uncertain
+                        else 'The routine stopped when the Mac service restarted. It runs again at its next time.'))
+                    self._put('tasks', task)
+                    self._event('task.updated', self._public(task), task['bot_id'], task['id'])
+                    continue
                 task.update(status='failed' if uncertain else 'queued', summary='A tool stopped without a receipt. Check its result before starting new work.' if uncertain else 'Resuming after the Mac service restarted.', updated_at=now())
                 # A lane turn returns to its pending decision without a result. The executing receipt stays unknown,
                 # so the next continuation is refused until someone checks it.
