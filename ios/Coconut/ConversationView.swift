@@ -469,11 +469,17 @@ struct MessageBubble: View {
                 if let requestId = message.clientRequestId,
                    let outgoing = store.outgoingMessages.first(where: { $0.id == requestId }) {
                     if outgoing.status == .failed {
-                        Button("Not sent · Retry", systemImage: "arrow.clockwise") {
-                            Task { await store.retryOutgoing(requestId) }
+                        HStack(spacing: 16) {
+                            Button("Not sent · Retry", systemImage: "arrow.clockwise") {
+                                Task { await store.retryOutgoing(requestId) }
+                            }
+                            .accessibilityIdentifier("retry-message-\(requestId)")
+                            // A failed message holds the later messages to this bot. Delete lets them go.
+                            Button("Delete", role: .destructive) { store.deleteUnsent(requestId) }
+                                .accessibilityIdentifier("delete-message-\(requestId)")
                         }
                         .font(.caption).foregroundStyle(.secondary)
-                        .frame(minHeight: 44).accessibilityIdentifier("retry-message-\(requestId)")
+                        .frame(minHeight: 44)
                     } else if outgoing.status == .rejected {
                         Button("Not sent · Edit", systemImage: "pencil") { editingOutgoing = outgoing }
                             .font(.caption).foregroundStyle(.secondary)
@@ -602,6 +608,11 @@ private struct RejectedMessageEditor: View {
                 }
                 .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityIdentifier("resend-edited-message")
+                Button("Delete message", role: .destructive) {
+                    store.deleteUnsent(outgoing.id)
+                    dismiss()
+                }
+                .accessibilityIdentifier("delete-rejected-message")
             }
             .navigationTitle("Edit message").navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }

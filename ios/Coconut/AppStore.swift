@@ -693,7 +693,10 @@ final class AppStore {
     }
 
     private func deliverOutgoing(_ id: String) async {
-        guard let outgoing = outgoingMessages.first(where: { $0.id == id }) else { return }
+        guard let index = outgoingMessages.firstIndex(where: { $0.id == id }) else { return }
+        // A retry of a failed message is on its way again, so Delete does not offer it while the Mac can receive it.
+        outgoingMessages[index].status = .sending
+        let outgoing = outgoingMessages[index]
         let result: AgentTask? = await write("bots/\(outgoing.botId)/messages", payload: outgoing.request,
             as: AgentTask.self, quiet: true, refreshInBackground: true, idempotencyKey: id, onFailure: { failure in
                 guard let index = self.outgoingMessages.firstIndex(where: { $0.id == id }),
@@ -709,6 +712,24 @@ final class AppStore {
             }
             try? saveOutgoing()
         }
+    }
+
+    /// Removes a message that did not send. A failed message holds the messages after it to the same bot, because they
+    /// go in order, so its removal lets them go. A message that reached the Mac before its answer was lost still shows
+    /// from the Mac.
+    @discardableResult
+    func deleteUnsent(_ id: String) -> Bool {
+        guard outgoingMessages.contains(where: { $0.id == id && [.failed, .rejected].contains($0.status) }) else { return false }
+        let previous = outgoingMessages
+        outgoingMessages.removeAll { $0.id == id }
+        // Save the removal first. A saved message that stayed in outgoing.json would send at the next launch.
+        do { try saveOutgoing() } catch {
+            outgoingMessages = previous
+            report(error)
+            return false
+        }
+        scheduleDelivery()
+        return true
     }
 
     func replaceRejected(_ outgoing: OutgoingMessage, text: String) async {
