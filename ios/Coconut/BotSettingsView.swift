@@ -247,6 +247,7 @@ private struct RoutineEditorView: View {
             } else {
                 Section("Instructions") {
                     TextField("What should this bot do?", text: $prompt, axis: .vertical)
+                        .fieldUnderHeader()
                         .lineLimit(4...12).accessibilityIdentifier("routine-prompt")
                 }
                 if let check = current?.scriptCheck {

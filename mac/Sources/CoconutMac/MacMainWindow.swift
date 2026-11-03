@@ -30,6 +30,13 @@ struct MacMainWindow: View {
                 NavigationSplitView {
                     MacSidebar(selection: $selection, search: search)
                         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+                        .toolbar {
+                            ToolbarItem {
+                                Button { createOpen = true } label: { Label("New bot", systemImage: "square.and.pencil") }
+                                    .keyboardShortcut("n", modifiers: .command)
+                                    .help("Create a bot")
+                            }
+                        }
                         .searchable(text: $search, placement: .sidebar, prompt: "Search")
                 } detail: {
                     detail
@@ -54,14 +61,12 @@ struct MacMainWindow: View {
         switch selection {
         case .inbox, nil:
             MacInboxView(selection: $selection)
-                .toolbar { newBotButton }
         case .library:
             NavigationStack {
                 LibraryView()
                     .navigationTitle("Library")
                     .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
             }
-            .toolbar { newBotButton }
         case .bot(let botId):
             NavigationStack {
                 ConversationView(botId: botId)
@@ -90,24 +95,17 @@ struct MacMainWindow: View {
                         }
                     }
                 }
+                // A grouped Mac form keeps each section in a box, as the iPhone settings show them.
+                .formStyle(.grouped)
                 .inspectorColumnWidth(min: 260, ideal: 320, max: 420)
             }
             .toolbar {
-                newBotButton
                 ToolbarItem(placement: .primaryAction) {
                     Button { inspectorShown.toggle() } label: { Label("Details", systemImage: "sidebar.trailing") }
                         .keyboardShortcut("i", modifiers: .command)
                         .help("Show or hide the details of the bot")
                 }
             }
-        }
-    }
-
-    private var newBotButton: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Button { createOpen = true } label: { Label("New bot", systemImage: "plus") }
-                .keyboardShortcut("n", modifiers: .command)
-                .help("Create a bot")
         }
     }
 }

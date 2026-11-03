@@ -238,6 +238,7 @@ struct BotIdentityFields: View {
         }
         Section("Name") {
             TextField("Name", text: $name).textContentType(.name)
+                .fieldUnderHeader()
                 .focused($focused, equals: .name)
                 .submitLabel(.done)
                 .onSubmit(commit)
@@ -246,6 +247,7 @@ struct BotIdentityFields: View {
         Section("Description") {
             TextField("What should this bot do?", text: $instructions, axis: .vertical)
                 .lineLimit(5...18)
+                .fieldUnderHeader()
                 .focused($focused, equals: .instructions)
                 .onSubmit(commit)
                 .accessibilityIdentifier("bot-instructions")
