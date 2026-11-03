@@ -1,23 +1,28 @@
 import SwiftUI
 
 enum BoardStyle {
-    static let paper = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.065, alpha: 1) : .systemBackground })
-    static let surface = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.13, alpha: 1) : UIColor(white: 0.955, alpha: 1) })
-    static let userBubble = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.36, alpha: 1) : UIColor(white: 0.86, alpha: 1) })
-    static let userBubbleLink = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.75, green: 0.87, blue: 1, alpha: 1) : UIColor(red: 0, green: 0.31, blue: 0.68, alpha: 1) })
+    static let paper = Color.adaptive { dark, _ in dark ? PlatformColor(white: 0.065, alpha: 1) : .pageBackground }
+    static let surface = Color.adaptive { dark, _ in PlatformColor(white: dark ? 0.13 : 0.955, alpha: 1) }
+    static let userBubble = Color.adaptive { dark, _ in PlatformColor(white: dark ? 0.36 : 0.86, alpha: 1) }
+    static let userBubbleLink = Color.adaptive { dark, _ in
+        dark ? PlatformColor(red: 0.75, green: 0.87, blue: 1, alpha: 1) : PlatformColor(red: 0, green: 0.31, blue: 0.68, alpha: 1)
+    }
     static let ink = Color.primary
-    static let accent = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.99, green: 0.52, blue: 0.36, alpha: 1) : UIColor(red: 0.72, green: 0.27, blue: 0.14, alpha: 1) })
-    static let green = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark ? UIColor(red: 0.56, green: 0.75, blue: 0.60, alpha: 1) : UIColor(red: 0.27, green: 0.43, blue: 0.32, alpha: 1) })
-    static let line = Color(uiColor: UIColor { traits in
-        let color: UIColor = traits.userInterfaceStyle == .dark ? .white : .black
-        return color.withAlphaComponent(traits.accessibilityContrast == .high ? 0.4 : 0.1)
-    })
+    static let accent = Color.adaptive { dark, _ in
+        dark ? PlatformColor(red: 0.99, green: 0.52, blue: 0.36, alpha: 1) : PlatformColor(red: 0.72, green: 0.27, blue: 0.14, alpha: 1)
+    }
+    static let green = Color.adaptive { dark, _ in
+        dark ? PlatformColor(red: 0.56, green: 0.75, blue: 0.60, alpha: 1) : PlatformColor(red: 0.27, green: 0.43, blue: 0.32, alpha: 1)
+    }
+    static let line = Color.adaptive { dark, highContrast in
+        (dark ? PlatformColor.white : .black).withAlphaComponent(highContrast ? 0.4 : 0.1)
+    }
     static let control = Color.primary
-    static let controlLabel = Color(uiColor: .systemBackground)
+    static let controlLabel = Color(platformColor: .pageBackground)
     // Semantic tints. Each one names a meaning, not a hue.
     static let positive = green
     static let attention = accent
-    static let destructive = Color(uiColor: .systemRed)
+    static let destructive = Color(platformColor: .systemRed)
 
     /// The one fade for status text. Reduce Motion turns it off.
     static func fade(reduceMotion: Bool) -> Animation? { reduceMotion ? nil : .easeOut(duration: 0.2) }

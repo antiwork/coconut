@@ -1,6 +1,8 @@
 import ImageIO
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// A row of photos that a bot sent one after another. A tap opens the photos full screen.
 struct PhotoCarousel: View {
@@ -34,6 +36,7 @@ struct PhotoCarousel: View {
         .contentMargins(.horizontal, 16, for: .scrollContent)
         .padding(.horizontal, -16)
         .accessibilityIdentifier("photo-carousel")
+        #if os(iOS)
         .fullScreenCover(isPresented: $viewerOpen) {
             // The viewer closes into the photo it shows, so the row keeps that photo in view.
             PhotoViewer(photos: photos, index: $viewing)
@@ -45,6 +48,7 @@ struct PhotoCarousel: View {
                 HeldPhoto(photo: photos[held], message: messages[held], onReply: onReply)
             }
         }
+        #endif
     }
 
     private func tile(_ photo: MessagePhoto, message: Message, index: Int) -> some View {
@@ -65,6 +69,7 @@ struct PhotoCarousel: View {
             }
             .contentShape(Rectangle())
             .onTapGesture { viewing = index; viewerOpen = true }
+            #if os(iOS)
             // A held photo shows its reactions and actions, as a held text message does.
             .onLongPressGesture(minimumDuration: 0.4) {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -74,6 +79,7 @@ struct PhotoCarousel: View {
                 transaction.disablesAnimations = true
                 withTransaction(transaction) { held = index }
             } onPressingChanged: { pressing = $0 ? index : nil }
+            #endif
             .accessibilityElement(children: .ignore)
             .accessibilityAddTraits(.isButton)
             .accessibilityLabel(photo.label)
@@ -89,26 +95,27 @@ struct PhotoCarousel: View {
                         }
                     }
                 }
-                if !photo.isMacFile { Button("Copy link") { UIPasteboard.general.url = photo.url } }
+                if !photo.isMacFile { Button("Copy link") { Pasteboard.copy(photo.url) } }
             }
             MessageReactionList(message: message, enabled: canReply)
         }
     }
 }
 
+#if os(iOS)
 /// A held photo. A photo from the Mac has no public address, so Copy and Share take its image, and they wait until it
 /// has loaded.
 private struct HeldPhoto: View {
     let photo: MessagePhoto
     let message: Message
     let onReply: ((Message) -> Void)?
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
 
     var body: some View {
         let loaded = image
         HeldMessageView(message: message, onReply: onReply, copyTitle: photo.isMacFile ? "Copy" : "Copy link",
-                        copy: photo.isMacFile ? loaded.map { image in { UIPasteboard.general.image = image } }
-                            : { UIPasteboard.general.url = photo.url },
+                        copy: photo.isMacFile ? loaded.map { image in { Pasteboard.copy(image) } }
+                            : { Pasteboard.copy(photo.url) },
                         share: photo.isMacFile ? loaded.map { .image($0, photo.label) } : .url(photo.url)) { maxHeight in
             PhotoMenuPreview(url: photo.url, maxHeight: maxHeight)
                 .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small))
@@ -131,7 +138,7 @@ private struct PhotoMenuPreview: View {
         if let image = PhotoLoader.shared.cached(url, size: .full) ?? PhotoLoader.shared.cached(url, size: .tile),
            image.size.width > 0, image.size.height > 0 {
             let scale = min(340 / image.size.width, maxHeight / image.size.height)
-            Image(uiImage: image).resizable()
+            Image(platformImage: image).resizable()
                 .frame(width: image.size.width * scale, height: image.size.height * scale)
         } else {
             RemotePhoto(url: url).frame(width: 340, height: min(230, maxHeight))
@@ -190,8 +197,8 @@ struct PhotoViewer: View {
             Group {
                 // A shared image offers Save Image. Before the image loads, the link is shared.
                 if loaded.contains(photo.url), let image = PhotoLoader.shared.cached(photo.url, size: .full) {
-                    ShareLink(item: Image(uiImage: image),
-                              preview: SharePreview(photo.label, image: Image(uiImage: image)))
+                    ShareLink(item: Image(platformImage: image),
+                              preview: SharePreview(photo.label, image: Image(platformImage: image)))
                 } else if !photo.isMacFile {
                     ShareLink(item: photo.url)
                 }
@@ -210,7 +217,7 @@ private struct PhotoPage: View {
     let url: URL
     @Binding var zoomed: Bool
     let loaded: () -> Void
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
     @State private var failed = false
     @State private var attempt = 0
 
@@ -307,11 +314,13 @@ private struct ZoomableImage: UIViewRepresentable {
     }
 }
 
+#endif
+
 /// A photo from an address. It shows a placeholder while it loads and an icon when it fails.
 struct RemotePhoto: View {
     let url: URL
     // A photo in the cache shows at once, without a frame of the placeholder.
-    @State private var image: UIImage?
+    @State private var image: PlatformImage?
     @State private var failed = false
     @State private var attempt = 0
 
@@ -324,7 +333,7 @@ struct RemotePhoto: View {
         Rectangle().fill(BoardStyle.surface)
             .overlay {
                 if let image {
-                    Image(uiImage: image).resizable().scaledToFill()
+                    Image(platformImage: image).resizable().scaledToFill()
                 } else if failed {
                     Image(systemName: "photo").font(.title2).foregroundStyle(.secondary)
                 } else {
@@ -355,7 +364,7 @@ enum PhotoSize: Int {
 final class PhotoLoader: @unchecked Sendable {
     static let shared = PhotoLoader()
     // NSCache is safe to use from any thread.
-    private let images = NSCache<NSString, UIImage>()
+    private let images = NSCache<NSString, PlatformImage>()
     private let session: URLSession
     /// Loads a photo that a bot saved on the Mac, `coconut-file://<artifact id>`, through the paired Mac. The store
     /// sets it.
@@ -369,14 +378,15 @@ final class PhotoLoader: @unchecked Sendable {
         session = URLSession(configuration: configuration)
     }
 
-    func cached(_ url: URL, size: PhotoSize) -> UIImage? { images.object(forKey: Self.key(url, size)) }
+    func cached(_ url: URL, size: PhotoSize) -> PlatformImage? { images.object(forKey: Self.key(url, size)) }
 
     /// The disk cache keeps the downloaded data, so the second size of a photo does not download it again.
-    func image(_ url: URL, size: PhotoSize) async -> UIImage? {
+    func image(_ url: URL, size: PhotoSize) async -> PlatformImage? {
         if let image = cached(url, size: size) { return image }
-        guard let data = await download(url),
-              let image = downsampledImage(data, largestSide: size.rawValue).map(UIImage.init(cgImage:)) else { return nil }
-        images.setObject(image, forKey: Self.key(url, size), cost: image.cgImage.map { $0.bytesPerRow * $0.height } ?? data.count)
+        guard let data = await download(url), let decoded = downsampledImage(data, largestSide: size.rawValue)
+        else { return nil }
+        let image = PlatformImage(decoded)
+        images.setObject(image, forKey: Self.key(url, size), cost: decoded.bytesPerRow * decoded.height)
         return image
     }
 

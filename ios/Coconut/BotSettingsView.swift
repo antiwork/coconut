@@ -50,9 +50,9 @@ struct BotSettingsView: View {
             if let error = store.error { Section { InlineError(error) } }
         }
         .settingsBackground()
-        .navigationTitle(draft?.name ?? "Bot").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(draft?.name ?? "Bot").inlineNavigationTitle()
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+            ToolbarItem(placement: .trailingBar) {
                 Menu {
                     if let draft {
                         Button(draft.archived ? "Restore bot" : "Archive bot") {
@@ -259,7 +259,7 @@ private struct RoutineEditorView: View {
             }
             Section {
                 TextField("Weekdays at 8am", text: $schedule)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .noAutocapitalization().autocorrectionDisabled()
                     .accessibilityIdentifier("routine-schedule")
                 Toggle("Enabled", isOn: $enabled).tint(BoardStyle.green).accessibilityIdentifier("routine-enabled")
             } header: { Text("Schedule") } footer: {
@@ -283,7 +283,7 @@ private struct RoutineEditorView: View {
             if let error = store.error { Section { InlineError(error) } }
         }
         .settingsBackground()
-        .navigationTitle(routine == nil ? "New routine" : "Routine").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(routine == nil ? "New routine" : "Routine").inlineNavigationTitle()
         .toolbar {
             if routine == nil { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
             ToolbarItem(placement: .confirmationAction) { Button(saving ? "Saving…" : "Save", action: save).disabled(!canSave).accessibilityIdentifier("save-routine") }

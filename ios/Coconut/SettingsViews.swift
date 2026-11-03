@@ -60,11 +60,13 @@ struct AppSettingsView: View {
                     Text("Coconut \(appVersion) · Execution stays on your Mac.")
                 }
             }
+            #if os(iOS)
             .listSectionSpacing(24)
+            #endif
             .settingsBackground()
-            .navigationTitle("Settings").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Settings").inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .leadingBar) {
                     Button { dismiss() } label: {
                         Image(systemName: "xmark").font(.body.weight(.medium))
                             .frame(minWidth: 44, minHeight: 44)
@@ -182,7 +184,7 @@ private struct MacConnectionSettingsView: View {
             }
         }
         .settingsBackground()
-        .navigationTitle("Your Mac").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Your Mac").inlineNavigationTitle()
         // The check is quiet: a Mac that does not answer shows no warning and no error.
         .task(id: store.connection == .connected) {
             guard store.connection == .connected else { return }
@@ -229,7 +231,7 @@ struct BotIdentityFields: View {
                 NavigationStack {
                     Form { BotAppearancePicker(avatar: $avatar, color: $color, identity: identity) }
                         .settingsBackground()
-                        .navigationTitle("Character").navigationBarTitleDisplayMode(.inline)
+                        .navigationTitle("Character").inlineNavigationTitle()
                         .toolbar { Button("Done") { appearanceOpen = false } }
                 }.presentationDetents([.large])
             }
@@ -274,7 +276,7 @@ struct BotEditorView: View {
             }
             .disabled(saving)
             .settingsBackground()
-            .navigationTitle("New bot").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("New bot").inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

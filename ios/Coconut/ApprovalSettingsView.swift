@@ -45,7 +45,7 @@ struct ApprovalSettingsView: View {
         }
         .disabled(saving)
         .settingsBackground()
-        .navigationTitle("Access").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Access").inlineNavigationTitle()
     }
 
     private func save(_ value: String?) {

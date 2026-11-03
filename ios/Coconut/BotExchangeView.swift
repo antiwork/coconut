@@ -166,6 +166,6 @@ struct BotExchangeView: View {
                 }.accessibilityLabel(route.botIds.map { id in store.bots.first { $0.id == id }?.name ?? "Deleted bot" }.joined(separator: " and "))
             }
         }
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
     }
 }

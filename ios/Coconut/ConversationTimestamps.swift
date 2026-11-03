@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 @MainActor @Observable
 private final class TimestampReveal {
@@ -23,6 +25,7 @@ struct ConversationTimestamps: ViewModifier {
     @ScaledMetric(relativeTo: .caption) private var width = 88.0
 
     func body(content: Content) -> some View {
+        #if os(iOS)
         content
             .environment(\.timestampReveal, reveal)
             .gesture(TimestampRevealGesture(changed: { distance in
@@ -33,6 +36,10 @@ struct ConversationTimestamps: ViewModifier {
                 }
             }))
             .onDisappear { reveal.distance = 0 }
+        #else
+        // A Mac has no swipe to reveal the times. Each message shows its time when the pointer rests on it.
+        content
+        #endif
     }
 }
 
@@ -57,11 +64,16 @@ struct MessageTimestamp: ViewModifier {
                 }
                 .accessibilityCustomContent(LocalizedStringKey("Time"), date.formatted(date: .abbreviated, time: .shortened))
         } else {
+            #if os(macOS)
+            content.help(createdAt.apiDate?.formatted(date: .abbreviated, time: .shortened) ?? "")
+            #else
             content
+            #endif
         }
     }
 }
 
+#if os(iOS)
 private struct TimestampRevealGesture: UIGestureRecognizerRepresentable {
     let changed: (CGFloat) -> Void
     let ended: () -> Void
@@ -105,3 +117,4 @@ private struct TimestampRevealGesture: UIGestureRecognizerRepresentable {
         }
     }
 }
+#endif

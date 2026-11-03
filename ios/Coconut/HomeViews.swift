@@ -273,6 +273,6 @@ struct ArchivedBotsView: View {
             }
         }
         .listStyle(.plain).scrollContentBackground(.hidden).background(BoardStyle.paper)
-        .navigationTitle("Archived").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Archived").inlineNavigationTitle()
     }
 }

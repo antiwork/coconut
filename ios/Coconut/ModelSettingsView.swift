@@ -93,7 +93,7 @@ struct ModelSettingsView: View {
                                 }.tag(model.selectionKey)
                             }
                         }
-                        .pickerStyle(.navigationLink)
+                        .pagePickerStyle()
                         .accessibilityIdentifier("model-picker")
                         if let selectedModel, !selectedModel.reasoningEfforts.isEmpty {
                             Picker("Effort", selection: Binding(get: { effort }, set: { effort = $0; edited = true; save() })) {
@@ -103,7 +103,7 @@ struct ModelSettingsView: View {
                                     Text(ModelPresentation.effortName(value)).tag(Optional(value))
                                 }
                             }
-                            .pickerStyle(.navigationLink)
+                            .pagePickerStyle()
                             .accessibilityIdentifier("model-effort-picker")
                         } else {
                             LabeledContent("Effort", value: ModelPresentation.effortName(selectedModel?.defaultReasoningEffort))
@@ -138,7 +138,7 @@ struct ModelSettingsView: View {
             }
         }
         .settingsBackground()
-        .navigationTitle("Model").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Model").inlineNavigationTitle()
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 if saving { ProgressView().accessibilityLabel("Saving model settings") }

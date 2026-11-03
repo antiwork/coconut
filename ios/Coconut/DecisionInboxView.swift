@@ -138,11 +138,11 @@ struct DecisionInboxView: View {
                 .accessibilityHidden(current == nil)
                 .accessibilityLabel("\(queue.remainingCount) decisions left. Show all")
         }
-        if #available(iOS 26.0, *) {
-            ToolbarItem(placement: .topBarTrailing) { undoButton }
+        if #available(iOS 26.0, macOS 26.0, *) {
+            ToolbarItem(placement: .trailingBar) { undoButton }
                 .sharedBackgroundVisibility(.hidden)
         } else {
-            ToolbarItem(placement: .topBarTrailing) { undoButton }
+            ToolbarItem(placement: .trailingBar) { undoButton }
         }
     }
 
@@ -258,7 +258,7 @@ struct DecisionInboxView: View {
                     }
                 }
             }
-            .navigationTitle("Inbox").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Inbox").inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { overviewOpen = false } } }
         }
     }
@@ -320,7 +320,7 @@ struct DecisionInboxView: View {
         updatingIds.insert(decision.id)
         // Keep the tapped card visible while the write changes the pending queue.
         confirmingChoice = (decision, optionId ?? decision.cardOptions.first { $0.answer == choice }?.id)
-        UISelectionFeedbackGenerator().selectionChanged()
+        Haptics.selection()
         let write = Task { await store.answer(decision, choice: choice, optionId: optionId) }
         Task {
             try? await Task.sleep(for: .milliseconds(340))

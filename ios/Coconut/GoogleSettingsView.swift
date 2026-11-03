@@ -89,9 +89,13 @@ final class GoogleSignIn: NSObject, ASWebAuthenticationPresentationContextProvid
     func cancel() { complete(.failure(CancellationError())) }
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        #if os(iOS)
         UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .filter { $0.activationState == .foregroundActive }
             .flatMap(\.windows).first(where: \.isKeyWindow) ?? ASPresentationAnchor()
+        #else
+        NSApplication.shared.keyWindow ?? ASPresentationAnchor()
+        #endif
     }
 }
 

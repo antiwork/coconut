@@ -1,6 +1,8 @@
 import Foundation
 import Observation
+#if canImport(UIKit)
 import UIKit
+#endif
 import UserNotifications
 import SwiftUI
 
@@ -117,7 +119,7 @@ struct NotificationSettingsView: View {
         .tint(BoardStyle.green)
         .settingsBackground()
         .navigationTitle("Notifications")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         // Read again when the connection returns, so the screen does not keep an unavailable status.
         .task(id: store.connection) { await store.refreshPushStatus() }
     }
@@ -140,7 +142,7 @@ struct WorkHoursView: View {
                 Picker("Time zone", selection: $push.workTimeZone) {
                     ForEach(TimeZone.knownTimeZoneIdentifiers, id: \.self) { Text($0.replacingOccurrences(of: "_", with: " ")).tag($0) }
                 }
-                .pickerStyle(.navigationLink)
+                .pagePickerStyle()
                 .accessibilityIdentifier("work-hours-timezone")
                 if push.workStartMinutes >= push.workEndMinutes {
                     InlineError("Start must be before end.")
@@ -176,7 +178,7 @@ struct WorkHoursView: View {
         .settingsBackground()
         .environment(\.timeZone, TimeZone(identifier: "UTC") ?? .gmt)
         .navigationTitle("Work hours")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
     }
 
     private func weekday(_ number: Int) -> Binding<Bool> {
@@ -223,7 +225,7 @@ struct UrgentCardsView: View {
         }
         .settingsBackground()
         .navigationTitle("Urgent cards")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
     }
 }
 
@@ -470,7 +472,13 @@ final class PushNotifications {
         PushChoices(preferences: preferences, schedule: schedule, outside: outsideWorkHours)
     }
 
-    var allowed: Bool { [.authorized, .provisional, .ephemeral].contains(authorization) }
+    var allowed: Bool {
+        #if os(iOS)
+        [.authorized, .provisional, .ephemeral].contains(authorization)
+        #else
+        [.authorized, .provisional].contains(authorization)
+        #endif
+    }
     var environment: String { Bundle.main.object(forInfoDictionaryKey: "CoconutPushEnvironment") as? String ?? "development" }
 
     func refresh(requestPermission: Bool = false) async {
@@ -485,7 +493,10 @@ final class PushNotifications {
         if authorization != settings.authorizationStatus { authorization = settings.authorizationStatus }
         if badgesAllowed != (settings.badgeSetting == .enabled) { badgesAllowed = settings.badgeSetting == .enabled }
         await PushRelayClient.shared.flushRevocations()
+        #if os(iOS)
+        // The push relay serves the iPhone app only. A Mac app shows local notifications while it runs.
         if allowed { UIApplication.shared.registerForRemoteNotifications() }
+        #endif
     }
 
     func setBadgeCount(_ count: Int) {
@@ -503,10 +514,17 @@ final class PushNotifications {
     }
 
     func openSystemSettings() {
+        #if os(iOS)
         if let url = URL(string: UIApplication.openNotificationSettingsURLString) { UIApplication.shared.open(url) }
+        #else
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension") {
+            NSWorkspace.shared.open(url)
+        }
+        #endif
     }
 }
 
+#if os(iOS)
 @MainActor
 final class CoconutAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
@@ -544,6 +562,7 @@ final class CoconutAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         }
     }
 }
+#endif
 
 struct PushRegistration: Encodable {
     let token: String

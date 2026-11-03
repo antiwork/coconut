@@ -413,7 +413,7 @@ struct NativeTaskDetailsView: View {
             }
         }
         .navigationTitle("Task details")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         .alert("Stop this recovery?", isPresented: Binding(
             get: { stopPendingConfirmation != nil }, set: { if !$0 { stopPendingConfirmation = nil } }),

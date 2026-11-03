@@ -1,3 +1,5 @@
+// The iPhone shows a held message over the chat. A Mac uses the menu of a secondary click (ConversationView).
+#if os(iOS)
 import SwiftUI
 import UIKit
 
@@ -111,3 +113,4 @@ struct HeldMessageView<Preview: View>: View {
         if let action { DispatchQueue.main.async(execute: action) }
     }
 }
+#endif

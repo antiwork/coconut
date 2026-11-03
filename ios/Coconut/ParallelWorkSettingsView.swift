@@ -21,7 +21,7 @@ struct ParallelWorkSettingsView: View {
                             Text("\(value)").tag(Optional(value))
                         }
                     }
-                    .pickerStyle(.navigationLink)
+                    .pagePickerStyle()
                     .accessibilityIdentifier("work-item-limit")
                 } footer: {
                     Text("Automatic lets up to \(capacity.automaticLimit) bots work at once. Your Mac chooses this number from its processors and memory. A lower number does not stop work that runs now.")
@@ -36,7 +36,7 @@ struct ParallelWorkSettingsView: View {
         .disabled(saving)
         .settingsBackground()
         .navigationTitle("Parallel work")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
     }
 
     private func save(_ value: Int?) {

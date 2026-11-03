@@ -1,6 +1,5 @@
 import Foundation
 import Observation
-import UIKit
 import CryptoKit
 import Network
 import OSLog
@@ -345,7 +344,7 @@ final class AppStore {
         do {
             let candidate = APIClient(tunnel: pairingTunnel, token: nil)
             let response: PairResponse = try await candidate.request("pair", method: "POST", body: APIJSON.encode(
-                PairRequest(code: setup.code, deviceName: UIDevice.current.name)), retryTransient: false)
+                PairRequest(code: setup.code, deviceName: Device.name)), retryTransient: false)
             guard let handshakeHash = await pairingTunnel.handshakeHash else { throw TunnelError.protocolViolation }
             // A closed pairing screen cancels its pairing. Nothing is saved after that, so a late answer keeps the Mac.
             try Task.checkCancellation()
@@ -396,7 +395,7 @@ final class AppStore {
         do {
             let candidate = try APIClient(loopback: address, token: nil)
             let response: PairResponse = try await candidate.request("pair", method: "POST", body: APIJSON.encode(
-                PairRequest(code: code, deviceName: UIDevice.current.name)), retryTransient: false)
+                PairRequest(code: code, deviceName: Device.name)), retryTransient: false)
             disconnect()
             try PairingToken.save(response.token)
             let configuration = PairingConfiguration(loopback: address, deviceId: response.deviceId)
@@ -2290,24 +2289,6 @@ final class AppStore {
     #endif
 
     private static var now: String { ISO8601DateFormatter().string(from: Date()) }
-}
-
-@MainActor
-private final class BackgroundTask {
-    private var identifier = UIBackgroundTaskIdentifier.invalid
-
-    func begin(_ name: String, expiration: @escaping @MainActor () -> Void) {
-        identifier = UIApplication.shared.beginBackgroundTask(withName: name) { [self] in
-            expiration()
-            end()
-        }
-    }
-
-    func end() {
-        guard identifier != .invalid else { return }
-        UIApplication.shared.endBackgroundTask(identifier)
-        identifier = .invalid
-    }
 }
 
 // pairing.json. Version 2 pairs through the relay tunnel. Only a simulator debug build uses version 1, with an http://

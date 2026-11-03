@@ -54,14 +54,14 @@ struct MessageDraftEditor: View {
                     LabeledContent("Via", value: draft.channel)
                     if draft.sender != nil {
                         TextField("From", text: Binding(get: { draft.sender ?? "" }, set: { draft.sender = $0 }))
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .noAutocapitalization().autocorrectionDisabled()
                     }
                     TextField("To", text: $draft.recipient)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .noAutocapitalization().autocorrectionDisabled()
                         .accessibilityIdentifier("draft-recipient-field")
                     if draft.replyTo != nil {
                         TextField("Reply to", text: Binding(get: { draft.replyTo ?? "" }, set: { draft.replyTo = $0 }))
-                            .textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .noAutocapitalization().autocorrectionDisabled()
                     }
                     TextField("Subject", text: Binding(get: { draft.subject ?? "" }, set: { draft.subject = $0 }))
                         .accessibilityIdentifier("draft-subject-field")
@@ -75,7 +75,7 @@ struct MessageDraftEditor: View {
                 if let saveError { Section { Text(saveError).foregroundStyle(BoardStyle.attention) } }
             }
             .scrollContentBackground(.hidden).background(BoardStyle.paper)
-            .navigationTitle("Edit draft").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Edit draft").inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }.disabled(saving)
