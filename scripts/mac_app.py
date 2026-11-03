@@ -85,8 +85,10 @@ def info_plist(version: str, build: str) -> dict:
         'CFBundleVersion': build,
         'LSApplicationCategoryType': 'public.app-category.productivity',
         'LSMinimumSystemVersion': MINIMUM_SYSTEM,
-        # A menu bar app: no Dock icon and no main menu.
-        'LSUIElement': True,
+        # The chat window has a Dock icon and a main menu. The menu bar item shows the service of this Mac.
+        'LSUIElement': False,
+        # A pairing link from Hermes opens the pairing page of the chat window.
+        'CFBundleURLTypes': [{'CFBundleURLName': 'Pairing', 'CFBundleURLSchemes': ['coconut']}],
         'NSHighResolutionCapable': True,
         'SUFeedURL': FEED_URL,
         'SUPublicEDKey': ED_PUBLIC_KEY,

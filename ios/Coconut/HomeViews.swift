@@ -161,6 +161,8 @@ struct BotContactRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let bot: Bot
+    /// The face of the bot. The iPhone list shows a large face; a Mac sidebar shows a smaller one.
+    var avatarSize: CGFloat = 46
     private var latestMessage: Message? {
         latestConversationMessage(in: store.messages.filter { $0.botId == bot.id })
     }
@@ -181,7 +183,7 @@ struct BotContactRow: View {
     var body: some View {
         let subtitle = BotRowSubtitle(needsYou: store.botNeedsYou(bot), phase: phase, health: bot.health)
         HStack(spacing: 14) {
-            LiveBotAvatar(bot: bot, size: 46)
+            LiveBotAvatar(bot: bot, size: avatarSize)
             VStack(alignment: .leading, spacing: 5) {
                 if dynamicTypeSize.isAccessibilitySize {
                     name
