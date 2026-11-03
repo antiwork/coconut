@@ -92,7 +92,6 @@ class WorkScopeCompletionTests(unittest.TestCase):
         self.write('POST', '/v1/tasks/' + task['id'] + '/replies', dict(text='Continue the export', mode='queue'))
         row = self.row()
         self.assertEqual(row['work_state'], 'queued')
-        self.assertEqual(row['work_queue_position'], 1)
         self.assertIn(task['id'], [a['id'] for a in row['work_attempts']])
 
     def test_queued_work_from_an_old_epoch_stays_excluded(self):

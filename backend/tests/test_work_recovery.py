@@ -59,26 +59,6 @@ class WorkRecoveryTests(unittest.TestCase):
         self.start(status='completed', _work_todos={'todos': [dict(id='coconut-assignment', status='completed', content='Verified the requested result.')]})
         self.service.running.clear()
         self.sync()
-        self.write('POST', f'/v1/work/items/{row["id"]}/dismiss', {'dismissal_id': 'done'})
-        self.assertEqual(self.sync()[0]['work_dismissal_id'], 'done')
-
-    def test_repair_preserves_dismissal_of_a_completed_retry(self):
-        self.start()
-        row = self.sync()[0]
-        retry = self.retry()
-        duplicate = copy.deepcopy(self.service._get('artifacts', row['id']))
-        duplicate.update(id='dismissed-duplicate', task_id=retry['id'], status='completed', activity='Completed')
-        self.service._put('artifacts', duplicate)
-        self.task = retry
-        self.start(status='completed', _work_todos={'todos': [dict(id='coconut-assignment', status='completed', content='Verified the requested result.')]})
-        self.service.running.clear()
-        self.write('POST', '/v1/work/items/dismissed-duplicate/dismiss', {'dismissal_id': 'dismissed'})
-        rows = self.sync()
-        self.assertEqual([a['id'] for a in rows], ['dismissed-duplicate'])
-        self.assertEqual(rows[0]['work_dismissal_id'], 'dismissed')
-        self.write('POST', '/v1/work/items/dismissed-duplicate/dismiss', {'dismissal_id': 'dismissed', 'undo': True})
-        self.assertIsNone(self.sync()[0]['work_dismissal_id'])
-        self.assertTrue(self.service._get('artifacts', row['id'])['_hidden'])
 
     def test_second_retry_from_original_message_keeps_the_row(self):
         original = self.start()

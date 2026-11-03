@@ -109,52 +109,6 @@ class DelegatedWorkDuplicatesTests(unittest.TestCase):
         finally:
             self.service.running.clear()
 
-    def test_stop_keeps_an_older_callback_that_also_owns_other_work(self):
-        first = self.track()
-        owner = self.service._get('tasks', self.task['id'])
-        callback = dict(owner, id='shared-callback', _assignment_task_id=owner['id'],
-                        source_task_id='helper-task', _is_return=True, created_at=datetime.now(timezone.utc).isoformat())
-        self.service._put('tasks', callback)
-        for key, title in [('account-export', 'Export account data'), ('other-export', 'Export the other account')]:
-            self.service._register_work(callback['id'], dict(key=key, title=title, activity='Checking the export', status='working'))
-        newer = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages', dict(text='Continue', mode='queue'))
-        owner.update(exchange_id=newer['exchange_id'], _waiting_on=[], status='completed')
-        self.service._put('tasks', owner)
-        self.write('POST', '/v1/work/items/' + first['id'] + '/cancel', {})
-        saved = self.service._get('tasks', callback['id'])
-        self.assertEqual(saved['status'], 'working')
-        self.assertIn('Continue the other requested work.', saved['_steering'][-1])
-
-    def test_stop_after_parent_callback_cancels_original_assignment_and_delegate(self):
-        parent = self.track()
-        child, _ = self.child()
-        owner = self.service._get('tasks', self.task['id'])
-        callback = dict(owner, id='parent-callback', _assignment_task_id=owner['id'],
-                        source_task_id='helper-task', _is_return=True,
-                        created_at=datetime.now(timezone.utc).isoformat())
-        self.service._put('tasks', callback)
-        self.service._register_work(callback['id'], dict(key='account-export', title='Export account data',
-            activity='Read the progress report', status='working'))
-        self.write('POST', '/v1/work/items/' + parent['id'] + '/cancel', {})
-        for identity in (owner['id'], callback['id'], child['id']):
-            self.assertEqual(self.service._get('tasks', identity)['status'], 'cancelled')
-
-    def test_cancelling_a_callback_preserves_other_completed_work(self):
-        completed = self.track(key='saved-export', status='completed', activity='Export saved',
-                               completion_evidence='Read the saved export; all records are present.')
-        owner = self.service._get('tasks', self.task['id'])
-        callback = dict(owner, id='later-callback', _assignment_task_id=owner['id'],
-                        source_task_id='helper-task', _is_return=True,
-                        created_at=datetime.now(timezone.utc).isoformat())
-        self.service._put('tasks', callback)
-        active = self.service._register_work(callback['id'], dict(key='another-export', title='Export another account',
-            activity='Preparing another export', status='working'))
-        self.write('POST', '/v1/work/items/' + active['id'] + '/cancel', {})
-        rows = {a['id']: a for a in self.service.snapshot()['artifacts']}
-        self.assertEqual(rows[active['id']]['work_state'], 'cancelled')
-        self.assertEqual(rows[completed['id']]['work_state'], 'completed')
-        self.assertEqual(self.service._get('tasks', callback['id'])['status'], 'cancelled')
-
     def test_reused_parent_key_does_not_hide_an_older_delegation(self):
         parent = self.track()
         _, item = self.child()

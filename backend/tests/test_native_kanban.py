@@ -1337,7 +1337,7 @@ for title in ('First defect', 'Second defect'):
         self.service._put('artifacts', alias)
         with patch.object(self.service, '_all', side_effect=AssertionError('Do not infer the alias from history')):
             original, projected = self.service._work_projection([dict(item), dict(alias)])
-        self.assertEqual(projected['native_task_id'], original['native_task_id'])
+        self.assertEqual(projected['title'], original['title'])
         self.assertEqual(projected['work_outcome_id'], original['id'])
         self.assertEqual(projected['work_state'], original['work_state'])
         self.assertEqual(self.service._work_identity(alias), self.service._work_identity(item))
@@ -2705,10 +2705,6 @@ assert started == [identities['followup']], started
         self.provider.release.clear()
         self.settle(lambda: len(self.provider.started) == 2)
         self.assertEqual(set(self.provider.started), {t['id'] for t in tasks[:2]})
-        with self.service.lock:
-            positions = self.service._queue_positions({t['id']: self.service._get('tasks', t['id']) for t in tasks}, time.time())
-        self.assertEqual(positions[tasks[2]['id']], 1)
-        self.assertEqual(positions[tasks[3]['id']], 2)
         cancelled = self.service._get('tasks', tasks[2]['id'])
         with self.service.transaction():
             cancelled['status'] = 'cancelled'

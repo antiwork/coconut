@@ -79,8 +79,6 @@ class ConcurrentWorkTests(unittest.TestCase):
                     saved = service._get('tasks', task['id'])
                     saved['_execution_session_id'] = tasks[0]['id']
                     service._put('tasks', saved)
-                positions = service._queue_positions({t['id']: t for t in service._all('tasks')}, time.time())
-                self.assertEqual(positions, {task['id']: i + 1 for i, task in enumerate(tasks)})
                 service._dispatch_pending()
                 deadline = time.monotonic() + 2
                 while len(provider.started) < 2 and time.monotonic() < deadline:

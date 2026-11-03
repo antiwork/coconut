@@ -237,30 +237,6 @@ class ExternalWorkWaitTests(unittest.TestCase):
         context = self.service.work_context_input(parent['id'])
         self.assertTrue({routine['id'], callback['id']} <= {t['id'] for t in context['tasks']})
 
-    def test_cancelling_parent_steers_active_routine_check_without_stopping_intake(self):
-        import threading
-        parent, item, child, _, payload = self.delegated_wait()
-        sent = self.write('POST', '/v1/bots/' + child['bot_id'] + '/messages', dict(text='Intake', mode='queue'))
-        routine = self.service._get('tasks', sent['id'])
-        routine.update(status='working', _native_job={'id': 'child-native'}, _native_turn_id='routine-turn',
-                       _conversation_epoch=self.service._setting('conversation_epoch'))
-        self.service._put('tasks', routine)
-        self.service.running[routine['id']] = threading.current_thread()
-        report = dict(payload, status='working', activity='Reading receipts')
-        report.pop('external_wait')
-        self.service._register_work(routine['id'], report)
-        report.update(status='waiting', activity='Waiting for the existing check')
-        self.service._register_work(routine['id'], report)
-        self.assertEqual(self.service._get('artifacts', item['id'])['_external_wait_task_id'], routine['id'])
-        self.service._cancel_work(parent['id'], [])
-        saved = self.service._get('tasks', routine['id'])
-        self.assertEqual(saved['status'], 'working')
-        self.assertIn(parent['id'], saved['_steering'][-1])
-        self.assertIn('Continue the other requested work.', saved['_steering'][-1])
-        self.assertEqual(self.sync()[0]['work_state'], 'cancelled')
-        with self.assertRaises(ServiceError):
-            self.service._register_work(routine['id'], payload)
-
     def test_completed_handoff_keeps_external_wait_after_parent_exchange_changes(self):
         parent, item, child, _, _ = self.delegated_wait()
         owner = self.service._get('tasks', parent['task_id'])

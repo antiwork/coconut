@@ -206,13 +206,6 @@ class ProposalWorkOwnershipTests(unittest.TestCase):
         self.service._queue_work_recoveries()
         self.assertEqual(len(self.service._all('tasks')), before)
 
-    def test_cancellation_stops_the_approved_proposal_followup(self):
-        _, pr, _, followup, child, card = self.pending_followup()
-        self.write('POST', '/v1/work/items/' + pr['id'] + '/cancel', {})
-        self.assertEqual(self.service._get('tasks', followup['id'])['status'], 'cancelled')
-        self.assertEqual(self.service._get('tasks', child['id'])['status'], 'cancelled')
-        self.assertNotEqual(self.service._get('decisions', card['id'])['status'], 'pending')
-
     def test_proposal_link_cannot_claim_an_unrelated_or_old_session_task(self):
         parent, pr, proposal, followup, child, card = self.pending_followup()
         original = dict(followup)

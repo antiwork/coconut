@@ -122,7 +122,7 @@ class StateSyncTests(unittest.TestCase):
         changed = self.service.updates(page['cursor'])
         self.assertIn(message['id'], changed['removed_messages'])
         self.assertEqual(changed['messages'], [])
-        observation = {'id': 'current-work', 'activity_observed_at': 'new-observation'}
+        observation = {'id': 'current-work', 'activity': 'new-observation'}
         with patch.object(Service, '_work_projection', return_value=[observation]):
             idle = self.service.updates(changed['cursor'])
         self.assertEqual(idle['artifacts'], [observation])
@@ -152,7 +152,7 @@ class StateSyncTests(unittest.TestCase):
 
     def test_idle_delta_keeps_work_observations_fresh(self):
         cursor = self.service._cursor()
-        observation = {'id': 'work', 'activity_observed_at': 'current'}
+        observation = {'id': 'work', 'activity': 'current'}
         with patch('coconut.service.now', return_value='2099-01-01T00:00:00Z'), \
              patch.object(Service, '_work_projection', return_value=[observation]):
             page = self.service.updates(cursor, collection_deltas=True)
@@ -168,7 +168,7 @@ class StateSyncTests(unittest.TestCase):
              patch.object(Service, '_work_projection', side_effect=AssertionError('No native work changed')):
             page = self.service.updates(cursor, collection_deltas=True, native_events=True)
         self.assertEqual(page, dict(after=cursor, cursor=cursor,
-            server_time='2099-01-01T00:00:00Z', collection_deltas=True, native_work_observed_at='2099-01-01T00:00:00Z'))
+            server_time='2099-01-01T00:00:00Z', collection_deltas=True))
 
     def test_native_progress_event_delivers_after_an_idle_read(self):
         from types import SimpleNamespace
@@ -194,7 +194,6 @@ class StateSyncTests(unittest.TestCase):
              patch.object(Service, '_work_projection', return_value=[{'id': 'work'}]):
             page = self.service.updates(cursor, collection_deltas=True)
         self.assertEqual(page['artifacts'], [{'id': 'work'}])
-        self.assertNotIn('native_work_observed_at', page)
 
     def test_protocol_three_keeps_retained_work_fresh_until_migration(self):
         from types import SimpleNamespace
@@ -464,7 +463,7 @@ class StateSyncTests(unittest.TestCase):
         with self.service.transaction():
             self.service.db.execute('UPDATE events SET created_at=? WHERE seq=?', ('2026-09-16T12:00:00Z', cursor))
         self.service.emit(task['id'], 'text_delta', {'text': 'More words'})
-        observation = {'id': 'work', 'activity_observed_at': 'current'}
+        observation = {'id': 'work', 'activity': 'current'}
         with patch('coconut.service.now', return_value='2026-09-16T12:00:16Z'), \
              patch.object(Service, '_work_projection', return_value=[observation]):
             page = self.service.updates(cursor)

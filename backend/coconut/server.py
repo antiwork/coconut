@@ -174,8 +174,7 @@ class Handler(BaseHTTPRequestHandler):
 
     @property
     def recent_work(self):
-        """A phone that loads older finished Work on request asks the recent state to leave out Work that finished
-        more than 7 days ago."""
+        """A phone that shows no finished Work asks the recent state to leave it out."""
         return self.headers.get('X-Coconut-Work') == 'recent'
 
     def _gateway(self, bridge, path):
@@ -244,23 +243,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200, service.request_workspace_recovery(
                     self._body(), self.headers.get('Idempotency-Key', ''), device))
                 return
-            if method == 'POST' and url.path == '/v1/maintenance/checkout-recovery':
-                self._json(200, service.request_checkout_recovery(
-                    self._body(), self.headers.get('Idempotency-Key', ''), authorization[7:], peer))
-                return
             if method == 'GET':
-                if url.path.startswith('/v1/tasks/') and url.path.endswith('/checkout-recovery'):
-                    self._json(200, service.checkout_recovery_preview(
-                        url.path.removeprefix('/v1/tasks/').removesuffix('/checkout-recovery'), device))
-                elif url.path == '/v1/state':
+                if url.path == '/v1/state':
                     self._json(200, service.snapshot(timings=self.timings, content_only=self.headers.get('X-Coconut-State') in ('content', 'recent'),
                         compact_history=self.headers.get('X-Coconut-State') == 'recent', recent_work=self.recent_work))
                 elif url.path == '/v1/search':
                     self._json(200, service.search_conversations(parse_qs(url.query).get('q', [''])[0]))
                 elif url.path == '/v1/state/settings':
                     self._json(200, service.native_snapshot())
-                elif url.path.startswith('/v1/bots/') and url.path.endswith('/work/older'):
-                    self._json(200, service.older_work(url.path.removeprefix('/v1/bots/').removesuffix('/work/older')))
                 elif url.path.startswith('/v1/cards/'):
                     self._json(200, service.card(url.path.removeprefix('/v1/cards/')))
                 elif url.path.startswith('/v1/history/'):

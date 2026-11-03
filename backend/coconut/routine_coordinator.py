@@ -162,7 +162,7 @@ class NativeRoutines:
         """Whether Coconut's own settle pass archived the native task of this failed routine occurrence.
 
         _settle_native_orphans archives the waiting task of a failed request after a few minutes. A person's Stop
-        cancels the request instead, and the phone's idle archive takes only a task that waited for IDLE_AGE. Hermes
+        cancels the request instead, and an old idle archive takes only a task that waited for IDLE_AGE. Hermes
         must have confirmed the failure of this exact job and owner, and the occurrence must hold no input, decision,
         or tool call. The archived task must be the one that Coconut created for this request, ended by the run of
         its claim without success, with no run or worker left. completion() reads that card from the adapter.
@@ -266,7 +266,7 @@ class NativeRoutines:
         The request has no routine record, and no person stopped it. Coconut created the request once. Its claim names
         the archived task and the current input, and Coconut started the run of that claim. No tool call is unknown.
         Its only open input is the input that the failed turn never received, which the continuation hands to the
-        retry. The checks of _settled_card hold too, so the phone's idle archive is not it. The card is the request's
+        retry. The checks of _settled_card hold too, so an old idle archive is not it. The card is the request's
         original card, the successor of its retained outcome for the claim's input, or the successor that a provider
         stop ended (_provider_successor).
         """
@@ -403,7 +403,7 @@ class NativeRoutines:
         The reconciler cancels a request when Hermes archives the task of its accepted input. The settle pass archives
         the task of every failed request, though, and no person stopped this one, so its failure stays and the
         occurrence or request can continue. The reconciler sees the archive within a pass, while the age check still
-        tells it from the phone's idle archive. The task keeps that answer, so a later pass does not cancel it either.
+        tells it from an old idle archive. The task keeps that answer, so a later pass does not cancel it either.
         Only Coconut's records and the snapshot are read, because the reconciler holds the service lock. A continuation
         still reads the runs from the adapter before it starts (settled_failed_occurrence, settled_failed_request).
         """
@@ -551,7 +551,7 @@ class NativeRoutines:
         """The checks of a settled archive that hold for every finished request.
 
         The claim names the card, which Coconut created in this tenant, and which has no run or worker left. Its last
-        activity is within IDLE_AGE, so the phone's idle archive is not it. The request has no open input, worker,
+        activity is within IDLE_AGE, so an old idle archive is not it. The request has no open input, worker,
         or unknown tool call, and no idle archive closed any of its cards. `carried` names open input that the caller
         hands to the continuation.
         """

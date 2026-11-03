@@ -948,9 +948,6 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         self.service._put('contexts', dict(self.service._get('contexts', context['id']), status='completed'))
         return self.service._get('decisions', 'gate')
 
-    def cancel_work(self, work_id):
-        return self.service.mutate('POST', '/v1/work/items/' + work_id + '/cancel', {}, str(uuid4()), 'test-phone')
-
     def assert_ended_lane_turn_held(self, owner, lane_turn, seen):
         self.assertEqual(seen['held_after'], 403, 'Native actions stay held until the old lane turn exits')
         queued = self.service._get('tasks', owner['id'])
@@ -979,57 +976,6 @@ class IndependentTechnicalWorkTests(unittest.TestCase):
         captured = self.resume_after_gate(owner)
         self.assert_resumed_from_the_gate(owner, [lane_turn], captured, pre_lane, expect=('resolved', None))
         self.assertEqual(captured['decision']['resolution_context'], withdrawn['resolution_context'])
-
-    def test_a_real_shared_work_cancel_during_a_follow_up_lane_turn_resumes_with_its_stop_message(self):
-        owner, source = self.lane_native()
-        pre_lane = self.gate_turn_receipt(owner)
-        self.lane(source)
-        work_id = self.service._get('tasks', owner['id'])['_work_context_id']
-        # The owner also serves another Work outcome, so cancelling one is a scope change, not a stop.
-        self.service._put('artifacts', dict(id='other-work', task_id=owner['id'], bot_id=owner['bot_id'], kind='work',
-            title='Another outcome', status='queued', created_at=owner['created_at'], _native_outcome_id='t_other'))
-        first = self.drive(owner, steer='Also run the request specs.')
-        follow_up_turn = self.service._get('tasks', owner['id'])['_native_turn_id']
-        consumed = {}
-        def during(task, emit):
-            with self.service.transaction():
-                current = self.service._get('tasks', owner['id'])
-                self.service._steer_task(current, 'Use the staging seed data.', [], current['conversation_bot_id'])
-                self.service._put('tasks', current)
-            consumed['id'] = next(m['id'] for m in self.service._task_messages(owner['id']) if m.get('text') == 'Use the staging seed data.')
-            emit('steering_consumed', {'turn_id': task['_native_turn_id'], 'message_ids': [consumed['id']]})
-            self.cancel_work(work_id)
-        seen = self.drive(owner, tools=2, during=during)
-        self.assertNotIn('during_error', seen, seen.get('during_error'))
-        gate = self.service._get('decisions', 'gate')
-        self.assertEqual((gate['status'], gate['resolution']), ('resolved', 'work_scope_changed'))
-        stop = next(m for m in self.service._task_messages(owner['id']) if m.get('text', '').startswith('Stop work on'))
-        self.assert_ended_lane_turn_held(owner, follow_up_turn, seen)
-        captured = self.resume_after_gate(owner)
-        self.assert_resumed_from_the_gate(owner, [first['task']['_native_turn_id'], follow_up_turn], captured,
-                                          pre_lane, expect=('resolved', None))
-        self.assertIn(stop['id'], captured['task']['_turn_message_ids'], 'The unconsumed stop message reaches the resume')
-        self.assertNotIn(consumed['id'], captured['task']['_turn_message_ids'], 'A live message the lane turn read is not repeated')
-        self.assertNotIn(first['steer'], captured['task']['_turn_message_ids'])
-        self.assertIn('Ask a new question only if', captured['decision']['resolution_context'])
-
-    def test_cancelling_the_owners_only_work_during_a_lane_turn_stops_it(self):
-        owner, source = self.lane_native()
-        self.lane(source)
-        work_id = self.service._get('tasks', owner['id'])['_work_context_id']
-        seen = self.drive(owner, tools=2, during=lambda task, emit: self.cancel_work(work_id))
-        self.assertNotIn('during_error', seen, seen.get('during_error'))
-        stopped = self.service._get('tasks', owner['id'])
-        self.assertEqual(stopped['status'], 'cancelled')
-        self.assertNotIn('_resume_decision', stopped)
-        self.assertNotIn('_return_pending', stopped)
-        # The normal task stop closes its decisions as cancelled. Nothing executes and nothing resumes.
-        for identity in ('scope', 'gate'):
-            closed = self.service._get('decisions', identity)
-            self.assertEqual((closed['status'], closed['decided_by']), ('rejected', 'cancellation'))
-        self.assertEqual([d for d in self.service._all('deliveries') if d['source_task_id'] == owner['id']], [])
-        self.service._kanban_rows()
-        self.assertEqual(self.service._get('tasks', owner['id'])['status'], 'cancelled', 'A Work stop grants no resume')
 
     def test_a_real_withdrawal_during_an_unknown_lane_tool_keeps_the_turn_and_resumes_closed(self):
         owner, source = self.lane_native()
@@ -1640,11 +1586,6 @@ class DeclinedMergeLaneTests(unittest.TestCase):
         self.service._put('tasks', dict(source, bot_id=ops['id']))
         self.refused(owner, source, 'Only the owner or its requesting bot')
         self.service._put('tasks', source)
-        # A person's Stop of the Work ends the pause with the Work. Nothing continues it.
-        self.service.mutate('POST', '/v1/work/items/paused-work/cancel', {}, str(uuid4()), 'test-phone')
-        with self.assertRaises(ServiceError):
-            self.lane(source)
-        self.assertEqual(self.service._get('decisions', 'declined'), self.declined)
 
     def test_local_fixes_still_need_a_separate_approval_and_the_decline_never_authorizes(self):
         owner, source = self.declined_native()
@@ -2292,10 +2233,6 @@ class HeldMergeLaneTests(unittest.TestCase):
         self.service._put('tasks', dict(source, bot_id=ops['id']))
         self.refused(owner, source, 'Only the owner or its requesting bot')
         self.service._put('tasks', source)
-        self.service.mutate('POST', '/v1/work/items/held-pr/cancel', {}, str(uuid4()), 'test-phone')
-        with self.assertRaises(ServiceError):
-            self.lane(source)
-        self.assertEqual(self.service._get('decisions', 'held'), self.held)
 
     def test_a_read_only_turn_runs_with_its_holds_follows_the_successor_and_returns_to_the_hold_once(self):
         owner, source = self.held_native()

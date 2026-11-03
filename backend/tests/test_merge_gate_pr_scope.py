@@ -933,29 +933,6 @@ class MergeGateReviewTransferTests(unittest.TestCase):
         self.assertOpen()
         self.assertEqual(self.service._get('decisions', 'xcode-decision'), self.sibling_decision)
 
-    def test_resuming_the_work_replaces_the_review_owner_so_the_old_chain_leaves_the_gate(self):
-        self.person_started_review(_pr_review=dict(url=TARGET, pr_state='open', head_sha='a' * 40))
-        self.target_record(_reviewed_head='a' * 40, _reviewed_heads=['a' * 40])
-        self.held_worker()
-        self.assertBlocked()
-        before = self.record()
-        # The person cancels the work and resumes it. The service gives the review to the new task and drops the others.
-        self.write(f"/v1/work/items/{before['id']}/cancel", {})
-        self.write(f"/v1/work/items/{before['id']}/resume", {})
-        after = self.record()
-        self.assertNotEqual(after['_review_task_id'], 'f21ea9d7')
-        self.assertEqual(after.get('_reviewed_heads'), [])
-        self.assertTrue(all(a.get('_review_task_id') is None for a in self.service._all('artifacts')
-                            if a['url'] == TARGET and a['bot_id'] != after['bot_id']))
-        tasks = {t['id']: t for t in self.service._all('tasks')}
-        chain = self.service._work_chain(tasks[after['_review_task_id']], tasks, self.service._work_receipts(),
-                                         include_continuations=True)
-        self.assertNotIn('target-worker', chain)
-        self.assertOpen()
-        # The resumed owner's own unread work still gates the card.
-        self.receipt('resumed-wait', after['_review_task_id'], _wait_task_id=EXPERT)
-        self.assertBlocked()
-
 
 class MergeGateReviewHistoryTests(unittest.TestCase):
     """The PR record lists every owner it has had, from its first one, so a transfer names who reviewed.
@@ -1060,14 +1037,6 @@ class MergeGateReviewHistoryTests(unittest.TestCase):
         self.service._bind_pr_progress(record, continuation)
         self.service._put('artifacts', record)
         self.assertEqual(self.record().get('_review_owners'), ['f21ea9d7', 'review-continuation'])
-
-    def test_a_resume_appends_the_resumed_task_and_a_new_bot_record_starts_its_own_history(self):
-        record = self.record()
-        self.write(f"/v1/work/items/{record['id']}/cancel", {})
-        self.write(f"/v1/work/items/{record['id']}/resume", {})
-        record = self.record()
-        owners = record.get('_review_owners') or []
-        self.assertEqual((owners[:1], owners[-1:], len(owners)), (['f21ea9d7'], [record['_review_task_id']], 2))
 
     def test_a_same_bot_shared_intake_that_never_owned_the_review_stays_exempt_after_a_transfer(self):
         self.shared_intake()
@@ -1307,19 +1276,6 @@ class MergeGateReviewHistoryTests(unittest.TestCase):
         self.service._put('artifacts', dict(record, _review_history_unknown=True))
         self.assertNotIn('_review_ownership_at', self.record())
         self.assertBlocked()
-
-    def test_a_detached_record_keeps_its_history_and_a_rebind_continues_it(self):
-        desk = next(a for a in self.service._all('artifacts') if a['url'] == TARGET and a['bot_id'] == self.bots['Desk']['id'])
-        self.write(f"/v1/work/items/{desk['id']}/cancel", {})
-        self.write(f"/v1/work/items/{desk['id']}/resume", {})
-        record = self.record()
-        # The resumed task belongs to the Desk bot, so the Gumroad record is detached and keeps its complete list.
-        self.assertIsNone(record['_review_task_id'])
-        self.assertEqual(record.get('_review_owners'), ['f21ea9d7'])
-        self.assertNotIn('_review_history_unknown', record)
-        self.move_to('review-d')
-        self.assertEqual(self.record().get('_review_owners'), ['f21ea9d7', 'review-d'])
-        self.assertNotIn('_review_history_unknown', self.record())
 
     def test_a_record_without_a_list_is_marked_when_its_owner_leaves(self):
         self.service._put('artifacts', {k: v for k, v in self.record().items() if k != '_review_owners'})

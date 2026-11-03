@@ -83,13 +83,6 @@ class WorkOutcomeAliasTests(unittest.TestCase):
         self.report(child, parent)
         row = self.service._work_projection([self.service._get('artifacts', pr['id'])])[0]
         self.assertEqual(row['work_outcome_id'], parent['id'])
-        self.write('POST', '/v1/work/items/' + parent['id'] + '/cancel', {})
-        self.assertEqual(self.service._get('tasks', child['id'])['status'], 'cancelled')
-        row = self.service._work_projection([self.service._get('artifacts', pr['id'])])[0]
-        self.assertEqual(row['work_state'], 'cancelled')
-        self.assertNotIn('checkout_recovery_stopped', row)
-        canonical = self.service._work_projection([self.service._get('artifacts', parent['id'])])[0]
-        self.assertIs(canonical['checkout_recovery_stopped'], True)
 
     def test_hidden_delegate_keeps_context_for_existing_discussions(self):
         parent = self.track()
@@ -99,47 +92,20 @@ class WorkOutcomeAliasTests(unittest.TestCase):
         self.assertEqual(context['id'], report['id'])
         self.assertEqual(context['title'], self.service._get('artifacts', report['id'])['title'])
 
-    def test_resuming_delegate_pr_restores_monitoring_in_the_parent_bot(self):
-        from test_service_pr import URL
-        parent = self.track()
-        child, report = self.child(key='worker-export')
-        pr = self.service._register_pr_artifact(child['id'], dict(url=URL))
-        self.report(child, parent)
-        self.write('POST', '/v1/work/items/' + pr['id'] + '/cancel', {})
-        self.write('POST', '/v1/work/items/' + pr['id'] + '/resume', {})
-        owner = self.service._get('tasks', self.service._get('artifacts', parent['id'])['task_id'])
-        owner.update(status='waiting', _waiting_on=[])
-        self.service._put('tasks', owner)
-        for peer in self.service._all('artifacts'):
-            if peer['kind'] == 'pr':
-                peer.update(pr_state='open', checks_state='passed', required_checks_state='passed')
-                self.service._put('artifacts', peer)
-        self.service._queue_pr_reviews()
-        resumed = self.service._get('tasks', owner['id'])
-        self.assertEqual(resumed['status'], 'queued')
-        self.assertEqual(resumed['_pr_review']['url'], URL)
-
-    def test_resumed_delegate_pr_keeps_its_wait_after_the_turn_ends(self):
-        self.check_retired_delegate_wait(failed=False)
-
     def test_recovered_delegate_pr_keeps_its_wait_after_the_turn_ends(self):
-        self.check_retired_delegate_wait(failed=True)
+        self.check_retired_delegate_wait()
 
-    def check_retired_delegate_wait(self, *, failed):
+    def check_retired_delegate_wait(self):
         from test_service_pr import URL
         parent = self.track()
         child, report = self.child(key='worker-export')
-        pr = self.service._register_pr_artifact(child['id'], dict(url=URL))
+        self.service._register_pr_artifact(child['id'], dict(url=URL))
         self.report(child, parent)
-        if failed:
-            for identity in (parent['task_id'], child['id']):
-                previous = self.service._get('tasks', identity)
-                previous.update(status='failed', _waiting_on=[], _conversation_epoch=self.service._setting('conversation_epoch'))
-                self.service._put('tasks', previous)
-            self.service._queue_work_recoveries()
-        else:
-            self.write('POST', '/v1/work/items/' + pr['id'] + '/cancel', {})
-            self.write('POST', '/v1/work/items/' + pr['id'] + '/resume', {})
+        for identity in (parent['task_id'], child['id']):
+            previous = self.service._get('tasks', identity)
+            previous.update(status='failed', _waiting_on=[], _conversation_epoch=self.service._setting('conversation_epoch'))
+            self.service._put('tasks', previous)
+        self.service._queue_work_recoveries()
         owner = self.service._get('tasks', self.service._get('artifacts', parent['id'])['task_id'])
         self.assertNotEqual(owner['id'], parent['task_id'])
         owner['status'] = 'working'
@@ -373,34 +339,6 @@ class WorkOutcomeAliasTests(unittest.TestCase):
         self.assertNotIn('_same_outcome_as', saved)
         self.assertEqual(saved['_work_parent_id'], new_parent['id'])
 
-
-    def test_canceled_parent_cannot_receive_a_new_alias(self):
-        parent = self.track()
-        self.track(key='separate-result', title='Prepare another export')
-        task, child = self.child(key='worker-export')
-        self.write('POST', '/v1/work/items/' + parent['id'] + '/cancel', {})
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'working')
-        with self.assertRaises(ServiceError): self.report(task, parent)
-        self.assertFalse(self.service._get('artifacts', child['id'])['_hidden'])
-
-    def test_nested_handoff_cannot_inherit_a_canceled_parent(self):
-        parent = self.track()
-        self.track(key='another-result', title='Prepare another export')
-        task, child = self.child(key='worker-export')
-        self.report(task, parent)
-        self.write('POST', '/v1/work/items/' + parent['id'] + '/cancel', {})
-        self.assertEqual(self.service._get('tasks', task['id'])['status'], 'working')
-        bot = self.write('POST', '/v1/bots', dict(name='Nested delegate', role='Export'))
-        sent = self.service._store_bot_message(task['id'], dict(target_bot_id=bot['id'], text='Prepare export', require_response=True))
-        delegate = self.service._get('tasks', sent['task_id'])
-        delegate.update(status='working', _native_relay=True)
-        self.service._put('tasks', delegate)
-        report = self.service._register_work(delegate['id'], dict(key='worker-export', title='Export account data',
-            activity='Verifying export', status='working'))
-        self.assertFalse(self.service._get('artifacts', report['id'])['_hidden'])
-        self.assertEqual(self.service._get('artifacts', child['id'])['_work_parent_id'], parent['id'])
-        with self.assertRaises(ServiceError): self.report(task, parent)
-
     def test_nested_same_key_handoff_keeps_the_outer_alias(self):
         parent = self.track()
         task, _ = self.child(key='worker-export')
@@ -539,7 +477,7 @@ class PullRequestOutcomeTests(unittest.TestCase):
     track = fixtures.track
     write = fixtures.write
 
-    def test_pr_reuses_its_outcome_and_cancellation(self):
+    def test_pr_reuses_its_outcome(self):
         from test_service_pr import URL
         work = self.track()
         pr = self.service._register_pr_artifact(self.task['id'], dict(url=URL))
@@ -550,9 +488,6 @@ class PullRequestOutcomeTests(unittest.TestCase):
             self.assertEqual({a['work_state'] for a in rows}, {'working'})
         finally:
             self.service.running.clear()
-        result = self.write('POST', '/v1/work/items/' + pr['id'] + '/cancel', {})
-        self.assertTrue(result['ok'])
-        self.assertEqual({a['work_state'] for a in self.service.snapshot()['artifacts']}, {'cancelled'})
 
     def test_merge_card_from_another_task_stays_attached_to_the_outcome(self):
         from test_service_pr import URL
@@ -604,31 +539,6 @@ class PullRequestOutcomeTests(unittest.TestCase):
         second = self.service._register_pr_artifact(self.task['id'], dict(url=URL.replace('/42', '/43')))
         self.assertEqual(second.get('work_outcome_id'), first['work_outcome_id'])
 
-    def test_pr_refresh_restores_dismissed_automatic_work_only_when_active(self):
-        from test_automatic_work import AutomaticWorkTests
-        from test_service_pr import URL
-        AutomaticWorkTests.start(self)
-        self.service._sync_automatic_work()
-        work = next(a for a in self.service._all('artifacts') if a['kind'] == 'work')
-        pr = self.service._register_pr_artifact(self.task['id'], dict(url=URL))
-        self.service._sync_automatic_work()
-        AutomaticWorkTests.start(self, status='completed', _work_todos={'todos': [dict(id='coconut-assignment',
-            status='completed', content='Export verified.')]})
-        self.service.running.clear()
-        self.write('POST', '/v1/work/items/' + pr['id'] + '/dismiss', dict(dismissal_id='finished'))
-        saved = self.service._get('artifacts', pr['id'])
-        saved['pr_state'] = 'open'
-        self.service._put('artifacts', saved)
-        self.service._restore_active_work(saved)
-        key = 'work.dismissed.work:' + work['id']
-        self.assertEqual(self.service._setting(key), 'finished')
-        AutomaticWorkTests.start(self, _work_todos={})
-        try:
-            self.service._restore_active_work(saved)
-            self.assertIsNone(self.service._setting(key))
-        finally:
-            self.service.running.clear()
-
     def test_pr_recovery_can_update_its_hidden_automatic_outcome(self):
         from test_automatic_work import AutomaticWorkTests
         from test_service_pr import URL
@@ -673,17 +583,6 @@ class PullRequestOutcomeTests(unittest.TestCase):
             dict(text='How is this going?', mode='queue', work_artifact_id=pr['id'], work_status_only=True))
         reply = self.write('POST', '/v1/tasks/' + status['id'] + '/replies', dict(text='Please finish the fix'))
         self.assertEqual(self.service._get('tasks', reply['id'])['_work_context_id'], work['id'])
-
-    def test_resuming_linked_work_restores_pr_monitoring(self):
-        from test_service_pr import URL
-        work = self.track()
-        pr = self.service._register_pr_artifact(self.task['id'], dict(url=URL))
-        self.write('POST', '/v1/work/items/' + pr['id'] + '/cancel', {})
-        self.write('POST', '/v1/work/items/' + pr['id'] + '/resume', {})
-        owner = self.service._get('artifacts', work['id'])['task_id']
-        saved = self.service._get('artifacts', pr['id'])
-        self.assertEqual(saved['_review_task_id'], owner)
-        self.assertTrue(self.service._pr_review_source_current(saved))
 
     def test_visible_outcome_recovery_retains_its_pr_monitor(self):
         from test_automatic_work import AutomaticWorkTests
@@ -763,7 +662,7 @@ class PullRequestOutcomeTests(unittest.TestCase):
         row = self.service._work_projection([self.service._get('artifacts', work['id'])])[0]
         self.assertEqual(row['work_state'], 'waiting')
 
-    def test_replacement_outcome_keeps_pr_state_and_shared_dismissal(self):
+    def test_replacement_outcome_keeps_pr_state(self):
         from test_service_pr import URL
         work = self.track()
         pr = self.service._register_pr_artifact(self.task['id'], dict(url=URL))
@@ -780,18 +679,6 @@ class PullRequestOutcomeTests(unittest.TestCase):
         row = self.service._work_projection([self.service._get('artifacts', pr['id'])])[0]
         self.assertEqual(row['work_outcome_id'], replacement['id'])
         self.assertEqual(row['work_state'], 'completed')
-        self.write('POST', '/v1/work/items/' + pr['id'] + '/dismiss', dict(dismissal_id='shared'))
-        rows = self.service.snapshot()['artifacts']
-        self.assertEqual({a['work_dismissal_id'] for a in rows}, {'shared'})
-        self.write('POST', '/v1/work/items/' + pr['id'] + '/dismiss', dict(dismissal_id='shared', undo=True))
-        self.assertEqual({a['work_dismissal_id'] for a in self.service.snapshot()['artifacts']}, {None})
-        replacement.update(status='waiting', completion_evidence='')
-        self.service._put('artifacts', replacement)
-        owner.update(status='waiting', _work_todos={})
-        self.service._put('tasks', owner)
-        for _ in range(2):
-            result = self.write('POST', '/v1/work/items/' + pr['id'] + '/cancel', {})
-            self.assertNotIn(previous['id'], [a['id'] for a in result['artifacts']])
 
     def test_pr_activity_uses_its_own_head_in_the_shared_outcome(self):
         from test_service_pr import URL
@@ -891,41 +778,18 @@ class PullRequestOutcomeTests(unittest.TestCase):
         self.assertNotEqual(owner['id'], self.task['id'])
         self.assertEqual(owner['_self_recovery']['work'][0]['id'], work['id'])
 
-    def test_linking_cannot_restart_a_cancelled_standalone_pr(self):
-        from test_service_pr import URL
-        task = self.service._get('tasks', self.task['id'])
-        task['status'] = 'working'
-        self.service._put('tasks', task)
-        pr = self.service._register_pr_artifact(self.task['id'], dict(url=URL))
-        self.write('POST', '/v1/work/items/' + pr['id'] + '/cancel', {})
-        self.task = self.write('POST', '/v1/bots/' + self.bot['id'] + '/messages',
-            dict(text='Check the export records', mode='queue'))
-        work = self.track()
-        with self.assertRaises(ServiceError):
-            self.service._register_pr_artifact(self.task['id'], dict(url=URL, work_id=work['id']))
-        saved = self.service._get('artifacts', pr['id'])
-        self.assertNotIn('work_outcome_id', saved)
-        self.assertEqual(self.service._work_projection([saved])[0]['work_state'], 'cancelled')
-
-    def test_resumed_pr_can_wait_after_its_original_attempt_was_cancelled(self):
-        self.check_resumed_pr_wait(failed=False)
-
     def test_recovered_pr_can_wait_after_its_original_attempt_failed(self):
-        self.check_resumed_pr_wait(failed=True)
+        self.check_resumed_pr_wait()
 
-    def check_resumed_pr_wait(self, *, failed):
+    def check_resumed_pr_wait(self):
         from test_service_pr import URL
         from test_automatic_work import AutomaticWorkTests
         work = self.track()
         pr = self.service._register_pr_artifact(self.task['id'],
             dict(url=URL, activity='Checking the previous attempt'))
-        if failed:
-            AutomaticWorkTests.start(self, status='failed')
-            self.service.running.clear()
-            self.service._queue_work_recoveries()
-        else:
-            self.write('POST', '/v1/work/items/' + pr['id'] + '/cancel', {})
-            self.write('POST', '/v1/work/items/' + pr['id'] + '/resume', {})
+        AutomaticWorkTests.start(self, status='failed')
+        self.service.running.clear()
+        self.service._queue_work_recoveries()
         owner = self.service._get('tasks', self.service._get('artifacts', work['id'])['task_id'])
         self.assertNotEqual(owner['id'], self.task['id'])
         owner['status'] = 'working'

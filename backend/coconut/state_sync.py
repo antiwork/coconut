@@ -1,18 +1,14 @@
 """Read current content separately from native settings and older history."""
 import time
-from datetime import datetime, timedelta, timezone
 
 # A person who opens the settings gets a live look at the model lists of the providers, at most this often.
 MODEL_REFRESH_SECONDS = 300
-# Task details lists finished Work of the last 7 days (TrackedWorkItem.finishedWindow in the app) and loads older
-# finished Work on request. The extra hour covers a phone clock that runs behind the Mac.
-FINISHED_WORK_WINDOW = timedelta(days=7, hours=1)
 
 
 def work_items(cards):
-    """Group the Work cards that Task details can show as one item: the copies of a Work item or of a pull request.
+    """Group the Work cards of one item: the copies of a Work item or of a pull request.
 
-    The keys follow Artifact.workIdentity in the app: the Work outcome, or the URL of a pull request.
+    The key is the Work outcome, or the URL of a pull request.
     """
     parent = {}
     def root(key):
@@ -33,22 +29,9 @@ def work_items(cards):
     return list(items.values())
 
 
-def finished_before(item, cutoff):
-    """Return True when every card of a Work item finished and none changed after the cutoff.
-
-    The time follows TrackedWorkItem.lastActivity in the app, which reads only the Work card of the item.
-    """
-    for card in item:
-        if card.get('work_state') not in ('completed', 'cancelled'):
-            return False
-        try:
-            last = datetime.fromisoformat((card.get('native_last_activity_at') or card.get('observed_at')
-                                           or card.get('checked_at') or card['created_at']).replace('Z', '+00:00'))
-        except (TypeError, ValueError):
-            return False
-        if (last if last.tzinfo else last.replace(tzinfo=timezone.utc)) >= cutoff:
-            return False
-    return True
+def finished(item):
+    """Return True when every card of a Work item finished."""
+    return all(card.get('work_state') in ('completed', 'cancelled') for card in item)
 
 
 # An exchange row can appear in the conversation of its sender and of each recipient, besides its own bot.
@@ -122,46 +105,12 @@ class StateSync:
             values += (json.dumps(sorted(among)),)
         return {row[0] for row in self.db.execute(query, values)}
 
-    def _older_work_items(self, artifacts):
-        """Return each Work item that finished before the window, with the bots whose Task details list it."""
-        import json
-        cutoff = datetime.now(timezone.utc) - FINISHED_WORK_WINDOW
-        older = [item for item in work_items([a for a in artifacts if a['kind'] in ('work', 'pr')]) if finished_before(item, cutoff)]
-        conversations = dict(self.db.execute("SELECT id,json_extract(data,'$.conversation_bot_id') FROM tasks "
-            "WHERE id IN (SELECT value FROM json_each(?))",
-            (json.dumps(sorted({c['task_id'] for item in older for c in item if c.get('task_id')})),)))
-        # Task details lists the native Work of a bot and of the tasks that started in its conversation.
-        return [(item, {bot for c in item if c.get('native_task_id') for bot in (c['bot_id'], conversations.get(c.get('task_id')))} - {None})
-                for item in older]
-
     def _current_work(self, artifacts, messages):
-        """Leave out Work that finished more than a week ago, except the cards that the messages show.
-
-        Also return the bots whose Task details can load the Work that is left out.
-        """
+        """Leave out finished Work, except the cards that the messages show."""
         shown = {m.get('artifact_id') for m in messages}
-        older = [(item, bots) for item, bots in self._older_work_items(artifacts) if not any(c['id'] in shown for c in item)]
-        left_out = {card['id'] for item, _ in older for card in item}
-        return [a for a in artifacts if a['id'] not in left_out], sorted(set().union(*(bots for _, bots in older)))
-
-    def older_work(self, bot_id):
-        """Return the Work of one bot's Task details that the recent state leaves out, with its tasks."""
-        import json
-        from .service import ServiceError
-        with self._read_view() as view, view._read_transaction():
-            if view._get('bots', bot_id).get('_deleted'):
-                raise ServiceError(404, 'This bot was removed.')
-            visible = {b['id'] for b in view._all('bots') if not b.get('_deleted')}
-            task_ids = view._visible_task_ids(visible)
-            # Reading the whole table caches each row for the outcome lookups of the projection.
-            cards = [a for a in view._all('artifacts') if a['kind'] in ('work', 'pr') and view._visible(a, visible, task_ids)]
-            shown = [card for item, bots in view._older_work_items([view._public(a) for a in view._work_projection(cards)])
-                     if bot_id in bots for card in item]
-            tasks = [view._public(json.loads(row[0])) for row in view.db.execute(
-                "SELECT data FROM tasks WHERE id IN (SELECT value FROM json_each(?)) AND NOT coalesce(json_extract(data,'$._hidden'),0) "
-                "AND NOT coalesce(json_extract(data,'$._deleted'),0) ORDER BY rowid",
-                (json.dumps(sorted({c['task_id'] for c in shown if c.get('task_id')})),))]
-            return dict(artifacts=shown, tasks=tasks, cursor=view._cursor())
+        left_out = {card['id'] for item in work_items([a for a in artifacts if a['kind'] in ('work', 'pr')])
+                    if finished(item) and not any(c['id'] in shown for c in item) for card in item}
+        return [a for a in artifacts if a['id'] not in left_out]
 
     def _recent_messages(self, visible, limit=60):
         messages, before = {}, {}
@@ -372,15 +321,14 @@ class StateSync:
         # Only retained legacy work changes with time alone. Within one interval, a native update does not look for it.
         retained = self._retained_work_observations() if native and new_interval else []
         refresh_activity = new_interval and (not native or bool(retained))
-        freshness = {'native_work_observed_at': self.kanban.observed_at} if native else {}
         if not rows and collection_deltas and (native or not refresh_activity):
-            result = dict(after=after, cursor=cursor, server_time=server_time, collection_deltas=True, **freshness)
+            result = dict(after=after, cursor=cursor, server_time=server_time, collection_deltas=True)
             if refresh_activity:
                 result['artifacts'] = [self._public(a) for a in self._work_projection(retained)]
             return result
         bots = [self._bot_view(b, None) for b in self._all('bots') if not b.get('_deleted')]
         visible = {b['id'] for b in bots}
-        result = dict(after=after, cursor=cursor, server_time=server_time, bots=bots, **freshness)
+        result = dict(after=after, cursor=cursor, server_time=server_time, bots=bots)
         task_ids, message_ids, decision_ids, artifact_ids = set(), set(), set(), set()
         # A task's status shows in the attempts of its work. Only task events change it.
         changed_task_ids = set()
