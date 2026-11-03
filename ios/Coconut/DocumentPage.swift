@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 import WebKit
 
 /// An HTML document of the Library in a closed web view.
@@ -9,7 +8,8 @@ import WebKit
 /// gives a script the six chart colors of the current appearance. The content security policy blocks every load from
 /// the network, and the web view keeps no data. A web link opens in the browser after the person agrees. The Mac checks the
 /// same rules when the bot saves the page (backend/coconut/documents.py).
-struct DocumentPage: UIViewRepresentable {
+@MainActor
+struct DocumentPage {
     let document: BotDocument
     let meta: String
     let content: String
@@ -19,28 +19,36 @@ struct DocumentPage: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeUIView(context: Context) -> WKWebView {
+    private func makeWebView(_ coordinator: Coordinator) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
+        #if os(iOS)
         configuration.dataDetectorTypes = []
+        #endif
         // The libraries and the tokens run before the page. A user script of the app is outside the content security
         // policy of the page, which allows only the inline scripts of the bot.
         for script in Self.scripts { configuration.userContentController.addUserScript(script) }
         let view = WKWebView(frame: .zero, configuration: configuration)
-        view.navigationDelegate = context.coordinator
+        view.navigationDelegate = coordinator
+        #if os(iOS)
         view.isOpaque = false
         view.backgroundColor = .clear
         view.scrollView.backgroundColor = .clear
+        #else
+        // A Mac web view draws a white page under the document unless it is told not to.
+        view.setValue(false, forKey: "drawsBackground")
+        view.underPageBackgroundColor = .clear
+        #endif
         view.allowsLinkPreview = false
         return view
     }
 
-    func updateUIView(_ view: WKWebView, context: Context) {
-        context.coordinator.openLink = openLink
+    private func update(_ view: WKWebView, _ coordinator: Coordinator) {
+        coordinator.openLink = openLink
         // A new version, another header or another appearance draws the page again, so the colors of a script follow.
         let state = [document.id, String(document.version), meta, colorScheme == .dark ? "dark" : "light"]
-        guard context.coordinator.loaded != state else { return }
-        context.coordinator.loaded = state
+        guard coordinator.loaded != state else { return }
+        coordinator.loaded = state
         view.loadHTMLString(Self.html(title: document.title, meta: meta, content: content), baseURL: nil)
     }
 
@@ -140,3 +148,15 @@ struct DocumentPage: UIViewRepresentable {
     figure { margin: 0 0 12px; }
     """
 }
+
+#if os(iOS)
+extension DocumentPage: UIViewRepresentable {
+    func makeUIView(context: Context) -> WKWebView { makeWebView(context.coordinator) }
+    func updateUIView(_ view: WKWebView, context: Context) { update(view, context.coordinator) }
+}
+#else
+extension DocumentPage: NSViewRepresentable {
+    func makeNSView(context: Context) -> WKWebView { makeWebView(context.coordinator) }
+    func updateNSView(_ view: WKWebView, context: Context) { update(view, context.coordinator) }
+}
+#endif

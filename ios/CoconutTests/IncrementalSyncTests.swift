@@ -40,7 +40,7 @@ final class IncrementalSyncTests: XCTestCase {
         let address = try await server.start()
         defer { server.stop() }
         let savedToken = PairingToken.read()
-        let folder = URL.applicationSupportDirectory.appendingPathComponent("Coconut")
+        let folder = URL.applicationSupportDirectory.appendingPathComponent(TestIsolation.name("Coconut"))
         let paths = ["pairing.json", "snapshot.json", "outgoing.json"].map { folder.appendingPathComponent($0) }
         let saved = paths.map { try? Data(contentsOf: $0) }
         let store = AppStore(demo: false)

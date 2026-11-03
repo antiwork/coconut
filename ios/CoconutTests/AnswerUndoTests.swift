@@ -23,7 +23,7 @@ final class AnswerUndoTests: XCTestCase {
         let server = try DecisionDeliveryServer(snapshot: snapshot, failFirst: false, reject: false)
         let address = try await server.start()
         let savedToken = PairingToken.read()
-        let folder = URL.applicationSupportDirectory.appendingPathComponent("Coconut")
+        let folder = URL.applicationSupportDirectory.appendingPathComponent(TestIsolation.name("Coconut"))
         let paths = ["pairing.json", "snapshot.json", "outgoing.json"].map { folder.appendingPathComponent($0) }
         let saved = paths.map { try? Data(contentsOf: $0) }
         for path in paths { try? FileManager.default.removeItem(at: path) }

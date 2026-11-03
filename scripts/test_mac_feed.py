@@ -46,7 +46,7 @@ class FeedTests(unittest.TestCase):
             self.assertIsNone(entry.find(mac_feed.tag('channel')), 'An item without a channel reaches every app.')
         self.assertEqual(older.findtext(mac_feed.tag('version')), '11')
         self.assertEqual(older.findtext(mac_feed.tag('shortVersionString')), '0.1.0')
-        self.assertEqual(older.findtext(mac_feed.tag('minimumSystemVersion')), '14.0')
+        self.assertEqual(older.findtext(mac_feed.tag('minimumSystemVersion')), mac_feed.MINIMUM_SYSTEM)
         enclosure = older.find('enclosure')
         self.assertEqual(enclosure.get('url'), f'{BASE}/Coconut-0.1.0-11.zip')
         self.assertEqual(enclosure.get(mac_feed.tag('edSignature')), 'sig11')
@@ -65,6 +65,12 @@ class FeedTests(unittest.TestCase):
     def test_the_feed_keeps_its_newest_items(self):
         merged = mac_feed.merge([item(build) for build in range(1, 7)], item(8), keep=5)
         self.assertEqual([entry.build for entry in merged], [8, 6, 5, 4, 3])
+
+    def test_the_feed_keeps_the_last_build_for_an_older_macos(self):
+        older = [item(build, minimum_system='14.0') for build in (1, 2)]
+        merged = mac_feed.merge(older + [item(build) for build in range(3, 8)], item(8), keep=5)
+        self.assertEqual([entry.build for entry in merged], [8, 7, 6, 5, 4, 2])
+        self.assertEqual(merged[-1].minimum_system, '14.0')
 
     def test_a_rebuild_replaces_the_item_of_the_same_build(self):
         merged = mac_feed.merge([item(8, signature='old'), item(7)], item(8, signature='new'))
@@ -239,13 +245,15 @@ class InstallScriptTests(unittest.TestCase):
         path.rename(named)
         return named
 
-    def feed(self, *builds: int, tool: str = FAKE_TOOL) -> str:
-        """Write a feed of items with file URLs, from the newest build down. Return its URL."""
+    def feed(self, *builds: int, tool: str = FAKE_TOOL, minimums: dict | None = None) -> str:
+        """Write a feed of items with file URLs, from the newest build down. Return its URL. `minimums` maps a build
+        to the oldest macOS that it supports."""
         items = []
         for build in builds:
             path = self.archive(build, tool)
             items.append(mac_feed.Item(version='0.1.0', build=build, file=path.name,
-                                       length=path.stat().st_size, signature='sig', published='Mon, 26 Oct 2026'))
+                                       length=path.stat().st_size, signature='sig', published='Mon, 26 Oct 2026',
+                                       minimum_system=(minimums or {}).get(build, '14.0')))
         text = mac_feed.render(items).decode().replace(mac_feed.BASE_URL, self.folder.as_uri())
         (self.folder / 'appcast.xml').write_text(text)
         return (self.folder / 'appcast.xml').as_uri()
@@ -293,6 +301,18 @@ class InstallScriptTests(unittest.TestCase):
         self.assertNotIn('defaults write', self.log.read_text())
         self.assertIn(f'paired {CODE}', result.stdout)
         self.assertIn('cannot change its update settings yet', self.note(result))
+
+    def test_a_mac_takes_the_newest_build_that_its_macos_can_open(self):
+        feed = self.feed(516, 514, 512, minimums={516: '99.0', 514: '99.0'})
+        result = self.run_script(CODE, feed=feed)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Downloading Coconut-0.1.0-512-', result.stderr)
+
+    def test_a_mac_that_no_build_supports_installs_nothing(self):
+        feed = self.feed(518, minimums={518: '99.0'})
+        result = self.run_script(CODE, feed=feed)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No Coconut.app in the update feed runs on macOS', result.stderr)
 
     def test_an_empty_feed_installs_nothing(self):
         (self.folder / 'appcast.xml').write_text(mac_feed.render([]).decode())

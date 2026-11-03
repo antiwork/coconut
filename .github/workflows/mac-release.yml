@@ -139,7 +139,8 @@ jobs:
           set -euo pipefail
           archive="$(python scripts/mac_app.py archive --output "$RUNNER_TEMP/mac")"
           # The Swift build put the tools of the pinned Sparkle version here.
-          sign_update=mac/.build/artifacts/sparkle/Sparkle/bin/sign_update
+          # Xcode downloads Sparkle for the app target into the build folder of scripts/mac_app.py.
+          sign_update=mac/.build/xcode/packages/artifacts/sparkle/Sparkle/bin/sign_update
           signature="$(printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$sign_update" --ed-key-file - -p "$archive")"
           printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$sign_update" --ed-key-file - --verify "$archive" "$signature"
           { echo "ARCHIVE=$archive"; echo "SIGNATURE=$signature"; } >> "$GITHUB_ENV"

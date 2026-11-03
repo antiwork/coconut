@@ -3,10 +3,18 @@ packages:
   MarkdownUI:
     url: https://github.com/gonzalezreal/swift-markdown-ui
     exactVersion: 2.4.1
+  # The updater of Coconut.app. The owner made the EdDSA key pair of the feed with this version. Update both together.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    exactVersion: 2.10.0
+  # CoconutKit: setup, status, updates and pairing of the service on this Mac (mac/Package.swift).
+  CoconutMacKit:
+    path: ../mac
 options:
   bundleIdPrefix: dev.local
   deploymentTarget:
     iOS: "18.0"
+    macOS: "15.0"
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -77,6 +85,37 @@ targets:
         UIApplicationSupportsIndirectInputEvents: true
         NSBonjourServices:
           - _coconut._tcp
+  # The main executable of Coconut.app: the service controls in the menu bar and, later, the chat client. It compiles the
+  # views and state of the iPhone app; the iPhone-only views stay out. scripts/mac_app.py builds it and makes the bundle.
+  CoconutMac:
+    type: application
+    platform: macOS
+    dependencies:
+      - package: MarkdownUI
+      - package: Sparkle
+      - package: CoconutMacKit
+        product: CoconutKit
+    sources:
+      - path: Coconut
+        excludes:
+          - CoconutApp.swift
+          - Assets.xcassets
+          - Info.plist
+          - Coconut.entitlements
+      - PushShared
+      - Tunnel
+      - ../scripts/push-envelope.swift
+      - ../mac/Sources/CoconutApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.mac
+        PRODUCT_NAME: Coconut
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_IDENTITY: "-"
+        ENABLE_HARDENED_RUNTIME: NO
   CoconutNotificationService:
     type: app-extension
     platform: iOS
@@ -120,6 +159,23 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.tests
         GENERATE_INFOPLIST_FILE: YES
         TARGETED_DEVICE_FAMILY: "1,2"
+  # The logic tests of the iPhone app, run on the Mac against the CoconutMac target. The test of the row hold needs a
+  # UIKit window, so only the iPhone runs it.
+  CoconutMacTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: CoconutTests
+        excludes:
+          - ConversationRowHoldTests.swift
+    dependencies:
+      - target: CoconutMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.gumroad.coconut.mac.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Coconut.app/Contents/MacOS/Coconut
+        BUNDLE_LOADER: $(TEST_HOST)
   CoconutUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -145,3 +201,11 @@ schemes:
       targets:
         - name: CoconutTests
         - name: CoconutUITests
+  CoconutMac:
+    build:
+      targets:
+        CoconutMac: all
+    test:
+      config: Debug
+      targets:
+        - name: CoconutMacTests

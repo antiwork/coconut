@@ -9,15 +9,18 @@ on:
       - 'scripts/mac_app.py'
       - 'scripts/test_mac_app.py'
       - 'scripts/mac-icon.swift'
-      - 'ios/Coconut/Assets.xcassets/CoconutAppIcon.appiconset/**'
       - 'scripts/mac_feed.py'
       - 'scripts/test_mac_feed.py'
       - 'updates/**'
       - 'scripts/tunnel-*.swift'
       - 'scripts/test_tunnel_loopback.py'
       - 'ios/Tunnel/**'
-      - 'ios/Coconut/PairingSetup.swift'
-      - 'ios/Coconut/TunnelConnection.swift'
+      # The app target compiles the views and state of the iPhone app (ios/project.yml, target CoconutMac).
+      - 'ios/project.yml'
+      - 'ios/Coconut.xcodeproj/**'
+      - 'ios/Coconut/**'
+      - 'ios/PushShared/**'
+      - 'scripts/push-envelope.swift'
       - 'relay/**'
       - '.github/workflows/mac-app.yml'
       - '.github/workflows/mac-release.yml'
@@ -28,15 +31,18 @@ on:
       - 'scripts/mac_app.py'
       - 'scripts/test_mac_app.py'
       - 'scripts/mac-icon.swift'
-      - 'ios/Coconut/Assets.xcassets/CoconutAppIcon.appiconset/**'
       - 'scripts/mac_feed.py'
       - 'scripts/test_mac_feed.py'
       - 'updates/**'
       - 'scripts/tunnel-*.swift'
       - 'scripts/test_tunnel_loopback.py'
       - 'ios/Tunnel/**'
-      - 'ios/Coconut/PairingSetup.swift'
-      - 'ios/Coconut/TunnelConnection.swift'
+      # The app target compiles the views and state of the iPhone app (ios/project.yml, target CoconutMac).
+      - 'ios/project.yml'
+      - 'ios/Coconut.xcodeproj/**'
+      - 'ios/Coconut/**'
+      - 'ios/PushShared/**'
+      - 'scripts/push-envelope.swift'
       - 'relay/**'
       - '.github/workflows/mac-app.yml'
       - '.github/workflows/mac-release.yml'
@@ -51,7 +57,7 @@ concurrency:
 jobs:
   mac-app:
     runs-on: macos-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -63,6 +69,12 @@ jobs:
           swift test --package-path mac
           python3 -m unittest discover -s scripts -p test_mac_app.py
           python3 -m unittest discover -s scripts -p test_mac_feed.py
+      - name: Run the logic tests of the iPhone app on the Mac
+        # The app target compiles the views and state of the iPhone app. CoconutMacTests runs their tests on macOS.
+        run: |
+          set -euo pipefail
+          xcodebuild -project ios/Coconut.xcodeproj -scheme CoconutMac -destination platform=macOS \
+            -derivedDataPath "$RUNNER_TEMP/mac-tests" CODE_SIGN_IDENTITY=- test | tail -n 40
       - name: Run the relay loopback test
         # The test client, the Miniflare relay, the sidecar, and the backend run on this runner. A skipped test fails the job.
         run: |

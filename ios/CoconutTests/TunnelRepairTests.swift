@@ -10,7 +10,7 @@ final class TunnelRepairTests: XCTestCase {
         #else
         let savedToken = PairingToken.read()
         let savedCredentials = TunnelCredentials.read()
-        let folder = URL.applicationSupportDirectory.appendingPathComponent("Coconut")
+        let folder = URL.applicationSupportDirectory.appendingPathComponent(TestIsolation.name("Coconut"))
         let paths = ["pairing.json", "snapshot.json", "outgoing.json"].map { folder.appendingPathComponent($0) }
         let savedFiles = paths.map { try? Data(contentsOf: $0) }
         for path in paths { try? FileManager.default.removeItem(at: path) }
@@ -72,7 +72,7 @@ final class TunnelRepairTests: XCTestCase {
         #else
         let savedToken = PairingToken.read()
         let savedCredentials = TunnelCredentials.read()
-        let folder = URL.applicationSupportDirectory.appendingPathComponent("Coconut")
+        let folder = URL.applicationSupportDirectory.appendingPathComponent(TestIsolation.name("Coconut"))
         let paths = ["pairing.json", "snapshot.json", "outgoing.json"].map { folder.appendingPathComponent($0) }
         let savedFiles = paths.map { try? Data(contentsOf: $0) }
         for path in paths { try? FileManager.default.removeItem(at: path) }

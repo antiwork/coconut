@@ -35,7 +35,7 @@ final class ConnectionRecoveryTests: XCTestCase {
         let address = try await server.start()
         defer { server.stop() }
         let savedToken = PairingToken.read()
-        let folder = URL.applicationSupportDirectory.appendingPathComponent("Coconut")
+        let folder = URL.applicationSupportDirectory.appendingPathComponent(TestIsolation.name("Coconut"))
         let paths = ["pairing.json", "snapshot.json", "outgoing.json"].map { folder.appendingPathComponent($0) }
         let savedFiles = paths.map { try? Data(contentsOf: $0) }
         // Start without a saved state, so the first request is always the state download.

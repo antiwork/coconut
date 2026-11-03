@@ -39,7 +39,7 @@ from tunnel import SOURCES as SIDECAR_SOURCES
 ROOT = Path(__file__).resolve().parents[1]
 MAC = ROOT / 'mac'
 BUNDLE_ID = 'com.gumroad.coconut.mac'
-MINIMUM_SYSTEM = '14.0'
+MINIMUM_SYSTEM = '15.0'
 ARCHITECTURES = ('arm64', 'x86_64')
 # The update feed serves each archive as a Workers Static Asset, and Cloudflare accepts at most 25 MiB per file.
 ARCHIVE_LIMIT = 25 * 1024 * 1024
@@ -50,6 +50,11 @@ FEED_URL = 'https://coconut-updates.gumroad.workers.dev/mac/appcast.xml'
 ED_PUBLIC_KEY = 'bsZLk/GXxQHmjyBDgQ/RY31DmKYvGBLPmJhzOFCkAWE='
 # The iPhone icon is the one source of the app icon.
 ICON_SOURCE = ROOT / 'ios/Coconut/Assets.xcassets/CoconutAppIcon.appiconset/CoconutAppIcon.png'
+# The app target of ios/project.yml. It compiles the views of the iPhone app with the menu bar code.
+PROJECT = ROOT / 'ios/Coconut.xcodeproj'
+APP_SCHEME = 'CoconutMac'
+# Xcode keeps its build and the downloaded packages here. The release takes sign_update from the Sparkle package.
+XCODE_BUILD = MAC / '.build/xcode'
 
 
 def run(arguments: list, **options) -> subprocess.CompletedProcess:
@@ -92,17 +97,30 @@ def info_plist(version: str, build: str) -> dict:
         # with automatic updates off made Sparkle ask in a window that nobody saw. See Updater.checkForRequest.
         'SUAllowsAutomaticUpdates': True,
         'SUScheduledCheckInterval': 21600,
+        # The relay that keeps a pairing code until the Mac answers it (PairingCode.swift).
+        'CoconutPushRelayURL': 'https://coconut-push.gumroad.workers.dev',
     }
 
 
-def swift_products(scratch: Path) -> Path:
-    """Build the app and the tool for both architectures. Return the folder of the products."""
+def swift_tool(scratch: Path) -> Path:
+    """Build the `coconut` tool for both architectures. Return its path."""
     command = ['swift', 'build', '-c', 'release', '--package-path', MAC, '--scratch-path', scratch]
     for architecture in ARCHITECTURES:
         command += ['--arch', architecture]
-    for product in ('CoconutApp', 'CoconutTool'):
-        run(command + ['--product', product])
-    return Path(run(command + ['--show-bin-path'], capture_output=True, text=True).stdout.strip())
+    run(command + ['--product', 'CoconutTool'])
+    return Path(run(command + ['--show-bin-path'], capture_output=True, text=True).stdout.strip()) / 'CoconutTool'
+
+
+def xcode_app() -> Path:
+    """Build the app target for both architectures, without a signature. Return the app that Xcode made.
+
+    sign() signs the finished bundle, so Xcode does not sign here.
+    """
+    run(['xcodebuild', '-project', PROJECT, '-scheme', APP_SCHEME, '-configuration', 'Release',
+         '-destination', 'generic/platform=macOS', '-derivedDataPath', XCODE_BUILD,
+         '-clonedSourcePackagesDirPath', XCODE_BUILD / 'packages', f'ARCHS={" ".join(ARCHITECTURES)}',
+         'ONLY_ACTIVE_ARCH=NO', 'CODE_SIGNING_ALLOWED=NO', 'build'], stdout=subprocess.DEVNULL)
+    return XCODE_BUILD / 'Build/Products/Release/Coconut.app'
 
 
 def compile_sidecar(output: Path, scratch: Path) -> None:
@@ -124,10 +142,14 @@ def assemble(output: Path, version: str, build: str) -> Path:
         (contents / folder).mkdir(parents=True)
     with tempfile.TemporaryDirectory() as temporary:
         scratch = Path(temporary)
-        products = swift_products(MAC / '.build')
-        shutil.copy2(products / 'CoconutApp', contents / 'MacOS/Coconut')
-        shutil.copy2(products / 'CoconutTool', contents / 'Helpers/coconut')
-        add_sparkle(products / 'Sparkle.framework', contents / 'Frameworks/Sparkle.framework')
+        built = xcode_app()
+        shutil.copy2(built / 'Contents/MacOS/Coconut', contents / 'MacOS/Coconut')
+        # The resources of the app target, such as the text of the Hermes pairing message.
+        for resource in sorted((built / 'Contents/Resources').iterdir()):
+            copy = shutil.copytree if resource.is_dir() else shutil.copy2
+            copy(resource, contents / 'Resources' / resource.name)
+        shutil.copy2(swift_tool(MAC / '.build'), contents / 'Helpers/coconut')
+        add_sparkle(built / 'Contents/Frameworks/Sparkle.framework', contents / 'Frameworks/Sparkle.framework')
         compile_sidecar(contents / 'Helpers/tunnel-sidecar', scratch)
         make_icon(contents / 'Resources/Coconut.icns', scratch)
     for agent in sorted((MAC / 'LaunchAgents').glob('*.plist')):

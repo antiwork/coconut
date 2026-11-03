@@ -233,7 +233,7 @@ struct KeychainItem {
 
     private var baseQuery: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service,
+         kSecAttrService as String: TestIsolation.name(service),
          kSecAttrAccount as String: account]
     }
 }

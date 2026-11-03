@@ -183,7 +183,7 @@ The code works once, for 10 minutes, and only for the iPhone that made it. Teleg
 
 A developer with a checkout of this repository runs `python3 ~/Coconut/scripts/setup_coconut.py` instead. The command does these steps:
 
-1. It checks for macOS and Xcode Command Line Tools. Coconut.app needs macOS 14 or later.
+1. It checks for macOS and Xcode Command Line Tools. Coconut.app needs macOS 15 or later. A Mac on macOS 14 gets the last build for macOS 14.
 2. It finds and checks the Hermes that the person already uses, as the service does at each start. See [The Hermes that Coconut uses](#the-hermes-that-coconut-uses). It does not install its own copy. If Hermes is missing or does not pass the check, it stops and says why.
 3. It adds the `coconut` skill to the Hermes profiles. See [The coconut skill for Hermes](#the-coconut-skill-for-hermes). A failure here does not stop the setup.
 4. It prepares notification encryption with `push.py --rebuild`.

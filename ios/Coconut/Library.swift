@@ -30,10 +30,13 @@ struct DocumentRoute: Hashable {
 /// The Library tab: the documents of the bots, grouped by bot. The bot with the latest update comes first.
 struct LibraryView: View {
     @Environment(AppStore.self) private var store
+    /// Shows the documents of this bot only, as the inspector of a Mac chat does.
+    var botId: String? = nil
 
     private var groups: [(bot: Bot, documents: [BotDocument])] {
         let bots = Dictionary(uniqueKeysWithValues: store.bots.map { ($0.id, $0) })
-        let grouped = Dictionary(grouping: store.documents ?? [], by: \.botId)
+        let documents = (store.documents ?? []).filter { botId == nil || $0.botId == botId }
+        let grouped = Dictionary(grouping: documents, by: \.botId)
         return grouped.compactMap { id, documents in
             bots[id].map { (bot: $0, documents: documents.sorted { $0.updatedAt > $1.updatedAt }) }
         }.sorted { ($0.documents.first?.updatedAt ?? "") > ($1.documents.first?.updatedAt ?? "") }
@@ -142,6 +145,7 @@ extension BotDocument {
 /// One open document: Markdown drawn natively, or an HTML page in a closed web view (DocumentPage).
 struct DocumentView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.openURL) private var openURL
     @Environment(\.dismiss) private var dismiss
     let documentId: String
     @State private var document: BotDocument?
@@ -183,10 +187,10 @@ struct DocumentView: View {
         }
         .background(BoardStyle.paper)
         .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar {
             if let document, let content = document.content {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Menu {
                         ShareLink(item: content, subject: Text(document.title)) {
                             Label("Share", systemImage: "square.and.arrow.up")
@@ -201,7 +205,7 @@ struct DocumentView: View {
         }
         .confirmationDialog("Open \(link?.host() ?? "this link")?", isPresented: Binding(
             get: { link != nil }, set: { if !$0 { link = nil } }), titleVisibility: .visible) {
-            Button("Open in browser") { if let link { UIApplication.shared.open(link) } }
+            Button("Open in browser") { if let link { openURL(link) } }
         } message: { Text(link?.absoluteString ?? "") }
         .task(id: documentId) { await load() }
         .onChange(of: store.connection) { _, connection in
