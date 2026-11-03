@@ -613,7 +613,10 @@ class GatewayAdapterTests(unittest.TestCase):
         from gateway.platforms.base import SendResult
         class Prompt:
             chat_id, session_key, command, description = None, 'agent:main:coconut:dm', 'rm -rf build', 'Delete files?'
-            actions = [('Allow once', 'once', 'primary'), ('Deny', 'deny', 'danger')]
+            # A Hermes without its text catalog gives the keys of its texts as labels.
+            actions = [('gateway.exec_approval.action_once', 'once', 'primary'),
+                       ('gateway.exec_approval.action_later', 'ask_later', 'secondary'),
+                       ('Deny', 'deny', 'danger')]
         async def runner(event):
             Prompt.chat_id = event.source.chat_id
             sent = await self.adapter.send_clarify(event.source.chat_id, 'Which region?', ['Europe', 'America'],
@@ -639,6 +642,9 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(tools.clarify_gateway.calls, [('clarify-1', 'America')])
         self.assertEqual(tools.approval.calls, [('agent:main:coconut:dm', 'once', None)])
         self.assertEqual(cards['Delete files?']['explanation'], 'rm -rf build')
+        # The card names each choice in English, never with a text key of Hermes.
+        self.assertEqual([option['label'] for option in cards['Delete files?']['options']],
+                         ['Allow once', 'Ask later', 'Deny'])
         self.assertEqual(self.replies(task), [('Done.', False)])
 
     def test_a_recorded_wait_ends_the_turn_in_the_gateway(self):

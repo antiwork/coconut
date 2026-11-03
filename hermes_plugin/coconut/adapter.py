@@ -29,6 +29,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import threading
 import time
 import urllib.error
@@ -112,6 +113,23 @@ def turn_for_chat(chat_id):
             return adapter, turn
     return None, None
 
+
+
+# Coconut names the approval choices of Hermes in its own words, in English. A Hermes without its text catalog gives
+# the keys of its texts, such as gateway.exec_approval.action_once, and a card must never show those.
+APPROVAL_LABELS = {'once': 'Allow once', 'session': 'Allow for this session', 'always': 'Always allow',
+                   'deny': 'Deny'}
+TEXT_KEY = re.compile(r'^[a-z0-9_]+(\.[a-z0-9_]+)+$')
+
+
+def approval_label(choice, label) -> str:
+    """The button text of one approval choice of Hermes."""
+    if choice in APPROVAL_LABELS:
+        return APPROVAL_LABELS[choice]
+    text = str(label or '').strip()
+    if not text or TEXT_KEY.match(text):
+        return str(choice).replace('_', ' ').capitalize()
+    return text
 
 class Bridge:
     """The routes of the Coconut service. Each call blocks, so the adapter runs it in a thread."""
@@ -570,7 +588,8 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
                                     choices=options)
 
     async def _send_exec_approval_prompt(self, prompt) -> SendResult:
-        options = [dict(id=choice, label=str(label), deny=choice == 'deny') for label, choice, _ in prompt.actions]
+        options = [dict(id=choice, label=approval_label(choice, label), deny=choice == 'deny')
+                   for label, choice, _ in prompt.actions]
         return await self._question(prompt.chat_id, ('approval', prompt.session_key), question_kind='approval',
                                     text=str(prompt.description or 'Allow this command?'), detail=str(prompt.command),
                                     choices=options)
