@@ -1,0 +1,193 @@
+"""Documents of the bots: the page rules, the end dates, the tools of a gateway turn and the routes of the phone."""
+from datetime import datetime, timedelta, timezone
+import tempfile
+import threading
+import unittest
+from uuid import uuid4
+
+from coconut.documents import KEPT_VERSIONS, end_time, page_problems
+from coconut.service import Service, ServiceError
+from test_gateway_chat import Adapter, Provider
+
+TREEMAP = '''<h1>Revenue</h1><svg id="chart"></svg>
+<script>
+const root = d3.hierarchy({children: [{name: "Courses", value: 41200}, {name: "Ebooks", value: 18300}]}).sum(d => d.value);
+d3.select("#chart").selectAll("rect").data(root.leaves()).join("rect").attr("fill", (d, i) => coconut.palette[i]);
+</script>
+<style>h1 { color: var(--text); } #add { margin: 0 }</style>'''
+
+
+class PageRuleTests(unittest.TestCase):
+    def test_a_page_with_tokens_and_the_given_libraries_passes(self):
+        self.assertEqual(page_problems(TREEMAP), [])
+        self.assertEqual(page_problems('<style>#bad { margin: 0 }</style>'), [])
+        # The text of a page is not code.
+        self.assertEqual(page_problems('<p>Fixed in PR #377 (see #12, #345). Last fetch: 10:00. The lab (room 2) is '
+                                       'red.</p><a href="#add">Up</a>'), [])
+        # A link that the person opens is not a load.
+        self.assertEqual(page_problems('<a href="https://github.com/antiwork/coconut/pull/1">PR</a>'), [])
+
+    def test_each_rule_names_its_fix(self):
+        cases = {'<p style="font-family: Comic Sans">x</p>': 'font',
+                 '<p style="color:#ff0000">x</p>': 'hex value',
+                 '<script>bar.attr("fill", "#1D9E75")</script>': 'hex value',
+                 '<p style="color: rgb(1, 2, 3)">x</p>': 'function',
+                 '<script src="https://cdn.example.com/d3.js"></script>': 'another file',
+                 '<link rel="stylesheet" href="x.css">': 'another file',
+                 '<img src="https://example.com/a.png">': 'network',
+                 '<div style="background: url(//example.com/a.png)"></div>': 'network',
+                 '<script>fetch("/data.json")</script>': 'network',
+                 '<p style="font: 12px serif">x</p>': 'font',
+                 '<style>p { color: red }</style>': 'by name',
+                 '<script>bar.style("fill", "steelblue")</script>': 'by name',
+                 '<script>const color = d3.scaleOrdinal(d3.schemeTableau10)</script>': 'scheme of d3',
+                 '<script>const c = `#fff`</script>': 'hex value',
+                 '<rect fill="#ff0000"></rect>': 'color attribute',
+                 '<button onclick="this.style.color = \'#000\'">x</button>': 'hex value'}
+        for page, reason in cases.items():
+            with self.subTest(page=page):
+                self.assertIn(reason, ' '.join(page_problems(page)))
+
+    def test_an_end_date_is_the_end_of_that_day_and_must_come_within_a_year(self):
+        current = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
+        day = end_time('2026-11-06', current)
+        local = datetime.combine(datetime(2026, 11, 6).date(), datetime.max.time()).astimezone()
+        self.assertEqual(day, local.astimezone(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z'))
+        self.assertEqual(end_time('2026-11-04T09:00:00Z', current), '2026-11-04T09:00:00Z')
+        for value, reason in (('2026-11-01', 'future'), ('2028-01-01', 'one year'), ('Friday', 'ISO 8601')):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, reason):
+                end_time(value, current)
+
+
+class DocumentServiceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.service = Service(self.temp.name, Provider(), start_workers=False)
+        self.service.gateway_enabled = lambda: True
+        self.bot = self.write('POST', '/v1/bots', {'name': 'Tuner'})
+        self.other = self.write('POST', '/v1/bots', {'name': 'Desk'})
+        self.turn, self.finish = self.start_turn(self.bot)
+
+    def tearDown(self):
+        self.finish()
+        self.service.close()
+        self.temp.cleanup()
+
+    def write(self, method, path, data=None):
+        return self.service.mutate(method, path, data or {}, str(uuid4()), 'phone')
+
+    def start_turn(self, bot):
+        """A running gateway turn of the bot, and the function that ends it."""
+        task = self.write('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Track the signups.'})
+        bridge = self.service.gateway_bridge
+        adapter = Adapter(bridge, self.service.profiles.home(bot), [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+
+        def finish():
+            if runner.is_alive():
+                bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+                runner.join(5)
+        return turn, finish
+
+    def tool(self, name, arguments, turn=None):
+        return self.service.gateway_tool({'turn_id': turn or self.turn, 'tool': name, 'arguments': arguments})
+
+    def save(self, **arguments):
+        return self.tool('save_document', dict(dict(key='signups-daily', title='Signups', format='markdown',
+                                                    content='# Signups\n\n412 today.'), **arguments))
+
+    def test_a_save_with_the_same_key_replaces_the_document_and_adds_a_version(self):
+        self.assertEqual(self.save(summary='412 today')['version'], 1)
+        self.assertEqual(self.save(content='# Signups\n\n430 today.', summary='430 today')['version'], 2)
+        listed = self.service.documents()['documents']
+        self.assertEqual([(d['key'], d['version'], d['summary'], d['bot_id']) for d in listed],
+                         [('signups-daily', 2, '430 today', self.bot['id'])])
+        self.assertEqual(self.service.document(listed[0]['id'])['content'], '# Signups\n\n430 today.')
+        self.assertEqual(self.tool('read_document', {'key': 'signups-daily'})['content'], '# Signups\n\n430 today.')
+        self.assertEqual([d['key'] for d in self.tool('read_document', {})['documents']], ['signups-daily'])
+
+    def test_a_bot_keeps_only_its_latest_versions(self):
+        for number in range(KEPT_VERSIONS + 3):
+            self.save(content=f'Version {number + 1}.')
+        kept = self.service.db.execute('SELECT version FROM document_versions ORDER BY version').fetchall()
+        self.assertEqual([row[0] for row in kept], list(range(4, KEPT_VERSIONS + 4)))
+
+    def test_coconut_refuses_a_page_that_breaks_the_rules_and_names_the_reason(self):
+        with self.assertRaisesRegex(ServiceError, 'Coconut did not save the page. The page sets a font'):
+            self.save(format='html', content='<p style="font-family: serif">x</p>')
+        for arguments, reason in (({'key': 'Signups Daily'}, 'lowercase'), ({'format': 'pdf'}, 'markdown or html'),
+                                  ({'content': 'x' * (512 * 1024 + 1)}, '512 KB'),
+                                  ({'expires_at': 'soon'}, 'ISO 8601')):
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(ServiceError, reason):
+                self.save(**arguments)
+        self.assertEqual(self.service.documents()['documents'], [])
+        self.assertEqual(self.save(format='html', content=TREEMAP)['version'], 1)
+
+    def test_the_key_belongs_to_the_bot(self):
+        self.save()
+        self.finish()
+        turn, finish = self.start_turn(self.other)
+        try:
+            with self.assertRaisesRegex(ServiceError, 'no document'):
+                self.tool('read_document', {'key': 'signups-daily'}, turn)
+            with self.assertRaisesRegex(ServiceError, 'no document'):
+                self.tool('delete_document', {'key': 'signups-daily'}, turn)
+            self.assertEqual(self.tool('save_document', dict(key='signups-daily', title='Desk signups',
+                                                             format='markdown', content='x'), turn)['version'], 1)
+        finally:
+            finish()
+        self.assertEqual(sorted(d['title'] for d in self.service.documents()['documents']),
+                         ['Desk signups', 'Signups'])
+
+    def test_a_temporary_document_leaves_the_library_after_its_end(self):
+        ends = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+        self.assertTrue(self.save(expires_at=ends)['expires_at'])
+        # An update without an end date keeps the end. An empty text removes it.
+        self.assertTrue(self.save()['expires_at'])
+        self.assertIsNone(self.save(expires_at='')['expires_at'])
+        self.save(expires_at=ends)
+        document = self.service.documents()['documents'][0]
+        self.service.db.execute("UPDATE documents SET data=json_set(data,'$.expires_at','2026-01-01T00:00:00Z')")
+        self.assertEqual(self.service.documents()['documents'], [])
+        with self.assertRaisesRegex(ServiceError, 'ended'):
+            self.service.document(document['id'])
+        self.assertEqual(self.tool('read_document', {})['documents'], [])
+
+    def test_a_save_brings_back_an_ended_document_and_spaces_remove_an_end(self):
+        self.save(expires_at=(datetime.now(timezone.utc) + timedelta(days=2)).isoformat())
+        self.service.db.execute("UPDATE documents SET data=json_set(data,'$.expires_at','2026-01-01T00:00:00Z')")
+        self.assertIsNone(self.save()['expires_at'])
+        self.assertEqual(len(self.service.documents()['documents']), 1)
+        self.save(expires_at=(datetime.now(timezone.utc) + timedelta(days=2)).isoformat())
+        self.assertIsNone(self.save(expires_at='   ')['expires_at'])
+        self.assertEqual(len(self.service.documents()['documents']), 1)
+
+    def test_the_bot_and_the_phone_delete_a_document(self):
+        self.save()
+        self.save(key='launch-checklist', title='Launch checklist')
+        self.assertEqual(self.tool('delete_document', {'key': 'signups-daily'})['status'], 'deleted')
+        remaining = self.service.documents()['documents']
+        self.assertEqual([d['key'] for d in remaining], ['launch-checklist'])
+        self.assertEqual(self.write('DELETE', f'/v1/documents/{remaining[0]["id"]}'), {'ok': True})
+        self.assertEqual(self.write('DELETE', f'/v1/documents/{remaining[0]["id"]}'), {'ok': True})
+        self.assertEqual(self.service.documents()['documents'], [])
+        self.assertEqual(self.service.db.execute('SELECT count(*) FROM document_versions').fetchone()[0], 0)
+        events = [row[0] for row in self.service.db.execute("SELECT type FROM events WHERE type LIKE 'document.%'")]
+        self.assertEqual(events, ['document.created', 'document.created', 'document.deleted', 'document.deleted'])
+
+    def test_the_library_leaves_out_the_documents_of_a_deleted_bot(self):
+        self.save()
+        self.finish()
+        self.write('DELETE', f'/v1/bots/{self.bot["id"]}')
+        self.assertEqual(self.service.documents()['documents'], [])
+        # The rows and their versions go with the bot.
+        for table in ('documents', 'document_versions'):
+            self.assertEqual(self.service.db.execute(f'SELECT count(*) FROM {table}').fetchone()[0], 0)
+
+
+if __name__ == '__main__':
+    unittest.main()

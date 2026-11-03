@@ -183,6 +183,7 @@ from .technical_lane import TechnicalLane
 from .hermes_setup import HermesSetup
 from .bot_profiles import BotProfiles
 from .gateway_chat import GatewayChat
+from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
 
 
 # The statements of Service._refresh_bot. Each needs an index and no sort. A test reads the plan of each one.
@@ -212,7 +213,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat):
+class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat, Documents):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -256,6 +257,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         for table in self.TABLES:
             self.db.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
         self.db.executescript(TASK_CHANGES_SCHEMA)
+        self.db.executescript(DOCUMENTS_SCHEMA)
         # The committed task states that the writer and the read views share. See task_cache.py.
         self._task_states = TaskStates()
         # The kept history of each bot, with the message changes that update it. See history_cache.py.
@@ -1144,6 +1146,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 with self.transaction():
                     self.db.execute('INSERT INTO requests(key,fingerprint,response) VALUES (?,?,?)', (key, fingerprint, encoded(result)))
                 return result
+        if method == 'DELETE' and path.startswith('/v1/documents/') and path.count('/') == 3:
+            # A delete is the same each time, so it needs no saved response.
+            return self.delete_document(path.rsplit('/', 1)[1])
         if method == 'POST' and path == '/v1/work/refresh':
             with self.lock:
                 if time.monotonic() - self.pr_last_request >= 10:
@@ -1437,6 +1442,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     self._event('routine.updated', self._public(routine), bot['id'])
             bot.update(_deleted=True, archived=True, _delete_task_ids=cancelled)
             self._put('bots', bot)
+            self._remove_bot_documents(bot['id'])
             # Remove from Coconut keeps the Hermes profile folder.
             self._remove_profile_row(bot['id'])
             self._event('bot.deleted', {'id': bot['id']} | (audit or {}), bot['id'], (audit or {}).get('source_task_id'))
