@@ -175,15 +175,6 @@ extension ToolbarItemPlacement {
         #endif
     }
 
-    /// The place of the bot button above a chat: the leading edge on an iPhone, the center of the window on a Mac.
-    static var botTitle: ToolbarItemPlacement {
-        #if os(iOS)
-        .topBarLeading
-        #else
-        .principal
-        #endif
-    }
-
     /// The trailing edge of the bar: the primary actions on a Mac.
     static var trailingBar: ToolbarItemPlacement {
         #if os(iOS)

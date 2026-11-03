@@ -87,8 +87,8 @@ struct MacMainWindow: View {
                     .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
                     .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
             }
-            // The bot button names the chat, so the window shows no title of its own. Without this, the title of the
-            // bot settings in the inspector repeats the bot name.
+            // The pill over the chat names the bot, so the window shows no title of its own. Without this, the title of
+            // the bot settings in the inspector repeats the bot name.
             .toolbar(removing: .title)
             .inspector(isPresented: $inspectorShown) {
                 VStack(spacing: 0) {

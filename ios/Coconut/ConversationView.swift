@@ -252,8 +252,7 @@ struct ConversationView: View {
                     if #available(iOS 26.0, *) {
                         ToolbarSpacer(.fixed, placement: .leadingBar)
                     }
-                    #endif
-                    ToolbarItem(placement: .botTitle) {
+                    ToolbarItem(placement: .leadingBar) {
                         NavigationLink(value: BotSettingsRoute(botId: bot.id)) {
                             HStack(spacing: 8) {
                                 LiveBotAvatar(bot: bot, size: 28)
@@ -269,7 +268,24 @@ struct ConversationView: View {
                         .accessibilityIdentifier("bot-settings")
                         .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                     }
+                    #endif
                 }
+                #if os(macOS)
+                // A Mac toolbar groups its items into one glass bar. The bot gets a pill of its own over the top of the
+                // chat instead, and the inspector next to the chat has its settings.
+                .overlay(alignment: .top) {
+                    HStack(spacing: 8) {
+                        LiveBotAvatar(bot: bot, size: 24)
+                        Text(bot.name).font(.headline).lineLimit(1).truncationMode(.tail)
+                    }
+                    .padding(.leading, 6).padding(.trailing, 12)
+                    .frame(height: 34)
+                    .modifier(FloatingCapsule())
+                    .padding(.top, 8)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityAddTraits(.isHeader)
+                }
+                #endif
                 .confirmationDialog(StopCopy.title(executor: stop.item.map { executorName($0) } ?? bot.name),
                                     isPresented: $stop.isPresented, titleVisibility: .visible, presenting: stop.item) { task in
                     Button("Stop task", role: .destructive) { Task { await store.cancel(task) } }
@@ -821,6 +837,17 @@ private struct ComposerBackdrop: ViewModifier {
             content
         } else {
             content.background(BoardStyle.paper)
+        }
+    }
+}
+
+/// A small floating shape: Liquid Glass on macOS 26 and iOS 26, and a thin material before.
+private struct FloatingCapsule: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            content.glassEffect(.regular, in: Capsule())
+        } else {
+            content.background(.regularMaterial, in: Capsule())
         }
     }
 }
