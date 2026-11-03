@@ -272,6 +272,10 @@ struct ArchivedBotsView: View {
                     .swipeActions {
                         Button("Restore", systemImage: "tray.and.arrow.up") { Task { await store.archiveBot(bot) } }
                     }
+                    // A Mac has no swipe on a list row. Its secondary click offers the same Restore.
+                    .contextMenu {
+                        Button("Restore", systemImage: "tray.and.arrow.up") { Task { await store.archiveBot(bot) } }
+                    }
             }
         }
         .listStyle(.plain).scrollContentBackground(.hidden).background(BoardStyle.paper)

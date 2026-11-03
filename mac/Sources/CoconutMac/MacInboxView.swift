@@ -28,13 +28,23 @@ struct MacInboxView: View {
             Divider()
             Group {
                 if let chosen {
-                    ScrollView {
-                        DecisionCard(decision: chosen, showsBot: true)
-                            .id(chosen.id)
-                            .frame(maxWidth: 560)
-                            .padding(24)
-                            .frame(maxWidth: .infinity)
+                    // The card links to its chat and to an earlier answer. Those open in this column.
+                    NavigationStack {
+                        ScrollView {
+                            DecisionCard(decision: chosen, showsBot: true)
+                                .id(chosen.id)
+                                .frame(maxWidth: 560)
+                                .padding(24)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .navigationDestination(for: ConversationRoute.self) { route in
+                            ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
+                                             focusMessageId: route.messageId, attachedWork: route.workContext)
+                        }
+                        .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
+                        .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
                     }
+                    .id(chosen.id)
                     .toolbar {
                         ToolbarItem(placement: .primaryAction) {
                             Button { selection = .bot(chosen.botId) } label: {

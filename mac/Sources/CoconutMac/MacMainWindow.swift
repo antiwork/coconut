@@ -4,6 +4,7 @@ import SwiftUI
 enum MacSelection: Hashable {
     case inbox
     case library
+    case archived
     case bot(String)
 }
 
@@ -67,6 +68,15 @@ struct MacMainWindow: View {
                     .navigationTitle("Library")
                     .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
             }
+        case .archived:
+            NavigationStack {
+                ArchivedBotsView()
+                    .navigationDestination(for: ConversationRoute.self) { route in
+                        ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
+                                         focusMessageId: route.messageId, attachedWork: route.workContext)
+                    }
+                    .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
+            }
         case .bot(let botId):
             NavigationStack {
                 ConversationView(botId: botId)
@@ -87,8 +97,10 @@ struct MacMainWindow: View {
                     .pickerStyle(.segmented).labelsHidden()
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     NavigationStack {
+                        // Each bot gets its own settings view. Leaving it saves its edits to that bot, so an unsaved
+                        // edit never moves to the next bot.
                         switch inspectorTab {
-                        case .details: BotSettingsView(botId: botId)
+                        case .details: BotSettingsView(botId: botId).id(botId)
                         case .library:
                             LibraryView(botId: botId)
                                 .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
@@ -139,6 +151,13 @@ struct MacSidebar: View {
             }
             Section("Bots") {
                 ForEach(others) { bot in row(bot) }
+            }
+            let archived = store.bots.filter(\.archived).count
+            if archived > 0 {
+                Label("Archived", systemImage: "archivebox")
+                    .badge(archived)
+                    .tag(MacSelection.archived)
+                    .accessibilityIdentifier("sidebar-archived")
             }
         }
         .listStyle(.sidebar)
