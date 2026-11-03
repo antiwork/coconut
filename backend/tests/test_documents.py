@@ -23,7 +23,7 @@ class PageRuleTests(unittest.TestCase):
         self.assertEqual(page_problems('<style>#bad { margin: 0 }</style>'), [])
         # The text of a page is not code.
         self.assertEqual(page_problems('<p>Fixed in PR #377 (see #12, #345). Last fetch: 10:00. The lab (room 2) is '
-                                       'red.</p><a href="#add">Up</a>'), [])
+                                       'red. Use style="color:red" here.</p><a href="#add">Up</a>'), [])
         # A link that the person opens is not a load.
         self.assertEqual(page_problems('<a href="https://github.com/antiwork/coconut/pull/1">PR</a>'), [])
 
@@ -43,7 +43,13 @@ class PageRuleTests(unittest.TestCase):
                  '<script>const color = d3.scaleOrdinal(d3.schemeTableau10)</script>': 'scheme of d3',
                  '<script>const c = `#fff`</script>': 'hex value',
                  '<rect fill="#ff0000"></rect>': 'color attribute',
-                 '<button onclick="this.style.color = \'#000\'">x</button>': 'hex value'}
+                 '<button onclick="this.style.color = \'#000\'">x</button>': 'hex value',
+                 '<p style=color:red>x</p>': 'by name',
+                 '<style>.card { border: 1px solid #fff }</style>': 'hex value',
+                 '<style>@media (min-width: 400px) { .card { box-shadow: 0 0 2px #000 } }</style>': 'hex value',
+                 '<div style="background: linear-gradient(#fff, #000)"></div>': 'hex value',
+                 '<script>bar.style("border", "1px solid #ccc")</script>': 'hex value',
+                 '<svg><image href="https://example.com/a.png"/></svg>': 'network'}
         for page, reason in cases.items():
             with self.subTest(page=page):
                 self.assertIn(reason, ' '.join(page_problems(page)))
@@ -67,6 +73,7 @@ class DocumentServiceTests(unittest.TestCase):
         self.bot = self.write('POST', '/v1/bots', {'name': 'Tuner'})
         self.other = self.write('POST', '/v1/bots', {'name': 'Desk'})
         self.turn, self.finish = self.start_turn(self.bot)
+        self.task_id = self.task['id']
 
     def tearDown(self):
         self.finish()
@@ -78,7 +85,7 @@ class DocumentServiceTests(unittest.TestCase):
 
     def start_turn(self, bot):
         """A running gateway turn of the bot, and the function that ends it."""
-        task = self.write('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Track the signups.'})
+        task = self.task = self.write('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'Track the signups.'})
         bridge = self.service.gateway_bridge
         adapter = Adapter(bridge, self.service.profiles.home(bot), [])
         adapter.start()
@@ -126,6 +133,19 @@ class DocumentServiceTests(unittest.TestCase):
                 self.save(**arguments)
         self.assertEqual(self.service.documents()['documents'], [])
         self.assertEqual(self.save(format='html', content=TREEMAP)['version'], 1)
+
+    def test_a_cancelled_turn_changes_no_document(self):
+        from coconut.service import YieldForDecision
+        self.save()
+        self.write('POST', f'/v1/tasks/{self.task_id}/cancel')
+        for write in (lambda: self.service.save_document(self.task_id, dict(
+                key='signups-daily', title='Signups', format='markdown', content='Late.')),
+                      lambda: self.service.delete_bot_document(self.task_id, {'key': 'signups-daily'})):
+            with self.assertRaises(YieldForDecision):
+                write()
+        document = self.service.documents()['documents'][0]
+        self.assertEqual((document['version'], self.service.document(document['id'])['content']),
+                         (1, '# Signups\n\n412 today.'))
 
     def test_the_key_belongs_to_the_bot(self):
         self.save()

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, time as day_time, timedelta, timezone
+from html.parser import HTMLParser
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS documents (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -32,47 +33,47 @@ MAX_SUMMARY = 200
 KEPT_VERSIONS = 10
 LONGEST_LIFE = timedelta(days=366)
 
-# The page rules of HTML read only the code of a page: its <style> elements, its style and event attributes, its
-# scripts, its tags and the color attributes of its tags. The text of the page can say anything, for example "PR #377"
-# or "Last fetch: 10:00". The content security policy of the phone is the real guard against loads. These rules tell
-# the bot what to fix.
-_STYLES = re.compile(r'(<style\b[^>]*>)(.*?)</style\s*>', re.I | re.S)
-_SCRIPTS = re.compile(r'(<script\b[^>]*>)(.*?)</script\s*>', re.I | re.S)
-_QUOTED = r'''("[^"]*"|'[^']*')'''
-_STYLE_ATTRIBUTES = re.compile(r'\bstyle\s*=\s*' + _QUOTED, re.I)
-_EVENT_ATTRIBUTES = re.compile(r'\bon[a-z]+\s*=\s*' + _QUOTED, re.I)
-_COLOR_ATTRIBUTES = re.compile(r'\b(?:fill|stroke|color|bgcolor|stop-color|flood-color)\s*=\s*' + _QUOTED, re.I)
+# The page rules of HTML read only the code of a page, which an HTML parser finds: the CSS of its <style> elements
+# and style attributes, its scripts and event attributes, its tags, and the color attributes of its tags. The text of
+# the page can say anything, for example "PR #377", "Last fetch: 10:00" or 'style="color:red"'. The content security
+# policy of the phone is the real guard against loads. These rules tell the bot what to fix.
 _COLOR_NAMES = ('red|green|blue|black|white|gray|grey|orange|yellow|purple|pink|brown|cyan|magenta|navy|teal|maroon|'
                 'olive|lime|aqua|silver|gold|indigo|violet|crimson|coral|salmon|tomato|orchid|turquoise|khaki|beige|'
                 'lavender|steelblue|skyblue|darkblue|darkred|darkgreen|lightblue|lightgray|lightgrey|darkgray|darkgrey')
-_HEX = r'#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})(?![0-9a-z_-])'
-_QUOTE = '[\'"`]'
+_HEX = r'(?<![\w-])#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})(?![\w-])'
 _COLOR_ADVICE = ('Use a token: var(--c1) to var(--c6), var(--text), var(--text-2), var(--bg), var(--surface) or '
                  'var(--line), or coconut.palette in a script.')
 _FONT = 'The page sets a font. Remove it: Coconut sets the font of each page.'
+_HEX_REASON = 'The page writes a color as a hex value. ' + _COLOR_ADVICE
+_NAME_REASON = 'The page writes a color by name. ' + _COLOR_ADVICE
+_FILE = 'The page loads another file. Coconut gives d3 and Plot to each page. Put everything else in the page.'
 _NETWORK = 'The page loads something from the network. Pages have no network access. Put the data in the page.'
-# (the part of the page, the pattern, the reason)
+_COLOR_PROPERTY = r'(?:color|background(?:-color)?|fill|stroke|border(?:-[a-z]+)?|outline|box-shadow|text-shadow)'
+_COLOR_ATTRIBUTES = {'fill', 'stroke', 'color', 'bgcolor', 'stop-color', 'flood-color', 'lighting-color'}
+_FILE_TAGS = {'link', 'iframe', 'object', 'embed', 'base', 'frame', 'applet'}
+_LOAD_ATTRIBUTES = {'src', 'srcset', 'poster', 'action', 'data', 'href', 'xlink:href', 'background'}
+_REMOTE = re.compile(r'^\s*(?:[a-z][a-z0-9+.-]*:)?//', re.I)
+# (the part of the page, the pattern, the reason). "css" is the declarations: the inside of the innermost braces of
+# each <style> element, and each style attribute. A selector such as #add { } is not a declaration.
 HTML_RULES = (
-    ('code', re.compile(r'font-family|fontFamily|\bfont\s*:', re.I), _FONT),
-    ('tags', re.compile(r'<font\b', re.I), _FONT),
-    # A hex color in CSS follows a colon, and in a script it is a whole string. An ID selector in CSS (#add { }) is
-    # not a color. An ID that looks like hex in a script string is rare, and the reason says to rename it.
-    ('code', re.compile(r':\s*' + _HEX + r'(?!\s*\{)|' + _QUOTE + r'\s*' + _HEX + r'\s*' + _QUOTE, re.I),
-     'The page writes a color as a hex value. ' + _COLOR_ADVICE + ' If it is an element ID, rename the ID.'),
-    ('code', re.compile(r'\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\s*\(', re.I),
+    ('css', re.compile(r'font-family|\bfont\s*:', re.I), _FONT),
+    ('scripts', re.compile(r'font-family|fontFamily'), _FONT),
+    ('css', re.compile(_HEX, re.I), _HEX_REASON),
+    # In a script a hex color is in a string. An ID selector that looks like hex in a string is rare, and the reason
+    # says to rename it.
+    ('scripts', re.compile(r'[\'"`][^\'"`\n]*?' + _HEX, re.I), _HEX_REASON + ' If it is an element ID, rename the ID.'),
+    ('code', re.compile(r'\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color-mix)\s*\(', re.I),
      'The page writes a color as a function. ' + _COLOR_ADVICE),
-    ('code', re.compile(r'(?:color|background(?:-color)?|fill|stroke|border(?:-[a-z]+)?|outline)\s*:[^;{}"\'\n]*'
-                        r'\b(?:' + _COLOR_NAMES + r')\b|' + _QUOTE + r'(?:' + _COLOR_NAMES + r')' + _QUOTE, re.I),
-     'The page writes a color by name. ' + _COLOR_ADVICE),
-    ('code', re.compile(r'\bd3\.(?:scheme|interpolate(?:Rgb|Hsl|Lab|Hcl|Cubehelix|Turbo|Viridis|Inferno|Magma|Plasma|'
-                        r'Warm|Cool|Rainbow|Sinebow|Blues|Greens|Greys|Oranges|Purples|Reds|Spectral|RdBu|RdYlGn))'),
+    ('css', re.compile(_COLOR_PROPERTY + r'\s*:[^;]*\b(?:' + _COLOR_NAMES + r')\b', re.I), _NAME_REASON),
+    ('scripts', re.compile(r'[\'"`](?:' + _COLOR_NAMES + r')[\'"`]|' + _COLOR_PROPERTY + r'\s*:[^;\'"`]*\b(?:'
+                           + _COLOR_NAMES + r')\b', re.I), _NAME_REASON),
+    ('scripts', re.compile(r'\bd3\.(?:scheme|interpolate(?:Rgb|Hsl|Lab|Hcl|Cubehelix|Turbo|Viridis|Inferno|Magma|'
+                           r'Plasma|Warm|Cool|Rainbow|Sinebow|Blues|Greens|Greys|Oranges|Purples|Reds|Spectral|RdBu|'
+                           r'RdYlGn))'),
      'The page uses a color scheme of d3. ' + _COLOR_ADVICE),
     ('colors', re.compile(_HEX + r'|\b(?:rgba?|hsla?)\s*\(|^\s*(?:' + _COLOR_NAMES + r')\s*$', re.I),
      'A tag has a color attribute with a value. ' + _COLOR_ADVICE),
-    ('tags', re.compile(r'<script\b[^>]*\bsrc\s*=|<link\b|<iframe\b|<object\b|<embed\b|<base\b', re.I),
-     'The page loads another file. Coconut gives d3 and Plot to each page. Put everything else in the page.'),
-    ('tags', re.compile(r'<[^>]*\b(?:src|srcset|poster|action)\s*=\s*[\'"]?\s*(?:https?:)?//', re.I), _NETWORK),
-    ('code', re.compile(r'@import\b|url\(\s*[\'"]?\s*(?:https?:)?//', re.I), _NETWORK),
+    ('stylesheets', re.compile(r'@import\b|url\(\s*[\'"]?\s*(?:[a-z][a-z0-9+.-]*:)?//', re.I), _NETWORK),
     ('scripts', re.compile(r'\bfetch\s*\(|\b(?:XMLHttpRequest|WebSocket|EventSource|sendBeacon|importScripts)\b|'
                            r'\bimport\s*\('),
      'The page script uses the network. Pages have no network access. Put the data in the page.'),
@@ -113,16 +114,56 @@ DELETE_SCHEMA = {'name': 'coconut_delete_document', 'description': (
         'required': ['key']}}
 
 
+class _PageCode(HTMLParser):
+    """The code of a page, in the parts of HTML_RULES, and the reasons that its tags give."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = {'css': [], 'scripts': [], 'colors': [], 'stylesheets': []}
+        self.reasons = []
+        self.element = None
+
+    def handle_starttag(self, tag, attributes):
+        self.element = tag if tag in ('style', 'script') else None
+        if tag == 'font':
+            self.reasons.append(_FONT)
+        if tag in _FILE_TAGS or (tag == 'script' and any(name == 'src' for name, _ in attributes)):
+            self.reasons.append(_FILE)
+        for name, value in attributes:
+            value = value or ''
+            if name == 'style':
+                self.parts['css'].append(value)
+                self.parts['stylesheets'].append(value)
+            elif name.startswith('on'):
+                self.parts['scripts'].append(value)
+            elif name in _COLOR_ATTRIBUTES:
+                self.parts['colors'].append(value)
+            elif name in _LOAD_ATTRIBUTES and name != 'href' and any(
+                    _REMOTE.match(part) for part in value.split(',')):
+                self.reasons.append(_NETWORK)
+            elif name in ('href', 'xlink:href') and tag not in ('a',) and _REMOTE.match(value):
+                self.reasons.append(_NETWORK)
+
+    handle_startendtag = handle_starttag
+
+    def handle_endtag(self, tag):
+        self.element = None
+
+    def handle_data(self, data):
+        if self.element == 'script':
+            self.parts['scripts'].append(data)
+        elif self.element == 'style':
+            self.parts['stylesheets'].append(data)
+            self.parts['css'].extend(re.findall(r'\{([^{}]*)\}', data))
+
+
 def page_problems(content: str) -> list[str]:
-    """The page rules that an HTML document breaks, each reason once, in the order of HTML_RULES."""
-    def values(pattern):
-        return [match.group(1)[1:-1] for match in pattern.finditer(content)]
-    scripts = [match.group(2) for match in _SCRIPTS.finditer(content)] + values(_EVENT_ATTRIBUTES)
-    styles = [match.group(2) for match in _STYLES.finditer(content)] + values(_STYLE_ATTRIBUTES)
-    # The tags without the code inside <style> and <script>.
-    tags = _SCRIPTS.sub(r'\1</script>', _STYLES.sub(r'\1</style>', content))
-    parts = {'code': styles + scripts, 'scripts': scripts, 'tags': [tags], 'colors': values(_COLOR_ATTRIBUTES)}
-    problems = []
+    """The page rules that an HTML document breaks, each reason once."""
+    page = _PageCode()
+    page.feed(content)
+    page.close()
+    parts = dict(page.parts, code=page.parts['css'] + page.parts['scripts'])
+    problems = list(dict.fromkeys(page.reasons))
     for part, pattern, reason in HTML_RULES:
         if reason not in problems and any(pattern.search(text) for text in parts[part]):
             problems.append(reason)
@@ -187,7 +228,7 @@ class Documents:
             raise ServiceError(400, str(error)) from None
         current = now()
         with self.transaction():
-            task = self._get('tasks', task_id)
+            task = self._running_task(task_id)
             bot = self._get('bots', task['bot_id'])
             if bot['archived'] or bot.get('_deleted'):
                 raise ServiceError(409, 'The bot is archived or deleted.')
@@ -229,7 +270,7 @@ class Documents:
         from .service import ServiceError
         key = arguments.get('key')
         with self.transaction():
-            bot_id = self._get('tasks', task_id)['bot_id']
+            bot_id = self._running_task(task_id)['bot_id']
             document = self._document_of_key(bot_id, key) if isinstance(key, str) else None
             if document is None:
                 raise ServiceError(404, 'This bot has no document with this key.')
@@ -265,6 +306,15 @@ class Documents:
             if row:
                 self._remove_document(json.loads(row[0]), None)
         return {'ok': True}
+
+    def _running_task(self, task_id: str) -> dict:
+        """The task of a write. The person can cancel the turn while the tool call waits for the write lock, so the
+        write checks the task again inside its transaction, as a provider event does."""
+        from .service import YieldForDecision
+        task = self._get('tasks', task_id)
+        if task['status'] != 'working' or self.stopping.is_set():
+            raise YieldForDecision('This task no longer accepts provider output.')
+        return task
 
     def _document_of_key(self, bot_id: str, key: str) -> dict | None:
         row = self.db.execute("SELECT data FROM documents WHERE json_extract(data,'$.bot_id')=? "
