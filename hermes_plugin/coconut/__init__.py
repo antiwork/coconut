@@ -20,11 +20,24 @@ def _adapter(config):
     return CoconutAdapter(config)
 
 
+def platform_hint():
+    """HINT and the worker's rules for cards, for a merge card and for bot changes (card_tools).
+
+    Hermes puts the hint of the platform into the system prompt of each Coconut session, with no size limit. The prompt
+    sections of all plugins share a budget of 8000 characters, and the rules are longer: Hermes skipped two of their
+    three parts in each session."""
+    from .tools import cards
+    module = cards()
+    rules = (module.DECISION_INSTRUCTIONS, module.PR_MERGE_INSTRUCTIONS, module.BOT_CREATION_INSTRUCTIONS,
+             module.BOT_DELETION_INSTRUCTIONS)
+    return '\n\n'.join([HINT, *(text.strip() for text in rules)])
+
+
 def register(ctx):
     from gateway.platform_registry import PlatformEntry
     options = dict(
         # Only the Coconut service on this Mac sends messages, and only for the person's paired phones.
-        trusted_inbound=True, display_tier='high', display_overrides=DISPLAY, platform_hint=HINT,
+        trusted_inbound=True, display_tier='high', display_overrides=DISPLAY, platform_hint=platform_hint(),
         max_message_length=100_000, emoji='🥥')
     # A field that this Hermes does not know would stop the registration.
     known = {field.name for field in dataclasses.fields(PlatformEntry)}

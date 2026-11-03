@@ -1329,16 +1329,15 @@ class GatewayAdapterTests(unittest.TestCase):
         # The card tool states the order rule, as the worker's tool does.
         self.assertIn('must be the first item of options',
                       schemas['coconut_ask']['parameters']['properties']['recommended_option_id']['description'])
-        # The card rules of the worker go into each Coconut session, in parts that Hermes allows.
-        from coconut.card_tools import DECISION_INSTRUCTIONS
-        self.assertEqual(sorted(sections), ['coconut.cards.0', 'coconut.cards.1', 'coconut.cards.2', 'coconut.rules.0'])
-        self.assertTrue(all(fits and text and other == '' for text, other, fits in sections.values()))
-        self.assertEqual(' '.join(' '.join(sections[f'coconut.cards.{n}'][0] for n in range(3)).split()),
-                         ' '.join(DECISION_INSTRUCTIONS.split()))
-        # The rules of a merge card and of bot changes, as the worker gives them.
-        from coconut.card_tools import BOT_CREATION_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS
-        self.assertIn(PR_MERGE_INSTRUCTIONS[:80], sections['coconut.rules.0'][0])
-        self.assertIn(BOT_CREATION_INSTRUCTIONS.strip()[:80], sections['coconut.rules.0'][0])
+        # The card rules of the worker go whole into each Coconut session, with the hint of the platform. The prompt
+        # sections of all plugins share a budget of 8000 characters in Hermes, which skipped most of the rules.
+        from coconut.card_tools import (BOT_CREATION_INSTRUCTIONS, BOT_DELETION_INSTRUCTIONS, DECISION_INSTRUCTIONS,
+                                        PR_MERGE_INSTRUCTIONS)
+        self.assertEqual(sections, {})
+        hint = calls[0]['platform_hint']
+        self.assertTrue(hint.startswith(self.plugin.HINT))
+        for rules in (DECISION_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS, BOT_CREATION_INSTRUCTIONS, BOT_DELETION_INSTRUCTIONS):
+            self.assertIn(rules.strip(), hint)
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
