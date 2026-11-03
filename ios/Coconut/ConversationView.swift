@@ -272,18 +272,23 @@ struct ConversationView: View {
                 }
                 #if os(macOS)
                 // A Mac toolbar groups its items into one glass bar. The bot gets a pill of its own over the top of the
-                // chat instead, and the inspector next to the chat has its settings.
+                // chat instead. It opens the settings of this bot, also in a chat that has no inspector next to it.
                 .overlay(alignment: .top) {
-                    HStack(spacing: 8) {
-                        LiveBotAvatar(bot: bot, size: 24)
-                        Text(bot.name).font(.headline).lineLimit(1).truncationMode(.tail)
+                    NavigationLink(value: BotSettingsRoute(botId: bot.id)) {
+                        HStack(spacing: 8) {
+                            LiveBotAvatar(bot: bot, size: 24)
+                            Text(bot.name).font(.headline).lineLimit(1).truncationMode(.tail)
+                        }
+                        .padding(.leading, 6).padding(.trailing, 12)
+                        .frame(height: 34)
+                        .modifier(FloatingCapsule())
+                        .contentShape(Capsule())
                     }
-                    .padding(.leading, 6).padding(.trailing, 12)
-                    .frame(height: 34)
-                    .modifier(FloatingCapsule())
+                    .buttonStyle(.plain)
                     .padding(.top, 8)
-                    .accessibilityElement(children: .combine)
-                    .accessibilityAddTraits(.isHeader)
+                    .help("Settings of \(bot.name)")
+                    .accessibilityLabel("\(bot.name) settings")
+                    .accessibilityIdentifier("bot-settings")
                 }
                 #endif
                 .confirmationDialog(StopCopy.title(executor: stop.item.map { executorName($0) } ?? bot.name),
