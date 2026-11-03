@@ -63,22 +63,7 @@ final class NativeDecisionFlowTests: XCTestCase {
         XCTAssertTrue(scout.waitForExistence(timeout: 10))
         XCTAssertTrue(scout.label.contains("I am checking background limits and reconnect behavior."),
                       "Home must show the latest conversation text instead of a generic status.")
-        app.buttons["search-conversations"].tap()
-        let search = app.textFields["home-search-input"]
-        XCTAssertTrue(search.waitForExistence(timeout: 5))
-        search.tap()
-        search.typeText("Scout")
-        XCTAssertTrue(scout.exists)
-        XCTAssertFalse(forge.exists)
-        app.buttons["close-search"].tap()
-        XCTAssertTrue(scout.waitForExistence(timeout: 5))
-
-        app.buttons["search-conversations"].tap()
-        search.tap()
-        search.typeText("background limits")
-        XCTAssertTrue(scout.exists, "Search must include conversation text.")
-        XCTAssertFalse(forge.exists)
-        app.buttons["close-search"].tap()
+        XCTAssertTrue(forge.exists)
 
         app.buttons["app-settings"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))

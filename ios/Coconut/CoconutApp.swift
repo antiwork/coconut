@@ -45,8 +45,6 @@ struct CoconutHome: View {
     // The first run hides Close, because Coconut needs a pairing before it can show anything.
     @State private var onboardingFirstRun = false
     @State private var createOpen = false
-    @State private var searchOpen = false
-    @State private var searchText = ""
     @State private var selectedTab: HomeTab = .inbox
     @State private var notificationDecisionId: String?
     @State private var openingNotification = false
@@ -56,7 +54,6 @@ struct CoconutHome: View {
     @State private var libraryPath = NavigationPath()
     @State private var keyboardVisible = false
     @State private var conversationFooters: [HomeTab: Bool] = [:]
-    @FocusState private var searchFocused: Bool
 
     private var conversationCanMinimize: Bool? { conversationFooters[selectedTab] }
 
@@ -94,7 +91,6 @@ struct CoconutHome: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: selectedTab) { _, tab in
-            searchFocused = false
             if previewedNotification?.decisionId != nil && tab != .inbox {
                 PushNotifications.shared.target = nil
                 previewedNotification = nil
@@ -128,7 +124,7 @@ struct CoconutHome: View {
             Group {
                 switch tab {
                 case .inbox: DecisionInboxView(focusDecisionId: $notificationDecisionId, refreshingDecisionId: PushNotifications.shared.target?.decisionId)
-                case .bots: HomeLaunchView(searchText: searchText)
+                case .bots: HomeLaunchView()
                 case .library: LibraryView()
                 }
             }
@@ -136,22 +132,6 @@ struct CoconutHome: View {
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { rootToolbar(inbox: tab != .bots) }
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    if searchOpen && tab == .bots {
-                        HStack(spacing: 10) {
-                            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                            TextField("Search conversations", text: $searchText)
-                                .focused($searchFocused).textInputAutocapitalization(.never)
-                                .autocorrectionDisabled().accessibilityIdentifier("home-search-input")
-                            Button { searchFocused = false; searchOpen = false; searchText = "" } label: {
-                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
-                            }.accessibilityLabel("Close search").accessibilityIdentifier("close-search")
-                        }
-                        .padding(.leading, 16).padding(.trailing, 4)
-                        .background(.regularMaterial, in: Capsule())
-                        .padding(.horizontal, 16).padding(.bottom, 8)
-                    }
-                }
                 .safeAreaInset(edge: .top, spacing: 0) {
                     if !store.isDemo, let notice = store.connection.notice {
                         ConnectionBanner(notice: notice) {
@@ -203,12 +183,6 @@ struct CoconutHome: View {
         }
         if !inbox {
             ToolbarItem(placement: .topBarTrailing) {
-                Button { searchOpen = true; searchFocused = true } label: {
-                    Image(systemName: "magnifyingglass")
-                }.accessibilityLabel("Search conversations").accessibilityIdentifier("search-conversations")
-            }
-            if #available(iOS 26.0, *) { ToolbarSpacer(.fixed, placement: .topBarTrailing) }
-            ToolbarItem(placement: .topBarTrailing) {
                 Button { createOpen = true } label: {
                     Image(systemName: "plus")
                 }.accessibilityLabel("Create bot").accessibilityIdentifier("create-bot")
@@ -246,7 +220,7 @@ struct CoconutHome: View {
     }
 
     private func showNotification(_ destination: NotificationDestination) {
-        settingsOpen = false; createOpen = false; searchOpen = false; searchFocused = false
+        settingsOpen = false; createOpen = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         switch destination {
         case .inbox(let decisionId):

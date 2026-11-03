@@ -4,10 +4,9 @@ struct HomeLaunchView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .subheadline) private var pinWidth = 108
-    let searchText: String
 
     private var activeBots: [Bot] {
-        store.bots.filter { !$0.archived && matches($0) }.sorted { lastActivity($0) > lastActivity($1) }
+        store.bots.filter { !$0.archived }.sorted { lastActivity($0) > lastActivity($1) }
     }
     private var pinned: [Bot] {
         activeBots.filter(\.pinned).sorted {
@@ -42,9 +41,6 @@ struct HomeLaunchView: View {
                         .accessibilityIdentifier("bot-conversation-\(bot.id)")
                         .padding(.horizontal, 24)
                 }
-                if activeBots.isEmpty && !searchText.isEmpty {
-                    Text("No matching conversations").font(.subheadline).foregroundStyle(.secondary).padding(.vertical, 24)
-                }
                 NavigationLink(value: HomeDestination.archived) {
                     HStack(spacing: 6) {
                         Text("Archived")
@@ -58,7 +54,6 @@ struct HomeLaunchView: View {
                 .padding(.horizontal, 24).padding(.top, 14)
             }
             .padding(.top, pinned.isEmpty ? 16 : 0)
-            .task(id: searchText) { await store.searchConversations(searchText) }
             .padding(.bottom, 20)
         }
         .background(BoardStyle.paper)
@@ -97,13 +92,6 @@ struct HomeLaunchView: View {
         Button("Archive bot", systemImage: "archivebox") { Task { await store.archiveBot(bot) } }
     }
 
-    private func matches(_ bot: Bot) -> Bool {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return true }
-        if [bot.name, bot.role, bot.lastMessage].contains(where: { $0.localizedCaseInsensitiveContains(query) }) { return true }
-        if store.remoteSearchQuery == searchText && store.remoteSearchBotIds.contains(bot.id) { return true }
-        return store.messages.contains { $0.botId == bot.id && $0.kind == "text" && $0.text.localizedCaseInsensitiveContains(query) }
-    }
     private func lastActivity(_ bot: Bot) -> Date {
         store.messages.filter { $0.botId == bot.id && $0.reactionEvent == nil }.compactMap { $0.createdAt.apiDate }.max()
             ?? bot.createdAt.apiDate ?? .distantPast

@@ -253,7 +253,7 @@ struct ConversationView: View {
                         ToolbarSpacer(.fixed, placement: .leadingBar)
                     }
                     #endif
-                    ToolbarItem(placement: .leadingBar) {
+                    ToolbarItem(placement: .botTitle) {
                         NavigationLink(value: BotSettingsRoute(botId: bot.id)) {
                             HStack(spacing: 8) {
                                 LiveBotAvatar(bot: bot, size: 28)
