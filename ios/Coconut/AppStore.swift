@@ -37,6 +37,8 @@ final class AppStore {
     var workCapacity: ParallelWorkSettings?
     var routines: [Routine] = []
     var learning: [LearningGroup] = []
+    /// The documents of the Library, newest first, without their content. Nil until the first load.
+    var documents: [BotDocument]?
     var connection: ConnectionState = .unconfigured {
         // A photo from the Mac that failed while the phone was offline loads again.
         didSet { if connection == .connected, oldValue != .connected { NotificationCenter.default.post(name: .coconutMacConnected, object: nil) } }
@@ -1572,6 +1574,30 @@ final class AppStore {
         if isDemo { return true }
         let result: Acknowledgement? = await write("bots/restart", payload: EmptyRequest(), as: Acknowledgement.self)
         return result?.ok == true
+    }
+
+    func loadDocuments() async {
+        if isDemo { documents = BotDocument.previews(bots: bots); return }
+        guard let client else { return }
+        do {
+            let response: DocumentList = try await client.request("documents")
+            documents = response.documents
+        } catch { report(error) }
+    }
+
+    /// One document with the content of its current version. Nil when the Mac cannot send it.
+    func loadDocument(id: String) async -> BotDocument? {
+        if isDemo { return BotDocument.previews(bots: bots).first { $0.id == id } }
+        guard let client else { return nil }
+        do { return try await client.request("documents/\(id)") }
+        catch { report(error); return nil }
+    }
+
+    func deleteDocument(_ document: BotDocument) async {
+        documents?.removeAll { $0.id == document.id }
+        if isDemo { return }
+        let _: Acknowledgement? = await write("documents/\(document.id)", method: "DELETE", payload: EmptyRequest(),
+                                               as: Acknowledgement.self)
     }
 
     private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, expectedPairing: CheckoutRecoveryPairing? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {

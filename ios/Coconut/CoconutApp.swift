@@ -51,7 +51,7 @@ enum HomeDestination: Hashable {
     case inbox, archived
 }
 
-enum HomeTab: Hashable { case bots, inbox }
+enum HomeTab: Hashable { case bots, inbox, library }
 
 struct CoconutHome: View {
     @Environment(AppStore.self) private var store
@@ -68,6 +68,7 @@ struct CoconutHome: View {
     @State private var previewedNotification: NotificationTarget?
     @State private var botsPath = NavigationPath()
     @State private var inboxPath = NavigationPath()
+    @State private var libraryPath = NavigationPath()
     @State private var keyboardVisible = false
     @State private var conversationFooters: [HomeTab: Bool] = [:]
     @FocusState private var searchFocused: Bool
@@ -75,7 +76,7 @@ struct CoconutHome: View {
     private var conversationCanMinimize: Bool? { conversationFooters[selectedTab] }
 
     private var tabBarVisibility: Visibility {
-        let activePath = selectedTab == .inbox ? inboxPath : botsPath
+        let activePath = switch selectedTab { case .inbox: inboxPath; case .bots: botsPath; case .library: libraryPath }
         return keyboardVisible || (!activePath.isEmpty && conversationCanMinimize == nil) ? .hidden : .automatic
     }
 
@@ -96,6 +97,13 @@ struct CoconutHome: View {
                     Image(systemName: "bubble.left.and.bubble.right").environment(\.symbolVariants, .none)
                 }
             }.accessibilityIdentifier("home-bots")
+            Tab(value: HomeTab.library) {
+                root(tab: .library, path: $libraryPath)
+            } label: {
+                Label { Text("Library") } icon: {
+                    Image(systemName: "books.vertical").environment(\.symbolVariants, .none)
+                }
+            }.accessibilityIdentifier("home-library")
         }
         .modifier(NativeTabCollapse(enabled: conversationCanMinimize == true && !keyboardVisible))
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
@@ -133,8 +141,11 @@ struct CoconutHome: View {
     private func root(tab: HomeTab, path: Binding<NavigationPath>) -> some View {
         NavigationStack(path: path) {
             Group {
-                if tab == .inbox { DecisionInboxView(focusDecisionId: $notificationDecisionId, refreshingDecisionId: PushNotifications.shared.target?.decisionId) }
-                else { HomeLaunchView(searchText: searchText) }
+                switch tab {
+                case .inbox: DecisionInboxView(focusDecisionId: $notificationDecisionId, refreshingDecisionId: PushNotifications.shared.target?.decisionId)
+                case .bots: HomeLaunchView(searchText: searchText)
+                case .library: LibraryView()
+                }
             }
                 .toolbar(tabBarVisibility, for: .tabBar)
                 .navigationTitle("")
@@ -181,6 +192,9 @@ struct CoconutHome: View {
                 }
                 .navigationDestination(for: BotSettingsRoute.self) { route in
                     BotSettingsView(botId: route.botId)
+                }
+                .navigationDestination(for: DocumentRoute.self) { route in
+                    DocumentView(documentId: route.id)
                 }
                 .background(BoardStyle.paper)
                 .overlay(alignment: .top) {
