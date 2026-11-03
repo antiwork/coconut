@@ -92,7 +92,7 @@ final class AppPerformanceTests: XCTestCase {
     @MainActor func testLongConversationScrolling() throws {
         let app = try pairedApp()
         openConversation(app)
-        let transcript = app.scrollViews["conversation-transcript"]
+        let transcript = app.collectionViews["conversation-transcript"]
         measure(metrics: [XCTCPUMetric(application: app), XCTOSSignpostMetric.scrollingAndDecelerationMetric], options: options()) {
             transcript.swipeDown()
             transcript.swipeDown()
@@ -104,7 +104,7 @@ final class AppPerformanceTests: XCTestCase {
     @MainActor func testLoadEarlierMessages() throws {
         let app = try pairedApp()
         openConversation(app)
-        let transcript = app.scrollViews["conversation-transcript"]
+        let transcript = app.collectionViews["conversation-transcript"]
         let earlier = app.buttons["load-earlier-messages"]
         let measureOptions = options(3)
         measureOptions.invocationOptions = [.manuallyStart, .manuallyStop]

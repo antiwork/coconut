@@ -13,7 +13,7 @@ final class ConversationTabBarTests: XCTestCase {
         XCTAssertTrue(context.waitForExistence(timeout: 5))
         context.tap()
         XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
-        let transcript = app.scrollViews["conversation-transcript"]
+        let transcript = app.collectionViews["conversation-transcript"]
         let input = app.textViews["message-input"].exists ? app.textViews["message-input"] : app.textFields["message-input"]
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         input.tap()

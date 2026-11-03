@@ -25,7 +25,7 @@ final class FooterScrollTests: XCTestCase {
         for _ in 0..<5 where !bot.isHittable { app.scrollViews.firstMatch.swipeDown(velocity: .fast) }
         XCTAssertTrue(bot.isHittable)
         bot.tap()
-        let transcript = app.scrollViews["conversation-transcript"]
+        let transcript = app.collectionViews["conversation-transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 5))
         XCTAssertTrue(inbox.isHittable, "Opening a conversation must keep the footer expanded.")
         let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.45))

@@ -17,7 +17,7 @@ final class SendFromHistoryTests: XCTestCase {
         bot.tap()
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
-        let transcript = app.scrollViews["conversation-transcript"]
+        let transcript = app.collectionViews["conversation-transcript"]
         for attempt in 0..<3 {
             for _ in 0..<(4 + attempt * 2) { transcript.swipeDown(velocity: .fast) }
             input.tap()
