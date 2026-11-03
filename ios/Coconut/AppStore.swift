@@ -1593,11 +1593,16 @@ final class AppStore {
         catch { report(error); return nil }
     }
 
-    func deleteDocument(_ document: BotDocument) async {
+    /// Delete a document on the Mac. The row leaves the list only after the Mac confirms. Return whether it did.
+    @discardableResult
+    func deleteDocument(_ document: BotDocument) async -> Bool {
+        if !isDemo {
+            let result: Acknowledgement? = await write("documents/\(document.id)", method: "DELETE",
+                                                       payload: EmptyRequest(), as: Acknowledgement.self)
+            guard result?.ok == true else { return false }
+        }
         documents?.removeAll { $0.id == document.id }
-        if isDemo { return }
-        let _: Acknowledgement? = await write("documents/\(document.id)", method: "DELETE", payload: EmptyRequest(),
-                                               as: Acknowledgement.self)
+        return true
     }
 
     private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, expectedPairing: CheckoutRecoveryPairing? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {

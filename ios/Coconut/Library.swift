@@ -71,7 +71,8 @@ struct LibraryView: View {
         }
         .background(BoardStyle.paper)
         .refreshable { await store.loadDocuments() }
-        .task { await store.loadDocuments() }
+        // A load without a connection does nothing, so the Library loads again when the Mac connects.
+        .task(id: store.connection) { await store.loadDocuments() }
     }
 
     private var emptyLibrary: some View {
@@ -169,8 +170,13 @@ struct DocumentView: View {
                     }
                 }
             } else if failed {
-                ContentUnavailableView("Coconut could not load this document", systemImage: "doc.text",
-                                       description: Text("Check the connection to your Mac and try again."))
+                ContentUnavailableView {
+                    Label("Coconut could not load this document", systemImage: "doc.text")
+                } description: {
+                    Text("Check the connection to your Mac and try again.")
+                } actions: {
+                    Button("Try again") { Task { await load() } }
+                }
             } else {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
@@ -186,7 +192,7 @@ struct DocumentView: View {
                             Label("Share", systemImage: "square.and.arrow.up")
                         }
                         Button(role: .destructive) {
-                            Task { await store.deleteDocument(document); dismiss() }
+                            Task { if await store.deleteDocument(document) { dismiss() } }
                         } label: { Label("Delete", systemImage: "trash") }
                     } label: { Image(systemName: "ellipsis") }
                         .accessibilityLabel("Document actions")
@@ -198,6 +204,10 @@ struct DocumentView: View {
             Button("Open in browser") { if let link { UIApplication.shared.open(link) } }
         } message: { Text(link?.absoluteString ?? "") }
         .task(id: documentId) { await load() }
+        .onChange(of: store.connection) { _, connection in
+            // A document that failed to load loads again when the Mac connects.
+            if failed && connection == .connected { Task { await load() } }
+        }
         .onChange(of: listed?.version) { _, version in
             // A newer version in the list loads again. A removed document keeps what the view shows.
             guard let version, version > document?.version ?? 0 else { return }
@@ -207,6 +217,7 @@ struct DocumentView: View {
 
     private func load() async {
         guard let loaded = await store.loadDocument(id: documentId) else { failed = document == nil; return }
+        failed = false
         document = loaded
     }
 
