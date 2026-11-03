@@ -577,29 +577,6 @@ final class TrackedWorkItemTests: XCTestCase {
         let linked = TrackedWorkItem.tracked(in: [alias, pr, work])
         XCTAssertEqual(linked.count, 1)
         XCTAssertEqual(linked.first?.pullRequest?.number, "42")
-        XCTAssertTrue(TrackedWorkItem.tracked(in: [alias, pr, work], visibility: ["work:export": true]).isEmpty)
-    }
-
-    @MainActor
-    func testLinkedPullRequestDismissalAndUndoKeepBothCopiesHidden() async throws {
-        let work = item(status: "completed")
-        var pr = work
-        pr.id = "pr"
-        pr.kind = "pr"
-        pr.url = "https://github.com/example/project/pull/42"
-        pr.workOutcomeId = work.id
-        pr.workState = "completed"
-        let store = AppStore(demo: true)
-        store.artifacts = [work, pr]
-        let row = try XCTUnwrap(TrackedWorkItem.tracked(in: store.artifacts).first)
-        store.dismissWork(row)
-        XCTAssertTrue(TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility).isEmpty)
-        for _ in 0..<20 { await Task.yield() }
-        XCTAssertTrue(TrackedWorkItem.tracked(in: store.artifacts).isEmpty)
-        store.undoWorkDismissal()
-        XCTAssertEqual(TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility).count, 1)
-        for _ in 0..<20 { await Task.yield() }
-        XCTAssertEqual(TrackedWorkItem.tracked(in: store.artifacts).count, 1)
     }
 
     func testDisconnectedActivityDoesNotKeepClaimingWork() throws {
@@ -617,22 +594,6 @@ final class TrackedWorkItemTests: XCTestCase {
         XCTAssertTrue(row.isWorking(at: date))
         XCTAssertFalse(row.isWorking(at: date.addingTimeInterval(61)))
         XCTAssertEqual(row.activity(at: date.addingTimeInterval(61)), "Status unavailable")
-    }
-
-    @MainActor
-    func testDismissUndoAndRepeatedDismissUseStableItemIdentity() async throws {
-        let store = AppStore(demo: true)
-        store.artifacts = [item(status: "completed")]
-        let row = try XCTUnwrap(TrackedWorkItem.tracked(in: store.artifacts).first)
-        store.dismissWork(row)
-        XCTAssertTrue(TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility).isEmpty)
-        store.undoWorkDismissal()
-        store.dismissWork(row)
-        for _ in 0..<20 { await Task.yield() }
-        XCTAssertTrue(TrackedWorkItem.tracked(in: store.artifacts, visibility: store.workVisibility).isEmpty)
-        store.undoWorkDismissal()
-        for _ in 0..<20 { await Task.yield() }
-        XCTAssertEqual(TrackedWorkItem.tracked(in: store.artifacts).count, 1)
     }
 
     func testIdleNativeWorkUsesHermesActivityAndFinishedWorkStaysForAWeek() throws {

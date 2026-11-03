@@ -31,10 +31,6 @@ final class AppStore {
     /// Only saved task answers change a transcript. Work cards change on most updates, so conversations do not read them.
     private(set) var transcriptArtifacts: [Artifact] = []
     var checkoutConfirmation: CheckoutRecoveryConfirmation?
-    var workVisibility: [String: Bool] = [:]
-    var workUndo: [WorkDismissal] = []
-    @ObservationIgnored private var workMutationTail: Task<Void, Never>?
-    @ObservationIgnored private var workMutationIds: [String: UUID] = [:]
     var approvals: ApprovalSettings?
     var parallelWork: ParallelWorkSettings?
     var apiFallback: APIFallbackSettings?
@@ -199,7 +195,6 @@ final class AppStore {
             return
         }
         if let configuration: PairingConfiguration = ProtectedCache.read("pairing.json"), PairingToken.read() != nil {
-            workVisibility = [:]; workUndo = []; workMutationIds = [:]
             pairing = configuration
             connection = .disconnected
             if let cache: OutgoingCache = ProtectedCache.read("outgoing.json"), cache.deviceId == configuration.deviceId {
@@ -372,7 +367,6 @@ final class AppStore {
         resetDelivery()
         outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; sendingAnswerIds = []; restoredDecisionId = nil
         ProtectedCache.remove("outgoing.json")
-        workVisibility = [:]; workUndo = []; workMutationIds = [:]
         pairing = configuration
         cursor = 0
         error = nil
@@ -436,7 +430,6 @@ final class AppStore {
     }
 
     func disconnect() {
-        workVisibility = [:]; workUndo = []; workMutationIds = [:]
         checkoutConfirmation = nil
         if let deviceId = pairing?.deviceId {
             PushRelayClient.shared.disable(deviceId: deviceId)
@@ -1510,66 +1503,6 @@ final class AppStore {
         } catch { report(error); return nil }
     }
 
-    func dismissWork(_ pr: TrackedPullRequest) {
-        dismissWork(TrackedWorkItem(artifact: pr.artifact, pullRequests: [pr]))
-    }
-
-    func dismissWork(_ item: TrackedWorkItem) {
-        guard item.isFinished else { return }
-        let dismissal = WorkDismissal(id: UUID().uuidString, artifactId: item.artifact.id, url: item.id)
-        workUndo.append(dismissal)
-        changeWorkVisibility(dismissal, undo: false)
-    }
-
-    func undoWorkDismissal() {
-        guard let dismissal = workUndo.popLast() else { return }
-        changeWorkVisibility(dismissal, undo: true)
-    }
-
-    private func changeWorkVisibility(_ dismissal: WorkDismissal, undo: Bool) {
-        workVisibility[dismissal.url] = !undo
-        let operation = UUID()
-        workMutationIds[dismissal.url] = operation
-        let deviceId = pairing?.deviceId
-        let previous = workMutationTail
-        workMutationTail = Task {
-            await previous?.value
-            guard deviceId == pairing?.deviceId else { return }
-            let succeeded: Bool
-            if isDemo {
-                applyWorkReceipt(dismissal, undo: undo)
-                succeeded = true
-            } else {
-                let collection = dismissal.url.hasPrefix("work:") ? "items" : "pull-requests"
-                let result = await write("work/\(collection)/\(dismissal.artifactId)/dismiss",
-                    payload: WorkDismissRequest(dismissalId: dismissal.id, undo: undo), as: WorkRefreshResponse.self,
-                    onSuccess: { receipt in
-                        guard receipt.ok, deviceId == self.pairing?.deviceId else { return }
-                        self.applyWorkReceipt(dismissal, undo: undo)
-                    })
-                succeeded = result?.ok == true
-            }
-            guard deviceId == pairing?.deviceId, workMutationIds[dismissal.url] == operation else { return }
-            if !succeeded && undo {
-                workUndo.append(dismissal)
-            } else if !succeeded {
-                workUndo.removeAll { $0.id == dismissal.id }
-            }
-            workVisibility.removeValue(forKey: dismissal.url)
-            workMutationIds.removeValue(forKey: dismissal.url)
-        }
-    }
-
-    private func applyWorkReceipt(_ dismissal: WorkDismissal, undo: Bool) {
-        // Reject older snapshots and keep message replay consistent with the confirmed write.
-        snapshotEpoch = UUID()
-        snapshotRequest = nil
-        for index in artifacts.indices where artifacts[index].workIdentity == dismissal.url {
-            artifacts[index].workDismissalId = undo ? nil : dismissal.id
-        }
-        cachedState?.artifacts = artifacts
-    }
-
     func refreshWork() async {
         guard !isDemo, foreground, let client else { return }
         let generation = connectionGeneration
@@ -2317,7 +2250,6 @@ final class AppStore {
                 try PairingToken.save(token)
                 let configuration = PairingConfiguration(loopback: address, deviceId: "simulator-bootstrap")
                 try ProtectedCache.write(configuration, name: "pairing.json")
-                workVisibility = [:]; workUndo = []; workMutationIds = [:]
             pairing = configuration
                 connection = .disconnected
                 cursor = 0
@@ -2539,5 +2471,3 @@ private struct BotApprovalRequest: Encodable {
 
 private struct WorkRefreshResponse: Decodable { let ok: Bool }
 
-struct WorkDismissal: Identifiable { let id: String; let artifactId: String; let url: String }
-private struct WorkDismissRequest: Encodable { let dismissalId: String; let undo: Bool }

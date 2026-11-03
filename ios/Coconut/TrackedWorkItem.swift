@@ -109,9 +109,9 @@ struct TrackedWorkItem: Identifiable {
         }
     }
 
-    static func tracked(in artifacts: [Artifact], visibility: [String: Bool] = [:], at date: Date = Date(),
+    static func tracked(in artifacts: [Artifact], at date: Date = Date(),
                         includeDismissedWorkIdentities: Set<String> = []) -> [Self] {
-        let allRequests = TrackedPullRequest.tracked(in: artifacts, visibility: visibility)
+        let allRequests = TrackedPullRequest.tracked(in: artifacts)
         let represented = Set(allRequests.map { $0.artifact.workIdentity })
         let requests = Dictionary(grouping: allRequests, by: { $0.artifact.workIdentity }).values.map { copies in
             let copies = copies.sorted { $0.id < $1.id }
@@ -125,7 +125,7 @@ struct TrackedWorkItem: Identifiable {
         let groupedTasks = Dictionary(grouping: artifacts.filter { $0.kind == "work" }, by: \.workIdentity)
         let tasks = groupedTasks.compactMap { identity, copies -> Self? in
             guard !represented.contains(identity),
-                  !(visibility[identity] ?? copies.contains { $0.workDismissalId != nil })
+                  !copies.contains(where: { $0.workDismissalId != nil })
                     || includeDismissedWorkIdentities.contains(identity) else { return nil }
             let ordered = copies.sorted { $0.id < $1.id }
             guard let item = ordered.first(where: { $0.workOutcomeId == nil || $0.workOutcomeId == $0.id })
