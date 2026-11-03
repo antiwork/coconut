@@ -40,7 +40,7 @@ LONGEST_LIFE = timedelta(days=366)
 _COLOR_NAMES = ('red|green|blue|black|white|gray|grey|orange|yellow|purple|pink|brown|cyan|magenta|navy|teal|maroon|'
                 'olive|lime|aqua|silver|gold|indigo|violet|crimson|coral|salmon|tomato|orchid|turquoise|khaki|beige|'
                 'lavender|steelblue|skyblue|darkblue|darkred|darkgreen|lightblue|lightgray|lightgrey|darkgray|darkgrey')
-_HEX = r'(?<![\w-])#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})(?![\w-])'
+_HEX = r'(?<![\w.$-])#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})(?![\w-])'
 _COLOR_ADVICE = ('Use a token: var(--c1) to var(--c6), var(--text), var(--text-2), var(--bg), var(--surface) or '
                  'var(--line), or coconut.palette in a script.')
 _FONT = 'The page sets a font. Remove it: Coconut sets the font of each page.'
@@ -53,31 +53,32 @@ _COLOR_ATTRIBUTES = {'fill', 'stroke', 'color', 'bgcolor', 'stop-color', 'flood-
 _FILE_TAGS = {'link', 'iframe', 'object', 'embed', 'base', 'frame', 'applet'}
 _LOAD_ATTRIBUTES = {'src', 'srcset', 'poster', 'action', 'data', 'href', 'xlink:href', 'background'}
 _REMOTE = re.compile(r'^\s*(?:[a-z][a-z0-9+.-]*:)?//', re.I)
-# (the part of the page, the pattern, the reason). "css" is the declarations: the inside of the innermost braces of
-# each <style> element, and each style attribute. A selector such as #add { } is not a declaration.
+# (the part of the page, the pattern, the reason). "css" is the text of each <style> element and style attribute,
+# and "scripts" the text of each script and event attribute without its comments. "code" is both. The rules are wide
+# on purpose: a refused page costs the bot one fix, and a page with its own colors breaks the look of the Library.
 HTML_RULES = (
-    ('css', re.compile(r'font-family|\bfont\s*:', re.I), _FONT),
-    ('scripts', re.compile(r'font-family|fontFamily'), _FONT),
-    ('css', re.compile(_HEX, re.I), _HEX_REASON),
-    # In a script a hex color is in a string. An ID selector that looks like hex in a string is rare, and the reason
-    # says to rename it.
-    ('scripts', re.compile(r'[\'"`][^\'"`\n]*?' + _HEX, re.I), _HEX_REASON + ' If it is an element ID, rename the ID.'),
+    ('code', re.compile(r'font-family|fontFamily|\bfont\s*:', re.I), _FONT),
+    # A hex value in CSS is a color unless it is in a selector, which a { ends before a ; or a }.
+    ('css', re.compile(_HEX + r'(?![^{};]*\{)', re.I), _HEX_REASON),
+    ('scripts', re.compile(_HEX, re.I),
+     _HEX_REASON + ' If it is an element ID or a number, write it another way, for example "No. 377".'),
     ('code', re.compile(r'\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color-mix)\s*\(', re.I),
      'The page writes a color as a function. ' + _COLOR_ADVICE),
-    ('css', re.compile(_COLOR_PROPERTY + r'\s*:[^;]*\b(?:' + _COLOR_NAMES + r')\b', re.I), _NAME_REASON),
-    ('scripts', re.compile(r'[\'"`](?:' + _COLOR_NAMES + r')[\'"`]|' + _COLOR_PROPERTY + r'\s*:[^;\'"`]*\b(?:'
-                           + _COLOR_NAMES + r')\b', re.I), _NAME_REASON),
+    ('code', re.compile(_COLOR_PROPERTY + r'\s*:[^;]*?\b(?:' + _COLOR_NAMES + r')\b|[\'"`]\s*(?:' + _COLOR_NAMES
+                        + r')\s*[\'"`]', re.I), _NAME_REASON),
     ('scripts', re.compile(r'\bd3\.(?:scheme|interpolate(?:Rgb|Hsl|Lab|Hcl|Cubehelix|Turbo|Viridis|Inferno|Magma|'
                            r'Plasma|Warm|Cool|Rainbow|Sinebow|Blues|Greens|Greys|Oranges|Purples|Reds|Spectral|RdBu|'
                            r'RdYlGn))'),
      'The page uses a color scheme of d3. ' + _COLOR_ADVICE),
     ('colors', re.compile(_HEX + r'|\b(?:rgba?|hsla?)\s*\(|^\s*(?:' + _COLOR_NAMES + r')\s*$', re.I),
      'A tag has a color attribute with a value. ' + _COLOR_ADVICE),
-    ('stylesheets', re.compile(r'@import\b|url\(\s*[\'"]?\s*(?:[a-z][a-z0-9+.-]*:)?//', re.I), _NETWORK),
+    ('code', re.compile(r'@import\b|url\(\s*[\'"]?\s*(?:[a-z][a-z0-9+.-]*:)?//', re.I), _NETWORK),
     ('scripts', re.compile(r'\bfetch\s*\(|\b(?:XMLHttpRequest|WebSocket|EventSource|sendBeacon|importScripts)\b|'
                            r'\bimport\s*\('),
      'The page script uses the network. Pages have no network access. Put the data in the page.'),
 )
+# The comments of a script. A // after a colon or a quote begins an address, not a comment.
+_SCRIPT_COMMENTS = re.compile(r'/\*.*?\*/|(?<![:\'"`\\])//[^\n]*', re.S)
 
 SAVE_SCHEMA = {'name': 'coconut_save_document', 'description': (
     'Save a document in the Library of Coconut, where the person reads it on the phone. A save with an existing key '
@@ -119,7 +120,7 @@ class _PageCode(HTMLParser):
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
-        self.parts = {'css': [], 'scripts': [], 'colors': [], 'stylesheets': []}
+        self.parts = {'css': [], 'scripts': [], 'colors': []}
         self.reasons = []
         self.element = None
 
@@ -133,9 +134,8 @@ class _PageCode(HTMLParser):
             value = value or ''
             if name == 'style':
                 self.parts['css'].append(value)
-                self.parts['stylesheets'].append(value)
             elif name.startswith('on'):
-                self.parts['scripts'].append(value)
+                self.parts['scripts'].append(_SCRIPT_COMMENTS.sub(' ', value))
             elif name in _COLOR_ATTRIBUTES:
                 self.parts['colors'].append(value)
             elif name in _LOAD_ATTRIBUTES and name != 'href' and any(
@@ -151,10 +151,9 @@ class _PageCode(HTMLParser):
 
     def handle_data(self, data):
         if self.element == 'script':
-            self.parts['scripts'].append(data)
+            self.parts['scripts'].append(_SCRIPT_COMMENTS.sub(' ', data))
         elif self.element == 'style':
-            self.parts['stylesheets'].append(data)
-            self.parts['css'].extend(re.findall(r'\{([^{}]*)\}', data))
+            self.parts['css'].append(data)
 
 
 def page_problems(content: str) -> list[str]:

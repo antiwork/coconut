@@ -20,7 +20,10 @@ d3.select("#chart").selectAll("rect").data(root.leaves()).join("rect").attr("fil
 class PageRuleTests(unittest.TestCase):
     def test_a_page_with_tokens_and_the_given_libraries_passes(self):
         self.assertEqual(page_problems(TREEMAP), [])
-        self.assertEqual(page_problems('<style>#bad { margin: 0 }</style>'), [])
+        self.assertEqual(page_problems('<style>#bad { margin: 0 } #add, #fed .x:hover { padding: 0 }</style>'), [])
+        # A comment and an address in a script are not colors, and a private field read is not a color.
+        self.assertEqual(page_problems('<script>// Fixes #377\nconst total = this.#add + 1\n'
+                                       'const link = "https://github.com/antiwork/coconut"</script>'), [])
         # The text of a page is not code.
         self.assertEqual(page_problems('<p>Fixed in PR #377 (see #12, #345). Last fetch: 10:00. The lab (room 2) is '
                                        'red. Use style="color:red" here.</p><a href="#add">Up</a>'), [])
@@ -49,7 +52,11 @@ class PageRuleTests(unittest.TestCase):
                  '<style>@media (min-width: 400px) { .card { box-shadow: 0 0 2px #000 } }</style>': 'hex value',
                  '<div style="background: linear-gradient(#fff, #000)"></div>': 'hex value',
                  '<script>bar.style("border", "1px solid #ccc")</script>': 'hex value',
-                 '<svg><image href="https://example.com/a.png"/></svg>': 'network'}
+                 '<svg><image href="https://example.com/a.png"/></svg>': 'network',
+                 '<script>Object.assign(document.body.style, {font: "16px serif"})</script>': 'font',
+                 '<script>el.style.backgroundImage = "url(https://example.com/chart.png)"</script>': 'network',
+                 '<style>.badge::after { content: "}"; color:#fff }</style>': 'hex value',
+                 '<script>el.style.color = `\n#fff\n`</script>': 'hex value'}
         for page, reason in cases.items():
             with self.subTest(page=page):
                 self.assertIn(reason, ' '.join(page_problems(page)))
