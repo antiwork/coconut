@@ -153,7 +153,7 @@ struct OnboardingView: View {
     private var actions: some View {
         HStack(spacing: 12) {
             Button {
-                UIPasteboard.general.string = messageText
+                Pasteboard.copy(messageText)
                 withAnimation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 0.8)) { copied = true }
             } label: {
                 Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
@@ -344,8 +344,10 @@ private struct PairingHelpView: View {
                     Text("On your Mac, open the download, move Coconut to Applications, open it, and choose Set Up Coconut in its menu.")
                 }
                 Section {
+                    #if os(iOS)
                     Button { scannerOpen = true } label: { Label("Scan the QR code", systemImage: "qrcode.viewfinder") }
                         .accessibilityIdentifier("onboarding-scan")
+                    #endif
                     Button { pasteOpen = true } label: { Label("Paste a pairing link", systemImage: "doc.on.clipboard") }
                         .accessibilityIdentifier("onboarding-paste")
                 } header: {
@@ -355,16 +357,18 @@ private struct PairingHelpView: View {
                 }
             }
             .settingsBackground()
-            .navigationTitle("Need help?").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Need help?").inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
             }
+            #if os(iOS)
             .sheet(isPresented: $scannerOpen) {
                 PairingScannerView { payload in
                     scannerOpen = false
                     onPayload(payload)
                 }
             }
+            #endif
             .sheet(isPresented: $pasteOpen) {
                 PastePairingSetupView { payload in
                     _ = try PairingSetup.parse(payload)

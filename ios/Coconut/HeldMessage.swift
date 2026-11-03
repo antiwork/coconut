@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// A held message over the blurred chat, as Messages shows one: its reactions above, the message, and short action
 /// rows below. Text messages and photos share it.

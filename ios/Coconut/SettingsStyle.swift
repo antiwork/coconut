@@ -25,9 +25,7 @@ extension View {
 }
 
 enum SettingsBackground {
-    static let color = Color(uiColor: UIColor {
-        $0.userInterfaceStyle == .dark ? UIColor(white: 0.065, alpha: 1) : .systemGroupedBackground
-    })
+    static let color = Color.adaptive { dark, _ in dark ? PlatformColor(white: 0.065, alpha: 1) : .groupedPageBackground }
 }
 
 // Every pairing entry point opens the same pairing page. The page asks before it replaces a pairing.
@@ -38,6 +36,6 @@ struct PairMacButton: View {
     var body: some View {
         Button(store.hasPairing ? "Pair a new Mac" : "Pair with your Mac") { open = true }
             .accessibilityIdentifier("pair-with-mac")
-            .fullScreenCover(isPresented: $open) { OnboardingView() }
+            .fullScreen(isPresented: $open) { OnboardingView() }
     }
 }

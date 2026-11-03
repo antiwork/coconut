@@ -31,7 +31,7 @@ struct MCPSettingsView: View {
                      : "Connect to your Mac first. All bots can use these tools. Hermes keeps their settings on your Mac.")
             }
         }
-        .navigationTitle("Connections").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("Connections").inlineNavigationTitle()
         .settingsBackground()
         .sheet(isPresented: $adding) { NavigationStack { MCPConnectionView() } }
     }
@@ -53,14 +53,14 @@ struct MCPConnectionView: View {
         Form {
             Section {
                 TextField("Name", text: $name)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .noAutocapitalization().autocorrectionDisabled()
                     .disabled(server != nil).accessibilityIdentifier("mcp-name")
                 TextField("https://example.com/mcp", text: $address)
-                    .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .urlKeyboard().noAutocapitalization().autocorrectionDisabled()
                     .disabled(server?.editable == false).accessibilityIdentifier("mcp-url")
                 if server?.editable != false {
                     SecureField(server?.hasToken == true ? "Access token saved · enter to replace" : "Access token (optional)", text: $token)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                        .noAutocapitalization().autocorrectionDisabled().privacySensitive()
                         .accessibilityIdentifier("mcp-token")
                         .disabled(removeAuthentication)
                     if server?.hasToken == true {
@@ -109,7 +109,7 @@ struct MCPConnectionView: View {
             }
             if let error = store.error { Section { InlineError(error) } }
         }
-        .navigationTitle(server?.id ?? "Add connection").navigationBarTitleDisplayMode(.inline)
+        .navigationTitle(server?.id ?? "Add connection").inlineNavigationTitle()
         .settingsBackground()
         .toolbar {
             if server == nil {

@@ -249,10 +249,12 @@ struct ConversationView: View {
                 .onDisappear { isVisible = false; composerFocused = false; footerScroll.reset() }
                 .onChange(of: composerFocused) { _, _ in footerScroll.reset() }
                 .toolbar {
+                    #if os(iOS)
                     if #available(iOS 26.0, *) {
-                        ToolbarSpacer(.fixed, placement: .topBarLeading)
+                        ToolbarSpacer(.fixed, placement: .leadingBar)
                     }
-                    ToolbarItem(placement: .topBarLeading) {
+                    #endif
+                    ToolbarItem(placement: .leadingBar) {
                         NavigationLink(value: BotSettingsRoute(botId: bot.id)) {
                             HStack(spacing: 8) {
                                 LiveBotAvatar(bot: bot, size: 28)
@@ -268,7 +270,7 @@ struct ConversationView: View {
                         .accessibilityIdentifier("bot-settings")
                         .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
                     }
-                    ToolbarItem(placement: .topBarTrailing) {
+                    ToolbarItem(placement: .trailingBar) {
                         Button { composerFocused = false; taskDetailsOpen = true } label: {
                             Image(systemName: "list.bullet.rectangle").frame(minWidth: 44, minHeight: 44)
                         }
@@ -290,7 +292,7 @@ struct ConversationView: View {
         .sheet(isPresented: $taskDetailsOpen) {
             NavigationStack { NativeTaskDetailsView(botId: botId) }
         }
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .preference(key: ConversationFooterPreference.self,
                     value: isVisible ? (!composerFocused && footerScroll.allowsMinimization) : nil)
     }
@@ -498,6 +500,7 @@ struct MessageBubble: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
             .background(isUser ? BoardStyle.userBubble : BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
+            #if os(iOS)
             .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 // The held message fades in over the chat, without the slide of a full-screen cover.
@@ -507,7 +510,7 @@ struct MessageBubble: View {
             })
             .fullScreenCover(isPresented: $held) {
                 HeldMessageView(message: message, onReply: onReply.map { reply in { _ in reply() } }, copyTitle: "Copy",
-                                copy: { UIPasteboard.general.string = message.text }, share: .text(message.text),
+                                copy: { Pasteboard.copy(message.text) }, share: .text(message.text),
                                 trailing: isUser) { maxHeight in
                     // A long message shows its start.
                     MessageText(text: displayText, linkColor: isUser ? BoardStyle.userBubbleLink : .blue,
@@ -521,6 +524,13 @@ struct MessageBubble: View {
                         .frame(maxWidth: 340, alignment: isUser ? .trailing : .leading)
                 }
             }
+            #else
+            // A Mac shows the actions of a held message in the menu of a secondary click.
+            .contextMenu {
+                if let onReply { Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() } }
+                Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(message.text) }
+            }
+            #endif
                 if !isUser && !message.streaming {
                     LinkPreviewList(text: message.text)
                 }
@@ -533,13 +543,15 @@ struct MessageBubble: View {
             Image(systemName: "arrowshape.turn.up.left.fill").font(.body)
                 .foregroundStyle(.secondary).opacity(min(replyOffset / 55, 1))
         }
+        #if os(iOS)
         .gesture(MessageReplyGesture(enabled: onReply != nil && store.messageReference(for: message) != nil,
             changed: { replyOffset = min(72, $0 * 0.7) }, ended: { shouldReply in
                 if shouldReply { onReply?() }
                 withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.8)) { replyOffset = 0 }
             }))
+        #endif
         .accessibilityElement(children: .contain)
-        .accessibilityAction(named: "Copy") { UIPasteboard.general.string = message.text }
+        .accessibilityAction(named: "Copy") { Pasteboard.copy(message.text) }
         .accessibilityActions {
             // VoiceOver gets the same Reply and reactions as the long-press menu, and only where that menu has them.
             if onReply != nil, store.messageReference(for: message) != nil {
@@ -622,7 +634,7 @@ private struct RejectedMessageEditor: View {
                 }
                 .accessibilityIdentifier("delete-rejected-message")
             }
-            .navigationTitle("Edit message").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Edit message").inlineNavigationTitle()
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
     }

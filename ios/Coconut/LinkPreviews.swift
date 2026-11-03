@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// Preview cards for the web pages that a bot message links to. One link gets a large card with the page's
 /// image. Two or three links get compact rows.

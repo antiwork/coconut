@@ -1,5 +1,6 @@
-import AVFoundation
 import SwiftUI
+#if os(iOS)
+import AVFoundation
 import VisionKit
 
 struct PairingScannerView: View {
@@ -43,7 +44,7 @@ struct PairingScannerView: View {
                     ProgressView("Opening camera…")
                 }
             }
-            .navigationTitle("Scan pairing QR code").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Scan pairing QR code").inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
@@ -136,6 +137,8 @@ private struct SetupQRScanner: UIViewControllerRepresentable {
     }
 }
 
+#endif
+
 struct PastePairingSetupView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var payload = ""
@@ -149,7 +152,7 @@ struct PastePairingSetupView: View {
                 Section {
                     TextEditor(text: $payload)
                         .font(.caption.monospaced()).frame(minHeight: editorHeight)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled().privacySensitive()
+                        .noAutocapitalization().autocorrectionDisabled().privacySensitive()
                         .accessibilityLabel("Pairing link").accessibilityIdentifier("pairing-setup-payload")
                 } footer: {
                     Text("Paste the pairing link from Coconut on your Mac. Coconut shows the name of the Mac before you pair.")
@@ -168,7 +171,7 @@ struct PastePairingSetupView: View {
                 }
             }
             .settingsBackground()
-            .navigationTitle("Paste pairing link").navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Paste pairing link").inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }

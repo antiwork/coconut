@@ -92,12 +92,19 @@ struct DecisionPreviewStrip: View {
             }
             loadedIds = Set(loaded.keys)
         }
+        #if os(iOS)
         .fullScreenCover(item: $selection) { selected in
             DecisionPreviewViewer(previews: previews.compactMap { preview in
                 loaded[preview.id].map { PreviewFile(url: $0.file, title: preview.caption, id: preview.id) }
             }, selectedId: selected.id)
                 .ignoresSafeArea()
         }
+        #else
+        // The Quick Look panel of the Mac shows the files, and the arrow keys move between them.
+        .quickLookPreview(Binding(get: { selection.flatMap { loaded[$0.id]?.file } },
+                                  set: { if $0 == nil { selection = nil } }),
+                          in: previews.compactMap { loaded[$0.id]?.file })
+        #endif
     }
 }
 
@@ -106,6 +113,7 @@ private struct PreviewLoadKey: Equatable {
     let attempt: Int
 }
 
+#if os(iOS)
 private final class PreviewFile: NSObject, QLPreviewItem {
     let previewItemURL: URL?
     let previewItemTitle: String?
@@ -141,3 +149,4 @@ private struct DecisionPreviewViewer: UIViewControllerRepresentable {
         func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> any QLPreviewItem { previews[index] }
     }
 }
+#endif
