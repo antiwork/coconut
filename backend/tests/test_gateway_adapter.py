@@ -1317,6 +1317,8 @@ class GatewayAdapterTests(unittest.TestCase):
                                                              'coconut_track_pr', 'coconut_message_bot',
                                                              'coconut_record_pause', 'coconut_read_receipts',
                                                              'coconut_continue_work', 'coconut_track_work',
+                                                             'coconut_save_document', 'coconut_read_document',
+                                                             'coconut_delete_document',
                                                              'coconut_kanban_complete', 'coconut_kanban_block',
                                                              'coconut_kanban_schedule', 'coconut_kanban_heartbeat',
                                                              'coconut_kanban_request_review', 'coconut_kanban_link',
@@ -1340,7 +1342,7 @@ class GatewayAdapterTests(unittest.TestCase):
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
-        self.assertEqual(len(tool_names), 26)
+        self.assertEqual(len(tool_names), 29)
         from coconut.card_tools import WORKSPACE_SCHEMA
         self.assertEqual(schemas['coconut_workspace'], WORKSPACE_SCHEMA)
         # The check tool has the revision fields of the worker's check tool: of a question and of a draft.

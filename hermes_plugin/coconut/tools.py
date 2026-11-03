@@ -30,6 +30,9 @@ facts, and can open a technical lane (backend/coconut/technical_lane.py).
 Work. coconut_track_work tracks the work of a work session in Coconut Work (backend/coconut/tracked_work.py). A turn of
 the bot's chat records an outcome on the board instead, and a native outcome reports on its card.
 
+Documents. coconut_save_document, coconut_read_document and coconut_delete_document keep the pages of the bot in the
+Library of the phone (backend/coconut/documents.py).
+
 Card checks. coconut_refresh_decision records the result of an automatic check of a pending card. Only a check turn
 (mode `refresh`) can call it, and a check turn can call no other Coconut tool (hooks.guard_tool). The model calls of
 the other turns do not get its schema (hooks.add_turn_context). coconut_suggest, coconut_resolve_reply and the revision of
@@ -220,5 +223,8 @@ def register(ctx):
                             (backend('native_receipt_context').SCHEMA, _service_tool('read_receipts')),
                             (backend('technical_lane').CONTINUE_SCHEMA, _service_tool('continue_work')),
                             (backend('tracked_work').TRACK_WORK_SCHEMA, _service_tool('track_work')),
+                            (backend('documents').SAVE_SCHEMA, _service_tool('save_document')),
+                            (backend('documents').READ_SCHEMA, _service_tool('read_document')),
+                            (backend('documents').DELETE_SCHEMA, _service_tool('delete_document')),
                             *((schema, _service_tool(schema['name'][len('coconut_'):])) for schema in claim_schemas())):
         ctx.register_tool(name=schema['name'], toolset=TOOLSET, schema=schema, handler=handler, emoji='🥥')

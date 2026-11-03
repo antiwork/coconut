@@ -929,6 +929,12 @@ class GatewayChat:
             if task.get('_chat_session'):
                 raise ServiceError(409, TRACK_WORK_CHAT)
             return self.emit(task_id, 'artifact', dict(arguments, kind='work'))
+        if tool == 'save_document':
+            return self.save_document(task_id, arguments)
+        if tool == 'read_document':
+            return self.read_document(task_id, arguments)
+        if tool == 'delete_document':
+            return self.delete_bot_document(task_id, arguments)
         if data.get('tool') == 'track_pr':
             artifact = {'kind': 'pr', 'url': require_text(arguments, 'url', 500)}
             if isinstance(arguments.get('work_id'), str) and arguments['work_id'].strip():

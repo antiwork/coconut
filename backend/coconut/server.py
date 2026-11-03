@@ -298,6 +298,10 @@ class Handler(BaseHTTPRequestHandler):
                     self._json(200, service.learning())
                 elif url.path == '/v1/setup':
                     self._json(200, service.hermes_setup())
+                elif url.path == '/v1/documents':
+                    self._json(200, service.documents())
+                elif url.path.startswith('/v1/documents/') and url.path.count('/') == 3:
+                    self._json(200, service.document(url.path.rsplit('/', 1)[1]))
                 elif url.path.startswith('/v1/artifacts/') and url.path.endswith('/content'):
                     parts = url.path.strip('/').split('/')
                     if len(parts) != 4:

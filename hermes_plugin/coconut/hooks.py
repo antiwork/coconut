@@ -79,7 +79,8 @@ SECTION_CHARS = 4000
 # Tools that a follow-up on a pending card must not call: it answers a question and leaves the card as it is.
 CARD_TOOLS = ('coconut_ask', 'coconut_suggest', 'clarify', 'coconut_track_pr', 'coconut_message_bot',
               'coconut_wait', 'coconut_correct_withdrawal', 'coconut_create_bot', 'coconut_delete_bot',
-              'coconut_continue_work', 'coconut_track_work')
+              'coconut_continue_work', 'coconut_track_work', 'coconut_save_document', 'coconut_read_document',
+              'coconut_delete_document')
 PAUSED_MESSAGE = ('Coconut shows a card and waits for the answer of the person. End this turn now. Coconut continues '
                   'this conversation with the answer.')
 WAITED_MESSAGE = ('Coconut recorded the wait of this turn. Finish this turn now with a short summary, and call no other '
