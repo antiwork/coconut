@@ -72,8 +72,10 @@ struct ConversationView: View {
         Group {
             if let bot {
                 ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 10) {
+                    // A lazy stack froze here: rows of very different heights switched between their estimated and
+                    // real height on every frame. A list sizes its rows without that loop and stays as fast.
+                    List {
+                        Group {
                             conversationHeader(bot: bot, messages: messages)
                             if store.hasOlderMessages(botId) {
                                 Button {
@@ -117,7 +119,7 @@ struct ConversationView: View {
                                 }
                                 }
                                 }
-                                    // Keep full text height when the lazy stack resizes or scrolls to a new message.
+                                    // Keep full text height when the list resizes or scrolls to a new message.
                                     .fixedSize(horizontal: false, vertical: true)
                                     .id(message.kind == "decision" ? (message.decisionId ?? entry.id) : entry.id)
                             }
@@ -125,12 +127,17 @@ struct ConversationView: View {
                                 BotStatusRow(bot: bot, activity: activity)
                                     .transition(.opacity.animation(BoardStyle.fade(reduceMotion: reduceMotion)))
                             }
-                            Color.clear.frame(height: 1).id("conversation-bottom")
+                            // The row inset and this padding keep 14 points below the last row.
+                            Color.clear.frame(height: 1).padding(.bottom, 9).id("conversation-bottom")
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 4)
-                        .padding(.bottom, 14)
+                        .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                     }
+                    .listStyle(.plain)
+                    .buttonStyle(.borderless)
+                    .scrollContentBackground(.hidden)
+                    .environment(\.defaultMinListRowHeight, 1)
                     .accessibilityIdentifier("conversation-transcript")
                     .modifier(ConversationTimestamps())
                     .defaultScrollAnchor(focusTarget == nil ? .bottom : .top, for: .initialOffset)
@@ -150,8 +157,9 @@ struct ConversationView: View {
                     .onScrollGeometryChange(for: CGFloat.self) { ConversationFooterScroll.offset(in: $0) } action: { _, offset in
                         footerScroll.scroll(to: offset)
                     }
-                    .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { old, new in
-                        if let row = rowHold.rowToRestore(offsetChange: new - old, userScrolling: userScrolling, followsBottom: nearBottom) {
+                    .onScrollGeometryChange(for: [CGFloat].self) { [$0.contentOffset.y, $0.contentSize.height] } action: { old, new in
+                        let change = zip(old, new).map { abs($1 - $0) }.max() ?? 0
+                        if let row = rowHold.rowToRestore(layoutChange: change, userScrolling: userScrolling, followsBottom: nearBottom) {
                             proxy.scrollTo(row, anchor: .top)
                         }
                     }

@@ -166,6 +166,12 @@ final class DecisionInboxTests: XCTestCase {
         let composer = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(composer.exists)
         XCTAssertTrue(composer.isHittable)
+        // Cards and long messages have very different heights. A lazy stack froze while the reader scrolled past them.
+        let transcript = app.collectionViews["conversation-transcript"]
+        for _ in 0..<2 { transcript.swipeDown() }
+        for _ in 0..<3 { transcript.swipeUp() }
+        for _ in 0..<3 { transcript.swipeDown() }
+        XCTAssertTrue(composer.isHittable)
     }
 
     @MainActor

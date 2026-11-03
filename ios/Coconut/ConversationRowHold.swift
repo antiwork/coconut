@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// The row that the chat showed at the top on purpose, such as the card that opened it.
-/// Lazy rows above it can change height without a scroll by the reader, for example while assistive
-/// technology reads the transcript. The scroll view then can move to another place, so the chat scrolls back.
+/// Rows above it can change without a scroll by the reader: the list inserts an older page after the scroll,
+/// or rows take their real height while assistive technology reads them. The chat then scrolls back to the row.
 struct ConversationRowHold {
     private(set) var row: String?
 
@@ -15,9 +15,10 @@ struct ConversationRowHold {
         if phase == .interacting { release() }
     }
 
-    /// The row to show again after the offset changed by `offsetChange`, or nil when the change is the reader's.
-    func rowToRestore(offsetChange: CGFloat, userScrolling: Bool, followsBottom: Bool) -> String? {
-        guard let row, !userScrolling, !followsBottom, abs(offsetChange) > 1 else { return nil }
+    /// The row to show again after the offset or the content height changed by `layoutChange`,
+    /// or nil when the change is the reader's.
+    func rowToRestore(layoutChange: CGFloat, userScrolling: Bool, followsBottom: Bool) -> String? {
+        guard let row, !userScrolling, !followsBottom, abs(layoutChange) > 1 else { return nil }
         return row
     }
 }

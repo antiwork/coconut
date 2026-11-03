@@ -14,7 +14,7 @@ final class QuietConversationTests: XCTestCase {
         XCTAssertTrue(bot.waitForExistence(timeout: 10))
         bot.tap()
         XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
-        let transcript = app.scrollViews["conversation-transcript"]
+        let transcript = app.collectionViews["conversation-transcript"]
         transcript.swipeDown()
         XCTAssertFalse(app.descendants(matching: .any)["activity-row"].exists)
         XCTAssertFalse(app.staticTexts["Read 3 files · Compared the retry paths"].exists)

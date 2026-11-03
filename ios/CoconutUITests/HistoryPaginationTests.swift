@@ -17,7 +17,7 @@ final class HistoryPaginationTests: XCTestCase {
         let conversation = app.buttons["bot-conversation-\(bot)"]
         XCTAssertTrue(conversation.waitForExistence(timeout: 15))
         conversation.tap()
-        let transcript = app.scrollViews["conversation-transcript"]
+        let transcript = app.collectionViews["conversation-transcript"]
         let earlier = app.buttons["load-earlier-messages"]
         for _ in 0..<18 {
             if earlier.exists && earlier.isHittable { break }

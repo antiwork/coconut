@@ -141,6 +141,9 @@ def main():
         state['messages'] = [original]
         for decision in state['decisions']:
             decision.update(request_bot_id=bot['id'], request_message_id=original['id'])
+        if args.inbox_link:
+            # Bots often keep writing after a card. A long message below the selected card fills the screen.
+            state['messages'] += [message('assistant', paragraph * 12), message('assistant', 'Latest note after the cards.')]
     if args.decision_assessment:
         state['decisions'] = state['decisions'][:1]
         decision = state['decisions'][0]

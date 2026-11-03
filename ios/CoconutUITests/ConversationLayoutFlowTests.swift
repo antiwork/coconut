@@ -61,7 +61,7 @@ final class ConversationLayoutFlowTests: XCTestCase {
         bot.tap()
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
-        let transcript = app.scrollViews["conversation-transcript"]
+        let transcript = app.collectionViews["conversation-transcript"]
         for draft in ["Keep this draft.", "\nFirst detail\nSecond detail\nThird detail\nFourth detail"] {
             input.tap()
             input.typeText(draft)
@@ -118,7 +118,7 @@ final class ConversationLayoutFlowTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [endVisible], timeout: 5), .completed, "The chat must open at its end.")
         let jump = app.buttons["conversation-latest"]
         XCTAssertTrue(jump.waitForNonExistence(timeout: 3), "A chat at its end needs no jump.")
-        let transcript = app.scrollViews["conversation-transcript"]
+        let transcript = app.collectionViews["conversation-transcript"]
         transcript.swipeDown()
         transcript.swipeDown()
         XCTAssertTrue(jump.waitForExistence(timeout: 5), "Newer messages below the screen must show the jump.")
@@ -159,7 +159,7 @@ final class ConversationLayoutFlowTests: XCTestCase {
         pinned.lifetime = .keepAlways
         add(pinned)
 
-        let transcript = app.scrollViews["conversation-transcript"]
+        let transcript = app.collectionViews["conversation-transcript"]
         app.coordinate(withNormalizedOffset: .zero).withOffset(
             CGVector(dx: transcript.frame.maxX - 8, dy: input.frame.minY - 40)
         ).tap()
