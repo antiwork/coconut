@@ -111,10 +111,13 @@ class SetupCoconutTests(unittest.TestCase):
         app = self.app(personal)
         self.assertEqual(setup_coconut.find_app(), app)
 
-    def feed(self, *builds):
+    def feed(self, *builds, minimum="15.0"):
+        """A feed of these builds. A build is a number, or (number, the oldest macOS that it supports)."""
+        builds = [build if isinstance(build, tuple) else (build, minimum) for build in builds]
         return setup_coconut.mac_feed.render([setup_coconut.mac_feed.Item(
             version="0.1.0", build=build, file=f"Coconut-0.1.0-{build}-0123456789abcdef.zip",
-            length=3, signature="sig", published="Mon, 26 Oct 2026 12:00:00 +0000") for build in builds])
+            length=3, signature="sig", published="Mon, 26 Oct 2026 12:00:00 +0000", minimum_system=system)
+            for build, system in builds])
 
     def test_the_newest_build_is_chosen(self):
         self.assertEqual(setup_coconut.choose_item(self.feed(5, 7, 6), "26.6").build, 7)
@@ -122,9 +125,12 @@ class SetupCoconutTests(unittest.TestCase):
             setup_coconut.choose_item(None, "26.6")
 
     def test_an_older_macos_gets_no_app_that_cannot_open(self):
+        feed = self.feed((8, "15.0"), (7, "14.0"))
         with self.assertRaisesRegex(SystemExit, "needs macOS 14.0 or later. This Mac has macOS 13.6"):
-            setup_coconut.choose_item(self.feed(7), "13.6")
-        self.assertEqual(setup_coconut.choose_item(self.feed(7), "14.0").build, 7)
+            setup_coconut.choose_item(feed, "13.6")
+        # A Mac on macOS 14 gets the last build for macOS 14. A newer Mac gets the newest build.
+        self.assertEqual(setup_coconut.choose_item(feed, "14.7").build, 7)
+        self.assertEqual(setup_coconut.choose_item(feed, "15.0").build, 8)
 
     def test_a_downloaded_app_must_match_its_name_and_pass_gatekeeper(self):
         _, system, _ = self.folders()

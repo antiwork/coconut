@@ -93,11 +93,19 @@ def parse(data: bytes) -> list[Item]:
 
 
 def merge(items: list[Item], new: Item, keep: int = KEEP) -> list[Item]:
-    """Add the new item, replace an item of the same build, and keep the newest `keep` items."""
+    """Add the new item, replace an item of the same build, and keep the newest `keep` items.
+
+    The newest item of each older minimum macOS also stays, so a Mac on that macOS can still install its last build.
+    """
     builds = {new.build: new}
     for item in items:
         builds.setdefault(item.build, item)
-    return sorted(builds.values(), key=lambda item: item.build, reverse=True)[:keep]
+    newest = sorted(builds.values(), key=lambda item: item.build, reverse=True)
+    kept = newest[:keep]
+    for item in newest[keep:]:
+        if all(other.minimum_system != item.minimum_system for other in kept):
+            kept.append(item)
+    return kept
 
 
 def render(items: list[Item]) -> bytes:

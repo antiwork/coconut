@@ -32,8 +32,33 @@ fi
 say() { printf 'Coconut: %s\n' "$1"; }
 fail() { printf 'Coconut: %s\n' "$1" >&2; exit 1; }
 
-# The XPath of the newest item. The feed lists the items from the newest build down.
-ITEM_PATH="//item[1]"
+# True when the macOS version $1 is the same as or later than $2, for example 15.1 and 15.0.
+version_at_least() {
+  local IFS=. index
+  local -a have need
+  read -r -a have <<<"$1"
+  read -r -a need <<<"$2"
+  for index in 0 1 2; do
+    (( ${have[index]:-0} > ${need[index]:-0} )) && return 0
+    (( ${have[index]:-0} < ${need[index]:-0} )) && return 1
+  done
+  return 0
+}
+
+# Print the XPath of the newest item that runs on this Mac, or nothing. The feed lists the items from the newest build
+# down, and each item names the oldest macOS that it supports.
+compatible_item() {
+  local feed="$1" system count index minimum
+  system="$(sw_vers -productVersion)"
+  count="$(xmllint --xpath 'count(//item)' "$feed" 2>/dev/null || echo 0)"
+  for ((index = 1; index <= count; index++)); do
+    minimum="$(xmllint --xpath "string(//item[$index]/*[local-name()='minimumSystemVersion'])" "$feed")"
+    if version_at_least "$system" "${minimum:-$MINIMUM_MACOS}"; then
+      printf '//item[%s]' "$index"
+      return
+    fi
+  done
+}
 
 # Print the installed Coconut.app, if any. An app that can do this run comes first: an earlier app can stay in a folder
 # that this account cannot change.
@@ -97,16 +122,19 @@ quit_app() {
 # Download, check and install the newest app, in the folder or the first writable Applications folder.
 # Print the path of the installed app.
 install_app() {
-  local folder="$1" work feed url length name digest
+  local folder="$1" work feed item url length name digest
   # Global, so the trap can still read it when the script exits.
   WORK="$(mktemp -d)"
   trap 'rm -rf "$WORK"' EXIT
   work="$WORK"
   curl -fsSL --retry 3 -o "$work/appcast.xml" "$FEED_URL" || fail "Could not download the update feed $FEED_URL."
   feed="$work/appcast.xml"
-  url="$(xmllint --xpath "string($ITEM_PATH/enclosure/@url)" "$feed" 2>/dev/null || true)"
+  [ "$(xmllint --xpath 'count(//item)' "$feed" 2>/dev/null || echo 0)" -gt 0 ] || fail "The update feed has no build."
+  item="$(compatible_item "$feed")"
+  [ -n "$item" ] || fail "No Coconut.app in the update feed runs on macOS $(sw_vers -productVersion). Update macOS first."
+  url="$(xmllint --xpath "string($item/enclosure/@url)" "$feed" 2>/dev/null || true)"
   [ -n "$url" ] || fail "The update feed has no build."
-  length="$(xmllint --xpath "string($ITEM_PATH/enclosure/@length)" "$feed")"
+  length="$(xmllint --xpath "string($item/enclosure/@length)" "$feed")"
   name="${url##*/}"
   # Each archive name ends with the first 16 hex digits of its SHA-256.
   [[ "$name" =~ -([0-9a-f]{16})\.zip$ ]] || fail "The update feed names an unexpected archive: $name."
