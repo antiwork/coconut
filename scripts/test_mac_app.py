@@ -70,6 +70,8 @@ class MacAppTests(unittest.TestCase):
         self.assertIs(info['SUAutomaticallyUpdate'], True)
         # `coconut update` installs without a question also with automatic updates off.
         self.assertIs(info['SUAllowsAutomaticUpdates'], True)
+        # Each Mac checks every hour, the shortest interval that Sparkle allows.
+        self.assertEqual(info['SUScheduledCheckInterval'], 3600)
 
     def test_sparkle_goes_in_without_the_xpc_services_of_a_sandboxed_app(self):
         framework = self.folder / 'Sparkle.framework'

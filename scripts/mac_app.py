@@ -90,13 +90,14 @@ def info_plist(version: str, build: str) -> dict:
         'NSHighResolutionCapable': True,
         'SUFeedURL': FEED_URL,
         'SUPublicEDKey': ED_PUBLIC_KEY,
-        # Check every six hours, and install an update without a question. The app updates its source after the relaunch.
+        # Check every hour, and install an update without a question. The app updates its source after the relaunch.
+        # One hour is the shortest interval that Sparkle allows. A check reads the appcast, about 3 KB.
         'SUEnableAutomaticChecks': True,
         'SUAutomaticallyUpdate': True,
         # Without this key, Sparkle allows automatic installs only while automatic checks are on. Then `coconut update`
         # with automatic updates off made Sparkle ask in a window that nobody saw. See Updater.checkForRequest.
         'SUAllowsAutomaticUpdates': True,
-        'SUScheduledCheckInterval': 21600,
+        'SUScheduledCheckInterval': 3600,
         # The relay that keeps a pairing code until the Mac answers it (PairingCode.swift).
         'CoconutPushRelayURL': 'https://coconut-push.gumroad.workers.dev',
     }
