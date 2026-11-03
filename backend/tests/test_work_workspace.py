@@ -188,18 +188,6 @@ class RecoveryWorkspaceTests(unittest.TestCase):
         self.service._ensure_execution_session(recovered)
         self.assertEqual(recovered['_execution_session_id'], original['_execution_session_id'])
 
-    def test_cancel_and_resume_keeps_execution_owner(self):
-        self.start()
-        item = self.sync()[0]
-        original = self.service._get('tasks', self.task['id'])
-        self.service._ensure_execution_session(original)
-        self.write('POST', '/v1/work/items/' + item['id'] + '/cancel', {})
-        self.service.running.clear()
-        self.write('POST', '/v1/work/items/' + item['id'] + '/resume', {})
-        resumed = self.service._all('tasks')[-1]
-        self.assertNotEqual(resumed['id'], original['id'])
-        self.assertEqual(resumed['_execution_session_id'], original['_execution_session_id'])
-
     def test_chat_reply_to_failed_work_keeps_execution_owner(self):
         self.stranded()
         original = self.service._get('tasks', self.task['id'])

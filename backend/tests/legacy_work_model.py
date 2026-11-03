@@ -16,31 +16,15 @@ class LegacyWorkModel:
         else:
             self._project_work_outcomes(artifacts, {t['id']: t for t in self._all('tasks')},
                                         self._pending_completion_receipts(), self._all('decisions'), datetime.now(timezone.utc))
-        for item in artifacts:
-            item.pop('checkout_recovery_stopped', None)
-            if (item['kind'] == 'work' and item.get('work_outcome_id') in (None, item['id'])
-                    and self._work_identity(item) == 'work:' + item['id']
-                    and self._setting('work.cancelled.work:' + item['id'])):
-                item['checkout_recovery_stopped'] = True
         return artifacts
 
     def _work_live(self, task, records, timestamp):
         worker = self.running.get(task['id'])
         return bool(worker and worker.is_alive())
 
-    def _queue_positions(self, tasks, timestamp):
-        if self.kanban is not None:
-            return self._native_queue_positions(tasks, timestamp)
-        positions = {}
-        for task in self._dispatch_order(list(tasks.values())):
-            if task.get('_work_status_only') or not self._dispatch_eligible(task, timestamp):
-                continue
-            positions[task['id']] = len(positions) + 1
-        return positions
-
-    def _work_outcome(self, item, tasks, records, decisions, contexts, timestamp, peers=None, queue_positions=None):
+    def _work_outcome(self, item, tasks, records, decisions, contexts, timestamp, peers=None):
         if item.get('_native_outcome_id'):
-            return self._native_outcome_projection(item, tasks, records, decisions, timestamp, queue_positions, peers)
+            return self._native_outcome_projection(item, tasks, decisions, peers)
         peers = peers or [item]
         latest_prs = {p['url'].lower(): p for p in sorted((p for p in peers if p['kind'] == 'pr'), key=lambda p:
                  (p.get('observed_at') or p['created_at'], p.get('checked_at') or '', p['id']))}
@@ -296,20 +280,12 @@ class LegacyWorkModel:
             actor = live[-1]['bot_id']
         elif queued:
             actor = queued[-1]['bot_id']
-        queue_position = None
-        if state == 'queued' and queue_positions is not None:
-            candidates = [task for task in queued if task['id'] in queue_positions]
-            if candidates:
-                next_task = min(candidates, key=lambda task: (queue_positions[task['id']], task['created_at'], task['id']))
-                queue_position, actor = queue_positions[next_task['id']], next_task['bot_id']
         return dict(work_state=state, activity=activity, work_next_step=next_step,
                     work_decision_id=pending[0]['id'] if pending and state == 'needs_decision' else None,
-                    work_queue_position=queue_position,
                     completion_condition=item.get('completion_condition') or item['title'], completion_evidence=evidence,
                     work_attempts=[dict(id=t['id'], state=t['status']) for t in attempts],
                     work_dependencies=dependencies,
                     activity_bot_id=actor,
-                    activity_observed_at=timestamp.isoformat(),
                     activity_state={'needs_decision': 'waiting', 'queued': 'waiting', 'needs_recovery': 'blocked'}.get(state, state))
 
     def _project_work_outcomes(self, artifacts, tasks, records, decisions, timestamp):
@@ -323,7 +299,6 @@ class LegacyWorkModel:
 
     def _project_work_outcomes_inner(self, artifacts, tasks, records, decisions, timestamp):
         contexts = self._all('contexts')
-        queue_positions = self._queue_positions(tasks, timestamp.timestamp())
         groups = {}
         delegated = {}
         copies_by_outcome = {}
@@ -348,10 +323,8 @@ class LegacyWorkModel:
             reports = peers + copies + (delegated.get(latest['id'], []) if latest['kind'] == 'work' else [])
             if latest['id'] not in {p['id'] for p in reports}:
                 reports.append(latest)
-            outcome = self._work_outcome(latest, tasks, records, decisions, contexts, timestamp, reports, queue_positions)
+            outcome = self._work_outcome(latest, tasks, records, decisions, contexts, timestamp, reports)
             for item in peers:
                 item.update(outcome)
                 if item['kind'] == 'work':
                     item['status'] = outcome['activity_state']
-                key = self._work_identity(item)
-                item['work_dismissal_id'] = self._setting('work.dismissed.' + key)

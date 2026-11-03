@@ -71,8 +71,8 @@ class WorkReadCostTests(unittest.TestCase):
                          [{'output': '3'}, {'output': '4'}, {}])
         self.assertEqual(len(original('native_receipts')), 6)
 
-    def test_work_wait_and_cancel_do_not_scan_completed_tool_history(self):
-        item = self.track()
+    def test_work_wait_does_not_scan_completed_tool_history(self):
+        self.track()
         self.track(key='second-outcome', title='Keep the second outcome')
         with self.service.transaction():
             task = self.service._get('tasks', self.task['id'])
@@ -84,12 +84,11 @@ class WorkReadCostTests(unittest.TestCase):
                                         conversation_bot_id=task['conversation_bot_id'])
         original = self.service._all
         def read(table):
-            self.assertNotEqual(table, 'native_receipts', 'A work action must not decode unrelated tool history.')
+            self.assertNotEqual(table, 'native_receipts', 'A work wait must not decode unrelated tool history.')
             return original(table)
         with patch.object(self.service, '_all', side_effect=read):
             result = self.service.wait_for_task(task['id'], dict(task_id=target['id'], reason='Waiting for tests'))
             self.assertEqual(result['status'], 'waiting')
-            self.write('POST', '/v1/work/items/' + item['id'] + '/cancel', {})
         self.assertEqual(self.service._get('tasks', task['id'])['status'], 'working')
         self.assertEqual(self.service._get('native_receipts', 'completed-history')['state'], 'completed')
 

@@ -182,7 +182,7 @@ class ConversationOutcomeDispatchTests(unittest.TestCase):
         def work_activity():
             item = dict(id='work-1', kind='work', key='review', task_id=review['id'], bot_id=self.dev['id'],
                         title='Review', _native_outcome_id='t_review')
-            return self.service._native_outcome_projection(item, {review['id']: task()}, [], [], start, {})['activity']
+            return self.service._native_outcome_projection(item, {review['id']: task()}, [])['activity']
         self.service._note_respawn_guards(start)
         self.assertEqual(task()['_respawn_guard'], dict(reason='recent_success', since=start))
         # Before an hour nothing shows.

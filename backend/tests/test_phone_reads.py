@@ -293,7 +293,7 @@ class WorkProjectionTests(PhoneReadCase):
                     self.service._read_view() as view, view._read_transaction():
                 expected = view._native_work_view([dict(a) for a in artifacts])
         self.assertEqual(indexed, expected)
-        self.assertEqual({a['native_status'] for a in indexed}, {'running', 'ready', 'done', 'blocked'})
+        self.assertEqual({a['work_state'] for a in indexed}, {'working', 'queued', 'completed', 'waiting'})
         # Outcomes t_0 and t_1 have two tasks each.
         self.assertEqual(sorted(len(a['work_attempts']) for a in indexed), [1, 1, 2, 2, 2, 2])
 

@@ -2,7 +2,7 @@ import threading
 import unittest
 from uuid import uuid4
 
-from coconut.service import ServiceError, now
+from coconut.service import now
 from test_service_pr import PRServiceTests, URL
 import legacy_work_sync
 
@@ -90,7 +90,6 @@ class WorkStatusTests(unittest.TestCase):
         row = self.row()
         self.assertEqual(row['work_state'], 'queued')
         self.assertEqual(row['activity'], 'Queued')
-        self.assertEqual(row['work_queue_position'], 1)
 
     def test_failed_turn_overrides_bot_ready_report(self):
         self.artifact('Ready to merge', 'ready')
@@ -103,22 +102,6 @@ class WorkStatusTests(unittest.TestCase):
         self.service._register_pr_artifact(self.task['id'], dict(url=URL, activity='Checking a finding'))
         self.assertEqual(self.service._get('artifacts', artifact['id'])['_activity'], 'Checking a finding')
         self.assertEqual(len(self.tracker.urls), 1)
-
-    def test_dismiss_and_undo_preserve_chat_and_all_bot_copies(self):
-        artifact = self.artifact()
-        artifact.update(pr_state='merged', status='merged')
-        with self.service.transaction():
-            self.service._put('artifacts', artifact)
-            self.service._put('artifacts', dict(artifact, id=str(uuid4())))
-        messages = self.service._all('messages')
-        path = f'/v1/work/pull-requests/{artifact["id"]}/dismiss'
-        self.write('POST', path, dict(dismissal_id='first'))
-        self.assertTrue(all(a['work_dismissal_id'] == 'first' for a in self.service.snapshot()['artifacts']))
-        self.assertEqual(messages, self.service._all('messages'))
-        self.write('POST', path, dict(dismissal_id='second'))
-        with self.assertRaises(ServiceError): self.write('POST', path, dict(dismissal_id='first', undo=True))
-        self.write('POST', path, dict(dismissal_id='second', undo=True))
-        self.assertTrue(all(a['work_dismissal_id'] is None for a in self.service.snapshot()['artifacts']))
 
     def test_new_owner_does_not_inherit_previous_ready_report(self):
         artifact = self.artifact('Ready to merge', 'ready')
@@ -134,23 +117,6 @@ class WorkStatusTests(unittest.TestCase):
             self.assertEqual(self.row()['activity_state'], 'working')
         finally:
             self.service.running.clear()
-
-    def test_explicit_tracking_restores_a_reopened_pr(self):
-        from dataclasses import replace
-        from test_service_pr import observation
-        artifact = self.artifact()
-        artifact.update(pr_state='closed')
-        with self.service.transaction(): self.service._put('artifacts', artifact)
-        self.write('POST', f'/v1/work/pull-requests/{artifact["id"]}/dismiss', dict(dismissal_id='test'))
-        self.tracker.observations = [replace(observation(), pr_state='open')]
-        self.write('POST', '/v1/work/pull-requests', {'bot_id': self.bot['id'], 'url': URL})
-        self.assertIsNone(self.row()['work_dismissal_id'])
-
-    def test_open_work_cannot_be_dismissed(self):
-        artifact = self.artifact()
-        with self.assertRaises(ServiceError) as error:
-            self.write('POST', f'/v1/work/pull-requests/{artifact["id"]}/dismiss', dict(dismissal_id='test'))
-        self.assertEqual(error.exception.status, 409)
 
     def test_saved_todo_expires_and_notifies_phone_once(self):
         import time

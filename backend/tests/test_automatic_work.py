@@ -65,15 +65,6 @@ class AutomaticWorkTests(unittest.TestCase):
         self.assertEqual(self.sync()[0]['id'], item['id'])
         self.assertEqual(self.sync()[0]['status'], 'working')
 
-    def test_completion_can_be_dismissed_and_stays_dismissed(self):
-        self.start()
-        item = self.sync()[0]
-        self.start(status='completed', _work_todos={'todos': [dict(id='coconut-assignment', status='completed', content='Verified the requested result.')]})
-        self.service.running.clear()
-        self.assertEqual(self.sync()[0]['status'], 'completed')
-        self.write('POST', f'/v1/work/items/{item["id"]}/dismiss', dict(dismissal_id='dismiss'))
-        self.assertEqual(self.sync()[0]['work_dismissal_id'], 'dismiss')
-
     def test_failure_stays_visible_as_needing_attention(self):
         self.start()
         self.sync()

@@ -3,7 +3,6 @@ import unittest
 from unittest.mock import patch
 
 import test_followup_conversation_scope as fixtures
-from coconut.service import ServiceError
 from coconut.tracked_work import TrackedWork
 import legacy_work_sync
 
@@ -107,20 +106,6 @@ class WorkFollowupIdentityTests(unittest.TestCase):
         self.assertEqual(self.report()['id'], first['id'])
         context = self.service.work_context_input(first['id'])
         self.assertEqual({t['id'] for t in context['tasks']}, {original['id'], middle_task, self.task['id']})
-
-    def test_dismissal_and_undo_work_through_either_existing_id(self):
-        first, later, _ = self.legacy_pair()
-        saved = self.service._get('artifacts', later['id'])
-        saved.update(status='completed')
-        self.service._put('artifacts', saved)
-        self.write('POST', f'/v1/work/items/{later["id"]}/dismiss', {'dismissal_id': 'one'})
-        self.service._sync_automatic_work()
-        self.assertEqual(self.work()[0]['work_dismissal_id'], 'one')
-        self.write('POST', f'/v1/work/items/{first["id"]}/dismiss', {'dismissal_id': 'one', 'undo': True})
-        self.assertIsNone(self.work()[0]['work_dismissal_id'])
-        self.write('POST', f'/v1/work/items/{later["id"]}/dismiss', {'dismissal_id': 'two'})
-        with self.assertRaises(ServiceError):
-            self.write('POST', f'/v1/work/items/{first["id"]}/dismiss', {'dismissal_id': 'one', 'undo': True})
 
     def test_similar_titles_without_a_decision_link_stay_separate(self):
         first = self.report()

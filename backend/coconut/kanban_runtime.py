@@ -23,7 +23,7 @@ def fingerprint(value):
 
 # Hermes states that wait for someone to act: specify, finish a parent, unblock, review, or reach a scheduled time.
 IDLE_STATUSES = ('triage', 'todo', 'blocked', 'review', 'scheduled')
-# A waiting task without a Hermes event for this long is idle. The phone uses the same age.
+# A waiting task without a Hermes event for this long is idle. Earlier app versions archived such tasks on request.
 IDLE_AGE = 7 * 86400
 # Events that leave a block as it is. Any other later event (a claim, an unblock, a new block) ends its proof.
 BLOCK_KEEPING_EVENTS = ('commented', 'linked', 'unlinked', 'attached', 'reprioritized', 'heartbeat', 'terminal_worker_reaped')
@@ -351,7 +351,7 @@ class Board:
         """The note that the latest archive of a task wrote at once, or None.
 
         archive_stale archives a task and then comments why, so the comment is the next event of the task. A person's
-        archive, the phone's idle archive, and a Stop write no such comment, so their next comment is someone else's
+        archive, an old idle archive, and a Stop write no such comment, so their next comment is someone else's
         or none. The comment's row is the latest comment of the event's author written from the archive to the event,
         because add_comment writes the row and the event together. Hermes writes some comments without an event, so a
         count of events does not find it. Its length must match the event too. `later` lists the kinds of the events
@@ -401,19 +401,14 @@ class Board:
             cached = self._diagnostics[task.id] = (key, [dict(kind=d.kind, severity=d.severity, title=d.title) for d in found])
         return last, cached[1]
 
-    def _idle(self, identity, idle_age, before=None, tenant=None):
+    def _idle(self, identity, idle_age, before=None):
         """Whether a task waits without a worker, unchanged for `idle_age` seconds and, with `before`, since that time."""
         task = self.kb.get_task(self.conn, identity)
-        if (task is None or tenant is not None and task.tenant != tenant or task.status not in IDLE_STATUSES
+        if (task is None or task.status not in IDLE_STATUSES
                 or task.worker_pid or task.current_run_id):
             return False
         last, _ = self.activity(task)
         return bool(last) and time.time() - last >= idle_age and (before is None or last < before)
-
-    def archive_idle(self, tenant, identities):
-        """Archive the person's idle tasks of one bot. A task that changed since the phone listed it stays."""
-        return [identity for identity in identities
-                if self._idle(identity, IDLE_AGE, tenant=tenant) and self.kb.archive_task(self.conn, identity)]
 
     def archive_stale(self, cards, note, idle_age):
         """Archive idle tasks whose sources closed, with a note on each task.
@@ -659,8 +654,6 @@ def main():
                 elif request['op'] == 'finish':
                     result = {'ok': board.finish(request['id'], request['run_id'], request['state'], request['summary'],
                                                  request.get('error_code'))}
-                elif request['op'] == 'archive_idle':
-                    result = {'archived': board.archive_idle(request['tenant'], request['ids'])}
                 elif request['op'] == 'archive_stale':
                     result = {'archived': board.archive_stale(request['cards'], request['note'], request['idle_age'])}
                 elif request['op'] == 'archive_settled':

@@ -78,13 +78,12 @@ def fixture():
                         kind='pr' if pr else 'work', title=' '.join(rng.choice(WORDS) for _ in range(6)).capitalize(),
                         status='merged' if pr else 'completed', preview='', created_at=task['created_at'],
                         observed_at=task['created_at'], work_state='completed', activity_state='completed', activity='Completed',
-                        activity_observed_at=task['created_at'], completion_evidence=reply(rng)[:rng.choice((20, 600))])
+                        completion_evidence=reply(rng)[:rng.choice((20, 600))])
         if pr:
             artifact.update(url=f'https://github.com/example/repo/pull/{index}', pr_state='merged', draft=False,
                             checked_at=task['created_at'], head_sha=f'{index:040x}')
         else:
-            artifact.update(url=None, native_task_id=f't_{index}', activity_bot_id=task['bot_id'],
-                            completion_condition=artifact['title'], native_diagnostics=[])
+            artifact.update(url=None, activity_bot_id=task['bot_id'], completion_condition=artifact['title'])
         artifacts.append(artifact)
     routines = [dict(id=f'routine-{index}', bot_id=bots[index % len(bots)]['id'], name=f'Routine {index}',
                      prompt=reply(rng)[:1400], cron='0 9 * * *', timezone='UTC', enabled=True,
@@ -149,8 +148,7 @@ def main():
                             clock['cursor'] += 1
                             card = dict(data['artifacts'][clock['cursor'] % 1044], observed_at=stamp(datetime.now(timezone.utc)))
                             self.send(dict(after=after, cursor=clock['cursor'], server_time=card['observed_at'], bots=data['bots'],
-                                           tasks=[], messages=[], removed_messages=[], artifacts=[card], collection_deltas=True,
-                                           native_work_observed_at=card['observed_at']))
+                                           tasks=[], messages=[], removed_messages=[], artifacts=[card], collection_deltas=True))
                             return
                 self.send(dict(after=after, cursor=max(after, clock['cursor']), server_time=stamp(datetime.now(timezone.utc)),
                                collection_deltas=True))

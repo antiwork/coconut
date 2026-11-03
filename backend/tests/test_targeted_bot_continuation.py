@@ -415,10 +415,6 @@ class TargetedBotContinuationTests(unittest.TestCase):
         self.service._queue_work_recoveries()
         self.assertEqual(len(self.service._all('tasks')), before)
         self.assertEqual(self.service._get('tasks', receipt['task_id'])['status'], 'queued')
-        self.write('/v1/work/items/' + work['id'] + '/cancel', {})
-        self.assertEqual(self.service._get('tasks', receipt['task_id'])['status'], 'cancelled')
-        self.service._run_task(receipt['task_id'])
-        self.assertEqual(self.provider.starts, [])
 
     def test_completed_continuation_finishes_existing_automatic_work(self):
         previous, source = self.prepare()

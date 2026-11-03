@@ -191,11 +191,6 @@ class PRReviewTests(unittest.TestCase):
         self.assertEqual(task['status'], 'queued')
         self.assertEqual(task['_pr_review']['pr_state'], 'closed')
 
-    def test_external_close_preserves_cancelled_work(self):
-        self.write('/v1/work/items/' + self.artifact_id + '/cancel', {})
-        self.green(pr_state='closed', checks_state='unknown')
-        self.assertEqual(self.service._get('tasks', self.child_id)['status'], 'cancelled')
-
     def test_terminal_observation_keeps_completed_native_outcome_closed(self):
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -452,23 +447,6 @@ class PRReviewTests(unittest.TestCase):
         self.assertEqual(self.service._get('artifacts', self.artifact_id)['_review_task_id'], owner['id'])
         row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == self.artifact_id)
         self.assertIn(execution, [t['id'] for t in row['work_attempts']])
-
-    def test_completed_resumed_pr_does_not_restore_its_cancelled_predecessor(self):
-        owner = self.service._get('tasks', self.child_id)
-        self.service._ensure_execution_session(owner)
-        self.write('/v1/work/items/' + self.artifact_id + '/cancel', {})
-        self.write('/v1/work/items/' + self.artifact_id + '/resume', {})
-        artifact = self.service._get('artifacts', self.artifact_id)
-        task = self.service._get('tasks', artifact['_review_task_id'])
-        task.update(status='working', _conversation_epoch=self.service._setting('conversation_epoch'))
-        self.service._put('tasks', task)
-        self.service._register_pr_artifact(task['id'], dict(url=URL, activity='Waiting for checks', activity_state='waiting'))
-        task['status'] = 'completed'
-        self.service._put('tasks', task)
-        row = next(a for a in self.service.snapshot()['artifacts'] if a['id'] == self.artifact_id)
-        self.assertEqual(row['work_state'], 'waiting')
-        self.assertEqual(row['activity'], 'Review complete')
-        self.assertNotIn(owner['id'], [t['id'] for t in row['work_attempts']])
 
     def test_correction_keeps_ownership_when_coordinator_also_tracks_the_pr(self):
         parent = next(t for t in self.service._all('tasks') if t['bot_id'] == self.desk['id'] and not t.get('_is_return'))

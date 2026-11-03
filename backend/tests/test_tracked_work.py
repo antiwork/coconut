@@ -72,23 +72,6 @@ class TrackedWorkTests(unittest.TestCase):
         self.assertEqual(self.row()['activity'], 'Needs recovery')
         self.assertNotEqual(self.row()['status'], 'completed')
 
-    def test_completion_dismissal_and_undo_persist(self):
-        item = self.track(status='completed', activity='Export saved', completion_evidence='Read the saved export; all records are present.')
-        path = f'/v1/work/items/{item["id"]}/dismiss'
-        self.write('POST', path, dict(dismissal_id='first'))
-        self.assertEqual(self.row()['work_dismissal_id'], 'first')
-        self.write('POST', path, dict(dismissal_id='second'))
-        with self.assertRaises(ServiceError):
-            self.write('POST', path, dict(dismissal_id='first', undo=True))
-        self.write('POST', path, dict(dismissal_id='second', undo=True))
-        self.assertIsNone(self.row()['work_dismissal_id'])
-        self.assertEqual(self.row()['status'], 'completed')
-
-    def test_active_work_cannot_be_dismissed(self):
-        item = self.track()
-        with self.assertRaises(ServiceError):
-            self.write('POST', f'/v1/work/items/{item["id"]}/dismiss', dict(dismissal_id='one'))
-
     def test_invalid_input_does_not_create_item(self):
         for fields in [dict(status='merged'), dict(activity=''), dict(key='bad key'), dict(title='a\nb'), dict(activity='a'*81)]:
             with self.assertRaises(ServiceError): self.track(**fields)
@@ -103,12 +86,6 @@ class TrackedWorkTests(unittest.TestCase):
         self.task = original
         with self.assertRaises(ServiceError): self.track(status='completed')
         self.assertEqual(self.service._get('artifacts', item['id'])['activity'], 'Saving the export')
-
-    def test_generic_dismissal_with_prs_in_the_same_list(self):
-        item = self.track(status='completed', activity='Export saved', completion_evidence='Read the saved export; all records are present.')
-        self.service._register_pr_artifact(self.task['id'], dict(url='https://github.com/example/project/pull/42'))
-        result = self.write('POST', f'/v1/work/items/{item["id"]}/dismiss', dict(dismissal_id='one'))
-        self.assertTrue(result['ok'])
 
 
 class DelegatedTrackedWorkTests(unittest.TestCase):

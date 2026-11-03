@@ -55,13 +55,6 @@ class WorkServiceTests(PRServiceTests):
         self.service.refresh_pull_requests()
         self.assertEqual(len(self.tracker.urls), 2)
 
-    def test_manual_refresh_is_coalesced(self):
-        self.write('POST', '/v1/work/refresh', {})
-        self.assertTrue(self.service.pr_refresh_requested.is_set())
-        self.service.pr_refresh_requested.clear()
-        self.write('POST', '/v1/work/refresh', {})
-        self.assertFalse(self.service.pr_refresh_requested.is_set())
-
 
 class FollowPRTests(PRServiceTests):
     def test_explicit_follow_refreshes_a_reopened_pr(self):

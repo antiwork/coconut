@@ -104,6 +104,17 @@ class ServiceRestartTests(unittest.TestCase):
         self.service.poll_service_drain()
         self.assertTrue(self.service.restart_pending)
 
+    def test_startup_ends_an_open_checkout_recovery_of_an_earlier_version(self):
+        with self.service.transaction():
+            self.service._put('workspace_recoveries', dict(id='checkout', state='held', merge_commit='a' * 40,
+                                                           request={}, created_at='2026-10-01T00:00:00Z'))
+        self.service.close()
+        self.service = Service(self.temp.name, FixtureProvider(self.temp.name), start_workers=False)
+        receipt = self.service._get('workspace_recoveries', 'checkout')
+        self.assertEqual((receipt['state'], receipt['error']), ('superseded', 'Checkout recovery was removed.'))
+        self.assertFalse(self.service._workspace_recovery_hold)
+        self.assertFalse(self.service.restart_pending)
+
     def test_the_drain_waits_for_an_uncertain_dispatch(self):
         request, drained = self.drain_files()
         request.write_text(str(time.time() + 60))

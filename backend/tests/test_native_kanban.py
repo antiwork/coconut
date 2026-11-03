@@ -2705,10 +2705,6 @@ assert started == [identities['followup']], started
         self.provider.release.clear()
         self.settle(lambda: len(self.provider.started) == 2)
         self.assertEqual(set(self.provider.started), {t['id'] for t in tasks[:2]})
-        with self.service.lock:
-            positions = self.service._queue_positions({t['id']: self.service._get('tasks', t['id']) for t in tasks}, time.time())
-        self.assertEqual(positions[tasks[2]['id']], 1)
-        self.assertEqual(positions[tasks[3]['id']], 2)
         cancelled = self.service._get('tasks', tasks[2]['id'])
         with self.service.transaction():
             cancelled['status'] = 'cancelled'

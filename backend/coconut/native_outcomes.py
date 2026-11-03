@@ -1824,8 +1824,6 @@ class NativeOutcomes:
         self._event('task.updated', self._public(task), task['bot_id'], task['id'])
 
     def _native_work_view(self, artifacts):
-        from datetime import datetime, timezone
-        timestamp = datetime.now(timezone.utc)
         groups = {}
         pending_decisions = None
         for item in artifacts:
@@ -1837,17 +1835,14 @@ class NativeOutcomes:
             if not root.get('_native_outcome_id'):
                 terminal = self._retained_terminal_work(root)
                 if terminal:
-                    item.update(terminal, activity_observed_at=timestamp.isoformat(), work_decision_id=None,
-                        work_next_step=None, work_queue_position=None,
-                        work_dismissal_id=self._setting('work.dismissed.' + self._work_identity(root)))
+                    item.update(terminal, work_decision_id=None, work_next_step=None)
                     if root['id'] != item['id'] or item.get('work_outcome_id'):
                         item['work_outcome_id'] = root['id']
                     if item['kind'] == 'work':
                         item['status'] = terminal['activity_state']
                 else:
                     item.update(work_state="waiting", activity_state="waiting", activity="Status unavailable",
-                        activity_observed_at=None, work_decision_id=None, work_next_step=None,
-                        work_queue_position=None, work_dependencies=[], work_attempts=[])
+                        work_decision_id=None, work_next_step=None, work_dependencies=[], work_attempts=[])
                     if pending_decisions is None:
                         pending_decisions = [json.loads(row[0]) for row in self.db.execute(
                             "SELECT data FROM decisions WHERE json_extract(data,'$.status')='pending' "
@@ -1869,8 +1864,8 @@ class NativeOutcomes:
         if groups:
             identities = {root['task_id'] for root, _ in groups.values()} - {None}
             natives = {root['_native_outcome_id'] for root, _ in groups.values()}
-            # The projection reads the root tasks and the tasks of these native outcomes. The queue reads only which
-            # Kanban tasks exist, so the other rows stay in SQLite.
+            # The projection reads the root tasks, and the tasks of these native outcomes among the tasks that Kanban
+            # knows.
             rows = self.db.execute(
                 "SELECT id,CASE WHEN id IN (SELECT value FROM json_each(?)) OR json_extract(data,'$._native_outcome_id') "
                 "IN (SELECT value FROM json_each(?)) THEN data END FROM tasks WHERE id IN (SELECT value FROM json_each(?))",
@@ -1900,7 +1895,6 @@ class NativeOutcomes:
                     root_id = self._work_outcome_artifact(linked)['id']
                 if root_id in groups:
                     reports.setdefault(root_id, []).append(linked or json.loads(row[2]))
-            positions = self._native_queue_positions({row[0] for row in rows}, timestamp.timestamp())
             # Index the native tasks and the attempts of each outcome once. A search of both lists for each outcome
             # took 1.2 s of a 1.9 s state read with 3,000 outcomes.
             natives, owners = {}, {}
@@ -1910,29 +1904,13 @@ class NativeOutcomes:
                 if task.get('_native_outcome_id'):
                     owners.setdefault(task['_native_outcome_id'], set()).add(task['id'])
             for root, peers in groups.values():
-                outcome = self._native_outcome_projection(root, tasks, [], decisions, timestamp, positions,
+                outcome = self._native_outcome_projection(root, tasks, decisions,
                     peers + reports.get(root['id'], []), natives=natives, owners=owners)
                 for item in peers:
                     item.update(outcome)
                     if item['kind'] == 'work':
                         item['status'] = outcome['activity_state']
-                    item['work_dismissal_id'] = self._setting('work.dismissed.' + self._work_identity(root))
         return artifacts
-
-    def archive_idle_work(self, bot_id, data):
-        """Archive Hermes tasks of one bot that wait for someone to act, after the person confirms them on the phone."""
-        from .service import ServiceError
-        identities = data.get('native_task_ids') if isinstance(data, dict) else None
-        if (not isinstance(identities, list) or not identities or len(identities) > 500
-                or not all(isinstance(identity, str) and identity for identity in identities)):
-            raise ServiceError(400, 'List the idle tasks to archive.')
-        if not self.kanban:
-            raise ServiceError(409, 'Hermes Kanban is not available.')
-        with self.lock:
-            self._get('bots', bot_id)
-        archived = self.kanban.call({'op': 'archive_idle', 'tenant': bot_id, 'ids': identities})['archived']
-        self._close_archived_cards(archived, 'Idle task archive')
-        return {'archived': archived}
 
     def _close_archived_cards(self, archived, name):
         """Read the board again after an archive. An archived task asks nothing more, so its open cards close, as
@@ -1953,8 +1931,7 @@ class NativeOutcomes:
                         self._event('decision.updated', self._public(decision), decision['bot_id'], decision['task_id'])
         self._publish_kanban_changes()
 
-    def _native_outcome_projection(self, item, tasks, records, decisions, timestamp, queue_positions, peers=None, *,
-                                   natives=None, owners=None):
+    def _native_outcome_projection(self, item, tasks, decisions, peers=None, *, natives=None, owners=None):
         """natives maps each native task ID to its task, and owners maps each outcome to the IDs of its tasks.
 
         A caller that projects many outcomes builds both maps once (see _native_work_view).
@@ -2001,19 +1978,12 @@ class NativeOutcomes:
         if state == 'queued' and (owner.get('_respawn_guard') or {}).get('notice'):
             # Hermes has held this ready work for an hour (kanban_scheduler._note_respawn_guards).
             activity = owner['_respawn_guard']['notice']
-        return dict(title=native['title'] if native else item['title'], native_task_id=item['_native_outcome_id'],
-            native_status=status, native_block_kind=native.get('block_kind') if native else None,
-            progress_observed_at=native.get('progress_at') if native else None,
+        return dict(title=native['title'] if native else item['title'],
             work_state=state, activity=activity, work_next_step='Review decision' if state == 'needs_decision' else None,
             work_decision_id=pending[0]['id'] if state == 'needs_decision' else None,
-            work_queue_position=(queue_positions or {}).get(owner.get('id')) if state == 'queued' else None,
             completion_condition=item.get('completion_condition') or item['title'],
             completion_evidence=native.get('outcome_summary') if native and state == 'completed' else None,
             work_attempts=[dict(id=identity, state=tasks[identity]['status']) for identity in sorted(owners) if identity in tasks],
             work_dependencies=[dict(id=parent['id'], title=parent['title'], state=parent['status']) for parent in dependencies],
             activity_bot_id=owner.get('bot_id', item['bot_id']),
-            activity_observed_at=self.kanban.observed_at if self.kanban else None,
-            native_last_activity_at=(datetime.fromtimestamp(native['last_activity_at'], timezone.utc).isoformat().replace('+00:00', 'Z')
-                                     if native and native.get('last_activity_at') else None),
-            native_diagnostics=native.get('diagnostics', []) if native and not terminal else [],
             activity_state={'needs_decision': 'waiting', 'queued': 'waiting'}.get(state, state))

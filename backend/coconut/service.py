@@ -243,7 +243,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._pending_decision_sources = set()
         self._ready_decision_sources = None
         self.pr_follow_lock = threading.Lock()
-        self.pr_last_request = float('-inf')
         self.lock = threading.RLock()
         self.dispatch_gate = threading.RLock()
         self.model_settings_lock = threading.Lock()
@@ -394,21 +393,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._put('bots', bot)
             self.db.execute('DROP TABLE IF EXISTS policies')
             self.db.execute('DROP TABLE IF EXISTS preference_receipts')
-        try:
-            checkout_was_held = getattr(self, '_workspace_recovery_hold', False)
-            self._admit_checkout_recovery()
-            if checkout_was_held and not self._workspace_recovery_hold:
-                if hasattr(self.provider, 'migrate_model_default'):
-                    self.provider.migrate_model_default(self._setting('model'), self._setting('base_url'))
-                elif hasattr(self.provider, 'configure') and self._setting('model'):
-                    self.provider.configure(model=self._setting('model'), base_url=self._setting('base_url') or None)
-        except BaseException:
-            if self.kanban:
-                self.kanban.close()
-            self.db.close()
-            fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
-            self.process_lock.close()
-            raise
         try:
             self.rescan_profiles()
         except Exception:
@@ -1045,7 +1029,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 work_started = time.perf_counter()
                 state['artifacts'] = [self._public(a) for a in self._work_projection([self._get('artifacts', a['id']) for a in state['artifacts']])]
                 if content_only and recent_work:
-                    state['artifacts'], state['older_work_bot_ids'] = self._current_work(state['artifacts'], state['messages'])
+                    state['artifacts'] = self._current_work(state['artifacts'], state['messages'])
                 work_finished = time.perf_counter()
                 if content_only:
                     referenced = {o.get('task_id') for name in ('messages', 'decisions', 'artifacts') for o in state[name]}
@@ -1149,14 +1133,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         if method == 'DELETE' and path.startswith('/v1/documents/') and path.count('/') == 3:
             # A delete is the same each time, so it needs no saved response.
             return self.delete_document(path.rsplit('/', 1)[1])
-        if method == 'POST' and path == '/v1/work/refresh':
-            with self.lock:
-                if time.monotonic() - self.pr_last_request >= 10:
-                    self.pr_last_request = time.monotonic()
-                    self.pr_refresh_requested.set()
-            return {'ok': True}
-        if method == 'POST' and path.startswith('/v1/bots/') and path.endswith('/work/archive-idle') and path.count('/') == 5:
-            return self.archive_idle_work(path.split('/')[3], data)
         if method == 'POST' and path.startswith('/v1/settings/google/'):
             return self.google_connection(path.rsplit('/', 1)[1], data, device_id, key)
         if method == 'PUT' and path == '/v1/settings/api-fallback' and hasattr(self.provider, 'native_settings'):
@@ -1523,12 +1499,6 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     def _write(self, method: str, parts: list[str], data: dict, device: str, callbacks: list) -> dict:
         if not isinstance(data, dict) or not parts or parts[0] != 'v1':
             raise ServiceError(400, 'Send a JSON object to a v1 route.')
-        if method == 'POST' and len(parts) == 5 and parts[:2] == ['v1', 'work'] and parts[2] in ('pull-requests', 'items') and parts[4] == 'dismiss':
-            return self._dismiss_work(parts[3], data)
-        if method == 'POST' and len(parts) == 5 and parts[:3] == ['v1', 'work', 'items'] and parts[4] == 'cancel':
-            return self._cancel_work(parts[3], callbacks)
-        if method == 'POST' and len(parts) == 5 and parts[:3] == ['v1', 'work', 'items'] and parts[4] == 'resume':
-            return self._resume_work(parts[3])
         if parts == ['v1', 'settings', 'work-capacity'] and method == 'PUT':
             if set(data) != {'limit'}:
                 raise ServiceError(400, 'Specify a work limit, or null for Automatic.')

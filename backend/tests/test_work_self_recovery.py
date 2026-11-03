@@ -43,7 +43,6 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         self.assertEqual(task['_self_recovery']['unknown_tools'][0]['action']['arguments']['command'], 'git push')
         self.assertEqual(self.sync()[0]['id'], item['id'])
         self.assertEqual(self.sync()[0]['work_state'], 'queued')
-        self.assertEqual(self.sync()[0]['work_queue_position'], 1)
         count = len(self.service._all('tasks'))
         self.recover()
         self.assertEqual(len(self.service._all('tasks')), count)
@@ -75,13 +74,6 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         self.assertEqual(task['_self_recovery']['previous_status'], 'completed')
         self.assertEqual(self.sync()[0]['work_state'], 'queued')
         self.assertEqual(task['_self_recovery']['work'][0]['key'], 'task-' + self.task['id'])
-
-    def test_cancelled_work_never_recovers(self):
-        item = self.stranded()
-        self.write('POST', '/v1/work/items/' + item['id'] + '/cancel', {})
-        count = len(self.service._all('tasks'))
-        self.recover()
-        self.assertEqual(len(self.service._all('tasks')), count)
 
     def test_verified_completed_work_never_recovers(self):
         self.stranded()
@@ -180,7 +172,6 @@ class WorkSelfRecoveryTests(unittest.TestCase):
         self.assertTrue(290 < delay <= 300)
         row = self.sync()[0]
         self.assertEqual(row['work_state'], 'waiting')
-        self.assertIsNone(row['work_queue_position'])
         self.assertEqual(self.service._all('decisions'), [])
 
     def test_human_reply_resumes_scheduled_check_immediately(self):

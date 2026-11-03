@@ -2,7 +2,6 @@
 import json
 from datetime import datetime, timezone
 from collections import deque
-from uuid import uuid4
 
 PAUSE_DECISION_STATES = ('approved', 'rejected', 'modified', 'replied', 'executed', 'failed')
 
@@ -627,14 +626,7 @@ class WorkStatus:
         return sorted(urls)
 
     def _work_projection(self, artifacts):
-        self._native_work_view(artifacts)
-        for item in artifacts:
-            item.pop('checkout_recovery_stopped', None)
-            if (item['kind'] == 'work' and item.get('work_outcome_id') in (None, item['id'])
-                    and self._work_identity(item) == 'work:' + item['id']
-                    and self._setting('work.cancelled.work:' + item['id'])):
-                item['checkout_recovery_stopped'] = True
-        return artifacts
+        return self._native_work_view(artifacts)
 
     def _tracked_pr_observations(self, task, urls):
         import json
@@ -705,107 +697,6 @@ class WorkStatus:
         outcome = self._work_outcome_artifact(item)
         return 'work:' + outcome['id'] if outcome['kind'] == 'work' else outcome['url'].lower()
 
-    def _cancel_work(self, artifact_id, callbacks):
-        from .service import ServiceError, encoded, now
-        item = self._work_outcome_artifact(self._get('artifacts', artifact_id))
-        if item['kind'] not in ('work', 'pr'):
-            raise ServiceError(400, 'This item does not appear in Work.')
-        identity = self._work_identity(item)
-        if self._setting('work.cancelled.' + identity):
-            self.db.execute('UPDATE settings SET value=? WHERE key=?',
-                            (encoded(str(uuid4())), 'work.cancelled.' + identity))
-            peers = [a for a in self._all('artifacts') if a['kind'] in ('pr', 'work')
-                     and self._work_identity(a) == identity]
-            return dict(ok=True, artifacts=[self._public(a) for a in self._work_projection(peers) if not a.get('_hidden')], cursor=self._cursor())
-        projected = self._work_projection([dict(item)])[0]
-        if projected['work_state'] in ('completed', 'cancelled'):
-            raise ServiceError(409, 'This work has already finished.')
-        tasks = {t['id']: t for t in self._all('tasks')}
-        peers = [a for a in self._all('artifacts') if a['kind'] in ('pr', 'work')
-                 and self._work_identity(a) == identity]
-        owned = {p.get(field) for p in peers for field in
-                 (('task_id',) if p['kind'] == 'work' else ('_review_task_id', '_activity_task_id'))} & tasks.keys()
-        checks = {a.get('_external_wait_task_id') for a in self._all('artifacts')
-                  if a['kind'] == 'work' and (self._work_identity(a) == identity or a.get('_work_parent_id') == item['id'])}
-        owned |= checks & tasks.keys()
-        owned |= {t['id'] for t in tasks.values() if t.get('_work_context_id') in {p['id'] for p in peers}}
-        owned |= {tasks[i]['_assignment_task_id'] for i in list(owned)
-                  if tasks[i].get('_assignment_task_id') in tasks}
-        proposals = self._proposal_work_links(tasks)
-        while True:
-            # Wait targets can belong to other work. Only follow owned attempts.
-            expanded = owned | {t['id'] for t in tasks.values()
-                if any(t.get(field) in owned for field in ('source_task_id', '_assignment_task_id',
-                                                          '_requester_reply_task_id', '_relay_callback_owner'))}
-            expanded |= {target for source in owned for target in proposals.get(source, set())}
-            expanded |= {continued['id'] for source in owned
-                         if (continued := self._continued_work_task(tasks[source], tasks))}
-            if expanded == owned:
-                break
-            owned = expanded
-        self.db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',
-                        ('work.cancelled.' + identity, encoded(now())))
-        others = [a for a in self._all('artifacts') if a['kind'] in ('work', 'pr') and not a.get('_hidden')
-                  and self._work_identity(a) != identity
-                  and not self._setting('work.cancelled.' + self._work_identity(a))]
-        # Native intake routines serve other sources too. Steer the cancelled outcome only.
-        shared = {i for i in checks & tasks.keys() if self._assignment(tasks[i]).get('_native_job')}
-        shared |= {self._assignment(tasks[i])['id'] for i in list(shared)}
-        records = self._pending_completion_receipts()
-        for routine_task_id in list(shared):
-            shared.update(self._work_chain(tasks[routine_task_id], tasks, records, include_continuations=True))
-        for other in self._work_projection(others):
-            if other['work_state'] in ('completed', 'cancelled'):
-                continue
-            for field in ('task_id', '_review_task_id', '_activity_task_id', '_external_wait_task_id'):
-                root = tasks.get(other.get(field))
-                if root:
-                    shared.update(self._work_chain(root, tasks, records, include_continuations=True))
-                    root = tasks.get(root.get('_assignment_task_id'), root)
-                    shared.update(self._work_chain(root, tasks, records, include_continuations=True))
-        for task_id in sorted(owned):
-            task = tasks[task_id]
-            if task_id in shared:
-                if task['status'] in self.ACTIVE:
-                    text = f"Stop work on {item['title']} (Work ID {item['id']}). Continue the other requested work."
-                    self._message(task['bot_id'], text, task_id=task_id, role='user', human_authored=True)
-                    task.setdefault('_steering', []).append(text)
-                    self._put('tasks', task)
-                continue
-            self._cancel_one(task, callbacks, include_finished=True)
-        for decision in self._all('decisions'):
-            url = (decision.get('merge_pr_url') or '').lower()
-            exact = bool(url) and any(p['kind'] == 'pr' and p['url'].lower() == url for p in peers)
-            # Unlinked questions on a shared task need a fresh scope after cancellation.
-            changed_scope = item['kind'] == 'work' and not url and decision['task_id'] in owned & shared
-            if decision['status'] != 'pending' or not (exact or changed_scope):
-                continue
-            resolution = 'work_scope_changed' if changed_scope else 'cancelled'
-            response = (f"The person cancelled {item['title']}. Continue the other requested work. "
-                        "This question is withdrawn because its work scope is unclear. Ask a new question only if the remaining work still needs approval."
-                        if changed_scope else 'The person cancelled this work. Do not execute its action. Continue only other requested work.')
-            decision.update(status='resolved', resolution=resolution, resolution_context=response,
-                            outcome='Work scope changed.' if changed_scope else 'Work cancelled.',
-                            resolved_at=now(), revision=decision['revision'] + 1)
-            self._put('decisions', decision)
-            if decision.get('_receipt_id'):
-                record = self._get('native_receipts', decision['_receipt_id'])
-                if record['state'] == 'awaiting_answer':
-                    record.update(state='completed', completed_at=now(), result=encoded({
-                        'response': response, 'resolution': resolution, 'url': item.get('url')}))
-                    self._put('native_receipts', record)
-            task = self._get('tasks', decision['task_id'])
-            self._event('decision.updated', self._public(decision), task['bot_id'], task['id'])
-            if task['status'] == 'needs_you' and not any(d['status'] == 'pending' and d['task_id'] == task['id'] for d in self._all('decisions')):
-                task.update(status='queued', _resume_decision=decision['id'], updated_at=now())
-                self._put('tasks', task)
-                self._event('task.updated', self._public(task), task['bot_id'], task['id'])
-                self._refresh_bot(task['bot_id'])
-        projected = self._work_projection([dict(peer) for peer in peers])
-        for peer in projected:
-            self._event('artifact.updated', peer, peer['bot_id'], peer.get('task_id'))
-        return dict(ok=True, artifacts=[self._public(peer) for peer in projected if not peer.get('_hidden')], cursor=self._cursor())
-
     def _resume_pr_reviews(self, item, task, *, reset_heads=True):
         from .service import uid
         groups = {}
@@ -827,55 +718,3 @@ class WorkStatus:
                     peer['_reviewed_heads'] = []
                     peer.pop('_reviewed_head', None)
                 self._put('artifacts', peer)
-
-    def _resume_work(self, artifact_id):
-        from .service import ServiceError, now
-        item = self._work_outcome_artifact(self._get('artifacts', artifact_id))
-        if item['kind'] not in ('work', 'pr'):
-            raise ServiceError(400, 'This item does not appear in Work.')
-        key = 'work.cancelled.' + self._work_identity(item)
-        if not self._setting(key) and self._work_projection([dict(item)])[0]['work_state'] != 'cancelled':
-            return {'ok': True}
-        bot = self._get('bots', item['bot_id'])
-        task = self._send(bot, dict(text=f"Resume {item['title']}. Inspect saved results before repeating any action. Keep the existing approval scope.", mode='queue'), work_item=item)
-        task = self._get('tasks', task['id'])
-        task['_conversation_epoch'] = self._setting('conversation_epoch')
-        self._put('tasks', task)
-        self.db.execute('DELETE FROM settings WHERE key=?', (key,))
-        self.db.execute('DELETE FROM settings WHERE key=?', ('work.dismissed.' + self._work_identity(item),))
-        if item['kind'] == 'work':
-            self._carry_work_history(item, dict(item))
-            item.update(task_id=task['id'], status='waiting', activity='Queued', observed_at=now(), _work_resuming=True)
-            self._put('artifacts', item)
-        self._resume_pr_reviews(item, task)
-        item = self._get('artifacts', item['id'])
-        self._event('artifact.updated', self._work_projection([dict(item)])[0], item['bot_id'], task['id'])
-        return {'ok': True}
-
-    def _dismiss_work(self, artifact_id, data):
-        from .service import ServiceError, encoded, require_text
-        artifact = self._work_outcome_artifact(self._get('artifacts', artifact_id))
-        if artifact['kind'] not in ('pr', 'work'):
-            raise ServiceError(400, 'This item does not appear in Work.')
-        identity = self._work_identity(artifact)
-        key = 'work.dismissed.' + identity
-        token = require_text(data, 'dismissal_id', 80)
-        undo = data.get('undo') is True
-        current = self._setting(key)
-        if undo:
-            if current and current != token:
-                raise ServiceError(409, 'A newer dismissal replaced this action.')
-            self.db.execute('DELETE FROM settings WHERE key=?', (key,))
-        else:
-            if artifact['kind'] == 'work':
-                peers = self._work_projection([artifact])
-            else:
-                peers = [a for a in self._all('artifacts') if a['kind'] == 'pr' and a['url'].lower() == artifact['url'].lower()]
-            latest = max(peers, key=lambda a: (a.get('observed_at') or a['created_at'], a.get('checked_at') or a['created_at'], a['id']))
-            finished = latest['status'] in ('completed', 'cancelled') if artifact['kind'] == 'work' else (latest.get('pr_state') in ('merged', 'closed') or latest['status'] == 'merged')
-            finished = finished or bool(self._setting('work.cancelled.' + self._work_identity(artifact)))
-            if not finished:
-                raise ServiceError(409, 'Only completed work can be dismissed.')
-            self.db.execute('INSERT INTO settings(key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', (key, encoded(token)))
-        self._event('work.updated', {'url': artifact['url'], 'id': artifact['id']})
-        return {'ok': True}

@@ -213,7 +213,7 @@ class LegacyWorkSync:
             records = self._work_receipts()
             handled = set()
             for row in projected:
-                if row.get('work_state') != 'needs_recovery' or row.get('work_dismissal_id'):
+                if row.get('work_state') != 'needs_recovery':
                     continue
                 item = canonical[row['id']]
                 if item is None:
@@ -234,7 +234,7 @@ class LegacyWorkSync:
                     continue
                 # One verification turn owns all affected outcomes from this assignment.
                 affected = [a for a in items if any(p['id'] == a['id'] and p.get('work_state') == 'needs_recovery'
-                            and not p.get('work_dismissal_id') for p in projected)
+                            for p in projected)
                             and canonical[a['id']] is not None
                             and canonical[a['id']].get('_review_task_id' if canonical[a['id']]['kind'] == 'pr' else 'task_id') == owner['id']]
                 handled.add(owner['id'])
@@ -281,7 +281,7 @@ class LegacyWorkSync:
                 self._event('work.recovery_queued', dict(task_id=task['id'], previous_task_id=owner['id'],
                     work_ids=[a['id'] for a in affected]), bot['id'], task['id'])
 
-NAMES = ('_work_projection', '_work_outcome', '_project_work_outcomes', '_project_work_outcomes_inner', '_work_live', '_queue_positions', '_queue_work_recoveries', '_work_title', '_sync_followup_work', '_resume_tracked_work', '_automatic_work_state', '_sync_automatic_work')
+NAMES = ('_work_projection', '_work_outcome', '_project_work_outcomes', '_project_work_outcomes_inner', '_work_live', '_queue_work_recoveries', '_work_title', '_sync_followup_work', '_resume_tracked_work', '_automatic_work_state', '_sync_automatic_work')
 
 
 def scope():

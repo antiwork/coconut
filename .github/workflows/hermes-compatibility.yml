@@ -162,7 +162,7 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_independent_technical_work.py 2> .runtime/independent-technical-work.log || { cat .runtime/independent-technical-work.log; exit 1; }
           cat .runtime/independent-technical-work.log
           grep -qx 'OK' .runtime/independent-technical-work.log # The real review card claim and finish checks must run, not skip.
-          grep -Eq '^Ran 83 tests in ' .runtime/independent-technical-work.log # Includes the declined merge lane on a real triage card, the held merge lane on a done card's successor, two open delegated PRs of one Work that continue together under the lane, and a lane turn through the gateway.
+          grep -Eq '^Ran 81 tests in ' .runtime/independent-technical-work.log # Includes the declined merge lane on a real triage card, the held merge lane on a done card's successor, two open delegated PRs of one Work that continue together under the lane, and a lane turn through the gateway.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_delegated_report_continuation.py 2> .runtime/delegated-report-continuation.log || { cat .runtime/delegated-report-continuation.log; exit 1; }
           cat .runtime/delegated-report-continuation.log
           grep -qx 'OK' .runtime/delegated-report-continuation.log # The native dispatch checks must run, not skip.
