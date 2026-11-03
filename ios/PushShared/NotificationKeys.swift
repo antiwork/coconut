@@ -89,7 +89,7 @@ enum NotificationKeys {
 
     private static func query(account: String) -> [String: Any] {
         var result: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "com.gumroad.coconut.push", kSecAttrAccount as String: account]
+            kSecAttrService as String: TestIsolation.name("com.gumroad.coconut.push"), kSecAttrAccount as String: account]
         if let group = Bundle.main.object(forInfoDictionaryKey: "CoconutPushKeychainGroup") as? String, !group.isEmpty {
             result[kSecAttrAccessGroup as String] = group
         }

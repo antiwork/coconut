@@ -2431,7 +2431,7 @@ private struct LearningResponse: Decodable, Sendable { let groups: [LearningGrou
 
 enum ProtectedCache {
     private static var directory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Coconut", isDirectory: true)
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(TestIsolation.name("Coconut"), isDirectory: true)
     }
 
     static func read<T: Decodable>(_ name: String, in location: URL? = nil) -> T? {

@@ -158,6 +158,7 @@
 		8A440AF112FF848BDA618795 /* MessagePhotos.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3877D84229483E68BD05E5F0 /* MessagePhotos.swift */; };
 		8AA26EBBA0C273AB52A0AE74 /* PreviewDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3A43A7E155EAC1270A61B25 /* PreviewDiagnostics.swift */; };
 		8CE9F0466AB8D6B1E352CD5B /* SettingsStyle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22ECF8C307532AF3869C15F7 /* SettingsStyle.swift */; };
+		8D5D8D51030FD26735E611F5 /* TestIsolation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE7D6BDE77246AF7A1CF43CD /* TestIsolation.swift */; };
 		8DEBB58B2324219CE7F2058E /* PushRelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A60CFE7EAB28FA54EB0D2203 /* PushRelayClient.swift */; };
 		8F6AD2841A698C058260615B /* NativeTaskDetailsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3CE294DF92B7E6D7D4276F4 /* NativeTaskDetailsView.swift */; };
 		8F7CAE9D3062FF3E2619EF8E /* MCPSettingsFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53C542B24868FF4FB0A86C9E /* MCPSettingsFlowTests.swift */; };
@@ -209,6 +210,7 @@
 		B8412C94199949B9ACE8F165 /* Routes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA07287D8E8B821C1C945D80 /* Routes.swift */; };
 		BA924B94BF0BB83AFD6D66D7 /* ConversationSendRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48C8A0078FDB1346414F800 /* ConversationSendRecoveryTests.swift */; };
 		BBDAE9B5F0E31E9B16121672 /* Bloub-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 52DB3E8483A7BFF7DE542101 /* Bloub-LICENSE.txt */; };
+		BCE599B60805DA307A9878FA /* TestIsolation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE7D6BDE77246AF7A1CF43CD /* TestIsolation.swift */; };
 		BD247504877389A3D2262E1A /* IncrementalSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 547FF45685223422176EDA75 /* IncrementalSyncTests.swift */; };
 		BE17AA8A5AFFA3A3D953207A /* MessageDraftView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78004F47AACBEB462A36AA3B /* MessageDraftView.swift */; };
 		BEB25352C6CB0933FC1A23E6 /* InboxPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 006EED726F87508904580908 /* InboxPresentationTests.swift */; };
@@ -232,6 +234,7 @@
 		CF2134EE2AC9BDD89514BF51 /* NotificationFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2D8BD1F0E75656ABA3C23B6 /* NotificationFlowTests.swift */; };
 		CFC4AE392E006130F6620810 /* NotificationPlan.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36D624FBCAF3F69D37E5FA38 /* NotificationPlan.swift */; };
 		D000ED0488731487AF58520B /* NoiseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F931B5378D19A7ACFDB37485 /* NoiseTests.swift */; };
+		D064CD6B589C01ABE7F02C1E /* TestIsolation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE7D6BDE77246AF7A1CF43CD /* TestIsolation.swift */; };
 		D15329D70078E66B645B9E53 /* OlderWorkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65998F1A751092E4783A0954 /* OlderWorkTests.swift */; };
 		D211684A74A593F1EAD7A983 /* SettingsViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */; };
 		D2708A2BEB37E361789502A5 /* StateUpdatesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9BA02796500592E76CC1993 /* StateUpdatesTests.swift */; };
@@ -476,6 +479,7 @@
 		D4BD9798275DFA5E79CC222A /* WorkTabReturnTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkTabReturnTests.swift; sourceTree = "<group>"; };
 		D5E828E2D51E827B95F08B22 /* NavigationRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationRecoveryTests.swift; sourceTree = "<group>"; };
 		DC18213B09F82C2500E4D504 /* PreviewState.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = PreviewState.json; sourceTree = "<group>"; };
+		DE7D6BDE77246AF7A1CF43CD /* TestIsolation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestIsolation.swift; sourceTree = "<group>"; };
 		DF7BF2FB5CEF695737612D1D /* ConnectionBanners.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionBanners.swift; sourceTree = "<group>"; };
 		E047A026D090ABDE156F4AAF /* StateUpdates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateUpdates.swift; sourceTree = "<group>"; };
 		E071D5849425BFD67FAEE846 /* DecisionInboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionInboxTests.swift; sourceTree = "<group>"; };
@@ -812,6 +816,7 @@
 				7CA9695EAB2F655862469B6C /* NotificationContent.swift */,
 				66C75106310254DAF919E136 /* NotificationKeys.swift */,
 				A3A43A7E155EAC1270A61B25 /* PreviewDiagnostics.swift */,
+				DE7D6BDE77246AF7A1CF43CD /* TestIsolation.swift */,
 			);
 			path = PushShared;
 			sourceTree = "<group>";
@@ -1170,6 +1175,7 @@
 				D9AC0C6E8EFDFAE1A3086D03 /* SettingsStyle.swift in Sources */,
 				D211684A74A593F1EAD7A983 /* SettingsViews.swift in Sources */,
 				19A96D695D5D2C1EBD30410F /* StateUpdates.swift in Sources */,
+				8D5D8D51030FD26735E611F5 /* TestIsolation.swift in Sources */,
 				41466C9D92D01AEF376C25A4 /* Theme.swift in Sources */,
 				2862A15C5D4911E05306B17D /* TrackedWorkItem.swift in Sources */,
 				23D58AF72A5F6729FA65344B /* TranscriptPresentation.swift in Sources */,
@@ -1239,6 +1245,7 @@
 				8CE9F0466AB8D6B1E352CD5B /* SettingsStyle.swift in Sources */,
 				F44E98A6DDB9163438280BAD /* SettingsViews.swift in Sources */,
 				0CE3FD694FA5FF40A3BE0B2B /* StateUpdates.swift in Sources */,
+				D064CD6B589C01ABE7F02C1E /* TestIsolation.swift in Sources */,
 				CA614F81435252679031DB1E /* Theme.swift in Sources */,
 				A10772E1B63E97E34CB37472 /* TrackedWorkItem.swift in Sources */,
 				99BD0D4F77E494CF715A751E /* TranscriptPresentation.swift in Sources */,
@@ -1256,6 +1263,7 @@
 				9B159D58013A3CFAD8D1C2C7 /* NotificationKeys.swift in Sources */,
 				DFEBABEA6463487DEAFD1A92 /* NotificationService.swift in Sources */,
 				CA600F0080EC075E89DB8547 /* PreviewDiagnostics.swift in Sources */,
+				BCE599B60805DA307A9878FA /* TestIsolation.swift in Sources */,
 				0E115E85F7147FB4EAF1109E /* push-envelope.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

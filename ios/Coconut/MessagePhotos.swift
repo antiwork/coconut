@@ -426,8 +426,13 @@ final class PhotoLoader: @unchecked Sendable {
 
     private static let largestDownload = 20 << 20
 
+    // The caches of an iPhone app are its own. A Mac app that has no sandbox shares the folder, so it uses a folder of
+    // its bundle there.
     private static let macFiles = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("MacPhotos", isDirectory: true)
+        #if os(macOS)
+        .appendingPathComponent(Bundle.main.bundleIdentifier ?? "com.gumroad.coconut.mac", isDirectory: true)
+        #endif
+        .appendingPathComponent(TestIsolation.name("MacPhotos"), isDirectory: true)
 
     /// Above 200 MB of Mac photos, the oldest used ones go until 150 MB are left, as a URL cache keeps its size.
     static func trimMacFiles(in folder: URL = macFiles, limit: Int = 200 << 20, target: Int = 150 << 20) {

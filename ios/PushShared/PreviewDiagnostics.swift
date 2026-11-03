@@ -70,7 +70,7 @@ enum PreviewDiagnostics {
     }
 
     private static func query(_ source: Source) -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: TestIsolation.name(service),
          kSecAttrAccount as String: source.rawValue]
     }
 
