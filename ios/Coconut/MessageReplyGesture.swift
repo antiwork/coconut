@@ -1,7 +1,7 @@
+// A swipe to reply is an iPhone gesture. A Mac uses the menu of a secondary click (ConversationView).
+#if os(iOS)
 import SwiftUI
-#if canImport(UIKit)
 import UIKit
-#endif
 
 struct MessageReplyGesture: UIGestureRecognizerRepresentable {
     let enabled: Bool
@@ -58,3 +58,4 @@ struct MessageReplyGesture: UIGestureRecognizerRepresentable {
         }
     }
 }
+#endif

@@ -527,7 +527,10 @@ struct MessageBubble: View {
             #else
             // A Mac shows the actions of a held message in the menu of a secondary click.
             .contextMenu {
-                if let onReply { Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() } }
+                // As the swipe and VoiceOver do, Reply shows only for a saved message, which a reply can quote.
+                if let onReply, store.messageReference(for: message) != nil {
+                    Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
+                }
                 Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(message.text) }
             }
             #endif
