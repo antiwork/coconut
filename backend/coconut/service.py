@@ -2392,8 +2392,12 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             followup = self._get('tasks', created['id'])
             followup['_shared_message_ids'] = [m['id'] for m in waiting]
             followup['_preference_source_ids'] = [m['id'] for m in waiting if m.get('_human_device_id')]
+            # The files that came with the messages go with them. The files of the card's turn stay with the card.
+            files = [a for a in task.get('_attachment_ids', []) if a not in task.get('_turn_attachment_ids', [])]
+            followup['_attachment_ids'] = list(dict.fromkeys(followup.get('_attachment_ids', []) + files))
             self._put('tasks', followup)
-            task.update(_steering=[], _live_messages={}, steering_status='continued', _continued_task_id=followup['id'])
+            task.update(_steering=[], _live_messages={}, steering_status='continued', _continued_task_id=followup['id'],
+                        _attachment_ids=[a for a in task.get('_attachment_ids', []) if a not in files])
             self._put('tasks', task)
             self._event('task.updated', self._public(task), task['conversation_bot_id'], task_id)
 
@@ -3519,6 +3523,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                             messages = messages[boundary + 1:]
                         task.update(_turn_message_ids=[m['id'] for m in messages], _turn_started_at=now(),
                                     _steering=[], _live_messages={}, _turn_preference_source_ids=list(task.get('_preference_source_ids', [])))
+                    # Text after the card of an earlier turn never shows with a later card.
+                    task.pop('_after_card', None)
+                    task.pop('_after_card_sealed', None)
                     self._record_direct_reply(task)
                     task.setdefault('_reaction_feedback', [] if task.get('_work_status_only') else list(bot.get('_pending_reactions', {}).values()))
                     task.setdefault('_turn_attachment_ids', list(task.get('_attachment_ids', [])))
@@ -3807,7 +3814,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             # A card of this turn paused the task. Its later text is kept, and shows at the end if it answers.
             with self.transaction():
                 task = self._get('tasks', task_id)
-                if task['status'] == 'needs_you':
+                # The person can answer the card before the turn ends. The task then waits for its next turn.
+                if task['status'] == 'needs_you' or (task['status'] != 'working' and '_after_card' in task):
                     if kind in card_followup.TEXT_KINDS:
                         card_followup.add(task, kind, payload)
                         self._put('tasks', task)

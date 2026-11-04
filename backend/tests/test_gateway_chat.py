@@ -738,6 +738,48 @@ class ServiceRoutingTests(unittest.TestCase):
                 self.assertEqual(self.read('tasks', task['id'])['status'], 'needs_you')
                 self.assertEqual(self.replies(task), shown)
 
+    def test_an_answer_after_a_card_shows_when_the_person_answered_the_card_first(self):
+        answer = ('The investigation of #4274 finished: the seller passed review because the check ran before the '
+                  'product page changed. The fix adds a second check at publish time, and it is merged.')
+        task = self.send('What happened to the investigation?')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        self.service.gateway_tool({'turn_id': turn, 'tool': 'ask', 'arguments': self.CARD})
+        card = next(d for d in self.decisions() if d['task_id'] == task['id'])
+        # The person answers before Hermes ends the turn. The answer queues the next turn.
+        self.write('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'ship', 'revision': 1})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': answer})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        self.assertFalse(runner.is_alive())
+        self.assertEqual(self.replies(task), [(answer, False, False)])
+        self.assertNotIn('_after_card', self.read('tasks', task['id']))
+
+    def test_a_file_sent_during_a_turn_goes_with_the_message_past_the_card(self):
+        import base64
+        task = self.send('Check the release.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        notes = self.write('POST', '/v1/attachments', {'bot_id': self.bot['id'], 'filename': 'notes.txt',
+                                                       'content_base64': base64.b64encode(b'Ship notes.').decode()})
+        self.write('POST', f'/v1/bots/{self.bot["id"]}/messages',
+                   {'text': 'Review this file.', 'mode': 'auto', 'attachment_ids': [notes['id']]})
+        self.service.gateway_tool({'turn_id': turn, 'tool': 'ask', 'arguments': self.CARD})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        stored = self.read('tasks', task['id'])
+        followup = self.read('tasks', stored['_continued_task_id'])
+        self.assertEqual(followup['_attachment_ids'], [notes['id']])
+        self.assertNotIn(notes['id'], stored['_attachment_ids'])
+
     def test_a_message_typed_during_a_turn_does_not_wait_for_the_card_that_ends_it(self):
         task = self.send('Check the release.')
         adapter = Adapter(self.service.gateway_bridge, self.home, [])

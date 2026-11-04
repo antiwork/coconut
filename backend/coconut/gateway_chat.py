@@ -858,6 +858,14 @@ class GatewayChat:
             if data.get('tool') == 'ask' and pause.decision_id:
                 # The card is durable and the task waits for its answer, as after a card of the worker. The plugin
                 # blocks each further tool call of the turn, and the answer continues the task in a later turn.
+                # The rest of the turn's text is kept, also when the person answers before the turn ends
+                # (card_followup).
+                task_id = self.gateway_bridge.task_of(data.get('turn_id'))
+                if task_id is not None:
+                    with self.transaction():
+                        task = self._get('tasks', task_id)
+                        task.setdefault('_after_card', '')
+                        self._put('tasks', task)
                 return {'status': 'waiting', 'decision_id': pause.decision_id, 'paused': True, 'instruction': PAUSED}
             raise ServiceError(409, 'This Coconut turn no longer takes tool calls.') from None
 
