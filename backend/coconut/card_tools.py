@@ -281,6 +281,7 @@ DECISION_INSTRUCTIONS = (
     'A text response with status replied closes its card and resumes the task. Apply the response in the normal conversation. '
     'Create a new card only if a human choice is still needed. Include the answer and the current facts in that card. '
     'Before ending a turn, check whether your reply asks the human to choose or offers optional work. '
+    'Write the answer that the person asked for before you call coconut_ask: the card ends your turn. '
     'Use the appropriate card tool first. Ordinary answers, progress reports, and completed results stay in chat. '
     'Write each card for a busy person who reads it once in Inbox. Make it as short as it can be while it stays clear on its own. '
     'Every sentence must help the person decide. Remove background, process history, and facts that do not change the choice. '

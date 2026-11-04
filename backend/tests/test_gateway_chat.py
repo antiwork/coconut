@@ -664,8 +664,9 @@ class ServiceRoutingTests(unittest.TestCase):
         adapter.join(5)
         turn = adapter.turns[0]['id']
         result = self.service.gateway_tool({'turn_id': turn, 'tool': 'ask', 'arguments': self.CARD})
-        # Hermes ends the turn. Its last text comes after the card, and the task no longer takes output.
+        # Hermes ends the turn. Its last text comes after the card and only points to it, so it does not show.
         self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': 'I asked.'})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
         runner.join(5)
         self.assertFalse(runner.is_alive())
         card = next(d for d in self.decisions() if d['task_id'] == task['id'])
@@ -688,6 +689,7 @@ class ServiceRoutingTests(unittest.TestCase):
         result = self.service.gateway_tool({'turn_id': turn, 'tool': 'ask', 'arguments': card})
         self.assertTrue(result['paused'])
         self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': 'I asked.'})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
         runner.join(5)
         saved = next(d for d in self.decisions() if d['task_id'] == task['id'])
         self.assertEqual(([o['id'] for o in saved['options']], saved['recommended_option_id']), (['wait', 'ship'], 'wait'))
@@ -712,6 +714,53 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
         self.assertEqual(self.provider.resumes, [])
         self.assertEqual(self.replies(task), [('Shipped.', False, False)])
+
+    def test_an_answer_after_a_card_shows_and_a_pointer_to_the_card_does_not(self):
+        answer = ('The investigation of #4274 finished: the seller passed review because the check ran before the '
+                  'product page changed. The fix adds a second check at publish time, and it is merged.')
+        for text, shown in [('I asked you on a card.', []), (answer, [(answer, False, False)])]:
+            with self.subTest(text=text[:20]):
+                task = self.send('What happened to the investigation?')
+                adapter = Adapter(self.service.gateway_bridge, self.home, [])
+                adapter.start()
+                runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+                runner.start()
+                adapter.join(5)
+                turn = adapter.turns[0]['id']
+                result = self.service.gateway_tool({'turn_id': turn, 'tool': 'ask', 'arguments': self.CARD})
+                self.assertTrue(result['paused'])
+                # Hermes writes after the card, then ends the turn. The text does not stop the turn.
+                self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'send', 'message_id': 'm:1', 'text': text})
+                self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+                runner.join(5)
+                self.assertFalse(runner.is_alive())
+                # The card still waits, and only an answer shows.
+                self.assertEqual(self.read('tasks', task['id'])['status'], 'needs_you')
+                self.assertEqual(self.replies(task), shown)
+
+    def test_a_message_typed_during_a_turn_does_not_wait_for_the_card_that_ends_it(self):
+        task = self.send('Check the release.')
+        adapter = Adapter(self.service.gateway_bridge, self.home, [])
+        adapter.start()
+        runner = threading.Thread(target=self.service._run_task, args=(task['id'],), daemon=True)
+        runner.start()
+        adapter.join(5)
+        turn = adapter.turns[0]['id']
+        # The person writes while the turn runs. The message joins the turn as steering.
+        steered = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Also check the changelog.', 'mode': 'auto'})
+        self.assertEqual(steered['id'], task['id'])
+        self.service.gateway_tool({'turn_id': turn, 'tool': 'ask', 'arguments': self.CARD})
+        self.service.gateway_bridge.event({'turn_id': turn, 'kind': 'done', 'outcome': 'success'})
+        runner.join(5)
+        self.assertFalse(runner.is_alive())
+        stored = self.read('tasks', task['id'])
+        self.assertEqual((stored['status'], stored['_steering']), ('needs_you', []))
+        # The message starts its own turn now, and the card keeps waiting for its answer.
+        followup = self.read('tasks', stored['_continued_task_id'])
+        typed = next(m for m in self.service._task_messages(task['id']) if m['text'] == 'Also check the changelog.')
+        self.assertEqual((followup['status'], followup['_shared_message_ids']), ('queued', [typed['id']]))
+        card = next(d for d in self.decisions() if d['task_id'] == task['id'])
+        self.assertEqual(card['status'], 'pending')
 
     def test_a_turn_saves_only_its_own_text_and_its_context_names_the_cards_that_wait_now(self):
         # A card waits, and another card was answered in a work session. Earlier turns may have named both.

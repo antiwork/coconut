@@ -2367,6 +2367,36 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._refresh_bot(bot['id'])
         return self._public(task)
 
+    def _release_followups_after_card(self, task_id):
+        """Messages that the person typed in a chat while a turn ran do not wait for the card that ended the turn.
+
+        They joined the turn as steering. When the turn ends in a card, the task waits for its answer, and the messages
+        waited too, for as long as the card stayed open. Now they start their own turn at once, as a message typed
+        after the card does. The card keeps waiting for its answer.
+        """
+        with self.transaction():
+            task = self._get('tasks', task_id)
+            # Only a chat that the person types in. Other turns keep their follow-up for the card's answer.
+            if (task['status'] != 'needs_you' or not task.get('_steering') or not task.get('_chat_session')
+                    or task.get('source_bot_id') or task.get('_native_job') or task.get('_work_status_only')):
+                return
+            consumed = set(task.get('_turn_message_ids', []))
+            waiting = [m for m in self._task_messages(task_id)
+                       if m['role'] == 'user' and m['kind'] == 'text' and not m.get('decision_id')
+                       and m['id'] not in consumed and m['text'] in task['_steering']]
+            if not waiting:
+                return
+            bot = self._get('bots', task['bot_id'])
+            created = self._send(bot, dict(text=waiting[-1]['text'], mode='queue'),
+                                 conversation_bot_id=task['conversation_bot_id'], record_message=False)
+            followup = self._get('tasks', created['id'])
+            followup['_shared_message_ids'] = [m['id'] for m in waiting]
+            followup['_preference_source_ids'] = [m['id'] for m in waiting if m.get('_human_device_id')]
+            self._put('tasks', followup)
+            task.update(_steering=[], _live_messages={}, steering_status='continued', _continued_task_id=followup['id'])
+            self._put('tasks', task)
+            self._event('task.updated', self._public(task), task['conversation_bot_id'], task_id)
+
     def _record_direct_reply(self, task):
         bot_id = task['bot_id']
         direct = next((m for m in (self._get('messages', identity) for identity in reversed(task['_turn_message_ids']))
@@ -3666,6 +3696,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._record_source_seen(task_id, source_seen, source_activity)
                 if pause.decision_id:
                     self._ack_reaction_feedback(task['bot_id'], task_id, reaction_feedback)
+                self._release_followups_after_card(task_id)
             except Exception as error:
                 if not self.stopping.is_set():
                     summary = f'Work stopped: {str(error)[:240]}'
@@ -3771,6 +3802,18 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             return self._register_work(task_id, payload)
         if kind == 'artifact' and payload.get('kind') == 'pr':
             return self._register_pr_artifact(task_id, payload)
+        from . import card_followup
+        if kind in card_followup.TEXT_KINDS + ('completed', 'failed') and not self.stopping.is_set():
+            # A card of this turn paused the task. Its later text is kept, and shows at the end if it answers.
+            with self.transaction():
+                task = self._get('tasks', task_id)
+                if task['status'] == 'needs_you':
+                    if kind in card_followup.TEXT_KINDS:
+                        card_followup.add(task, kind, payload)
+                        self._put('tasks', task)
+                        return
+                    card_followup.show(self, task)
+                    self._put('tasks', task)
         pending = False
         with self.transaction():
             task = self._get('tasks', task_id)
