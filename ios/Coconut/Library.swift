@@ -24,7 +24,9 @@ struct BotDocument: Codable, Identifiable, Equatable, Sendable {
         let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false)
         guard let first = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
               lines[first].hasPrefix("# ") else { return markdown }
-        return lines[(first + 1)...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        // Only the blank lines after the heading go. The next line keeps its indent, which can start a code block.
+        let rest = lines[(first + 1)...].drop { $0.trimmingCharacters(in: .whitespaces).isEmpty }
+        return rest.joined(separator: "\n")
     }
 }
 

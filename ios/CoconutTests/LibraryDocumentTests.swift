@@ -7,6 +7,10 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertEqual(BotDocument.body(markdown), "Source: gumroad-private#4274.\n\n## Timeline")
     }
 
+    func testTheBodyKeepsTheIndentOfACodeBlockAfterTheTitle() {
+        XCTAssertEqual(BotDocument.body("# Title\n\n    let x = 1\n    let y = 2"), "    let x = 1\n    let y = 2")
+    }
+
     func testTheBodyKeepsOtherHeadingsAndText() {
         for markdown in ["## Timeline\nFirst step", "Intro\n# Later title", "#4274 is the issue", ""] {
             XCTAssertEqual(BotDocument.body(markdown), markdown)
