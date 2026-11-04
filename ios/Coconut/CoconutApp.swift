@@ -145,8 +145,6 @@ struct CoconutHome: View {
                     switch destination {
                     case .inbox:
                         DecisionInboxView().navigationTitle("Inbox").navigationBarTitleDisplayMode(.inline)
-                    case .archived:
-                        ArchivedBotsView()
                     }
                 }
                 .navigationDestination(for: ConversationRoute.self) { route in

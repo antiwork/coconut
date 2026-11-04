@@ -5,7 +5,7 @@ struct ConversationFooterPreference: PreferenceKey {
     static func reduce(value: inout Bool?, nextValue: () -> Bool?) { value = nextValue() ?? value }
 }
 
-struct ConversationFooterScroll {
+struct ConversationFooterScroll: Equatable {
     private var origin: CGFloat?
     private var userScrolling = false
     private(set) var allowsMinimization = false

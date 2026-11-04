@@ -16,7 +16,7 @@ struct HomeLaunchView: View {
         }
     }
     private var conversations: [Bot] { activeBots.filter { !$0.pinned } }
-    private var archivedCount: Int { store.bots.filter(\.archived).count }
+    @State private var deleting: Bot?
 
     var body: some View {
         ScrollView {
@@ -41,23 +41,13 @@ struct HomeLaunchView: View {
                         .accessibilityIdentifier("bot-conversation-\(bot.id)")
                         .padding(.horizontal, 24)
                 }
-                NavigationLink(value: HomeDestination.archived) {
-                    HStack(spacing: 6) {
-                        Text("Archived")
-                        if archivedCount > 0 { Text("\(archivedCount)") }
-                        Image(systemName: "chevron.right").font(.caption)
-                    }
-                    .font(.subheadline).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                }
-                .buttonStyle(HomePressStyle()).accessibilityIdentifier("archived-conversations")
-                .padding(.horizontal, 24).padding(.top, 14)
             }
             .padding(.top, pinned.isEmpty ? 16 : 0)
             .padding(.bottom, 20)
         }
         .background(BoardStyle.paper)
         .refreshable { await store.reconnect() }
+        .modifier(DeleteBotDialog(bot: $deleting))
     }
 
     private var pinnedTiles: some View {
@@ -89,7 +79,7 @@ struct HomeLaunchView: View {
         Button(bot.pinned ? "Unpin bot" : "Pin bot", systemImage: bot.pinned ? "pin.slash" : "pin") {
             Task { await store.pinBot(bot, pinned: !bot.pinned) }
         }
-        Button("Archive bot", systemImage: "archivebox") { Task { await store.archiveBot(bot) } }
+        Button("Delete bot", systemImage: "trash", role: .destructive) { deleting = bot }
     }
 
     private func lastActivity(_ bot: Bot) -> Date {
@@ -242,31 +232,5 @@ struct BotActivityDot: View {
                 .accessibilityElement().accessibilityLabel("Working")
                 .accessibilityIdentifier("bot-active-\(bot.id)")
         }
-    }
-}
-
-struct ArchivedBotsView: View {
-    @Environment(AppStore.self) private var store
-    private var bots: [Bot] { store.bots.filter(\.archived) }
-
-    var body: some View {
-        List {
-            if bots.isEmpty {
-                Text("No archived conversations").foregroundStyle(.secondary)
-            }
-            ForEach(bots) { bot in
-                NavigationLink(value: ConversationRoute(botId: bot.id)) { BotContactRow(bot: bot) }
-                    .listRowBackground(Color.clear)
-                    .swipeActions {
-                        Button("Restore", systemImage: "tray.and.arrow.up") { Task { await store.archiveBot(bot) } }
-                    }
-                    // A Mac has no swipe on a list row. Its secondary click offers the same Restore.
-                    .contextMenu {
-                        Button("Restore", systemImage: "tray.and.arrow.up") { Task { await store.archiveBot(bot) } }
-                    }
-            }
-        }
-        .listStyle(.plain).scrollContentBackground(.hidden).background(BoardStyle.paper)
-        .navigationTitle("Archived").inlineNavigationTitle()
     }
 }

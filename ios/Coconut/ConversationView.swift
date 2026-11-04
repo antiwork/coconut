@@ -30,6 +30,7 @@ struct ConversationView: View {
     @State private var transcript = TranscriptCache()
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.toggleBotDetails) private var toggleBotDetails
     @ScaledMetric(relativeTo: .headline) private var nameWidth = 150
 
     init(botId: String, focusDecisionId: String? = nil, focusMessageId: String? = nil, attachedWork: WorkReference? = nil) {
@@ -154,7 +155,11 @@ struct ConversationView: View {
                         withAnimation(BoardStyle.fade(reduceMotion: reduceMotion)) { latestHidden = hidden }
                     }
                     .onScrollGeometryChange(for: CGFloat.self) { ConversationFooterScroll.offset(in: $0) } action: { _, offset in
-                        footerScroll.scroll(to: offset)
+                        // This runs on every frame of a scroll. A write of an unchanged value would still redraw the
+                        // whole chat on each frame, so only a change is written.
+                        var next = footerScroll
+                        next.scroll(to: offset)
+                        if next != footerScroll { footerScroll = next }
                     }
                     .onScrollGeometryChange(for: [CGFloat].self) { [$0.contentOffset.y, $0.contentSize.height] } action: { old, new in
                         let change = zip(old, new).map { abs($1 - $0) }.max() ?? 0
@@ -272,21 +277,20 @@ struct ConversationView: View {
                 }
                 #if os(macOS)
                 // A Mac toolbar groups its items into one glass bar. The bot gets a pill of its own over the top of the
-                // chat instead. It opens the settings of this bot, also in a chat that has no inspector next to it.
+                // chat instead. Next to an inspector it shows and hides the details; elsewhere it opens the settings.
                 .overlay(alignment: .top) {
-                    NavigationLink(value: BotSettingsRoute(botId: bot.id)) {
-                        HStack(spacing: 8) {
-                            LiveBotAvatar(bot: bot, size: 24)
-                            Text(bot.name).font(.headline).lineLimit(1).truncationMode(.tail)
+                    Group {
+                        if let toggleBotDetails {
+                            Button(action: toggleBotDetails) { botPill(bot) }
+                                .keyboardShortcut("i", modifiers: .command)
+                                .help("Show or hide the details of \(bot.name)")
+                        } else {
+                            NavigationLink(value: BotSettingsRoute(botId: bot.id)) { botPill(bot) }
+                                .help("Settings of \(bot.name)")
                         }
-                        .padding(.leading, 6).padding(.trailing, 12)
-                        .frame(height: 34)
-                        .modifier(FloatingCapsule())
-                        .contentShape(Capsule())
                     }
                     .buttonStyle(.plain)
                     .padding(.top, 8)
-                    .help("Settings of \(bot.name)")
                     .accessibilityLabel("\(bot.name) settings")
                     .accessibilityIdentifier("bot-settings")
                 }
@@ -306,6 +310,19 @@ struct ConversationView: View {
         .preference(key: ConversationFooterPreference.self,
                     value: isVisible ? (!composerFocused && footerScroll.allowsMinimization) : nil)
     }
+
+    #if os(macOS)
+    private func botPill(_ bot: Bot) -> some View {
+        HStack(spacing: 8) {
+            LiveBotAvatar(bot: bot, size: 24)
+            Text(bot.name).font(.headline).lineLimit(1).truncationMode(.tail)
+        }
+        .padding(.leading, 6).padding(.trailing, 12)
+        .frame(height: 34)
+        .modifier(FloatingCapsule())
+        .contentShape(Capsule())
+    }
+    #endif
 
     @ViewBuilder
     private func conversationHeader(bot: Bot, messages: [Message]) -> some View {
@@ -716,7 +733,7 @@ struct ConversationComposer: View {
                 DatePicker("Start", selection: $scheduledAt, in: Date()...)
                     .font(.caption)
             }
-            HStack(alignment: .bottom, spacing: 4) {
+            HStack(alignment: .bottom, spacing: 8) {
                 Menu {
                     Button("Mention a bot", systemImage: "at") {
                         text += text.isEmpty || text.last?.isWhitespace == true ? "@" : " @"
@@ -730,13 +747,15 @@ struct ConversationComposer: View {
                         }
                     }
                 } label: {
-                    Image(systemName: uploading ? "hourglass" : "plus").font(.title2)
-                        .foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
+                    Image(systemName: uploading ? "hourglass" : "plus").font(.title3.weight(.medium))
+                        .foregroundStyle(.secondary).frame(width: 46, height: 46)
+                        .contentShape(Circle())
                 }
                 #if os(macOS)
                 // A Mac draws a menu as a pull-down button with an arrow. The composer shows only its icon.
                 .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
                 #endif
+                .modifier(ComposerSurface(shape: Circle()))
                 .disabled(!connected || uploading)
                 .accessibilityLabel("More options")
                 HStack(alignment: .bottom, spacing: 4) {
@@ -750,6 +769,14 @@ struct ConversationComposer: View {
                     #endif
                     .padding(.vertical, 12)
                     .focused($focused)
+                    #if os(macOS)
+                    // On a Mac, Return sends and Shift-Return starts a new line, as in Messages.
+                    .onKeyPress(.return, phases: .down) { press in
+                        guard !press.modifiers.contains(.shift) else { return .ignored }
+                        send()
+                        return .handled
+                    }
+                    #endif
                     .accessibilityIdentifier("message-input")
                 if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Button(action: send) {
@@ -772,9 +799,10 @@ struct ConversationComposer: View {
                     }.buttonStyle(.plain).accessibilityLabel("Stop \(executorName)'s task").accessibilityIdentifier("stop-current-task")
                 }
                 }
+                .padding(.leading, 14).padding(.trailing, 4)
+                .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: 23, style: .continuous)))
             }
-                .padding(.horizontal, 4)
-                .modifier(ComposerSurface())
+            .modifier(ComposerGlassGroup())
         }
         .padding(.horizontal, 16)
         .padding(.top, 4)
@@ -820,17 +848,28 @@ struct ConversationComposer: View {
     }
 }
 
-/// The field of the composer. With Liquid Glass (iOS 26, macOS 26) it is a glass shape that the chat scrolls under;
-/// before, a tinted shape with a hairline.
-private struct ComposerSurface: ViewModifier {
+/// The field and the plus button of the composer. With Liquid Glass (iOS 26, macOS 26) each is a glass shape that the
+/// chat scrolls under; before, a tinted shape with a hairline.
+private struct ComposerSurface<S: Shape>: ViewModifier {
+    let shape: S
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: BoardStyle.Radius.large)
         if #available(iOS 26.0, macOS 26.0, *) {
             content.glassEffect(.regular.interactive(), in: shape)
         } else {
             content
                 .background(BoardStyle.surface.opacity(0.45), in: shape)
                 .overlay(shape.stroke(BoardStyle.line))
+        }
+    }
+}
+
+/// The glass shapes of the composer blend into each other when they come close.
+private struct ComposerGlassGroup: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, macOS 26.0, *) {
+            GlassEffectContainer(spacing: 8) { content }
+        } else {
+            content
         }
     }
 }

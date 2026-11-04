@@ -4,7 +4,6 @@ import SwiftUI
 enum MacSelection: Hashable {
     case inbox
     case library
-    case archived
     case bot(String)
 }
 
@@ -66,20 +65,12 @@ struct MacMainWindow: View {
                     .navigationTitle("Library")
                     .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
             }
-        case .archived:
-            NavigationStack {
-                ArchivedBotsView()
-                    .navigationDestination(for: ConversationRoute.self) { route in
-                        ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
-                                         focusMessageId: route.messageId, attachedWork: route.workContext)
-                    }
-                    .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
-                    .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
-            }
         case .bot(let botId):
             NavigationStack {
                 ConversationView(botId: botId)
                     .id(botId)
+                    // The bot's title over the chat shows and hides the details next to it.
+                    .environment(\.toggleBotDetails) { inspectorShown.toggle() }
                     .navigationDestination(for: ConversationRoute.self) { route in
                         ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
                                          focusMessageId: route.messageId, attachedWork: route.workContext)
@@ -113,13 +104,6 @@ struct MacMainWindow: View {
                 .formStyle(.grouped)
                 .inspectorColumnWidth(min: 260, ideal: 320, max: 420)
             }
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { inspectorShown.toggle() } label: { Label("Details", systemImage: "sidebar.trailing") }
-                        .keyboardShortcut("i", modifiers: .command)
-                        .help("Show or hide the details of the bot")
-                }
-            }
         }
     }
 }
@@ -128,6 +112,7 @@ struct MacMainWindow: View {
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Binding var selection: MacSelection?
+    @State private var deleting: Bot?
 
     private var activeBots: [Bot] {
         store.bots.filter { !$0.archived }.sorted { lastActivity($0) > lastActivity($1) }
@@ -153,15 +138,13 @@ struct MacSidebar: View {
             Section("Bots") {
                 ForEach(others) { bot in row(bot) }
             }
-            let archived = store.bots.filter(\.archived).count
-            if archived > 0 {
-                Label("Archived", systemImage: "archivebox")
-                    .badge(archived)
-                    .tag(MacSelection.archived)
-                    .accessibilityIdentifier("sidebar-archived")
-            }
         }
         .listStyle(.sidebar)
+        .modifier(DeleteBotDialog(bot: $deleting))
+        // A deleted bot leaves the list. Its chat closes, and the Inbox shows instead.
+        .onChange(of: store.bots.map(\.id)) { _, ids in
+            if case .bot(let id) = selection, !ids.contains(id) { selection = .inbox }
+        }
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
     }
 
@@ -171,6 +154,8 @@ struct MacSidebar: View {
             .tag(MacSelection.bot(bot.id))
             .contextMenu {
                 Button(bot.pinned ? "Unpin" : "Pin") { Task { await store.pinBot(bot, pinned: !bot.pinned) } }
+                Divider()
+                Button("Delete Bot…", role: .destructive) { deleting = bot }
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
     }
