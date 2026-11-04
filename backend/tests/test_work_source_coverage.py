@@ -74,6 +74,9 @@ class WorkSourceTests(unittest.TestCase):
         self.assertEqual(owners({}, False), [])
         self.assertEqual(owners({item['id']: 'new-audit'}, False), [(item['id'], 'new-audit')])
         self.assertEqual(owners({item['id']: 'new-audit'}, True), [(item['id'], 'new-audit')])
+        # A reopened PR registers again with its owner, because a closed record gets no polls.
+        tracked['pr_state'] = 'closed'
+        self.assertEqual(owners({}, True), [(item['id'], 'old-audit')])
 
     def test_a_covered_pull_request_is_tracked_with_its_existing_audit(self):
         # The PR already has a live audit when the option is turned on. No new audit starts, and the PR is still

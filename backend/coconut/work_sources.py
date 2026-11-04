@@ -511,8 +511,9 @@ def pull_requests_to_track(items, bot_id, created, tasks, bindings, tracked, cur
         if item.get('kind') != 'pull_request' or item.get('_removed_from_source'):
             continue
         existing = tracked(item['id'])
-        if (existing and existing.get('pr_state') not in ('closed', 'merged') and existing.get('_review_task_id')
-                and item['id'] not in created and current(existing)):
+        # A closed record gets no polls, so a reopened PR registers again, also with the same owner.
+        live = existing and existing.get('pr_state') not in ('closed', 'merged')
+        if live and existing.get('_review_task_id') and item['id'] not in created and current(existing):
             continue
         owner = created.get(item['id'])
         if not owner:
@@ -523,7 +524,7 @@ def pull_requests_to_track(items, bot_id, created, tasks, bindings, tracked, cur
                      if identity in tasks and tasks[identity]['bot_id'] == bot_id]
             owner = audits[-1]['id'] if audits else (bound[-1] if bound else None)
         # The stale owner again changes nothing. The next change of the PR starts its audit, which takes it over.
-        if owner and owner != (existing or {}).get('_review_task_id'):
+        if owner and (not live or owner != existing.get('_review_task_id')):
             result.append((item['id'], owner))
     return result
 
