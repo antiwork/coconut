@@ -115,7 +115,7 @@ def main():
             if result: raise SystemExit(result)
             if fixture.state_reads_during_stream:
                 raise SystemExit('Reply delivery unexpectedly requested the full state.')
-            print('Verified recovery, draft retention, hidden partial text, and complete reply delivery without a full-state request.')
+            print('Verified recovery, draft retention, streamed partial text, and complete reply delivery without a full-state request.')
     finally:
         server.shutdown()
         server.server_close()

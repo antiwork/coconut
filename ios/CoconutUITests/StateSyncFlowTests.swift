@@ -44,7 +44,8 @@ final class StateSyncFlowTests: XCTestCase {
         XCTAssertEqual(input.value as? String, "Keep this draft")
         print("COCONUT_SYNC_STAGE=partial")
         XCTAssertTrue(recovered.waitForNonExistence(timeout: 10))
-        XCTAssertFalse(app.staticTexts["Unfinished reply text"].exists)
+        // The reply shows as it streams in.
+        XCTAssertTrue(app.staticTexts["Unfinished reply text"].waitForExistence(timeout: 10))
         XCTAssertEqual(input.value as? String, "Keep this draft")
         print("COCONUT_SYNC_STAGE=complete")
         XCTAssertTrue(app.staticTexts["Complete reply without reloading."].waitForExistence(timeout: 10))
