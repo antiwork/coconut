@@ -21,7 +21,7 @@ def _adapter(config):
 
 
 def platform_hint():
-    """HINT and the worker's rules for cards, for a merge card and for bot changes (card_tools).
+    """HINT and the worker's rules for cards, for a merge card, for bot changes and for the Library (card_tools).
 
     Hermes puts the hint of the platform into the system prompt of each Coconut session, with no size limit. The prompt
     sections of all plugins share a budget of 8000 characters, and the rules are longer: Hermes skipped two of their
@@ -29,7 +29,7 @@ def platform_hint():
     from .tools import cards
     module = cards()
     rules = (module.DECISION_INSTRUCTIONS, module.PR_MERGE_INSTRUCTIONS, module.BOT_CREATION_INSTRUCTIONS,
-             module.BOT_DELETION_INSTRUCTIONS)
+             module.BOT_DELETION_INSTRUCTIONS, module.LIBRARY_INSTRUCTIONS)
     return '\n\n'.join([HINT, *(text.strip() for text in rules)])
 
 

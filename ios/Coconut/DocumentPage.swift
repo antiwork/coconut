@@ -128,6 +128,8 @@ struct DocumentPage {
     body { font: var(--size-3)/1.45 -apple-system, system-ui, sans-serif; padding: 8px 24px 48px;
            -webkit-text-size-adjust: 100%; overflow-wrap: anywhere; }
     header { margin-bottom: 16px; padding-bottom: 16px; border-bottom: 0.5px solid var(--line); }
+    /* The header shows the title. A page that starts with its own title heading would show it twice. */
+    main > h1:first-child { display: none; }
     h1 { font-size: var(--size-4); font-weight: 600; line-height: 1.2; margin: 0 0 6px; }
     h2 { font-size: var(--size-3); font-weight: 600; margin: 24px 0 8px; }
     h3 { font-size: var(--size-2); font-weight: 600; margin: 16px 0 6px; }

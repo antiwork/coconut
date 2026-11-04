@@ -17,6 +17,17 @@ struct BotDocument: Codable, Identifiable, Equatable, Sendable {
     var content: String? = nil
 
     var isPage: Bool { format == "html" }
+
+    /// Markdown without a top heading at its start. The page shows the title over the content, so a bot's own title
+    /// heading would show a second title.
+    static func body(_ markdown: String) -> String {
+        let lines = markdown.split(separator: "\n", omittingEmptySubsequences: false)
+        guard let first = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+              lines[first].hasPrefix("# ") else { return markdown }
+        // Only the blank lines after the heading go. The next line keeps its indent, which can start a code block.
+        let rest = lines[(first + 1)...].drop { $0.trimmingCharacters(in: .whitespaces).isEmpty }
+        return rest.joined(separator: "\n")
+    }
 }
 
 struct DocumentList: Decodable, Sendable {
@@ -168,7 +179,7 @@ struct DocumentView: View {
                         VStack(alignment: .leading, spacing: 0) {
                             header(document)
                             Divider().padding(.vertical, 16)
-                            MessageText(text: content)
+                            MessageText(text: BotDocument.body(content))
                         }
                         .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 32)
                     }

@@ -420,6 +420,19 @@ BOT_CREATION_INSTRUCTIONS = (
     'Creating a bot does not bypass any approval. '
     'Give one short confirmation. Do not repeat the receipt or add an approval footer.')
 
+# Hermes lists plugin tools behind its tool search, so a bot does not see the document tools unless something names
+# them. This rule names them in each Coconut session.
+LIBRARY_INSTRUCTIONS = (
+    '\nCoconut has a Library: documents that the person reads in the app, outside the chat. Every bot can use it. '
+    'Save a document with coconut_save_document, read or list your documents with coconut_read_document, and remove '
+    'one with coconut_delete_document. If a tool is not in your tool list, find it with tool_search. '
+    'Save a document when the content outlives this reply: a report, a postmortem, a plan, research, a checklist, a '
+    'table or a chart. Keep a short answer in the chat, and name the document there by its title. '
+    'A document is temporary or kept current. For a temporary document, set expires_at. To keep a document current, '
+    'save it again with the same key when its facts change, for example from a routine. Each save adds a version. '
+    'The title is the heading of the page. Do not start the content with the title as a heading.'
+)
+
 BOT_DELETION_INSTRUCTIONS = (
     '\nWhen coconut_delete_bot is available, you can delete other Coconut bots on a direct human request. '
     'A capability question alone requests no deletion. Use the listed exact ID and name. '
