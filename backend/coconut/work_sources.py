@@ -498,19 +498,21 @@ def audit_signature(proof, decisions):
 RETRY_MAX = 24 * 3600
 
 
-def pull_requests_to_track(items, bot_id, created, tasks, bindings, tracked):
-    """The open pull requests of a source with `track_pull_requests` that the bot does not track yet, each with the task
-    that should review it: the audit of this pass, or else the newest audit or bound task of the same source item.
+def pull_requests_to_track(items, bot_id, created, tasks, bindings, tracked, current):
+    """The open pull requests of a source with `track_pull_requests` that need a review owner, each with the task that
+    should review it: the audit of this pass, or else the newest audit or bound task of the same source item.
 
-    A PR that is already covered (a live audit, a pending card or a no-card record) gets its existing task, so it is
-    tracked as well. A PR with no task yet waits for its first audit.
+    A PR keeps its owner only while that owner is current (`current`, for example not from before a restart of the
+    bots) and this pass started no new audit for it. A PR that is already covered (a live audit, a pending card or a
+    no-card record) gets its existing task, so it is tracked as well. A PR with no task yet waits for its first audit.
     """
     result = []
     for item in items:
         if item.get('kind') != 'pull_request' or item.get('_removed_from_source'):
             continue
         existing = tracked(item['id'])
-        if existing and existing.get('pr_state') not in ('closed', 'merged') and existing.get('_review_task_id'):
+        if (existing and existing.get('pr_state') not in ('closed', 'merged') and existing.get('_review_task_id')
+                and item['id'] not in created and current(existing)):
             continue
         owner = created.get(item['id'])
         if not owner:
@@ -520,7 +522,8 @@ def pull_requests_to_track(items, bot_id, created, tasks, bindings, tracked):
             bound = [identity for identity in bindings.get(item['id'], {}).get('task_ids', [])
                      if identity in tasks and tasks[identity]['bot_id'] == bot_id]
             owner = audits[-1]['id'] if audits else (bound[-1] if bound else None)
-        if owner:
+        # The stale owner again changes nothing. The next change of the PR starts its audit, which takes it over.
+        if owner and owner != (existing or {}).get('_review_task_id'):
             result.append((item['id'], owner))
     return result
 
@@ -925,7 +928,8 @@ class WorkSources:
                     state['recoveries'] = recoveries
                     if source.get('track_pull_requests'):
                         to_track = pull_requests_to_track(items, bot['id'], created, tasks, bindings,
-                                                          lambda url: self._bot_pr_artifact(bot['id'], url))
+                                                          lambda url: self._bot_pr_artifact(bot['id'], url),
+                                                          self._pr_review_source_current)
                     # End work whose sources closed. Another source of the same bot can link the same card, and its
                     # open list is not read here, so the rule runs only for a bot with one source.
                     stale, callbacks = {}, []

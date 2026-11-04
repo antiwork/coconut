@@ -62,6 +62,19 @@ class WorkSourceTests(unittest.TestCase):
     def test_a_source_tracks_no_pull_request_without_the_option(self):
         self.pull_request_source(track=False).assert_not_called()
 
+    def test_a_pull_request_moves_to_a_new_audit_when_its_owner_is_not_current(self):
+        from coconut.work_sources import pull_requests_to_track
+        item = dict(id='https://github.com/example/repo/pull/7', kind='pull_request')
+        tracked = dict(pr_state='open', _review_task_id='old-audit')
+        tasks = {'old-audit': dict(id='old-audit', bot_id='bot', _source_assignment=dict(id=item['id']), created_at='1')}
+        def owners(created, current):
+            return pull_requests_to_track([item], 'bot', created, tasks, {}, lambda url: tracked, lambda pr: current)
+        # A current owner keeps the PR. A new audit takes over from an owner from before a restart of the bots.
+        self.assertEqual(owners({}, True), [])
+        self.assertEqual(owners({}, False), [])
+        self.assertEqual(owners({item['id']: 'new-audit'}, False), [(item['id'], 'new-audit')])
+        self.assertEqual(owners({item['id']: 'new-audit'}, True), [(item['id'], 'new-audit')])
+
     def test_a_covered_pull_request_is_tracked_with_its_existing_audit(self):
         # The PR already has a live audit when the option is turned on. No new audit starts, and the PR is still
         # tracked, with that audit as its review owner.
