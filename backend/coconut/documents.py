@@ -120,7 +120,8 @@ SAVE_SCHEMA = {'name': 'coconut_save_document', 'description': (
         'title': {'type': 'string', 'maxLength': MAX_TITLE, 'description': 'The title that the Library shows.'},
         'format': {'type': 'string', 'enum': list(FORMATS)},
         'content': {'type': 'string', 'description': (
-            'The full document: Markdown, or the body of an HTML page with its scripts. At most 512 KB.')},
+            'The full document: Markdown, or the body of an HTML page with its scripts. At most 512 KB. The Library '
+            'shows the title as the heading of the page, so do not start the content with it.')},
         'summary': {'type': 'string', 'maxLength': MAX_SUMMARY, 'description': (
             'One short line about the current content, for example "412 signups today, up 9%".')},
         'expires_at': {'type': 'string', 'description': (

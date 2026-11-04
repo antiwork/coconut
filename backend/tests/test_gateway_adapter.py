@@ -1343,12 +1343,16 @@ class GatewayAdapterTests(unittest.TestCase):
         # The card rules of the worker go whole into each Coconut session, with the hint of the platform. The prompt
         # sections of all plugins share a budget of 8000 characters in Hermes, which skipped most of the rules.
         from coconut.card_tools import (BOT_CREATION_INSTRUCTIONS, BOT_DELETION_INSTRUCTIONS, DECISION_INSTRUCTIONS,
-                                        PR_MERGE_INSTRUCTIONS)
+                                        LIBRARY_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS)
         self.assertEqual(sections, {})
         hint = calls[0]['platform_hint']
         self.assertTrue(hint.startswith(self.plugin.HINT))
-        for rules in (DECISION_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS, BOT_CREATION_INSTRUCTIONS, BOT_DELETION_INSTRUCTIONS):
+        for rules in (DECISION_INSTRUCTIONS, PR_MERGE_INSTRUCTIONS, BOT_CREATION_INSTRUCTIONS, BOT_DELETION_INSTRUCTIONS,
+                      LIBRARY_INSTRUCTIONS):
             self.assertIn(rules.strip(), hint)
+        # Each session names the document tools, which Hermes lists only behind its tool search.
+        for tool in ('coconut_save_document', 'coconut_read_document', 'coconut_delete_document'):
+            self.assertIn(tool, hint)
         # A Coconut worker registers its own coconut tools.
         with patch.dict(os.environ, COCONUT_BOT_ID='bot'):
             self.plugin.register(Context())
