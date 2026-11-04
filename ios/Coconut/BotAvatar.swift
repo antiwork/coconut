@@ -15,7 +15,10 @@ struct BotAvatar: View {
     var phase: BotPhase? = nil
     /// The lasting mood. A finished turn and a new card show a short mood over it.
     var mood: CoconutMood = .neutral
-    var needsYou = false
+    /// The newest card that waits for an answer. Each new one surprises the bot.
+    var newestCard: String? = nil
+    /// A phase also ends when the connection drops. Only an online end is a finished turn.
+    var online = true
     var animated = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -23,19 +26,28 @@ struct BotAvatar: View {
     @State private var thinkingAmount = 0.0
     @State private var previousGesture: CoconutGesture?
     @State private var gestureChangedAt = -Double.infinity
-    @State private var flash: CoconutMood?
+    @State private var flash: Flash?
     @State private var shownMood: CoconutMood?
+    // The mood blink has its own closed state, so a regular blink cannot open the eyes during it.
+    @State private var changingMood = false
 
-    init(symbol: String, color: String, size: CGFloat = 52, identity: String = "", phase: BotPhase? = nil,
-         mood: CoconutMood = .neutral, needsYou: Bool = false, animated: Bool = true) {
-        self.symbol = symbol; self.color = color; self.size = size * Self.scale
-        self.identity = identity; self.phase = phase; self.mood = mood; self.needsYou = needsYou; self.animated = animated
+    // Each event has its own identity, so a repeated mood starts its time again.
+    private struct Flash: Equatable {
+        let mood: CoconutMood
+        let id = UUID()
     }
 
-    init(bot: Bot, size: CGFloat = 52, phase: BotPhase? = nil, mood: CoconutMood = .neutral, needsYou: Bool = false,
-         animated: Bool = true) {
+    init(symbol: String, color: String, size: CGFloat = 52, identity: String = "", phase: BotPhase? = nil,
+         mood: CoconutMood = .neutral, newestCard: String? = nil, online: Bool = true, animated: Bool = true) {
+        self.symbol = symbol; self.color = color; self.size = size * Self.scale
+        self.identity = identity; self.phase = phase; self.mood = mood; self.newestCard = newestCard; self.online = online
+        self.animated = animated
+    }
+
+    init(bot: Bot, size: CGFloat = 52, phase: BotPhase? = nil, mood: CoconutMood = .neutral, newestCard: String? = nil,
+         online: Bool = true, animated: Bool = true) {
         self.init(symbol: bot.avatar, color: bot.color, size: size, identity: bot.id, phase: phase, mood: mood,
-                  needsYou: needsYou, animated: animated)
+                  newestCard: newestCard, online: online, animated: animated)
     }
 
     private var isThinking: Bool { phase != nil }
@@ -44,13 +56,13 @@ struct BotAvatar: View {
 
     private var motionEnabled: Bool { animated && !reduceMotion && scenePhase == .active }
     private var seed: UInt64 { characterSeed(identity.isEmpty ? symbol + color : identity) }
-    private var targetMood: CoconutMood { flash ?? mood }
+    private var targetMood: CoconutMood { flash?.mood ?? mood }
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !motionEnabled || !isThinking)) { timeline in
             FruitFigure(index: FruitArtwork.index(symbol: symbol, identity: identity),
                         size: size, seed: seed, time: timeline.date.timeIntervalSinceReferenceDate,
-                        thinking: thinkingAmount, eyelid: blinking ? 0.08 : 1,
+                        thinking: thinkingAmount, eyelid: blinking || changingMood ? 0.08 : 1,
                         gesture: gesture, previousGesture: previousGesture, gestureChangedAt: gestureChangedAt,
                         mood: shownMood ?? targetMood)
         }
@@ -62,12 +74,14 @@ struct BotAvatar: View {
             gestureChangedAt = Date().timeIntervalSinceReferenceDate
         }
         .onChange(of: motionEnabled) { _, _ in updateThinking() }
-        .onChange(of: phase) { old, new in if old != nil && new == nil { flash = .happy } }
-        .onChange(of: needsYou) { old, new in if new && !old { flash = .surprised } }
+        .onChange(of: phase) { old, new in if old != nil && new == nil && online { flash = Flash(mood: .happy) } }
+        .onChange(of: newestCard) { _, new in if new != nil { flash = Flash(mood: .surprised) } }
         .task(id: flash) {
             guard flash != nil else { return }
-            try? await Task.sleep(for: .seconds(3))
-            if !Task.isCancelled { flash = nil }
+            do {
+                try await Task.sleep(for: .seconds(3))
+                flash = nil
+            } catch {}
         }
         .task(id: targetMood) { await showMood(targetMood) }
         .task(id: motionEnabled) {
@@ -89,11 +103,21 @@ struct BotAvatar: View {
 
     /// A new mood comes in a blink: the eyes close, the face changes, and the eyes open with a small overshoot.
     private func showMood(_ next: CoconutMood) async {
-        guard let current = shownMood, current != next, motionEnabled else { shownMood = next; return }
-        withAnimation(.easeIn(duration: 0.09)) { blinking = true }
-        try? await Task.sleep(for: .milliseconds(110))
+        guard let current = shownMood, current != next, motionEnabled else {
+            shownMood = next
+            // An earlier change can stop with the eyes closed, when the mood goes back before it finished.
+            if changingMood { withAnimation(.spring(response: 0.28, dampingFraction: 0.55)) { changingMood = false } }
+            return
+        }
+        withAnimation(.easeIn(duration: 0.09)) { changingMood = true }
+        do {
+            try await Task.sleep(for: .milliseconds(110))
+        } catch {
+            // A newer mood took over. It closes and opens the eyes itself.
+            return
+        }
         shownMood = next
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.55)) { blinking = false }
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.55)) { changingMood = false }
     }
 
     private func updateThinking() {
@@ -115,8 +139,13 @@ struct LiveBotAvatar: View {
         let latest = store.messages.lazy.filter { $0.botId == bot.id }.compactMap { $0.createdAt.apiDate }.max()
         return Date().timeIntervalSince(latest ?? bot.createdAt.apiDate ?? .now) > 2 * 86_400 ? .sleepy : .neutral
     }
+    private var newestCard: String? {
+        store.decisions.filter { $0.isPending && store.conversationBotId(for: $0) == bot.id }
+            .max { ($0.createdAt.apiDate ?? .distantPast) < ($1.createdAt.apiDate ?? .distantPast) }?.id
+    }
     var body: some View {
-        BotAvatar(bot: bot, size: size, phase: store.botPhase(bot), mood: mood, needsYou: store.botNeedsYou(bot))
+        BotAvatar(bot: bot, size: size, phase: store.botPhase(bot), mood: mood, newestCard: newestCard,
+                  online: store.isDemo || store.connection == .connected)
             .overlay(alignment: .bottomTrailing) {
                 // The moving face shows the work. Reduce Motion keeps the face still, so the dot shows it.
                 if reduceMotion { BotActivityDot(bot: bot).padding(size * BotAvatar.scale * 0.12) }
