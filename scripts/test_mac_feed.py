@@ -400,6 +400,17 @@ class InstallScriptTests(unittest.TestCase):
         self.assertEqual(self.log.read_text().splitlines()[0], f'open -g {self.applications[0]}/Coconut.app')
         self.assertIn(f'paired {CODE}', result.stdout)
 
+    def test_a_long_help_text_does_not_hide_what_the_app_can_do(self):
+        # The help is longer than a pipe holds, so a check that stops reading early stops the tool with SIGPIPE.
+        long_help = FAKE_TOOL.replace("help) printf 'pair <code>\\nCoconut.app --set-up sets up Coconut\\n' ;;",
+                                      "help) printf 'pair <code>\\nCoconut.app --set-up sets up Coconut\\n'; head -c 200000 /dev/zero | tr '\\0' x ;;")
+        self.assertNotEqual(long_help, FAKE_TOOL)
+        self.make_app(self.applications[0] / 'Coconut.app', long_help)
+        result = self.run_script(CODE)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Coconut.app is already in', result.stdout)
+        self.assertIn(f'paired {CODE}', result.stdout)
+
     def test_without_a_code_the_script_only_installs(self):
         result = self.run_script(feed=self.feed(512))
         self.assertEqual(result.returncode, 0, result.stderr)
