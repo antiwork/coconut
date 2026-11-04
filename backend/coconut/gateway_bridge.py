@@ -418,6 +418,10 @@ class TurnEvents:
         kind, text = event['kind'], event.get('text') or ''
         if kind == 'typing':
             self._phase('thinking')
+        elif kind == 'delta' and not self.commentary:
+            # A turn without commentary, such as a reaction, shows only its reply. Its streamed text could be commentary,
+            # which the phone would show until the interim send takes it back. The reply comes with the gateway's send.
+            self._phase('writing')
         elif kind == 'delta':
             number = event['stream']
             if self.sent or number in self.ended_streams or (self.delta_stream is not None and number < self.delta_stream):

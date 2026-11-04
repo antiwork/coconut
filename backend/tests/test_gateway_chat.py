@@ -152,34 +152,25 @@ class TurnEventTests(unittest.TestCase):
         return emitted, [turn.apply(event) for event in events]
 
     def test_a_silent_turn_shows_no_commentary_and_a_silence_marker_ends_it_without_a_message(self):
+        silent_end = ('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})
+        # A turn without commentary streams nothing: its streamed text could be commentary or a silence marker, which
+        # the phone would show until a later event takes it back.
+        for events in ([{'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True},
+                        {'kind': 'delta', 'stream': 1, 'text': '[SILENT]'}],
+                       [{'kind': 'delta', 'stream': 1, 'text': 'Let me look.'},
+                        {'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True},
+                        {'kind': 'delta', 'stream': 2, 'text': '[SILENT]'}],
+                       # Hermes holds back the start of a marker and sends no reply.
+                       [{'kind': 'delta', 'stream': 1, 'text': '[SILEN'}]):
+            emitted, _ = self.translate(*events, {'kind': 'done', 'outcome': 'success'}, silent=True)
+            self.assertEqual(emitted, [('phase', {'phase': 'writing'}), silent_end])
+        # A useful reply of a silent turn is an ordinary reply. It comes whole with the gateway's send.
+        reply = 'Glad it helped. One more detail: the cache is warm.'
         emitted, _ = self.translate(
-            {'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True},
-            {'kind': 'delta', 'stream': 1, 'text': '[SILENT]'},
+            {'kind': 'delta', 'stream': 1, 'text': 'Glad it '}, {'kind': 'send', 'message_id': 'm:1', 'text': reply},
             {'kind': 'done', 'outcome': 'success'}, silent=True)
-        self.assertEqual(emitted, [
-            ('phase', {'phase': 'writing'}), ('text_delta', {'text': '[SILENT]'}),
-            ('text_delta', {'text': '', 'replace': True}),
-            ('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})])
-        # Commentary that the plugin streamed before its interim send goes too, also when a later call follows.
-        emitted, _ = self.translate(
-            {'kind': 'delta', 'stream': 1, 'text': 'Let me look.'},
-            {'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True},
-            {'kind': 'delta', 'stream': 2, 'text': '[SILENT]'},
-            {'kind': 'done', 'outcome': 'success'}, silent=True)
-        self.assertNotIn(('interim_seal', {}), emitted)
-        self.assertEqual([data for kind, data in emitted if kind == 'text_delta'], [
-            {'text': 'Let me look.'}, {'text': '', 'replace': True}, {'text': '[SILENT]'}, {'text': '', 'replace': True}])
-        self.assertEqual(emitted[-1][1].get('silent_response'), True)
-        # Hermes holds back the start of a marker and sends no reply.
-        emitted, _ = self.translate({'kind': 'delta', 'stream': 1, 'text': '[SILEN'}, {'kind': 'done', 'outcome': 'success'},
-                                    silent=True)
-        self.assertEqual(emitted[-2:], [('text_delta', {'text': '', 'replace': True}),
-                                        ('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})])
-        # A useful reply of a silent turn is an ordinary reply.
-        emitted, _ = self.translate(
-            {'kind': 'send', 'message_id': 'm:1', 'text': 'Glad it helped. One more detail: the cache is warm.'},
-            {'kind': 'done', 'outcome': 'success'}, silent=True)
-        self.assertEqual(emitted[-1], ('completed', {'summary': 'Complete.'}))
+        self.assertEqual(emitted, [('phase', {'phase': 'writing'}), ('text_delta', {'text': reply}),
+                                   ('completed', {'summary': 'Complete.'})])
 
     def test_bot_traffic_keeps_its_commentary_and_may_end_in_silence(self):
         emitted, _ = self.translate(
