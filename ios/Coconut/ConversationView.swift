@@ -789,7 +789,7 @@ struct ConversationComposer: View {
                         .font(.body.weight(.semibold))
                         .foregroundStyle(canSend ? BoardStyle.controlLabel : .secondary)
                         .frame(width: sendSize, height: sendSize)
-                        .background(canSend ? BoardStyle.control : BoardStyle.ink.opacity(0.07), in: Circle())
+                        .modifier(SendButtonFill(enabled: canSend))
                         .frame(minWidth: 44, minHeight: 44)
                 }
                 .buttonStyle(.plain)
@@ -864,6 +864,19 @@ private struct ComposerSurface<S: Shape>: ViewModifier {
             content
                 .background(BoardStyle.surface.opacity(0.45), in: shape)
                 .overlay(shape.stroke(BoardStyle.line))
+        }
+    }
+}
+
+/// The fill of the send button. Inside the glass of the composer, a plain fill takes on the glass and looks dimmed, as if
+/// the button were off. With Liquid Glass the button has its own glass, tinted in the control color.
+private struct SendButtonFill: ViewModifier {
+    let enabled: Bool
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, macOS 26.0, *), enabled {
+            content.glassEffect(.regular.tint(BoardStyle.control).interactive(), in: Circle())
+        } else {
+            content.background(enabled ? BoardStyle.control : BoardStyle.ink.opacity(0.07), in: Circle())
         }
     }
 }
