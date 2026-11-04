@@ -50,11 +50,13 @@ struct FruitArtwork: Decodable {
 }
 
 struct FruitFigure: View, Animatable {
-    // Radius of the face sphere and the resting positions of its features, in artwork units.
+    // The face as it would sit on a sphere of this radius, in artwork units. The volume carries it to the fruit.
     static let faceRadius = 22.0
     static let eyeLongitude = 0.42
     static let eyeLatitude = -0.32
     static let mouthLatitude = 0.34
+    /// The body tips less than the gaze, so a fruit looks up without showing its bottom.
+    static let bodyPitch = 0.6
     let index: Int
     let size: CGFloat
     let seed: UInt64
@@ -64,58 +66,82 @@ struct FruitFigure: View, Animatable {
     var gesture: CoconutGesture = .ponder
     var previousGesture: CoconutGesture? = nil
     var gestureChangedAt = -Double.infinity
+    var mood: CoconutMood = .neutral
     nonisolated var animatableData: AnimatablePair<Double, Double> {
         get { AnimatablePair(thinking, eyelid) }
         set { thinking = newValue.first; eyelid = newValue.second }
     }
     var body: some View {
         let artwork = FruitArtwork.all[index]
-        let expression = CoconutExpression.sample(time: time, seed: seed, thinking: thinking, gesture: gesture,
-                                                  previous: previousGesture, changedAt: gestureChangedAt)
-        let radius = Self.faceRadius
+        let volume = FruitVolume.all[index]
+        let expression = mood.applied(to: CoconutExpression.sample(time: time, seed: seed, thinking: thinking, gesture: gesture,
+                                                                   previous: previousGesture, changedAt: gestureChangedAt))
+        let turn = FruitTurn(yaw: expression.yaw, pitch: expression.pitch * Self.bodyPitch)
         Canvas { context, _ in
             context.scaleBy(x: size / 100, y: size / 100)
-            let paths = FruitArtwork.paths[index]
-            for (layer, path) in zip(artwork.layers, paths) {
-                context.fill(path, with: .color(Color(hex: layer.fill)))
+            let skin = Color(hex: artwork.layers[0].fill)
+            for part in volume.body(turn: turn) {
+                context.fill(part, with: .color(skin))
+                context.stroke(part, with: .color(skin), style: StrokeStyle(lineWidth: FruitVolume.seamWidth, lineJoin: .round))
             }
-            // Features that turn past the edge of the fruit disappear behind it.
-            context.clip(to: paths[0])
-            context.translateBy(x: artwork.face[0], y: artwork.face[1])
-            context.scaleBy(x: artwork.face[2], y: artwork.face[2])
-            let ink = Color(hex: artwork.ink)
-            let latitude = Self.eyeLatitude + expression.pitch
+            for layer in volume.layers {
+                context.fill(volume.layer(layer, turn: turn), with: .color(Color(hex: layer.fill)))
+            }
+            let ink = Color(hex: artwork.ink), scale = artwork.face[2], radius = Self.faceRadius
+            // Face units around the face center, carried to the turned surface of the fruit.
+            func place(_ x: Double, _ y: Double) -> (point: CGPoint, facing: Double) {
+                volume.surface(CGPoint(x: artwork.face[0] + x * scale, y: artwork.face[1] + y * scale), turn: turn)
+            }
+            let eyeY = radius * sin(Self.eyeLatitude)
             for side in [-1.0, 1.0] {
-                let longitude = expression.yaw + side * Self.eyeLongitude
-                let facing = cos(longitude)
-                guard facing > 0.04 else { continue }
-                var eye = context
-                eye.translateBy(x: radius * sin(longitude) * cos(latitude), y: radius * sin(latitude) - side * sin(expression.yaw))
-                eye.rotate(by: .degrees(expression.eyeTilt * 0.6))
-                let width = 6.4 * expression.eyeWidth * facing
-                let height = 10.8 * expression.eyeHeight * eyelid * (0.7 + 0.3 * cos(latitude))
-                eye.fill(Path(ellipseIn: CGRect(x: -width / 2, y: -height / 2, width: width, height: height)), with: .color(ink))
-            }
-            let facing = cos(expression.yaw)
-            if facing > 0.15 {
-                let mouthLatitude = Self.mouthLatitude + expression.pitch
-                var mouth = context
-                mouth.translateBy(x: radius * sin(expression.yaw) * cos(mouthLatitude), y: radius * sin(mouthLatitude))
-                let half = expression.mouthWidth / 2 * facing
-                if expression.mouthOpen > 0.4 {
-                    let width = max(3, half * 0.9), height = expression.mouthOpen * 1.4
-                    mouth.fill(Path(ellipseIn: CGRect(x: -width / 2, y: -height / 2, width: width, height: height)), with: .color(ink))
-                } else {
-                    var lip = Path()
-                    lip.move(to: CGPoint(x: -half, y: 0))
-                    lip.addQuadCurve(to: CGPoint(x: half, y: -1), control: CGPoint(x: half * 0.1, y: 1 + expression.smile * 1.2))
-                    mouth.stroke(lip, with: .color(ink), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                let eyeX = side * radius * sin(Self.eyeLongitude) * cos(Self.eyeLatitude)
+                guard place(eyeX, eyeY).facing > -0.2 else { continue }
+                let tilt = (expression.eyeTilt * 0.6 - side * mood.innerTilt) * .pi / 180
+                func eyePoint(_ point: CGPoint) -> CGPoint {
+                    let y = point.y * eyelid
+                    return place(eyeX + point.x * cos(tilt) - y * sin(tilt), eyeY + point.x * sin(tilt) + y * cos(tilt)).point
                 }
+                if let arc = mood.eyeArc {
+                    context.stroke(Path { $0.addLines(Self.curve(arc.points).map(eyePoint)) }, with: .color(ink),
+                                   style: StrokeStyle(lineWidth: arc.lineWidth * scale, lineCap: .round, lineJoin: .round))
+                } else {
+                    let width = 3.2 * expression.eyeWidth, height = 5.4 * expression.eyeHeight
+                    context.fill(Path { $0.addLines(Self.oval(width: width, height: height).map(eyePoint)) }, with: .color(ink))
+                }
+            }
+            let mouthY = radius * sin(Self.mouthLatitude)
+            guard place(0, mouthY).facing > 0.1 else { return }
+            if expression.mouthOpen > 0.4 {
+                let width = max(1.5, expression.mouthWidth * 0.22), height = expression.mouthOpen * 0.7
+                context.fill(Path { $0.addLines(Self.oval(width: width, height: height).map { place($0.x, mouthY + $0.y).point }) },
+                             with: .color(ink))
+            } else {
+                let half = expression.mouthWidth / 2
+                let lip = Self.curve([CGPoint(x: -half, y: 0), CGPoint(x: half * 0.1, y: 1 + expression.smile * 1.2), CGPoint(x: half, y: -1)])
+                context.stroke(Path { $0.addLines(lip.map { place($0.x, mouthY + $0.y).point }) }, with: .color(ink),
+                               style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
             }
         }
         .frame(width: size, height: size)
         .scaleEffect(x: 1 + expression.squash * 0.03, y: 1 - expression.squash * 0.05, anchor: .bottom)
         .offset(y: -sin(time * .pi / 1.1) * size * 0.012 * thinking)
         .rotationEffect(.degrees(expression.roll * 0.6))
+    }
+
+    /// An oval as points, so each point can land on the curved surface. Width and height are radii.
+    static func oval(width: Double, height: Double) -> [CGPoint] {
+        (0..<20).map { step in
+            let angle = Double(step) / 20 * 2 * .pi
+            return CGPoint(x: width * cos(angle), y: height * sin(angle))
+        }
+    }
+
+    /// A quadratic curve through the first and last point, sampled as points.
+    static func curve(_ points: [CGPoint]) -> [CGPoint] {
+        (0...10).map { step in
+            let t = Double(step) / 10, u = 1 - t
+            return CGPoint(x: u * u * points[0].x + 2 * u * t * points[1].x + t * t * points[2].x,
+                           y: u * u * points[0].y + 2 * u * t * points[1].y + t * t * points[2].y)
+        }
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 
-// Each working phase has its own gesture. The face acts as a sphere: the eyes and mouth
-// sit on its surface, so a gaze change moves them across the fruit and foreshortens them.
+// Each working phase has its own gesture. The whole fruit turns as a solid (FruitVolume), and the eyes
+// and mouth sit on its surface, so a gaze change turns the fruit and carries the face around it.
 enum CoconutGesture: Sendable {
     case ponder, scan, focus, dart, recall, spin, write
 }
@@ -145,4 +145,33 @@ struct CoconutExpression: Equatable {
                     smile: mix(smile, other.smile), mouthOpen: mix(mouthOpen, other.mouthOpen),
                     squash: mix(squash, other.squash), roll: mix(roll, other.roll))
     }
+}
+
+/// A feeling that the face shows over its gesture. The face changes to a new mood inside a blink.
+enum CoconutMood: Sendable {
+    case neutral, happy, surprised, sad, sleepy
+
+    /// Closed-eye arcs, in face units around the eye center. Nil keeps the open oval.
+    var eyeArc: (points: [CGPoint], lineWidth: Double)? {
+        switch self {
+        case .happy: ([CGPoint(x: -2.9, y: 1.4), CGPoint(x: 0, y: -2), CGPoint(x: 2.9, y: 1.4)], 2.4)
+        case .sleepy: ([CGPoint(x: -2.8, y: -0.5), CGPoint(x: 0, y: 1), CGPoint(x: 2.8, y: -0.5)], 1.8)
+        case .neutral, .surprised, .sad: nil
+        }
+    }
+
+    func applied(to expression: CoconutExpression) -> CoconutExpression {
+        var face = expression
+        switch self {
+        case .neutral: break
+        case .happy: face.smile = 6; face.mouthWidth = 14; face.mouthOpen = 0
+        case .surprised: face.eyeWidth *= 1.25; face.eyeHeight *= 1.2; face.mouthOpen = 4
+        case .sad: face.eyeHeight *= 0.88; face.smile = -3.5; face.mouthWidth = 9; face.mouthOpen = 0
+        case .sleepy: face.smile = 0.5; face.mouthWidth = 7; face.mouthOpen = 0
+        }
+        return face
+    }
+
+    /// Sad eyes lean in at the top, so their outer corners droop.
+    var innerTilt: Double { self == .sad ? 22 : 0 }
 }
