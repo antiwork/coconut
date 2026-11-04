@@ -71,6 +71,7 @@ struct MacInboxView: View {
                 .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
                 .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
             }
+            .environment(\.pushRoute) { route in path.append(route) }
             .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
             .background(BoardStyle.paper)
         }

@@ -22,6 +22,8 @@ struct MacMainWindow: View {
     @State private var inspectorTab = InspectorTab.details
     @State private var createOpen = false
     @State private var pairingOpen = false
+    // The pages that a chat opened. A row of the chat list pushes onto it (pushRoute); another bot starts at its chat.
+    @State private var chatPath = NavigationPath()
 
     var body: some View {
         Group {
@@ -73,7 +75,7 @@ struct MacMainWindow: View {
             // inspector's split view did not settle on a layout and stopped the app, below about 1,300 points of
             // window width. The column also keeps its tabs in one row with the bot's title over the chat.
             HStack(spacing: 0) {
-                NavigationStack {
+                NavigationStack(path: $chatPath) {
                     ConversationView(botId: botId)
                         .id(botId)
                         // The bot's title over the chat shows and hides the details next to it.
@@ -85,6 +87,8 @@ struct MacMainWindow: View {
                         .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
                         .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
                 }
+                .environment(\.pushRoute) { route in chatPath.append(route) }
+                .onChange(of: botId) { _, _ in chatPath = NavigationPath() }
                 .frame(minWidth: 300, maxWidth: .infinity)
                 if inspectorShown {
                     Divider()
