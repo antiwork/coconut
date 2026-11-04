@@ -143,7 +143,8 @@ enum TranscriptPresentation {
             return results.contains(Result(task: task, sender: message.senderBotId ?? message.botId))
         }
         return messages.filter { message in
-            if message.streaming { return false }
+            // A reply shows as it streams in, so the person sees the bot write.
+            if message.streaming && !hasStreamingWords(message) { return false }
             if message.kind == "decision", let id = message.decisionId, replied.contains(id) { return false }
             if message.reactionEvent != nil || isSilenceControl(message) { return false }
             if isSettingsNotice(message) { return false }
@@ -190,6 +191,13 @@ enum TranscriptPresentation {
         guard let first = scalars.firstIndex(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }),
               let last = scalars.lastIndex(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }) else { return value.isEmpty }
         return scalars[first...last].elementsEqual(value.unicodeScalars)
+    }
+
+    /// Whether a streaming reply has words to show. A stream with no text yet, or with text that can still become the
+    /// silence marker, such as "[SIL", stays hidden.
+    static func hasStreamingWords(_ message: Message) -> Bool {
+        let text = message.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !text.isEmpty && !"[SILENT]".hasPrefix(text)
     }
 
     static func isSilenceControl(_ message: Message) -> Bool {

@@ -4,11 +4,13 @@ import XCTest
 @testable import Coconut
 
 final class TranscriptPresentationTests: XCTestCase {
-    func testFinalReplyAppearsOnceAfterPartialUpdates() {
+    func testAReplyShowsAsItStreamsAndStaysOneMessage() {
         let before = message("before", role: "user", text: "Check this.")
+        XCTAssertEqual(visibleIDs([before, message("reply", text: "\n", streaming: true)]), ["before"])
         for text in ["I am", "I am checking"] {
             let partial = message("reply", text: text, streaming: true)
-            XCTAssertEqual(visibleIDs([before, partial]), ["before"])
+            XCTAssertEqual(visibleIDs([before, partial]), ["before", "reply"])
+            // The bot list keeps the last complete message as its preview.
             XCTAssertEqual(latestConversationMessage(in: [before, partial])?.id, "before")
         }
         let answer = message("reply", text: "The check passed.")
@@ -50,7 +52,7 @@ final class TranscriptPresentationTests: XCTestCase {
         let commentary = message("commentary", text: "I will check the merge action and its tests.")
         let partial = message("reply", text: "The merge action", streaming: true)
 
-        XCTAssertEqual(visibleIDs([request, commentary, partial]), [request.id, commentary.id])
+        XCTAssertEqual(visibleIDs([request, commentary, partial]), [request.id, commentary.id, partial.id])
         XCTAssertEqual(latestConversationMessage(in: [commentary, partial])?.id, commentary.id)
 
         let answer = message("reply", text: "The merge action now merges the pull request.")
@@ -247,11 +249,11 @@ final class TranscriptPresentationTests: XCTestCase {
         XCTAssertEqual(visibleIDs(messages), messages.map(\.id))
     }
 
-    func testPartialReplyStaysHiddenBesideAnswer() {
+    func testPartialReplyShowsBesideAnswerButNotInThePreview() {
         let messages = [message("answer", text: "2"),
                         message("streaming", text: "Ready to review.", streaming: true)]
 
-        XCTAssertEqual(visibleIDs(messages), ["answer"])
+        XCTAssertEqual(visibleIDs(messages), ["answer", "streaming"])
         XCTAssertEqual(latestConversationMessage(in: messages)?.id, "answer")
     }
 
@@ -367,7 +369,14 @@ final class TranscriptPresentationTests: XCTestCase {
         let messages = [message("streaming", text: "Ready to review.", streaming: true),
                         message("card", kind: "artifact", artifactID: "result")]
 
-        XCTAssertEqual(visibleIDs(messages, artifacts: [artifact("result")]), ["card"])
+        XCTAssertEqual(visibleIDs(messages, artifacts: [artifact("result")]), ["streaming", "card"])
+    }
+
+    func testAStreamThatCanStillBecomeTheSilenceMarkerStaysHidden() {
+        for text in ["[", "[SIL", " [SILENT"] {
+            XCTAssertEqual(visibleIDs([message("reply", text: text, streaming: true)]), [], text)
+        }
+        XCTAssertEqual(visibleIDs([message("reply", text: "[See the report]", streaming: true)]), ["reply"])
     }
 
     func testBotMessageToAnotherRecipientCannotHideArtifact() {

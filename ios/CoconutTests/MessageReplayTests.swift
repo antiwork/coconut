@@ -194,8 +194,13 @@ final class MessageReplayTests: XCTestCase {
         store.tasks = [task]
         var stream = fixture.messages.first { $0.botId == bot.id && $0.role == "assistant" }!
         stream.streaming = true
+        let words = stream.text
+        stream.text = ""
         store.messages = [stream]
-        XCTAssertNotNil(store.conversationActivity(bot.id), "A real partial response still needs feedback.")
+        XCTAssertEqual(store.conversationActivity(bot.id)?.phase, .writing, "A reply with no words yet still needs feedback.")
+        stream.text = words
+        store.messages = [stream]
+        XCTAssertNil(store.conversationActivity(bot.id), "The streaming words are the feedback.")
         stream.streaming = false
         store.messages = [stream]
         XCTAssertNil(store.conversationActivity(bot.id))
@@ -205,6 +210,8 @@ final class MessageReplayTests: XCTestCase {
         store.tasks[0].phase = "an unknown phase"
         XCTAssertEqual(store.conversationActivity(bot.id)?.phase, .thinking)
         store.messages[0].streaming = true
+        XCTAssertNil(store.conversationActivity(bot.id))
+        store.messages[0].text = ""
         XCTAssertEqual(store.conversationActivity(bot.id)?.phase, .writing)
         XCTAssertEqual(store.conversationActivity(bot.id)?.reconnecting, false)
         store.connection = .disconnected

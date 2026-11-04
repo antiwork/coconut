@@ -132,7 +132,10 @@ final class AppStore {
     // The status row stays during a lost connection, so work in progress does not seem to stop.
     func conversationActivity(_ botId: String) -> ConversationActivity? {
         let reconnecting = !isDemo && connection != .connected
-        if messages.contains(where: { $0.botId == botId && $0.role == "assistant" && $0.streaming }) {
+        // A reply that streams in with text is its own sign of life. Until its first words, the row says Writing.
+        let streams = messages.filter { $0.botId == botId && $0.role == "assistant" && $0.streaming }
+        if !streams.isEmpty {
+            if streams.contains(where: TranscriptPresentation.hasStreamingWords) && !reconnecting { return nil }
             return ConversationActivity(phase: .writing, startedAt: nil, reconnecting: reconnecting)
         }
         if let running = runningPhase(where: { $0.chatBotId == botId }) {

@@ -29,9 +29,10 @@ final class ChatActivityFlowTests: XCTestCase {
         assertDisappears(thinking, within: 3, stage: "waiting")
         capture(app, "Waiting task returns to rest")
 
+        // A reply that streams in with words is its own feedback, so the row stays away.
         stage("streaming")
-        assertAppears(thinking, within: 3, stage: "streaming")
-        capture(app, "Streaming reply retains response feedback")
+        XCTAssertFalse(thinking.waitForExistence(timeout: 2), "A streaming reply with words needs no status row.")
+        capture(app, "Streaming reply shows its words")
 
         for terminal in ["completed", "failed"] {
             stage(terminal)
