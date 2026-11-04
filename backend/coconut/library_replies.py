@@ -36,12 +36,26 @@ def _heading(line: str) -> str | None:
     return _plain(match.group(1)) if match else None
 
 
+def _in_code(lines: list[str]) -> list[bool]:
+    """For each line, whether it is in fenced code, where `# Setup` is a comment and not a heading."""
+    inside, fence, marks = False, '', []
+    for line in lines:
+        stripped = line.lstrip()
+        opener = stripped[:3] if stripped.startswith(('```', '~~~')) else ''
+        if opener and (not inside or opener == fence):
+            marks.append(True)
+            inside, fence = not inside, opener
+        else:
+            marks.append(inside)
+    return marks
+
+
 def is_report(text: str) -> bool:
     """A reply with the shape of a report: headings, a table or a long list, with enough text, or with photos."""
     lines = text.splitlines()
     photos = sum(1 for line in lines if _PHOTO.match(line))
     prose = sum(len(line.strip()) for line in lines if not _PHOTO.match(line))
-    headings = sum(1 for line in lines if _heading(line))
+    headings = sum(1 for line, code in zip(lines, _in_code(lines)) if not code and _heading(line))
     items = sum(1 for line in lines if _LIST_ITEM.match(line))
     table = any(_TABLE_RULE.match(line) for line in lines)
     if photos:
@@ -53,7 +67,9 @@ def document_of(text: str, fallback_title: str) -> dict:
     """The title, the key, the summary and the content of the document of a report."""
     lines = text.strip().splitlines()
     # The first heading names the report, also after a sentence such as "Here is today's report".
-    heading = next(((index, _heading(line)) for index, line in enumerate(lines) if _heading(line)), None)
+    code = _in_code(lines)
+    heading = next(((index, _heading(line)) for index, line in enumerate(lines)
+                    if not code[index] and _heading(line)), None)
     title = heading[1] if heading else next((_plain(line) for line in lines if _plain(line) and not _PHOTO.match(line)), '')
     title = _shorten(title or fallback_title, MAX_TITLE)
     # The Library shows the title over the page, so a heading that gave it at the top goes.

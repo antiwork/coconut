@@ -314,6 +314,10 @@ class ReportShapeTests(unittest.TestCase):
         # The first heading names the report, also after an introduction.
         intro = document_of("Here is today's report.\n\n## Weekly sales\n\nSales rose.", 'Task')
         self.assertEqual(intro['title'], 'Weekly sales')
+        # A comment in fenced code is not a heading.
+        code = document_of("Deploy notes for the API.\n\n```sh\n# Setup\nmake\n```\n\n- One", 'Task')
+        self.assertEqual(code['title'], 'Deploy notes for the API.')
+        self.assertFalse(is_report('Run this.\n\n```python\n# Setup\n# Load\n' + 'x = 1\n' * 400 + '```'))
         self.assertTrue(intro['content'].startswith("Here is today's report."))
         # Titles in other scripts, or with the same start, keep their own documents.
         keys = {document_of(f'# {title}\n\nText', 'Task')['key'] for title in
