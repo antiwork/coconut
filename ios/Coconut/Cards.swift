@@ -22,6 +22,15 @@ struct DecisionCard: View {
     private var canRespond: Bool { store.canSubmitDecision }
     private var showsSelection: Bool { !decision.isPending || dismissing }
     private var isDismissed: Bool { dismissing || decision.status == "dismissed" }
+    /// A card in the chat has its own X. The iPhone Inbox dismisses with a swipe, but a Mac has no swipe, so its Inbox
+    /// card has the X too.
+    private var showsDismiss: Bool {
+        #if os(macOS)
+        true
+        #else
+        !showsBot
+        #endif
+    }
     private var selectionLabel: String {
         if isDismissed { return "Dismissed" }
         if decision.draft != nil {
@@ -88,10 +97,12 @@ struct DecisionCard: View {
             HStack(alignment: .top, spacing: 8) {
                 DecisionIntroduction(decision: decision, showsContext: !showsSelection)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if !showsBot && !showsSelection {
+                if showsDismiss && !showsSelection {
                     Button(action: dismiss) {
+                        // The icon sits at the top of its tap area, level with the first line of the title.
                         Image(systemName: "xmark").font(.body).foregroundStyle(.secondary)
-                            .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                            .padding(.top, 2)
+                            .frame(width: 44, height: 44, alignment: .topTrailing).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .disabled(!canRespond || submitting || store.answeringDecisionIds.contains(decision.id))

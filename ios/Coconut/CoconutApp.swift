@@ -83,7 +83,7 @@ struct CoconutHome: View {
                 root(tab: .library, path: $libraryPath)
             } label: {
                 Label { Text("Library") } icon: {
-                    Image(systemName: "books.vertical").environment(\.symbolVariants, .none)
+                    Image(systemName: "rectangle.3.group").environment(\.symbolVariants, .none)
                 }
             }.accessibilityIdentifier("home-library")
         }

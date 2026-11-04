@@ -91,7 +91,7 @@ struct LibraryView: View {
 
     private var emptyLibrary: some View {
         VStack(spacing: 8) {
-            Image(systemName: "books.vertical").font(.largeTitle.weight(.light)).foregroundStyle(.secondary)
+            Image(systemName: "rectangle.3.group").font(.largeTitle.weight(.light)).foregroundStyle(.secondary)
             Text("Your Library").font(.headline)
             Text("Bots keep documents here: notes, checklists, and charts that they update.")
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
