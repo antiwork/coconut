@@ -31,7 +31,7 @@ struct MacMainWindow: View {
                         .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 300)
                         .toolbar {
                             ToolbarItem {
-                                Button { createOpen = true } label: { Label("New bot", systemImage: "square.and.pencil") }
+                                Button { createOpen = true } label: { Label("New bot", systemImage: "plus") }
                                     .keyboardShortcut("n", modifiers: .command)
                                     .help("Create a bot")
                             }
@@ -93,6 +93,10 @@ struct MacMainWindow: View {
                         .transition(.move(edge: .trailing))
                 }
             }
+            // The chat and the details run up into the toolbar, so the bot's title and the tabs sit in its row, next to the
+            // window buttons. The toolbar draws no band of its own there.
+            .ignoresSafeArea(.container, edges: .top)
+            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
             // The pill over the chat names the bot, so the window shows no title of its own. Without this, the title of
             // the bot settings in the details repeats the bot name.
             .toolbar(removing: .title)
@@ -114,11 +118,11 @@ struct MacSidebar: View {
 
     var body: some View {
         List(selection: $selection) {
-            Label("Inbox", systemImage: "tray")
+            MacSidebarLabel(title: "Inbox", symbol: "tray")
                 .badge(store.inboxBadgeCount)
                 .tag(MacSelection.inbox)
                 .accessibilityIdentifier("sidebar-inbox")
-            Label("Library", systemImage: "books.vertical")
+            MacSidebarLabel(title: "Library", symbol: "rectangle.3.group")
                 .badge(store.documents?.count ?? 0)
                 .tag(MacSelection.library)
                 .accessibilityIdentifier("sidebar-library")
@@ -183,14 +187,16 @@ private struct MacBotDetails: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            Picker("Show", selection: $tab) {
-                Text("Details").tag(InspectorTab.details)
-                Text("Library").tag(InspectorTab.library)
+            // Text tabs. The current one sits on a soft capsule. The same height and top space as the bot's title over
+            // the chat, so both sit in one row.
+            HStack(spacing: 2) {
+                tabButton("Details", .details)
+                tabButton("Library", .library)
             }
-            .pickerStyle(.segmented).labelsHidden()
-            // The same height and top space as the bot's title over the chat, so both sit in one row.
             .frame(height: 34)
             .padding(.horizontal, 12).padding(.top, 8)
+            // The background of the form below reaches up into the toolbar area. The tabs stay in front of it.
+            .zIndex(1)
             NavigationStack {
                 // Each bot gets its own settings view. Leaving it saves its edits to that bot, so an unsaved edit
                 // never moves to the next bot.
@@ -205,5 +211,34 @@ private struct MacBotDetails: View {
         // A grouped Mac form keeps each section in a box, as the iPhone settings show them.
         .formStyle(.grouped)
         .background(BoardStyle.paper)
+    }
+
+    private func tabButton(_ title: String, _ value: InspectorTab) -> some View {
+        let selected = tab == value
+        return Button { tab = value } label: {
+            Text(title)
+                .font(.body.weight(selected ? .medium : .regular))
+                .foregroundStyle(selected ? .primary : .secondary)
+                .padding(.horizontal, 14).frame(height: 30)
+                .background(selected ? Color.primary.opacity(0.1) : .clear, in: Capsule())
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// A row of the sidebar's top part: a quiet icon in the text color, and room around it.
+private struct MacSidebarLabel: View {
+    let title: String
+    let symbol: String
+
+    var body: some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: symbol).foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
     }
 }

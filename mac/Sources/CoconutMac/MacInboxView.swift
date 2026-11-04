@@ -9,6 +9,14 @@ struct MacInboxView: View {
     // What the card opened: its chat or an earlier answer. A new card from the Mac keeps it, so an open chat keeps its
     // unsent message. A card that the person picks goes back to the card.
     @State private var path = NavigationPath()
+    // The last card that the X dismissed. Undo restores it while the Mac keeps its restore window open.
+    @State private var dismissed: Dismissal?
+
+    private struct Dismissal {
+        let receipt: Decision
+        let restoreKey = UUID().uuidString
+        let at = Date()
+    }
 
     // An answered card leaves at once. The app holds the answer for a few seconds, and Undo in the toolbar takes it back.
     private var pending: [Decision] {
@@ -36,7 +44,8 @@ struct MacInboxView: View {
                 Group {
                     if let chosen {
                         ScrollView {
-                            DecisionCard(decision: chosen, showsBot: true, showsUndo: false)
+                            DecisionCard(decision: chosen, showsBot: true, showsUndo: false,
+                                         onDismissed: { dismissed = Dismissal(receipt: $0) })
                                 .id(chosen.id)
                                 .frame(maxWidth: 560)
                                 .padding(24)
@@ -69,7 +78,14 @@ struct MacInboxView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 TimelineView(.periodic(from: .now, by: 1)) { context in
-                    if let waiting = store.latestWaitingAnswer(at: context.date) {
+                    // Undo takes back the newest action: a dismissal, or an answer that the app still holds.
+                    let waiting = store.latestWaitingAnswer(at: context.date)
+                    if let dismissed, let deadline = dismissed.receipt.inboxUndoUntil?.apiDate, deadline > context.date,
+                       dismissed.at > (waiting?.createdAt.apiDate ?? .distantPast) {
+                        Button { restore(dismissed) } label: { Label("Undo", systemImage: "arrow.uturn.backward") }
+                            .keyboardShortcut("z", modifiers: .command)
+                            .help("Bring back the dismissed card \(dismissed.receipt.title)")
+                    } else if let waiting {
                         Button {
                             store.undoAnswer(decisionId: waiting.decisionId)
                             chosenId = waiting.decisionId
@@ -81,6 +97,23 @@ struct MacInboxView: View {
             }
         }
         .onChange(of: chosenId) { _, _ in path = NavigationPath() }
+    }
+
+    /// Restores a dismissed card, as Undo after a swipe does on the iPhone. A retry uses the same key.
+    private func restore(_ dismissed: Dismissal) {
+        Task {
+            let result = await store.updateInbox(dismissed.receipt, action: "restore", idempotencyKey: dismissed.restoreKey)
+            // A newer dismissal can arrive while this one restores. It keeps its own Undo.
+            let current = self.dismissed?.restoreKey == dismissed.restoreKey
+            if result.decision != nil {
+                if current { self.dismissed = nil }
+                chosenId = dismissed.receipt.id
+            } else if result.isUncertain {
+                store.error = "Undo is not confirmed. Reconnect and try Undo again."
+            } else if current {
+                self.dismissed = nil
+            }
+        }
     }
 }
 

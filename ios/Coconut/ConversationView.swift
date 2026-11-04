@@ -135,6 +135,11 @@ struct ConversationView: View {
                         .listRowBackground(Color.clear)
                     }
                     .listStyle(.plain)
+                    #if os(macOS)
+                    // The chat runs up under the window's toolbar, where the bot's title floats. The first message
+                    // starts below the title.
+                    .contentMargins(.top, 52, for: .scrollContent)
+                    #endif
                     .buttonStyle(.borderless)
                     .scrollContentBackground(.hidden)
                     .environment(\.defaultMinListRowHeight, 1)

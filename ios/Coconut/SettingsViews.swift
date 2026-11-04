@@ -272,6 +272,12 @@ struct BotEditorView: View {
             }
             .disabled(saving)
             .settingsBackground()
+            #if os(macOS)
+            // A Mac sheet sizes itself to a plain form, which then runs its fields to the edges. Grouped sections give
+            // the fields their boxes and margins, as in the bot details.
+            .formStyle(.grouped)
+            .frame(width: 460, height: 460)
+            #endif
             .navigationTitle("New bot").inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
