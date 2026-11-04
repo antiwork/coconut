@@ -109,8 +109,8 @@ private struct ExchangeChip: View {
             .foregroundStyle(lit ? .primary : .secondary)
             .padding(.leading, 4).padding(.trailing, 8).padding(.vertical, 4)
             .background(Capsule().fill(Color.primary.opacity(lit ? 0.1 : 0)))
-            // The tap area is 44 points tall, more than the chip.
-            .padding(.vertical, 8)
+            // The tap area is at least 44 points tall, more than the chip.
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
     }

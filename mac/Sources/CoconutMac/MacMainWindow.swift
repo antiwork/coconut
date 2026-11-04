@@ -53,6 +53,8 @@ struct MacMainWindow: View {
         .sheet(isPresented: $createOpen) { BotEditorView() }
         .sheet(isPresented: $pairingOpen) { MacPairingView(model: model).frame(width: 520, height: 600) }
         .onChange(of: store.setupLink) { _, link in if link != nil { pairingOpen = true } }
+        // Each choice in the sidebar starts at its own root, so another bot never shows the last bot's pages.
+        .onChange(of: selection) { _, _ in chatPath = NavigationPath() }
         .overlay(alignment: .top) {
             if let error = store.error {
                 ErrorBanner(message: error) { store.error = nil }.padding(.horizontal, 16).padding(.top, 8)
@@ -88,7 +90,6 @@ struct MacMainWindow: View {
                         .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
                 }
                 .environment(\.pushRoute) { route in chatPath.append(route) }
-                .onChange(of: botId) { _, _ in chatPath = NavigationPath() }
                 .frame(minWidth: 300, maxWidth: .infinity)
                 if inspectorShown {
                     Divider()
