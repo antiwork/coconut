@@ -498,6 +498,37 @@ def audit_signature(proof, decisions):
 RETRY_MAX = 24 * 3600
 
 
+def pull_requests_to_track(items, bot_id, created, tasks, bindings, tracked, current):
+    """The open pull requests of a source with `track_pull_requests` that need a review owner, each with the task that
+    should review it: the audit of this pass, or else the newest audit or bound task of the same source item.
+
+    A PR keeps its owner only while that owner is current (`current`, for example not from before a restart of the
+    bots) and this pass started no new audit for it. A PR that is already covered (a live audit, a pending card or a
+    no-card record) gets its existing task, so it is tracked as well. A PR with no task yet waits for its first audit.
+    """
+    result = []
+    for item in items:
+        if item.get('kind') != 'pull_request' or item.get('_removed_from_source'):
+            continue
+        existing = tracked(item['id'])
+        # A closed record gets no polls, so a reopened PR registers again, also with the same owner.
+        live = existing and existing.get('pr_state') not in ('closed', 'merged')
+        if live and existing.get('_review_task_id') and item['id'] not in created and current(existing):
+            continue
+        owner = created.get(item['id'])
+        if not owner:
+            audits = sorted((task for task in tasks.values() if task['bot_id'] == bot_id
+                             and (task.get('_source_assignment') or {}).get('id') == item['id']),
+                            key=lambda task: task.get('created_at') or '')
+            bound = [identity for identity in bindings.get(item['id'], {}).get('task_ids', [])
+                     if identity in tasks and tasks[identity]['bot_id'] == bot_id]
+            owner = audits[-1]['id'] if audits else (bound[-1] if bound else None)
+        # The stale owner again changes nothing. The next change of the PR starts its audit, which takes it over.
+        if owner and (not live or owner != existing.get('_review_task_id')):
+            result.append((item['id'], owner))
+    return result
+
+
 def retry_delay(attempts, source):
     return min(RETRY_MAX, max(600, source.get('interval_seconds', 600)) * 2 ** min(attempts - 1, 10))
 
@@ -621,6 +652,20 @@ class WorkSources:
         self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))
         return {'status': 'recorded', 'next_check_at': until.isoformat()}
 
+    def _track_source_pr(self, bot_id, url, task_id):
+        """Track a pull request that a source with `track_pull_requests` reports, for the bot of the source.
+
+        The bot's audit task of the PR becomes its review owner. Coconut then resumes that bot when checks or reviews
+        change, and the bot decides about a merge card, as for a PR that it tracks itself with coconut_track_pr. No model
+        call has to remember the tracking. This reads GitHub, so it runs outside the service lock.
+        """
+        from .service import ServiceError, YieldForDecision
+        try:
+            self._register_pr_artifact(None, {'kind': 'pr', 'url': url, 'review_task_id': task_id}, bot_id=bot_id)
+        except (ServiceError, YieldForDecision) as error:
+            # The next change of the PR audits it again and retries the tracking.
+            logging.getLogger(__name__).warning('Coconut could not track %s for bot %s: %s', url, bot_id, error)
+
     def _poll_work_sources(self):
         while not self.stopping.is_set():
             try:
@@ -674,6 +719,9 @@ class WorkSources:
                     continue
             failing_since = state.get('failing_since')
             sole_source = sum(s['bot_id'] == bot['id'] for s in sources) == 1
+            # The pull requests of this pass that Coconut tracks for the bot, with their review owner, and the audits that
+            # this pass creates.
+            to_track, created = [], {}
             try:
                 env, cwd = self.provider.environment(bot['id'])
                 result = subprocess.run(source['command'], cwd=cwd, env=env, capture_output=True, timeout=60, check=True)
@@ -872,12 +920,17 @@ class WorkSources:
                                                           awaiting_user=bool(item.get('awaiting_user')))
                         self._put('tasks', task)
                         state['task_id'] = task['id']
+                        created[item['id']] = task['id']
                         previous = recoveries.get(item['id'], {})
                         attempts = previous.get('attempts', 1) + 1 if previous.get('signature') == signatures[item['id']] else 1
                         recoveries[item['id']] = dict(signature=signatures[item['id']], task_id=task['id'], attempts=attempts,
                                                      removed=bool(item.get('_removed_from_source')),
                                                      retry_at=time.time() + retry_delay(attempts, source))
                     state['recoveries'] = recoveries
+                    if source.get('track_pull_requests'):
+                        to_track = pull_requests_to_track(items, bot['id'], created, tasks, bindings,
+                                                          lambda url: self._bot_pr_artifact(bot['id'], url),
+                                                          self._pr_review_source_current)
                     # End work whose sources closed. Another source of the same bot can link the same card, and its
                     # open list is not read here, so the rule runs only for a bot with one source.
                     stale, callbacks = {}, []
@@ -916,6 +969,8 @@ class WorkSources:
                     self.update_bot_health(bot['id'])
                 for callback in callbacks:
                     callback()
+                for url, task_id in to_track:
+                    self._track_source_pr(bot['id'], url, task_id)
                 if stale:
                     archived = self.kanban.call({'op': 'archive_stale', 'cards': stale, 'note': STALE_NOTE,
                                                  'idle_age': STALE_IDLE_AGE})['archived']

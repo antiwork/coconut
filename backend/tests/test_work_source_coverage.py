@@ -36,6 +36,60 @@ class WorkSourceTests(unittest.TestCase):
             self.service.audit_work_sources()
         return self.service._setting('work-source:assigned')
 
+    def pull_request_source(self, track):
+        self.pr = dict(id='https://github.com/example/repo/pull/7', updated_at='2026-09-14T12:00:00Z', title='Open PR',
+                       kind='pull_request')
+        self.items = [self.item, self.pr]
+        if track:
+            self.source['track_pull_requests'] = True
+            (self.root / 'work-sources.json').write_text(json.dumps([self.source]))
+        with patch.object(self.service, '_register_pr_artifact') as register:
+            state = self.audit()
+        self.assertIsNone(state['error'])
+        return register
+
+    def test_a_source_can_track_each_open_pull_request_for_its_bot(self):
+        register = self.pull_request_source(track=True)
+        # Only the PR is tracked, for the bot of the source, with its audit task as review owner.
+        self.assertEqual(register.call_count, 1)
+        args, kwargs = register.call_args
+        self.assertIsNone(args[0])
+        self.assertEqual(args[1]['url'], self.pr['id'])
+        self.assertEqual(kwargs['bot_id'], self.bot['id'])
+        audit = self.service._get('tasks', args[1]['review_task_id'])
+        self.assertEqual(audit['_source_assignment']['id'], self.pr['id'])
+
+    def test_a_source_tracks_no_pull_request_without_the_option(self):
+        self.pull_request_source(track=False).assert_not_called()
+
+    def test_a_pull_request_moves_to_a_new_audit_when_its_owner_is_not_current(self):
+        from coconut.work_sources import pull_requests_to_track
+        item = dict(id='https://github.com/example/repo/pull/7', kind='pull_request')
+        tracked = dict(pr_state='open', _review_task_id='old-audit')
+        tasks = {'old-audit': dict(id='old-audit', bot_id='bot', _source_assignment=dict(id=item['id']), created_at='1')}
+        def owners(created, current):
+            return pull_requests_to_track([item], 'bot', created, tasks, {}, lambda url: tracked, lambda pr: current)
+        # A current owner keeps the PR. A new audit takes over from an owner from before a restart of the bots.
+        self.assertEqual(owners({}, True), [])
+        self.assertEqual(owners({}, False), [])
+        self.assertEqual(owners({item['id']: 'new-audit'}, False), [(item['id'], 'new-audit')])
+        self.assertEqual(owners({item['id']: 'new-audit'}, True), [(item['id'], 'new-audit')])
+        # A reopened PR registers again with its owner, because a closed record gets no polls.
+        tracked['pr_state'] = 'closed'
+        self.assertEqual(owners({}, True), [(item['id'], 'old-audit')])
+
+    def test_a_covered_pull_request_is_tracked_with_its_existing_audit(self):
+        # The PR already has a live audit when the option is turned on. No new audit starts, and the PR is still
+        # tracked, with that audit as its review owner.
+        self.pull_request_source(track=False)
+        audit = next(t for t in self.service._all('tasks')
+                     if (t.get('_source_assignment') or {}).get('id') == self.pr['id'])
+        self.source['track_pull_requests'] = True
+        (self.root / 'work-sources.json').write_text(json.dumps([self.source]))
+        with patch.object(self.service, '_register_pr_artifact') as register:
+            self.audit()
+        self.assertEqual([call.args[1]['review_task_id'] for call in register.call_args_list], [audit['id']])
+
     def test_complete_source_snapshot_replaces_trusted_repositories(self):
         from coconut.decision_sources import operator_owners
         self.assertEqual(self.audit()['trusted_repositories'], ['example/repo'])
