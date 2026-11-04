@@ -4,11 +4,9 @@ import SwiftUI
 // when the person submits it, and when the page closes. Back never drops an edit.
 struct BotSettingsView: View {
     @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
     let botId: String
     @State private var edits: BotDraft?
     @State private var routineOpen = false
-    @State private var deleteOpen = false
 
     private var draft: Bot? { edits?.bot }
 
@@ -51,18 +49,6 @@ struct BotSettingsView: View {
         }
         .settingsBackground()
         .navigationTitle(draft?.name ?? "Bot").inlineNavigationTitle()
-        .toolbar {
-            ToolbarItem(placement: .trailingBar) {
-                Menu {
-                    if let draft {
-                        Button(draft.archived ? "Restore bot" : "Archive bot") {
-                            Task { await store.archiveBot(draft); if store.error == nil { dismiss() } }
-                        }
-                        Button("Delete bot", role: .destructive) { deleteOpen = true }
-                    }
-                } label: { Image(systemName: "ellipsis") }.accessibilityLabel("Bot options")
-            }
-        }
         .onAppear {
             if edits == nil, let bot = store.bots.first(where: { $0.id == botId }) { edits = BotDraft(bot) }
         }
@@ -74,13 +60,6 @@ struct BotSettingsView: View {
         .onChange(of: draft?.color) { _, _ in save() }
         .onDisappear(perform: save)
         .sheet(isPresented: $routineOpen) { NavigationStack { RoutineEditorView(botId: botId) } }
-        .confirmationDialog("Delete \(draft?.name ?? "bot")?", isPresented: $deleteOpen, titleVisibility: .visible) {
-            Button("Delete bot", role: .destructive) {
-                if let draft { Task { await store.deleteBot(draft); if store.error == nil { dismiss() } } }
-            }
-        } message: {
-            Text("The Mac cancels this bot's work and removes its conversation. The audit record remains on your Mac.")
-        }
     }
 
     private func routineLink(_ routine: Routine, detail: String) -> some View {
@@ -320,6 +299,23 @@ private struct RoutineEditorView: View {
             }
             saving = false
             if store.error == nil { dismiss() }
+        }
+    }
+}
+
+/// Asks before a bot is deleted. The bot list opens it from the secondary click on a Mac and the long press on an iPhone.
+struct DeleteBotDialog: ViewModifier {
+    @Environment(AppStore.self) private var store
+    @Binding var bot: Bot?
+
+    func body(content: Content) -> some View {
+        content.confirmationDialog("Delete \(bot?.name ?? "bot")?",
+                                   isPresented: Binding(get: { bot != nil }, set: { if !$0 { bot = nil } }),
+                                   titleVisibility: .visible, presenting: bot) { bot in
+            Button("Delete bot", role: .destructive) { Task { await store.deleteBot(bot) } }
+                .accessibilityIdentifier("confirm-delete-bot")
+        } message: { _ in
+            Text("The Mac cancels this bot's work and removes its conversation. The audit record remains on your Mac.")
         }
     }
 }

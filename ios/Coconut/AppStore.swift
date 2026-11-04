@@ -581,14 +581,6 @@ final class AppStore {
         let _: Bot? = await write("bots/\(bot.id)", method: "PATCH", payload: PinRequest(pinned: pinned), as: Bot.self)
     }
 
-    func archiveBot(_ bot: Bot) async {
-        if isDemo {
-            if let index = bots.firstIndex(where: { $0.id == bot.id }) { bots[index].archived.toggle() }
-            return
-        }
-        let _: Bot? = await write("bots/\(bot.id)", method: "PATCH", payload: ArchiveRequest(archived: !bot.archived), as: Bot.self)
-    }
-
     func deleteBot(_ bot: Bot) async {
         if isDemo {
             bots.removeAll { $0.id == bot.id }; tasks.removeAll { $0.botId == bot.id }; messages.removeAll { $0.botId == bot.id }
@@ -2076,7 +2068,6 @@ private struct PinRequest: Encodable { let pinned: Bool }
 private struct InstructionsRequest: Encodable { let instructions: String }
 private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }
-private struct ArchiveRequest: Encodable { let archived: Bool }
 struct MessageRequest: Codable, Equatable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil; var workArtifactId: String? = nil; var workStatusOnly: Bool? = nil }
 private struct ReactionRequest: Encodable { let emoji: String; let active: Bool }
 struct OutgoingMessage: Codable, Identifiable, Equatable {
