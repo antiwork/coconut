@@ -36,6 +36,32 @@ class WorkSourceTests(unittest.TestCase):
             self.service.audit_work_sources()
         return self.service._setting('work-source:assigned')
 
+    def pull_request_source(self, track):
+        self.pr = dict(id='https://github.com/example/repo/pull/7', updated_at='2026-09-14T12:00:00Z', title='Open PR',
+                       kind='pull_request')
+        self.items = [self.item, self.pr]
+        if track:
+            self.source['track_pull_requests'] = True
+            (self.root / 'work-sources.json').write_text(json.dumps([self.source]))
+        with patch.object(self.service, '_register_pr_artifact') as register:
+            state = self.audit()
+        self.assertIsNone(state['error'])
+        return register
+
+    def test_a_source_can_track_each_open_pull_request_for_its_bot(self):
+        register = self.pull_request_source(track=True)
+        # Only the PR is tracked, for the bot of the source, with its audit task as review owner.
+        self.assertEqual(register.call_count, 1)
+        args, kwargs = register.call_args
+        self.assertIsNone(args[0])
+        self.assertEqual(args[1]['url'], self.pr['id'])
+        self.assertEqual(kwargs['bot_id'], self.bot['id'])
+        audit = self.service._get('tasks', args[1]['review_task_id'])
+        self.assertEqual(audit['_source_assignment']['id'], self.pr['id'])
+
+    def test_a_source_tracks_no_pull_request_without_the_option(self):
+        self.pull_request_source(track=False).assert_not_called()
+
     def test_complete_source_snapshot_replaces_trusted_repositories(self):
         from coconut.decision_sources import operator_owners
         self.assertEqual(self.audit()['trusted_repositories'], ['example/repo'])

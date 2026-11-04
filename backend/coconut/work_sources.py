@@ -621,6 +621,20 @@ class WorkSources:
         self.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(state)))
         return {'status': 'recorded', 'next_check_at': until.isoformat()}
 
+    def _track_source_pr(self, bot_id, url, task_id):
+        """Track a pull request that a source with `track_pull_requests` reports, for the bot of the source.
+
+        The bot's audit task of the PR becomes its review owner. Coconut then resumes that bot when checks or reviews
+        change, and the bot decides about a merge card, as for a PR that it tracks itself with coconut_track_pr. No model
+        call has to remember the tracking. This reads GitHub, so it runs outside the service lock.
+        """
+        from .service import ServiceError, YieldForDecision
+        try:
+            self._register_pr_artifact(None, {'kind': 'pr', 'url': url, 'review_task_id': task_id}, bot_id=bot_id)
+        except (ServiceError, YieldForDecision) as error:
+            # The next change of the PR audits it again and retries the tracking.
+            logging.getLogger(__name__).warning('Coconut could not track %s for bot %s: %s', url, bot_id, error)
+
     def _poll_work_sources(self):
         while not self.stopping.is_set():
             try:
@@ -674,6 +688,8 @@ class WorkSources:
                     continue
             failing_since = state.get('failing_since')
             sole_source = sum(s['bot_id'] == bot['id'] for s in sources) == 1
+            # The pull requests of this pass that Coconut tracks for the bot, with their audit task.
+            to_track = []
             try:
                 env, cwd = self.provider.environment(bot['id'])
                 result = subprocess.run(source['command'], cwd=cwd, env=env, capture_output=True, timeout=60, check=True)
@@ -872,6 +888,9 @@ class WorkSources:
                                                           awaiting_user=bool(item.get('awaiting_user')))
                         self._put('tasks', task)
                         state['task_id'] = task['id']
+                        if (source.get('track_pull_requests') and item.get('kind') == 'pull_request'
+                                and not item.get('_removed_from_source')):
+                            to_track.append((item['id'], task['id']))
                         previous = recoveries.get(item['id'], {})
                         attempts = previous.get('attempts', 1) + 1 if previous.get('signature') == signatures[item['id']] else 1
                         recoveries[item['id']] = dict(signature=signatures[item['id']], task_id=task['id'], attempts=attempts,
@@ -916,6 +935,8 @@ class WorkSources:
                     self.update_bot_health(bot['id'])
                 for callback in callbacks:
                     callback()
+                for url, task_id in to_track:
+                    self._track_source_pr(bot['id'], url, task_id)
                 if stale:
                     archived = self.kanban.call({'op': 'archive_stale', 'cards': stale, 'note': STALE_NOTE,
                                                  'idle_age': STALE_IDLE_AGE})['archived']
