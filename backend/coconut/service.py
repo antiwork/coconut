@@ -624,7 +624,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.db.execute('INSERT INTO events(type,bot_id,task_id,data,created_at) VALUES (?,?,?,?,?)', (event_type, bot_id, task_id, encoded(data), now()))
         self.push.record(event_type, data, bot_id, task_id)
 
-    def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False, direct_reply_message_id: str | None = None, interim: bool = False) -> dict:
+    def _message(self, bot_id: str, text: str, *, task_id: str | None = None, role: str = 'assistant', kind: str = 'text', decision_id: str | None = None, artifact_id: str | None = None, document_id: str | None = None, streaming: bool = False, sender_bot_id: str | None = None, recipient_bot_ids: list[str] | None = None, human_authored: bool = False, direct_reply_message_id: str | None = None, interim: bool = False) -> dict:
         task = self._get('tasks', task_id) if task_id else None
         thread_id = task['thread_id'] if task else None
         display_bot_id = (task['bot_id'] if task.get('source_bot_id') else task['conversation_bot_id']) if task else bot_id
@@ -635,6 +635,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             kind = 'bot_exchange'
             display_bot_id = sender_bot_id
         message = dict(id=uid(), bot_id=display_bot_id, task_id=task_id, thread_id=thread_id, sender_bot_id=sender_bot_id, recipient_bot_ids=recipients, role=role, kind=kind, text=text, decision_id=decision_id, artifact_id=artifact_id, created_at=now(), streaming=streaming)
+        if document_id:
+            message['document_id'] = document_id
         if interim:
             message['_interim'] = True
         if role == 'assistant' and kind == 'text':
@@ -4000,6 +4002,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         self._message(bot_id, task['summary'], task_id=task_id, kind='activity')
                 else:
                     self._message(bot_id, task['summary'], task_id=task_id, kind='status' if kind == 'failed' else 'text')
+                # Also a turn whose follow-up waits keeps its report: the next turn starts a new turn of replies.
+                if kind == 'completed' and not (task.get('_routine_silent') or reaction_silent or silent_completion):
+                    from .library_replies import keep_report
+                    keep_report(self, task)
             else:
                 raise ServiceError(400, f'Unknown provider event: {kind}')
             self._refresh_bot(bot_id)

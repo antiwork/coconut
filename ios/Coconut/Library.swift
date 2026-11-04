@@ -1,4 +1,5 @@
 import SwiftUI
+import MarkdownUI
 
 /// A page that a bot keeps in the Library (backend/coconut/documents.py). The list carries no content. The Mac sends
 /// the content of the current version when the phone opens the document.
@@ -180,6 +181,7 @@ struct DocumentView: View {
                             header(document)
                             Divider().padding(.vertical, 16)
                             MessageText(text: BotDocument.body(content))
+                                .markdownImageProvider(DocumentImages())
                         }
                         .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 32)
                     }
@@ -240,6 +242,96 @@ struct DocumentView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(document.title).font(.title2.weight(.semibold))
             Text(document.meta(botName: bot?.name)).font(.subheadline).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// A document in a chat: a card that opens it in the Library. The service adds one when a bot saves a new document, or
+/// when Coconut keeps a report of the bot (backend/coconut/library_replies.py).
+struct DocumentCard: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.openDocument) private var openDocument
+    @Environment(\.pushRoute) private var pushRoute
+    let documentId: String
+    /// The title when the card was made. The Library list has the current title and summary.
+    let title: String
+    private var document: BotDocument? { store.documents?.first { $0.id == documentId } }
+
+    var body: some View {
+        Button {
+            if let openDocument { openDocument(documentId) } else { pushRoute?(DocumentRoute(id: documentId)) }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: document?.isPage == true ? "chart.bar.xaxis" : "doc.text")
+                    .font(.body).foregroundStyle(.secondary)
+                    .frame(width: 36, height: 36)
+                    .background(BoardStyle.paper, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(document?.title ?? title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                    Text(detail).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
+            .contentShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
+        }
+        .buttonStyle(HomePressStyle())
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Opens the document in the Library")
+        .accessibilityIdentifier("document-card-\(documentId)")
+        // A new document is not in the list yet. One load brings its summary.
+        .task(id: documentId) { if document == nil { await store.loadDocuments() } }
+    }
+
+    private var detail: String {
+        guard let document else { return "Library" }
+        return "Library · " + document.detail
+    }
+}
+
+/// The photos of a Markdown document. A photo that a bot saved on the Mac (`coconut-file://`) loads through Coconut, as
+/// in the chat.
+private struct DocumentImages: ImageProvider {
+    func makeImage(url: URL?) -> some View {
+        DocumentPhoto(url: url)
+    }
+}
+
+private struct DocumentPhoto: View {
+    let url: URL?
+    @State private var image: PlatformImage?
+    @State private var failed = false
+    @State private var attempt = 0
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(platformImage: image).resizable().scaledToFit()
+            } else {
+                Rectangle().fill(BoardStyle.surface).frame(height: 160).overlay {
+                    if failed || url == nil {
+                        Image(systemName: "photo").font(.title2).foregroundStyle(.secondary)
+                    } else {
+                        ProgressView()
+                    }
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
+        // A photo of the Mac that failed loads again when the Mac connects, as in the chat (RemotePhoto).
+        .onReceive(NotificationCenter.default.publisher(for: .coconutMacConnected)) { _ in
+            if failed && url?.scheme == "coconut-file" { attempt += 1 }
+        }
+        .task(id: "\(url?.absoluteString ?? "") \(attempt)") {
+            guard let url else { return }
+            failed = false
+            image = PhotoLoader.shared.cached(url, size: .full)
+            guard image == nil else { return }
+            image = await PhotoLoader.shared.image(url, size: .full)
+            failed = image == nil
         }
     }
 }

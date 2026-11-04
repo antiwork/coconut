@@ -222,7 +222,7 @@ class Documents:
 
     def save_document(self, task_id: str, arguments: dict) -> dict:
         """coconut_save_document of a bot turn: create the document of the key, or replace its content."""
-        from .service import ServiceError, now, require_text, uid
+        from .service import ServiceError, require_text
         key, document_format, content = (arguments.get(name) for name in ('key', 'format', 'content'))
         if not isinstance(key, str) or not KEY.fullmatch(key):
             raise ServiceError(400, 'key must be 1 to 64 lowercase letters, digits and hyphens, for example '
@@ -250,29 +250,13 @@ class Documents:
             ends = end_time(ends, datetime.now(timezone.utc)) if isinstance(ends, str) and ends.strip() else None
         except ValueError as error:
             raise ServiceError(400, str(error)) from None
-        current = now()
         with self.transaction():
             task = self._running_task(task_id)
             bot = self._get('bots', task['bot_id'])
             if bot['archived'] or bot.get('_deleted'):
                 raise ServiceError(409, 'The bot is archived or deleted.')
-            document = self._document_of_key(bot['id'], key)
-            created = document is None
-            if created:
-                document = dict(id=uid(), bot_id=bot['id'], key=key, version=0, created_at=current)
-            elif expired(document, current):
-                # A save brings back an ended document. Its old end date would hide it again at once.
-                document['expires_at'] = None
-            document.update(title=title, format=document_format, summary=(summary or '').strip() or None,
-                            version=document['version'] + 1, updated_at=current, task_id=task_id, size=size)
-            if 'expires_at' in arguments:
-                document['expires_at'] = ends
-            self._put('documents', document)
-            self.db.execute('INSERT INTO document_versions(document_id, version, content, created_at) '
-                            'VALUES (?, ?, ?, ?)', (document['id'], document['version'], content, current))
-            self.db.execute('DELETE FROM document_versions WHERE document_id=? AND version<=?',
-                            (document['id'], document['version'] - KEPT_VERSIONS))
-            self._event('document.created' if created else 'document.updated', document, bot['id'], task_id)
+            document = self._write_document(task, bot, key, title, document_format, content, summary,
+                                            expires=ends if 'expires_at' in arguments else ...)
         return {'status': 'saved', 'key': key, 'version': document['version'],
                 'expires_at': document.get('expires_at')}
 
@@ -330,6 +314,34 @@ class Documents:
             if row:
                 self._remove_document(json.loads(row[0]), None)
         return {'ok': True}
+
+    def _write_document(self, task: dict, bot: dict, key: str, title: str, document_format: str, content: str,
+                        summary: str | None, *, expires) -> dict:
+        """Create the document of the key, or add a version to it, and show it in the chat. `expires` is the new end
+        date, None to remove it, or ... to keep it. The caller holds the transaction."""
+        from .library_replies import show_card
+        from .service import now, uid
+        current = now()
+        document = self._document_of_key(bot['id'], key)
+        created = document is None
+        if created:
+            document = dict(id=uid(), bot_id=bot['id'], key=key, version=0, created_at=current)
+        elif expired(document, current):
+            # A save brings back an ended document. Its old end date would hide it again at once.
+            document['expires_at'] = None
+        document.update(title=title, format=document_format, summary=(summary or '').strip() or None,
+                        version=document['version'] + 1, updated_at=current, task_id=task['id'],
+                        size=len(content.encode()))
+        if expires is not ...:
+            document['expires_at'] = expires
+        self._put('documents', document)
+        self.db.execute('INSERT INTO document_versions(document_id, version, content, created_at) '
+                        'VALUES (?, ?, ?, ?)', (document['id'], document['version'], content, current))
+        self.db.execute('DELETE FROM document_versions WHERE document_id=? AND version<=?',
+                        (document['id'], document['version'] - KEPT_VERSIONS))
+        self._event('document.created' if created else 'document.updated', document, bot['id'], task['id'])
+        show_card(self, task, document, created)
+        return document
 
     def _running_task(self, task_id: str) -> dict:
         """The task of a write. The person can cancel the turn while the tool call waits for the write lock, so the

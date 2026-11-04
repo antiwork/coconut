@@ -24,6 +24,8 @@ struct MacMainWindow: View {
     @State private var pairingOpen = false
     // The pages that a chat opened. A row of the chat list pushes onto it (pushRoute); another bot starts at its chat.
     @State private var chatPath = NavigationPath()
+    // The pages of the Library. A document card in a chat opens its document here.
+    @State private var libraryPath = NavigationPath()
 
     var body: some View {
         Group {
@@ -48,13 +50,22 @@ struct MacMainWindow: View {
         // The columns at their widest sidebar (300) fit side by side: the Inbox list (220) and its card (300), and a
         // chat (300) and its details (320). When they did not fit, the sidebar moved out to the left and the right side
         // was cut off.
+        .environment(\.openDocument) { id in
+            libraryPath = NavigationPath()
+            libraryPath.append(DocumentRoute(id: id))
+            selection = .library
+        }
         .frame(minWidth: 920, minHeight: 480)
         .background(BoardStyle.paper)
         .sheet(isPresented: $createOpen) { BotEditorView() }
         .sheet(isPresented: $pairingOpen) { MacPairingView(model: model).frame(width: 520, height: 600) }
         .onChange(of: store.setupLink) { _, link in if link != nil { pairingOpen = true } }
         // Each choice in the sidebar starts at its own root, so another bot never shows the last bot's pages.
-        .onChange(of: selection) { _, _ in chatPath = NavigationPath() }
+        .onChange(of: selection) { _, selected in
+            chatPath = NavigationPath()
+            // The Library row of the sidebar opens the list. A document card sets the page first and then the row.
+            if selected != .library { libraryPath = NavigationPath() }
+        }
         .overlay(alignment: .top) {
             if let error = store.error {
                 ErrorBanner(message: error) { store.error = nil }.padding(.horizontal, 16).padding(.top, 8)
@@ -67,7 +78,7 @@ struct MacMainWindow: View {
         case .inbox, nil:
             MacInboxView(selection: $selection)
         case .library:
-            NavigationStack {
+            NavigationStack(path: $libraryPath) {
                 LibraryView()
                     .navigationTitle("Library")
                     .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }

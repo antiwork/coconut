@@ -6,6 +6,7 @@ import unittest
 from uuid import uuid4
 
 from coconut.documents import KEPT_VERSIONS, end_time, page_problems
+from coconut.library_replies import document_of, is_report
 from coconut.service import Service, ServiceError
 from test_gateway_chat import Adapter, Provider
 
@@ -15,6 +16,14 @@ const root = d3.hierarchy({children: [{name: "Courses", value: 41200}, {name: "E
 d3.select("#chart").selectAll("rect").data(root.leaves()).join("rect").attr("fill", (d, i) => coconut.palette[i]);
 </script>
 <style>h1 { color: var(--text); } #add { margin: 0 }</style>'''
+
+REPORT = ('## Profit report, October\n\nNet profit rose 12% to $41,200 before income tax.\n\n### Revenue\n\n'
+          + ''.join(f'- Product {n}: ${n * 1000:,} in sales, up {n}% on September.\n' for n in range(1, 13))
+          + '\n| Month | Profit |\n|---|---|\n| Sep | $36,800 |\n| Oct | $41,200 |\n\n'
+          + '![Profit by month](coconut-file://4f6c1d1e-6d2b-4a59-9d55-6d3c3f0e1a2b)\n\n'
+          + '### Costs\n\nCosts fell on lower fees and fewer refunds. ' * 4)
+
+KEY = document_of(REPORT, 'Task')['key']
 
 
 class PageRuleTests(unittest.TestCase):
@@ -224,6 +233,97 @@ class DocumentServiceTests(unittest.TestCase):
         # The rows and their versions go with the bot.
         for table in ('documents', 'document_versions'):
             self.assertEqual(self.service.db.execute(f'SELECT count(*) FROM {table}').fetchone()[0], 0)
+
+
+    def cards(self):
+        return [(m['text'], m['document_id']) for m in self.service._task_messages(self.task_id)
+                if m['kind'] == 'document']
+
+    def reply(self, text):
+        self.service.gateway_bridge.event({'turn_id': self.turn, 'kind': 'send', 'message_id': 'm:1', 'text': text})
+        self.finish()
+
+    def test_a_new_document_shows_one_card_in_the_chat(self):
+        self.save()
+        self.save(content='# Signups\n\n430 today.')
+        document = self.service.documents()['documents'][0]
+        self.assertEqual(self.cards(), [('Signups', document['id'])])
+        card = next(m for m in self.service._task_messages(self.task_id) if m['kind'] == 'document')
+        self.assertEqual(card['bot_id'], self.bot['id'])
+
+    def test_a_report_in_the_chat_goes_to_the_library_after_the_reply(self):
+        self.reply(REPORT)
+        documents = self.service.documents()['documents']
+        self.assertEqual([(d['key'], d['title'], d['bot_id']) for d in documents],
+                         [(KEY, 'Profit report, October', self.bot['id'])])
+        content = self.service.document(documents[0]['id'])['content']
+        self.assertTrue(content.startswith('Net profit rose'))
+        self.assertIn('![Profit by month](coconut-file://', content)
+        messages = [m['kind'] for m in self.service._task_messages(self.task_id) if m['role'] == 'assistant']
+        self.assertEqual(messages[-2:], ['text', 'document'])
+        self.assertEqual(self.cards(), [('Profit report, October', documents[0]['id'])])
+
+    def test_a_short_answer_or_a_saved_document_adds_no_report(self):
+        self.reply('Signups are 412 today, up 9%.')
+        self.assertEqual(self.service.documents()['documents'], [])
+        self.turn, self.finish = self.start_turn(self.bot)
+        self.task_id = self.task['id']
+        self.save()
+        self.reply(REPORT)
+        self.assertEqual([d['key'] for d in self.service.documents()['documents']], ['signups-daily'])
+
+    def test_the_same_report_later_adds_a_version(self):
+        self.reply(REPORT)
+        self.turn, self.finish = self.start_turn(self.bot)
+        self.reply(REPORT.replace('rose 12%', 'rose 14%'))
+        documents = self.service.documents()['documents']
+        self.assertEqual([(d['key'], d['version']) for d in documents], [(KEY, 2)])
+
+
+    def test_a_report_with_a_queued_follow_up_goes_to_the_library(self):
+        # The person writes for the next turn while this one runs, so the task queues it when the turn ends.
+        steered = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Then check refunds.', 'mode': 'auto'})
+        self.assertEqual(steered['id'], self.task_id)
+        self.reply(REPORT)
+        self.assertEqual(self.service._get('tasks', self.task_id)['status'], 'queued')
+        self.assertEqual([d['key'] for d in self.service.documents()['documents']], [KEY])
+
+    def test_an_update_in_a_later_turn_of_the_task_shows_a_new_card(self):
+        self.save()
+        task = self.service._get('tasks', self.task_id)
+        task['_turn_started_at'] = '9999-01-01T00:00:00Z'
+        self.service._put('tasks', task)
+        self.save(content='# Signups\n\n430 today.')
+        self.assertEqual(len(self.cards()), 2)
+
+class ReportShapeTests(unittest.TestCase):
+    def test_a_report_has_structure_and_length_or_photos(self):
+        self.assertTrue(is_report(REPORT))
+        self.assertFalse(is_report('Signups are 412 today.'))
+        self.assertFalse(is_report('A long answer without structure. ' * 80))
+        self.assertTrue(is_report('**Revenue**\n\n' + '- An item with some words in it.\n' * 40))
+        self.assertTrue(is_report('## Sales\n\n' + 'Sales rose this week on two launches. ' * 10
+                                  + '\n\n![Sales](<coconut-file://a b>)'))
+
+    def test_the_title_comes_from_the_first_heading_or_line(self):
+        self.assertEqual(document_of(REPORT, 'Task')['title'], 'Profit report, October')
+        self.assertEqual(document_of('**Weekly sales:**\n\nSales rose.', 'Task')['title'], 'Weekly sales')
+        plain = document_of('Sales rose on two launches.\n\n- One', 'Task')
+        self.assertEqual((plain['title'], plain['key'][:-9]), ('Sales rose on two launches.', 'reply-sales-rose-on-two-launches'))
+        self.assertTrue(document_of('# !!!\n\nText', 'Task')['key'].startswith('reply-report-'))
+        # The first heading names the report, also after an introduction.
+        intro = document_of("Here is today's report.\n\n## Weekly sales\n\nSales rose.", 'Task')
+        self.assertEqual(intro['title'], 'Weekly sales')
+        # A comment in fenced code is not a heading.
+        code = document_of("Deploy notes for the API.\n\n```sh\n# Setup\nmake\n```\n\n- One", 'Task')
+        self.assertEqual(code['title'], 'Deploy notes for the API.')
+        self.assertFalse(is_report('Run this.\n\n```python\n# Setup\n# Load\n' + 'x = 1\n' * 400 + '```'))
+        self.assertTrue(intro['content'].startswith("Here is today's report."))
+        # Titles in other scripts, or with the same start, keep their own documents.
+        keys = {document_of(f'# {title}\n\nText', 'Task')['key'] for title in
+                ('销售报告', '费用分析', 'A' * 60 + ' one', 'A' * 60 + ' two')}
+        self.assertEqual(len(keys), 4)
+        self.assertTrue(all(len(key) <= 64 for key in keys))
 
 
 if __name__ == '__main__':

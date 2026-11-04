@@ -19,6 +19,8 @@ extension EnvironmentValues {
     /// Pushes a route onto the navigation stack around a chat. A row of the chat list opens a page with it: in a list, a
     /// row with a navigation link gets a chevron of its own and did not open on a tap.
     @Entry var pushRoute: ((any Hashable) -> Void)? = nil
+    /// Opens a document in the Library: its tab on the iPhone, its row in the sidebar on the Mac.
+    @Entry var openDocument: ((String) -> Void)? = nil
 }
 
 enum HomeDestination: Hashable {
