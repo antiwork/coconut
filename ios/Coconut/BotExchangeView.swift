@@ -54,6 +54,7 @@ extension Message {
 
 struct BotExchangeRow: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.pushRoute) private var pushRoute
     let messages: [Message]
     let botId: String
 
@@ -65,19 +66,53 @@ struct BotExchangeRow: View {
     }
 
     var body: some View {
-        NavigationLink(value: BotExchangeRoute(botIds: message.exchangeBotIds, messageId: message.id)) {
-            HStack(spacing: 5) {
-                Text(prefix)
-                if let peer { BotAvatar(bot: peer, size: 17) }
-                Text(peer?.name ?? "Deleted bot").lineLimit(1)
-                Image(systemName: "chevron.right").font(.caption2)
+        // The bot is a chip that opens the exchange, with no chevron. On an iPhone the chip pushes the page itself: a
+        // list row with a navigation link gets a chevron of its own and did not open on a tap.
+        let route = BotExchangeRoute(botIds: message.exchangeBotIds, messageId: message.id)
+        HStack(spacing: 4) {
+            Text(prefix).foregroundStyle(.secondary)
+            Group {
+                if let pushRoute {
+                    Button { pushRoute(route) } label: { chip }
+                } else {
+                    NavigationLink(value: route) { chip }
+                }
             }
-            .font(.caption).foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .contentShape(Rectangle())
+            .buttonStyle(ExchangeChipStyle())
+            .accessibilityLabel("\(prefix) \(peer?.name ?? "Deleted bot")")
+            .accessibilityIdentifier("bot-exchange-\(message.id)")
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("bot-exchange-\(message.id)")
+        .font(.caption)
+        .frame(maxWidth: .infinity, minHeight: 44)
+    }
+
+    private var chip: some View {
+        HStack(spacing: 5) {
+            if let peer { BotAvatar(bot: peer, size: 17) }
+            Text(peer?.name ?? "Deleted bot").lineLimit(1)
+        }
+    }
+}
+
+/// A bot chip: the name in the secondary color. A pointer over it, or a press, gives it a soft capsule.
+private struct ExchangeChipStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { ExchangeChip(configuration: configuration) }
+}
+
+private struct ExchangeChip: View {
+    let configuration: ButtonStyleConfiguration
+    @State private var hovering = false
+
+    var body: some View {
+        let lit = hovering || configuration.isPressed
+        configuration.label
+            .foregroundStyle(lit ? .primary : .secondary)
+            .padding(.leading, 4).padding(.trailing, 8).padding(.vertical, 4)
+            .background(Capsule().fill(Color.primary.opacity(lit ? 0.1 : 0)))
+            // The tap area is at least 44 points tall, more than the chip.
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
     }
 }
 

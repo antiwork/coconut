@@ -166,6 +166,8 @@ struct CoconutHome: View {
                     }
                 }
         }
+        // On the stack itself, so that the pushed pages get it too.
+        .environment(\.pushRoute) { route in path.wrappedValue.append(route) }
         .onPreferenceChange(ConversationFooterPreference.self) { allowed in
             conversationFooters[tab] = allowed
         }
