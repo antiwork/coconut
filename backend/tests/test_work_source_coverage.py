@@ -62,6 +62,18 @@ class WorkSourceTests(unittest.TestCase):
     def test_a_source_tracks_no_pull_request_without_the_option(self):
         self.pull_request_source(track=False).assert_not_called()
 
+    def test_a_covered_pull_request_is_tracked_with_its_existing_audit(self):
+        # The PR already has a live audit when the option is turned on. No new audit starts, and the PR is still
+        # tracked, with that audit as its review owner.
+        self.pull_request_source(track=False)
+        audit = next(t for t in self.service._all('tasks')
+                     if (t.get('_source_assignment') or {}).get('id') == self.pr['id'])
+        self.source['track_pull_requests'] = True
+        (self.root / 'work-sources.json').write_text(json.dumps([self.source]))
+        with patch.object(self.service, '_register_pr_artifact') as register:
+            self.audit()
+        self.assertEqual([call.args[1]['review_task_id'] for call in register.call_args_list], [audit['id']])
+
     def test_complete_source_snapshot_replaces_trusted_repositories(self):
         from coconut.decision_sources import operator_owners
         self.assertEqual(self.audit()['trusted_repositories'], ['example/repo'])
