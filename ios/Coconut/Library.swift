@@ -304,6 +304,7 @@ private struct DocumentPhoto: View {
     let url: URL?
     @State private var image: PlatformImage?
     @State private var failed = false
+    @State private var attempt = 0
 
     var body: some View {
         Group {
@@ -320,7 +321,11 @@ private struct DocumentPhoto: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
-        .task(id: url) {
+        // A photo of the Mac that failed loads again when the Mac connects, as in the chat (RemotePhoto).
+        .onReceive(NotificationCenter.default.publisher(for: .coconutMacConnected)) { _ in
+            if failed && url?.scheme == "coconut-file" { attempt += 1 }
+        }
+        .task(id: "\(url?.absoluteString ?? "") \(attempt)") {
             guard let url else { return }
             failed = false
             image = PhotoLoader.shared.cached(url, size: .full)

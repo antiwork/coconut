@@ -23,6 +23,8 @@ REPORT = ('## Profit report, October\n\nNet profit rose 12% to $41,200 before in
           + '![Profit by month](coconut-file://4f6c1d1e-6d2b-4a59-9d55-6d3c3f0e1a2b)\n\n'
           + '### Costs\n\nCosts fell on lower fees and fewer refunds. ' * 4)
 
+KEY = document_of(REPORT, 'Task')['key']
+
 
 class PageRuleTests(unittest.TestCase):
     def test_a_page_with_tokens_and_the_given_libraries_passes(self):
@@ -253,7 +255,7 @@ class DocumentServiceTests(unittest.TestCase):
         self.reply(REPORT)
         documents = self.service.documents()['documents']
         self.assertEqual([(d['key'], d['title'], d['bot_id']) for d in documents],
-                         [('reply-profit-report-october', 'Profit report, October', self.bot['id'])])
+                         [(KEY, 'Profit report, October', self.bot['id'])])
         content = self.service.document(documents[0]['id'])['content']
         self.assertTrue(content.startswith('Net profit rose'))
         self.assertIn('![Profit by month](coconut-file://', content)
@@ -275,8 +277,24 @@ class DocumentServiceTests(unittest.TestCase):
         self.turn, self.finish = self.start_turn(self.bot)
         self.reply(REPORT.replace('rose 12%', 'rose 14%'))
         documents = self.service.documents()['documents']
-        self.assertEqual([(d['key'], d['version']) for d in documents], [('reply-profit-report-october', 2)])
+        self.assertEqual([(d['key'], d['version']) for d in documents], [(KEY, 2)])
 
+
+    def test_a_report_with_a_queued_follow_up_goes_to_the_library(self):
+        # The person writes for the next turn while this one runs, so the task queues it when the turn ends.
+        steered = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Then check refunds.', 'mode': 'auto'})
+        self.assertEqual(steered['id'], self.task_id)
+        self.reply(REPORT)
+        self.assertEqual(self.service._get('tasks', self.task_id)['status'], 'queued')
+        self.assertEqual([d['key'] for d in self.service.documents()['documents']], [KEY])
+
+    def test_an_update_in_a_later_turn_of_the_task_shows_a_new_card(self):
+        self.save()
+        task = self.service._get('tasks', self.task_id)
+        task['_turn_started_at'] = '9999-01-01T00:00:00Z'
+        self.service._put('tasks', task)
+        self.save(content='# Signups\n\n430 today.')
+        self.assertEqual(len(self.cards()), 2)
 
 class ReportShapeTests(unittest.TestCase):
     def test_a_report_has_structure_and_length_or_photos(self):
@@ -291,8 +309,17 @@ class ReportShapeTests(unittest.TestCase):
         self.assertEqual(document_of(REPORT, 'Task')['title'], 'Profit report, October')
         self.assertEqual(document_of('**Weekly sales:**\n\nSales rose.', 'Task')['title'], 'Weekly sales')
         plain = document_of('Sales rose on two launches.\n\n- One', 'Task')
-        self.assertEqual((plain['title'], plain['key']), ('Sales rose on two launches.', 'reply-sales-rose-on-two-launches'))
-        self.assertEqual(document_of('# !!!\n\nText', 'Task')['key'], 'reply-report')
+        self.assertEqual((plain['title'], plain['key'][:-9]), ('Sales rose on two launches.', 'reply-sales-rose-on-two-launches'))
+        self.assertTrue(document_of('# !!!\n\nText', 'Task')['key'].startswith('reply-report-'))
+        # The first heading names the report, also after an introduction.
+        intro = document_of("Here is today's report.\n\n## Weekly sales\n\nSales rose.", 'Task')
+        self.assertEqual(intro['title'], 'Weekly sales')
+        self.assertTrue(intro['content'].startswith("Here is today's report."))
+        # Titles in other scripts, or with the same start, keep their own documents.
+        keys = {document_of(f'# {title}\n\nText', 'Task')['key'] for title in
+                ('销售报告', '费用分析', 'A' * 60 + ' one', 'A' * 60 + ' two')}
+        self.assertEqual(len(keys), 4)
+        self.assertTrue(all(len(key) <= 64 for key in keys))
 
 
 if __name__ == '__main__':

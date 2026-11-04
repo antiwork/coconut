@@ -11,6 +11,7 @@ that document.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 
 from .documents import MAX_TITLE
@@ -51,15 +52,20 @@ def is_report(text: str) -> bool:
 def document_of(text: str, fallback_title: str) -> dict:
     """The title, the key, the summary and the content of the document of a report."""
     lines = text.strip().splitlines()
-    first = _heading(lines[0]) if lines else None
-    title = first or next((_plain(line) for line in lines if _plain(line) and not _PHOTO.match(line)), '')
+    # The first heading names the report, also after a sentence such as "Here is today's report".
+    heading = next(((index, _heading(line)) for index, line in enumerate(lines) if _heading(line)), None)
+    title = heading[1] if heading else next((_plain(line) for line in lines if _plain(line) and not _PHOTO.match(line)), '')
     title = _shorten(title or fallback_title, MAX_TITLE)
-    # The Library shows the title over the page, so the heading that gave it goes.
+    # The Library shows the title over the page, so a heading that gave it at the top goes.
+    first = heading is not None and heading[0] == 0
     content = '\n'.join(lines[1:]).strip() if first else text.strip()
     summary = next((_plain(line) for line in lines[1 if first else 0:] if _plain(line) and not _PHOTO.match(line)
                     and not _heading(line) and not _LIST_ITEM.match(line) and '|' not in line), None)
-    slug = re.sub(r'[^a-z0-9]+', '-', title.casefold()).strip('-')[:57].strip('-') or 'report'
-    return dict(key='reply-' + slug, title=title, content=content or text.strip(),
+    # Only the same title shares a document. The hash keeps apart titles with the same start, and titles in
+    # letters that the slug leaves out.
+    slug = re.sub(r'[^a-z0-9]+', '-', title.casefold()).strip('-')[:48].strip('-') or 'report'
+    digest = hashlib.sha256(title.casefold().encode()).hexdigest()[:8]
+    return dict(key=f'reply-{slug}-{digest}', title=title, content=content or text.strip(),
                 summary=_shorten(summary, 160) if summary else None)
 
 
@@ -109,8 +115,10 @@ def show_card(service, task: dict, document: dict, created: bool):
     the transaction."""
     if not created and task.get('_native_job'):
         return
+    started = task.get('_turn_started_at', task['created_at'])
     for message in service._task_messages(task['id']):
-        if message['kind'] == 'document' and message.get('document_id') == document['id']:
+        if (message['kind'] == 'document' and message.get('document_id') == document['id']
+                and message['created_at'] >= started):
             if message['text'] != document['title']:
                 message['text'] = document['title']
                 service._put('messages', message)

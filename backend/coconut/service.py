@@ -3951,7 +3951,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         self._message(bot_id, task['summary'], task_id=task_id, kind='activity')
                 else:
                     self._message(bot_id, task['summary'], task_id=task_id, kind='status' if kind == 'failed' else 'text')
-                if task['status'] == 'completed' and not (task.get('_routine_silent') or reaction_silent or silent_completion):
+                # Also a turn whose follow-up waits keeps its report: the next turn starts a new turn of replies.
+                if kind == 'completed' and not (task.get('_routine_silent') or reaction_silent or silent_completion):
                     from .library_replies import keep_report
                     keep_report(self, task)
             else:
