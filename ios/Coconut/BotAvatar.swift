@@ -15,8 +15,9 @@ struct BotAvatar: View {
     var phase: BotPhase? = nil
     /// The lasting mood. A finished turn and a new card show a short mood over it.
     var mood: CoconutMood = .neutral
-    /// The newest card that waits for an answer. Each new one surprises the bot.
-    var newestCard: String? = nil
+    /// When the newest card that waits for an answer arrived. Only a later card surprises the bot, so an
+    /// answered card that leaves an older one does not.
+    var newestCardAt: Date? = nil
     /// A phase also ends when the connection drops. Only an online end is a finished turn.
     var online = true
     var animated = true
@@ -38,16 +39,16 @@ struct BotAvatar: View {
     }
 
     init(symbol: String, color: String, size: CGFloat = 52, identity: String = "", phase: BotPhase? = nil,
-         mood: CoconutMood = .neutral, newestCard: String? = nil, online: Bool = true, animated: Bool = true) {
+         mood: CoconutMood = .neutral, newestCardAt: Date? = nil, online: Bool = true, animated: Bool = true) {
         self.symbol = symbol; self.color = color; self.size = size * Self.scale
-        self.identity = identity; self.phase = phase; self.mood = mood; self.newestCard = newestCard; self.online = online
+        self.identity = identity; self.phase = phase; self.mood = mood; self.newestCardAt = newestCardAt; self.online = online
         self.animated = animated
     }
 
-    init(bot: Bot, size: CGFloat = 52, phase: BotPhase? = nil, mood: CoconutMood = .neutral, newestCard: String? = nil,
+    init(bot: Bot, size: CGFloat = 52, phase: BotPhase? = nil, mood: CoconutMood = .neutral, newestCardAt: Date? = nil,
          online: Bool = true, animated: Bool = true) {
         self.init(symbol: bot.avatar, color: bot.color, size: size, identity: bot.id, phase: phase, mood: mood,
-                  newestCard: newestCard, online: online, animated: animated)
+                  newestCardAt: newestCardAt, online: online, animated: animated)
     }
 
     private var isThinking: Bool { phase != nil }
@@ -75,7 +76,9 @@ struct BotAvatar: View {
         }
         .onChange(of: motionEnabled) { _, _ in updateThinking() }
         .onChange(of: phase) { old, new in if old != nil && new == nil && online { flash = Flash(mood: .happy) } }
-        .onChange(of: newestCard) { _, new in if new != nil { flash = Flash(mood: .surprised) } }
+        .onChange(of: newestCardAt) { old, new in
+            if let new, new > (old ?? .distantPast) { flash = Flash(mood: .surprised) }
+        }
         .task(id: flash) {
             guard flash != nil else { return }
             do {
@@ -139,12 +142,12 @@ struct LiveBotAvatar: View {
         let latest = store.messages.lazy.filter { $0.botId == bot.id }.compactMap { $0.createdAt.apiDate }.max()
         return Date().timeIntervalSince(latest ?? bot.createdAt.apiDate ?? .now) > 2 * 86_400 ? .sleepy : .neutral
     }
-    private var newestCard: String? {
+    private var newestCardAt: Date? {
         store.decisions.filter { $0.isPending && store.conversationBotId(for: $0) == bot.id }
-            .max { ($0.createdAt.apiDate ?? .distantPast) < ($1.createdAt.apiDate ?? .distantPast) }?.id
+            .compactMap(\.createdAt.apiDate).max()
     }
     var body: some View {
-        BotAvatar(bot: bot, size: size, phase: store.botPhase(bot), mood: mood, newestCard: newestCard,
+        BotAvatar(bot: bot, size: size, phase: store.botPhase(bot), mood: mood, newestCardAt: newestCardAt,
                   online: store.isDemo || store.connection == .connected)
             .overlay(alignment: .bottomTrailing) {
                 // The moving face shows the work. Reduce Motion keeps the face still, so the dot shows it.
