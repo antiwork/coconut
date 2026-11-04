@@ -12,6 +12,8 @@ struct DecisionCard: View {
     var onPreviewFrameChange: (CGRect) -> Void = { _ in }
     var onViewPrevious: ((String) -> Void)? = nil
     var onChoose: ((String, String?) -> Void)? = nil
+    /// The recorded dismissal of this card, for an Undo outside the card.
+    var onDismissed: ((Decision) -> Void)? = nil
     @State private var dismissing = false
     @State private var dismissRequest: (revision: Int, id: String)?
     @State private var submitting = false
@@ -235,8 +237,9 @@ struct DecisionCard: View {
         Task {
             let result = await store.updateInbox(decision, action: "dismiss", idempotencyKey: requestId)
             dismissing = false
-            if result.decision != nil {
+            if let receipt = result.decision {
                 dismissRequest = nil
+                onDismissed?(receipt)
             } else {
                 if !result.isUncertain { dismissRequest = nil }
                 responseError = "Dismissal not confirmed. Try again."
