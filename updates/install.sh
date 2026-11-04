@@ -78,16 +78,20 @@ installed_app() {
 # The `coconut` tool in an app.
 tool_of() { printf '%s\n' "$1/Contents/Helpers/coconut"; }
 
-# True when the tool of the app pairs with a code from the iPhone. An earlier tool prints a setup link for any
-# `coconut pair` and ignores the code.
-pairs_with_code() {
-  "$(tool_of "$1")" help </dev/null 2>/dev/null | grep -q 'pair <code>'
+# True when the help of the app's tool holds the text. The script reads all of the help first. In a pipe, `grep -q`
+# can stop reading before the tool stops writing, so SIGPIPE stops the tool and pipefail makes the check fail.
+help_has() {
+  local help
+  help="$("$(tool_of "$1")" help </dev/null 2>/dev/null || true)"
+  grep -q -- "$2" <<<"$help"
 }
 
+# True when the tool of the app pairs with a code from the iPhone. An earlier tool prints a setup link for any
+# `coconut pair` and ignores the code.
+pairs_with_code() { help_has "$1" 'pair <code>'; }
+
 # True when the app sets up Coconut by itself when it opens with --set-up. An earlier app ignores the argument.
-sets_up() {
-  "$(tool_of "$1")" help </dev/null 2>/dev/null | grep -q -- '--set-up'
-}
+sets_up() { help_has "$1" '--set-up'; }
 
 # True when the app can do this run: pair with the code, if there is one, and start a service that does not run.
 can_run() {
