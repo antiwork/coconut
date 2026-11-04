@@ -253,6 +253,8 @@ struct Message: Codable, Identifiable, Equatable, Sendable {
     var artifactId: String?
     var createdAt: String
     var streaming: Bool
+    /// The Library document of a "document" message: a card that opens it.
+    var documentId: String? = nil
     var threadId: String? = nil
     var senderBotId: String? = nil
     var recipientBotIds: [String]? = nil

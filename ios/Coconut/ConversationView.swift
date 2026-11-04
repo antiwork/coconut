@@ -444,6 +444,8 @@ struct TranscriptMessageRow: View {
         } else if message.kind == "artifact", let id = message.artifactId,
                   let artifact = store.artifacts.first(where: { $0.id == id }) {
             ArtifactCard(artifact: artifact)
+        } else if message.kind == "document", let id = message.documentId {
+            DocumentCard(documentId: id, title: message.text)
         } else {
             MessageBubble(message: message, scrollToDecision: scrollToDecision, onReply: onReply.map { reply in { reply(message) } })
         }

@@ -88,6 +88,12 @@ struct CoconutHome: View {
             }.accessibilityIdentifier("home-library")
         }
         .modifier(NativeTabCollapse(enabled: conversationCanMinimize == true && !keyboardVisible))
+        // A document card in a chat opens the document on the Library tab, so Back leads to the Library.
+        .environment(\.openDocument) { id in
+            libraryPath = NavigationPath()
+            libraryPath.append(DocumentRoute(id: id))
+            selectedTab = .library
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in keyboardVisible = false }
         .onChange(of: selectedTab) { _, tab in
