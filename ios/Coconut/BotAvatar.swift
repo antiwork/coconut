@@ -13,6 +13,9 @@ struct BotAvatar: View {
     var identity = ""
     // A phase means the bot works. Nil keeps the idle pose.
     var phase: BotPhase? = nil
+    /// The lasting mood. A finished turn and a new card show a short mood over it.
+    var mood: CoconutMood = .neutral
+    var needsYou = false
     var animated = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -20,14 +23,19 @@ struct BotAvatar: View {
     @State private var thinkingAmount = 0.0
     @State private var previousGesture: CoconutGesture?
     @State private var gestureChangedAt = -Double.infinity
+    @State private var flash: CoconutMood?
+    @State private var shownMood: CoconutMood?
 
-    init(symbol: String, color: String, size: CGFloat = 52, identity: String = "", phase: BotPhase? = nil, animated: Bool = true) {
+    init(symbol: String, color: String, size: CGFloat = 52, identity: String = "", phase: BotPhase? = nil,
+         mood: CoconutMood = .neutral, needsYou: Bool = false, animated: Bool = true) {
         self.symbol = symbol; self.color = color; self.size = size * Self.scale
-        self.identity = identity; self.phase = phase; self.animated = animated
+        self.identity = identity; self.phase = phase; self.mood = mood; self.needsYou = needsYou; self.animated = animated
     }
 
-    init(bot: Bot, size: CGFloat = 52, phase: BotPhase? = nil, animated: Bool = true) {
-        self.init(symbol: bot.avatar, color: bot.color, size: size, identity: bot.id, phase: phase, animated: animated)
+    init(bot: Bot, size: CGFloat = 52, phase: BotPhase? = nil, mood: CoconutMood = .neutral, needsYou: Bool = false,
+         animated: Bool = true) {
+        self.init(symbol: bot.avatar, color: bot.color, size: size, identity: bot.id, phase: phase, mood: mood,
+                  needsYou: needsYou, animated: animated)
     }
 
     private var isThinking: Bool { phase != nil }
@@ -36,13 +44,15 @@ struct BotAvatar: View {
 
     private var motionEnabled: Bool { animated && !reduceMotion && scenePhase == .active }
     private var seed: UInt64 { characterSeed(identity.isEmpty ? symbol + color : identity) }
+    private var targetMood: CoconutMood { flash ?? mood }
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !motionEnabled || !isThinking)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !motionEnabled || !isThinking)) { timeline in
             FruitFigure(index: FruitArtwork.index(symbol: symbol, identity: identity),
                         size: size, seed: seed, time: timeline.date.timeIntervalSinceReferenceDate,
                         thinking: thinkingAmount, eyelid: blinking ? 0.08 : 1,
-                        gesture: gesture, previousGesture: previousGesture, gestureChangedAt: gestureChangedAt)
+                        gesture: gesture, previousGesture: previousGesture, gestureChangedAt: gestureChangedAt,
+                        mood: shownMood ?? targetMood)
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
@@ -52,6 +62,14 @@ struct BotAvatar: View {
             gestureChangedAt = Date().timeIntervalSinceReferenceDate
         }
         .onChange(of: motionEnabled) { _, _ in updateThinking() }
+        .onChange(of: phase) { old, new in if old != nil && new == nil { flash = .happy } }
+        .onChange(of: needsYou) { old, new in if new && !old { flash = .surprised } }
+        .task(id: flash) {
+            guard flash != nil else { return }
+            try? await Task.sleep(for: .seconds(3))
+            if !Task.isCancelled { flash = nil }
+        }
+        .task(id: targetMood) { await showMood(targetMood) }
         .task(id: motionEnabled) {
             blinking = false
             guard motionEnabled else { return }
@@ -69,6 +87,15 @@ struct BotAvatar: View {
         }
     }
 
+    /// A new mood comes in a blink: the eyes close, the face changes, and the eyes open with a small overshoot.
+    private func showMood(_ next: CoconutMood) async {
+        guard let current = shownMood, current != next, motionEnabled else { shownMood = next; return }
+        withAnimation(.easeIn(duration: 0.09)) { blinking = true }
+        try? await Task.sleep(for: .milliseconds(110))
+        shownMood = next
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.55)) { blinking = false }
+    }
+
     private func updateThinking() {
         withAnimation(motionEnabled ? .easeOut(duration: 0.25) : nil) {
             thinkingAmount = isThinking && motionEnabled ? 1 : 0
@@ -82,8 +109,14 @@ struct LiveBotAvatar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let bot: Bot
     var size: CGFloat = 52
+    /// A provider problem makes the bot sad. A bot with no message for two days is sleepy.
+    private var mood: CoconutMood {
+        if bot.health != nil { return .sad }
+        let latest = store.messages.lazy.filter { $0.botId == bot.id }.compactMap { $0.createdAt.apiDate }.max()
+        return Date().timeIntervalSince(latest ?? bot.createdAt.apiDate ?? .now) > 2 * 86_400 ? .sleepy : .neutral
+    }
     var body: some View {
-        BotAvatar(bot: bot, size: size, phase: store.botPhase(bot))
+        BotAvatar(bot: bot, size: size, phase: store.botPhase(bot), mood: mood, needsYou: store.botNeedsYou(bot))
             .overlay(alignment: .bottomTrailing) {
                 // The moving face shows the work. Reduce Motion keeps the face still, so the dot shows it.
                 if reduceMotion { BotActivityDot(bot: bot).padding(size * BotAvatar.scale * 0.12) }
