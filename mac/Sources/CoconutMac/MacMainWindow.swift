@@ -7,13 +7,13 @@ enum MacSelection: Hashable {
     case bot(String)
 }
 
-/// The tabs of the inspector next to a chat.
-private enum InspectorTab: Hashable {
+/// The tabs of the details next to a chat.
+enum InspectorTab: Hashable {
     case details, library
 }
 
 /// The main window of the Mac client: the bots in a sidebar, the chat or the Inbox in the middle, and the details of the
-/// bot in an inspector on the right. It shows the pairing page until this Mac has a pairing.
+/// bot in a column on the right. It shows the pairing page until this Mac has a pairing.
 struct MacMainWindow: View {
     @Environment(AppStore.self) private var store
     @ObservedObject var model: AppModel
@@ -28,7 +28,7 @@ struct MacMainWindow: View {
             if store.hasPairing || store.isDemo {
                 NavigationSplitView {
                     MacSidebar(selection: $selection)
-                        .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+                        .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 300)
                         .toolbar {
                             ToolbarItem {
                                 Button { createOpen = true } label: { Label("New bot", systemImage: "square.and.pencil") }
@@ -43,7 +43,10 @@ struct MacMainWindow: View {
                 MacPairingView(model: model)
             }
         }
-        .frame(minWidth: 720, minHeight: 480)
+        // The columns at their widest sidebar (300) fit side by side: the Inbox list (220) and its card (300), and a
+        // chat (300) and its details (320). When they did not fit, the sidebar moved out to the left and the right side
+        // was cut off.
+        .frame(minWidth: 920, minHeight: 480)
         .background(BoardStyle.paper)
         .sheet(isPresented: $createOpen) { BotEditorView() }
         .sheet(isPresented: $pairingOpen) { MacPairingView(model: model).frame(width: 520, height: 600) }
@@ -66,44 +69,33 @@ struct MacMainWindow: View {
                     .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
             }
         case .bot(let botId):
-            NavigationStack {
-                ConversationView(botId: botId)
-                    .id(botId)
-                    // The bot's title over the chat shows and hides the details next to it.
-                    .environment(\.toggleBotDetails) { inspectorShown.toggle() }
-                    .navigationDestination(for: ConversationRoute.self) { route in
-                        ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
-                                         focusMessageId: route.messageId, attachedWork: route.workContext)
-                    }
-                    .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
-                    .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
+            // The details are a column of fixed width next to the chat, not an inspector. Next to a chat, the
+            // inspector's split view did not settle on a layout and stopped the app, below about 1,300 points of
+            // window width. The column also keeps its tabs in one row with the bot's title over the chat.
+            HStack(spacing: 0) {
+                NavigationStack {
+                    ConversationView(botId: botId)
+                        .id(botId)
+                        // The bot's title over the chat shows and hides the details next to it.
+                        .environment(\.toggleBotDetails) { withAnimation(.snappy) { inspectorShown.toggle() } }
+                        .navigationDestination(for: ConversationRoute.self) { route in
+                            ConversationView(botId: route.botId, focusDecisionId: route.decisionId,
+                                             focusMessageId: route.messageId, attachedWork: route.workContext)
+                        }
+                        .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
+                        .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
+                }
+                .frame(minWidth: 300, maxWidth: .infinity)
+                if inspectorShown {
+                    Divider()
+                    MacBotDetails(botId: botId, tab: $inspectorTab)
+                        .frame(width: 320)
+                        .transition(.move(edge: .trailing))
+                }
             }
             // The pill over the chat names the bot, so the window shows no title of its own. Without this, the title of
-            // the bot settings in the inspector repeats the bot name.
+            // the bot settings in the details repeats the bot name.
             .toolbar(removing: .title)
-            .inspector(isPresented: $inspectorShown) {
-                VStack(spacing: 0) {
-                    Picker("Show", selection: $inspectorTab) {
-                        Text("Details").tag(InspectorTab.details)
-                        Text("Library").tag(InspectorTab.library)
-                    }
-                    .pickerStyle(.segmented).labelsHidden()
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    NavigationStack {
-                        // Each bot gets its own settings view. Leaving it saves its edits to that bot, so an unsaved
-                        // edit never moves to the next bot.
-                        switch inspectorTab {
-                        case .details: BotSettingsView(botId: botId).id(botId)
-                        case .library:
-                            LibraryView(botId: botId)
-                                .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
-                        }
-                    }
-                }
-                // A grouped Mac form keeps each section in a box, as the iPhone settings show them.
-                .formStyle(.grouped)
-                .inspectorColumnWidth(min: 260, ideal: 320, max: 420)
-            }
         }
     }
 }
@@ -181,5 +173,37 @@ private struct MacConnectionFooter: View {
         }
         .font(.caption).foregroundStyle(.secondary)
         .padding(.horizontal, 12).padding(.vertical, 10)
+    }
+}
+
+/// The details of a bot next to its chat: its settings, or its documents in the Library.
+private struct MacBotDetails: View {
+    let botId: String
+    @Binding var tab: InspectorTab
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Show", selection: $tab) {
+                Text("Details").tag(InspectorTab.details)
+                Text("Library").tag(InspectorTab.library)
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            // The same height and top space as the bot's title over the chat, so both sit in one row.
+            .frame(height: 34)
+            .padding(.horizontal, 12).padding(.top, 8)
+            NavigationStack {
+                // Each bot gets its own settings view. Leaving it saves its edits to that bot, so an unsaved edit
+                // never moves to the next bot.
+                switch tab {
+                case .details: BotSettingsView(botId: botId).id(botId)
+                case .library:
+                    LibraryView(botId: botId)
+                        .navigationDestination(for: DocumentRoute.self) { DocumentView(documentId: $0.id) }
+                }
+            }
+        }
+        // A grouped Mac form keeps each section in a box, as the iPhone settings show them.
+        .formStyle(.grouped)
+        .background(BoardStyle.paper)
     }
 }

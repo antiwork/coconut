@@ -22,7 +22,7 @@ struct MacInboxView: View {
                 MacInboxRow(decision: decision).tag(decision.id)
             }
             .listStyle(.inset)
-            .frame(width: 300)
+            .frame(minWidth: 220, idealWidth: 280, maxWidth: 320)
             .overlay {
                 if pending.isEmpty {
                     QuietEmptyState(symbol: "tray", title: "Nothing waits for you",
@@ -62,7 +62,7 @@ struct MacInboxView: View {
                 .navigationDestination(for: BotExchangeRoute.self) { BotExchangeView(route: $0) }
                 .navigationDestination(for: BotSettingsRoute.self) { BotSettingsView(botId: $0.botId) }
             }
-            .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
             .background(BoardStyle.paper)
         }
         .navigationTitle("Inbox")
