@@ -30,6 +30,13 @@ struct DocumentPage {
         #endif
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = coordinator
+        // A photo that failed while the Mac was away loads again when it connects.
+        coordinator.reconnect = NotificationCenter.default.addObserver(forName: .coconutMacConnected, object: nil,
+                                                                       queue: .main) { [weak view] _ in
+            MainActor.assumeIsolated {
+                view?.evaluateJavaScript("window.coconutRetryPhotos && coconutRetryPhotos()")
+            }
+        }
         #if os(iOS)
         view.isOpaque = false
         view.backgroundColor = .clear
@@ -53,7 +60,7 @@ struct DocumentPage {
         // outside the content security policy of the page, which allows only the inline scripts of the bot.
         let scripts = view.configuration.userContentController
         scripts.removeAllUserScripts()
-        for script in Self.scripts(diagrams: content.contains("mermaid")) { scripts.addUserScript(script) }
+        for script in Self.scripts(diagrams: content.lowercased().contains("mermaid")) { scripts.addUserScript(script) }
         let markdown = !document.isPage
         view.loadHTMLString(Self.html(title: document.title, meta: meta,
                                       content: markdown ? BotDocument.body(content) : content, markdown: markdown),
@@ -63,6 +70,9 @@ struct DocumentPage {
     final class Coordinator: NSObject, WKNavigationDelegate {
         var loaded: [String]?
         var openLink: ((URL) -> Void)?
+        nonisolated(unsafe) var reconnect: NSObjectProtocol?
+
+        deinit { if let reconnect { NotificationCenter.default.removeObserver(reconnect) } }
 
         func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction) async -> WKNavigationActionPolicy {
             // The page itself loads once. A web link goes to the view, which asks the person first, because a script

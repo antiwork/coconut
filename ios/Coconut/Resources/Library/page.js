@@ -42,7 +42,9 @@
     callout.className = "callout " + kind;
     const title = document.createElement("p");
     title.className = "kicker";
-    title.textContent = match[2].trim() || ({ note: "Note", tip: "Tip", important: "Important", warning: "Warning",
+    // The title comes from HTML, so "Costs &amp; limits" is read as text first.
+    const titleText = new DOMParser().parseFromString(match[2], "text/html").body.textContent.trim();
+    title.textContent = titleText || ({ note: "Note", tip: "Tip", important: "Important", warning: "Warning",
       caution: "Caution" })[kind];
     callout.append(title, ...quote.childNodes);
     quote.replaceWith(callout);
@@ -86,6 +88,21 @@
       figure.classList.add("broken");
     }
   }
+
+  // Photos that a bot saved on the Mac load through the app. One that failed loads again when the Mac connects
+  // (DocumentPage calls coconutRetryPhotos).
+  document.addEventListener("error", (event) => {
+    const image = event.target;
+    if (image.tagName === "IMG" && image.src.startsWith("coconut-file:")) image.dataset.failed = "1";
+  }, true);
+  let attempt = 0;
+  window.coconutRetryPhotos = () => {
+    attempt += 1;
+    for (const image of document.querySelectorAll("img[data-failed]")) {
+      delete image.dataset.failed;
+      image.src = image.src.split("?")[0] + "?retry=" + attempt;
+    }
+  };
 
   // Diagrams: Mermaid in the colors of the page. The app adds Mermaid only to a page that has a diagram.
   if (window.mermaid && main.querySelector("pre.mermaid")) {
