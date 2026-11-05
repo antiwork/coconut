@@ -80,12 +80,17 @@ def document_of(text: str, fallback_title: str) -> dict:
     content = '\n'.join(lines[1:]).strip() if first else text.strip()
     summary = next((_plain(line) for line in lines[1 if first else 0:] if _plain(line) and not _PHOTO.match(line)
                     and not _heading(line) and not _LIST_ITEM.match(line) and '|' not in line), None)
-    # Only the same title shares a document. The hash keeps apart titles with the same start, and titles in
-    # letters that the slug leaves out.
+    return dict(key=report_key(title), title=title, content=content or text.strip(),
+                summary=_shorten(summary, 160) if summary else None)
+
+
+def report_key(title: str) -> str:
+    """The key of a kept report. Only the same title shares a document. The hash keeps apart titles with the same
+    start, and titles in letters that the slug leaves out. A bot never makes this key, so it also marks a page that
+    Coconut kept."""
     slug = re.sub(r'[^a-z0-9]+', '-', title.casefold()).strip('-')[:48].strip('-') or 'report'
     digest = hashlib.sha256(title.casefold().encode()).hexdigest()[:8]
-    return dict(key=f'reply-{slug}-{digest}', title=title, content=content or text.strip(),
-                summary=_shorten(summary, 160) if summary else None)
+    return f'reply-{slug}-{digest}'
 
 
 def _shorten(text: str, limit: int) -> str:
@@ -171,6 +176,9 @@ def remove_unasked_reports(service):
     removed = set()
     for (data,) in service.db.execute("SELECT data FROM documents WHERE json_extract(data,'$.key') LIKE 'reply-%'").fetchall():
         document = json.loads(data)
+        # Only a page that Coconut kept. A bot can choose a key that starts with reply-, but not the hash of its title.
+        if document['key'] != report_key(document['title']):
+            continue
         # The task of the latest save can be a later routine. The first card of the page names the task that made
         # it, because each new page showed a card. A page without a card stays.
         card = service.db.execute("SELECT data FROM messages WHERE json_extract(data,'$.kind')='document' AND "

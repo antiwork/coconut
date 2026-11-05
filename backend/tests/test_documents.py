@@ -6,7 +6,7 @@ import unittest
 from uuid import uuid4
 
 from coconut.documents import KEPT_VERSIONS, end_time, page_problems
-from coconut.library_replies import document_of, is_report
+from coconut.library_replies import document_of, is_report, report_key
 from coconut.service import Service, ServiceError
 from test_gateway_chat import Adapter, Provider
 
@@ -344,8 +344,11 @@ class DocumentServiceTests(unittest.TestCase):
                 self.service._put('messages', message)
         task = self.service._get('tasks', self.task_id)
         with self.service.transaction():
-            unasked = self.service._write_document(task, self.bot, 'reply-what-changed-1234abcd', 'What changed',
+            unasked = self.service._write_document(task, self.bot, report_key('What changed'), 'What changed',
                                                    'markdown', 'Text.', None, expires=None)
+            # A bot saved its own page with a key that starts with reply- in the same turn. It stays.
+            self.service._write_document(task, self.bot, 'reply-notes', 'Reply notes', 'markdown', 'Text.', None,
+                                         expires=None)
         self.save()
         # A routine later updated the page that a person asked for. It stays.
         task = self.service._get('tasks', self.task_id)
@@ -357,7 +360,7 @@ class DocumentServiceTests(unittest.TestCase):
             self.service.db.execute("DELETE FROM settings WHERE key='unasked_reports_removed'")
             remove_unasked_reports(self.service)
         self.assertEqual(sorted(d['key'] for d in self.service.documents()['documents']),
-                         sorted([asked['key'], 'signups-daily']))
+                         sorted([asked['key'], 'reply-notes', 'signups-daily']))
         card = next(m for m in self.service._task_messages(self.task_id) if m.get('document_id') == unasked['id'])
         self.assertTrue(card.get('_hidden'))
         self.assertTrue(self.service._setting('unasked_reports_removed'))
