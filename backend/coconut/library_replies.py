@@ -117,8 +117,7 @@ def asked_by_person(service, task: dict) -> bool:
     """Whether a message that a person typed in a chat started or joined this turn. Bots write structured status
     replies all day: to each other, for work intake and for pull request gates. Only a person's request makes a
     reply a report to keep."""
-    if task.get('source_bot_id') or task.get('_native_job') or task.get('_work_status_only'):
-        return False
+    # A person can also join a turn that another bot or a routine started.
     for identity in task.get('_turn_message_ids', []):
         message = service.db.execute('SELECT data FROM messages WHERE id=?', (identity,)).fetchone()
         if message and json.loads(message[0]).get('_human_source_kind') == 'chat':
@@ -172,11 +171,16 @@ def remove_unasked_reports(service):
     removed = set()
     for (data,) in service.db.execute("SELECT data FROM documents WHERE json_extract(data,'$.key') LIKE 'reply-%'").fetchall():
         document = json.loads(data)
-        row = service.db.execute('SELECT data FROM tasks WHERE id=?', (document.get('task_id'),)).fetchone()
-        task = json.loads(row[0]) if row else {}
-        asked = not (task.get('source_bot_id') or task.get('_native_job') or task.get('_work_status_only')) and any(
-            message['role'] == 'user' and message.get('_human_source_kind') == 'chat'
-            for message in (service._task_messages(task['id']) if task else []))
+        # The task of the latest save can be a later routine. The first card of the page names the task that made
+        # it, because each new page showed a card. A page without a card stays.
+        card = service.db.execute("SELECT data FROM messages WHERE json_extract(data,'$.kind')='document' AND "
+                                  "json_extract(data,'$.document_id')=? ORDER BY rowid LIMIT 1",
+                                  (document['id'],)).fetchone()
+        creator = json.loads(card[0]).get('task_id') if card else None
+        if creator is None:
+            continue
+        asked = any(message['role'] == 'user' and message.get('_human_source_kind') == 'chat'
+                    for message in service._task_messages(creator))
         if not asked:
             service._remove_document(document, None)
             removed.add(document['id'])

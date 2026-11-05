@@ -1335,13 +1335,16 @@ final class AppStore {
         return result?.ok == true
     }
 
-    func loadDocuments() async {
-        if isDemo { documents = BotDocument.previews(bots: bots); return }
-        guard let client else { return }
+    /// Loads the Library list. True when the list is fresh from the Mac.
+    @discardableResult
+    func loadDocuments() async -> Bool {
+        if isDemo { documents = BotDocument.previews(bots: bots); return true }
+        guard let client else { return false }
         do {
             let response: DocumentList = try await client.request("documents")
             documents = response.documents
-        } catch { report(error) }
+            return true
+        } catch { report(error); return false }
     }
 
     /// One document with the content of its current version. Nil when the Mac cannot send it.

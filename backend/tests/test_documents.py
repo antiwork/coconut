@@ -305,10 +305,15 @@ class DocumentServiceTests(unittest.TestCase):
         self.reply(REPORT)
         self.assertEqual(self.service.documents()['documents'], [])
         self.assertEqual(self.cards(), [])
-        # A turn that another bot sent is not a person's request either.
+        # A turn that another bot sent is not a person's request, until a person joins it.
         from coconut.library_replies import asked_by_person
         task = self.service._get('tasks', self.task_id)
         self.assertFalse(asked_by_person(self.service, dict(task, source_bot_id=self.other['id'])))
+        message = next(m for m in self.service._task_messages(self.task_id) if m['role'] == 'user')
+        message['_human_source_kind'] = 'chat'
+        self.service._put('messages', message)
+        self.assertTrue(asked_by_person(self.service, dict(task, source_bot_id=self.other['id'],
+                                                           _turn_message_ids=[message['id']])))
 
     def test_a_person_asks_the_bot_about_a_page(self):
         self.save()
@@ -342,6 +347,11 @@ class DocumentServiceTests(unittest.TestCase):
             unasked = self.service._write_document(task, self.bot, 'reply-what-changed-1234abcd', 'What changed',
                                                    'markdown', 'Text.', None, expires=None)
         self.save()
+        # A routine later updated the page that a person asked for. It stays.
+        task = self.service._get('tasks', self.task_id)
+        with self.service.transaction():
+            self.service._write_document(task, self.bot, asked['key'], asked['title'], 'markdown', 'Later.', None,
+                                         expires=None)
         with self.service.transaction():
             # The service ran the cleanup at its start, before these pages.
             self.service.db.execute("DELETE FROM settings WHERE key='unasked_reports_removed'")

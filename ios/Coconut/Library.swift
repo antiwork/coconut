@@ -269,9 +269,11 @@ struct DocumentCard: View {
     let documentId: String
     /// The title when the card was made. The Library list has the current title and summary.
     let title: String
-    /// The Library no longer has the page: someone deleted it. The card goes too.
-    @State private var gone = false
+    /// The card loaded a fresh Library list. Only such a list can say that the page is gone.
+    @State private var listFresh = false
     private var document: BotDocument? { store.documents?.first { $0.id == documentId } }
+    /// Someone deleted the page, so the card goes too. A later list that has the page brings the card back.
+    private var gone: Bool { listFresh && store.documents != nil && document == nil }
 
     var body: some View {
         if !gone { card }
@@ -304,10 +306,8 @@ struct DocumentCard: View {
         .accessibilityIdentifier("document-card-\(documentId)")
         // A new document is not in the list yet. One load brings its summary.
         .task(id: documentId) {
-            guard document == nil else { return }
-            await store.loadDocuments()
-            // Only a list that loaded can say that the page is gone.
-            gone = store.documents != nil && document == nil
+            guard document == nil else { listFresh = true; return }
+            listFresh = await store.loadDocuments()
         }
     }
 
