@@ -762,10 +762,15 @@ class WorktreeRetirementTests(unittest.TestCase):
         jobs = self.service.profiles.home(self.bot) / 'cron' / 'jobs.json'
         jobs.parent.mkdir(parents=True, exist_ok=True)
         routine = dict(id='job1', enabled=True, workdir=str(path))
-        jobs.write_text(json.dumps({'jobs': [routine, dict(id='job2', enabled=True, workdir=str(scratch))]}))
+        # A malformed entry does not stop the pass.
+        jobs.write_text(json.dumps({'jobs': [None, routine, dict(id='job2', enabled=True, workdir=str(scratch))]}))
         self.assertEqual(self.retire(), [])
         self.assertTrue(path.is_dir())
         self.assertTrue((scratch / 'notes.txt').exists())
+        # A routine that works inside the worktree keeps it too, but one that works in the whole workspaces folder does not.
+        self.assertTrue(retirement.used_by_routine(path, {Path(os.path.realpath(path)) / 'sub'}, self.workspaces))
+        self.assertTrue(retirement.used_by_routine(path / 'sub', {Path(os.path.realpath(path))}, self.workspaces))
+        self.assertFalse(retirement.used_by_routine(path, {Path(os.path.realpath(self.workspaces))}, self.workspaces))
         # A paused routine does not keep the folder.
         jobs.write_text(json.dumps({'jobs': [dict(routine, enabled=False)]}))
         self.service._next_worktree_retirement = 0
@@ -3333,11 +3338,17 @@ class WorktreeRetirementTests(unittest.TestCase):
         active, _, _, _ = self.outcome(status='queued')
         busy = folder(active)
         saved = {'one': dict(path=str(named / 'worktree'))}
+        # An empty folder that a routine works in, or that holds a routine's folder, stays.
+        routine = folder(str(uuid4()))
+        parent = folder(str(uuid4()))
+        routines = {Path(os.path.realpath(routine)), Path(os.path.realpath(parent)) / 'sub'}
         with patch.object(retirement, 'changed_at', lambda info: info.st_mtime):
-            self.service._remove_empty_scratch(self.workspaces, saved, time.time())
+            self.service._remove_empty_scratch(self.workspaces, saved, time.time(), routines)
         self.assertFalse(idle.exists())
-        for kept in (fresh, full, own, archive, named, busy):
+        for kept in (fresh, full, own, archive, named, busy, routine, parent):
             self.assertTrue(kept.exists(), kept)
+        routine.rmdir()
+        parent.rmdir()
         # An older kept folder does not take the place of a folder that can go.
         os.utime(busy, (old - 86400, old - 86400))
         idle = folder(str(uuid4()))

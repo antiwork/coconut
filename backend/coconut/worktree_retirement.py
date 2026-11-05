@@ -116,6 +116,19 @@ def holds_tracked(folder, places):
     return any(place == folder or folder in place.parents for place in places)
 
 
+def used_by_routine(place, folders, root):
+    """Whether a routine's working folder is this place, lies inside it, or holds it. A routine can read the files
+    below its folder. A routine that works in the whole workspaces folder, or above it, keeps no single outcome:
+    that rule would keep every outcome forever."""
+    place, root = Path(os.path.realpath(place)), Path(os.path.realpath(root))
+    for folder in folders:
+        if folder == place or place in folder.parents:
+            return True
+        if folder in place.parents and folder != root and folder not in root.parents:
+            return True
+    return False
+
+
 # An entry waits in the trash folder under this ending until the second walk finds no change. empty_moved never deletes
 # such a name, so a crash or a failed undo cannot lose an entry that the walk did not clear.
 CHECKING = '.checking'
@@ -563,7 +576,7 @@ class WorktreeRetirement:
                 with contextlib.suppress(*work_workspace.GIT_ERRORS):
                     work_workspace.git(repository, 'worktree', 'prune', timeout=work_workspace.CHECKOUT_SECONDS)
 
-    def _remove_empty_scratch(self, root, saved, current):
+    def _remove_empty_scratch(self, root, saved, current, routines=frozenset()):
         """Delete the empty scratch workspaces (workspaces/<outcome>) that nothing changed for EMPTY_SCRATCH_SECONDS.
 
         _clear_idle_scratch leaves an empty folder, and nothing removed it. A folder of an outcome with an active task
@@ -579,7 +592,9 @@ class WorktreeRetirement:
         real = Path(os.path.realpath(root))
         candidates = []
         for folder in root.iterdir():
-            if not SCRATCH_NAME.fullmatch(folder.name) or folder in named or real / folder.name in named:
+            if (not SCRATCH_NAME.fullmatch(folder.name) or folder in named or real / folder.name in named
+                    or used_by_routine(folder, routines, root)):
+                # An empty folder can still be the working folder of a routine.
                 continue
             try:
                 info = folder.lstat()
@@ -634,7 +649,9 @@ class WorktreeRetirement:
                 continue
             jobs = data.get('jobs') if isinstance(data, dict) else None
             for job in jobs if isinstance(jobs, list) else []:
-                folder = job.get('workdir') if isinstance(job, dict) else None
+                if not isinstance(job, dict):
+                    continue
+                folder = job.get('workdir')
                 if job.get('enabled', True) and isinstance(folder, str) and os.path.isabs(folder):
                     folders.add(Path(os.path.realpath(folder)))
         return folders
@@ -938,12 +955,11 @@ class WorktreeRetirement:
         # workspace. The outcome is then not finished for this pass.
         routines = self._routine_folders()
         if routines:
-            def used_by_routine(outcome):
+            def kept(outcome):
                 places = [root / outcome] + [Path(b['path']) for b in saved.values() if isinstance(b, dict)
                                              and b.get('outcome') == outcome and isinstance(b.get('path'), str)]
-                return any(holds_tracked(place, routines) or any(Path(os.path.realpath(place)) in folder.parents
-                                                                 for folder in routines) for place in places)
-            finished = {outcome for outcome in finished if not used_by_routine(outcome)}
+                return any(used_by_routine(place, routines, root) for place in places)
+            finished = {outcome for outcome in finished if not kept(outcome)}
         try:
             self._stop_idle_orphans(finished, saved, urgent=low_disk)
         except (ValueError, OSError, KeyError, subprocess.TimeoutExpired, sqlite3.Error) as error:
@@ -990,7 +1006,7 @@ class WorktreeRetirement:
         except (ValueError, OSError, subprocess.TimeoutExpired, sqlite3.Error) as error:
             logging.getLogger(__name__).warning('Coconut could not clear stale bot workspaces: %s', error)
         try:
-            self._remove_empty_scratch(root, saved, current)
+            self._remove_empty_scratch(root, saved, current, routines)
         except (ValueError, OSError, sqlite3.Error) as error:
             logging.getLogger(__name__).warning('Coconut could not remove empty scratch workspaces: %s', error)
         if not saved:
