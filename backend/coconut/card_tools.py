@@ -433,7 +433,13 @@ LIBRARY_INSTRUCTIONS = (
     'A message can ask about one of your pages: read it with coconut_read_document before you answer. '
     'A document is temporary or kept current. For a temporary document, set expires_at. To keep a document current, '
     'save it again with the same key when its facts change, for example from a routine. Each save adds a version. '
-    'The title is the heading of the page. Do not start the content with the title as a heading.'
+    'The title is the heading of the page. Do not start the content with the title as a heading. '
+    'You can also save a document on your own, without a request, when the person will want to come back to it: a '
+    'postmortem, a weekly report, a decision record or research. A status update is not a document. Before you make a '
+    'new document, read your list and update the document that covers the topic. Make at most two new documents a day '
+    'on your own. '
+    'A document does not notify the person. When an update changes something that the person must know, write one '
+    'short chat message that names the document and says what changed. Otherwise, update the document quietly.'
 )
 
 BOT_DELETION_INSTRUCTIONS = (
