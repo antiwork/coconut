@@ -184,8 +184,9 @@ struct ConversationView: View {
                     .onScrollGeometryChange(for: CGSize.self) { $0.contentSize } action: { _, _ in
                         if nearBottom && (focusTarget == nil || didFocusDecision) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
-                    .onScrollGeometryChange(for: CGSize.self) { $0.containerSize } action: { _, _ in
-                        // Follow keyboard and composer resizing only when the reader stays at the bottom.
+                    .onScrollGeometryChange(for: [CGFloat].self) { [$0.containerSize.height, $0.contentInsets.bottom] } action: { _, _ in
+                        // Follow keyboard and composer resizing only when the reader stays at the bottom. The keyboard
+                        // and the composer change the bottom inset of the chat, not the size of its container.
                         if !userScrolling && nearBottom && (focusTarget == nil || didFocusDecision) {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
@@ -261,7 +262,13 @@ struct ConversationView: View {
                     guard let quote else { return }
                     store.pageQuotes[botId] = nil
                     replyTo = quote
-                    composerFocused = true
+                    // The chat follows its latest message. The keyboard opens after the push, because a keyboard that
+                    // opens during the push left the latest messages under the composer.
+                    nearBottom = true
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(450))
+                        composerFocused = true
+                    }
                 }
                 .onChange(of: composerFocused) { _, _ in footerScroll.reset() }
                 .toolbar {
@@ -741,12 +748,17 @@ struct ConversationComposer: View {
                     .accessibilityIdentifier("work-context-preview")
             }
             if let reference = replyTo {
+                // The chat scrolls under the composer, so the quote needs a surface of its own, as the field has.
                 HStack(spacing: 8) {
                     MessageQuote(reference: reference)
                     Button { replyTo = nil } label: {
                         Image(systemName: "xmark").foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
-                    }.accessibilityLabel("Cancel reply")
-                }.padding(.horizontal, 12).accessibilityIdentifier("reply-preview")
+                    }.accessibilityLabel(reference.documentId == nil ? "Cancel reply" : "Remove the page")
+                }
+                .padding(.leading, 14).padding(.trailing, 4).padding(.vertical, 2)
+                .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium, style: .continuous)))
+                .padding(.horizontal, 12).padding(.bottom, 6)
+                .accessibilityIdentifier("reply-preview")
             }
             BotMentionControls(text: $text, selection: $selection, selected: $mentions, bots: store.bots, focused: focused) { focused = true }
             if !attachments.isEmpty {

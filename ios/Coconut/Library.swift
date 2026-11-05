@@ -209,7 +209,7 @@ struct DocumentView: View {
                     Menu {
                         if let bot {
                             Button { ask(bot, about: document) } label: {
-                                Label("Ask \(bot.name) about this page", systemImage: "bubble.left")
+                                Label("Chat about this page", systemImage: "bubble.left")
                             }
                             .accessibilityIdentifier("document-ask")
                         }
