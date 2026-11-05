@@ -612,6 +612,33 @@ class WorktreeRetirement:
         if removed:
             logging.getLogger(__name__).warning('Coconut removed %s empty scratch workspaces.', removed)
 
+    def _routine_folders(self):
+        """The working folders of the enabled Hermes routines of the bots (cron/jobs.json of each profile).
+
+        Hermes starts a routine in its folder by itself, without a Coconut turn, so no turn restores a retired worktree
+        for it, and Hermes refuses to start a routine whose folder is gone. These folders stay. A profile whose jobs
+        Coconut cannot read protects nothing, and the pass goes on.
+        """
+        folders = set()
+        for bot in self._all('bots'):
+            if bot.get('_deleted'):
+                continue
+            try:
+                data = json.loads((self.profiles.home(bot) / 'cron' / 'jobs.json').read_text())
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                if not isinstance(error, FileNotFoundError):
+                    logging.getLogger(__name__).warning('Coconut could not read the routines of bot %s: %s', bot['id'], error)
+                continue
+            except Exception as error:  # ProfileError: a bot without a profile has no routines.
+                logging.getLogger(__name__).debug('No routines for bot %s: %s', bot['id'], error)
+                continue
+            jobs = data.get('jobs') if isinstance(data, dict) else None
+            for job in jobs if isinstance(jobs, list) else []:
+                folder = job.get('workdir') if isinstance(job, dict) else None
+                if job.get('enabled', True) and isinstance(folder, str) and os.path.isabs(folder):
+                    folders.add(Path(os.path.realpath(folder)))
+        return folders
+
     def _bots_with_turns(self):
         """Return the IDs of the bots with a running turn or a claim, or None when Coconut cannot tell."""
         from .service import ServiceError
@@ -666,7 +693,8 @@ class WorktreeRetirement:
         # Readers are usually idle between polls, so neither file age nor open-file
         # checks identify these live dependencies. Keep configured paths, including bindings that have not been
         # written yet. A reader can also import or read the files next to it, so a reader keeps its whole entry.
-        sealed = set()
+        # A routine starts in its folder without a turn, so that folder stays like a reader's.
+        sealed = set(self._routine_folders())
         sources_path = self.root / 'work-sources.json'
         try:
             if sources_path.exists():
@@ -906,6 +934,16 @@ class WorktreeRetirement:
             return []
         # The registry changes by atomic rename, so this read needs no lock. Retirement checks again under the lock.
         saved = json.loads(manifest.read_text()) if manifest.exists() else {}
+        # A routine that works in the folder of an outcome keeps that outcome's files: its worktrees and its scratch
+        # workspace. The outcome is then not finished for this pass.
+        routines = self._routine_folders()
+        if routines:
+            def used_by_routine(outcome):
+                places = [root / outcome] + [Path(b['path']) for b in saved.values() if isinstance(b, dict)
+                                             and b.get('outcome') == outcome and isinstance(b.get('path'), str)]
+                return any(holds_tracked(place, routines) or any(Path(os.path.realpath(place)) in folder.parents
+                                                                 for folder in routines) for place in places)
+            finished = {outcome for outcome in finished if not used_by_routine(outcome)}
         try:
             self._stop_idle_orphans(finished, saved, urgent=low_disk)
         except (ValueError, OSError, KeyError, subprocess.TimeoutExpired, sqlite3.Error) as error:

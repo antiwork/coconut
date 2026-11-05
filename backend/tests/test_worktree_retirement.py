@@ -751,6 +751,26 @@ class WorktreeRetirementTests(unittest.TestCase):
         self.retire()
         self.assertTrue((scratch / 'notes.txt').exists())
 
+    def test_a_folder_that_a_routine_works_in_stays(self):
+        # Hermes starts a routine in its folder without a Coconut turn, so nothing would restore a retired worktree.
+        _, identity, path, task = self.outcome()
+        self.pull_request(task, 'merged')
+        outcome = task['_execution_session_id']
+        scratch = self.workspaces / outcome
+        scratch.mkdir(exist_ok=True)
+        (scratch / 'notes.txt').write_text('evidence that the routine reads\n')
+        jobs = self.service.profiles.home(self.bot) / 'cron' / 'jobs.json'
+        jobs.parent.mkdir(parents=True, exist_ok=True)
+        routine = dict(id='job1', enabled=True, workdir=str(path))
+        jobs.write_text(json.dumps({'jobs': [routine, dict(id='job2', enabled=True, workdir=str(scratch))]}))
+        self.assertEqual(self.retire(), [])
+        self.assertTrue(path.is_dir())
+        self.assertTrue((scratch / 'notes.txt').exists())
+        # A paused routine does not keep the folder.
+        jobs.write_text(json.dumps({'jobs': [dict(routine, enabled=False)]}))
+        self.service._next_worktree_retirement = 0
+        self.assertEqual(self.retire(), [identity])
+
     def test_a_discard_keeps_a_small_ignored_file_and_puts_it_back(self):
         outcome, identity, path, task = self.outcome()
         self.pull_request(task, 'merged')
