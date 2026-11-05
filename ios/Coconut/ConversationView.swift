@@ -15,6 +15,8 @@ struct ConversationView: View {
     @State private var messageDraft = ""
     @State private var workContext: WorkReference?
     @State private var replyTo: MessageReference?
+    /// A focus of the composer that waits for the push to end. A tap on the chat or leaving it cancels it.
+    @State private var focusAfterPush: UUID?
     @State private var messageAttachments: [Artifact] = []
     @State private var messageScheduling = false
     @State private var messageScheduledAt = Date().addingTimeInterval(3600)
@@ -149,7 +151,7 @@ struct ConversationView: View {
                     .defaultScrollAnchor(focusTarget == nil ? .bottom : .top, for: .alignment)
                     .scrollDismissesKeyboard(.interactively)
                     .contentShape(Rectangle())
-                    .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
+                    .simultaneousGesture(TapGesture().onEnded { focusAfterPush = nil; composerFocused = false })
                     .onScrollGeometryChange(for: Bool.self) { geometry in
                         geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 100
                     } action: { _, value in
@@ -265,10 +267,15 @@ struct ConversationView: View {
                     // The chat follows its latest message. The keyboard opens after the push, because a keyboard that
                     // opens during the push left the latest messages under the composer.
                     nearBottom = true
-                    Task {
-                        try? await Task.sleep(for: .milliseconds(450))
-                        composerFocused = true
-                    }
+                    focusAfterPush = UUID()
+                }
+                // The view cancels this task when it leaves the screen, and a new ID when the request changes.
+                .task(id: focusAfterPush) {
+                    guard focusAfterPush != nil else { return }
+                    try? await Task.sleep(for: .milliseconds(450))
+                    guard !Task.isCancelled, focusAfterPush != nil else { return }
+                    focusAfterPush = nil
+                    composerFocused = true
                 }
                 .onChange(of: composerFocused) { _, _ in footerScroll.reset() }
                 .toolbar {
@@ -290,7 +297,7 @@ struct ConversationView: View {
                         }
                         .buttonStyle(.plain).labelStyle(.titleAndIcon).accessibilityLabel("\(bot.name) settings")
                         .accessibilityIdentifier("bot-settings")
-                        .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
+                        .simultaneousGesture(TapGesture().onEnded { focusAfterPush = nil; composerFocused = false })
                     }
                     #endif
                 }
