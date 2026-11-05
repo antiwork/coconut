@@ -1,5 +1,4 @@
 import SwiftUI
-import MarkdownUI
 
 /// A page that a bot keeps in the Library (backend/coconut/documents.py). The list carries no content. The Mac sends
 /// the content of the current version when the phone opens the document.
@@ -154,7 +153,7 @@ extension BotDocument {
     }
 }
 
-/// One open document: Markdown drawn natively, or an HTML page in a closed web view (DocumentPage).
+/// One open document in a closed web view (DocumentPage): an HTML page, or Markdown that the page turns into HTML.
 struct DocumentView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.openURL) private var openURL
@@ -172,22 +171,11 @@ struct DocumentView: View {
     var body: some View {
         Group {
             if let document, let content = document.content {
-                if document.isPage {
-                    DocumentPage(document: document, meta: document.meta(botName: bot?.name), content: content) {
-                        link = $0
-                    }
-                        .ignoresSafeArea(edges: .bottom)
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 0) {
-                            header(document)
-                            Divider().padding(.vertical, 16)
-                            MessageText(text: BotDocument.body(content))
-                                .markdownImageProvider(DocumentImages())
-                        }
-                        .padding(.horizontal, 24).padding(.top, 8).padding(.bottom, 32)
-                    }
+                // Markdown and HTML share the page view, its article style and its blocks.
+                DocumentPage(document: document, meta: document.meta(botName: bot?.name), content: content) {
+                    link = $0
                 }
+                    .ignoresSafeArea(edges: .bottom)
             } else if failed {
                 ContentUnavailableView {
                     Label("Coconut could not load this document", systemImage: "doc.text")
@@ -252,12 +240,6 @@ struct DocumentView: View {
         document = loaded
     }
 
-    private func header(_ document: BotDocument) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(document.title).font(.title2.weight(.semibold))
-            Text(document.meta(botName: bot?.name)).font(.subheadline).foregroundStyle(.secondary)
-        }
-    }
 }
 
 /// A document in a chat: a card that opens it in the Library. The service adds one when a bot saves a new document, or
@@ -317,50 +299,6 @@ struct DocumentCard: View {
     }
 }
 
-/// The photos of a Markdown document. A photo that a bot saved on the Mac (`coconut-file://`) loads through Coconut, as
-/// in the chat.
-private struct DocumentImages: ImageProvider {
-    func makeImage(url: URL?) -> some View {
-        DocumentPhoto(url: url)
-    }
-}
-
-private struct DocumentPhoto: View {
-    let url: URL?
-    @State private var image: PlatformImage?
-    @State private var failed = false
-    @State private var attempt = 0
-
-    var body: some View {
-        Group {
-            if let image {
-                Image(platformImage: image).resizable().scaledToFit()
-            } else {
-                Rectangle().fill(BoardStyle.surface).frame(height: 160).overlay {
-                    if failed || url == nil {
-                        Image(systemName: "photo").font(.title2).foregroundStyle(.secondary)
-                    } else {
-                        ProgressView()
-                    }
-                }
-            }
-        }
-        .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.small, style: .continuous))
-        // A photo of the Mac that failed loads again when the Mac connects, as in the chat (RemotePhoto).
-        .onReceive(NotificationCenter.default.publisher(for: .coconutMacConnected)) { _ in
-            if failed && url?.scheme == "coconut-file" { attempt += 1 }
-        }
-        .task(id: "\(url?.absoluteString ?? "") \(attempt)") {
-            guard let url else { return }
-            failed = false
-            image = PhotoLoader.shared.cached(url, size: .full)
-            guard image == nil else { return }
-            image = await PhotoLoader.shared.image(url, size: .full)
-            failed = image == nil
-        }
-    }
-}
-
 extension BotDocument {
     /// The documents of demo mode.
     static func previews(bots: [Bot]) -> [BotDocument] {
@@ -369,6 +307,10 @@ extension BotDocument {
         let now = Date.now
         func time(_ hours: Double) -> String { now.addingTimeInterval(-hours * 3600).ISO8601Format() }
         return [
+            BotDocument(id: "preview-waitlist", botId: first.id, key: "waitlist-own-website",
+                        title: "A waitlist form on a seller's own website", format: "markdown",
+                        summary: "Decided: make the existing field official", version: 2, createdAt: time(30),
+                        updatedAt: time(0.5), content: previewWaitlist),
             BotDocument(id: "preview-revenue", botId: first.id, key: "revenue-by-category", title: "Revenue by category",
                         format: "html", summary: "$95,000 this month, up 6%", version: 14, createdAt: time(400),
                         updatedAt: time(1), content: previewTreemap),
@@ -384,6 +326,46 @@ extension BotDocument {
                             + "The refund window stays 30 days."),
         ]
     }
+
+    /// A Markdown page with each block: the lead, a callout, a diagram, a chart, a table and a task list.
+    private static let previewWaitlist = """
+    Jordi wants visitors to join the waitlist for one product from a form on his own site, without leaving it.
+
+    > [!TIP] Decided Nov 5 · Option A
+    > **Make the existing field official.** Add a product picker to the Subscribe form and document it. No server change.
+
+    ## How a signup works
+
+    ```mermaid
+    flowchart TD
+      A[Visitor submits the form] --> B[Gumroad receives seller and product]
+      B -->|Reviewed seller| C[Added to the waitlist]
+      B -->|Not reviewed| D[Sent to the product page]
+    ```
+
+    ## Waitlist signups by week
+
+    ```chart
+    {"type": "bar", "x": "week", "y": "signups", "data": [{"week": "Oct 13", "signups": 42}, {"week": "Oct 20", "signups": 61}, {"week": "Oct 27", "signups": 58}, {"week": "Nov 3", "signups": 87}]}
+    ```
+
+    ## Where forms work
+
+    | Place | Status |
+    |---|---|
+    | Product page | Shipped |
+    | Custom HTML | Shipped |
+    | Seller's website | In progress |
+
+    ## Next
+
+    - [x] Post the decision on the issue
+    - [ ] Gumclaw opens a draft PR
+    - [ ] One merge card after the review
+
+    > [!WARNING]
+    > A seller who is not reviewed sends visitors to the product page.
+    """
 
     private static let previewTreemap = """
     <p class="metric">$95,000 <span class="delta">+6% this month</span></p>

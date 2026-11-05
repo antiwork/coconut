@@ -83,6 +83,7 @@
 		3659B5709A05E658B631EF17 /* BotPhase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66C01B452AF6DE7CA34E741B /* BotPhase.swift */; };
 		38367AB3AD663E17234E46E8 /* BotSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCBA7E17655BED561202EC41 /* BotSettingsView.swift */; };
 		3877DBDF422615A073301637 /* BotAvatar.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7F9AF04038A01979A05935C /* BotAvatar.swift */; };
+		38B4B0E1990EC4B15DD7C879 /* mermaid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = A1E9016F6861BCC1AAFCD8EB /* mermaid.min.js */; };
 		39B3A0FE631ECEBD97FB4E54 /* BotExchangeFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB2417619FA30AF5EAF2B0BC /* BotExchangeFlowTests.swift */; };
 		39DA24AEFC6B5A75612CEC71 /* IncrementalSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 547FF45685223422176EDA75 /* IncrementalSyncTests.swift */; };
 		3D8AB0675BB12848A2DE7285 /* Library.swift in Sources */ = {isa = PBXBuildFile; fileRef = 314F7F34480A83406A676837 /* Library.swift */; };
@@ -112,6 +113,8 @@
 		592EEBD97D8F3769D5B1A192 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 68629CEC6C869677D8EA1CE0 /* Assets.xcassets */; };
 		59A5FEA8B9602BD807D70889 /* CoconutNotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = D077096B1D7594B096B3D215 /* CoconutNotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		59CFA44816F4310DB9EBBEFE /* PreviewStateFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F7D0F8D88BFF0F00891F0D9 /* PreviewStateFixture.swift */; };
+		5AB03F222DE1BD306009E6E4 /* page.js in Resources */ = {isa = PBXBuildFile; fileRef = B9F3B578561D71A593831830 /* page.js */; };
+		5BD20F988081A56A57D69790 /* marked.min.js in Resources */ = {isa = PBXBuildFile; fileRef = DFB2E316A71DED8BD963AEC4 /* marked.min.js */; };
 		5C79451CA553FFB10ECBBFAD /* ConversationRowHoldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CA58082ADA4D1E50055D18A /* ConversationRowHoldTests.swift */; };
 		5E7A2170D2C541082457D5CD /* DecisionInboxTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E071D5849425BFD67FAEE846 /* DecisionInboxTests.swift */; };
 		5E923EBC6DA285BCD7E2D60B /* MessageReplayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4BD35F28442F5CDDF9B0E66 /* MessageReplayTests.swift */; };
@@ -134,6 +137,7 @@
 		6F274E8D9D2AA0D5176D2D5E /* PairingCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4DA4590DED32EBD6745877E1 /* PairingCode.swift */; };
 		6FC0F33B81AAB8C90A26D69D /* MacPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 836D39F873118D97FFADE98C /* MacPairingView.swift */; };
 		72821C913ECFF2FD7A02150A /* MessageInteractionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F171F9C844D24DEF2B4389C6 /* MessageInteractionTests.swift */; };
+		72B9632ECD84E69F42B8799E /* marked.min.js in Resources */ = {isa = PBXBuildFile; fileRef = DFB2E316A71DED8BD963AEC4 /* marked.min.js */; };
 		72D1DDA3CDF3634298717101 /* hermes-pairing-message.txt in Resources */ = {isa = PBXBuildFile; fileRef = BF7C349246F8FA67CFC7F7D9 /* hermes-pairing-message.txt */; };
 		73119561E88C6E6447E3CEE7 /* ParallelWorkSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 700B733AA852AB61242F7E50 /* ParallelWorkSettingsView.swift */; };
 		7598EEF49724BFBC425C9C14 /* ModelSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13E2BAC2B32852FEC7770DD3 /* ModelSettingsTests.swift */; };
@@ -161,6 +165,7 @@
 		8D5D8D51030FD26735E611F5 /* TestIsolation.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE7D6BDE77246AF7A1CF43CD /* TestIsolation.swift */; };
 		8DEBB58B2324219CE7F2058E /* PushRelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A60CFE7EAB28FA54EB0D2203 /* PushRelayClient.swift */; };
 		8F7CAE9D3062FF3E2619EF8E /* MCPSettingsFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53C542B24868FF4FB0A86C9E /* MCPSettingsFlowTests.swift */; };
+		8FAFCEF11E4E22FCE01B34E5 /* page.js in Resources */ = {isa = PBXBuildFile; fileRef = B9F3B578561D71A593831830 /* page.js */; };
 		9157C710CFA923F1E89B3B2B /* ConversationFooterScrollTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B36D9F5414E1A10AA667E5A5 /* ConversationFooterScrollTests.swift */; };
 		93D8D55FE5A94348416B8153 /* PairingSetup.swift in Sources */ = {isa = PBXBuildFile; fileRef = F148539DFD85BF3879FA031A /* PairingSetup.swift */; };
 		93FBA3F4E639718755AE45A0 /* MessageReplyGesture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02C28DCD356AB0A20D629F25 /* MessageReplyGesture.swift */; };
@@ -258,6 +263,7 @@
 		EAC04248C852201538C8E66C /* ConversationTimestamps.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85FE35330C6B3578235F72A6 /* ConversationTimestamps.swift */; };
 		EB234D0A8D24F33D5B0C7202 /* WorkPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2A356F294D0E885E11F0744 /* WorkPresentationTests.swift */; };
 		EC7C4F9CEDD9890D9C194664 /* ParallelWorkSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9496F889212FE574F7A27C5F /* ParallelWorkSettingsTests.swift */; };
+		EC9731506236390E56953EF1 /* mermaid.min.js in Resources */ = {isa = PBXBuildFile; fileRef = A1E9016F6861BCC1AAFCD8EB /* mermaid.min.js */; };
 		ED2BB38B63BF3CE4AABA87C1 /* BotExchangeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D7EAE47898978A1E16BCA48 /* BotExchangeTests.swift */; };
 		EE829F49D569A8789B2FADD2 /* LinkPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 903AD4E2708B4A32290D084C /* LinkPreviews.swift */; };
 		EF509B0647E0D4B066213085 /* Platform.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6BADED5520F6428F59143DF /* Platform.swift */; };
@@ -439,6 +445,7 @@
 		9F8EE907E052D5714E1FCC28 /* ChatCardDismissTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatCardDismissTests.swift; sourceTree = "<group>"; };
 		9FB796A12D68BA7FB37609B0 /* BotStatusRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotStatusRow.swift; sourceTree = "<group>"; };
 		9FEF7C2D5F35AFC87F3C7B9E /* FruitVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FruitVolume.swift; sourceTree = "<group>"; };
+		A1E9016F6861BCC1AAFCD8EB /* mermaid.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = mermaid.min.js; sourceTree = "<group>"; };
 		A2A356F294D0E885E11F0744 /* WorkPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkPresentationTests.swift; sourceTree = "<group>"; };
 		A321C094F7942AA554149505 /* FruitAvatar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FruitAvatar.swift; sourceTree = "<group>"; };
 		A3A43A7E155EAC1270A61B25 /* PreviewDiagnostics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewDiagnostics.swift; sourceTree = "<group>"; };
@@ -458,6 +465,7 @@
 		B5C532B556E6AC4611DC4B3F /* SettingsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsViews.swift; sourceTree = "<group>"; };
 		B7F9AF04038A01979A05935C /* BotAvatar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotAvatar.swift; sourceTree = "<group>"; };
 		B8BC9EE960764592EBC7C381 /* BotMentions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotMentions.swift; sourceTree = "<group>"; };
+		B9F3B578561D71A593831830 /* page.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = page.js; sourceTree = "<group>"; };
 		BCBA7E17655BED561202EC41 /* BotSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotSettingsView.swift; sourceTree = "<group>"; };
 		BF7C349246F8FA67CFC7F7D9 /* hermes-pairing-message.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "hermes-pairing-message.txt"; sourceTree = "<group>"; };
 		C2C7083874709ECCEFB881E4 /* noise-vectors.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "noise-vectors.json"; sourceTree = "<group>"; };
@@ -476,6 +484,7 @@
 		DC18213B09F82C2500E4D504 /* PreviewState.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = PreviewState.json; sourceTree = "<group>"; };
 		DE7D6BDE77246AF7A1CF43CD /* TestIsolation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TestIsolation.swift; sourceTree = "<group>"; };
 		DF7BF2FB5CEF695737612D1D /* ConnectionBanners.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionBanners.swift; sourceTree = "<group>"; };
+		DFB2E316A71DED8BD963AEC4 /* marked.min.js */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.javascript; path = marked.min.js; sourceTree = "<group>"; };
 		E047A026D090ABDE156F4AAF /* StateUpdates.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateUpdates.swift; sourceTree = "<group>"; };
 		E071D5849425BFD67FAEE846 /* DecisionInboxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionInboxTests.swift; sourceTree = "<group>"; };
 		E64B8D243B3B47A49BFE4878 /* NotificationSentenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationSentenceTests.swift; sourceTree = "<group>"; };
@@ -806,6 +815,9 @@
 			children = (
 				C44EF49A1FC16B4DA5221169 /* d3.min.js */,
 				5DE6EF2DBE9CCF248AAE0B81 /* Library-LICENSE.txt */,
+				DFB2E316A71DED8BD963AEC4 /* marked.min.js */,
+				A1E9016F6861BCC1AAFCD8EB /* mermaid.min.js */,
+				B9F3B578561D71A593831830 /* page.js */,
 				AB49216E17A6AA31F01CF7C4 /* plot.umd.min.js */,
 			);
 			path = Library;
@@ -1020,6 +1032,9 @@
 				312E4CE64E3C0963A0812615 /* PreviewState.json in Resources */,
 				C66E7C7F5C072C2FC63D766B /* d3.min.js in Resources */,
 				5189900E05C6EB73F4FAC061 /* hermes-pairing-message.txt in Resources */,
+				5BD20F988081A56A57D69790 /* marked.min.js in Resources */,
+				EC9731506236390E56953EF1 /* mermaid.min.js in Resources */,
+				5AB03F222DE1BD306009E6E4 /* page.js in Resources */,
 				670456AC08CD142C8A9E06D9 /* plot.umd.min.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1034,6 +1049,9 @@
 				187856AB98335639528B1073 /* PreviewState.json in Resources */,
 				DE3FE5D5FFE0987773996832 /* d3.min.js in Resources */,
 				72D1DDA3CDF3634298717101 /* hermes-pairing-message.txt in Resources */,
+				72B9632ECD84E69F42B8799E /* marked.min.js in Resources */,
+				38B4B0E1990EC4B15DD7C879 /* mermaid.min.js in Resources */,
+				8FAFCEF11E4E22FCE01B34E5 /* page.js in Resources */,
 				EF88421570200A48F5F540B0 /* plot.umd.min.js in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
