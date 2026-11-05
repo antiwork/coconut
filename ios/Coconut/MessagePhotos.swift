@@ -390,6 +390,12 @@ final class PhotoLoader: @unchecked Sendable {
         return image
     }
 
+    /// The bytes of a photo that a bot saved on the Mac, for a Library page (DocumentPage). Nil when the Mac cannot send them.
+    func macFileData(_ url: URL) async -> Data? {
+        guard url.scheme == "coconut-file" else { return nil }
+        return await download(url)
+    }
+
     /// The data of a photo, or nil for a failed request or a file larger than `largestDownload`. The limit applies
     /// while the data arrives, so a huge file never fills the memory.
     private func download(_ url: URL) async -> Data? {

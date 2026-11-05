@@ -104,11 +104,20 @@ def _declarations(css: str) -> str:
     return ''.join('' if index + 1 < len(parts) and parts[index + 1] == '{' else part
                    for index, part in enumerate(parts))
 
+# The blocks of a page (page.js in the app). The save tool and the Library rule name them, so each bot knows them.
+BLOCKS = ('Write a page like a short article: its first paragraph is the lead, one or two sentences that state the '
+          'point. Markdown pages have blocks: a callout is a quote that starts with [!NOTE], [!TIP], [!IMPORTANT], '
+          '[!WARNING] or [!CAUTION], with an optional title on the same line; a ```mermaid block draws a diagram '
+          '(flowchart, sequence, timeline, gantt, pie); a ```chart block draws a graph from JSON {"type": "bar", '
+          '"line", "area" or "dot", "data": [...], "x": "field", "y": "field", "series": "field", "title": "..."}; '
+          'tables, task lists and photos work too. Show a process as a diagram, numbers as a chart, a decision as a '
+          'callout and a comparison as a table. HTML pages have the same blocks: <pre class="mermaid">, '
+          '<aside class="callout tip"> and <p class="lead">.')
 SAVE_SCHEMA = {'name': 'coconut_save_document', 'description': (
     'Save a document in the Library of Coconut, where the person reads it on the phone. A save with an existing key '
     'replaces that document and adds a version. Use a document for content that outlives the chat: something to '
-    'track, to reuse or to check later. A short answer stays in the chat. Markdown suits notes, summaries, checklists '
-    'and tables. HTML suits charts and other interactive pages. Coconut sets the font, the colors and the spacing of '
+    'track, to reuse or to check later. A short answer stays in the chat. ' + BLOCKS + ' '
+    'HTML suits an interactive page. Coconut sets the font, the colors and the spacing of '
     'each page: in HTML use only these tokens for color: var(--c1) to var(--c6), var(--text), var(--text-2), '
     'var(--bg), var(--surface), var(--line), or coconut.palette (an array of the six colors) in a script. A page has '
     'd3 and Plot (Observable Plot) and has no network access. Coconut refuses a page that sets a font, writes a '
