@@ -6,12 +6,15 @@ ends with a long, structured reply and the bot saved no document in that turn, C
 document of the bot. The reply stays in the chat. Its photos stay in the document as `coconut-file://` lines, which the
 phone loads through the Mac.
 
-A report keeps one document for each title. The same report on another day, also from a routine, adds a version to
-that document.
+Coconut keeps a report only for a turn that a person's message started or joined (asked_by_person). A routine, an
+exchange between bots and automatic work keep their pages only when the bot saves them.
+
+A report keeps one document for each title. The same report on another day adds a version to that document.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 
 from .documents import MAX_TITLE
@@ -110,9 +113,23 @@ def saved_in_turn(service, task: dict) -> bool:
     return row is not None
 
 
-def keep_report(service, task: dict):
-    """Save the report of a finished turn as a document. The caller holds the transaction."""
-    if saved_in_turn(service, task):
+def asked_by_person(service, task: dict) -> bool:
+    """Whether a message that a person typed in a chat started or joined this turn. Bots write structured status
+    replies all day: to each other, for work intake and for pull request gates. Only a person's request makes a
+    reply a report to keep."""
+    if task.get('source_bot_id') or task.get('_native_job') or task.get('_work_status_only'):
+        return False
+    for identity in task.get('_turn_message_ids', []):
+        message = service.db.execute('SELECT data FROM messages WHERE id=?', (identity,)).fetchone()
+        if message and json.loads(message[0]).get('_human_source_kind') == 'chat':
+            return True
+    return False
+
+
+def keep_report(service, task: dict, person_asked: bool):
+    """Save the report of a finished turn as a document, when a person asked for it (asked_by_person). The caller
+    holds the transaction."""
+    if not person_asked or saved_in_turn(service, task):
         return
     text = turn_reply(service, task)
     if not text or not is_report(text):
@@ -142,3 +159,34 @@ def show_card(service, task: dict, document: dict, created: bool):
             return
     service._message(task['bot_id'], document['title'], task_id=task['id'], kind='document',
                      document_id=document['id'])
+
+
+def remove_unasked_reports(service):
+    """Remove once the pages that Coconut kept from turns that no person asked for, with their chat cards.
+
+    Coconut 0.1.0 (642) kept a page for every structured reply: bot exchanges, work intake and pull request gates
+    each made one. A page that the bot saved itself stays, and so does a kept report that a person asked for. The
+    caller holds the transaction."""
+    if service._setting('unasked_reports_removed'):
+        return
+    removed = set()
+    for (data,) in service.db.execute("SELECT data FROM documents WHERE json_extract(data,'$.key') LIKE 'reply-%'").fetchall():
+        document = json.loads(data)
+        row = service.db.execute('SELECT data FROM tasks WHERE id=?', (document.get('task_id'),)).fetchone()
+        task = json.loads(row[0]) if row else {}
+        asked = not (task.get('source_bot_id') or task.get('_native_job') or task.get('_work_status_only')) and any(
+            message['role'] == 'user' and message.get('_human_source_kind') == 'chat'
+            for message in (service._task_messages(task['id']) if task else []))
+        if not asked:
+            service._remove_document(document, None)
+            removed.add(document['id'])
+    hidden = False
+    for (data,) in service.db.execute("SELECT data FROM messages WHERE json_extract(data,'$.kind')='document'").fetchall():
+        message = json.loads(data)
+        if message.get('document_id') in removed and not message.get('_hidden'):
+            message['_hidden'] = True
+            service._put('messages', message)
+            hidden = True
+    if hidden:
+        service._event('transcript.updated', {})
+    service.db.execute("INSERT INTO settings VALUES ('unasked_reports_removed','true')")

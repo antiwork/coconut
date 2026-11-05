@@ -37,6 +37,8 @@ final class AppStore {
     var learning: [LearningGroup] = []
     /// The documents of the Library, newest first, without their content. Nil until the first load.
     var documents: [BotDocument]?
+    /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
+    var pageQuotes: [String: MessageReference] = [:]
     var connection: ConnectionState = .unconfigured {
         // A photo from the Mac that failed while the phone was offline loads again.
         didSet { if connection == .connected, oldValue != .connected { NotificationCenter.default.post(name: .coconutMacConnected, object: nil) } }
@@ -636,7 +638,7 @@ final class AppStore {
         }
         let request = MessageRequest(text: text, mode: selectedMode,
             taskId: selectedMode == "steer" ? currentTask?.id : nil, scheduledAt: scheduledAt,
-            attachmentIds: attachments, recipientBotIds: [], replyToMessageId: replyTo?.messageId, mentionedBotIds: mentionedBotIds, workArtifactId: workContext?.id, workStatusOnly: workStatusOnly)
+            attachmentIds: attachments, recipientBotIds: [], replyToMessageId: replyTo?.documentId == nil ? replyTo?.messageId : nil, mentionedBotIds: mentionedBotIds, workArtifactId: workContext?.id, workStatusOnly: workStatusOnly, aboutDocumentId: replyTo?.documentId)
         let outgoing = OutgoingMessage(id: UUID().uuidString, botId: bot.id,
             executorIds: [selectedMode == "steer" ? currentTask!.botId : bot.id],
             request: request, createdAt: Self.now, status: .sending, replyTo: replyTo, workContext: workContext, sequence: nextDeliverySequence)
@@ -2071,7 +2073,7 @@ private struct PinRequest: Encodable { let pinned: Bool }
 private struct InstructionsRequest: Encodable { let instructions: String }
 private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }
-struct MessageRequest: Codable, Equatable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil; var workArtifactId: String? = nil; var workStatusOnly: Bool? = nil }
+struct MessageRequest: Codable, Equatable { let text: String; let mode: String; let taskId: String?; let scheduledAt: String?; let attachmentIds: [String]; let recipientBotIds: [String]; var replyToMessageId: String? = nil; var mentionedBotIds: [String]? = nil; var workArtifactId: String? = nil; var workStatusOnly: Bool? = nil; var aboutDocumentId: String? = nil }
 private struct ReactionRequest: Encodable { let emoji: String; let active: Bool }
 struct OutgoingMessage: Codable, Identifiable, Equatable {
     enum Status: String, Codable { case sending, accepted, failed, rejected }

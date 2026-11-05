@@ -296,6 +296,62 @@ class DocumentServiceTests(unittest.TestCase):
         self.save(content='# Signups\n\n430 today.')
         self.assertEqual(len(self.cards()), 2)
 
+    def test_a_report_that_no_person_asked_for_stays_in_the_chat(self):
+        # Work intake, a pull request gate or another bot starts the turn: no message of a person is in it.
+        for message in self.service._task_messages(self.task_id):
+            if message['role'] == 'user':
+                message.pop('_human_source_kind', None)
+                self.service._put('messages', message)
+        self.reply(REPORT)
+        self.assertEqual(self.service.documents()['documents'], [])
+        self.assertEqual(self.cards(), [])
+        # A turn that another bot sent is not a person's request either.
+        from coconut.library_replies import asked_by_person
+        task = self.service._get('tasks', self.task_id)
+        self.assertFalse(asked_by_person(self.service, dict(task, source_bot_id=self.other['id'])))
+
+    def test_a_person_asks_the_bot_about_a_page(self):
+        self.save()
+        self.finish()
+        page = self.service.documents()['documents'][0]
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages',
+                          {'text': 'Is this number right?', 'about_document_id': page['id']})
+        message = next(m for m in self.service._task_messages(task['id']) if m['role'] == 'user')
+        self.assertEqual((message['reply_to']['role'], message['reply_to']['text'], message['reply_to']['document_id']),
+                         ('document', 'Signups', page['id']))
+        from coconut.native_conversation import message_content
+        self.assertIn('About your Library page "Signups" (key signups-daily)', message_content(message))
+        # Only a page of this bot.
+        with self.assertRaises(ServiceError):
+            self.write('POST', f'/v1/bots/{self.other["id"]}/messages',
+                       {'text': 'And this?', 'about_document_id': page['id']})
+
+    def test_coconut_removes_once_the_pages_that_no_person_asked_for(self):
+        from coconut.library_replies import remove_unasked_reports
+        self.reply(REPORT)
+        asked = self.service.documents()['documents'][0]
+        # A page of build 642 from a turn without a person's message, and its card.
+        self.turn, self.finish = self.start_turn(self.bot)
+        self.task_id = self.task['id']
+        for message in self.service._task_messages(self.task_id):
+            if message['role'] == 'user':
+                message.pop('_human_source_kind', None)
+                self.service._put('messages', message)
+        task = self.service._get('tasks', self.task_id)
+        with self.service.transaction():
+            unasked = self.service._write_document(task, self.bot, 'reply-what-changed-1234abcd', 'What changed',
+                                                   'markdown', 'Text.', None, expires=None)
+        self.save()
+        with self.service.transaction():
+            # The service ran the cleanup at its start, before these pages.
+            self.service.db.execute("DELETE FROM settings WHERE key='unasked_reports_removed'")
+            remove_unasked_reports(self.service)
+        self.assertEqual(sorted(d['key'] for d in self.service.documents()['documents']),
+                         sorted([asked['key'], 'signups-daily']))
+        card = next(m for m in self.service._task_messages(self.task_id) if m.get('document_id') == unasked['id'])
+        self.assertTrue(card.get('_hidden'))
+        self.assertTrue(self.service._setting('unasked_reports_removed'))
+
 class ReportShapeTests(unittest.TestCase):
     def test_a_report_has_structure_and_length_or_photos(self):
         self.assertTrue(is_report(REPORT))

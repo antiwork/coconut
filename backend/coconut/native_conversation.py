@@ -80,7 +80,11 @@ def attachment_context(attachments):
 def message_content(message):
     text = message['text']
     reference = message.get('reply_to')
-    if reference:
+    if reference and reference.get('role') == 'document':
+        text = (f'[About your Library page "{reference["text"]}" (key {reference.get("document_key")}). Read it with '
+                'coconut_read_document before you answer. To change the page, save it again with the same key.]'
+                f'\n\n{text}')
+    elif reference:
         # Match the native gateway's reply context. Keep the entire quoted message.
         own = reference.get('author_bot_id') in message.get('recipient_bot_ids', [])
         who = (' your previous message' if own else f" {reference['author']}'s message") if reference['role'] == 'assistant' else ''

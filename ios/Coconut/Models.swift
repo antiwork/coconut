@@ -227,7 +227,14 @@ struct MessageReference: Codable, Equatable, Sendable {
     var messageId: String
     var text: String
     var author: String
+    /// "user", "assistant", or "document" for a Library page that the message asks about.
     var role: String
+    var documentId: String? = nil
+
+    /// A Library page as the subject of a message: "Ask the bot about this page".
+    static func page(_ document: BotDocument) -> MessageReference {
+        MessageReference(messageId: "", text: document.title, author: "Library", role: "document", documentId: document.id)
+    }
 }
 
 struct MessageReactionEvent: Codable, Equatable, Sendable {

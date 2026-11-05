@@ -256,6 +256,13 @@ struct ConversationView: View {
                 }
                 .onAppear { isVisible = true; footerScroll.reset() }
                 .onDisappear { isVisible = false; composerFocused = false; footerScroll.reset() }
+                // "Ask the bot about this page" opens the chat with the page quoted in the composer.
+                .onChange(of: store.pageQuotes[botId], initial: true) { _, quote in
+                    guard let quote else { return }
+                    store.pageQuotes[botId] = nil
+                    replyTo = quote
+                    composerFocused = true
+                }
                 .onChange(of: composerFocused) { _, _ in footerScroll.reset() }
                 .toolbar {
                     #if os(iOS)
@@ -468,8 +475,15 @@ struct MessageBubble: View {
     let message: Message
     var scrollToDecision: (String) -> Void = { _ in }
     var onReply: (() -> Void)? = nil
+    @Environment(\.openDocument) private var openDocument
+    @Environment(\.pushRoute) private var pushRoute
     private var isUser: Bool { message.role == "user" }
     private var displayText: String { message.text.trimmingCharacters(in: .newlines) }
+
+    private func openPage(_ id: String) {
+        if let openDocument { openDocument(id) } else { pushRoute?(DocumentRoute(id: id)) }
+    }
+
     private var cardReference: MessageReference? {
         guard isUser, let id = message.decisionId else { return nil }
         if let reference = message.replyTo, reference.messageId == id { return reference }
@@ -490,6 +504,11 @@ struct MessageBubble: View {
                     MessageQuote(reference: reference)
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("decision-reply-quote-\(message.decisionId ?? message.id)")
+                } else if let reference = message.replyTo, let page = reference.documentId {
+                    Button { openPage(page) } label: {
+                        MessageQuote(reference: reference)
+                    }.buttonStyle(.plain).accessibilityLabel("Open the page \(reference.text)")
+                        .accessibilityIdentifier("message-page-\(message.id)")
                 } else if let reference = message.replyTo {
                     Button { scrollToDecision(reference.messageId) } label: {
                         MessageQuote(reference: reference)
@@ -635,7 +654,14 @@ struct MessageQuote: View {
         HStack(spacing: 8) {
             Capsule().fill(.secondary).frame(width: 3)
             VStack(alignment: .leading, spacing: 3) {
-                Text(reference.author).font(.caption.weight(.semibold))
+                if reference.documentId != nil {
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.text").imageScale(.small)
+                        Text("Library page")
+                    }.font(.caption.weight(.semibold))
+                } else {
+                    Text(reference.author).font(.caption.weight(.semibold))
+                }
                 Text(reference.text).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
             }.frame(maxWidth: .infinity, alignment: .leading)
         }.fixedSize(horizontal: false, vertical: true).padding(.vertical, 5)

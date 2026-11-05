@@ -21,6 +21,8 @@ extension EnvironmentValues {
     @Entry var pushRoute: ((any Hashable) -> Void)? = nil
     /// Opens a document in the Library: its tab on the iPhone, its row in the sidebar on the Mac.
     @Entry var openDocument: ((String) -> Void)? = nil
+    /// Opens the chat of a bot. Only the Mac window sets it. Without it, a page pushes the chat onto its stack.
+    @Entry var openChat: ((String) -> Void)? = nil
 }
 
 enum HomeDestination: Hashable {
