@@ -439,7 +439,10 @@ LIBRARY_INSTRUCTIONS = (
     'new document, read your list and update the document that covers the topic. Make at most two new documents a day '
     'on your own. '
     'A document does not notify the person. When an update changes something that the person must know, write one '
-    'short chat message that names the document and says what changed. Otherwise, update the document quietly.'
+    'short chat message that names the document and says what changed. Otherwise, update the document quietly. '
+    'When you want the person to review or approve something longer than a short message, such as a plan, write it '
+    'as a document first. Then ask for the decision with coconut_ask, and name the document in the card context. '
+    'Save changes as new versions of the same document.'
 )
 
 BOT_DELETION_INSTRUCTIONS = (
