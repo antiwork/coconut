@@ -50,6 +50,7 @@ struct MacMainWindow: View {
         // The columns at their widest sidebar (300) fit side by side: the Inbox list (220) and its card (300), and a
         // chat (300) and its details (320). When they did not fit, the sidebar moved out to the left and the right side
         // was cut off.
+        .environment(\.openChat) { id in selection = .bot(id) }
         .environment(\.openDocument) { id in
             libraryPath = NavigationPath()
             libraryPath.append(DocumentRoute(id: id))

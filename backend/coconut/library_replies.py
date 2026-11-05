@@ -6,12 +6,15 @@ ends with a long, structured reply and the bot saved no document in that turn, C
 document of the bot. The reply stays in the chat. Its photos stay in the document as `coconut-file://` lines, which the
 phone loads through the Mac.
 
-A report keeps one document for each title. The same report on another day, also from a routine, adds a version to
-that document.
+Coconut keeps a report only for a turn that a person's message started or joined (asked_by_person). A routine, an
+exchange between bots and automatic work keep their pages only when the bot saves them.
+
+A report keeps one document for each title. The same report on another day adds a version to that document.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 
 from .documents import MAX_TITLE
@@ -77,12 +80,17 @@ def document_of(text: str, fallback_title: str) -> dict:
     content = '\n'.join(lines[1:]).strip() if first else text.strip()
     summary = next((_plain(line) for line in lines[1 if first else 0:] if _plain(line) and not _PHOTO.match(line)
                     and not _heading(line) and not _LIST_ITEM.match(line) and '|' not in line), None)
-    # Only the same title shares a document. The hash keeps apart titles with the same start, and titles in
-    # letters that the slug leaves out.
+    return dict(key=report_key(title), title=title, content=content or text.strip(),
+                summary=_shorten(summary, 160) if summary else None)
+
+
+def report_key(title: str) -> str:
+    """The key of a kept report. Only the same title shares a document. The hash keeps apart titles with the same
+    start, and titles in letters that the slug leaves out. A bot never makes this key, so it also marks a page that
+    Coconut kept."""
     slug = re.sub(r'[^a-z0-9]+', '-', title.casefold()).strip('-')[:48].strip('-') or 'report'
     digest = hashlib.sha256(title.casefold().encode()).hexdigest()[:8]
-    return dict(key=f'reply-{slug}-{digest}', title=title, content=content or text.strip(),
-                summary=_shorten(summary, 160) if summary else None)
+    return f'reply-{slug}-{digest}'
 
 
 def _shorten(text: str, limit: int) -> str:
@@ -110,9 +118,22 @@ def saved_in_turn(service, task: dict) -> bool:
     return row is not None
 
 
-def keep_report(service, task: dict):
-    """Save the report of a finished turn as a document. The caller holds the transaction."""
-    if saved_in_turn(service, task):
+def asked_by_person(service, task: dict) -> bool:
+    """Whether a message that a person typed in a chat started or joined this turn. Bots write structured status
+    replies all day: to each other, for work intake and for pull request gates. Only a person's request makes a
+    reply a report to keep."""
+    # A person can also join a turn that another bot or a routine started.
+    for identity in task.get('_turn_message_ids', []):
+        message = service.db.execute('SELECT data FROM messages WHERE id=?', (identity,)).fetchone()
+        if message and json.loads(message[0]).get('_human_source_kind') == 'chat':
+            return True
+    return False
+
+
+def keep_report(service, task: dict, person_asked: bool):
+    """Save the report of a finished turn as a document, when a person asked for it (asked_by_person). The caller
+    holds the transaction."""
+    if not person_asked or saved_in_turn(service, task):
         return
     text = turn_reply(service, task)
     if not text or not is_report(text):
@@ -142,3 +163,42 @@ def show_card(service, task: dict, document: dict, created: bool):
             return
     service._message(task['bot_id'], document['title'], task_id=task['id'], kind='document',
                      document_id=document['id'])
+
+
+def remove_unasked_reports(service):
+    """Remove once the pages that Coconut kept from turns that no person asked for, with their chat cards.
+
+    Coconut 0.1.0 (642) kept a page for every structured reply: bot exchanges, work intake and pull request gates
+    each made one. A page that the bot saved itself stays, and so does a kept report that a person asked for. The
+    caller holds the transaction."""
+    if service._setting('unasked_reports_removed'):
+        return
+    removed = set()
+    for (data,) in service.db.execute("SELECT data FROM documents WHERE json_extract(data,'$.key') LIKE 'reply-%'").fetchall():
+        document = json.loads(data)
+        # Only a page that Coconut kept. A bot can choose a key that starts with reply-, but not the hash of its title.
+        if document['key'] != report_key(document['title']):
+            continue
+        # The task of the latest save can be a later routine. The first card of the page names the task that made
+        # it, because each new page showed a card. A page without a card stays.
+        card = service.db.execute("SELECT data FROM messages WHERE json_extract(data,'$.kind')='document' AND "
+                                  "json_extract(data,'$.document_id')=? ORDER BY rowid LIMIT 1",
+                                  (document['id'],)).fetchone()
+        creator = json.loads(card[0]).get('task_id') if card else None
+        if creator is None:
+            continue
+        asked = any(message['role'] == 'user' and message.get('_human_source_kind') == 'chat'
+                    for message in service._task_messages(creator))
+        if not asked:
+            service._remove_document(document, None)
+            removed.add(document['id'])
+    hidden = False
+    for (data,) in service.db.execute("SELECT data FROM messages WHERE json_extract(data,'$.kind')='document'").fetchall():
+        message = json.loads(data)
+        if message.get('document_id') in removed and not message.get('_hidden'):
+            message['_hidden'] = True
+            service._put('messages', message)
+            hidden = True
+    if hidden:
+        service._event('transcript.updated', {})
+    service.db.execute("INSERT INTO settings VALUES ('unasked_reports_removed','true')")

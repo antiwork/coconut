@@ -159,6 +159,8 @@ struct DocumentView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.openURL) private var openURL
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.openChat) private var openChat
+    @Environment(\.pushRoute) private var pushRoute
     let documentId: String
     @State private var document: BotDocument?
     @State private var failed = false
@@ -205,6 +207,12 @@ struct DocumentView: View {
             if let document, let content = document.content {
                 ToolbarItem(placement: .trailingBar) {
                     Menu {
+                        if let bot {
+                            Button { ask(bot, about: document) } label: {
+                                Label("Ask \(bot.name) about this page", systemImage: "bubble.left")
+                            }
+                            .accessibilityIdentifier("document-ask")
+                        }
                         ShareLink(item: content, subject: Text(document.title)) {
                             Label("Share", systemImage: "square.and.arrow.up")
                         }
@@ -232,6 +240,12 @@ struct DocumentView: View {
         }
     }
 
+    /// Opens the bot's chat with the page quoted in the composer, as a reply quotes a message.
+    private func ask(_ bot: Bot, about document: BotDocument) {
+        store.pageQuotes[bot.id] = .page(document)
+        if let openChat { openChat(bot.id) } else { pushRoute?(ConversationRoute(botId: bot.id)) }
+    }
+
     private func load() async {
         guard let loaded = await store.loadDocument(id: documentId) else { failed = document == nil; return }
         failed = false
@@ -255,9 +269,17 @@ struct DocumentCard: View {
     let documentId: String
     /// The title when the card was made. The Library list has the current title and summary.
     let title: String
+    /// The card loaded a fresh Library list. Only such a list can say that the page is gone.
+    @State private var listFresh = false
     private var document: BotDocument? { store.documents?.first { $0.id == documentId } }
+    /// Someone deleted the page, so the card goes too. A later list that has the page brings the card back.
+    private var gone: Bool { listFresh && store.documents != nil && document == nil }
 
     var body: some View {
+        if !gone { card }
+    }
+
+    private var card: some View {
         Button {
             if let openDocument { openDocument(documentId) } else { pushRoute?(DocumentRoute(id: documentId)) }
         } label: {
@@ -283,7 +305,10 @@ struct DocumentCard: View {
         .accessibilityHint("Opens the document in the Library")
         .accessibilityIdentifier("document-card-\(documentId)")
         // A new document is not in the list yet. One load brings its summary.
-        .task(id: documentId) { if document == nil { await store.loadDocuments() } }
+        .task(id: documentId) {
+            guard document == nil else { listFresh = true; return }
+            listFresh = await store.loadDocuments()
+        }
     }
 
     private var detail: String {

@@ -371,6 +371,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._migrate_bot_exchanges()
                 self._migrate_activity_notices()
                 self._migrate_decision_link_notices()
+                from .library_replies import remove_unasked_reports
+                remove_unasked_reports(self)
                 self._migrate_silent_responses()
                 self._migrate_pr_review_sources()
                 self._migrate_native_routine_prompts()
@@ -2165,6 +2167,17 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             raise ServiceError(409, 'Restore this conversation first.')
         return message
 
+    def _document_reference(self, bot, document_id):
+        """A message about a Library page of the bot (\"Ask the bot about this page\"). It quotes the page as a reply
+        quotes a message, and the bot reads the page by its key."""
+        from .documents import expired
+        row = self.db.execute('SELECT data FROM documents WHERE id=?', (document_id,)).fetchone() if isinstance(document_id, str) else None
+        document = json.loads(row[0]) if row else None
+        if document is None or document['bot_id'] != bot['id'] or expired(document, now()):
+            raise ServiceError(409, 'Choose a page of this bot in the Library.')
+        return dict(message_id='', text=document['title'], author='Library', role='document',
+                    document_id=document['id'], document_key=document['key'])
+
     def _reply_reference(self, message):
         author = 'You' if message['role'] == 'user' else self._get('bots', message.get('sender_bot_id') or message['bot_id'])['name']
         return dict(message_id=message['id'], text=message['text'], author=author, role=message['role'],
@@ -2184,6 +2197,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             # A saved cross-chat quote supplies context; the requested bot remains the recipient.
             target = self._interaction_target(target_id)
             interaction = (interaction or {}) | dict(reply_to=self._reply_reference(target))
+        elif data.get('about_document_id') is not None:
+            interaction = (interaction or {}) | dict(reply_to=self._document_reference(bot, data['about_document_id']))
         if work_item:
             interaction = (interaction or {}) | dict(work_context=dict(id=work_item['id'], title=work_item['title']))
             data = dict(data, mode='queue')
@@ -3972,6 +3987,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                                         outcome='Hermes continued with your answer.' if kind == 'completed' else task['summary'])
                         self._put('decisions', decision)
                         self._event('decision.updated', self._public(decision), bot_id, task_id)
+                from .library_replies import asked_by_person
+                # Read before the follow-up advances the input of the task.
+                person_asked = asked_by_person(self, task)
                 if has_followup:
                     self._advance_input(task)
                 else:
@@ -4005,7 +4023,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 # Also a turn whose follow-up waits keeps its report: the next turn starts a new turn of replies.
                 if kind == 'completed' and not (task.get('_routine_silent') or reaction_silent or silent_completion):
                     from .library_replies import keep_report
-                    keep_report(self, task)
+                    keep_report(self, task, person_asked)
             else:
                 raise ServiceError(400, f'Unknown provider event: {kind}')
             self._refresh_bot(bot_id)
