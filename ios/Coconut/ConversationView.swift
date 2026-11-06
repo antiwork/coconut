@@ -168,8 +168,18 @@ struct ConversationView: View {
                         next.scroll(to: offset)
                         if next != footerScroll { footerScroll = next }
                     }
-                    .onScrollGeometryChange(for: [CGFloat].self) { [$0.contentOffset.y, $0.contentSize.height] } action: { old, new in
-                        let change = zip(old, new).map { abs($1 - $0) }.max() ?? 0
+                    .onScrollGeometryChange(for: [CGFloat].self) { [$0.contentOffset.y, $0.contentSize.height, $0.containerSize.height, $0.contentInsets.top + $0.contentInsets.bottom] } action: { old, new in
+                        #if os(macOS)
+                        // A mouse wheel, and some trackpad scrolls, report no scroll phase on the Mac, so userScrolling
+                        // stays false. Then the chat never learned that the reader left the bottom, and each new line of
+                        // a bot pulled it back down. An upward move while the content does not shrink is the reader's,
+                        // and a downward move that reaches the bottom follows new messages again.
+                        // A taller window or a new inset moves the offset too, so only a move in an unchanged viewport counts.
+                        let sameViewport = abs(new[2] - old[2]) < 0.5 && abs(new[3] - old[3]) < 0.5
+                        if sameViewport && new[0] < old[0] - 0.5 && new[1] >= old[1] - 0.5 { nearBottom = false }
+                        else if new[0] > old[0] + 0.5 && new[0] + new[2] >= new[1] - 4 { nearBottom = true }
+                        #endif
+                        let change = zip(old.prefix(2), new.prefix(2)).map { abs($1 - $0) }.max() ?? 0
                         if let row = rowHold.rowToRestore(layoutChange: change, userScrolling: userScrolling, followsBottom: nearBottom) {
                             proxy.scrollTo(row, anchor: .top)
                         }
@@ -181,10 +191,18 @@ struct ConversationView: View {
                         if userScrolling || previous == .interacting || previous == .decelerating {
                             let geometry = context.geometry
                             nearBottom = geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 100
+                            // Content that arrived during the scroll did not pull the chat down. A scroll that ends near
+                            // the bottom catches up with it once.
+                            if !userScrolling && nearBottom && (focusTarget == nil || didFocusDecision) {
+                                proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                            }
                         }
                     }
                     .onScrollGeometryChange(for: CGSize.self) { $0.contentSize } action: { _, _ in
-                        if nearBottom && (focusTarget == nil || didFocusDecision) { proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        // A scroll of the reader wins over new content: the chat follows again when the scroll ends.
+                        if nearBottom && !userScrolling && (focusTarget == nil || didFocusDecision) {
+                            proxy.scrollTo("conversation-bottom", anchor: .bottom)
+                        }
                     }
                     .onScrollGeometryChange(for: [CGFloat].self) { [$0.containerSize.height, $0.contentInsets.bottom] } action: { _, _ in
                         // Follow keyboard and composer resizing only when the reader stays at the bottom. The keyboard
@@ -197,7 +215,7 @@ struct ConversationView: View {
                         if following { rowHold.release() }
                     }
                     .onChange(of: activity != nil) { _, _ in
-                        if nearBottom { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom && !userScrolling { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .onChange(of: messages.last?.id) { _, _ in
                         if nearBottom { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
@@ -208,7 +226,7 @@ struct ConversationView: View {
                         proxy.scrollTo("conversation-bottom", anchor: .bottom)
                     }
                     .onChange(of: messages.last?.text) { _, _ in
-                        if nearBottom { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
+                        if nearBottom && !userScrolling { footerScroll.reset(); proxy.scrollTo("conversation-bottom", anchor: .bottom) }
                     }
                     .overlay(alignment: .bottomTrailing) {
                         // Newer messages can be below the screen, for example when a focused card opens the chat.
