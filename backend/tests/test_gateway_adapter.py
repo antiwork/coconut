@@ -78,6 +78,8 @@ class MessageEvent:
     allow_gateway_control: bool = True
     metadata: dict = field(default_factory=dict)
     reply_expected: Optional[bool] = None
+    # Hermes marks its own inputs, for example the completion of a background process (gateway/run_inbound.py).
+    internal: bool = False
 ''',
     'gateway/platforms/base.py': '''
 import asyncio
@@ -378,6 +380,41 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertTrue(self.complete(self.adapter.send(self.bot['id'], 'The gateway restarts.',
                                                         metadata={'_interim_send': True})).success)
         self.assertEqual(len(self.outside()), 1)
+
+    def test_a_run_that_hermes_starts_gets_a_coconut_turn(self):
+        # Hermes runs the chat by itself when a background process of an earlier turn finishes. The run gets a Coconut
+        # turn, so its reply belongs to a task of the chat and the coconut tools act for it.
+        async def runner(event):
+            chat = event.source.chat_id
+            holder, turn = self.adapter_module.turn_for_chat(chat)
+            seen.append(turn)
+            await self.adapter.send(chat, 'CI is green on the rerun.')
+            return None
+        seen = []
+        self.connect(runner)
+        from gateway.platforms.event import MessageEvent
+        source = self.adapter.build_source(chat_id=self.bot['id'], chat_type='dm', user_id='hermes')
+        event = MessageEvent(text='[IMPORTANT: Background process proc_1 completed normally (exit code 0).]',
+                             source=source, message_id='bg-1', internal=True)
+        with patch.dict(os.environ, HERMES_HOME=str(self.home)):
+            self.complete(self.adapter._process(event))
+        self.assertTrue(seen[0])
+        with self.service.lock:
+            task = next(t for t in self.service._all('tasks') if (t.get('_gateway_wake') or {}).get('message_id') == 'bg-1')
+        deadline = time.monotonic() + 5
+        while self.read('tasks', task['id'])['status'] == 'working' and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.replies(task), [('CI is green on the rerun.', False)])
+        self.assertEqual(self.outside(), [])
+        self.assertEqual(self.adapter._turns, {})
+        # An event that is not internal and that the service did not give stays outside a turn, as before.
+        plain = MessageEvent(text='hello', source=source, message_id='other-1')
+        seen.clear()
+        with patch.dict(os.environ, HERMES_HOME=str(self.home)):
+            self.complete(self.adapter._process(plain))
+        self.assertEqual(seen, [None])
+        self.assertEqual(self.outside(), [('CI is green on the rerun.', False)])
 
     def test_photos_reach_coconut_as_markdown_image_lines(self):
         async def runner(event):
