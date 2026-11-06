@@ -43,16 +43,13 @@ class BackgroundProcesses:
             return False
         return False
 
-    def _background_pending(self, task_id, *, finishing_task_id=None, excluding_task_ids=(), ignore_settled=False,
-                            ignored_receipt_ids=()):
+    def _background_pending(self, task_id, *, finishing_task_id=None, excluding_task_ids=(), ignore_settled=False):
         """True while a wait of the task, or of a turn of its assignment, has no delivery, or a turn that continues with
         such a result has not finished.
 
         ignore_settled skips the waits that already have their answer, and a queued turn that carries delivered answers
         of any kind. Such a turn does not run now: the caller holds the dispatch gate, which the dispatcher needs. The
         answer reaches an owner only when the owner runs, so it says nothing about work that runs now.
-
-        ignored_receipt_ids skips those receipts only, such as a wait that a merge gate proved unrelated. Its owner still gates.
         """
         with self.lock:
             turns = [json.loads(row[0]) for row in self.db.execute(
@@ -65,7 +62,7 @@ class BackgroundProcesses:
                 AND NOT EXISTS (SELECT 1 FROM contexts WHERE contexts.id=json_extract(native_receipts.data, '$.turn_id')
                     AND json_extract(contexts.data, '$._decision_refresh')=1)""",
                 (task_id, task_id))
-            return (any(not r.get('_process_delivery') and r['id'] not in ignored_receipt_ids
+            return (any(not r.get('_process_delivery')
                         and r.get('_wait_task_id') not in excluding_task_ids
                         and not (ignore_settled and self._wait_settled(r))
                         for r in (json.loads(row[0]) for row in receipts))
