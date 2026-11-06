@@ -1677,10 +1677,12 @@ for title in ('First defect', 'Second defect'):
         self.assertLess(ids.index(review['id']), ids.index(chat['id']))
         self.assertEqual(self.stopped(review['id']), [])
 
-    def test_merge_card_waits_for_the_conversation_review_result_until_it_is_consumed(self):
+    def test_merge_card_does_not_wait_for_the_review_that_still_runs(self):
+        # When to offer the merge is the person's workflow in the bot's skills. A review that still runs does not hold
+        # the card; the review still runs once, and its result still returns to the requester.
         from coconut.decision_sources import github_links
         from coconut.pr_tracking import PRObservation
-        from coconut.service import ServiceError, YieldForDecision
+        from coconut.service import YieldForDecision
         URL, revision = 'https://github.com/example/project/pull/42', '2026-09-23T11:46:31Z'
         state = PRObservation('pending', 'a' * 40, 'Change', URL, 'open', '2026-09-13T10:00:00Z', True, 'open', False, 'pending')
         self.service.pr_tracker = type('Tracker', (), {'observe': lambda _, url: state, 'observe_discussion': lambda _, url: None,
@@ -1705,29 +1707,15 @@ for title in ('First defect', 'Second defect'):
         starts = self.claimed_starts(release)
         self.settle(lambda: starts)
         self.assertEqual(self.service._get('tasks', review['id'])['status'], 'working')
-        # The reviewer's turn runs from its claim, so the requester cannot offer the merge yet.
-        with self.assertRaisesRegex(ServiceError, 'pending worker or delegated result'):
-            ask(requester['id'])
-        # Its result is saved but not delivered yet. The card still waits.
-        with patch.object(self.service, '_drain_returns'):
-            release.set()
-            self.settle(lambda: self.service.kanban.tasks[review['id']]['status'] == 'done'
-                        and self.service._get('tasks', review['id'])['status'] == 'completed')
-            self.assertEqual(self.returns(review['id'], requester['bot_id']), [])
-            with self.assertRaisesRegex(ServiceError, 'pending worker or delegated result'):
-                ask(requester['id'])
-        self.assertEqual([d for d in self.service._all('decisions') if d.get('merge_pr_url')], [])
-        # The requester's callback consumes the completed result once, and then it can offer the merge.
-        self.settle(lambda: any(t.get('_resolved_dependency_id') == review['id'] for t in self.service._all('tasks')))
-        sent = self.returns(review['id'], requester['bot_id'])
-        self.assertEqual(len(sent), 1)
-        self.assertFalse(sent[0]['text'].startswith('Task failed'))
-        callback = next(t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == review['id'])
-        working(callback['id'])
+        # The reviewer's turn runs from its claim, and the requester offers the merge card now.
         with self.assertRaises(YieldForDecision):
-            ask(callback['id'])
+            ask(requester['id'])
         cards = [d for d in self.service._all('decisions') if d.get('merge_pr_url')]
-        self.assertEqual([(d['status'], d['task_id']) for d in cards], [('pending', callback['id'])])
+        self.assertEqual([(d['status'], d['task_id']) for d in cards], [('pending', requester['id'])])
+        # The review finishes, and its result returns to the requester once.
+        release.set()
+        self.settle(lambda: any(t.get('_resolved_dependency_id') == review['id'] for t in self.service._all('tasks')))
+        self.assertEqual(len(self.returns(review['id'], requester['bot_id'])), 1)
         self.assertEqual(len([s for s in starts if s[0] == review['id']]), 1)
 
     def test_completed_history_import_removes_repeated_chain_reads(self):

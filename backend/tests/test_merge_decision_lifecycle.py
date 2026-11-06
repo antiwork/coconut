@@ -107,26 +107,14 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
             self.question(merge_pr_url=URL.replace('/42', '/43'))
         self.assertEqual(self.service._all('decisions'), [])
 
-    def test_merge_card_waits_for_the_delegated_review_result(self):
+    def test_merge_card_does_not_wait_for_the_delegated_review_result(self):
+        # A review that still runs does not hold the card. The review keeps running, and the task still waits for it.
         dev = self.write('/v1/bots', {'name': 'Dev', 'role': ''})
         review = self.service._store_bot_message(self.task['id'],
             dict(target_bot_id=dev['id'], text='Review the current PR head.'))
-        with self.assertRaisesRegex(ServiceError, 'pending worker or delegated result') as error:
-            self.question(merge_pr_url=URL)
-        self.assertEqual(error.exception.status, 400)
-        self.assertEqual(self.service._all('decisions'), [])
-        task = self.service._get('tasks', self.task['id'])
-        self.assertIn(review['task_id'], task['_waiting_on'])
-        self.service._run_task(review['task_id'])
-        self.service._drain_returns()
-        callback = next(t for t in self.service._all('tasks') if t.get('_resolved_dependency_id') == review['task_id'])
-        self.assertEqual(callback['_assignment_task_id'], task['id'])
-        callback['status'] = 'working'
-        self.service._put('tasks', callback)
-        self.task = callback
         decision, _ = self.question(merge_pr_url=URL)
         self.assertEqual(decision['status'], 'pending')
-        self.assertIn(review['task_id'], self.service._get('tasks', task['id'])['_waiting_on'])
+        self.assertIn(review['task_id'], self.service._get('tasks', self.task['id'])['_waiting_on'])
 
     def test_merge_request_does_not_wait_for_its_own_card(self):
         coordinator = self.write('/v1/bots', {'name': 'Coordinator', 'role': ''})
@@ -143,13 +131,9 @@ class MergeDecisionLifecycleTests(unittest.TestCase):
         reviewer = self.write('/v1/bots', {'name': 'Reviewer', 'role': ''})
         other = self.service._store_bot_message(owner['id'],
             dict(target_bot_id=reviewer['id'], text='Verify another review finding.'))
-        with self.assertRaisesRegex(ServiceError, 'pending worker'):
-            self.question(merge_pr_url=URL)
-        with self.service.transaction():
-            parent = self.service._get('tasks', owner['id'])
-            parent['_waiting_on'].remove(other['task_id'])
-            self.service._put('tasks', parent)
+        # Another review that still runs does not hold the card either.
         decision, _ = self.question(merge_pr_url=URL)
+        self.assertIn(other['task_id'], self.service._get('tasks', owner['id'])['_waiting_on'])
         self.assertEqual(decision['status'], 'pending')
         self.assertIn(task['id'], self.service._get('tasks', owner['id'])['_waiting_on'])
 
