@@ -7,8 +7,9 @@ run in the Coconut worker until phase 5 moves them. Both continue the same nativ
 (hermes_plugin/coconut/hooks.py). A service without a Hermes home (fixture mode and tests) has no gateway, and its
 provider runs every turn.
 
-Hermes also sends to a bot's chat outside a Coconut turn, for example the reply of its own turn for the completion of a
-background process (gateway_message). Such a message becomes a message of the bot in a finished task of its chat.
+Hermes also runs a bot's chat by itself, for example when a background process of an earlier turn finishes. The adapter
+asks for a Coconut turn for such a run (gateway_hermes_run), so its text streams and the coconut tools act for it. A
+send that still comes outside any turn (gateway_message) becomes a message of the bot in a finished task of its chat.
 
 A gateway turn reaches Coconut in two more ways. A question of Hermes (clarify, command approval, coconut_ask) becomes a
 decision card, and its answer returns to the waiting turn (record_gateway_question, answer_gateway_question). A tool of
@@ -371,6 +372,8 @@ class GatewayChat:
         self._gateway_retry_at = 0.0
         self._gateway_exit = None
         self.gateway_cron_threads: dict[str, threading.Thread] = {}
+        # The turns of runs that Hermes started by itself (gateway_hermes_run): message ID -> (turn ID, task ID).
+        self.gateway_wakes: dict[str, tuple[str, str]] = {}
         # The placeholder process of each Kanban claim that the gateway runs (kanban_worker_pid).
         self.gateway_holders: dict[str, subprocess.Popen] = {}
         # The tasks whose running turn ended the run of its claim with a board tool (claim_finished).
@@ -1457,6 +1460,59 @@ class GatewayChat:
                 raise
             self.gateway_cron_threads[task['id']] = thread
         return {'turn_id': turn, 'task_id': task['id'], 'chat_id': bot['id']}
+
+    def gateway_hermes_run(self, data: dict) -> dict:
+        """POST /v1/gateway/wake: Hermes runs a bot's chat by itself, for example when a background process of an
+        earlier turn finishes. Open a Coconut turn for that run, as for a cron run, so that its text streams and the
+        coconut tools act for it. Without a turn, a tool such as coconut_message_bot refused the run.
+
+        Return {skip: true} for a profile that is not a bot, for another chat, and while the bot's chat runs a turn.
+        The run's input stays out of the chat: it is a notice of Hermes, not a message of the person.
+        """
+        from .service import ServiceError, now, require_text, uid
+        home = os.path.realpath(require_text(data, 'home', 4096))
+        chat_id, message_id = require_text(data, 'chat_id', 200), require_text(data, 'message_id', 200)
+        row = self._gateway_profile(home)
+        if row is None or row['bot_id'] != chat_id:
+            return {'skip': True}
+        with self.transaction():
+            known = self.gateway_wakes.get(message_id)
+            if known is not None and self.gateway_bridge.task_of(known[0]) == known[1]:
+                return {'turn_id': known[0], 'task_id': known[1]}
+            bot = self._get('bots', chat_id)
+            if bot['archived'] or bot.get('_deleted'):
+                return {'skip': True}
+            # The index tasks_bot_status answers this without a parse of every task under the lock.
+            if self.db.execute("SELECT 1 FROM tasks INDEXED BY tasks_bot_status WHERE json_extract(data,'$.bot_id')=? "
+                               "AND json_extract(data,'$.status')='working' LIMIT 1", (bot['id'],)).fetchone():
+                # The chat runs a Coconut turn. That turn keeps the chat, and the run stays outside it.
+                return {'skip': True}
+            title = 'Continuing after background work'
+            task = self._get('tasks', self._send(bot, {'text': title, 'mode': 'queue'}, record_message=False,
+                                                 human_authored=False)['id'])
+            turn = self.gateway_bridge.open_turn(task['id'], home, bot['id'], cron=False)
+            # The run is a turn of the bot's chat: the answer to a card of the run continues in that chat.
+            task.update(status='working', summary='Working', title=title, _native_job_finished=True, _chat_session=True,
+                        _turn_started_at=now(), _native_turn_id=uid(),
+                        _gateway_wake=dict(message_id=message_id, turn_id=turn), updated_at=now())
+            self._put('tasks', task)
+            self._event('task.updated', self._public(task), bot['id'], task['id'])
+            self._refresh_bot(bot['id'])
+            # As for a cron run: an update waits for this thread, and a thread that cannot start closes the turn.
+            thread = threading.Thread(target=self._run_gateway_cron, args=(task['id'], turn),
+                                      name='coconut-gateway-wake', daemon=True)
+            self.gateway_cron_threads = {key: value for key, value in self.gateway_cron_threads.items()
+                                         if value.is_alive()}
+            try:
+                thread.start()
+            except BaseException:
+                self.gateway_bridge.cancel(task['id'])
+                raise
+            self.gateway_cron_threads[task['id']] = thread
+            self.gateway_wakes = {key: value for key, value in self.gateway_wakes.items()
+                                  if self.gateway_bridge.task_of(value[0]) == value[1]}
+            self.gateway_wakes[message_id] = (turn, task['id'])
+        return {'turn_id': turn, 'task_id': task['id']}
 
     def _run_gateway_cron(self, task_id: str, turn: str) -> None:
         """Translate the events of a cron run into its routine task, as _run_task does for a chat turn."""

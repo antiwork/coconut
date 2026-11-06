@@ -65,6 +65,41 @@ class GatewayCronTests(unittest.TestCase):
         self.assertEqual(self.service.gateway_cron({'event': 'start', 'home': self.temp.name, 'job_id': 'x',
                                                     'execution_id': 'other'}), {'skip': True})
 
+    def test_a_run_that_hermes_starts_in_a_chat_is_a_turn_whose_tools_work(self):
+        # Hermes runs a bot's chat by itself when a background process of an earlier turn finishes. Before, the run had
+        # no Coconut turn, and coconut_message_bot refused it ("works only during a Coconut chat turn").
+        other = self.service.mutate('POST', '/v1/bots', {'name': 'Gumroad Dev'}, str(uuid4()), 'phone')
+        wake = {'home': str(self.home), 'chat_id': self.bot['id'], 'message_id': 'bg-1'}
+        started = self.service.gateway_hermes_run(wake)
+        task = self.read('tasks', started['task_id'])
+        self.assertEqual((task['status'], task['bot_id']), ('working', self.bot['id']))
+        # The run's input is a notice of Hermes, not a message of the person.
+        with self.service.lock:
+            self.assertFalse([m for m in self.service._task_messages(task['id']) if m['role'] == 'user'])
+        # A second request for the same run finds the same turn.
+        self.assertEqual(self.service.gateway_hermes_run(wake)['turn_id'], started['turn_id'])
+        # While the run has its turn, the chat opens no second one.
+        self.assertEqual(self.service.gateway_hermes_run(dict(wake, message_id='bg-2')), {'skip': True})
+        # The run is a turn of the chat: a card answer continues in the chat, and a cancel stops the chat run.
+        self.assertTrue(self.read('tasks', started['task_id'])['_chat_session'])
+        self.assertFalse(self.service.gateway_bridge.turns[started['turn_id']].cron)
+        result = self.service.gateway_tool({'turn_id': started['turn_id'], 'tool': 'message_bot',
+                                            'arguments': {'bot': 'Gumroad Dev', 'text': 'CI is green.'}})
+        self.assertNotIn('error', result)
+        bridge = self.service.gateway_bridge
+        for event in ({'kind': 'send', 'message_id': 'w:1', 'text': 'CI is green, and I told Gumroad Dev.'},
+                      {'kind': 'done', 'outcome': 'success'}):
+            self.assertEqual(bridge.event(dict(event, turn_id=started['turn_id'])), {'ok': True})
+        deadline = time.monotonic() + 5
+        while self.read('tasks', started['task_id'])['status'] == 'working' and time.monotonic() < deadline:
+            time.sleep(.02)
+        # The turn ended. The task waits for the reply of Gumroad Dev, as after any coconut_message_bot.
+        self.assertEqual(self.read('tasks', started['task_id'])['status'], 'waiting')
+        self.assertIn(('CI is green, and I told Gumroad Dev.', False), self.messages(started['task_id']))
+        # A home that is not a bot's profile, and another chat of this profile, get no turn.
+        self.assertEqual(self.service.gateway_hermes_run(dict(wake, home=self.temp.name, message_id='bg-3')), {'skip': True})
+        self.assertEqual(self.service.gateway_hermes_run(dict(wake, chat_id=other['id'], message_id='bg-4')), {'skip': True})
+
     def test_a_cron_start_finds_its_run_through_an_index(self):
         started = self.start()
         original = type(self.service)._all

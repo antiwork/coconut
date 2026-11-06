@@ -9,6 +9,8 @@ the main listener, with the token of `<data>/gateway/bridge.json`:
 - `POST /v1/gateway/events` reports what the gateway does with a turn: `typing`, `delta`, `send`, `edit`, `delete`,
   `question` and `done`.
 - `POST /v1/gateway/tools` runs a Coconut tool of the `coconut` toolset for the task of a running turn (gateway_chat).
+- `POST /v1/gateway/wake` opens a turn for a run that Hermes starts in a bot's chat by itself, for example after a
+  background process (gateway_chat.gateway_hermes_run).
 - `POST /v1/gateway/cron` opens a turn for a cron run of the gateway (gateway_chat.gateway_cron). The plugin reports
   its events like those of a chat turn.
 - `POST /v1/gateway/messages` takes a send, an edit or a delete of the gateway outside a Coconut turn
@@ -268,10 +270,13 @@ class GatewayBridge:
             self.lock.notify_all()
         return True
 
-    def open_turn(self, task_id: str, home, chat_id: str) -> str:
-        """Register a turn that the gateway already runs, for example a cron run. Return its ID for follow()."""
+    def open_turn(self, task_id: str, home, chat_id: str, *, cron: bool = True) -> str:
+        """Register a turn that the gateway already runs, for example a cron run. Return its ID for follow().
+
+        A cron run cannot be stopped from a chat, so a cancel drops its turn. A run in a bot's chat (cron False, for
+        example after a background process) stops like a chat turn: the adapter gets the stop of the chat."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, '', 'Coconut')
-        turn.state, turn.silent_seconds, turn.cron = 'active', CRON_SILENT_SECONDS, True
+        turn.state, turn.silent_seconds, turn.cron = 'active', CRON_SILENT_SECONDS, cron
         with self.lock:
             self.turns[turn.id] = turn
         return turn.id

@@ -254,6 +254,9 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         self._roots: dict[str, str] = {}
         # The compressions that this adapter started after a turn (_compress).
         self._compressions: set = set()
+        # The runs that Hermes started by itself in a chat, such as the completion of a background process: the
+        # message ID of the run -> the Coconut turn that the service opened for it (_open_hermes_run).
+        self._hermes_runs: dict[str, str] = {}
         self._init_relay()
         ADAPTERS.add(self)
 
@@ -391,12 +394,58 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        # Only a turn that the service gave is a Coconut turn. Hermes also runs its own inputs through the adapter, for
-        # example the completion of a background process. Their sends go to the chat as messages outside a turn.
+        # A turn that the service gave is a Coconut turn. Hermes also runs its own inputs through the adapter, for
+        # example the completion of a background process. Such a run gets a Coconut turn of its own, so its text
+        # streams to the chat and the coconut tools act for it.
         if event.message_id in self._active:
             self._turns[event.source.chat_id] = event.message_id
+        elif getattr(event, 'internal', False) and event.source.chat_id not in self._turns:
+            await self._open_hermes_run(event)
+
+    async def _open_hermes_run(self, event: MessageEvent) -> None:
+        """Ask the service for a turn for a run that Hermes started. Without the service, or while the chat runs
+        another turn, the run's sends go to the chat as messages outside a turn, as before."""
+        chat_id = str(event.source.chat_id)
+        try:
+            answer = await self._request('/v1/gateway/wake', {'home': self._home, 'chat_id': chat_id,
+                                                              'message_id': str(event.message_id)})
+        except Exception as error:
+            LOG.warning('Coconut: the service did not open a turn for a Hermes run in chat %s (%s).', chat_id,
+                        type(error).__name__)
+            return
+        turn = answer.get('turn_id')
+        if turn and chat_id not in self._turns:
+            self._hermes_runs[str(event.message_id)] = str(turn)
+            self._turns[chat_id] = str(turn)
+
+    async def _close_hermes_run(self, event: MessageEvent, outcome) -> None:
+        turn = self._hermes_runs.pop(str(event.message_id))
+        if self._turns.get(event.source.chat_id) == turn:
+            del self._turns[event.source.chat_id]
+        PAUSED.discard(turn)
+        WAITED.discard(turn)
+        self._typing.discard(turn)
+        self.drop_stream(turn)
+        for delay in (*RETRY_SECONDS, None):
+            if await self._report(turn, 'done', outcome=getattr(outcome, 'value', str(outcome))):
+                break
+            if delay is not None:
+                await asyncio.sleep(delay)
+        self._compress_after(event.source.chat_id)
+
+    def _compress_after(self, chat_id: str) -> None:
+        """Compress a chat whose last turn reached the compression threshold of Hermes (note_prompt_size)."""
+        if chat_id in COMPRESS:
+            COMPRESS.discard(chat_id)
+            # The loop keeps only a weak reference to a task.
+            task = asyncio.ensure_future(self._compress(chat_id))
+            self._compressions.add(task)
+            task.add_done_callback(self._compressions.discard)
 
     async def on_processing_complete(self, event: MessageEvent, outcome) -> None:
+        if str(event.message_id) in self._hermes_runs:
+            await self._close_hermes_run(event, outcome)
+            return
         if event.message_id not in self._active:
             return
         if self._turns.get(event.source.chat_id) == event.message_id:
@@ -426,12 +475,7 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             if delay is not None:
                 await asyncio.sleep(delay)
         self._active.discard(event.message_id)
-        if event.source.chat_id in COMPRESS:
-            COMPRESS.discard(event.source.chat_id)
-            # The loop keeps only a weak reference to a task.
-            task = asyncio.ensure_future(self._compress(event.source.chat_id))
-            self._compressions.add(task)
-            task.add_done_callback(self._compressions.discard)
+        self._compress_after(event.source.chat_id)
 
     async def _compress(self, chat_id: str) -> None:
         """Compress the session of a chat, as `/compress` does, after a turn whose prompt reached the compression
