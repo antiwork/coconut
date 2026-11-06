@@ -424,12 +424,23 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             del self._turns[event.source.chat_id]
         PAUSED.discard(turn)
         WAITED.discard(turn)
+        self._typing.discard(turn)
         self.drop_stream(turn)
         for delay in (*RETRY_SECONDS, None):
             if await self._report(turn, 'done', outcome=getattr(outcome, 'value', str(outcome))):
                 break
             if delay is not None:
                 await asyncio.sleep(delay)
+        self._compress_after(event.source.chat_id)
+
+    def _compress_after(self, chat_id: str) -> None:
+        """Compress a chat whose last turn reached the compression threshold of Hermes (note_prompt_size)."""
+        if chat_id in COMPRESS:
+            COMPRESS.discard(chat_id)
+            # The loop keeps only a weak reference to a task.
+            task = asyncio.ensure_future(self._compress(chat_id))
+            self._compressions.add(task)
+            task.add_done_callback(self._compressions.discard)
 
     async def on_processing_complete(self, event: MessageEvent, outcome) -> None:
         if str(event.message_id) in self._hermes_runs:
@@ -464,12 +475,7 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             if delay is not None:
                 await asyncio.sleep(delay)
         self._active.discard(event.message_id)
-        if event.source.chat_id in COMPRESS:
-            COMPRESS.discard(event.source.chat_id)
-            # The loop keeps only a weak reference to a task.
-            task = asyncio.ensure_future(self._compress(event.source.chat_id))
-            self._compressions.add(task)
-            task.add_done_callback(self._compressions.discard)
+        self._compress_after(event.source.chat_id)
 
     async def _compress(self, chat_id: str) -> None:
         """Compress the session of a chat, as `/compress` does, after a turn whose prompt reached the compression

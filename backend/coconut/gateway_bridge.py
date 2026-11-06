@@ -270,10 +270,13 @@ class GatewayBridge:
             self.lock.notify_all()
         return True
 
-    def open_turn(self, task_id: str, home, chat_id: str) -> str:
-        """Register a turn that the gateway already runs, for example a cron run. Return its ID for follow()."""
+    def open_turn(self, task_id: str, home, chat_id: str, *, cron: bool = True) -> str:
+        """Register a turn that the gateway already runs, for example a cron run. Return its ID for follow().
+
+        A cron run cannot be stopped from a chat, so a cancel drops its turn. A run in a bot's chat (cron False, for
+        example after a background process) stops like a chat turn: the adapter gets the stop of the chat."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, '', 'Coconut')
-        turn.state, turn.silent_seconds, turn.cron = 'active', CRON_SILENT_SECONDS, True
+        turn.state, turn.silent_seconds, turn.cron = 'active', CRON_SILENT_SECONDS, cron
         with self.lock:
             self.turns[turn.id] = turn
         return turn.id

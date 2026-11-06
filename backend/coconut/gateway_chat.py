@@ -1482,14 +1482,17 @@ class GatewayChat:
             bot = self._get('bots', chat_id)
             if bot['archived'] or bot.get('_deleted'):
                 return {'skip': True}
-            if any(t['bot_id'] == bot['id'] and t['status'] == 'working' for t in self._all('tasks')):
+            # The index tasks_bot_status answers this without a parse of every task under the lock.
+            if self.db.execute("SELECT 1 FROM tasks INDEXED BY tasks_bot_status WHERE json_extract(data,'$.bot_id')=? "
+                               "AND json_extract(data,'$.status')='working' LIMIT 1", (bot['id'],)).fetchone():
                 # The chat runs a Coconut turn. That turn keeps the chat, and the run stays outside it.
                 return {'skip': True}
             title = 'Continuing after background work'
             task = self._get('tasks', self._send(bot, {'text': title, 'mode': 'queue'}, record_message=False,
                                                  human_authored=False)['id'])
-            turn = self.gateway_bridge.open_turn(task['id'], home, bot['id'])
-            task.update(status='working', summary='Working', title=title, _native_job_finished=True,
+            turn = self.gateway_bridge.open_turn(task['id'], home, bot['id'], cron=False)
+            # The run is a turn of the bot's chat: the answer to a card of the run continues in that chat.
+            task.update(status='working', summary='Working', title=title, _native_job_finished=True, _chat_session=True,
                         _turn_started_at=now(), _native_turn_id=uid(),
                         _gateway_wake=dict(message_id=message_id, turn_id=turn), updated_at=now())
             self._put('tasks', task)

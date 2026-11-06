@@ -80,6 +80,9 @@ class GatewayCronTests(unittest.TestCase):
         self.assertEqual(self.service.gateway_hermes_run(wake)['turn_id'], started['turn_id'])
         # While the run has its turn, the chat opens no second one.
         self.assertEqual(self.service.gateway_hermes_run(dict(wake, message_id='bg-2')), {'skip': True})
+        # The run is a turn of the chat: a card answer continues in the chat, and a cancel stops the chat run.
+        self.assertTrue(self.read('tasks', started['task_id'])['_chat_session'])
+        self.assertFalse(self.service.gateway_bridge.turns[started['turn_id']].cron)
         result = self.service.gateway_tool({'turn_id': started['turn_id'], 'tool': 'message_bot',
                                             'arguments': {'bot': 'Gumroad Dev', 'text': 'CI is green.'}})
         self.assertNotIn('error', result)
