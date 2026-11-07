@@ -2454,6 +2454,11 @@ def unpack(binding, checked, *, retry_failure=None, aside=None):
             # Git ignores these folders, so they do not change the digest above. One that aged out is gone, and the
             # log names it.
             return_held(retired['held'], path)
+            held = Path(retired['held']['folder'])
+            if aside and any(os.path.lexists(held / name) for name in retired['held']['names']):
+                # A writer of the path made a held folder in the new checkout first, so return_held kept the held
+                # copy. The recovery keeps both instead of reporting success (recover_residue).
+                raise ValueError(f'A held folder appeared in the checkout during the restore. Its held copy stays in {held}.')
     except BaseException as error:
         if isinstance(error, HeldMoveFailed) and error.stranded:
             # Held evidence that could not go back to its held place is in the checkout now. It is the only copy, so

@@ -225,6 +225,29 @@ class ResidueRecoveryTests(unittest.TestCase):
         self.assertEqual(tree(self.path / EVIDENCE), ARCHIVED)
         self.assertEqual(tree(Path(result['residue_recovery']['residue'])), self.residue)
 
+    def test_a_writer_of_a_held_folder_during_the_restore_keeps_both_copies(self):
+        self.incident(held=True)
+        held = Path(self.before['retired']['held']['folder'])
+        real = work_workspace.return_held
+        written = b'{"run": 3}\n'
+
+        def writer_first(record, path):
+            # The writer of the outcome makes the evidence folder in the new checkout before the held one returns.
+            self.write(Path(path) / EVIDENCE, {'ledger.json': written})
+            return real(record, path)
+        with patch.object(work_workspace, 'return_held', writer_first):
+            with self.assertRaisesRegex(ValueError, 'held folder appeared'):
+                acquire(self.workspaces, self.outcome, str(self.repo))
+        saved = self.registry()[self.identity]
+        self.assertTrue(saved['retired']['restore_failed']['residue_retry_failed'])
+        # Nothing is lost: the held copy, the writer's file in the kept checkout, and the first files at the path.
+        self.assertEqual(saved['retired']['held'], self.before['retired']['held'])
+        self.assertEqual(tree(held / EVIDENCE), ARCHIVED)
+        checkout = Path(saved['retired']['residue']['checkout'])
+        self.assertEqual((checkout / EVIDENCE / 'ledger.json').read_bytes(), written)
+        self.assertEqual(tree(self.path), self.residue)
+        self.assertIn('Ask the operator', self.gateway_acquire()['error'])
+
     def test_a_second_recovery_of_the_same_binding_stays_fenced(self):
         self.incident()
         saved = self.registry()
