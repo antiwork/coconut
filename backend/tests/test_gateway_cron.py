@@ -175,9 +175,12 @@ class GatewayCronTests(unittest.TestCase):
         self.assertEqual(self.read('tasks', started['task_id'])['status'], 'needs_you')
         # The end of the cron run does not complete the waiting task.
         bridge.event({'turn_id': started['turn_id'], 'kind': 'done', 'outcome': 'success'})
-        deadline = time.monotonic() + 5
-        while bridge.task_of(started['turn_id']) and time.monotonic() < deadline:
-            time.sleep(.02)
+        # The turn closes at once, but the thread of the run applies its end later. Wait for that thread: otherwise
+        # its end can reach the task after the answer below has started the next turn, and complete that turn.
+        thread = self.service.gateway_cron_threads[started['task_id']]
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertIsNone(bridge.task_of(started['turn_id']))
         self.assertEqual(self.read('tasks', started['task_id'])['status'], 'needs_you')
         with self.service.lock:
             decision = next(d for d in self.service._all('decisions') if d['task_id'] == started['task_id'])

@@ -1836,7 +1836,8 @@ def empty_scratch_trash(root):
 
 def drop_other_archives(directory, identity, keep, saved):
     """Keep one archive for each worktree. Never delete an archive that a binding names."""
-    named = {(b.get(key) or {}).get('archive') for b in saved.values() for key in ('retired', 'retire_failed')}
+    named = {(b.get(key) or {}).get('archive') for b in saved.values()
+             for key in ('retired', 'retire_failed', 'residue_recovery')}
     for old in [directory / (identity + '.tar.gz'), *directory.glob(identity + '-*.tar.gz')]:
         if old != keep and str(old) not in named:
             old.unlink(missing_ok=True)
@@ -1926,7 +1927,7 @@ def named_discard_archives(root):
 def named_retirement_archives(root):
     """Return the resolved paths of the archives that a binding names, or None when the registry cannot be read.
 
-    A retired, a failed, an interrupted, and a handed-off worktree each name their archive.
+    A retired, a failed, an interrupted, a handed-off, and a recovered worktree each name their archive.
     """
     try:
         saved = json.loads((Path(root) / 'worktrees.json').read_text())
@@ -1940,7 +1941,7 @@ def named_retirement_archives(root):
     for binding in saved.values():
         if not isinstance(binding, dict):
             continue
-        for key in ('retired', 'retire_failed', ORPHAN_REMOVAL, 'handoff'):
+        for key in ('retired', 'retire_failed', ORPHAN_REMOVAL, 'handoff', 'residue_recovery'):
             record = binding.get(key)
             if isinstance(record, dict) and isinstance(record.get('archive'), str) and record['archive']:
                 named.add(Path(record['archive']).resolve())
@@ -2122,6 +2123,152 @@ class DuplicateRestoreFailed(ValueError):
     """A proven duplicate recovery started, but encountered a different restore failure."""
 
 
+# A recovery moves the files that it finds at the saved path of a retired worktree to archive/residue/ (see recover_residue).
+RESIDUE = 'residue'
+
+
+def occupied_failure(failure, path):
+    # The first restore found files at the path and changed nothing. No later recovery has run since.
+    return (isinstance(failure, dict) and set(failure) == {'at', 'error'}
+            and failure['error'] == f'The path {path} is not empty and does not match the archive.')
+
+
+def residue_entries(folder, members, held=()):
+    """Return the type, size and times of each entry in folder. Refuse what is not evidence of the archived worktree.
+
+    A process of the outcome can write evidence again at the saved path after retirement removed the checkout. Only
+    real folders and regular files count, with no Git record and no link. Each entry must be in a folder that the
+    archive also names at the top of the worktree, such as a folder of QA evidence, or in a folder that retirement
+    held (`held`, see held_folders).
+    """
+    tops = {name.split('/')[0] for _, name in members if '/' in name} | {name.split('/')[0] for name in held}
+    result = []
+
+    def unreadable(error):
+        raise ValueError('Coconut cannot read all files at the saved path: ' + str(error)) from error
+    for directory, folders, files in os.walk(folder, onerror=unreadable):
+        for name in sorted(folders + files):
+            relative = (Path(directory) / name).relative_to(folder).as_posix()
+            status = os.lstat(Path(directory) / name)
+            if name.casefold() == '.git':
+                raise ValueError('The saved path holds a Git record.')
+            if not (stat.S_ISDIR(status.st_mode) or stat.S_ISREG(status.st_mode)):
+                raise ValueError('The saved path holds a link or a special file: ' + relative)
+            if relative.split('/')[0] not in tops or '/' not in relative and not stat.S_ISDIR(status.st_mode):
+                raise ValueError('The saved path holds files that the archive does not name: ' + relative)
+            result.append((relative, stat.S_IFMT(status.st_mode), status.st_ino, status.st_size,
+                           status.st_mtime_ns, status.st_ctime_ns))
+    if not result:
+        raise ValueError('The saved path holds no files.')
+    return sorted(result)
+
+
+def recover_residue(binding, root, persist):
+    """Restore a retired worktree whose first restore found newer evidence at its path. Hold the registry lock.
+
+    Only an explicit acquire of the owner calls this, for a binding whose only failure is that occupied path
+    (occupied_failure). Coconut checks the archive, the branch, the files at the path (residue_entries) and their
+    writers first. It then records the move, moves the folder at the path whole to archive/residue/, and restores
+    the archive into the empty path. The archive stays, and the binding names it and the moved folder in
+    `residue_recovery`. A refusal before the move changes nothing. A failure after the move takes the folder back
+    when it can, keeps a partial checkout whole next to it instead of deleting it, and marks the failure, so Coconut
+    never tries again without a person.
+    """
+    retired, failure = binding['retired'], binding['retired']['restore_failed']
+    path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
+    if path.is_symlink() or not path.is_dir() or path.resolve() != path or (path / '.git').exists():
+        raise ValueError('The saved path is not a plain folder.')
+    if archive.is_symlink() or not archive.is_file():
+        raise ValueError(f'The archive {archive} is missing.')
+    with tarfile.open(archive) as tar:
+        members, _ = archive_inventory(tar)
+        metadata = json.loads(tar.extractfile('retirement.json').read())
+    if (any(metadata.get(key) != binding[key] for key in ('outcome', 'repository', 'path', 'branch'))
+            or metadata.get('head') != retired['head'] or metadata.get('at') != retired['at']):
+        raise ValueError('The archive belongs to another owner, path, branch, or commit.')
+    if git(repository, 'rev-parse', '--verify', 'refs/heads/' + binding['branch']) != retired['head']:
+        raise ValueError('The saved branch moved after retirement.')
+    # Inside the main checkout, `git -C path` reports the main checkout, so Git's own record of the path decides.
+    if any(r['path'] == path or r['branch'] == 'refs/heads/' + binding['branch'] for r in registered(repository)):
+        raise ValueError('Git registers a worktree at the saved path or on the saved branch.')
+    held = [name for name in (retired.get('held') or {}).get('names') or () if isinstance(name, str) and name]
+    before = residue_entries(path, members, held)
+    if in_use(path):
+        raise ValueError('A process uses the saved path.')
+    directory = Path(root) / 'archive' / RESIDUE
+    directory.parent.mkdir(mode=0o700, exist_ok=True)
+    directory.mkdir(mode=0o700, exist_ok=True)
+    place = directory / f'{path.name}-{time.time_ns()}'
+    checkout = place.with_name(place.name + '-checkout')
+    if directory.is_symlink() or os.path.lexists(place) or os.path.lexists(checkout):
+        raise ValueError('The residue folder is not safe.')
+    # The binding names the folder before the move, so a stop cannot lose it. A later acquire then refuses.
+    binding['retired'] = dict(retired, residue=dict(folder=str(place), at=stamp(datetime.now(timezone.utc))))
+    try:
+        persist()
+    except BaseException:
+        binding['retired'] = retired
+        raise
+    try:
+        # The checks above take time. A parent folder that became a link since redirects the path.
+        if path.is_symlink() or path.resolve() != path:
+            raise OSError('the saved path is redirected')
+        os.rename(path, place)
+    except OSError as error:
+        binding['retired'] = retired
+        persist()
+        raise ValueError(f'Coconut could not move the files at the saved path: {error}') from None
+
+    def give_back():
+        # Put the folder back only into a missing or empty path. Never replace other files, and never follow a link.
+        with contextlib.suppress(OSError):
+            if path.is_symlink() or path.resolve() != path:
+                return False
+            if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
+                path.rmdir()
+            if not os.path.lexists(path):
+                os.rename(place, path)
+                return True
+        return False
+    # A writer can act between the check and the move. Its files moved too, so compare them again.
+    try:
+        changed = residue_entries(place, members, held) != before or in_use(place)
+    except (ValueError, OSError):
+        changed = True
+    changed_error = 'The files at the saved path changed during the recovery.'
+    if changed and give_back():
+        # Nothing else happened, so the first failure stays the proof.
+        binding['retired'] = retired
+        persist()
+        raise ValueError(changed_error)
+    try:
+        if changed:
+            raise ValueError(changed_error)
+        unpack(dict(binding, retired=dict(retired, restore_failed=None)), {}, aside=checkout)
+    except BaseException as error:
+        returned = give_back()
+        message = str(error)[:1000] + ('' if returned else f' The files of the saved path are in {place}.')
+        if os.path.lexists(checkout):
+            message += (f' The partial checkout, with any file written during the restore, is in {checkout}. '
+                        'Its .git file is renamed to .git-detached.')
+        binding['retired'] = dict(retired, restore_failed=dict(
+            at=stamp(datetime.now(timezone.utc)), error=message, residue_retry_failed=True,
+            duplicate_retry_failed=True, intent_retry_failed=True))
+        # Name only what is still outside the path, so a person finds every file.
+        kept = {**({} if returned else {'folder': str(place)}),
+                **({'checkout': str(checkout)} if os.path.lexists(checkout) else {})}
+        if kept:
+            binding['retired']['residue'] = kept
+        logging.getLogger(__name__).warning('Coconut could not restore %s over its newer files: %s', path, message)
+        raise
+    binding.pop('retired')
+    binding['residue_recovery'] = dict(archive=str(archive), residue=str(place), failure=failure,
+                                       at=stamp(datetime.now(timezone.utc)))
+    logging.getLogger(__name__).warning('Coconut restored %s from %s. The newer files of the path are in %s.',
+                                        path, archive, place)
+    validate_binding(binding)
+
+
 def intent_failure(failure):
     # PR92's duplicate retry reached the final digest check, then rolled back.
     # Do not admit generic digest failures or another failure of this recovery.
@@ -2215,7 +2362,7 @@ def reapply_discard(path, archive, head):
                             'and the checkout is clean.') from None
 
 
-def unpack(binding, checked, *, retry_failure=None):
+def unpack(binding, checked, *, retry_failure=None, aside=None):
     retired = binding['retired']
     path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
     if path.is_symlink():
@@ -2283,7 +2430,7 @@ def unpack(binding, checked, *, retry_failure=None):
                         raise ValueError('The archive does not prove the legacy intent-to-add mismatch.')
             # Archive validation can take time. Do not roll back someone else's files
             # if the previously empty path became occupied before Git starts.
-            if occupied(path) or path.is_symlink() or retry_failure and path.resolve() != path:
+            if occupied(path) or path.is_symlink() or (retry_failure or aside) and path.resolve() != path:
                 raise ValueError('The saved worktree path is no longer empty or has been redirected.')
             # Mark the checkout before Git starts. An interrupted add can leave a registered partial checkout.
             created = True
@@ -2312,12 +2459,29 @@ def unpack(binding, checked, *, retry_failure=None):
             # Git ignores these folders, so they do not change the digest above. One that aged out is gone, and the
             # log names it.
             return_held(retired['held'], path)
+            held = Path(retired['held']['folder'])
+            if aside and any(os.path.lexists(held / name) for name in retired['held']['names']):
+                # A writer of the path made a held folder in the new checkout first, so return_held kept the held
+                # copy. The recovery keeps both instead of reporting success (recover_residue).
+                raise ValueError(f'A held folder appeared in the checkout during the restore. Its held copy stays in {held}.')
     except BaseException as error:
         if isinstance(error, HeldMoveFailed) and error.stranded:
             # Held evidence that could not go back to its held place is in the checkout now. It is the only copy, so
             # the checkout stays. A later restore adopts it and moves the other held folders back.
             logging.getLogger(__name__).warning('Coconut kept the checkout %s, because it holds the held folders %s.',
                                                 path, error.stranded)
+        elif created and aside:
+            # A writer of the path can write into the new checkout. Keep the partial checkout whole at `aside`, and
+            # drop only Git's record of it (recover_residue).
+            with contextlib.suppress(OSError):
+                if os.path.lexists(path):
+                    os.rename(path, aside)
+                # A later checkout of the path reuses the name of Git's record. Detach the kept copy from it, so a Git
+                # command in that copy cannot change the live worktree.
+                if (aside / '.git').is_file() and not (aside / '.git').is_symlink():
+                    os.rename(aside / '.git', aside / '.git-detached')
+            with contextlib.suppress(*GIT_ERRORS):
+                git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
         elif created:
             # Remove only the partial checkout. The archive stays.
             discard_checkout(repository, path)
@@ -2326,7 +2490,7 @@ def unpack(binding, checked, *, retry_failure=None):
         raise
 
 
-def restore(binding, checked, *, retry_duplicates=False, keep_archive=False):
+def restore(binding, checked, *, retry_duplicates=False, keep_archive=False, residue_root=None, persist=None):
     """Recreate a retired worktree at its saved path. Hold the registry lock.
 
     `checked` comes from compare_checkouts before the lock. Without an entry for the binding,
@@ -2337,7 +2501,8 @@ def restore(binding, checked, *, retry_duplicates=False, keep_archive=False):
     A failed restore keeps the archive and marks the binding `restore_failed`. Only an
     explicit same-owner acquire can retry a proven legacy identical-duplicate collision
     or its proven post-PR92 intent-to-add mismatch into a missing or empty path.
-    All other failures retain the operator fence.
+    With `residue_root`, that acquire can also restore over the newer evidence that a first restore found at the path
+    (recover_residue). `persist()` saves the registry. All other failures retain the operator fence.
     """
     retired = binding['retired']
     if retired.get('done'):
@@ -2404,6 +2569,23 @@ def restore(binding, checked, *, retry_duplicates=False, keep_archive=False):
              and (intent_failure(failure) or (not failure.get('duplicate_retry_failed')
              and isinstance(failure.get('error'), str)
              and failure['error'].startswith('The checkout already contains '))))
+    # One recovery for each binding, so its record keeps naming the archive and the moved folder.
+    if (residue_root and retry_duplicates and occupied_failure(failure, Path(binding['path'])) and 'residue' not in retired
+            and 'residue_recovery' not in binding):
+        try:
+            recover_residue(binding, residue_root, persist)
+            return
+        except RESTORE_ERRORS as error:
+            if 'retired' not in binding:
+                # The checkout is back. Only its last check failed, as after an ordinary restore below.
+                raise
+            # A refusal keeps the first failure as it is. A failure after the move marks it (recover_residue).
+            failure = binding['retired']['restore_failed']
+            if not failure.get('residue_retry_failed'):
+                raise ValueError(f'Coconut retired this worktree and could not restore it: {failure["error"]} '
+                                 f'Coconut did not restore it over the newer files: {str(error)[:1000]} '
+                                 f'The archive {archive} holds its uncommitted changes. The branch {binding["branch"]} '
+                                 'holds its commits. Ask the operator to restore it.') from None
     if not failure or retry:
         try:
             unpack(binding, checked, retry_failure=failure)
@@ -2504,7 +2686,8 @@ def acquire(root, outcome, repository, existing_worktree=None, *, successor=None
             previous = dict(binding)
             try:
                 if binding.get('retired'):
-                    restore(binding, checked, retry_duplicates=True)
+                    restore(binding, checked, retry_duplicates=True, residue_root=root,
+                            persist=lambda: save_bindings(manifest, saved))
                 else:
                     validate_binding(binding, allow_rename=True)
             finally:
