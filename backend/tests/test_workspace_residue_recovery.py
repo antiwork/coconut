@@ -92,8 +92,10 @@ class ResidueRecoveryTests(unittest.TestCase):
             (folder / name).parent.mkdir(parents=True, exist_ok=True)
             (folder / name).write_bytes(data)
 
-    def incident(self):
-        """Retire a worktree with evidence, write newer evidence at its path, and fail the first restore."""
+    def incident(self, held=False):
+        """Retire a worktree with evidence, write newer evidence at its path, and fail the first restore.
+
+        With `held`, the evidence folder is too large for the archive, and retirement holds it (held_folders)."""
         outcome = str(uuid4())
         self.task = dict(id=str(uuid4()), bot_id=self.bot['id'], _execution_session_id=outcome, title='QA',
                          status='completed', summary='', created_at=OLD, updated_at=OLD)
@@ -117,7 +119,10 @@ class ResidueRecoveryTests(unittest.TestCase):
         (self.path / 'notes.md').write_text('untracked\n')
         self.write(self.path / EVIDENCE, ARCHIVED)
         self.service._next_worktree_retirement = 0
-        self.assertEqual(self.service.retire_finished_worktrees(), [self.identity])
+        with patch.object(work_workspace, 'IGNORED_LIMIT_BYTES', 10 if held else work_workspace.IGNORED_LIMIT_BYTES):
+            self.assertEqual(self.service.retire_finished_worktrees(), [self.identity])
+        self.assertEqual(self.registry()[self.identity]['retired'].get('held', {}).get('names'),
+                         [EVIDENCE] if held else None)
         self.assertFalse(self.path.exists())
         self.archive = Path(self.registry()[self.identity]['retired']['archive'])
         self.archive_bytes = self.archive.read_bytes()
@@ -211,6 +216,23 @@ class ResidueRecoveryTests(unittest.TestCase):
         self.assertEqual(binding['path'], str(self.path))
         self.assertEqual(tree(Path(binding['residue_recovery']['residue'])), self.residue)
         self.assertTrue(self.archive.exists())
+
+    def test_evidence_in_a_held_folder_restores_with_the_held_folder(self):
+        self.incident(held=True)
+        result = self.gateway_acquire()
+        self.assertNotIn('error', result)
+        # The held folder is back in the checkout, and the newer evidence is in the moved folder.
+        self.assertEqual(tree(self.path / EVIDENCE), ARCHIVED)
+        self.assertEqual(tree(Path(result['residue_recovery']['residue'])), self.residue)
+
+    def test_a_second_recovery_of_the_same_binding_stays_fenced(self):
+        self.incident()
+        saved = self.registry()
+        saved[self.identity]['residue_recovery'] = dict(archive=str(self.root / 'first.tar.gz'), residue='first',
+                                                        failure={}, at='then')
+        save_bindings(self.manifest, saved)
+        self.assertIn('Ask the operator', self.gateway_acquire()['error'])
+        self.assert_fenced(binding=saved[self.identity])
 
     # The owner and the route.
 

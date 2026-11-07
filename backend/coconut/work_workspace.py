@@ -2133,14 +2133,15 @@ def occupied_failure(failure, path):
             and failure['error'] == f'The path {path} is not empty and does not match the archive.')
 
 
-def residue_entries(folder, members):
+def residue_entries(folder, members, held=()):
     """Return the type, size and times of each entry in folder. Refuse what is not evidence of the archived worktree.
 
     A process of the outcome can write evidence again at the saved path after retirement removed the checkout. Only
     real folders and regular files count, with no Git record and no link. Each entry must be in a folder that the
-    archive also names at the top of the worktree, such as a folder of QA evidence.
+    archive also names at the top of the worktree, such as a folder of QA evidence, or in a folder that retirement
+    held (`held`, see held_folders).
     """
-    tops = {name.split('/')[0] for _, name in members if '/' in name}
+    tops = {name.split('/')[0] for _, name in members if '/' in name} | {name.split('/')[0] for name in held}
     result = []
 
     def unreadable(error):
@@ -2190,7 +2191,8 @@ def recover_residue(binding, root, persist):
     # Inside the main checkout, `git -C path` reports the main checkout, so Git's own record of the path decides.
     if any(r['path'] == path or r['branch'] == 'refs/heads/' + binding['branch'] for r in registered(repository)):
         raise ValueError('Git registers a worktree at the saved path or on the saved branch.')
-    before = residue_entries(path, members)
+    held = [name for name in (retired.get('held') or {}).get('names') or () if isinstance(name, str) and name]
+    before = residue_entries(path, members, held)
     if in_use(path):
         raise ValueError('A process uses the saved path.')
     directory = Path(root) / 'archive' / RESIDUE
@@ -2225,7 +2227,7 @@ def recover_residue(binding, root, persist):
         return False
     # A writer can act between the check and the move. Its files moved too, so compare them again.
     try:
-        changed = residue_entries(place, members) != before or in_use(place)
+        changed = residue_entries(place, members, held) != before or in_use(place)
     except (ValueError, OSError):
         changed = True
     changed_error = 'The files at the saved path changed during the recovery.'
@@ -2557,7 +2559,9 @@ def restore(binding, checked, *, retry_duplicates=False, keep_archive=False, res
              and (intent_failure(failure) or (not failure.get('duplicate_retry_failed')
              and isinstance(failure.get('error'), str)
              and failure['error'].startswith('The checkout already contains '))))
-    if residue_root and retry_duplicates and occupied_failure(failure, Path(binding['path'])) and 'residue' not in retired:
+    # One recovery for each binding, so its record keeps naming the archive and the moved folder.
+    if (residue_root and retry_duplicates and occupied_failure(failure, Path(binding['path'])) and 'residue' not in retired
+            and 'residue_recovery' not in binding):
         try:
             recover_residue(binding, residue_root, persist)
             return
