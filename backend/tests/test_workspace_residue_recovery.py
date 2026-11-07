@@ -432,6 +432,18 @@ class ResidueRecoveryTests(unittest.TestCase):
         self.assertEqual(tree(self.path), self.residue)
         self.assertEqual(self.registry()[self.identity], saved)
 
+    def test_a_failed_last_check_keeps_the_restored_checkout_and_names_its_error(self):
+        self.incident()
+        with patch.object(work_workspace, 'validate_binding', side_effect=ValueError('Git is busy.')):
+            with self.assertRaisesRegex(ValueError, 'Git is busy'):
+                acquire(self.workspaces, self.outcome, str(self.repo))
+        saved = self.registry()[self.identity]
+        self.assertNotIn('retired', saved)
+        self.assertEqual(tree(Path(saved['residue_recovery']['residue'])), self.residue)
+        self.assertEqual(git(self.path, 'rev-parse', 'HEAD'), self.head)
+        # The next turn gets the restored worktree.
+        self.assertEqual(self.gateway_acquire()['path'], str(self.path))
+
     def test_other_saved_failures_stay_fenced(self):
         self.incident()
         failure = self.before['retired']['restore_failed']

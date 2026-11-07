@@ -2555,6 +2555,9 @@ def restore(binding, checked, *, retry_duplicates=False, keep_archive=False, res
             recover_residue(binding, residue_root, persist)
             return
         except RESTORE_ERRORS as error:
+            if 'retired' not in binding:
+                # The checkout is back. Only its last check failed, as after an ordinary restore below.
+                raise
             # A refusal keeps the first failure as it is. A failure after the move marks it (recover_residue).
             failure = binding['retired']['restore_failed']
             if not failure.get('residue_retry_failed'):
