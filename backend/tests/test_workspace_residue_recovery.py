@@ -425,6 +425,9 @@ class ResidueRecoveryTests(unittest.TestCase):
         self.assertIn(str(checkout), saved['retired']['restore_failed']['error'])
         # Nothing is deleted: the newer file is in the partial checkout, and the first files are back at the path.
         self.assertEqual((checkout / EVIDENCE / 'ledger.json').read_bytes(), written)
+        # The kept copy is plain files. A later checkout of the path cannot share its Git record.
+        self.assertFalse(os.path.lexists(checkout / '.git'))
+        self.assertTrue((checkout / '.git-detached').is_file())
         self.assertEqual(tree(self.path), self.residue)
         self.assertNotIn(str(checkout), git(self.repo, 'worktree', 'list', '--porcelain'))
         self.assertNotIn('branch refs/heads/' + self.branch, git(self.repo, 'worktree', 'list', '--porcelain'))

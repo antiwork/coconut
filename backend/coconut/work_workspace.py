@@ -2242,7 +2242,8 @@ def recover_residue(binding, root, persist):
         returned = give_back()
         message = str(error)[:1000] + ('' if returned else f' The files of the saved path are in {place}.')
         if os.path.lexists(checkout):
-            message += f' The partial checkout, with any file written during the restore, is in {checkout}.'
+            message += (f' The partial checkout, with any file written during the restore, is in {checkout}. '
+                        'Its .git file is renamed to .git-detached.')
         binding['retired'] = dict(retired, restore_failed=dict(
             at=stamp(datetime.now(timezone.utc)), error=message, residue_retry_failed=True,
             duplicate_retry_failed=True, intent_retry_failed=True))
@@ -2463,6 +2464,10 @@ def unpack(binding, checked, *, retry_failure=None, aside=None):
             with contextlib.suppress(OSError):
                 if os.path.lexists(path):
                     os.rename(path, aside)
+                # A later checkout of the path reuses the name of Git's record. Detach the kept copy from it, so a Git
+                # command in that copy cannot change the live worktree.
+                if (aside / '.git').is_file() and not (aside / '.git').is_symlink():
+                    os.rename(aside / '.git', aside / '.git-detached')
             with contextlib.suppress(*GIT_ERRORS):
                 git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
         elif created:
