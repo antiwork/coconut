@@ -31,6 +31,7 @@ from coconut.service import Service, ServiceError, now
 from coconut.work_sources import STALE_IDLE_AGE, STALE_NOTE, stale_cards
 import legacy_work_sync
 import test_archived_failed_request_continuation as failed_request_fixtures
+import test_archived_scheduled_assignment_continuation as assignment_fixtures
 import test_archived_scheduled_routine_continuation as routine_fixtures
 import test_native_kanban as native_fixtures
 import test_native_source_ownership as ownership_fixtures
@@ -1007,6 +1008,87 @@ class ClosedSourceNativeTests(unittest.TestCase):
         with self.assertRaisesRegex(ServiceError, 'applies only to work that Coconut ended'):
             self.service.emit(requester['id'], 'work_continue', dict(
                 task_id=archived, message='Verify the merge again.', continue_closed_source=True))
+
+
+@hermes_env.needs_hermes
+class ParkedClosedSourceNativeTests(unittest.TestCase):
+    """The installed Hermes kernel: the owner's turn parks its card and completes, the real assignment pass archives the
+    parked card, and only the explicit continuation gets a successor."""
+
+    setUp = assignment_fixtures.ArchivedScheduledAssignmentNativeTests.setUp
+    write = native_fixtures.NativeKanbanTests.write
+    native_program = native_fixtures.NativeKanbanTests.native_program
+    tick = native_fixtures.NativeKanbanTests.tick
+    native = routine_fixtures.ArchivedScheduledRoutineNativeTests.native
+    update = assignment_fixtures.ArchivedScheduledAssignmentNativeTests.update
+    dispatched = assignment_fixtures.ArchivedScheduledAssignmentNativeTests.dispatched
+    completed = assignment_fixtures.ArchivedScheduledAssignmentNativeTests.completed
+    assertQuiescent = assignment_fixtures.ArchivedScheduledAssignmentNativeTests.assertQuiescent
+    completed_assignment = assignment_fixtures.ArchivedScheduledAssignmentNativeTests.completed_assignment
+    audit = source_fixtures.WorkSourceTests.audit
+    source = ownership_fixtures.NativeSourceOwnershipTests.source
+    completion = ClosedSourceNativeTests.completion
+
+    def parked(self):
+        """The source audit gave the bot its issue. The bot completes the original card, continues the same execution,
+        and the successor's turn parks the card with kanban_schedule and completes. Then the issue leaves the source."""
+        self.source()
+        owner, caller, original, workspace = self.completed_assignment(
+            delegated=False, source=dict(id=self.item['id'], source_id='assigned'))
+        self.assertQuiescent(owner)
+        self.service.emit(caller['id'], 'work_continue', dict(task_id=original, message='Check the issue again.'))
+        parked = self.dispatched(1)['_native_outcome_id']
+        self.assertNotEqual(parked, original)
+        self.completed(owner)
+        self.tick()
+        self.assertEqual(self.service.kanban.tasks[owner['id']]['status'], 'scheduled')
+        # The source links the request's retained card to the issue.
+        with self.service.transaction():
+            state = self.service._setting('work-source:assigned')
+            state['native_links'].setdefault(self.item['id'], dict(updated_at=self.item['updated_at'], task_ids=[],
+                                                                   decision_ids=[]))['task_ids'].append(parked)
+            self.service.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('work-source:assigned', json.dumps(state)))
+        time.sleep(1.1)
+        self.items = []
+        with patch('coconut.work_sources.STALE_IDLE_AGE', 0):
+            self.audit()
+        self.service.kanban.call({'op': 'snapshot'})
+        self.service._reconcile_kanban()
+        return self.service._get('tasks', owner['id']), caller, original, parked, workspace
+
+    def test_the_real_pass_archives_the_parked_card_and_the_owner_continues_explicitly(self):
+        owner, caller, original, parked, workspace = self.parked()
+        # Hermes ended the claim's run as scheduled, and the request completed. The archive cancels nothing.
+        self.assertEqual(owner['status'], 'completed')
+        self.assertFalse(any(json.loads(row[0]).get('status') == 'cancelled' for row in self.service.db.execute(
+            "SELECT data FROM events WHERE task_id=? AND type='task.updated'", (owner['id'],))))
+        card = self.completion(parked)
+        self.assertEqual(set(card), COMPLETION_FIELDS)
+        self.assertEqual((card['status'], card['input_id'], card['archive']['author'], card['archive']['note'],
+                          card['archive']['run_id'], card['archive']['later']),
+                         ('archived', owner['_native_turn_id'], 'coconut', STALE_NOTE, None, []))
+        self.assertEqual([(r['id'], r['outcome'], r['ended']) for r in card['runs']],
+                         [(owner['_kanban_claim']['run_id'], 'scheduled', True)])
+        self.assertEqual(owner['_native_outcome_id'], parked)
+        history = self.native(parked), self.native(original)
+        # The plain call keeps the assignment pass's rule.
+        with self.assertRaisesRegex(ServiceError, 'continue_closed_source: true'):
+            self.service.emit(caller['id'], 'work_continue', dict(task_id=parked, message='Finish the issue.'))
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        receipt = self.service.emit(caller['id'], 'work_continue', dict(
+            task_id=parked, message='Finish the issue.', continue_closed_source=True))
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id=parked, status='queued'))
+        continued = self.service._get('tasks', owner['id'])
+        task = self.dispatched(2)
+        successor = task['_native_outcome_id']
+        self.assertNotIn(successor, (original, parked))
+        native = self.native(successor)
+        self.assertEqual(native['parents'], [parked])
+        self.assertEqual(native['key'], 'coconut-followup:' + owner['id'] + ':' + continued['_native_turn_id'])
+        self.assertEqual((native['tenant'], native['path']), (owner['bot_id'], workspace))
+        self.assertEqual((task['_native_turn_id'], task['_kanban_workspace']), (continued['_native_turn_id'], workspace))
+        # The archived card and the original card keep their history. Hermes runs only the successor.
+        self.assertEqual((self.native(parked), self.native(original)), history)
 
 
 if __name__ == '__main__':
