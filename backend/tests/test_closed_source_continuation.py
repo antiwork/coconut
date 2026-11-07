@@ -571,6 +571,251 @@ class OtherEndingsStayFinalTests(ClosedSource, unittest.TestCase):
         self.assertNotIn('_background_completion', self.store._get('tasks', owner['id']))
 
 
+ISSUE = 'https://github.com/antiwork/gumroad-private/issues/4293'
+PARKED = 't_b432d59d'
+PARKED_RUNS = (40318, 40323)
+
+
+class ParkedClosedSource(ClosedSource):
+    """The saved shape of Desk's audit of issue 4293: its worker parked the card, the request completed, the issue
+    closed, and the assignment pass archived the parked card. The reconciler cancels nothing that completed."""
+
+    receipt = routine_fixtures.ScheduledOccurrence.receipt
+    card = routine_fixtures.ScheduledOccurrence.card
+    dispatch = routine_fixtures.ScheduledOccurrence.dispatch
+
+    def schedule(self, owner):
+        """The worker parks its card with kanban_schedule, and the turn completes."""
+        task = self.store._get('tasks', owner['id'])
+        identity = task['_kanban_claim']['native_id']
+        self.receipt(owner['id'], 'kanban_schedule', dict(task_id=identity, reason=routine_fixtures.REASON),
+                     dict(ok=True, task_id=identity, status='scheduled', reason=routine_fixtures.REASON))
+        self.store.kanban.tasks[owner['id']].update(status='scheduled', current_run_id=None, worker_pid=None,
+                                                    claim_lock=None, last_activity_at=time.time() - STALE_IDLE_AGE - 60)
+        self.runs[identity][-1].update(status='scheduled', outcome='scheduled', ended=True)
+        self.store.emit(owner['id'], 'completed', dict(summary='Complete.'))
+        self.store._drain_returns()
+        return self.store._get('tasks', owner['id'])
+
+    def parked(self, relayed=True):
+        """Desk's own audit of the issue completes its card, and Desk continues the same execution. Board.sync gives the
+        input a successor, which the turn parks while Dev traces a consumer. Dev's result is the next input of the same
+        parked card (or, with relayed=False, Desk's own continuation is), and that turn parks the card again. Then the
+        issue closes, and the assignment pass archives the parked card."""
+        owner = self.store._get('tasks', self.store.mutate('POST', '/v1/bots/' + self.desk['id'] + '/messages',
+            {'text': 'Audit the assigned issue 4293.'}, str(uuid4()), 'test-phone')['id'])
+        self.workspace = self.execution_dir = self.store.root / 'workspaces' / owner['id']
+        self.workspace.mkdir(parents=True)
+        self.item = dict(id=str(uuid4()), bot_id=self.desk['id'], task_id=owner['id'], kind='work', title='Issue 4293',
+                         status='waiting', activity='Waiting', preview='', url=None, created_at=now(), observed_at=now(),
+                         _work_key='source:' + ISSUE, completion_condition='Resolve issue 4293')
+        self.store._put('artifacts', self.item)
+        owner = self.update(owner['id'], status='working', _execution_session_id=owner['id'], _native_turn_id='turn-original',
+                            _conversation_epoch=self.store._setting('conversation_epoch'), _work_context_id=self.item['id'],
+                            _source_assignment=dict(id=ISSUE, source_id='desk-github-assigned'),
+                            _kanban_claim=dict(native_id='t_original', external_id=owner['id'], input='turn-original',
+                                               run_id=40300, claim_lock='host:1', workspace=str(self.workspace)),
+                            _kanban_started=40300)
+        self.receipt(owner['id'], 'kanban_complete', dict(task_id='t_original', summary='Audited issue 4293.'),
+                     dict(ok=True, task_id='t_original', run_id=40300))
+        self.store.emit(owner['id'], 'completed', dict(summary='Audited issue 4293.'))
+        self.store.kanban.tasks[owner['id']] = self.card(owner, 't_original', 'coconut:' + owner['id'], input_id='turn-original')
+        self.runs['t_original'] = [dict(id=40300, status='done', outcome='completed', ended=True)]
+        self.requester = self.working(self.desk, 'Continue the audit of issue 4293.')
+        self.resume(identity='t_original', message='Recover the Dev trace for issue 4293.', reopen=None)
+        first = self.store._get('tasks', owner['id'])['_native_turn_id']
+        self.dispatch(owner, PARKED, PARKED_RUNS[0], key='coconut-followup:' + owner['id'] + ':' + first)
+        if relayed:
+            relay = self.store._store_bot_message(owner['id'], dict(target_bot_id=self.dev['id'],
+                                                                    text='Trace Gumclaw consumer sa-0-153726d3.'))
+        self.schedule(owner)
+        if relayed:
+            self.update(relay['task_id'], status='working')
+            self.store.emit(relay['task_id'], 'completed', dict(summary='Gumclaw consumer sa-0-153726d3 traced.'))
+            self.store._drain_returns()
+        else:
+            self.resume(identity=PARKED, message='Continue the audit of issue 4293.', reopen=None)
+        second = self.store._get('tasks', owner['id'])
+        self.assertEqual((second['status'], second['_native_outcome_id']), ('queued', PARKED))
+        self.dispatch(owner, PARKED, PARKED_RUNS[1])
+        scheduled = self.schedule(owner)
+        self.assertEqual(scheduled['status'], 'completed')
+        self.assertEqual(self.store.kanban.tasks[owner['id']]['idempotency_key'], 'coconut-followup:' + owner['id'] + ':' + first)
+        left = time.time() - 30
+        state = dict(native_links={ISSUE: dict(updated_at='2026-11-04T17:20:00Z', task_ids=['t_original', PARKED],
+                                               decision_ids=[])}, source_left={ISSUE: left})
+        with self.store.transaction():
+            self.store.db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', (SOURCE_KEY, json.dumps(state)))
+        tasks = {t['id']: t for t in self.store._all('tasks')}
+        self.assertEqual(stale_cards(set(), state['native_links'], state['source_left'], dict(self.store.kanban.tasks),
+                                     tasks, {}, time.time()), {PARKED: left})
+        archived = self.stale_archive(owner, PARKED)
+        self.assertEqual(archived, dict(scheduled, updated_at=archived['updated_at']))
+        self.assertEqual(self.cancellations(owner), [])
+        self.requester = self.update(self.requester['id'], status='working')
+        return archived
+
+    def resume(self, caller=None, message=MESSAGE, identity=PARKED, reopen=True):
+        return ClosedSource.resume(self, caller, message, identity, reopen)
+
+    def assertRejected(self, owner, pattern='.', caller=None, reopen=True, identity=PARKED):
+        return ClosedSource.assertRejected(self, owner, pattern, caller, reopen, identity)
+
+
+class ParkedClosedSourceTests(ParkedClosedSource, unittest.TestCase):
+    def test_saved_shape_continues_only_when_its_owner_asks_explicitly(self):
+        owner = self.parked()
+        before, item = copy.deepcopy(owner), self.store._get('artifacts', self.item['id'])
+        self.assertTrue(self.qualifies(owner))
+        self.assertRejected(owner, CLOSED_SOURCE_REFUSED, reopen=None)
+        self.assertRejected(owner, CLOSED_SOURCE_REFUSED, reopen=False)
+        receipt = self.resume()
+        self.assertEqual(receipt, dict(task_id=owner['id'], native_task_id=PARKED, status='queued'))
+        self.assertIn({'op': 'completion', 'id': PARKED}, self.calls)
+        continued = self.store._get('tasks', owner['id'])
+        self.assertEqual(continued['status'], 'queued')
+        self.assertNotEqual(continued['_native_turn_id'], before['_native_turn_id'])
+        for key in ('id', 'bot_id', 'session_id', 'thread_id', 'exchange_id', 'conversation_bot_id', '_execution_session_id',
+                    '_kanban_claim', '_kanban_started', '_native_outcome_id', '_work_context_id', '_source_assignment',
+                    'source_bot_id', 'source_task_id', 'created_at'):
+            self.assertEqual(continued.get(key), before.get(key), key)
+        self.assertEqual(continued['_self_recovery']['unknown_tools'], [])
+        self.assertEqual(continued['_bot_messages'][-1], dict(sender_bot_id=self.desk['id'], sender_name='Desk',
+                                                              text=MESSAGE, result_status=None, progress_only=False))
+        self.assertEqual(self.cancellations(owner), [])
+        self.assertEqual(self.store._get('artifacts', self.item['id']), item)
+        # The next row names the archived card and the new input, in the execution's own workspace.
+        row = self.store._kanban_row(continued, continued, 'ready', 10)
+        self.assertEqual((row['native_id'], row['input'], row['previous_input'], row['workspace']),
+                         (PARKED, continued['_native_turn_id'], before['_native_turn_id'], str(self.workspace)))
+        for _ in range(2):
+            self.store._reconcile_kanban()
+            self.assertEqual(self.store._get('tasks', owner['id']), continued)
+        self.assertEqual(self.resume(), receipt)
+        self.assertEqual(self.store._get('tasks', owner['id']), continued)
+
+    def test_only_the_owner_or_its_requester_can_continue(self):
+        owner = self.parked()
+        self.assertRejected(owner, 'Only the owner or its requesting bot', caller=self.working(self.dev, 'Continue it.'))
+        self.requester = self.update(self.requester['id'], status='completed')
+        self.assertRejected(owner, 'cannot continue work now')
+
+    def test_authenticated_inputs_still_need_the_explicit_choice(self):
+        # Both inputs of the parked card are Desk's own continuations, which settled_scheduled_continuation accepts
+        # after the settle pass. The assignment pass's archive still needs the explicit choice.
+        owner = self.parked(relayed=False)
+        self.assertTrue(self.qualifies(owner))
+        self.assertRejected(owner, CLOSED_SOURCE_REFUSED, reopen=None)
+        self.assertEqual(self.resume()['task_id'], owner['id'])
+
+    def test_other_archives_inputs_runs_and_sources_stay_final(self):
+        def runs(change):
+            return lambda owner: change(self.runs[PARKED])
+
+        def source(change):
+            return lambda owner: self.source_state(change)
+
+        def completed_after_the_archive(owner):
+            self.archives[PARKED]['at'] = int(time.time()) - 3600
+
+        def stopped(owner):
+            self.store._event('task.cancelled', self.store._public(owner), owner['bot_id'], owner['id'])
+
+        def cancelled_earlier(owner):
+            # A cancellation before the completion, such as a cancelled earlier input, still ends the work.
+            cancelled = dict(self.store._public(owner), status='cancelled')
+            self.store._event('task.updated', cancelled, owner['bot_id'], owner['id'])
+            self.store._event('task.updated', self.store._public(owner), owner['bot_id'], owner['id'])
+
+        def updated_after_completion(owner):
+            self.store._event('task.updated', dict(self.store._public(owner), status='waiting'), owner['bot_id'], owner['id'])
+        cases = dict(
+            person_archive=lambda owner: self.archives.update({PARKED: None}),
+            note_of_a_person=lambda owner: self.archives[PARKED].update(author='dashboard'),
+            other_note=lambda owner: self.archives[PARKED].update(note='Coconut ended this task.'),
+            archived_run=lambda owner: self.archives[PARKED].update(run_id=PARKED_RUNS[1]),
+            later_claim=lambda owner: self.archives[PARKED].update(later=['commented', 'claimed']),
+            completed_after_the_archive=completed_after_the_archive, stopped=stopped,
+            cancelled_earlier=cancelled_earlier, updated_after_completion=updated_after_completion,
+            created_twice=lambda owner: self.store._event('task.created', self.store._public(owner), owner['bot_id'], owner['id']),
+            routine=lambda owner: self.update(owner['id'], routine_id=str(uuid4())),
+            accepted_other_input=lambda owner: self.store.kanban.tasks[owner['id']].update(input_id='turn-original'),
+            later_input=lambda owner: self.update(owner['id'], _native_turn_id=str(uuid4())),
+            claim_of_another_card=lambda owner: self.update(owner['id'], _kanban_claim=dict(owner['_kanban_claim'], native_id='t_original')),
+            not_started=lambda owner: self.update(owner['id'], _kanban_started=PARKED_RUNS[0]),
+            failed_run=runs(lambda r: r[-1].update(status='blocked', outcome='blocked')),
+            completed_run=runs(lambda r: r[0].update(status='done', outcome='completed')),
+            open_run=runs(lambda r: r[-1].update(ended=False)),
+            later_run=runs(lambda r: r.append(dict(id=PARKED_RUNS[1] + 1, status='scheduled', outcome='scheduled', ended=True))),
+            reopened=source(lambda state: state['source_left'].pop(ISSUE)),
+            left_after_the_archive=source(lambda state: state['source_left'].update({ISSUE: time.time() + 3600})),
+            no_link=source(lambda state: state['native_links'][ISSUE]['task_ids'].remove(PARKED)))
+        for name, change in cases.items():
+            with self.subTest(name):
+                ClosedSource.setUp(self)
+                owner = self.parked()
+                change(self.store._get('tasks', owner['id']))
+                owner = self.store._get('tasks', owner['id'])
+                self.assertFalse(self.qualifies(owner))
+                self.assertRejected(owner, 'applies only to work that Coconut ended')
+                self.assertRejected(owner, reopen=None)
+
+    def test_holds_decisions_unknown_effects_and_active_work_hold(self):
+        def pending_decision(owner):
+            self.store._put('decisions', dict(id='pending', task_id=owner['id'], bot_id=owner['bot_id'], status='pending'))
+
+        def source_decision(owner):
+            # A later audit of issue 4293 waits for the person.
+            audit = dict(owner, id=str(uuid4()), status='needs_you', _source_assignment=dict(source_id='desk-github-assigned', id=ISSUE))
+            for key in ('_native_outcome_id', '_kanban_claim', '_work_context_id', '_execution_session_id'):
+                audit.pop(key, None)
+            self.store._put('tasks', audit)
+            self.store._put('decisions', dict(id='audit-card', task_id=audit['id'], bot_id=owner['bot_id'], status='pending'))
+
+        def unknown_tool(owner):
+            self.store._put('native_receipts', dict(id='unknown', task_id=owner['id'], turn_id=owner['_native_turn_id'],
+                state='executing', action_hash='hash', action={'name': 'terminal', 'arguments': {}}, created_at=now()))
+
+        def active_helper(owner):
+            helper = dict(owner, id=str(uuid4()), status='working', _assignment_task_id=owner['id'])
+            for key in ('_native_outcome_id', '_kanban_claim', '_work_context_id'):
+                helper.pop(key, None)
+            self.store._put('tasks', helper)
+
+        def held(owner):
+            # The person holds another turn of the same assignment.
+            self.store._put('tasks', dict(owner, id=str(uuid4()), status='paused', _assignment_task_id=owner['id']))
+
+        def work_cancelled(owner):
+            with self.store.transaction():
+                self.store.db.execute('INSERT INTO settings VALUES (?,?)', ('work.cancelled.work:' + self.item['id'], json.dumps(now())))
+
+        def stopped_exchange(owner):
+            exchange = self.store._get('exchanges', owner['exchange_id'])
+            self.store._put('exchanges', dict(exchange, cancelled=True))
+        decision, paused, active, waiting = ('decision about the same source is pending', 'paused, cancelled',
+                                             'has active work', 'Wait for this task')
+        # The archive check itself refuses work that a person, a worker, or an unknown effect still holds.
+        final = 'applies only to work that Coconut ended'
+        cases = dict(
+            pending_decision=(pending_decision, decision), source_decision=(source_decision, decision),
+            unknown_tool=(unknown_tool, final), active_helper=(active_helper, active), held=(held, paused),
+            work_cancelled=(work_cancelled, final), stopped_exchange=(stopped_exchange, paused),
+            live_worker=(lambda owner: self.store.running.__setitem__(owner['id'], Mock(is_alive=Mock(return_value=True))), final),
+            recorded_unknown=(lambda owner: self.update(owner['id'], _self_recovery=dict(unknown_tools=[dict(id='earlier-write')])), final),
+            open_dependency=(lambda owner: self.store.kanban.tasks[owner['id']].update(dependencies=[dict(id='t_other', status='todo')]), final),
+            waiting=(lambda owner: self.update(owner['id'], _waiting_on=['dependency']), waiting),
+            return_pending=(lambda owner: self.update(owner['id'], _return_pending=dict(text='Saved result')), final),
+            steering=(lambda owner: self.update(owner['id'], _steering=['Use the other checkout.']), final),
+            other_conversation=(lambda owner: self.update(owner['id'], _conversation_epoch='earlier'), paused))
+        for name, (change, pattern) in cases.items():
+            with self.subTest(name):
+                ClosedSource.setUp(self)
+                owner = self.parked()
+                change(owner)
+                self.assertRejected(self.store._get('tasks', owner['id']), pattern)
+
+
 class ArchiveNoteTests(unittest.TestCase):
     """Board.archive_note reads only the task_events and task_comments rows that Hermes writes. The native tests check
     the same reads on a real board. These tables have Hermes' columns, so the cases that a real board rarely shows run
