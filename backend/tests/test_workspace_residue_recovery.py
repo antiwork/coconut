@@ -419,6 +419,8 @@ class ResidueRecoveryTests(unittest.TestCase):
                 acquire(self.workspaces, self.outcome, str(self.repo))
         saved = self.registry()[self.identity]
         self.assertTrue(saved['retired']['restore_failed']['residue_retry_failed'])
+        # The first files went back to the path, so the record names only the partial checkout.
+        self.assertEqual(set(saved['retired']['residue']), {'checkout'})
         checkout = Path(saved['retired']['residue']['checkout'])
         self.assertIn(str(checkout), saved['retired']['restore_failed']['error'])
         # Nothing is deleted: the newer file is in the partial checkout, and the first files are back at the path.

@@ -2246,9 +2246,11 @@ def recover_residue(binding, root, persist):
         binding['retired'] = dict(retired, restore_failed=dict(
             at=stamp(datetime.now(timezone.utc)), error=message, residue_retry_failed=True,
             duplicate_retry_failed=True, intent_retry_failed=True))
-        if not returned or os.path.lexists(checkout):
-            binding['retired']['residue'] = dict(folder=str(place), **({'checkout': str(checkout)}
-                                                                       if os.path.lexists(checkout) else {}))
+        # Name only what is still outside the path, so a person finds every file.
+        kept = {**({} if returned else {'folder': str(place)}),
+                **({'checkout': str(checkout)} if os.path.lexists(checkout) else {})}
+        if kept:
+            binding['retired']['residue'] = kept
         logging.getLogger(__name__).warning('Coconut could not restore %s over its newer files: %s', path, message)
         raise
     binding.pop('retired')
