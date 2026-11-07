@@ -1044,18 +1044,19 @@ class NativeOutcomes:
             review = native.get('status') == 'review'
             # A queued owner keeps a scheduled card while Coconut holds its dispatch (see _kanban_rows).
             queued = native.get('status') in ('ready', 'scheduled') and owner['status'] == 'queued'
+            # The assignment pass ends idle work whose sources closed, and that stays the rule. Only the owner or its
+            # requesting bot can still ask for that same work, and only explicitly. Its archive comes first, so no
+            # other archive check continues that work without the explicit choice.
+            closed = (native.get('status') == 'archived'
+                      and self.settled_closed_source(owner, native, lambda: completion(identity)))
             # Coconut archives the task of a failed request itself. Its routine occurrence still continues, and so does
             # a failed ordinary request. So does the scheduled card of a continuation of a successful occurrence or a
             # completed ordinary request, and the original card of a completed relayed request that its worker
             # scheduled. The settle pass archives those too.
-            settled = native.get('status') == 'archived' and (
+            settled = native.get('status') == 'archived' and not closed and (
                 self.settled_failed_occurrence(owner, native, lambda: completion(identity))
                 or self.settled_failed_request(owner, native, lambda: completion(identity))
                 or self.settled_scheduled_continuation(owner, native, lambda: completion(identity)))
-            # The assignment pass ends idle work whose sources closed, and that stays the rule. Only the owner or its
-            # requesting bot can still ask for that same work, and only explicitly.
-            closed = (native.get('status') == 'archived' and not settled
-                      and self.settled_closed_source(owner, native, lambda: completion(identity)))
             if closed and not reopen:
                 raise ServiceError(409, CLOSED_SOURCE_REFUSED)
             if reopen and not closed:

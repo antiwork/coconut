@@ -314,10 +314,16 @@ class NativeRoutines:
         the next event after the latest archive, with only comments after it. Coconut created the request once, no Stop
         or routine touched it, and its last cancellation came after that archive. Every source that links the card or
         the request is still closed, left before the archive, and has no open card. Anything else stays final.
+
+        The worker can also park the card with kanban_schedule. Hermes then ends the claim's run as scheduled and the
+        request completes, so the reconciler has nothing to cancel after the archive. The work is unfinished, though
+        (see settled_scheduled_continuation). That completed request continues the same way: its claim's run ended as
+        scheduled, and no person or routine touched it, nothing cancelled it, and it completed before the archive.
         """
         claim = task.get('_kanban_claim') or {}
         turn = task.get('_native_turn_id')
-        if (task['status'] != 'cancelled' or any(field in task for field in ROUTINE_PROVENANCE)
+        parked = task['status'] == 'completed'
+        if (task['status'] not in ('cancelled', 'completed') or any(field in task for field in ROUTINE_PROVENANCE)
                 or not card.get('id') or task.get('_native_outcome_id') != card['id']
                 or claim.get('native_id') != card.get('id') or claim.get('external_id') != task['id']
                 or not turn or card.get('input_id') != turn
@@ -347,12 +353,14 @@ class NativeRoutines:
                 and native.get('input_id') == turn and not native.get('current_run_id') and not native.get('worker_pid')
                 and isinstance(runs, list) and runs
                 and all(isinstance(r, dict) and r.get('ended') and r.get('outcome') != 'completed' for r in runs)
-                and runs[-1].get('outcome') in FAILED_RUN_OUTCOMES and runs[-1].get('id') == claim['run_id']
+                and (runs[-1].get('outcome') == 'scheduled' if parked else runs[-1].get('outcome') in FAILED_RUN_OUTCOMES)
+                and runs[-1].get('id') == claim['run_id']
                 and isinstance(archive, dict) and archive.get('author') == 'coconut' and archive.get('note') == STALE_NOTE
                 and archive.get('run_id') is None and type(archive.get('at')) is int
                 and isinstance(archive.get('later'), list) and set(archive['later']) <= {'commented'}):
             return False
-        return self._cancelled_by_archive(task, archive['at']) and self._sources_closed(task, card, archive['at'])
+        ended = self._completed_before_archive if parked else self._cancelled_by_archive
+        return ended(task, archive['at']) and self._sources_closed(task, card, archive['at'])
 
     def _cancelled_by_archive(self, task, archived_at):
         """Whether Coconut created the request once, no person stopped it or routine triggered it, and its last
@@ -370,6 +378,26 @@ class NativeRoutines:
         except (AttributeError, ValueError):
             return False
         return after and created in ([task['bot_id']], [task.get('conversation_bot_id')])
+
+    def _completed_before_archive(self, task, archived_at):
+        """Whether Coconut created the request once, no person stopped it or routine triggered it, nothing ever
+        cancelled it, and its last update completed it no later than the archive at `archived_at`."""
+        created, completed = [], None
+        for bot, kind, raw, stamp in self.db.execute(REQUEST_EVENT_TIMES, (task['id'],)):
+            if kind in ('routine.triggered', 'task.cancelled'):
+                return False
+            if kind == 'task.created':
+                created.append(bot)
+            if kind == 'task.updated':
+                status = json.loads(raw).get('status')
+                if status == 'cancelled':
+                    return False
+                completed = stamp if status == 'completed' else None
+        try:
+            before = int(datetime.fromisoformat(completed.replace('Z', '+00:00')).timestamp()) <= archived_at
+        except (AttributeError, ValueError):
+            return False
+        return before and created in ([task['bot_id']], [task.get('conversation_bot_id')])
 
     def _sources_closed(self, task, card, archived_at):
         """Whether every source item that links the card or the request is still closed and left before the archive.
