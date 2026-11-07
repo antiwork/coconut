@@ -405,6 +405,33 @@ class ResidueRecoveryTests(unittest.TestCase):
         self.assertIn('Git refused the checkout', self.gateway_acquire()['error'])
         self.assert_fenced(binding=saved)
 
+    def test_a_writer_during_the_checkout_keeps_its_file_and_the_partial_checkout(self):
+        self.incident()
+        real = work_workspace.apply_unstaged
+        written = b'{"run": 3}\n'
+
+        def writer_returns(path, unstaged):
+            real(path, unstaged)
+            # The writer of the outcome writes its ledger again, into the new checkout, before the extraction.
+            self.write(Path(path) / EVIDENCE, {'ledger.json': written})
+        with patch.object(work_workspace, 'apply_unstaged', writer_returns):
+            with self.assertRaisesRegex(ValueError, 'already contains'):
+                acquire(self.workspaces, self.outcome, str(self.repo))
+        saved = self.registry()[self.identity]
+        self.assertTrue(saved['retired']['restore_failed']['residue_retry_failed'])
+        checkout = Path(saved['retired']['residue']['checkout'])
+        self.assertIn(str(checkout), saved['retired']['restore_failed']['error'])
+        # Nothing is deleted: the newer file is in the partial checkout, and the first files are back at the path.
+        self.assertEqual((checkout / EVIDENCE / 'ledger.json').read_bytes(), written)
+        self.assertEqual(tree(self.path), self.residue)
+        self.assertNotIn(str(checkout), git(self.repo, 'worktree', 'list', '--porcelain'))
+        self.assertNotIn('branch refs/heads/' + self.branch, git(self.repo, 'worktree', 'list', '--porcelain'))
+        self.assertEqual(self.archive.read_bytes(), self.archive_bytes)
+        # The next turn of the owner changes nothing.
+        self.assertIn('Ask the operator', self.gateway_acquire()['error'])
+        self.assertEqual(tree(self.path), self.residue)
+        self.assertEqual(self.registry()[self.identity], saved)
+
     def test_other_saved_failures_stay_fenced(self):
         self.incident()
         failure = self.before['retired']['restore_failed']

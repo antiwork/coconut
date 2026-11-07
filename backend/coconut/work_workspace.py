@@ -2170,7 +2170,8 @@ def recover_residue(binding, root, persist):
     writers first. It then records the move, moves the folder at the path whole to archive/residue/, and restores
     the archive into the empty path. The archive stays, and the binding names it and the moved folder in
     `residue_recovery`. A refusal before the move changes nothing. A failure after the move takes the folder back
-    when it can, and marks the failure, so Coconut never tries again without a person.
+    when it can, keeps a partial checkout whole next to it instead of deleting it, and marks the failure, so Coconut
+    never tries again without a person.
     """
     retired, failure = binding['retired'], binding['retired']['restore_failed']
     path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
@@ -2196,7 +2197,8 @@ def recover_residue(binding, root, persist):
     directory.parent.mkdir(mode=0o700, exist_ok=True)
     directory.mkdir(mode=0o700, exist_ok=True)
     place = directory / f'{path.name}-{time.time_ns()}'
-    if directory.is_symlink() or os.path.lexists(place):
+    checkout = place.with_name(place.name + '-checkout')
+    if directory.is_symlink() or os.path.lexists(place) or os.path.lexists(checkout):
         raise ValueError('The residue folder is not safe.')
     # The binding names the folder before the move, so a stop cannot lose it. A later acquire then refuses.
     binding['retired'] = dict(retired, residue=dict(folder=str(place), at=stamp(datetime.now(timezone.utc))))
@@ -2235,15 +2237,18 @@ def recover_residue(binding, root, persist):
     try:
         if changed:
             raise ValueError(changed_error)
-        unpack(dict(binding, retired=dict(retired, restore_failed=None)), {})
+        unpack(dict(binding, retired=dict(retired, restore_failed=None)), {}, aside=checkout)
     except BaseException as error:
         returned = give_back()
         message = str(error)[:1000] + ('' if returned else f' The files of the saved path are in {place}.')
+        if os.path.lexists(checkout):
+            message += f' The partial checkout, with any file written during the restore, is in {checkout}.'
         binding['retired'] = dict(retired, restore_failed=dict(
             at=stamp(datetime.now(timezone.utc)), error=message, residue_retry_failed=True,
             duplicate_retry_failed=True, intent_retry_failed=True))
-        if not returned:
-            binding['retired']['residue'] = dict(folder=str(place))
+        if not returned or os.path.lexists(checkout):
+            binding['retired']['residue'] = dict(folder=str(place), **({'checkout': str(checkout)}
+                                                                       if os.path.lexists(checkout) else {}))
         logging.getLogger(__name__).warning('Coconut could not restore %s over its newer files: %s', path, message)
         raise
     binding.pop('retired')
@@ -2347,7 +2352,7 @@ def reapply_discard(path, archive, head):
                             'and the checkout is clean.') from None
 
 
-def unpack(binding, checked, *, retry_failure=None):
+def unpack(binding, checked, *, retry_failure=None, aside=None):
     retired = binding['retired']
     path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
     if path.is_symlink():
@@ -2450,6 +2455,14 @@ def unpack(binding, checked, *, retry_failure=None):
             # the checkout stays. A later restore adopts it and moves the other held folders back.
             logging.getLogger(__name__).warning('Coconut kept the checkout %s, because it holds the held folders %s.',
                                                 path, error.stranded)
+        elif created and aside:
+            # A writer of the path can write into the new checkout. Keep the partial checkout whole at `aside`, and
+            # drop only Git's record of it (recover_residue).
+            with contextlib.suppress(OSError):
+                if os.path.lexists(path):
+                    os.rename(path, aside)
+            with contextlib.suppress(*GIT_ERRORS):
+                git(repository, 'worktree', 'prune', timeout=CHECKOUT_SECONDS)
         elif created:
             # Remove only the partial checkout. The archive stays.
             discard_checkout(repository, path)
