@@ -2210,6 +2210,9 @@ def recover_residue(binding, root, persist):
         binding['retired'] = retired
         raise
     try:
+        # The checks above take time. A parent folder that became a link since redirects the path.
+        if path.is_symlink() or path.resolve() != path:
+            raise OSError('the saved path is redirected')
         os.rename(path, place)
     except OSError as error:
         binding['retired'] = retired
@@ -2217,8 +2220,10 @@ def recover_residue(binding, root, persist):
         raise ValueError(f'Coconut could not move the files at the saved path: {error}') from None
 
     def give_back():
-        # Put the folder back only into a missing or empty path. Never replace other files.
+        # Put the folder back only into a missing or empty path. Never replace other files, and never follow a link.
         with contextlib.suppress(OSError):
+            if path.is_symlink() or path.resolve() != path:
+                return False
             if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
                 path.rmdir()
             if not os.path.lexists(path):
@@ -2425,7 +2430,7 @@ def unpack(binding, checked, *, retry_failure=None, aside=None):
                         raise ValueError('The archive does not prove the legacy intent-to-add mismatch.')
             # Archive validation can take time. Do not roll back someone else's files
             # if the previously empty path became occupied before Git starts.
-            if occupied(path) or path.is_symlink() or retry_failure and path.resolve() != path:
+            if occupied(path) or path.is_symlink() or (retry_failure or aside) and path.resolve() != path:
                 raise ValueError('The saved worktree path is no longer empty or has been redirected.')
             # Mark the checkout before Git starts. An interrupted add can leave a registered partial checkout.
             created = True

@@ -380,6 +380,40 @@ class ResidueRecoveryTests(unittest.TestCase):
         self.assertEqual(tree(parent / self.identity), self.residue)
         self.assertEqual(self.registry()[self.identity], self.before)
 
+    def redirect_on_scan(self, scan):
+        """Make the parent of the path a link on lsof scan number `scan`, as a process could during the recovery."""
+        parent, calls = self.root / 'redirected', []
+
+        def scanning(path, detail=False):
+            calls.append(path)
+            if len(calls) == scan:
+                shutil.move(str(self.repo / '.worktrees'), str(parent))
+                (self.repo / '.worktrees').symlink_to(parent)
+            return {} if detail else set()
+        self.holders.side_effect = scanning
+        return parent
+
+    def test_a_path_redirected_during_the_writer_check_is_not_moved(self):
+        self.incident()
+        parent = self.redirect_on_scan(1)
+        with self.assertRaisesRegex(ValueError, 'redirected'):
+            acquire(self.workspaces, self.outcome, str(self.repo))
+        self.assertEqual(tree(parent / self.identity), self.residue)
+        self.assertEqual(self.registry()[self.identity], self.before)
+        self.assertEqual(list((self.workspaces / 'archive' / work_workspace.RESIDUE).iterdir()), [])
+
+    def test_a_path_redirected_after_the_move_gets_no_checkout_and_no_files(self):
+        self.incident()
+        parent = self.redirect_on_scan(2)
+        with self.assertRaisesRegex(ValueError, 'redirected'):
+            acquire(self.workspaces, self.outcome, str(self.repo))
+        saved = self.registry()[self.identity]
+        self.assertTrue(saved['retired']['restore_failed']['residue_retry_failed'])
+        # The files stay in the moved folder that the binding names. Nothing goes through the link.
+        self.assertEqual(tree(Path(saved['retired']['residue']['folder'])), self.residue)
+        self.assertFalse(os.path.lexists(parent / self.identity))
+        self.assertNotIn('branch refs/heads/' + self.branch, git(self.repo, 'worktree', 'list', '--porcelain'))
+
     def test_a_live_writer_is_refused(self):
         self.incident()
         self.holders.side_effect = lambda path, detail=False: {4242: False} if detail else {4242}
