@@ -2137,9 +2137,11 @@ def residue_entries(folder, members, held=()):
     """Return the type, size and times of each entry in folder. Refuse what is not evidence of the archived worktree.
 
     A process of the outcome can write evidence again at the saved path after retirement removed the checkout. Only
-    real folders and regular files count, with no Git record and no link. Each entry must be in a folder that the
+    real folders and regular files count, with no Git record and no link. Each file must be in a folder that the
     archive also names at the top of the worktree, such as a folder of QA evidence, or in a folder that retirement
-    held (`held`, see held_folders).
+    held (`held`, see held_folders). A folder can be anywhere: it holds no data of its own. A Hermes subagent of the
+    outcome can recreate its nested worktree in .worktrees/ after retirement, and Hermes removes it when the subagent
+    ends. Only the empty .worktrees/ stays, and the recovery moves it with the rest.
     """
     tops = {name.split('/')[0] for _, name in members if '/' in name} | {name.split('/')[0] for name in held}
     result = []
@@ -2154,7 +2156,7 @@ def residue_entries(folder, members, held=()):
                 raise ValueError('The saved path holds a Git record.')
             if not (stat.S_ISDIR(status.st_mode) or stat.S_ISREG(status.st_mode)):
                 raise ValueError('The saved path holds a link or a special file: ' + relative)
-            if relative.split('/')[0] not in tops or '/' not in relative and not stat.S_ISDIR(status.st_mode):
+            if not stat.S_ISDIR(status.st_mode) and ('/' not in relative or relative.split('/')[0] not in tops):
                 raise ValueError('The saved path holds files that the archive does not name: ' + relative)
             result.append((relative, stat.S_IFMT(status.st_mode), status.st_ino, status.st_size,
                            status.st_mtime_ns, status.st_ctime_ns))

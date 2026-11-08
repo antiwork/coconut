@@ -55,6 +55,16 @@ def tree(folder):
     return result
 
 
+def layout(folder):
+    """Every folder, file and link under folder. tree() does not show an empty folder."""
+    result = tree(folder)
+    for directory, folders, _ in os.walk(folder):
+        for name in folders:
+            if not (Path(directory) / name).is_symlink():
+                result[(Path(directory) / name).relative_to(folder).as_posix()] = 'folder'
+    return result
+
+
 class ResidueRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -551,6 +561,221 @@ class ResidueRecoveryTests(unittest.TestCase):
         self.assertEqual(failure['error'], self.before['retired']['restore_failed']['error'])
         self.assert_fenced(binding=dict(self.before, retired=dict(self.before['retired'], restore_failed=failure)))
 
+    # A subagent's nested worktree, recreated after retirement and removed by Hermes, leaves only an empty folder.
+
+    def nested_incident(self):
+        """Retire a worktree with a nested subagent worktree. The subagent then recreates its worktree after the
+        retirement, and Hermes archives it to a ref and removes it when the subagent ends. Only the empty .worktrees/
+        stays at the saved path, and the first restore fails. The archive of the parent holds only its patches."""
+        outcome = str(uuid4())
+        self.task = dict(id=str(uuid4()), bot_id=self.bot['id'], _execution_session_id=outcome, title='Dev',
+                         status='completed', summary='', created_at=OLD, updated_at=OLD)
+        with self.service.transaction():
+            self.service._put('tasks', self.task)
+        self.outcome = outcome
+        self.identity = outcome + '-' + hashlib.sha256(str(self.repo).encode()).hexdigest()[:16]
+        self.path = self.repo / '.worktrees' / self.identity
+        self.branch = 'wt/' + self.identity
+        git(self.repo, 'worktree', 'add', '-q', '-b', self.branch, str(self.path))
+        binding = dict(path=str(self.path), branch=self.branch, repository=str(self.repo), outcome=outcome)
+        validate_binding(binding)
+        save_bindings(self.manifest, {self.identity: binding})
+        self.head = git(self.path, 'rev-parse', 'HEAD')
+        # Hermes adds .worktrees/ to the .gitignore of the parent, so the archive holds only an unstaged patch.
+        (self.path / '.gitignore').write_text(EVIDENCE + '/\n.worktrees/\n')
+        self.child = self.path / '.worktrees' / 'subagent-sa-0'
+        self.child_branch = 'hermes-subagent/subagent-sa-0'
+        git(self.repo, 'worktree', 'add', '-q', '-b', self.child_branch, str(self.child), self.head)
+        (self.child / 'tracked.txt').write_text('one\ncandidate\n')
+        git(self.child, 'add', 'tracked.txt')
+        self.commit(self.child, 'Candidate')
+        (self.child / 'tracked.txt').write_text('one\ncandidate\nuncommitted\n')
+        self.service._next_worktree_retirement = 0
+        self.assertEqual(self.service.retire_finished_worktrees(), [self.identity])
+        self.assertFalse(self.path.exists())
+        nested_archives = list((self.workspaces / 'archive' / 'nested').iterdir())
+        self.assertEqual(len(nested_archives), 1)
+        self.nested_archive, self.nested_bytes = nested_archives[0], nested_archives[0].read_bytes()
+        self.archive = Path(self.registry()[self.identity]['retired']['archive'])
+        self.archive_bytes = self.archive.read_bytes()
+        with tarfile.open(self.archive) as tar:
+            self.assertEqual(sorted(tar.getnames()), ['retirement.json', 'staged.patch', 'unstaged.patch'])
+        # The subagent still runs. It creates the parent folders and checks its branch out again.
+        self.child.parent.mkdir(parents=True)
+        git(self.repo, 'worktree', 'add', '-q', str(self.child), self.child_branch)
+        (self.child / 'tracked.txt').write_text('one\ncandidate\nuncommitted again\n')
+        # The subagent ends. Hermes keeps its edits in a ref and removes the worktree (finalize_subagent_worktree).
+        git(self.child, 'add', 'tracked.txt')
+        snapshot = git(self.child, 'commit-tree', git(self.child, 'write-tree'), '-p', 'HEAD', '-m',
+                       'hermes worktree archive: subagent-sa-0')
+        git(self.repo, 'update-ref', 'refs/hermes/archive/subagent-sa-0', snapshot)
+        git(self.repo, 'worktree', 'remove', '--force', str(self.child))
+        self.assertEqual(layout(self.path), {'.worktrees': 'folder'})
+        self.refs = git(self.repo, 'for-each-ref', '--format=%(refname) %(objectname)')
+        with self.assertRaisesRegex(ValueError, 'is not empty and does not match the archive'):
+            acquire(self.workspaces, outcome, str(self.repo))
+        self.residue = layout(self.path)
+        self.before = self.registry()[self.identity]
+
+    def assert_nested_fenced(self, result=None, *, residue=None, binding=None):
+        if result is not None:
+            self.assertIn('Ask the operator', result.get('error', ''))
+        self.assertEqual(layout(self.path), self.residue if residue is None else residue)
+        self.assertEqual(self.registry()[self.identity], self.before if binding is None else binding)
+        self.assertEqual(self.archive.read_bytes(), self.archive_bytes)
+        self.assertEqual(self.nested_archive.read_bytes(), self.nested_bytes)
+        self.assertNotIn('branch refs/heads/' + self.branch, git(self.repo, 'worktree', 'list', '--porcelain'))
+        moved = self.workspaces / 'archive' / work_workspace.RESIDUE
+        self.assertEqual(list(moved.iterdir()) if moved.exists() else [], [])
+
+    def test_an_empty_nested_worktree_folder_restores_through_the_gateway(self):
+        self.nested_incident()
+        result = self.gateway_acquire(existing_worktree=str(self.child))
+        self.assertNotIn('error', result)
+        # The saved binding of the outcome decides. The checkout is the parent, with its branch and its changes.
+        self.assertEqual(result['path'], str(self.path))
+        self.assertEqual(git(self.path, 'rev-parse', 'HEAD'), self.head)
+        self.assertEqual(git(self.path, 'branch', '--show-current'), self.branch)
+        self.assertEqual((self.path / '.gitignore').read_text(), EVIDENCE + '/\n.worktrees/\n')
+        # The archive stays, and the empty folder is in the moved folder that the binding names.
+        recovery = result['residue_recovery']
+        self.assertEqual(recovery['failure'], self.before['retired']['restore_failed'])
+        self.assertEqual(self.archive.read_bytes(), self.archive_bytes)
+        self.assertEqual(layout(Path(recovery['residue'])), self.residue)
+        self.assertEqual(self.nested_archive.read_bytes(), self.nested_bytes)
+        # Coconut does not restore the nested worktree. Its branch and the Hermes archive ref stay as they were,
+        # so the owner can check it out again inside the restored parent.
+        self.assertEqual(git(self.repo, 'for-each-ref', '--format=%(refname) %(objectname)'), self.refs)
+        self.assertFalse(self.child.exists())
+        git(self.repo, 'worktree', 'add', '-q', str(self.child), self.child_branch)
+        self.assertEqual((self.child / 'tracked.txt').read_text(), 'one\ncandidate\n')
+        self.assertEqual(git(self.path, 'status', '--porcelain'), 'M .gitignore')
+        self.assertEqual(self.gateway_acquire()['path'], str(self.path))
+
+    def test_files_in_the_empty_nested_folder_are_refused(self):
+        self.nested_incident()
+        for extra in ('.worktrees/subagent-sa-0/tracked.txt', '.worktrees/stray.txt', 'stray.txt'):
+            self.write(self.path, {extra: b'not evidence\n'})
+            residue = layout(self.path)
+            self.assertIn('does not name', self.gateway_acquire()['error'])
+            self.assert_nested_fenced(residue=residue)
+            (self.path / extra).unlink()
+            if (self.path / extra).parent == self.child:
+                self.child.rmdir()
+        self.assert_nested_fenced()
+
+    def test_a_nested_checkout_or_link_in_the_folder_is_refused(self):
+        self.nested_incident()
+        record = self.child / '.git'
+        record.parent.mkdir()
+        record.write_text('gitdir: /elsewhere\n')
+        self.assertIn('Git record', self.gateway_acquire()['error'])
+        self.assert_nested_fenced(residue=layout(self.path))
+        record.unlink()
+        record.parent.rmdir()
+        link = self.path / '.worktrees' / 'subagent-sa-0'
+        link.symlink_to(self.root)
+        self.assertIn('a link or a special file', self.gateway_acquire()['error'])
+        self.assert_nested_fenced(residue=layout(self.path))
+        link.unlink()
+        self.assert_nested_fenced()
+
+    def test_a_linked_nested_path_is_refused(self):
+        self.nested_incident()
+        real = self.root / 'real-residue'
+        self.path.rename(real)
+        self.path.symlink_to(real)
+        self.assertIn('not a plain folder', self.gateway_acquire()['error'])
+        self.assertEqual(layout(real), self.residue)
+        self.assertEqual(self.registry()[self.identity], self.before)
+
+    def test_a_writer_moved_branch_or_other_owner_keeps_the_empty_folder(self):
+        self.nested_incident()
+        self.holders.side_effect = lambda path, detail=False: {4242: False} if detail else {4242}
+        with self.assertRaisesRegex(ValueError, 'A process uses the saved path'):
+            acquire(self.workspaces, self.outcome, str(self.repo))
+        self.assert_nested_fenced()
+        self.holders.side_effect = lambda path, detail=False: {} if detail else set()
+        git(self.repo, 'update-ref', 'refs/heads/' + self.branch, git(self.repo, 'rev-parse', self.child_branch))
+        self.assertIn('branch moved', self.gateway_acquire()['error'])
+        self.assert_nested_fenced()
+        git(self.repo, 'update-ref', 'refs/heads/' + self.branch, self.head)
+        saved = self.registry()
+        saved[self.identity]['outcome'] = str(uuid4())
+        save_bindings(self.manifest, saved)
+        with self.assertRaisesRegex(ValueError, 'another owner'):
+            acquire(self.workspaces, self.outcome, str(self.repo))
+        self.assert_nested_fenced(binding=saved[self.identity])
+
+    def test_a_subagent_checkout_during_the_recovery_puts_the_folder_back(self):
+        self.nested_incident()
+        real = work_workspace.save_bindings
+        calls = []
+
+        def racing(manifest, saved):
+            real(manifest, saved)
+            if not calls:
+                calls.append(1)
+                # The subagent checks its branch out again after the recovery recorded the move.
+                git(self.repo, 'worktree', 'add', '-q', str(self.child), self.child_branch)
+        with patch.object(work_workspace, 'save_bindings', racing):
+            with self.assertRaisesRegex(ValueError, 'changed during the recovery'):
+                acquire(self.workspaces, self.outcome, str(self.repo))
+        # The subagent's checkout is back at its path, whole, and nothing else changed.
+        self.assertEqual(git(self.child, 'branch', '--show-current'), self.child_branch)
+        self.assertEqual(self.registry()[self.identity], self.before)
+        self.assertEqual(self.archive.read_bytes(), self.archive_bytes)
+        self.assertEqual(list((self.workspaces / 'archive' / work_workspace.RESIDUE).iterdir()), [])
+
+    def test_an_interrupted_nested_recovery_is_never_retried(self):
+        self.nested_incident()
+        with patch.object(work_workspace.os, 'rename', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                acquire(self.workspaces, self.outcome, str(self.repo))
+        saved = self.registry()[self.identity]
+        self.assertIn('residue', saved['retired'])
+        self.assertIn('Ask the operator', self.gateway_acquire()['error'])
+        self.assert_nested_fenced(binding=saved)
+
+    def test_a_failed_nested_checkout_puts_the_empty_folder_back_and_is_never_retried(self):
+        self.nested_incident()
+        real = work_workspace.git
+
+        def refuse(where, *arguments, **options):
+            if arguments[:2] == ('worktree', 'add'):
+                raise ValueError('Git refused the checkout.')
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=refuse):
+            with self.assertRaisesRegex(ValueError, 'Git refused the checkout'):
+                acquire(self.workspaces, self.outcome, str(self.repo))
+        saved = self.registry()[self.identity]
+        self.assertTrue(saved['retired']['restore_failed']['residue_retry_failed'])
+        self.assertNotIn('residue', saved['retired'])
+        self.assert_nested_fenced(binding=saved)
+        self.assertIn('Git refused the checkout', self.gateway_acquire()['error'])
+        self.assert_nested_fenced(binding=saved)
+
+    def test_a_partial_nested_checkout_with_a_late_writer_is_kept_whole(self):
+        self.nested_incident()
+        real = work_workspace.apply_unstaged
+
+        def writer_returns(path, unstaged):
+            real(path, unstaged)
+            # A writer adds a file to the new checkout, and the final digest check then fails.
+            (Path(path) / 'late.txt').write_text('late\n')
+        with patch.object(work_workspace, 'apply_unstaged', writer_returns):
+            with self.assertRaisesRegex(ValueError, 'do not match the archive'):
+                acquire(self.workspaces, self.outcome, str(self.repo))
+        saved = self.registry()[self.identity]
+        checkout = Path(saved['retired']['residue']['checkout'])
+        self.assertEqual((checkout / 'late.txt').read_text(), 'late\n')
+        self.assertTrue((checkout / '.git-detached').is_file())
+        self.assertEqual(layout(self.path), self.residue)
+        self.assertEqual(self.archive.read_bytes(), self.archive_bytes)
+        self.assertNotIn('branch refs/heads/' + self.branch, git(self.repo, 'worktree', 'list', '--porcelain'))
+        self.assertIn('Ask the operator', self.gateway_acquire()['error'])
+        self.assertEqual(self.registry()[self.identity], saved)
+
 
 class ResidueEntryTests(unittest.TestCase):
     def setUp(self):
@@ -566,6 +791,14 @@ class ResidueEntryTests(unittest.TestCase):
         self.assertEqual(names, [EVIDENCE, EVIDENCE + '/deep', EVIDENCE + '/deep/new.txt'])
         # A file at the top, even one that the archive names, is not in an evidence folder.
         (self.folder / 'notes.md').write_text('x')
+        with self.assertRaisesRegex(ValueError, 'does not name'):
+            work_workspace.residue_entries(self.folder, self.members)
+
+    def test_empty_folders_count_anywhere_but_their_files_do_not(self):
+        (self.folder / '.worktrees' / 'subagent').mkdir(parents=True)
+        names = [entry[0] for entry in work_workspace.residue_entries(self.folder, self.members)]
+        self.assertEqual(names, ['.worktrees', '.worktrees/subagent'])
+        (self.folder / '.worktrees' / 'subagent' / 'file.txt').write_text('x')
         with self.assertRaisesRegex(ValueError, 'does not name'):
             work_workspace.residue_entries(self.folder, self.members)
 
