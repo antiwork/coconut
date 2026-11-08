@@ -166,7 +166,7 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_delegated_report_continuation.py 2> .runtime/delegated-report-continuation.log || { cat .runtime/delegated-report-continuation.log; exit 1; }
           cat .runtime/delegated-report-continuation.log
           grep -qx 'OK' .runtime/delegated-report-continuation.log # The native dispatch checks must run, not skip.
-          grep -Eq '^Ran 55 tests in ' .runtime/delegated-report-continuation.log # Includes a requester turn that a delivered result started, and the open delegated PRs of one Work that continue one execution together.
+          grep -Eq '^Ran 62 tests in ' .runtime/delegated-report-continuation.log # Includes a requester turn that a delivered result started, the open delegated PRs of one Work that continue one execution together, and a requester turn past its source-tracked record of the PR.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_registered_delegation_continuation.py 2> .runtime/registered-delegation-continuation.log || { cat .runtime/registered-delegation-continuation.log; exit 1; }
           cat .runtime/registered-delegation-continuation.log
           grep -qx 'OK' .runtime/registered-delegation-continuation.log # The registered PR dispatch checks must run, not skip.

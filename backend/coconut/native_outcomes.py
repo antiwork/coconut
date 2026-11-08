@@ -648,13 +648,17 @@ class NativeOutcomes:
                         continue
                     requester_activity = (requester_report and self._work_execution_owner(reporter, tasks)['id']
                         in {owner.get('source_task_id'), *requester_roots})
-                    # The direct requester's own activity on this delegated PR of its Work. The requester stays
-                    # in the guard. Only its own calling turn can be the foreground below.
-                    linked_activity = bool(field == '_activity_task_id' and linked_parent and item['kind'] == 'pr'
+                    # The direct requester's own activity on this delegated PR of its Work, or the requester's record of
+                    # that PR that Coconut tracks for a source with no task (_track_source_pr), whose review owner is
+                    # the Work's own task. The requester stays in the guard. Only its own calling turn can be the
+                    # foreground below.
+                    linked_activity = bool(linked_parent and item['kind'] == 'pr'
+                        and ((field == '_activity_task_id' and peer['task_id'] == linked_parent['task_id'])
+                             or (field == '_review_task_id' and peer['task_id'] is None
+                                 and peer[field] == linked_parent['task_id']))
                         and linked_parent['task_id'] == owner.get('source_task_id')
                         and item.get('work_outcome_id') == peer.get('work_outcome_id') == linked_parent['id']
                         and peer['kind'] == 'pr' and peer['bot_id'] == linked_parent['bot_id']
-                        and peer['task_id'] == linked_parent['task_id']
                         and peer.get('url') and item.get('url') and peer['url'].lower() == item['url'].lower()
                         and self._work_execution_owner(reporter, tasks)['id'] == owner['source_task_id'])
                     if linked_activity:
@@ -665,7 +669,7 @@ class NativeOutcomes:
                         and reporter.get('_reply_to_task_id') in requesters
                         and reporter_source is not None
                         and self._work_execution_owner(reporter_source, tasks)['id'] in requesters)
-                    passive_report = (field == '_activity_task_id' and peer['kind'] == 'pr'
+                    passive_report = ((field == '_activity_task_id' or linked_activity) and peer['kind'] == 'pr'
                         and peer.get('url') and item.get('url')
                         and peer['url'].lower() == item['url'].lower()
                         and (requester_activity or owner_report or linked_activity))
