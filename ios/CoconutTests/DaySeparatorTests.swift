@@ -26,6 +26,8 @@ final class DaySeparatorTests: XCTestCase {
         XCTAssertEqual(label("2026-11-04T20:00:00Z"), "Wednesday")
         XCTAssertEqual(label("2026-10-01T20:00:00Z"), "Oct 1")
         XCTAssertEqual(label("2025-11-05T20:00:00Z"), "Nov 5, 2025")
+        // A late evening in the calendar's zone stays on that day, whatever zone the Mac runs in.
+        XCTAssertEqual(label("2026-11-07T02:00:00Z"), "Friday")
     }
 
     func testLabelChangesAfterMidnight() {

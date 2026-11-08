@@ -3,15 +3,18 @@ import SwiftUI
 enum DaySeparator {
     /// The day label shown above the first message of each calendar day.
     static func label(for date: Date, now: Date = .now, calendar: Calendar = .current, locale: Locale = .current) -> String {
+        // The label reads in the calendar's zone, the same one the day test below uses, so an evening message never
+        // prints the next day.
+        let style = Date.FormatStyle(locale: locale, calendar: calendar, timeZone: calendar.timeZone)
         let day = calendar.startOfDay(for: date)
         let today = calendar.startOfDay(for: now)
         let days = calendar.dateComponents([.day], from: day, to: today).day ?? 0
         if days == 0 { return String(localized: "Today") }
         if days == 1 { return String(localized: "Yesterday") }
-        if days > 1 && days < 7 { return date.formatted(Date.FormatStyle(locale: locale, calendar: calendar).weekday(.wide)) }
+        if days > 1 && days < 7 { return date.formatted(style.weekday(.wide)) }
         let sameYear = calendar.isDate(date, equalTo: now, toGranularity: .year)
-        let style = Date.FormatStyle(locale: locale, calendar: calendar).month(.abbreviated).day()
-        return sameYear ? date.formatted(style) : date.formatted(style.year())
+        let dated = style.month(.abbreviated).day()
+        return sameYear ? date.formatted(dated) : date.formatted(dated.year())
     }
 
     /// Whether `entry` is the first of its calendar day after `previous`.
