@@ -20,6 +20,13 @@ enum DaySeparator {
         guard let previous else { return true }
         return !calendar.isDate(date, inSameDayAs: previous)
     }
+
+    /// Whether two messages belong to one calendar day. Messages without a date stay together, because a group
+    /// that crosses midnight would leave the new day with no separator.
+    static func sameDay(_ first: String?, _ second: String?, calendar: Calendar = .current) -> Bool {
+        guard let first = first?.apiDate, let second = second?.apiDate else { return true }
+        return calendar.isDate(first, inSameDayAs: second)
+    }
 }
 
 struct DaySeparatorRow: View {

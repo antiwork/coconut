@@ -18,12 +18,16 @@ struct TranscriptEntry: Identifiable {
         entries.first { $0.photos.count > 1 && $0.messages.dropFirst().contains { $0.id == id } }?.id ?? id
     }
 
-    static func grouped(_ messages: [Message], botId: String? = nil) -> [TranscriptEntry] {
+    /// A carousel or an exchange never crosses midnight: a row belongs to one calendar day, so the day separator
+    /// above it is the only one that day needs.
+    static func grouped(_ messages: [Message], botId: String? = nil,
+                        calendar: Calendar = .current) -> [TranscriptEntry] {
         var entries: [TranscriptEntry] = []
         for message in messages {
             if !message.isBotExchange && (botId == nil || message.botId == botId) {
                 if let photo = message.photo {
-                    if let last = entries.last, !last.photos.isEmpty, last.message.photoSender == message.photoSender {
+                    if let last = entries.last, !last.photos.isEmpty, last.message.photoSender == message.photoSender,
+                       DaySeparator.sameDay(last.message.createdAt, message.createdAt, calendar: calendar) {
                         entries[entries.count - 1].messages.append(message)
                         entries[entries.count - 1].photos.append(photo)
                     } else {
@@ -35,7 +39,8 @@ struct TranscriptEntry: Identifiable {
             }
             guard message.isBotExchange else { continue }
             if let last = entries.last, last.isExchange,
-               last.message.exchangeBotIds == message.exchangeBotIds {
+               last.message.exchangeBotIds == message.exchangeBotIds,
+               DaySeparator.sameDay(last.message.createdAt, message.createdAt, calendar: calendar) {
                 entries[entries.count - 1].messages.append(message)
             } else {
                 entries.append(TranscriptEntry(messages: [message], isExchange: true))
