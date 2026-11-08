@@ -1131,6 +1131,20 @@ class GatewayChat:
             self._save_work_progress(task, payload)
         return {'status': 'recorded', 'saved': bool(payload)}
 
+    def gateway_document(self, data: dict) -> dict:
+        """POST /v1/gateway/document: a page that the tooling of this Mac keeps for a bot, without a turn.
+
+        The tooling names the Hermes home of the bot's profile and the page. The page follows the rules of a page
+        that a bot saves, and the Library shows it as such, but no turn asked for it, so it shows no card in the
+        chat and a save that changes nothing writes nothing.
+        """
+        from .service import ServiceError, require_text
+        home = os.path.realpath(require_text(data, 'home', 4096))
+        profile = self._gateway_profile(home)
+        if profile is None:
+            raise ServiceError(404, 'This Hermes home is not the profile of a bot.')
+        return self.publish_page(profile['bot_id'], data)
+
     def gateway_file(self, data: dict) -> dict:
         """POST /v1/gateway/files: a photo that a bot of the adapter's profile saved on the Mac.
 

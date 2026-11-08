@@ -395,5 +395,62 @@ class ReportShapeTests(unittest.TestCase):
         self.assertTrue(all(len(key) <= 64 for key in keys))
 
 
+class GatewayPageTests(unittest.TestCase):
+    """The tooling of the Mac keeps a page of a bot, without a turn and without a card in the chat."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.service = Service(self.temp.name, Provider(), start_workers=False)
+        self.service.gateway_enabled = lambda: True
+        self.bot = self.write('POST', '/v1/bots', {'name': 'Desk'})
+        self.home = str(self.service.profiles.home(self.bot))
+
+    def tearDown(self):
+        self.service.close()
+        self.temp.cleanup()
+
+    def write(self, method, path, data=None):
+        return self.service.mutate(method, path, data or {}, str(uuid4()), 'phone')
+
+    def publish(self, **arguments):
+        page = dict(home=self.home, key='dashboard-home', title='Home', format='markdown',
+                    content='Needs attention: 29 items past 8h.', summary='29 past 8h')
+        return self.service.gateway_document(dict(page, **arguments))
+
+    def test_the_tooling_keeps_a_page_of_a_bot_without_a_turn(self):
+        self.assertEqual(self.publish(), {'status': 'saved', 'key': 'dashboard-home', 'version': 1,
+                                          'expires_at': None})
+        documents = self.service.documents()['documents']
+        self.assertEqual([(d['key'], d['title'], d['bot_id'], d['version']) for d in documents],
+                         [('dashboard-home', 'Home', self.bot['id'], 1)])
+        self.assertEqual(self.service.document(documents[0]['id'])['content'],
+                         'Needs attention: 29 items past 8h.')
+        # No turn asked for the page, so the chat shows nothing.
+        self.assertEqual((self.service._all('tasks'), self.service._all('messages')), ([], []))
+
+    def test_a_save_that_changes_nothing_writes_nothing(self):
+        self.publish()
+        self.assertEqual(self.publish()['version'], 1)
+        self.assertEqual(self.service.db.execute('SELECT count(*) FROM document_versions').fetchone()[0], 1)
+        self.assertEqual(self.publish(content='Needs attention: 31 items past 8h.')['version'], 2)
+        # An end date that comes with the save is a change, also when the content is the same.
+        ends = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+        self.assertEqual(self.publish(content='Needs attention: 31 items past 8h.', expires_at=ends)['version'], 3)
+
+    def test_a_home_that_is_not_the_profile_of_a_bot_keeps_no_page(self):
+        with self.assertRaisesRegex(ServiceError, 'not the profile of a bot'):
+            self.publish(home=f'{self.temp.name}/somewhere-else')
+
+    def test_a_page_that_the_tooling_keeps_follows_the_page_rules(self):
+        for arguments, reason in (({'key': 'Dashboard Home'}, 'lowercase'), ({'format': 'pdf'}, 'markdown or html'),
+                                  ({'content': ' '}, 'empty'), ({'content': 'x' * (512 * 1024 + 1)}, '512 KB'),
+                                  ({'expires_at': 'soon'}, 'ISO 8601')):
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(ServiceError, reason):
+                self.publish(**arguments)
+        with self.assertRaisesRegex(ServiceError, 'did not save the page. The page sets a font'):
+            self.publish(format='html', content='<p style="font-family: serif">x</p>')
+        self.assertEqual(self.service.documents()['documents'], [])
+
+
 if __name__ == '__main__':
     unittest.main()

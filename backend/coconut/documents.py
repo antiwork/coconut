@@ -226,48 +226,92 @@ def expired(document: dict, current: str) -> bool:
     return bool(document.get('expires_at')) and document['expires_at'] <= current
 
 
+def page_to_save(arguments: dict) -> tuple[str, str, str, str, str | None]:
+    """The key, title, format, content and summary of a page, or the reason to refuse it. The tools of a bot turn
+    and the tooling of the Mac save a page through this, so both follow the page rules."""
+    from .service import ServiceError, require_text
+    key, document_format, content = (arguments.get(name) for name in ('key', 'format', 'content'))
+    if not isinstance(key, str) or not KEY.fullmatch(key):
+        raise ServiceError(400, 'key must be 1 to 64 lowercase letters, digits and hyphens, for example '
+                                'signups-daily.')
+    title = require_text(arguments, 'title', MAX_TITLE)
+    if document_format not in FORMATS:
+        raise ServiceError(400, 'format must be markdown or html.')
+    if not isinstance(content, str) or not content.strip():
+        raise ServiceError(400, 'content must not be empty.')
+    if len(content.encode()) > MAX_CONTENT:
+        raise ServiceError(413, 'content must be at most 512 KB. Keep less data in the document.')
+    summary = arguments.get('summary')
+    if summary is not None and (not isinstance(summary, str) or len(summary) > MAX_SUMMARY):
+        raise ServiceError(400, f'summary must contain at most {MAX_SUMMARY} characters.')
+    if document_format == 'html':
+        problems = page_problems(content)
+        if problems:
+            raise ServiceError(400, 'Coconut did not save the page. ' + ' '.join(problems))
+    return key, title, document_format, content, summary
+
+
+def page_end(arguments: dict, current: datetime):
+    """The end date of a page as UTC text: the new one, None to remove it, or ... to keep the one it has, which is
+    what an omitted expires_at means."""
+    from .service import ServiceError
+    if 'expires_at' not in arguments:
+        return ...
+    ends = arguments.get('expires_at')
+    if ends is not None and not isinstance(ends, str):
+        raise ServiceError(400, 'expires_at must be a date (YYYY-MM-DD) or an ISO 8601 time.')
+    try:
+        return end_time(ends, current) if isinstance(ends, str) and ends.strip() else None
+    except ValueError as error:
+        raise ServiceError(400, str(error)) from None
+
+
 class Documents:
-    """The documents of the bots: the tools of a bot turn and the routes of the phone."""
+    """The documents of the bots: the tools of a bot turn, the tooling of the Mac and the routes of the phone."""
 
     def save_document(self, task_id: str, arguments: dict) -> dict:
         """coconut_save_document of a bot turn: create the document of the key, or replace its content."""
-        from .service import ServiceError, require_text
-        key, document_format, content = (arguments.get(name) for name in ('key', 'format', 'content'))
-        if not isinstance(key, str) or not KEY.fullmatch(key):
-            raise ServiceError(400, 'key must be 1 to 64 lowercase letters, digits and hyphens, for example '
-                                    'signups-daily.')
-        title = require_text(arguments, 'title', MAX_TITLE)
-        if document_format not in FORMATS:
-            raise ServiceError(400, 'format must be markdown or html.')
-        if not isinstance(content, str) or not content.strip():
-            raise ServiceError(400, 'content must not be empty.')
-        size = len(content.encode())
-        if size > MAX_CONTENT:
-            raise ServiceError(413, 'content must be at most 512 KB. Keep less data in the document.')
-        summary = arguments.get('summary')
-        if summary is not None and (not isinstance(summary, str) or len(summary) > MAX_SUMMARY):
-            raise ServiceError(400, f'summary must contain at most {MAX_SUMMARY} characters.')
-        if document_format == 'html':
-            problems = page_problems(content)
-            if problems:
-                raise ServiceError(400, 'Coconut did not save the page. ' + ' '.join(problems))
-        ends = arguments.get('expires_at')
-        if ends is not None and not isinstance(ends, str):
-            raise ServiceError(400, 'expires_at must be a date (YYYY-MM-DD) or an ISO 8601 time.')
-        try:
-            # An omitted end date keeps the end date of the document. An empty text removes it.
-            ends = end_time(ends, datetime.now(timezone.utc)) if isinstance(ends, str) and ends.strip() else None
-        except ValueError as error:
-            raise ServiceError(400, str(error)) from None
+        from .service import ServiceError
+        key, title, document_format, content, summary = page_to_save(arguments)
+        ends = page_end(arguments, datetime.now(timezone.utc))
         with self.transaction():
             task = self._running_task(task_id)
             bot = self._get('bots', task['bot_id'])
             if bot['archived'] or bot.get('_deleted'):
                 raise ServiceError(409, 'The bot is archived or deleted.')
-            document = self._write_document(task, bot, key, title, document_format, content, summary,
-                                            expires=ends if 'expires_at' in arguments else ...)
+            document = self._write_document(task, bot, key, title, document_format, content, summary, expires=ends)
         return {'status': 'saved', 'key': key, 'version': document['version'],
                 'expires_at': document.get('expires_at')}
+
+    def publish_page(self, bot_id: str, arguments: dict) -> dict:
+        """A page that the tooling of the Mac keeps for a bot, without a turn.
+
+        No turn asked for the page, so there is no chat card: the person finds it in the Library. A save that
+        changes nothing writes nothing, because the tooling runs on a timer and the page should keep its version
+        until its content really changes.
+        """
+        from .service import ServiceError
+        key, title, document_format, content, summary = page_to_save(arguments)
+        ends = page_end(arguments, datetime.now(timezone.utc))
+        with self.transaction():
+            bot = self._get('bots', bot_id)
+            if bot['archived'] or bot.get('_deleted'):
+                raise ServiceError(409, 'The bot is archived or deleted.')
+            document = self._document_of_key(bot_id, key)
+            if document is not None and self._page_is_like(document, title, document_format, content, summary, ends):
+                return {'status': 'unchanged', 'key': key, 'version': document['version'],
+                        'expires_at': document.get('expires_at')}
+            document, _ = self._store_page(bot, key, title, document_format, content, summary, ends)
+        return {'status': 'saved', 'key': key, 'version': document['version'],
+                'expires_at': document.get('expires_at')}
+
+    def _page_is_like(self, document: dict, title: str, document_format: str, content: str, summary: str | None,
+                      ends) -> bool:
+        """Whether the page of a key is already what the tooling would write. An end date that comes with the save
+        counts as a change, and an omitted one keeps the end date of the document."""
+        return (ends is ... and document['title'] == title and document['format'] == document_format
+                and (document.get('summary') or '') == (summary or '').strip()
+                and self._document_content(document) == content)
 
     def read_document(self, task_id: str, arguments: dict) -> dict:
         """coconut_read_document of a bot turn: one document of the bot with its content, or the list of them."""
@@ -329,6 +373,16 @@ class Documents:
         """Create the document of the key, or add a version to it, and show it in the chat. `expires` is the new end
         date, None to remove it, or ... to keep it. The caller holds the transaction."""
         from .library_replies import show_card
+        document, created = self._store_page(bot, key, title, document_format, content, summary, expires,
+                                             task_id=task['id'])
+        show_card(self, task, document, created)
+        return document
+
+    def _store_page(self, bot: dict, key: str, title: str, document_format: str, content: str, summary: str | None,
+                    expires, task_id: str | None = None) -> tuple[dict, bool]:
+        """Create the page of the key, or add a version to it, with its version record and its event. task_id is the
+        turn that asked for the page, or None for a page that the tooling of the Mac keeps. The caller holds the
+        transaction and returns the document and whether the save created it."""
         from .service import now, uid
         current = now()
         document = self._document_of_key(bot['id'], key)
@@ -339,7 +393,7 @@ class Documents:
             # A save brings back an ended document. Its old end date would hide it again at once.
             document['expires_at'] = None
         document.update(title=title, format=document_format, summary=(summary or '').strip() or None,
-                        version=document['version'] + 1, updated_at=current, task_id=task['id'],
+                        version=document['version'] + 1, updated_at=current, task_id=task_id,
                         size=len(content.encode()))
         if expires is not ...:
             document['expires_at'] = expires
@@ -348,9 +402,8 @@ class Documents:
                         'VALUES (?, ?, ?, ?)', (document['id'], document['version'], content, current))
         self.db.execute('DELETE FROM document_versions WHERE document_id=? AND version<=?',
                         (document['id'], document['version'] - KEPT_VERSIONS))
-        self._event('document.created' if created else 'document.updated', document, bot['id'], task['id'])
-        show_card(self, task, document, created)
-        return document
+        self._event('document.created' if created else 'document.updated', document, bot['id'], task_id)
+        return document, created
 
     def _running_task(self, task_id: str) -> dict:
         """The task of a write. The person can cancel the turn while the tool call waits for the write lock, so the
