@@ -110,9 +110,13 @@ struct ConversationView: View {
                                     }.buttonStyle(.plain)
                                 }
                             }
-                            ForEach(entries) { entry in
+                            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                                 let message = entry.message
-                                Group {
+                                VStack(spacing: 0) {
+                                if let date = message.createdAt.apiDate,
+                                   DaySeparator.starts(date, after: index > 0 ? entries[index - 1].message.createdAt.apiDate : nil) {
+                                    DaySeparatorRow(date: date)
+                                }
                                 if entry.isExchange {
                                     BotExchangeRow(messages: entry.messages, botId: botId)
                                 } else {
@@ -373,11 +377,6 @@ struct ConversationView: View {
         VStack(spacing: 6) {
             if let error = store.error {
                 ErrorBanner(message: error) { store.error = nil }
-            }
-            if let date = messages.first?.createdAt.apiDate {
-                Text(date.formatted(date: .abbreviated, time: .omitted))
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .padding(.vertical, 12)
             }
             if messages.isEmpty {
                 VStack(spacing: 10) {
