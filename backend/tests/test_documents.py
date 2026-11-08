@@ -437,6 +437,16 @@ class GatewayPageTests(unittest.TestCase):
         ends = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
         self.assertEqual(self.publish(content='Needs attention: 31 items past 8h.', expires_at=ends)['version'], 3)
 
+    def test_a_page_of_the_tooling_comes_back_when_it_has_ended(self):
+        self.publish(expires_at=(datetime.now(timezone.utc) + timedelta(days=2)).isoformat())
+        self.service.db.execute("UPDATE documents SET data=json_set(data,'$.expires_at','2026-01-01T00:00:00Z')")
+        self.assertEqual(self.service.documents()['documents'], [])
+        # The same content brings it back: an ended page is never what the tooling would write, and its old end
+        # date would hide it again at once.
+        self.assertEqual(self.publish(), {'status': 'saved', 'key': 'dashboard-home', 'version': 2,
+                                          'expires_at': None})
+        self.assertEqual([d['key'] for d in self.service.documents()['documents']], ['dashboard-home'])
+
     def test_a_home_that_is_not_the_profile_of_a_bot_keeps_no_page(self):
         with self.assertRaisesRegex(ServiceError, 'not the profile of a bot'):
             self.publish(home=f'{self.temp.name}/somewhere-else')

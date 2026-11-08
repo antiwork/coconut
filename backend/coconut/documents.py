@@ -290,7 +290,7 @@ class Documents:
         changes nothing writes nothing, because the tooling runs on a timer and the page should keep its version
         until its content really changes.
         """
-        from .service import ServiceError
+        from .service import ServiceError, now
         key, title, document_format, content, summary = page_to_save(arguments)
         ends = page_end(arguments, datetime.now(timezone.utc))
         with self.transaction():
@@ -298,7 +298,8 @@ class Documents:
             if bot['archived'] or bot.get('_deleted'):
                 raise ServiceError(409, 'The bot is archived or deleted.')
             document = self._document_of_key(bot_id, key)
-            if document is not None and self._page_is_like(document, title, document_format, content, summary, ends):
+            if (document is not None and not expired(document, now())
+                    and self._page_is_like(document, title, document_format, content, summary, ends)):
                 return {'status': 'unchanged', 'key': key, 'version': document['version'],
                         'expires_at': document.get('expires_at')}
             document, _ = self._store_page(bot, key, title, document_format, content, summary, ends)
