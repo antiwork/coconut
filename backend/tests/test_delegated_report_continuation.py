@@ -586,6 +586,205 @@ class LinkedRequesterActivityTests(unittest.TestCase):
         self.each({name: name for name in names}, check)
 
 
+class SourceTrackedRequesterReportTests(unittest.TestCase):
+    """The requester's own record of the delegated PR has no task, as in PR 9042.
+
+    Coconut tracks a source's PR for the source's bot with no task (_track_source_pr), and the Work of that record
+    became the requester's native outcome (_retained_pr_candidates). The Work's own task is the record's review owner.
+    Only the requester's own current native turn is exempt as the caller. Every other guard stays.
+    """
+    setUp = fixtures.NativeWorkContinuationTests.setUp
+    tearDown = fixtures.NativeWorkContinuationTests.tearDown
+    write = fixtures.NativeWorkContinuationTests.write
+    prepare = fixtures.NativeWorkContinuationTests.prepare
+    snapshot_result = fixtures.NativeWorkContinuationTests.snapshot_result
+    scheduled_native = fixtures.NativeWorkContinuationTests.scheduled_native
+    resume = fixtures.NativeWorkContinuationTests.resume
+    linked_requester_pr = fixtures.NativeWorkContinuationTests.linked_requester_pr
+    assert_rejected = DelegatedReportContinuationTests.assert_rejected
+    requester_branch = DelegatedReportContinuationTests.requester_branch
+    requester_cases = DelegatedReportContinuationTests.requester_cases
+    requester_callback = DelegatedReportContinuationTests.requester_callback
+    request_continuation = callback_fixtures.RequesterCallbackContinuationTests.request_continuation
+    run_turn = LinkedRequesterActivityTests.run_turn
+    requester_activity = LinkedRequesterActivityTests.requester_activity
+    assert_admitted_once = LinkedRequesterActivityTests.assert_admitted_once
+    each = LinkedRequesterActivityTests.each
+
+    def source_tracked(self):
+        # Like Desk: the requester's Work is its retained native outcome, and its current turn runs on that claim.
+        owner, requester, work, pr, report, helper = self.requester_activity(retained=True)
+        # The fields that _register_pr_artifact saved for the source's PR, and the delegate's own record of the PR.
+        report = dict(id='requester-pr', task_id=None, bot_id=requester['bot_id'], kind='pr', title='The delegated PR',
+                      status='preparing', pr_state='open', url=pr['url'], work_outcome_id=work['id'],
+                      _review_task_id=requester['id'], _review_owners=[requester['id']])
+        pr = dict(pr, status='preparing', _review_owners=[owner['id']])
+        pr.pop('_activity_task_id')
+        self.service._put('artifacts', report)
+        self.service._put('artifacts', pr)
+        return owner, requester, work, pr, report, helper
+
+    def test_the_requester_continues_its_delegated_pr_from_its_own_native_turn(self):
+        owner, requester, work, pr, report, helper = self.source_tracked()
+        tasks = {t['id']: t for t in self.service._all('tasks') if t['id'] != owner['id']}
+        artifacts = {a['id']: a for a in self.service._all('artifacts') if a['id'] != pr['id']}
+        cards = copy.deepcopy(self.service.kanban.tasks)
+        receipt = self.resume(requester)
+        self.assert_admitted_once(owner, pr, receipt, lambda: self.resume(requester))
+        # The requester's Work, its record of the PR and its own turn keep their owners, links and native binding.
+        self.assertEqual({t['id']: t for t in self.service._all('tasks') if t['id'] != owner['id']}, tasks)
+        self.assertEqual({a['id']: a for a in self.service._all('artifacts') if a['id'] != pr['id']}, artifacts)
+        self.assertEqual(self.service.kanban.tasks, cards)
+
+    def test_the_provider_route_admits_the_requester_once(self):
+        owner, requester, work, pr, report, helper = self.source_tracked()
+        receipt = self.request_continuation(requester, twice=True)
+        self.assert_admitted_once(owner, pr, receipt, lambda: receipt)
+        self.assertEqual(self.service._get('artifacts', report['id']), report)
+
+    def test_only_the_requesters_own_native_turn_is_its_foreground(self):
+        def card(**changes):
+            return lambda owner, requester: self.service.kanban.tasks[requester['id']].update(changes) or requester
+
+        def claim(**changes):
+            return lambda owner, requester: self.service._put('tasks', dict(
+                requester, _kanban_claim=dict(requester['_kanban_claim'], **changes))) or requester
+
+        def task(**changes):
+            return lambda owner, requester: self.service._put('tasks', dict(requester, **changes)) or requester
+
+        def other_turn(owner, requester):
+            # Another requester task in its own execution makes the call. The requester's turn stays a writer.
+            other = dict(requester, id=str(uuid4()), _work_context_id=None)
+            other.pop('_native_outcome_id')
+            other['_execution_session_id'] = other['id']
+            return self.run_turn(other, 't_other_turn', 'other-turn')
+
+        def owner_turn(owner, requester):
+            # The delegate's own new turn makes the call while the requester's turn still runs.
+            caller = self.write(f'/v1/bots/{owner["bot_id"]}/messages', {'text': 'Continue the PR.'})
+            caller = dict(self.service._get('tasks', caller['id']), status='working')
+            self.service._put('tasks', caller)
+            return caller
+
+        cases = {
+            'a local turn': task(_native_turn_id=None, _kanban_claim=None),
+            'a scheduled card': card(status='scheduled', current_run_id=None, worker_pid=None),
+            'a reviewer run': card(claim_source_status='review'),
+            'another run': card(current_run_id=72),
+            'another card': card(id='t_other'),
+            'a card with an earlier input': card(input_id='earlier-turn'),
+            "another task's claim": claim(external_id='other-task'),
+            'a claim without a run': claim(run_id=None),
+            'an earlier conversation': task(_conversation_epoch='earlier'),
+            'another requester turn as the caller': other_turn,
+            "the delegate's own turn as the caller": owner_turn,
+        }
+
+        def check(change):
+            owner, requester, work, pr, report, helper = self.source_tracked()
+            caller = change(owner, requester)
+            self.assert_rejected(owner, self.service._get('tasks', caller['id']), 'another execution|cannot continue')
+        self.each(cases, check)
+
+    def test_the_record_must_be_the_works_own_source_record_of_the_pr(self):
+        def report(**changes):
+            def change(owner, requester, work, pr, report):
+                self.service._put('artifacts', dict(report, **changes))
+            return change
+
+        def other_task(owner, requester):
+            # Another task of the requester, outside the requester's execution, and live.
+            other = dict(requester, id=str(uuid4()), _work_context_id=None)
+            other.pop('_native_outcome_id')
+            other['_execution_session_id'] = other['id']
+            return self.run_turn(other, 't_other_turn', 'other-turn')
+
+        def reviewed_by(choose):
+            def change(owner, requester, work, pr, report):
+                self.service._put('artifacts', dict(report, _review_task_id=choose(owner, requester),
+                                                    _review_owners=[choose(owner, requester)]))
+            return change
+
+        def reported_by_another_task(owner, requester, work, pr, report):
+            # The record has a task of its own, so it is no source record of the Work.
+            self.service._put('artifacts', dict(report, task_id=other_task(owner, requester)['id']))
+
+        def turn_of_the_requester(owner, requester):
+            # A later turn of the requester's execution is not the Work's own task.
+            turn = dict(requester, id=str(uuid4()), status='completed', _kanban_claim=None)
+            turn.pop('_native_outcome_id')
+            self.service._put('tasks', turn)
+            return turn['id']
+
+        def aliased_work(owner, requester, work, pr, report):
+            alias = dict(work, id='work-alias', _same_outcome_as=work['id'])
+            self.service._put('artifacts', alias)
+            self.service._put('artifacts', dict(report, work_outcome_id=alias['id']))
+
+        def another_requester(owner, requester, work, pr, report):
+            # A forged root: the Work and its record belong to another task of the requester bot, not to the task
+            # that delegated this PR.
+            other = other_task(owner, requester)
+            self.service._put('artifacts', dict(work, task_id=other['id']))
+            self.service._put('artifacts', dict(report, _review_task_id=other['id'], _review_owners=[other['id']]))
+
+        def live_writer(owner, requester, work, pr, report):
+            # Another live turn of the requester bot reports activity on the same record.
+            writer = self.write(f'/v1/bots/{requester["bot_id"]}/messages', {'text': 'Update the PR.'})
+            writer = self.run_turn(self.service._get('tasks', writer['id']), 't_writer', 'writer-turn')
+            self.service._put('artifacts', dict(report, _activity_task_id=writer['id']))
+
+        cases = {
+            'another PR of the Work': report(url=URL[:-1] + '2'),
+            'another Work of the same outcome': aliased_work,
+            'another bot as the reporter': report(bot_id='other-bot'),
+            'a live writer of the record': live_writer,
+            'a record with a task of its own': reported_by_another_task,
+            'another live task as the review owner': reviewed_by(lambda owner, requester: other_task(owner, requester)['id']),
+            'another turn of the requester as the review owner': reviewed_by(turn_of_the_requester),
+            'a Work of another requester task': another_requester,
+        }
+
+        def check(change):
+            owner, requester, work, pr, report, helper = self.source_tracked()
+            change(owner, requester, work, pr, report)
+            self.assert_rejected(owner, self.service._get('tasks', requester['id']),
+                                 'another execution|another native outcome')
+        self.each(cases, check)
+
+    def test_the_requesters_other_work_and_waits_stay_guarded(self):
+        def cases(requester, helper):
+            def update(task, **changes):
+                return lambda: self.service._put('tasks', dict(task, **changes))
+
+            def helper_running():
+                self.service._put('tasks', dict(helper, status='working'))
+                self.service.kanban.tasks[helper['id']] = dict(id='t_helper', status='running', current_run_id=81)
+                update(requester, _waiting_on=[helper['id']])()
+            found = self.requester_cases(requester['id'])
+            found.update({
+                'a live helper that the requester waits for': helper_running,
+                'an open requester context': lambda: self.service._put('contexts', dict(
+                    id='requester-context', task_id=requester['id'], bot_id=requester['bot_id'], status='working')),
+                'requester steering': update(requester, _steering=[{'text': 'Wait.'}]),
+                'requester live messages': update(requester, _live_messages=[{'text': 'Wait.'}]),
+                'a blocked requester follow-up': update(requester, _blocked_followup={'source_ids': [], 'attachment_ids': []}),
+            })
+            return found
+
+        def check(name):
+            owner, requester, work, pr, report, helper = self.source_tracked()
+            cases(requester, helper)[name]()
+            self.assert_rejected(owner, self.service._get('tasks', requester['id']), 'another execution')
+        owner, requester, work, pr, report, helper = self.source_tracked()
+        names = list(cases(requester, helper))
+        self.tearDown()
+        self.setUp()
+        self.assertEqual(len(names), 13)
+        self.each({name: name for name in names}, check)
+
+
 class SelectedFinishedPrTests(unittest.TestCase):
     """Every delegated PR of the requester's Work finished, as PR 8606 and Coconut 218 of one Care recovery.
 
@@ -1262,7 +1461,7 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
         self.end_caller_turn = end_caller_turn
         return requester
 
-    def linked(self, second_pr=False, requester_turn=False, finished=False, delivered=False):
+    def linked(self, second_pr=False, requester_turn=False, finished=False, delivered=False, source_tracked=False):
         prepare = self.prepare
         saved = []
 
@@ -1280,14 +1479,19 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
             requester_pr = dict(id=str(uuid4()), task_id=requester['id'], bot_id=requester['bot_id'],
                 kind='pr', title='The delegated PR', status='preparing', pr_state='open', url=URL,
                 created_at=requester['created_at'], work_outcome_id=work['id'], _review_task_id=requester['id'])
-            if requester_turn:
+            if source_tracked:
+                # Coconut tracks the PR for the requester's source with no task, and the delegate reports no activity,
+                # as in PR 9042. The delegate's hidden Work report is not part of that shape.
+                requester_pr.update(task_id=None, _review_owners=[requester['id']])
+                pr.pop('_activity_task_id')
+            elif requester_turn:
                 # The requester reports activity on the delegated PR itself, as in PR 8606.
                 requester_pr['_activity_task_id'] = requester['id']
             if finished:
                 # Every delegated PR of the Work merged, and so did the requester's own report of the first.
                 pr.update(status='merged', pr_state='merged')
                 requester_pr.update(status='merged', pr_state='merged')
-            items = [work, pr, report, requester_pr]
+            items = [work, pr, requester_pr] if source_tracked else [work, pr, report, requester_pr]
             if second_pr:
                 items.append(dict(pr, id=str(uuid4()), url=URL[:-1] + '2'))
             for item in items:
@@ -1343,6 +1547,30 @@ class NativeDelegatedReportContinuationTests(unittest.TestCase):
                            (requester_pr, ('task_id', 'kind', 'url', 'work_outcome_id', '_review_task_id', '_activity_task_id'))):
             current = self.service._get('artifacts', item['id'])
             self.assertEqual({k: current.get(k) for k in keys}, {k: item.get(k) for k in keys})
+
+    def test_the_requester_dispatches_its_delegated_pr_past_its_source_tracked_record(self):
+        saved = self.linked(requester_turn=True, source_tracked=True)
+        self.check_dispatch('done')
+        work, pr, requester_pr = saved
+        owner = self.service._get('tasks', pr['task_id'])
+        self.assertEqual(owner['_work_context_id'], pr['id'])
+        # No Work row or other artifact appears. The requester's Work and its record of the PR keep their links.
+        self.assertEqual({a['id'] for a in self.service._all('artifacts')}, {item['id'] for item in saved})
+        for item, keys in ((work, ('task_id', 'kind')),
+                           (requester_pr, ('task_id', 'kind', 'url', 'work_outcome_id', '_review_task_id', '_review_owners'))):
+            current = self.service._get('artifacts', item['id'])
+            self.assertEqual({k: current.get(k) for k in keys}, {k: item.get(k) for k in keys})
+
+    def test_another_requester_turn_cannot_exempt_the_requesters_source_tracked_record(self):
+        self.linked(requester_turn=True, source_tracked=True)
+        owner, requester, identity, workspace = self.prepare('done')
+        before = self.service._all('artifacts')
+        with self.assertRaisesRegex(ServiceError, 'another execution'):
+            self.resume(self.other_caller, identity)
+        self.assertEqual(self.service._get('tasks', owner['id']), owner)
+        self.assertEqual(self.service._all('artifacts'), before)
+        self.assertEqual(self.service.kanban.tasks[requester['id']]['status'], 'running')
+        self.end_requester_turn()
 
     def test_another_requester_turn_cannot_exempt_the_requesters_activity(self):
         self.linked(requester_turn=True)
