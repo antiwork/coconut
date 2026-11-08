@@ -606,8 +606,8 @@ class ResidueRecoveryTests(unittest.TestCase):
         (self.child / 'tracked.txt').write_text('one\ncandidate\nuncommitted again\n')
         # The subagent ends. Hermes keeps its edits in a ref and removes the worktree (finalize_subagent_worktree).
         git(self.child, 'add', 'tracked.txt')
-        snapshot = git(self.child, 'commit-tree', git(self.child, 'write-tree'), '-p', 'HEAD', '-m',
-                       'hermes worktree archive: subagent-sa-0')
+        snapshot = git(self.child, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit-tree',
+                       git(self.child, 'write-tree'), '-p', 'HEAD', '-m', 'hermes worktree archive: subagent-sa-0')
         git(self.repo, 'update-ref', 'refs/hermes/archive/subagent-sa-0', snapshot)
         git(self.repo, 'worktree', 'remove', '--force', str(self.child))
         self.assertEqual(layout(self.path), {'.worktrees': 'folder'})
