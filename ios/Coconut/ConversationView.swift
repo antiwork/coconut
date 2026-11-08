@@ -423,6 +423,7 @@ private final class TranscriptCache {
         let decisions: [Decision]
         let artifacts: [Artifact]
         let tasks: [AgentTask]
+        let timeZone: String
     }
 
     private var inputs: Inputs?
@@ -431,11 +432,12 @@ private final class TranscriptCache {
     func current(in store: AppStore, botId: String, focusDecisionId: String?) -> (messages: [Message], entries: [TranscriptEntry]) {
         let latest = Inputs(botId: botId, focusDecisionId: focusDecisionId, messages: store.messages,
                             outgoingMessages: store.outgoingMessages, outgoingAnswers: store.outgoingAnswers,
-                            decisions: store.decisions, artifacts: store.transcriptArtifacts, tasks: store.tasks)
+                            decisions: store.decisions, artifacts: store.transcriptArtifacts, tasks: store.tasks,
+                            timeZone: TimeZone.autoupdatingCurrent.identifier)
         if latest != inputs {
             inputs = latest
             let messages = store.conversationTranscript(for: botId, focusDecisionId: focusDecisionId)
-            value = (messages, TranscriptEntry.grouped(messages, botId: botId))
+            value = (messages, TranscriptEntry.grouped(messages, botId: botId, calendar: .autoupdatingCurrent))
         }
         return value
     }
