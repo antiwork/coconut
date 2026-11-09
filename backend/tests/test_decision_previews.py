@@ -1,5 +1,7 @@
+import random
 import struct
 import unittest
+from unittest import mock
 from io import BytesIO
 from PIL import Image
 
@@ -134,6 +136,27 @@ class DecisionPreviewTests(unittest.TestCase):
             self.assertEqual((stored.format, stored.size), ('JPEG', (20, 30)))
         artifact = self.service._get('artifacts', preview['artifact_id'])
         self.assertEqual(artifact['title'], 'preview.jpg')
+
+    def test_a_transparent_webp_photo_keeps_its_transparency(self):
+        output = BytesIO()
+        Image.new('RGBA', (20, 30), (255, 0, 0, 0)).save(output, format='WEBP', lossless=True)
+        decision = self.question([self.image(name='logo.webp', content=output.getvalue())])
+        artifact_id = decision['previews'][0]['artifact_id']
+        with Image.open(BytesIO(self.service.artifact_content(artifact_id)[0])) as stored:
+            self.assertEqual((stored.format, stored.mode), ('PNG', 'RGBA'))
+            self.assertEqual(stored.getpixel((0, 0))[3], 0)
+        self.assertEqual(self.service._get('artifacts', artifact_id)['title'], 'preview.png')
+
+    def test_the_size_limit_holds_for_a_converted_photo(self):
+        noise = Image.frombytes('RGB', (200, 200), bytes(random.Random(1).getrandbits(8) for _ in range(120000)))
+        source = BytesIO(); noise.save(source, format='WEBP', quality=1)
+        converted = BytesIO(); noise.save(converted, format='JPEG', quality=90)
+        limit = (len(source.getvalue()) + len(converted.getvalue())) // 2
+        self.assertLess(len(source.getvalue()), limit)
+        with mock.patch('coconut.decision_previews.MAX_IMAGE_BYTES', limit), self.assertRaises(ServiceError):
+            self.event('native_question', dict(title='Review?', options=[dict(id='yes', label='Yes')],
+                previews=[self.image(name='noise.webp', content=source.getvalue())]))
+        self.assertFalse(self.service._all('artifacts'))
 
     def test_rejects_symlinks_large_dimensions_and_too_many_images(self):
         valid = self.image()

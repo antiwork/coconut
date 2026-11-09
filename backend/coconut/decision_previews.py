@@ -10,7 +10,7 @@ MAX_IMAGE_BYTES = 4 * 1024 * 1024
 
 def prepared_image(content):
     """The bytes to store, the size and the extension of a preview image. A WebP photo, which listing and shop sites
-    often serve, is stored as a JPEG, so every app shows it."""
+    often serve, is stored as a JPEG, so every app shows it, or as a PNG when it has transparency, which a JPEG drops."""
     # Pillow ships with Hermes. Decode before pausing for a decision.
     from PIL import Image, UnidentifiedImageError
     formats = ['PNG', 'JPEG', 'WEBP']
@@ -24,8 +24,13 @@ def prepared_image(content):
         with Image.open(BytesIO(content), formats=formats) as image:
             image.load()
             if kind == 'WEBP':
+                transparent = image.mode in ('RGBA', 'LA', 'PA') or 'transparency' in image.info
+                kind = 'PNG' if transparent else 'JPEG'
                 output = BytesIO()
-                image.convert('RGB').save(output, format='JPEG', quality=90)
+                if transparent:
+                    image.convert('RGBA').save(output, format='PNG')
+                else:
+                    image.convert('RGB').save(output, format='JPEG', quality=90)
                 content = output.getvalue()
         return content, width, height, 'png' if kind == 'PNG' else 'jpg'
     except (OSError, SyntaxError, UnidentifiedImageError, Image.DecompressionBombError) as error:
@@ -54,10 +59,13 @@ def attach_previews(service, decision, payload):
                 if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_IMAGE_BYTES:
                     raise ValueError('Each preview must be a regular image file under 4 MB.')
                 content = source.read(MAX_IMAGE_BYTES + 1)
+            if len(content) > MAX_IMAGE_BYTES:
+                raise ValueError('Keep each image under 4 MB and all previews under 12 MB.')
+            # The limits hold for the stored bytes: a converted WebP photo can be larger than its source.
+            content, width, height, extension = prepared_image(content)
             total += len(content)
             if len(content) > MAX_IMAGE_BYTES or total > 12 * 1024 * 1024:
                 raise ValueError('Keep each image under 4 MB and all previews under 12 MB.')
-            content, width, height, extension = prepared_image(content)
         except (OSError, ValueError) as error:
             raise ServiceError(400, str(error) if isinstance(error, ValueError) else 'The preview image could not be read.') from error
         artifact_id = str(uuid4())
