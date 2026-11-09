@@ -6,6 +6,8 @@ struct MacInboxView: View {
     @Environment(AppStore.self) private var store
     @Binding var selection: MacSelection?
     @State private var chosenId: String?
+    // The cards whose rows are on screen. A rebuilt list scrolls back to the top one (see the list below).
+    @State private var shownIds: Set<String> = []
     // What the card opened: its chat or an earlier answer. A new card from the Mac keeps it, so an open chat keeps its
     // unsent message. A card that the person picks goes back to the card.
     @State private var path = NavigationPath()
@@ -26,10 +28,25 @@ struct MacInboxView: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            List(pending, selection: $chosenId) { decision in
-                MacInboxRow(decision: decision).tag(decision.id)
+            ScrollViewReader { proxy in
+                List(pending, selection: $chosenId) { decision in
+                    MacInboxRow(decision: decision).tag(decision.id)
+                        .onAppear { shownIds.insert(decision.id) }
+                        .onDisappear { shownIds.remove(decision.id) }
+                }
+                .listStyle(.inset)
+                // The Mac list gave a card that arrived while it showed the height of a one-line row and never measured
+                // it again, so its title was cut off with the bot name under it. A new set of cards builds the list
+                // again, and the list measures every row. The chosen card stays, because chosenId lives outside the list.
+                .id(pending.map(\.id))
+                .onChange(of: pending.map(\.id)) { before, after in
+                    // A new list starts at its top. Scroll back to the top row on screen that stays. A person at the top
+                    // stays at the top, where a new card shows.
+                    guard let place = before.first(where: { shownIds.contains($0) && after.contains($0) }),
+                          place != before.first else { return }
+                    DispatchQueue.main.async { proxy.scrollTo(place, anchor: .top) }
+                }
             }
-            .listStyle(.inset)
             .frame(minWidth: 220, idealWidth: 280, maxWidth: 320)
             .overlay {
                 if pending.isEmpty {
@@ -127,9 +144,7 @@ private struct MacInboxRow: View {
         HStack(alignment: .top, spacing: 10) {
             if let bot { LiveBotAvatar(bot: bot, size: 22) }
             VStack(alignment: .leading, spacing: 2) {
-                // The title always takes two lines, so each row has the same height. The Mac list keeps the height that
-                // it measured first. A title that wrapped to more lines later was cut off with the bot name under it.
-                Text(decision.title).font(.body.weight(.medium)).lineLimit(2, reservesSpace: true)
+                Text(decision.title).font(.body.weight(.medium)).lineLimit(2)
                 HStack(spacing: 4) {
                     Text(bot?.name ?? "Bot")
                     if let date = decision.createdAt.apiDate {
