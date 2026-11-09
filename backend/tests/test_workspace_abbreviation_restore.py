@@ -89,10 +89,16 @@ class AbbreviationRestoreTests(unittest.TestCase):
                           for data in (b'object %d\n' % number for number in range(count)))
         subprocess.run(['git', '-C', str(self.repo), 'fast-import', '--quiet'], input=stream, check=True, timeout=120)
 
-    def retire(self, earlier=None):
+    def shrink(self):
+        """Repack as git gc does. The added objects are unreachable, so Git abbreviates object names as before."""
+        git(self.repo, 'repack', '-a', '-d', '-q')
+
+    def retire(self, earlier=None, shape='qa'):
         """Retire a worktree with edits to tracked files, untracked evidence, and ignored files.
 
-        `earlier(binding)` runs before the retirement, for example to add the record of an earlier recovery."""
+        `earlier(binding)` runs before the retirement, for example to add the record of an earlier recovery. With
+        shape 'gitignore', the only change is an unstaged line `.worktrees/` in .gitignore, as in the second owner's
+        archive."""
         outcome = str(uuid4())
         self.task = dict(id=str(uuid4()), bot_id=self.bot['id'], _execution_session_id=outcome, title='QA',
                          status='completed', summary='', created_at=OLD, updated_at=OLD)
@@ -110,6 +116,24 @@ class AbbreviationRestoreTests(unittest.TestCase):
         if earlier:
             earlier(binding)
         save_bindings(self.manifest, saved)
+        if shape == 'gitignore':
+            with (self.path / '.gitignore').open('a') as stream:
+                stream.write('.worktrees/\n')
+        else:
+            self.qa_changes()
+        self.head = git(self.path, 'rev-parse', 'HEAD')
+        self.before_retirement(self.path)
+        self.service._next_worktree_retirement = 0
+        self.assertEqual(self.service.retire_finished_worktrees(), [self.identity])
+        self.assertFalse(self.path.exists())
+        self.archive = Path(self.registry()[self.identity]['retired']['archive'])
+        self.archive_bytes = self.archive.read_bytes()
+        with tarfile.open(self.archive) as tar:
+            self.staged = tar.extractfile('staged.patch').read()
+            self.unstaged = tar.extractfile('unstaged.patch').read()
+        self.assertEqual(len(index_names(self.staged)), 0 if shape == 'gitignore' else 1)
+
+    def qa_changes(self):
         for name in ('index.tsx', 'product_edit.ts', 'file_embeds_spec.rb'):
             with (self.path / name).open('a') as stream:
                 stream.write(f'QA change of {name}\n')
@@ -120,16 +144,41 @@ class AbbreviationRestoreTests(unittest.TestCase):
         (self.path / EVIDENCE / 'report.md').write_text('# Run 1\n')
         (self.path / '.knapsack_pro').mkdir()
         (self.path / '.knapsack_pro' / 'report.json').write_text('{}\n')
-        self.head = git(self.path, 'rev-parse', 'HEAD')
-        self.service._next_worktree_retirement = 0
-        self.assertEqual(self.service.retire_finished_worktrees(), [self.identity])
-        self.assertFalse(self.path.exists())
-        self.archive = Path(self.registry()[self.identity]['retired']['archive'])
+
+    def before_retirement(self, path):
+        """A test can read the worktree here, just before retirement removes it."""
+
+    def rewrite_archive(self, staged=None, unstaged=None):
+        """Replace the archived patches, and save the digest that they give, as a consistent but other archive."""
+        with tarfile.open(fileobj=io.BytesIO(self.archive_bytes)) as source:
+            members = [(member, source.extractfile(member).read() if member.isfile() else None)
+                       for member in source.getmembers()]
+        names, patches = [], {'staged.patch': staged, 'unstaged.patch': unstaged}
+        with tarfile.open(self.archive, 'w:gz') as target:
+            for member, data in members:
+                if patches.get(member.name) is not None:
+                    data = patches[member.name]
+                    member.size = len(data)
+                if member.name.startswith('untracked/'):
+                    names.append(member.name[len('untracked/'):])
+                target.addfile(member, io.BytesIO(data) if data is not None else None)
         self.archive_bytes = self.archive.read_bytes()
-        with tarfile.open(self.archive) as tar:
-            self.staged = tar.extractfile('staged.patch').read()
-            self.unstaged = tar.extractfile('unstaged.patch').read()
-        self.assertEqual(len(index_names(self.staged)), 1)
+        saved = self.registry()
+        saved[self.identity]['retired']['changes'] = changes_digest(
+            self.staged if staged is None else staged, self.unstaged if unstaged is None else unstaged, names)
+        saved[self.identity]['retired']['restore_failed'] = dict(at=OLD, error=DIGEST_FAILURE)
+        save_bindings(self.manifest, saved)
+        self.before = saved[self.identity]
+
+    def git_state(self):
+        """The refs, index, config, and object files of the repository, to show that a check wrote nothing."""
+        common = Path(git(self.repo, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
+        files = {}
+        for item in sorted(common.rglob('*')):
+            relative = item.relative_to(common).as_posix()
+            if item.is_file() and not relative.startswith(('logs/', 'worktrees/')):
+                files[relative] = hashlib.sha256(item.read_bytes()).hexdigest()
+        return files
 
     def fail_first_restore(self):
         """Fail the first restore with the last comparison of the earlier version, as it failed for the owner.
@@ -190,21 +239,13 @@ class AbbreviationRestoreTests(unittest.TestCase):
                    for patch in (self.staged, self.unstaged) for old, _ in index_names(patch)}
         self.assertEqual((archived, current), ({7}, {8}))
 
-    def test_the_drift_proof_looks_up_few_names_under_the_lock(self):
+    def test_the_fixture_shows_the_names_shrink_after_a_repack(self):
         self.retire()
-        real, calls = work_workspace.git, []
-
-        def counting(where, *arguments, **options):
-            calls.extend(arguments[:2] == ('rev-parse', '--short') and [1] or [])
-            return real(where, *arguments, **options)
-        with patch.object(work_workspace, 'git', side_effect=counting), patch.object(work_workspace, 'DRIFT_SAMPLES', 2):
-            with self.assertRaisesRegex(ValueError, 'as before'):
-                work_workspace.abbreviation_drift(self.repo, b'', self.unstaged)
-            self.assertEqual(len(calls), 2)
-            self.grow()
-            calls.clear()
-            self.assertEqual(work_workspace.abbreviation_drift(self.repo, b'', self.unstaged), [(7, 8)])
-            self.assertEqual(len(calls), 1)
+        self.grow()
+        self.shrink()
+        current = {len(git(self.repo, 'rev-parse', '--short', git(self.repo, 'rev-parse', old.decode())))
+                   for patch in (self.staged, self.unstaged) for old, _ in index_names(patch)}
+        self.assertEqual(current, {7})
 
     # The repair.
 
@@ -379,6 +420,92 @@ class AbbreviationRestoreTests(unittest.TestCase):
         # The next turn gets the live worktree.
         self.assertEqual(self.gateway_acquire()['path'], str(self.path))
 
+    # A saved digest failure after the names grew and shrank again, as for both Gumroad owners.
+
+    def test_the_owner_restores_after_growth_and_a_repack_through_the_gateway(self):
+        self.retire()
+        self.grow()
+        self.fail_first_restore()
+        # A later git gc repacks: Git abbreviates the archived names as at retirement again.
+        self.shrink()
+        result = self.gateway_acquire(existing_worktree=str(self.path))
+        self.assertNotIn('error', result)
+        self.assert_restored()
+        recovery = self.registry()[self.identity]['digest_recovery']
+        self.assertEqual((recovery['archive'], recovery['failure']), (str(self.archive), self.before['retired']['restore_failed']))
+        self.assertEqual(recovery['abbreviation'], [[7, 7]])
+        self.assertEqual(self.archive.read_bytes(), self.archive_bytes)
+        self.assertEqual(list(self.workspaces.glob('.proof-*')), [])
+
+    def test_a_gitignore_only_archive_restores_after_growth_and_a_repack(self):
+        self.retire(shape='gitignore')
+        self.assertIn(b'+.worktrees/', self.unstaged)
+        self.grow()
+        self.fail_first_restore()
+        self.shrink()
+        result = self.gateway_acquire()
+        self.assertNotIn('error', result)
+        self.assertEqual(git(self.path, 'rev-parse', 'HEAD'), self.head)
+        self.assertTrue((self.path / '.gitignore').read_text().endswith('.worktrees/\n'))
+        self.assertEqual(git(self.path, 'diff', '--name-only'), '.gitignore')
+        self.assertEqual(self.registry()[self.identity]['digest_recovery']['abbreviation'], [[7, 7]])
+        self.assertEqual(self.archive.read_bytes(), self.archive_bytes)
+
+    def test_a_saved_digest_failure_without_a_current_difference_restores_once(self):
+        self.retire()
+        self.fail_first_restore_without_growth()
+        result = self.gateway_acquire()
+        self.assertNotIn('error', result)
+        self.assert_restored()
+        self.assertIn('digest_recovery', self.registry()[self.identity])
+
+    # Archives that hold the saved digest but not what Git writes for the saved commit: no live effect.
+
+    def assert_refused_before_any_effect(self, result, state):
+        self.assert_fenced(result)
+        self.assertFalse(self.path.exists())
+        self.assertNotIn('residue', self.registry()[self.identity]['retired'])
+        self.assertEqual(self.git_state(), state)
+        self.assertEqual(list(self.workspaces.glob('.proof-*')), [])
+
+    def test_a_consistent_archive_whose_patch_does_not_apply_stays_fenced(self):
+        self.retire()
+        self.rewrite_archive(unstaged=self.unstaged.replace(b' line 39 of index.tsx', b' line 39 of other.tsx'))
+        state = self.git_state()
+        result = self.gateway_acquire()
+        self.assertIn('Ask the operator', result['error'])
+        self.assert_refused_before_any_effect(result, state)
+
+    def test_an_archive_of_the_earlier_writer_stays_fenced(self):
+        # The earlier archive writer could write an entry twice. Its restores failed for other reasons.
+        self.retire()
+        with tarfile.open(fileobj=io.BytesIO(self.archive_bytes)) as source:
+            members = [(member, source.extractfile(member).read()) for member in source.getmembers()]
+        with tarfile.open(self.archive, 'w:gz') as target:
+            for member, data in members + [next(row for row in members if row[0].name.startswith('ignored/'))]:
+                target.addfile(member, io.BytesIO(data))
+        self.archive_bytes = self.archive.read_bytes()
+        saved = self.registry()
+        saved[self.identity]['retired']['restore_failed'] = dict(at=OLD, error=DIGEST_FAILURE)
+        save_bindings(self.manifest, saved)
+        self.before = saved[self.identity]
+        state = self.git_state()
+        result = self.gateway_acquire()
+        self.assertIn('earlier archive writer', result['error'])
+        self.assert_refused_before_any_effect(result, state)
+
+    def test_a_consistent_archive_that_git_does_not_write_stays_fenced(self):
+        written = {}
+        self.before_retirement = lambda path: written.setdefault(
+            'patch', work_workspace.git_output(path, 'diff', *work_workspace.DIFF, '-U1'))
+        self.retire()
+        # The patch applies, but Git writes three lines of context, not one.
+        self.rewrite_archive(unstaged=written['patch'])
+        state = self.git_state()
+        result = self.gateway_acquire()
+        self.assertIn('Ask the operator', result['error'])
+        self.assert_refused_before_any_effect(result, state)
+
     def test_the_owner_restores_into_the_empty_folder_that_a_native_claim_made(self):
         # The owner's saved path is an empty folder: a native claim made it after the failed restore.
         self.retire()
@@ -411,12 +538,6 @@ class AbbreviationRestoreTests(unittest.TestCase):
         self.assert_fenced(self.gateway_acquire(), saved)
 
     # Refusals: each keeps the saved failure, the archive, and the empty path.
-
-    def test_a_saved_digest_failure_without_longer_names_stays_fenced(self):
-        self.retire()
-        self.fail_first_restore_without_growth()
-        self.assert_fenced(self.gateway_acquire())
-        self.assertIn('abbreviates the archived object names as before', self.gateway_acquire()['error'])
 
     def fail_first_restore_without_growth(self):
         with patch.object(work_workspace, 'matches_archive', lambda *_: False):
