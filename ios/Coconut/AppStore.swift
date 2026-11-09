@@ -194,7 +194,11 @@ final class AppStore {
             connection = .preview
             return
         }
-        if let configuration: PairingConfiguration = ProtectedCache.read("pairing.json"), PairingToken.read() != nil {
+        // A token that the Keychain cannot read now still belongs to this pairing, and polling reads it again. Without
+        // this, the first start after an update showed the pairing page until the person restarted the app.
+        let hasToken: Bool
+        do { hasToken = try PairingToken.lookup() != nil } catch { hasToken = true }
+        if let configuration: PairingConfiguration = ProtectedCache.read("pairing.json"), hasToken {
             pairing = configuration
             connection = .disconnected
             if let cache: OutgoingCache = ProtectedCache.read("outgoing.json"), cache.deviceId == configuration.deviceId {
@@ -313,7 +317,8 @@ final class AppStore {
             throw TunnelError.needsRepair
         }
         if let tunnel, tunnel.endpoint == pairing.tunnelEndpoint { return APIClient(tunnel: tunnel, token: token) }
-        guard let endpoint = pairing.tunnelEndpoint, let credentials = TunnelCredentials.read(),
+        // Only missing credentials need a new pairing. A Keychain that cannot read them now throws, and polling tries again.
+        guard let endpoint = pairing.tunnelEndpoint, let credentials = try TunnelCredentials.lookup(),
               let phoneKey = credentials.phoneKey else { throw TunnelError.needsRepair }
         let connection = TunnelConnection(endpoint: endpoint, phoneKey: phoneKey, credential: .token(credentials.clientToken),
                                           makeSocket: tunnelSocketFactory)
@@ -409,8 +414,21 @@ final class AppStore {
         guard !isDemo else { return }
         repairRequired = false
         stopPolling()
-        guard let pairing, let token = PairingToken.read() else {
+        guard let pairing else {
             connection = .unconfigured
+            return
+        }
+        let token: String
+        do {
+            guard let found = try PairingToken.lookup() else {
+                connection = .unconfigured
+                return
+            }
+            token = found
+        } catch {
+            // The Keychain cannot read the token now. Polling tries again.
+            recordSyncFailure(error)
+            if foreground { beginPolling() }
             return
         }
         let generation = connectionGeneration
@@ -1368,7 +1386,12 @@ final class AppStore {
     }
 
     private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
-        guard let pairing, let token = PairingToken.read() else {
+        let storedToken: String?
+        do { storedToken = try PairingToken.lookup() } catch {
+            if !quiet { self.error = error.localizedDescription }
+            return nil
+        }
+        guard let pairing, let token = storedToken else {
             if !quiet { error = "Pair with your Mac in Settings to continue." }
             return nil
         }
@@ -1509,7 +1532,8 @@ final class AppStore {
             while !Task.isCancelled, self.foreground, self.connectionGeneration == generation {
                 do {
                     if self.client == nil {
-                        guard let pairing = self.pairing, let token = PairingToken.read() else { self.connection = .unconfigured; break }
+                        // A Keychain that cannot read the token now throws, and the loop tries again after its pause.
+                        guard let pairing = self.pairing, let token = try PairingToken.lookup() else { self.connection = .unconfigured; break }
                         self.client = try makeClient(pairing, token: token)
                     }
                     guard let client = self.client else { break }

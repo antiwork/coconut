@@ -1,5 +1,6 @@
 import XCTest
 import Network
+import Security
 @testable import Coconut
 
 final class ConnectionRecoveryTests: XCTestCase {
@@ -72,6 +73,48 @@ final class ConnectionRecoveryTests: XCTestCase {
         server.releaseState()
         try await waitUntil { store.connection == .connected }
         XCTAssertEqual(store.connection, .connected, store.syncIssue ?? "No sync error")
+        #endif
+    }
+
+    // After an update starts the Mac app again, the Keychain can refuse the token for a moment. The same store
+    // connects by itself when the Keychain reads again: no Reconnect, no restart.
+    @MainActor
+    func testPollingConnectsWhenARefusingKeychainReadsAgain() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let server = try ConnectionServer(snapshot: APIJSON.encoder().encode(PreviewStateFixture.load()))
+        let address = try await server.start()
+        server.releaseState()
+        defer { server.stop() }
+        let savedToken = PairingToken.read()
+        let folder = URL.applicationSupportDirectory.appendingPathComponent(TestIsolation.name("Coconut"))
+        let paths = ["pairing.json", "snapshot.json", "outgoing.json"].map { folder.appendingPathComponent($0) }
+        let savedFiles = paths.map { try? Data(contentsOf: $0) }
+        for path in paths { try? FileManager.default.removeItem(at: path) }
+        try PairingToken.save("fixture-only")
+        try ProtectedCache.write(PairingConfiguration(loopback: address, deviceId: "device"), name: "pairing.json")
+        KeychainItem.testRefusal = errSecInteractionNotAllowed
+        let store = AppStore(demo: false)
+        defer {
+            KeychainItem.testRefusal = nil
+            store.setForeground(false)
+            store.disconnect()
+            if let savedToken { try? PairingToken.save(savedToken) } else { PairingToken.delete() }
+            for (path, data) in zip(paths, savedFiles) {
+                if let data { try? data.write(to: path, options: .atomic) }
+                else { try? FileManager.default.removeItem(at: path) }
+            }
+        }
+        XCTAssertTrue(store.hasPairing)
+        store.setForeground(true)
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(server.requests, 0, "Without the token, the store must not ask the Mac.")
+        XCTAssertTrue(store.hasPairing)
+        XCTAssertNotEqual(store.connection, .connected)
+        KeychainItem.testRefusal = nil
+        try await waitUntil { store.connection == .connected }
+        XCTAssertEqual(server.requests, 1)
         #endif
     }
 }

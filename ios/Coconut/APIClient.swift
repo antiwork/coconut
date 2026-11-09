@@ -7,6 +7,8 @@ enum ServiceError: LocalizedError {
     case response(Int, String)
     case invalidResponse
     case keychain(OSStatus)
+    // The Keychain has the pairing but refused to read it, for example just after an update started the app again.
+    case keychainUnavailable(OSStatus)
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +16,7 @@ enum ServiceError: LocalizedError {
         case .response(_, let message): return message
         case .invalidResponse: return "The Mac returned an unreadable response."
         case .keychain: return "The iPhone could not save its pairing token securely."
+        case .keychainUnavailable: return "Coconut cannot read its pairing from the Keychain right now. Try again in a moment."
         }
     }
 }
@@ -196,12 +199,27 @@ struct KeychainItem {
     let service: String
     var account = "paired-mac"
 
-    func read() -> Data? {
+    func read() -> Data? { try? lookup() }
+
+    #if DEBUG
+    // A test sets this status to make every read fail as a refusing Keychain does.
+    nonisolated(unsafe) static var testRefusal: OSStatus?
+    #endif
+
+    /// The data of the item, or nil when there is no item. Throws when the Keychain has an item that it cannot read now.
+    /// A Mac app that an update just started can get such a refusal for a moment, and a locked iPhone too. That is not
+    /// a missing pairing.
+    func lookup() throws -> Data? {
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
+        var status = SecItemCopyMatching(query as CFDictionary, &result)
+        #if DEBUG
+        if let refusal = Self.testRefusal { status = refusal }
+        #endif
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else { throw ServiceError.keychainUnavailable(status) }
         return result as? Data
     }
 
@@ -238,6 +256,8 @@ enum PairingToken {
     private static let item = KeychainItem(service: "local.coconut.device-token")
 
     static func read() -> String? { item.read().flatMap { String(data: $0, encoding: .utf8) } }
+    /// The token, nil when this device has none, or a throw when the Keychain cannot read it now.
+    static func lookup() throws -> String? { try item.lookup().flatMap { String(data: $0, encoding: .utf8) } }
     static func save(_ token: String) throws { try item.save(Data(token.utf8)) }
     static func delete() { item.delete() }
 }
@@ -257,6 +277,7 @@ struct TunnelCredentials: Codable, Equatable {
     var phoneKey: Curve25519.KeyAgreement.PrivateKey? { try? .init(rawRepresentation: privateKey) }
 
     static func read() -> Self? { item.read().flatMap { try? JSONDecoder().decode(Self.self, from: $0) } }
+    static func lookup() throws -> Self? { try item.lookup().flatMap { try? JSONDecoder().decode(Self.self, from: $0) } }
     func save() throws { try Self.item.save(try JSONEncoder().encode(self)) }
     static func delete() { item.delete() }
 }
