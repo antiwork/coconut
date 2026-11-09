@@ -225,6 +225,62 @@ class DocumentServiceTests(unittest.TestCase):
         events = [row[0] for row in self.service.db.execute("SELECT type FROM events WHERE type LIKE 'document.%'")]
         self.assertEqual(events, ['document.created', 'document.created', 'document.deleted', 'document.deleted'])
 
+    def pin(self, document, pinned=True):
+        return self.write('PATCH', f'/v1/documents/{document["id"]}', {'pinned': pinned})
+
+    def listed(self, key):
+        return next(d for d in self.service.documents()['documents'] if d['key'] == key)
+
+    def test_the_person_pins_a_document_and_the_library_shows_it_first(self):
+        for key in ('signups-daily', 'launch-checklist', 'weekly-summary'):
+            self.save(key=key)
+
+        def keys():
+            return [d['key'] for d in self.service.documents()['documents']]
+        self.assertEqual(keys(), ['weekly-summary', 'launch-checklist', 'signups-daily'])
+        cursor = self.service._cursor()
+        oldest = self.listed('signups-daily')
+        # A pin is not a change of the page: the version and the update time stay.
+        self.assertEqual(self.pin(oldest), dict(oldest, pinned=True))
+        self.assertEqual(keys(), ['signups-daily', 'weekly-summary', 'launch-checklist'])
+        # The pinned documents have their newest first, as the other documents do.
+        self.pin(self.listed('launch-checklist'))
+        self.assertEqual(keys(), ['launch-checklist', 'signups-daily', 'weekly-summary'])
+        self.assertFalse(self.pin(oldest, False)['pinned'])
+        self.assertEqual(keys(), ['launch-checklist', 'weekly-summary', 'signups-daily'])
+        # A pin adds no event, so no phone loads its state again.
+        self.assertEqual(self.service._cursor(), cursor)
+
+    def test_a_save_and_a_restart_keep_the_pin(self):
+        self.save()
+        self.pin(self.listed('signups-daily'))
+        self.assertEqual(self.save(content='# Signups\n\n430 today.', summary='430 today')['version'], 2)
+        document = self.listed('signups-daily')
+        self.assertEqual((document['version'], document['summary'], document['pinned']), (2, '430 today', True))
+        # The pin belongs to the person. The bot does not read it.
+        self.assertNotIn('pinned', self.tool('read_document', {'key': 'signups-daily'}))
+        # A save brings back an ended document with its pin.
+        self.service.db.execute("UPDATE documents SET data=json_set(data,'$.expires_at','2026-01-01T00:00:00Z')")
+        self.save()
+        self.assertTrue(self.listed('signups-daily')['pinned'])
+        self.finish()
+        self.service.close()
+        self.service = Service(self.temp.name, Provider(), start_workers=False)
+        self.assertTrue(self.listed('signups-daily')['pinned'])
+
+    def test_a_pin_needs_a_document_of_the_library_and_true_or_false(self):
+        self.save()
+        document = self.listed('signups-daily')
+        for data in ({}, {'pinned': 'yes'}, {'pinned': 1}):
+            with self.subTest(data=data), self.assertRaisesRegex(ServiceError, 'true or false'):
+                self.write('PATCH', f'/v1/documents/{document["id"]}', data)
+        with self.assertRaisesRegex(ServiceError, 'not found'):
+            self.pin({'id': 'missing'})
+        self.service.db.execute("UPDATE documents SET data=json_set(data,'$.expires_at','2026-01-01T00:00:00Z')")
+        with self.assertRaisesRegex(ServiceError, 'ended'):
+            self.pin(document)
+        self.assertNotIn('pinned', self.service._get('documents', document['id']))
+
     def test_the_library_leaves_out_the_documents_of_a_deleted_bot(self):
         self.save()
         self.finish()

@@ -1356,7 +1356,11 @@ final class AppStore {
     /// Loads the Library list. True when the list is fresh from the Mac.
     @discardableResult
     func loadDocuments() async -> Bool {
-        if isDemo { documents = BotDocument.previews(bots: bots); return true }
+        if isDemo {
+            // The demo keeps its pins and deletes. A new load must not bring the first documents back.
+            if documents == nil { documents = BotDocument.previews(bots: bots) }
+            return true
+        }
         guard let client else { return false }
         do {
             let response: DocumentList = try await client.request("documents")
@@ -1383,6 +1387,19 @@ final class AppStore {
         }
         documents?.removeAll { $0.id == document.id }
         return true
+    }
+
+    /// Pin a document in the Library, or remove its pin. The document moves only after the Mac confirms.
+    func pinDocument(_ document: BotDocument, pinned: Bool) async {
+        if !isDemo {
+            let result: BotDocument? = await write("documents/\(document.id)", method: "PATCH",
+                                                   payload: PinRequest(pinned: pinned), as: BotDocument.self,
+                                                   refreshInBackground: true)
+            guard result != nil else { return }
+        }
+        // An open document reads its pin from the list. A list without the document is not loaded yet.
+        if documents?.contains(where: { $0.id == document.id }) != true { await loadDocuments() }
+        if let index = documents?.firstIndex(where: { $0.id == document.id }) { documents?[index].pinned = pinned }
     }
 
     private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
