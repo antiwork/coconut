@@ -37,6 +37,9 @@ final class AppStore {
     var learning: [LearningGroup] = []
     /// The documents of the Library, newest first, without their content. Nil until the first load.
     var documents: [BotDocument]?
+    /// Counts the pins and the deletes that the Mac confirmed to this app. A list that the app asked for before such a
+    /// change can be older than the change.
+    @ObservationIgnored private var documentChanges = 0
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
     var pageQuotes: [String: MessageReference] = [:]
     var connection: ConnectionState = .unconfigured {
@@ -1362,8 +1365,11 @@ final class AppStore {
             return true
         }
         guard let client else { return false }
+        let changes = documentChanges
         do {
             let response: DocumentList = try await client.request("documents")
+            // The Mac confirmed a pin or a delete during this request, so this list can be older. Ask again.
+            guard changes == documentChanges else { return await loadDocuments() }
             documents = response.documents
             return true
         } catch { report(error); return false }
@@ -1384,6 +1390,7 @@ final class AppStore {
             let result: Acknowledgement? = await write("documents/\(document.id)", method: "DELETE",
                                                        payload: EmptyRequest(), as: Acknowledgement.self)
             guard result?.ok == true else { return false }
+            documentChanges += 1
         }
         documents?.removeAll { $0.id == document.id }
         return true
@@ -1396,6 +1403,7 @@ final class AppStore {
                                                    payload: PinRequest(pinned: pinned), as: BotDocument.self,
                                                    refreshInBackground: true)
             guard result != nil else { return }
+            documentChanges += 1
         }
         // An open document reads its pin from the list. A list without the document is not loaded yet.
         if documents?.contains(where: { $0.id == document.id }) != true { await loadDocuments() }
