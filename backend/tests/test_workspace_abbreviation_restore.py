@@ -59,8 +59,11 @@ class AbbreviationRestoreTests(unittest.TestCase):
         self.repo = self.root / 'repo'
         self.repo.mkdir()
         git(self.repo, 'init', '-q')
-        (self.repo / '.gitignore').write_text('.knapsack_pro/\n')
-        for name in ('index.tsx', 'product_edit.ts', 'file_embeds_spec.rb', 'notes.txt'):
+        (self.repo / '.gitignore').write_text('.knapsack_pro/\nsub/.gitattributes\n')
+        # Tracked attributes give .dat files a text diff. A nested untracked or ignored file can override them.
+        (self.repo / '.gitattributes').write_text('*.dat diff\n')
+        for name in ('index.tsx', 'product_edit.ts', 'file_embeds_spec.rb', 'notes.txt', 'bin/data.dat', 'sub/notes.dat'):
+            (self.repo / name).parent.mkdir(exist_ok=True)
             (self.repo / name).write_text(''.join(f'line {number} of {name}\n' for number in range(40)))
         git(self.repo, 'add', '.')
         self.commit(self.repo, 'Initial')
@@ -119,6 +122,8 @@ class AbbreviationRestoreTests(unittest.TestCase):
         if shape == 'gitignore':
             with (self.path / '.gitignore').open('a') as stream:
                 stream.write('.worktrees/\n')
+        elif shape in ('attributes', 'attributes-link'):
+            self.attribute_changes(link=shape == 'attributes-link')
         else:
             self.qa_changes()
         self.head = git(self.path, 'rev-parse', 'HEAD')
@@ -131,7 +136,7 @@ class AbbreviationRestoreTests(unittest.TestCase):
         with tarfile.open(self.archive) as tar:
             self.staged = tar.extractfile('staged.patch').read()
             self.unstaged = tar.extractfile('unstaged.patch').read()
-        self.assertEqual(len(index_names(self.staged)), 0 if shape == 'gitignore' else 1)
+        self.assertEqual(len(index_names(self.staged)), 1 if shape == 'qa' else 0)
 
     def qa_changes(self):
         for name in ('index.tsx', 'product_edit.ts', 'file_embeds_spec.rb'):
@@ -144,6 +149,21 @@ class AbbreviationRestoreTests(unittest.TestCase):
         (self.path / EVIDENCE / 'report.md').write_text('# Run 1\n')
         (self.path / '.knapsack_pro').mkdir()
         (self.path / '.knapsack_pro' / 'report.json').write_text('{}\n')
+
+    def attribute_changes(self, link=False):
+        """Archived attributes files that mark two edited files binary, beside a text edit with short names.
+
+        bin/.gitattributes is untracked, and sub/.gitattributes is ignored. With `link`, bin/.gitattributes is a link,
+        which Git does not read, so bin/data.dat keeps a text patch."""
+        if link:
+            (self.path / 'attributes.txt').write_text('*.dat binary\n')
+            (self.path / 'bin' / '.gitattributes').symlink_to('../attributes.txt')
+        else:
+            (self.path / 'bin' / '.gitattributes').write_text('*.dat binary\n')
+        (self.path / 'sub' / '.gitattributes').write_text('*.dat binary\n')
+        for name in ('bin/data.dat', 'sub/notes.dat', 'index.tsx'):
+            with (self.path / name).open('a') as stream:
+                stream.write(f'QA change of {name}\n')
 
     def before_retirement(self, path):
         """A test can read the worktree here, just before retirement removes it."""
@@ -450,6 +470,68 @@ class AbbreviationRestoreTests(unittest.TestCase):
         self.assertEqual(git(self.path, 'diff', '--name-only'), '.gitignore')
         self.assertEqual(self.registry()[self.identity]['digest_recovery']['abbreviation'], [[7, 7]])
         self.assertEqual(self.archive.read_bytes(), self.archive_bytes)
+
+    def test_archived_untracked_and_ignored_attributes_take_part_in_the_proof(self):
+        self.retire(shape='attributes')
+        # The archive holds binary patches for both .dat files, from the nested attributes, and a text patch.
+        self.assertEqual(self.unstaged.count(b'GIT binary patch'), 2)
+        self.assertEqual({len(n) for pair in index_names(self.unstaged) for n in pair}, {7, 40})
+        self.grow()
+        self.fail_first_restore()
+        self.shrink()
+        result = self.gateway_acquire()
+        self.assertNotIn('error', result)
+        self.assertEqual(git(self.path, 'rev-parse', 'HEAD'), self.head)
+        # The attributes files come back with their bytes, as untracked and ignored files, and stay out of Git.
+        self.assertEqual((self.path / 'bin' / '.gitattributes').read_text(), '*.dat binary\n')
+        self.assertEqual((self.path / 'sub' / '.gitattributes').read_text(), '*.dat binary\n')
+        self.assertEqual(git(self.path, 'ls-files', '--others', '--exclude-standard'), 'bin/.gitattributes')
+        self.assertEqual(git(self.path, 'diff', '--name-only').split(), ['bin/data.dat', 'index.tsx', 'sub/notes.dat'])
+        self.assertTrue((self.path / 'sub' / 'notes.dat').read_text().endswith('QA change of sub/notes.dat\n'))
+        # Binary patches always carry full names. The text patch has the names of retirement again.
+        self.assertEqual(self.registry()[self.identity]['digest_recovery']['abbreviation'], [[7, 7], [40, 40]])
+        self.assertEqual(self.archive.read_bytes(), self.archive_bytes)
+        self.assertEqual(list(self.workspaces.glob('.proof-*')), [])
+
+    def test_an_archived_link_named_gitattributes_is_not_read_as_attributes(self):
+        # Git does not read a .gitattributes that is a link, so the archive holds a text patch for bin/data.dat.
+        self.retire(shape='attributes-link')
+        self.assertEqual(self.unstaged.count(b'GIT binary patch'), 1)
+        self.grow()
+        self.fail_first_restore()
+        self.shrink()
+        result = self.gateway_acquire()
+        self.assertNotIn('error', result)
+        self.assertEqual(os.readlink(self.path / 'bin' / '.gitattributes'), '../attributes.txt')
+        self.assertIn('digest_recovery', self.registry()[self.identity])
+
+    def test_an_archived_attributes_file_cannot_take_the_name_of_a_tracked_file(self):
+        self.retire()
+        with tempfile.TemporaryDirectory(dir=self.workspaces, prefix='.proof-') as scratch:
+            with self.assertRaisesRegex(ValueError, 'name of a tracked file'):
+                work_workspace.round_trip(self.repo, self.head, self.staged, self.unstaged, scratch,
+                                          [('.gitattributes', b'* binary\n')])
+
+    def test_an_archive_whose_attributes_do_not_explain_its_binary_patch_stays_fenced(self):
+        # The archived attributes file says nothing about .dat files, so Git writes text patches: refuse, no effect.
+        self.retire(shape='attributes')
+        with tarfile.open(fileobj=io.BytesIO(self.archive_bytes)) as source:
+            members = [(member, source.extractfile(member).read()) for member in source.getmembers()]
+        with tarfile.open(self.archive, 'w:gz') as target:
+            for member, data in members:
+                if member.name.endswith('/.gitattributes'):
+                    data = b'*.txt binary\n'
+                    member.size = len(data)
+                target.addfile(member, io.BytesIO(data))
+        self.archive_bytes = self.archive.read_bytes()
+        saved = self.registry()
+        saved[self.identity]['retired']['restore_failed'] = dict(at=OLD, error=DIGEST_FAILURE)
+        save_bindings(self.manifest, saved)
+        self.before = saved[self.identity]
+        state = self.git_state()
+        result = self.gateway_acquire()
+        self.assertIn('do not give the archived changes', result['error'])
+        self.assert_refused_before_any_effect(result, state)
 
     def test_a_saved_digest_failure_without_a_current_difference_restores_once(self):
         self.retire()

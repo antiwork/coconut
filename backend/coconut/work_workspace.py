@@ -2333,13 +2333,16 @@ def digest_failure(failure):
             and failure['error'] == 'The restored files do not match the archive.')
 
 
-def round_trip(repository, head, staged, unstaged, scratch):
+def round_trip(repository, head, staged, unstaged, scratch, attributes=()):
     """Return the archived and current lengths of object names when Git writes `staged` and `unstaged` itself, or raise.
 
     Coconut applies the archived patches to the commit `head` in a private index, with a private object folder that
     borrows the repository's objects, and has Git write both patches again. They must hold the archived changes
     (same_patch). This proves, before any checkout, that the archive restores the same tracked changes on this
-    repository today, whatever length Git now gives object names. It writes objects and indexes only in `scratch`, and
+    repository today, whatever length Git now gives object names. `attributes` lists the archived untracked and ignored
+    .gitattributes files as (name, bytes). A checkout reads them as Git reads tracked ones, so they decide, for
+    example, which patches are binary. They join only the tree that Git reads attributes from, never the compared
+    trees. It writes objects and indexes only in `scratch`, and
     no checkout, index, ref, or object of the repository, and runs no hook. As for any write, Git can update the time
     of a repository pack that already holds an object (freshening). Missing objects of a partial clone are not
     fetched, and the proof then fails.
@@ -2357,8 +2360,20 @@ def round_trip(repository, head, staged, unstaged, scratch):
         if patch:
             git_output(repository, 'apply', '--cached', '--binary', '--whitespace=nowarn', '-', data=patch, env=env)
         trees.append(git_output(repository, 'write-tree', env=env).decode().strip())
-    # A checkout reads attributes from its own files: the tree with both patches.
-    env['GIT_ATTR_SOURCE'] = trees[1]
+    # A checkout reads attributes from its own files: the tracked ones of the tree with both patches, and the
+    # archived files that unpack extracts before its last comparison.
+    source = trees[1]
+    if attributes:
+        env['GIT_INDEX_FILE'] = str(Path(scratch) / 'attributes')
+        git_output(repository, 'read-tree', source, env=env)
+        tracked = set(git_output(repository, 'ls-files', '-z', env=env).split(b'\0'))
+        for name, data in attributes:
+            if os.fsencode(name) in tracked:
+                raise ValueError('An archived attributes file has the name of a tracked file.')
+            blob = git_output(repository, 'hash-object', '-w', '--no-filters', '--stdin', data=data, env=env).decode().strip()
+            git_output(repository, 'update-index', '--add', '--cacheinfo', f'100644,{blob},{name}', env=env)
+        source = git_output(repository, 'write-tree', env=env).decode().strip()
+    env['GIT_ATTR_SOURCE'] = source
     lengths = set()
     for patch, old, new in ((staged, head, trees[0]), (unstaged, trees[0], trees[1])):
         if not same_patch(patch, git_output(repository, 'diff', *DIFF, '--full-index', old, new, env=env)):
@@ -2395,6 +2410,9 @@ def recover_digest(binding, root, persist):
         members, duplicates = archive_inventory(tar)
         metadata = json.loads(tar.extractfile('retirement.json').read())
         staged, unstaged = (tar.extractfile(name).read() for name in PATCHES)
+        # Git does not read a .gitattributes that is a link, so only regular files count.
+        attributes = [(name, tar.extractfile(member).read()) for member, name in members
+                      if member.isfile() and name.rsplit('/', 1)[-1] == '.gitattributes']
     if duplicates:
         # Only an earlier archive writer wrote an entry twice, and earlier restores of such an archive failed for
         # other reasons (unpack's legacy recoveries). Its digest failure keeps the fence.
@@ -2409,7 +2427,7 @@ def recover_digest(binding, root, persist):
     if any(r['path'] == path or r['branch'] == 'refs/heads/' + binding['branch'] for r in registered(repository)):
         raise ValueError('Git registers a worktree at the saved path or on the saved branch.')
     with tempfile.TemporaryDirectory(dir=root, prefix='.proof-') as scratch:
-        lengths = round_trip(repository, retired['head'], staged, unstaged, scratch)
+        lengths = round_trip(repository, retired['head'], staged, unstaged, scratch, attributes)
     directory = Path(root) / 'archive' / RESIDUE
     directory.parent.mkdir(mode=0o700, exist_ok=True)
     directory.mkdir(mode=0o700, exist_ok=True)
