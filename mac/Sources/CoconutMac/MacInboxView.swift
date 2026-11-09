@@ -30,6 +30,10 @@ struct MacInboxView: View {
                 MacInboxRow(decision: decision).tag(decision.id)
             }
             .listStyle(.inset)
+            // The Mac list gave a card that arrived while it showed the height of a one-line row and never measured it
+            // again, so its title was cut off with the bot name under it. A new set of cards builds the list again, and
+            // the list measures every row. The chosen card stays, because chosenId lives outside the list.
+            .id(pending.map(\.id))
             .frame(minWidth: 220, idealWidth: 280, maxWidth: 320)
             .overlay {
                 if pending.isEmpty {
@@ -127,9 +131,7 @@ private struct MacInboxRow: View {
         HStack(alignment: .top, spacing: 10) {
             if let bot { LiveBotAvatar(bot: bot, size: 22) }
             VStack(alignment: .leading, spacing: 2) {
-                // The title always takes two lines, so each row has the same height. The Mac list keeps the height that
-                // it measured first. A title that wrapped to more lines later was cut off with the bot name under it.
-                Text(decision.title).font(.body.weight(.medium)).lineLimit(2, reservesSpace: true)
+                Text(decision.title).font(.body.weight(.medium)).lineLimit(2)
                 HStack(spacing: 4) {
                     Text(bot?.name ?? "Bot")
                     if let date = decision.createdAt.apiDate {
