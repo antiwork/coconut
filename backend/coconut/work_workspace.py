@@ -2333,33 +2333,59 @@ def digest_failure(failure):
             and failure['error'] == 'The restored files do not match the archive.')
 
 
-# abbreviation_drift looks up at most this many archived object names.
-DRIFT_SAMPLES = 16
+def round_trip(repository, head, staged, unstaged, scratch, attributes=()):
+    """Return the archived and current lengths of object names when Git writes `staged` and `unstaged` itself, or raise.
 
-
-def abbreviation_drift(repository, *patches):
-    """Return the archived and current length of an object name in the index lines of `patches`, or raise.
-
-    Prove from Git's own objects that the repository now abbreviates the archived names with more characters, which
-    changes the digest of the same changes (same_patch). The new side of a patch often names a blob that only the
-    worktree held, so Git cannot resolve it. Such a name proves nothing, but the old side names blobs of the commit.
+    Coconut applies the archived patches to the commit `head` in a private index, with a private object folder that
+    borrows the repository's objects, and has Git write both patches again. They must hold the archived changes
+    (same_patch). This proves, before any checkout, that the archive restores the same tracked changes on this
+    repository today, whatever length Git now gives object names. `attributes` lists the archived untracked and ignored
+    .gitattributes files as (name, bytes). A checkout reads them as Git reads tracked ones, so they decide, for
+    example, which patches are binary. They join only the tree that Git reads attributes from, never the compared
+    trees. It writes objects and indexes only in `scratch`, and
+    no checkout, index, ref, or object of the repository, and runs no hook. As for any write, Git can update the time
+    of a repository pack that already holds an object (freshening). Missing objects of a partial clone are not
+    fetched, and the proof then fails. The repository's fsmonitor and split index do not apply to the private indexes.
     """
-    names = sorted({name.decode() for patch in patches for line in patch.split(b'\n')
-                    if (match := INDEX_LINE.fullmatch(line)) for name in match.group(1, 2) if name.strip(b'0')})
-    found = git_output(repository, 'cat-file', '--batch-check=%(objectname)',
-                       data=''.join(name + '\n' for name in names).encode()).decode().splitlines()
-    if len(found) != len(names):
-        raise ValueError('Git did not look up every object that the archived patches name.')
-    # Git prints the full name of a found object, and the name with `missing` or `ambiguous` otherwise.
-    full = [(name, line) for name, line in zip(names, found)
-            if len(line) in (40, 64) and line.startswith(name) and not line.strip('0123456789abcdef')]
-    # --short takes one name and prints it with Git's current abbreviation. Git gives every object the same length
-    # unless a name is ambiguous, so a few names show a change. This runs under the registry lock: stop at the first.
-    for name, line in full[:DRIFT_SAMPLES]:
-        short = git(repository, 'rev-parse', '--short', line)
-        if len(short) > len(name):
-            return [(len(name), len(short))]
-    raise ValueError('Git abbreviates the archived object names as before.')
+    common = Path(git(repository, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
+    objects = Path(scratch) / 'objects'
+    objects.mkdir()
+    env = dict(GIT_OBJECT_DIRECTORY=str(objects), GIT_ALTERNATE_OBJECT_DIRECTORIES=str(common / 'objects'),
+               GIT_NO_LAZY_FETCH='1')
+    # The repository's config still applies. Keep its fsmonitor hook or daemon and its split index, which writes into
+    # the repository's Git folder, away from the private indexes.
+    private = ('-c', 'core.fsmonitor=false', '-c', 'core.splitIndex=false', '-c', 'core.untrackedCache=false')
+    trees = []
+    for name, patch in (('staged', staged), ('unstaged', unstaged)):
+        # The unstaged patch applies to the index that the staged patch made, as it does in a checkout.
+        env['GIT_INDEX_FILE'] = str(Path(scratch) / name)
+        git_output(repository, *private, 'read-tree', trees[-1] if trees else head + '^{tree}', env=env)
+        if patch:
+            git_output(repository, *private, 'apply', '--cached', '--binary', '--whitespace=nowarn', '-', data=patch, env=env)
+        trees.append(git_output(repository, *private, 'write-tree', env=env).decode().strip())
+    # A checkout reads attributes from its own files: the tracked ones of the tree with both patches, and the
+    # archived files that unpack extracts before its last comparison.
+    source = trees[1]
+    if attributes:
+        env['GIT_INDEX_FILE'] = str(Path(scratch) / 'attributes')
+        git_output(repository, *private, 'read-tree', source, env=env)
+        tracked = set(git_output(repository, *private, 'ls-files', '-z', env=env).split(b'\0'))
+        for name, data in attributes:
+            if os.fsencode(name) in tracked:
+                raise ValueError('An archived attributes file has the name of a tracked file.')
+            blob = git_output(repository, *private, 'hash-object', '-w', '--no-filters', '--stdin', data=data, env=env).decode().strip()
+            git_output(repository, *private, 'update-index', '--add', '--cacheinfo', f'100644,{blob},{name}', env=env)
+        source = git_output(repository, *private, 'write-tree', env=env).decode().strip()
+    env['GIT_ATTR_SOURCE'] = source
+    lengths = set()
+    for patch, old, new in ((staged, head, trees[0]), (unstaged, trees[0], trees[1])):
+        if not same_patch(patch, git_output(repository, *private, 'diff', *DIFF, '--full-index', old, new, env=env)):
+            raise ValueError('The archived patches do not give the archived changes on the saved commit.')
+        current = git_output(repository, *private, 'diff', *DIFF, old, new, env=env)
+        lengths |= {(len(a), len(b)) for line, other in zip(patch.split(b'\n'), current.split(b'\n'))
+                    if (x := INDEX_LINE.fullmatch(line)) and (y := INDEX_LINE.fullmatch(other))
+                    for a, b in zip(x.group(1, 2), y.group(1, 2)) if a.strip(b'0')}
+    return sorted(lengths)
 
 
 def recover_digest(binding, root, persist):
@@ -2368,12 +2394,14 @@ def recover_digest(binding, root, persist):
     Only an explicit acquire of the owner calls this, for a binding whose only failure is that comparison
     (digest_failure). Before a version that compares with full object names (same_patch), a fetch after retirement
     that made Git abbreviate object names with more characters failed every restore, and the rollback left the path
-    empty. Coconut checks that the path is still missing or empty and not redirected, that the archive is the saved
-    one, that the branch did not move and no worktree holds it or the path, and that Git now abbreviates the
-    archived object names with more characters (abbreviation_drift). A refusal changes nothing. It then restores
-    as usual. The archive stays, and the binding names it in `digest_recovery`. Other records of the binding, such
-    as `residue_recovery`, stay. The binding names the place of a partial checkout before the restore. A failure
-    keeps a partial checkout whole there, and marks the failure, so Coconut never tries again without a person.
+    empty. Git sizes these names by a count of packed objects that a later git gc can lower again, so the length that
+    Git gives them now proves nothing. Coconut checks that the path is still missing or empty and not redirected,
+    that the archive is the saved one and not from an earlier archive writer, that the branch did not move and no
+    worktree holds it or the path, and that Git writes the archived patches again on the saved commit (round_trip,
+    in a private index under `root`). A refusal changes nothing. It then restores as usual. The archive stays, and
+    the binding names it in `digest_recovery`. Other records of the binding, such as `residue_recovery`, stay. The
+    binding names the place of a partial checkout before the restore. A failure keeps a partial checkout whole
+    there, and marks the failure, so Coconut never tries again without a person.
     """
     retired, failure = binding['retired'], binding['retired']['restore_failed']
     path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
@@ -2382,9 +2410,16 @@ def recover_digest(binding, root, persist):
     if archive.is_symlink() or not archive.is_file():
         raise ValueError(f'The archive {archive} is missing.')
     with tarfile.open(archive) as tar:
-        members, _ = archive_inventory(tar)
+        members, duplicates = archive_inventory(tar)
         metadata = json.loads(tar.extractfile('retirement.json').read())
         staged, unstaged = (tar.extractfile(name).read() for name in PATCHES)
+        # Git does not read a .gitattributes that is a link, so only regular files count.
+        attributes = [(name, tar.extractfile(member).read()) for member, name in members
+                      if member.isfile() and name.rsplit('/', 1)[-1] == '.gitattributes']
+    if duplicates:
+        # Only an earlier archive writer wrote an entry twice, and earlier restores of such an archive failed for
+        # other reasons (unpack's legacy recoveries). Its digest failure keeps the fence.
+        raise ValueError('The archive is from an earlier archive writer.')
     if (any(metadata.get(key) != binding[key] for key in ('outcome', 'repository', 'path', 'branch'))
             or metadata.get('head') != retired['head'] or metadata.get('at') != retired['at']):
         raise ValueError('The archive belongs to another owner, path, branch, or commit.')
@@ -2394,7 +2429,8 @@ def recover_digest(binding, root, persist):
         raise ValueError('The saved branch moved after retirement.')
     if any(r['path'] == path or r['branch'] == 'refs/heads/' + binding['branch'] for r in registered(repository)):
         raise ValueError('Git registers a worktree at the saved path or on the saved branch.')
-    drift = abbreviation_drift(repository, staged, unstaged)
+    with tempfile.TemporaryDirectory(dir=root, prefix='.proof-') as scratch:
+        lengths = round_trip(repository, retired['head'], staged, unstaged, scratch, attributes)
     directory = Path(root) / 'archive' / RESIDUE
     directory.parent.mkdir(mode=0o700, exist_ok=True)
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -2424,10 +2460,10 @@ def recover_digest(binding, root, persist):
         logging.getLogger(__name__).warning('Coconut could not restore %s again: %s', path, message)
         raise
     binding.pop('retired')
-    binding['digest_recovery'] = dict(archive=str(archive), failure=failure, abbreviation=drift,
+    binding['digest_recovery'] = dict(archive=str(archive), failure=failure, abbreviation=lengths,
                                       at=stamp(datetime.now(timezone.utc)))
-    logging.getLogger(__name__).warning('Coconut restored %s from %s again. Git abbreviates its object names with '
-                                        'more characters since retirement.', path, archive)
+    logging.getLogger(__name__).warning('Coconut restored %s from %s again. The archived and current lengths of its '
+                                        'object names: %s.', path, archive, lengths)
     validate_binding(binding)
 
 
