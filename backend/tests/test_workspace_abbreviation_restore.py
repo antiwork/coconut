@@ -45,7 +45,7 @@ def index_names(patch):
     return re.findall(rb'^index ([0-9a-f]+)\.\.([0-9a-f]+)', patch, re.M)
 
 
-def legacy_comparison(path, staged, unstaged, expected):
+def legacy_comparison(path, patches, expected):
     # The last comparison of unpack before this change: the digest of the checkout's own patches.
     return changes_digest(*changes(path)) == expected
 
@@ -229,6 +229,21 @@ class AbbreviationRestoreTests(unittest.TestCase):
         self.assertNotIn('error', result)
         self.assert_restored()
         self.assertNotIn('retired', self.registry()[self.identity])
+
+    def test_an_unchanged_leftover_checkout_is_adopted_without_reading_the_patches(self):
+        self.retire()
+        work_workspace.unpack(self.registry()[self.identity], {})
+        real, reads = tarfile.open, []
+
+        def counting(*arguments, **options):
+            reads.append(arguments[0] if arguments else options.get('name'))
+            return real(*arguments, **options)
+        # compare_checkouts reads the archived files before the lock. Under the lock, a matching digest reads none.
+        checked = work_workspace.compare_checkouts([self.registry()[self.identity]])
+        with patch.object(work_workspace.tarfile, 'open', side_effect=counting):
+            binding = self.registry()[self.identity]
+            work_workspace.unpack(binding, checked)
+        self.assertEqual(reads, [])
 
     def test_the_owner_restores_after_the_saved_digest_failure_and_keeps_every_record(self):
         records = {}

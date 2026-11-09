@@ -251,16 +251,18 @@ def same_patch(archived, full):
     return True
 
 
-def matches_archive(path, staged, unstaged, expected):
+def matches_archive(path, patches, expected):
     """Return True when the checkout at path holds the archived changes: their digest `expected` (changes_digest).
 
-    `staged` and `unstaged` are the archived patches. When the digest of the checkout differs only because Git now
-    abbreviates object names with more characters (same_patch), the checkout still holds the archived changes. The
-    archived patches and the untracked names of the checkout must then give the saved digest themselves.
+    `patches()` returns the archived staged and unstaged patches. Coconut reads them only when the digest of the
+    checkout differs, because a read can decompress a large archive. When it differs only because Git now abbreviates
+    object names with more characters (same_patch), the checkout still holds the archived changes. The archived
+    patches and the untracked names of the checkout must then give the saved digest themselves.
     """
     current = changes(path)
     if changes_digest(*current) == expected:
         return True
+    staged, unstaged = patches()
     if changes_digest(staged, unstaged, current[2]) != expected:
         return False
     return (same_patch(staged, git_output(path, 'diff', '--cached', *DIFF, '--full-index', 'HEAD'))
@@ -2531,12 +2533,13 @@ def unpack(binding, checked, *, retry_failure=None, aside=None):
         marks = record[0] if record is not None else None
         try:
             validate_binding(dict(binding))
-            if marks is not None:
+
+            def archived():
                 with tarfile.open(archive) as tar:
-                    staged, unstaged = (tar.extractfile(name).read() for name in PATCHES)
+                    return tuple(tar.extractfile(name).read() for name in PATCHES)
             intact = (marks is not None
                       and git(path, 'rev-parse', 'HEAD') == retired['head']
-                      and matches_archive(path, staged, unstaged, retired['changes'])
+                      and matches_archive(path, archived, retired['changes'])
                       and checkout_marks(path, [name for name, *_ in marks]) == marks)
         except RESTORE_ERRORS:
             intact = False
@@ -2602,7 +2605,7 @@ def unpack(binding, checked, *, retry_failure=None, aside=None):
             # Create links last, so that no archived file is written through a link.
             for name, target in links:
                 place_link(path, name, target)
-        if git(path, 'rev-parse', 'HEAD') != retired['head'] or not matches_archive(path, staged, unstaged, retired['changes']):
+        if git(path, 'rev-parse', 'HEAD') != retired['head'] or not matches_archive(path, lambda: (staged, unstaged), retired['changes']):
             raise ValueError('The restored files do not match the archive.')
         if retired.get('held'):
             # Git ignores these folders, so they do not change the digest above. One that aged out is gone, and the
