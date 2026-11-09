@@ -104,7 +104,7 @@ The routes of a room start with `/v1/rooms/<room ID>`. The room ID is 32 random 
 | `POST /v1/rooms/<id>/members`, `Authorization: Ticket <ticket>`, body `{"member": m, "hash": h, "proof": p}` | A new Mac | 200 with `{"welcome": w}`, and the ticket loses one use. 200 without a new use for a repeat with the same `m` and `h`. 401 for a proof that fails, and for a ticket that is unknown, expired or without a use left. 409 when `m` exists with another token, or the room is full. |
 | `GET /v1/rooms/<id>/members` | Member | 200 with `{"members": [{"member": m, "admin": true, "joined": t}]}`. |
 | `DELETE /v1/rooms/<id>/members/<m>` | Admin, or member `m` | 204. The relay removes the token, closes the socket and deletes the kept entries of `m`. 409 when `m` is the admin and the room has other members. When the admin leaves a room without other members, the relay deletes the room. |
-| `POST /v1/rooms/<id>/entries`, body `{"id": i, "kept": k, "body": b}` | Member | 200 with `{"seq": n, "first": f}`. 409 when the entry ID belongs to another member. 413 for a body over the limit. 429 over the write limit. 507 when the entries of the member are full. |
+| `POST /v1/rooms/<id>/entries`, body `{"id": i, "kept": k, "body": b}` | Member | 200 with `{"seq": n, "first": f}`. 409 when the entry ID belongs to another member. 413 for a body over the limit. 429 over the write limit. 507 when the entries of the member or of the room are full. |
 | `GET /v1/rooms/<id>/entries?after=<seq>` | Member | 200 with `{"entries": [...], "last": n}`: the entries with a higher `seq`, in order. `last` is the highest `seq` that the room has now. Without `after`, the answer starts at the first entry. |
 | `GET /v1/rooms/<id>/socket`, as a WebSocket | Member | 101. See [Socket](#socket). |
 | `DELETE /v1/rooms/<id>` | Admin | 204 deletes the room with all its data, and closes each socket. |
@@ -139,11 +139,14 @@ A long poll would keep the Durable Object in memory, and Cloudflare bills that t
 | Body of an entry | 99 bytes to 1 MiB |
 | Kept entries of one member | 512 entries and 64 MiB |
 | Other entries of one member | 64 MiB |
+| All entries of one room | 8 GiB |
 | Retention of an entry that is not kept | 90 days after its last write |
 | Writes of one member | 300 each minute |
 | New rooms | 10 each hour for one IP address, as for tunnel routes |
 | Other room requests | 3,000 each minute for one IP address |
 | Room without a request of a member | Deleted after 180 days |
+
+A member that leaves and joins again continues its counts: its entries that are not kept stay on the relay, and so does its count of writes in the minute.
 
 A page can have 512 KiB of content (`MAX_CONTENT` in `backend/coconut/documents.py`), so a page fits in one entry. Each Mac keeps the full history of the chat in its own store. The retention time only limits how far back a new member or a Mac that was off can read.
 

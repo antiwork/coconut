@@ -43,6 +43,7 @@ import { close, hash, HEX64, readBytes, send } from './tunnel.js';
 const LIMITS = {
   members: 64, tickets: 8, minTtl: 60, maxTtl: 7 * 86400, uses: 64, welcome: 1024,
   minBody: 99, maxBody: 1024 * 1024, keptEntries: 512, keptBytes: 64 * 1024 * 1024, otherBytes: 64 * 1024 * 1024,
+  roomBytes: 8 * 1024 * 1024 * 1024,
   retentionSeconds: 90 * 86400, writesPerMinute: 300, readEntries: 256, readBytes: 1024 * 1024,
   creationsPerHour: 10, idleSeconds: 180 * 86400, sweepSeconds: 86400,
 };
@@ -199,21 +200,31 @@ export class Room {
 
   // `first` is the `seq` of the first write of the entry ID. A member row also counts the writes of its member in
   // the current minute and the entries that the member has now, so a write reads and writes that one row for them.
+  // A row without a `hash` is a member that left: the row stays while the relay has entries of that member, so a
+  // member that joins again continues its counts. The index is only for kept entries, which are few: a message
+  // writes no index row for it.
   schema() {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value);
-      CREATE TABLE IF NOT EXISTS members (id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, admin INTEGER NOT NULL,
+      CREATE TABLE IF NOT EXISTS members (id TEXT PRIMARY KEY, hash TEXT UNIQUE, admin INTEGER NOT NULL,
         joined INTEGER NOT NULL, minute INTEGER NOT NULL DEFAULT 0, writes INTEGER NOT NULL DEFAULT 0,
         kept INTEGER NOT NULL DEFAULT 0, kept_bytes INTEGER NOT NULL DEFAULT 0, other_bytes INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS tickets (hash TEXT PRIMARY KEY, expires INTEGER NOT NULL, uses INTEGER NOT NULL,
         welcome BLOB NOT NULL);
       CREATE TABLE IF NOT EXISTS entries (seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, member TEXT NOT NULL,
-        first INTEGER NOT NULL, at INTEGER NOT NULL, kept INTEGER NOT NULL, size INTEGER NOT NULL, body BLOB NOT NULL);`);
+        first INTEGER NOT NULL, at INTEGER NOT NULL, kept INTEGER NOT NULL, size INTEGER NOT NULL, body BLOB NOT NULL);
+      CREATE INDEX IF NOT EXISTS entries_kept ON entries (member) WHERE kept = 1;`);
   }
 
   meta(key) { return this.sql.exec('SELECT value FROM meta WHERE key = ?', key).toArray()[0]?.value; }
   setMeta(key, value) { this.sql.exec('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', key, value); }
   row(query, ...values) { return this.sql.exec(query, ...values).toArray()[0]; }
   last() { return this.sql.exec('SELECT COALESCE(MAX(seq), 0) AS last FROM entries').one().last; }
+  // The number of members that have a token now. A member that left has none.
+  active() { return this.sql.exec('SELECT COUNT(*) AS n FROM members WHERE hash IS NOT NULL').one().n; }
+  // Deletes the rows of the members that left, when the relay has no entry of them and their minute of writes is over.
+  forget(now) {
+    this.sql.exec('DELETE FROM members WHERE hash IS NULL AND other_bytes = 0 AND minute < ?', Math.floor(now / 60000));
+  }
 
   async fetch(request) {
     const url = new URL(request.url), operation = url.pathname.slice(1), values = url.searchParams, now = Date.now();
@@ -236,10 +247,10 @@ export class Room {
         return status(204);
       case 'members':
         return Response.json({
-          members: this.sql.exec('SELECT id, admin, joined FROM members ORDER BY joined, id').toArray()
+          members: this.sql.exec('SELECT id, admin, joined FROM members WHERE hash IS NOT NULL ORDER BY joined, id').toArray()
             .map(row => ({ member: row.id, admin: !!row.admin, joined: row.joined })),
         }, { headers: noStore });
-      case 'remove': return this.remove(member, values.get('member'));
+      case 'remove': return this.remove(member, values.get('member'), now);
       case 'write': return this.write(member, values.get('id'), values.get('kept') === '1', body, now);
       case 'read': return this.read(Number(values.get('after')));
       case 'socket': return this.socket(member);
@@ -299,25 +310,28 @@ export class Room {
     if (!found) return status(401);
     const welcome = () => Response.json({ welcome: Buffer.from(found.welcome).toString('base64') }, { headers: noStore });
     const existing = this.row('SELECT hash FROM members WHERE id = ?', member);
-    if (existing) return existing.hash === digest ? welcome() : status(409);
+    if (existing?.hash) return existing.hash === digest ? welcome() : status(409);
     if (found.uses < 1) return status(401);
-    if (this.sql.exec('SELECT COUNT(*) AS n FROM members').one().n >= this.limits.members
-      || this.row('SELECT 1 FROM members WHERE hash = ?', digest)) return status(409);
-    this.sql.exec('INSERT INTO members (id, hash, admin, joined) VALUES (?, ?, 0, ?)', member, digest, now);
+    if (this.active() >= this.limits.members || this.row('SELECT 1 FROM members WHERE hash = ?', digest)) return status(409);
+    // The row of a member that left gets the new token and keeps its counts.
+    this.sql.exec(`INSERT INTO members (id, hash, admin, joined) VALUES (?, ?, 0, ?)
+      ON CONFLICT (id) DO UPDATE SET hash = excluded.hash, joined = excluded.joined`, member, digest, now);
     this.sql.exec('UPDATE tickets SET uses = uses - 1 WHERE hash = ?', ticket);
     return welcome();
   }
 
-  remove(caller, target) {
+  remove(caller, target, now) {
     if (!caller.admin && caller.id !== target) return status(403);
-    const member = this.row('SELECT admin FROM members WHERE id = ?', target);
+    const member = this.row('SELECT admin FROM members WHERE id = ? AND hash IS NOT NULL', target);
     if (!member) return status(204);
     if (member.admin) {
       // An admin that leaves a room with other members would leave it without anyone who can invite or remove.
-      return this.sql.exec('SELECT COUNT(*) AS n FROM members').one().n > 1 ? status(409) : this.destroy();
+      return this.active() > 1 ? status(409) : this.destroy();
     }
-    this.sql.exec('DELETE FROM members WHERE id = ?', target);
     this.sql.exec('DELETE FROM entries WHERE member = ? AND kept = 1', target);
+    // The row loses its token, and it stays while its counts still matter.
+    this.sql.exec('UPDATE members SET hash = NULL, kept = 0, kept_bytes = 0 WHERE id = ?', target);
+    this.forget(now);
     for (const ws of this.ctx.getWebSockets(`member:${target}`)) close(ws, 1008, 'removed');
     return status(204);
   }
@@ -328,13 +342,18 @@ export class Room {
     if (writes > limits.writesPerMinute) return status(429);
     const old = this.row('SELECT seq, member, first, kept, size FROM entries WHERE id = ?', id);
     if (old && old.member !== member.id) return status(409);
-    // What the member has without the entry that this write replaces, and then with the new entry. A member that
-    // joins again after a removal replaces entries that its new row never counted, so a value can go below zero.
+    // What the member has without the entry that this write replaces, and then with the new entry.
     let count = member.kept - (old?.kept ? 1 : 0);
     let keptBytes = member.kept_bytes - (old?.kept ? old.size : 0);
     let otherBytes = member.other_bytes - (old && !old.kept ? old.size : 0);
     if (kept) { count += 1; keptBytes += size; } else otherBytes += size;
     if (count > limits.keptEntries || keptBytes > limits.keptBytes || otherBytes > limits.otherBytes) return status(507);
+    // The room has a limit too, because the entries of a member that left stay for a time. A write that does not
+    // add bytes always fits, so a member of a full room can still make an entry smaller.
+    if (keptBytes + otherBytes > member.kept_bytes + member.other_bytes) {
+      const others = this.sql.exec('SELECT COALESCE(SUM(kept_bytes + other_bytes), 0) AS bytes FROM members WHERE id != ?', member.id).one().bytes;
+      if (others + keptBytes + otherBytes > limits.roomBytes) return status(507);
+    }
     // A number is never used again, also after the relay deletes the entry that had it.
     const seq = this.sql.exec(`INSERT INTO meta (key, value) VALUES ('seq', 1)
       ON CONFLICT (key) DO UPDATE SET value = value + 1 RETURNING value`).one().value;
@@ -343,7 +362,7 @@ export class Room {
     this.sql.exec('INSERT INTO entries (seq, id, member, first, at, kept, size, body) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       seq, id, member.id, first, now, kept ? 1 : 0, size, body);
     this.sql.exec('UPDATE members SET minute = ?, writes = ?, kept = ?, kept_bytes = ?, other_bytes = ? WHERE id = ?',
-      minute, writes, Math.max(0, count), Math.max(0, keptBytes), Math.max(0, otherBytes), member.id);
+      minute, writes, count, keptBytes, otherBytes, member.id);
     // The writer has the number in its answer. Each other member gets it on its socket.
     const own = new Set(this.ctx.getWebSockets(`member:${member.id}`));
     for (const ws of this.ctx.getWebSockets()) if (!own.has(ws)) send(ws, JSON.stringify({ seq }));
@@ -396,11 +415,15 @@ export class Room {
       await this.destroy();
       return;
     }
-    const old = this.sql.exec('SELECT member, SUM(size) AS bytes FROM entries WHERE kept = 0 AND at <= ? GROUP BY member', cutoff);
+    // A later write has a higher `seq` and a later time, so the old entries are the start of the log. The scan stops
+    // at the first entry that is new enough, and the queries below read only the entries before it.
+    const end = this.row('SELECT seq FROM entries WHERE at > ? ORDER BY seq LIMIT 1', cutoff)?.seq ?? this.last() + 1;
+    const old = this.sql.exec('SELECT member, SUM(size) AS bytes FROM entries WHERE kept = 0 AND seq < ? GROUP BY member', end);
     for (const { member, bytes } of old.toArray()) {
-      this.sql.exec('UPDATE members SET other_bytes = MAX(other_bytes - ?, 0) WHERE id = ?', bytes, member);
+      this.sql.exec('UPDATE members SET other_bytes = other_bytes - ? WHERE id = ?', bytes, member);
     }
-    this.sql.exec('DELETE FROM entries WHERE kept = 0 AND at <= ?', cutoff);
+    this.sql.exec('DELETE FROM entries WHERE kept = 0 AND seq < ?', end);
+    this.forget(now);
     this.sql.exec('DELETE FROM tickets WHERE expires <= ?', now);
     await this.ctx.storage.setAlarm(now + this.limits.sweepSeconds * 1000);
   }

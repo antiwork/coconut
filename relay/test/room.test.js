@@ -325,6 +325,52 @@ test('a member keeps a limited number of entries and bytes', async t => {
   assert.equal((await write(other, entry(600))).status, 200);
 });
 
+test('a member that joins again keeps its limits', async t => {
+  const { admin, invite, join, write, read, members, remove } = await room(t, { limits: { otherBytes: 300, writesPerMinute: 4 } });
+  const { ticket } = await invite({ uses: 8 });
+  let { who } = await join(ticket);
+  const again = async () => {
+    assert.equal((await remove(who, who)).status, 204);
+    assert.ok(!(await members(admin)).some(({ member: memberId }) => memberId === who.member));
+    who = { ...who, token: token() };
+    assert.equal((await join(ticket, who)).status, 200);
+  };
+  // The entries that are not kept stay when the member leaves, and they still count after it joins again.
+  const message = entry(250);
+  assert.equal((await write(who, message)).status, 200);
+  await again();
+  assert.equal((await write(who, entry(120))).status, 507);
+  assert.equal((await read(admin)).entries.length, 1);
+  // The count of the writes continues too. Nine writes cross at most one minute boundary, so one minute has at
+  // least five of them, and no part between two joins has more than three. This holds also for a member that has
+  // only kept entries, whose row has no bytes that keep it.
+  for (const replaced of [message, entry(100, true)]) {
+    const statuses = [];
+    for (let part = 0; part < 3; part += 1) {
+      for (let index = 0; index < 3; index += 1) statuses.push((await write(who, { ...replaced, body: sealed(100) })).status);
+      if (part < 2) await again();
+    }
+    assert.ok(statuses.includes(429), `${replaced.kept ? 'kept' : 'other'} entries: ${statuses}`);
+    ({ who } = await join(ticket));
+  }
+});
+
+test('a room holds a limited number of bytes', async t => {
+  const { admin, member, write, remove } = await room(t, { limits: { roomBytes: 500 } });
+  const other = await member(), page = entry(200, true), message = entry(250);
+  assert.equal((await write(admin, message)).status, 200);
+  assert.equal((await write(other, page)).status, 200);
+  assert.equal((await write(other, entry(120))).status, 507);
+  assert.equal((await write(admin, entry(120, true))).status, 507);
+  // A write that adds no bytes fits in a full room, and it makes room for another write.
+  assert.equal((await write(other, { ...page, body: sealed(100) })).status, 200);
+  assert.equal((await write(other, entry(120))).status, 200);
+  // The entries that a removed member leaves still count.
+  assert.equal((await remove(admin, other)).status, 204);
+  assert.equal((await write(admin, entry(140))).status, 507);
+  assert.equal((await write(admin, entry(120))).status, 200);
+});
+
 test('a member writes a limited number of entries each minute', async t => {
   const { admin, member, write } = await room(t, { limits: { writesPerMinute: 3 } });
   // Seven writes cross at most one minute boundary, so one minute has at least four of them.
