@@ -112,6 +112,8 @@ class AbbreviationRestoreTests(unittest.TestCase):
         for name in ('index.tsx', 'product_edit.ts', 'file_embeds_spec.rb'):
             with (self.path / name).open('a') as stream:
                 stream.write(f'QA change of {name}\n')
+        # One edit is staged, so the archive holds a staged text patch too.
+        git(self.path, 'add', 'file_embeds_spec.rb')
         (self.path / EVIDENCE).mkdir()
         (self.path / EVIDENCE / 'ledger.json').write_text('{"run": 1}\n')
         (self.path / EVIDENCE / 'report.md').write_text('# Run 1\n')
@@ -124,7 +126,9 @@ class AbbreviationRestoreTests(unittest.TestCase):
         self.archive = Path(self.registry()[self.identity]['retired']['archive'])
         self.archive_bytes = self.archive.read_bytes()
         with tarfile.open(self.archive) as tar:
+            self.staged = tar.extractfile('staged.patch').read()
             self.unstaged = tar.extractfile('unstaged.patch').read()
+        self.assertEqual(len(index_names(self.staged)), 1)
 
     def fail_first_restore(self):
         """Fail the first restore with the last comparison of the earlier version, as it failed for the owner.
@@ -165,6 +169,8 @@ class AbbreviationRestoreTests(unittest.TestCase):
         self.assertEqual(git(self.path, 'branch', '--show-current'), self.branch)
         for name in ('index.tsx', 'product_edit.ts', 'file_embeds_spec.rb'):
             self.assertTrue((self.path / name).read_text().endswith(f'QA change of {name}\n'))
+        self.assertEqual(git(self.path, 'diff', '--cached', '--name-only'), 'file_embeds_spec.rb')
+        self.assertEqual(git(self.path, 'diff', '--name-only').split(), ['index.tsx', 'product_edit.ts'])
         self.assertEqual((self.path / EVIDENCE / 'ledger.json').read_text(), '{"run": 1}\n')
         self.assertEqual((self.path / '.knapsack_pro' / 'report.json').read_text(), '{}\n')
 
@@ -176,11 +182,11 @@ class AbbreviationRestoreTests(unittest.TestCase):
 
     def test_the_fixture_shows_the_longer_object_names(self):
         self.retire()
-        archived = {len(name) for pair in index_names(self.unstaged) for name in pair}
+        archived = {len(name) for patch in (self.staged, self.unstaged) for pair in index_names(patch) for name in pair}
         self.grow()
         # The old side names blobs of the commit. Git now abbreviates each with one more character.
         current = {len(git(self.repo, 'rev-parse', '--short', git(self.repo, 'rev-parse', old.decode())))
-                   for old, _ in index_names(self.unstaged)}
+                   for patch in (self.staged, self.unstaged) for old, _ in index_names(patch)}
         self.assertEqual((archived, current), ({7}, {8}))
 
     def test_the_drift_proof_looks_up_few_names_under_the_lock(self):
@@ -208,8 +214,11 @@ class AbbreviationRestoreTests(unittest.TestCase):
         self.assertNotIn('error', result)
         self.assert_restored()
         self.assertNotIn('retired', self.registry()[self.identity])
-        # The patches of the checkout differ from the archive only in their longer object names.
-        self.assertNotEqual(git(self.path, 'diff', *work_workspace.DIFF).encode() + b'\n', self.unstaged)
+        # The patches of the checkout differ from the archive only in their longer object names, on both sides.
+        for patch, arguments in ((self.staged, ('--cached', 'HEAD')), (self.unstaged, ())):
+            restored = work_workspace.git_output(self.path, 'diff', *work_workspace.DIFF, *arguments)
+            self.assertNotEqual(restored, patch)
+            self.assertEqual({len(n) for pair in index_names(restored) for n in pair}, {8})
 
     def test_a_checkout_left_by_a_stopped_restore_is_adopted_after_the_repository_grew(self):
         self.retire()
