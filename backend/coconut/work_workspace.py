@@ -2345,40 +2345,43 @@ def round_trip(repository, head, staged, unstaged, scratch, attributes=()):
     trees. It writes objects and indexes only in `scratch`, and
     no checkout, index, ref, or object of the repository, and runs no hook. As for any write, Git can update the time
     of a repository pack that already holds an object (freshening). Missing objects of a partial clone are not
-    fetched, and the proof then fails.
+    fetched, and the proof then fails. The repository's fsmonitor and split index do not apply to the private indexes.
     """
     common = Path(git(repository, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
     objects = Path(scratch) / 'objects'
     objects.mkdir()
     env = dict(GIT_OBJECT_DIRECTORY=str(objects), GIT_ALTERNATE_OBJECT_DIRECTORIES=str(common / 'objects'),
                GIT_NO_LAZY_FETCH='1')
+    # The repository's config still applies. Keep its fsmonitor hook or daemon and its split index, which writes into
+    # the repository's Git folder, away from the private indexes.
+    private = ('-c', 'core.fsmonitor=false', '-c', 'core.splitIndex=false', '-c', 'core.untrackedCache=false')
     trees = []
     for name, patch in (('staged', staged), ('unstaged', unstaged)):
         # The unstaged patch applies to the index that the staged patch made, as it does in a checkout.
         env['GIT_INDEX_FILE'] = str(Path(scratch) / name)
-        git_output(repository, 'read-tree', trees[-1] if trees else head + '^{tree}', env=env)
+        git_output(repository, *private, 'read-tree', trees[-1] if trees else head + '^{tree}', env=env)
         if patch:
-            git_output(repository, 'apply', '--cached', '--binary', '--whitespace=nowarn', '-', data=patch, env=env)
-        trees.append(git_output(repository, 'write-tree', env=env).decode().strip())
+            git_output(repository, *private, 'apply', '--cached', '--binary', '--whitespace=nowarn', '-', data=patch, env=env)
+        trees.append(git_output(repository, *private, 'write-tree', env=env).decode().strip())
     # A checkout reads attributes from its own files: the tracked ones of the tree with both patches, and the
     # archived files that unpack extracts before its last comparison.
     source = trees[1]
     if attributes:
         env['GIT_INDEX_FILE'] = str(Path(scratch) / 'attributes')
-        git_output(repository, 'read-tree', source, env=env)
-        tracked = set(git_output(repository, 'ls-files', '-z', env=env).split(b'\0'))
+        git_output(repository, *private, 'read-tree', source, env=env)
+        tracked = set(git_output(repository, *private, 'ls-files', '-z', env=env).split(b'\0'))
         for name, data in attributes:
             if os.fsencode(name) in tracked:
                 raise ValueError('An archived attributes file has the name of a tracked file.')
-            blob = git_output(repository, 'hash-object', '-w', '--no-filters', '--stdin', data=data, env=env).decode().strip()
-            git_output(repository, 'update-index', '--add', '--cacheinfo', f'100644,{blob},{name}', env=env)
-        source = git_output(repository, 'write-tree', env=env).decode().strip()
+            blob = git_output(repository, *private, 'hash-object', '-w', '--no-filters', '--stdin', data=data, env=env).decode().strip()
+            git_output(repository, *private, 'update-index', '--add', '--cacheinfo', f'100644,{blob},{name}', env=env)
+        source = git_output(repository, *private, 'write-tree', env=env).decode().strip()
     env['GIT_ATTR_SOURCE'] = source
     lengths = set()
     for patch, old, new in ((staged, head, trees[0]), (unstaged, trees[0], trees[1])):
-        if not same_patch(patch, git_output(repository, 'diff', *DIFF, '--full-index', old, new, env=env)):
+        if not same_patch(patch, git_output(repository, *private, 'diff', *DIFF, '--full-index', old, new, env=env)):
             raise ValueError('The archived patches do not give the archived changes on the saved commit.')
-        current = git_output(repository, 'diff', *DIFF, old, new, env=env)
+        current = git_output(repository, *private, 'diff', *DIFF, old, new, env=env)
         lengths |= {(len(a), len(b)) for line, other in zip(patch.split(b'\n'), current.split(b'\n'))
                     if (x := INDEX_LINE.fullmatch(line)) and (y := INDEX_LINE.fullmatch(other))
                     for a, b in zip(x.group(1, 2), y.group(1, 2)) if a.strip(b'0')}

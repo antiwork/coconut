@@ -505,6 +505,23 @@ class AbbreviationRestoreTests(unittest.TestCase):
         self.assertEqual(os.readlink(self.path / 'bin' / '.gitattributes'), '../attributes.txt')
         self.assertIn('digest_recovery', self.registry()[self.identity])
 
+    def test_the_proof_runs_no_fsmonitor_and_writes_no_split_index_in_the_repository(self):
+        self.retire(shape='attributes')
+        marker = self.root / 'fsmonitor-ran'
+        hook = self.root / 'fsmonitor.sh'
+        hook.write_text(f'#!/bin/sh\ntouch {marker}\necho 1\nprintf "\\0"\n')
+        hook.chmod(0o755)
+        # The repository's own config: an fsmonitor hook, a split index, and an untracked cache.
+        for key, value in (('core.fsmonitor', str(hook)), ('core.splitIndex', 'true'), ('core.untrackedCache', 'true')):
+            git(self.repo, 'config', key, value)
+        state = self.git_state()
+        attributes = [('bin/.gitattributes', b'*.dat binary\n'), ('sub/.gitattributes', b'*.dat binary\n')]
+        with tempfile.TemporaryDirectory(dir=self.workspaces, prefix='.proof-') as scratch:
+            self.assertEqual(work_workspace.round_trip(self.repo, self.head, self.staged, self.unstaged, scratch,
+                                                       attributes), [(7, 7), (40, 40)])
+        self.assertFalse(marker.exists())
+        self.assertEqual(self.git_state(), state)
+
     def test_an_archived_attributes_file_cannot_take_the_name_of_a_tracked_file(self):
         self.retire()
         with tempfile.TemporaryDirectory(dir=self.workspaces, prefix='.proof-') as scratch:
