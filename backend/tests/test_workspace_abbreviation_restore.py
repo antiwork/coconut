@@ -183,6 +183,22 @@ class AbbreviationRestoreTests(unittest.TestCase):
                    for old, _ in index_names(self.unstaged)}
         self.assertEqual((archived, current), ({7}, {8}))
 
+    def test_the_drift_proof_looks_up_few_names_under_the_lock(self):
+        self.retire()
+        real, calls = work_workspace.git, []
+
+        def counting(where, *arguments, **options):
+            calls.extend(arguments[:2] == ('rev-parse', '--short') and [1] or [])
+            return real(where, *arguments, **options)
+        with patch.object(work_workspace, 'git', side_effect=counting), patch.object(work_workspace, 'DRIFT_SAMPLES', 2):
+            with self.assertRaisesRegex(ValueError, 'as before'):
+                work_workspace.abbreviation_drift(self.repo, b'', self.unstaged)
+            self.assertEqual(len(calls), 2)
+            self.grow()
+            calls.clear()
+            self.assertEqual(work_workspace.abbreviation_drift(self.repo, b'', self.unstaged), [(7, 8)])
+            self.assertEqual(len(calls), 1)
+
     # The repair.
 
     def test_a_restore_after_the_repository_grew_gets_the_archived_changes(self):

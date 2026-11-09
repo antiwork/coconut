@@ -2317,8 +2317,12 @@ def digest_failure(failure):
             and failure['error'] == 'The restored files do not match the archive.')
 
 
+# abbreviation_drift looks up at most this many archived object names.
+DRIFT_SAMPLES = 16
+
+
 def abbreviation_drift(repository, *patches):
-    """Return the archived and current lengths of the object names in the index lines of `patches`, or raise.
+    """Return the archived and current length of an object name in the index lines of `patches`, or raise.
 
     Prove from Git's own objects that the repository now abbreviates the archived names with more characters, which
     changes the digest of the same changes (same_patch). The new side of a patch often names a blob that only the
@@ -2333,12 +2337,13 @@ def abbreviation_drift(repository, *patches):
     # Git prints the full name of a found object, and the name with `missing` or `ambiguous` otherwise.
     full = [(name, line) for name, line in zip(names, found)
             if len(line) in (40, 64) and line.startswith(name) and not line.strip('0123456789abcdef')]
-    # --short takes one name. It prints the name with Git's current abbreviation.
-    current = [git(repository, 'rev-parse', '--short', line) for _, line in full]
-    drift = sorted({(len(name), len(short)) for (name, _), short in zip(full, current) if len(short) > len(name)})
-    if not drift:
-        raise ValueError('Git abbreviates the archived object names as before.')
-    return drift
+    # --short takes one name and prints it with Git's current abbreviation. Git gives every object the same length
+    # unless a name is ambiguous, so a few names show a change. This runs under the registry lock: stop at the first.
+    for name, line in full[:DRIFT_SAMPLES]:
+        short = git(repository, 'rev-parse', '--short', line)
+        if len(short) > len(name):
+            return [(len(name), len(short))]
+    raise ValueError('Git abbreviates the archived object names as before.')
 
 
 def recover_digest(binding, root, persist):
