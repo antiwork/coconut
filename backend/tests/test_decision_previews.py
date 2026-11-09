@@ -125,6 +125,16 @@ class DecisionPreviewTests(unittest.TestCase):
         self.assertEqual(decision['previews'][0]['width'], 20)
         self.assertEqual(self.service.artifact_content(decision['previews'][0]['artifact_id'])[0], jpeg)
 
+    def test_a_webp_photo_is_stored_as_a_jpeg(self):
+        # Listing and shop sites often serve WebP. Every app shows the JPEG.
+        decision = self.question([self.image(name='listing.webp', content=image_bytes('WEBP'))])
+        preview = decision['previews'][0]
+        self.assertEqual((preview['width'], preview['height']), (20, 30))
+        with Image.open(BytesIO(self.service.artifact_content(preview['artifact_id'])[0])) as stored:
+            self.assertEqual((stored.format, stored.size), ('JPEG', (20, 30)))
+        artifact = self.service._get('artifacts', preview['artifact_id'])
+        self.assertEqual(artifact['title'], 'preview.jpg')
+
     def test_rejects_symlinks_large_dimensions_and_too_many_images(self):
         valid = self.image()
         link = self.root / 'link.png'; link.symlink_to(valid['path'])

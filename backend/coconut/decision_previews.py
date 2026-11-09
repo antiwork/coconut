@@ -8,21 +8,28 @@ from uuid import uuid4
 MAX_IMAGE_BYTES = 4 * 1024 * 1024
 
 
-def image_size(content):
+def prepared_image(content):
+    """The bytes to store, the size and the extension of a preview image. A WebP photo, which listing and shop sites
+    often serve, is stored as a JPEG, so every app shows it."""
     # Pillow ships with Hermes. Decode before pausing for a decision.
     from PIL import Image, UnidentifiedImageError
+    formats = ['PNG', 'JPEG', 'WEBP']
     try:
-        with Image.open(BytesIO(content), formats=['PNG', 'JPEG']) as image:
+        with Image.open(BytesIO(content), formats=formats) as image:
             width, height = image.size
             if min(width, height) < 1 or max(width, height) > 16000 or width * height > 40_000_000:
                 raise ValueError('Keep preview dimensions under 16,000 pixels and 40 megapixels.')
-            extension = 'png' if image.format == 'PNG' else 'jpg'
+            kind = image.format
             image.verify()
-        with Image.open(BytesIO(content), formats=['PNG', 'JPEG']) as image:
+        with Image.open(BytesIO(content), formats=formats) as image:
             image.load()
-        return width, height, extension
+            if kind == 'WEBP':
+                output = BytesIO()
+                image.convert('RGB').save(output, format='JPEG', quality=90)
+                content = output.getvalue()
+        return content, width, height, 'png' if kind == 'PNG' else 'jpg'
     except (OSError, SyntaxError, UnidentifiedImageError, Image.DecompressionBombError) as error:
-        raise ValueError('Use a complete PNG or JPEG image that can be opened.') from error
+        raise ValueError('Use a complete PNG, JPEG or WebP image that can be opened.') from error
 
 
 def attach_previews(service, decision, payload):
@@ -50,7 +57,7 @@ def attach_previews(service, decision, payload):
             total += len(content)
             if len(content) > MAX_IMAGE_BYTES or total > 12 * 1024 * 1024:
                 raise ValueError('Keep each image under 4 MB and all previews under 12 MB.')
-            width, height, extension = image_size(content)
+            content, width, height, extension = prepared_image(content)
         except (OSError, ValueError) as error:
             raise ServiceError(400, str(error) if isinstance(error, ValueError) else 'The preview image could not be read.') from error
         artifact_id = str(uuid4())
