@@ -2341,7 +2341,7 @@ def abbreviation_drift(repository, *patches):
     return drift
 
 
-def recover_digest(binding, root):
+def recover_digest(binding, root, persist):
     """Restore a retired worktree again whose first restore failed only its last comparison. Hold the registry lock.
 
     Only an explicit acquire of the owner calls this, for a binding whose only failure is that comparison
@@ -2351,8 +2351,8 @@ def recover_digest(binding, root):
     one, that the branch did not move and no worktree holds it or the path, and that Git now abbreviates the
     archived object names with more characters (abbreviation_drift). A refusal changes nothing. It then restores
     as usual. The archive stays, and the binding names it in `digest_recovery`. Other records of the binding, such
-    as `residue_recovery`, stay. A failure keeps a partial checkout whole in archive/residue/, and marks the
-    failure, so Coconut never tries again without a person.
+    as `residue_recovery`, stay. The binding names the place of a partial checkout before the restore. A failure
+    keeps a partial checkout whole there, and marks the failure, so Coconut never tries again without a person.
     """
     retired, failure = binding['retired'], binding['retired']['restore_failed']
     path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
@@ -2380,6 +2380,14 @@ def recover_digest(binding, root):
     checkout = directory / f'{path.name}-{time.time_ns()}-checkout'
     if directory.is_symlink() or os.path.lexists(checkout):
         raise ValueError('The residue folder is not safe.')
+    # The binding names the place of a partial checkout before the restore, so a stop cannot lose it. A later
+    # acquire then refuses.
+    binding['retired'] = dict(retired, residue=dict(checkout=str(checkout), at=stamp(datetime.now(timezone.utc))))
+    try:
+        persist()
+    except BaseException:
+        binding['retired'] = retired
+        raise
     try:
         unpack(dict(binding, retired=dict(retired, restore_failed=None)), {}, aside=checkout)
     except BaseException as error:
@@ -2724,9 +2732,10 @@ def restore(binding, checked, *, retry_duplicates=False, keep_archive=False, res
                                  f'The archive {archive} holds its uncommitted changes. The branch {binding["branch"]} '
                                  'holds its commits. Ask the operator to restore it.') from None
     # One recovery for each binding, so its record keeps naming the archive.
-    if residue_root and retry_duplicates and digest_failure(failure) and 'digest_recovery' not in binding:
+    if (residue_root and retry_duplicates and digest_failure(failure) and 'residue' not in retired
+            and 'digest_recovery' not in binding):
         try:
-            recover_digest(binding, residue_root)
+            recover_digest(binding, residue_root, persist)
             return
         except RESTORE_ERRORS as error:
             if 'retired' not in binding:

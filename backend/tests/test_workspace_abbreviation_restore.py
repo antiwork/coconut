@@ -247,6 +247,37 @@ class AbbreviationRestoreTests(unittest.TestCase):
         # The next turn gets the live worktree.
         self.assertEqual(self.gateway_acquire()['path'], str(self.path))
 
+    def test_the_owner_restores_into_the_empty_folder_that_a_native_claim_made(self):
+        # The owner's saved path is an empty folder: a native claim made it after the failed restore.
+        self.retire()
+        self.grow()
+        self.fail_first_restore()
+        self.path.mkdir(parents=True)
+        result = self.gateway_acquire()
+        self.assertNotIn('error', result)
+        self.assert_restored()
+        self.assertIn('digest_recovery', self.registry()[self.identity])
+
+    def test_a_stop_during_the_recovery_is_never_retried(self):
+        self.retire()
+        self.grow()
+        self.fail_first_restore()
+        on_disk = []
+
+        def killed(*_, **__):
+            # The process stops here. What the registry holds on disk now is what the next acquire finds.
+            on_disk.append(self.manifest.read_text())
+            raise KeyboardInterrupt
+        with patch.object(work_workspace, 'unpack', side_effect=killed):
+            with self.assertRaises(KeyboardInterrupt):
+                acquire(self.workspaces, self.outcome, str(self.repo))
+        self.manifest.write_text(on_disk[0])
+        saved = self.registry()[self.identity]
+        # The registry names the place of a partial checkout before the restore, and keeps the first failure.
+        self.assertIn('checkout', saved['retired']['residue'])
+        self.assertEqual(saved['retired']['restore_failed'], self.before['retired']['restore_failed'])
+        self.assert_fenced(self.gateway_acquire(), saved)
+
     # Refusals: each keeps the saved failure, the archive, and the empty path.
 
     def test_a_saved_digest_failure_without_longer_names_stays_fenced(self):
