@@ -127,7 +127,9 @@ private struct MacInboxRow: View {
         HStack(alignment: .top, spacing: 10) {
             if let bot { LiveBotAvatar(bot: bot, size: 22) }
             VStack(alignment: .leading, spacing: 2) {
-                Text(decision.title).font(.body.weight(.medium)).lineLimit(2)
+                // The title always takes two lines, so each row has the same height. The Mac list keeps the height that
+                // it measured first. A title that wrapped to more lines later was cut off with the bot name under it.
+                Text(decision.title).font(.body.weight(.medium)).lineLimit(2, reservesSpace: true)
                 HStack(spacing: 4) {
                     Text(bot?.name ?? "Bot")
                     if let date = decision.createdAt.apiDate {
