@@ -49,7 +49,7 @@ const HOST_WAIT_MS = 5000;
 // message of the phone is 96 bytes, 128 bytes in base64.
 const MAX_WAITING_ATTACHMENT = 1536;
 const REGISTRATIONS_PER_HOUR = 10;
-const HEX64 = /^[a-f0-9]{64}$/;
+export const HEX64 = /^[a-f0-9]{64}$/;
 
 export const hash = value => createHash('sha256').update(value).digest('hex');
 // A host message: `channel u32 big-endian | bytes`.
@@ -60,8 +60,8 @@ const framed = (channel, bytes) => {
   return frame;
 };
 const control = value => framed(0, new TextEncoder().encode(JSON.stringify(value)));
-const close = (ws, code, reason) => { try { ws.close(code, reason); } catch {} };
-const send = (ws, data) => { try { ws.send(data); } catch {} };
+export const close = (ws, code, reason) => { try { ws.close(code, reason); } catch {} };
+export const send = (ws, data) => { try { ws.send(data); } catch {} };
 
 // Reads the body as a stream and stops at the cap. It returns null for a larger body.
 export async function readBytes(request, limit) {
