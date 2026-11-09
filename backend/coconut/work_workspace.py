@@ -2108,34 +2108,48 @@ def checkout_marks(path, names):
     return result
 
 
+def archive_mark(archive):
+    """Return the inode, size, and times of an archive file. A replaced or rewritten archive gives another mark."""
+    status = os.stat(archive)
+    return status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns
+
+
 def archived_marks(path, archive):
-    """Return (matching fingerprint or None, starting fingerprint) for archived files."""
-    with tarfile.open(archive) as tar:
+    """Return (matching fingerprint or None, starting fingerprint, patches, archive mark) for archived files.
+
+    `patches` are the archived staged and unstaged patches of a matching checkout, or None. They come from the same
+    read as the files, so unpack can compare the checkout's patches under the registry lock without another read of
+    the archive (matches_archive). `archive mark` is archive_mark of the file that this read opened.
+    """
+    with open(archive, 'rb') as stream, tarfile.open(fileobj=stream) as tar:
+        status = os.fstat(stream.fileno())
+        mark = status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns
         members = list(archived_members(tar))
         names = [name for _, name in members]
         marks = checkout_marks(path, names)
-        if any(len(mark) == 2 for mark in marks):
+        if any(len(entry) == 2 for entry in marks):
             # A file appearing during comparison must not make a missing starting file look intact.
-            return None, marks
+            return None, marks, None, mark
         for member, name in members:
             target = path / name
             if member.issym():
                 if not target.is_symlink() or os.readlink(target) != member.linkname:
-                    return None, marks
+                    return None, marks, None, mark
             elif (not target.is_file() or target.is_symlink() or target.stat().st_size != member.size
                     or path_digest(target) != file_digest(tar.extractfile(member))):
                 # Same size is not enough. Compare the contents with the archived copy.
-                return None, marks
-    return marks, marks
+                return None, marks, None, mark
+        patches = tuple(tar.extractfile(name).read() for name in PATCHES)
+    return marks, marks, patches, mark
 
 
 def compare_checkouts(bindings):
     """Compare each checkout at the path of a retired binding with its archive. Run without the registry lock.
 
     The archived files can total hundreds of megabytes, so Coconut reads them before it takes the lock.
-    Return a map from each binding, as JSON, to the fingerprint of its archived files, or to None when
-    the checkout does not match. Under the lock, unpack accepts a checkout only when its binding and its
-    fingerprint did not change.
+    Return a map from each binding, as JSON, to the result of archived_marks, or to None when the comparison
+    failed. Under the lock, unpack accepts a checkout only when its binding, its fingerprint, and the archive file
+    did not change. It then uses the archived patches of this read.
     """
     checked = {}
     for binding in bindings:
@@ -2519,27 +2533,30 @@ def unpack(binding, checked, *, retry_failure=None, aside=None):
         raise ValueError('A failed restore cannot be retried over an occupied path.')
     if occupied(path):
         # Retirement stopped before Git removed the checkout, or a restore stopped before the registry changed.
-        # compare_checkouts read the files without the lock. Here Coconut compares only their fingerprint.
+        # compare_checkouts read the files and the patches without the lock. Here Coconut compares only their
+        # fingerprint, and the checkout's own patches with the archived ones.
         key = json.dumps(binding, sort_keys=True)
         if key not in checked:
             # A checkout appeared or the binding changed since the unlocked read.
             checked = compare_checkouts([binding])
         elif checked[key] is not None:
-            match, starting = checked[key]
-            if match is None and checkout_marks(path, [name for name, *_ in starting]) != starting:
-                # A partial checkout finished after comparison; retry only when its files changed.
+            match, starting, _, read = checked[key]
+            try:
+                current = archive_mark(archive)
+            except OSError:
+                current = None
+            if (match is None and checkout_marks(path, [name for name, *_ in starting]) != starting
+                    or match is not None and read != current):
+                # A partial checkout finished after comparison, or another file now has the archive's name. Compare
+                # again. Only then does Coconut read the archive under the lock.
                 checked = compare_checkouts([binding])
         record = checked.get(key)
-        marks = record[0] if record is not None else None
+        marks, patches = (record[0], record[2]) if record is not None else (None, None)
         try:
             validate_binding(dict(binding))
-
-            def archived():
-                with tarfile.open(archive) as tar:
-                    return tuple(tar.extractfile(name).read() for name in PATCHES)
             intact = (marks is not None
                       and git(path, 'rev-parse', 'HEAD') == retired['head']
-                      and matches_archive(path, archived, retired['changes'])
+                      and matches_archive(path, lambda: patches, retired['changes'])
                       and checkout_marks(path, [name for name, *_ in marks]) == marks)
         except RESTORE_ERRORS:
             intact = False

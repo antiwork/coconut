@@ -8,6 +8,7 @@ coconut_workspace (Service.gateway_tool and the plugin's _workspace) where the r
 """
 import contextlib
 from datetime import datetime, timedelta, timezone
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -244,6 +245,97 @@ class AbbreviationRestoreTests(unittest.TestCase):
             binding = self.registry()[self.identity]
             work_workspace.unpack(binding, checked)
         self.assertEqual(reads, [])
+
+    def opened_under_lock(self):
+        """Patch tarfile.open to record, for each open of an archive, whether the registry lock is held."""
+        real, opens = tarfile.open, []
+
+        def probe(*arguments, **options):
+            with (self.workspaces / '.workspace.lock').open('a') as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    opens.append(False)
+                except BlockingIOError:
+                    opens.append(True)
+            return real(*arguments, **options)
+        return patch.object(work_workspace.tarfile, 'open', side_effect=probe), opens
+
+    def leftover_after_growth(self):
+        """A restore that stopped before the registry changed left a complete checkout. Then the repository grew."""
+        self.retire()
+        work_workspace.unpack(self.registry()[self.identity], {})
+        self.grow()
+        self.assertNotEqual(changes_digest(*changes(self.path)), self.registry()[self.identity]['retired']['changes'])
+
+    def test_an_adoption_after_growth_reads_the_archive_only_before_the_lock(self):
+        self.leftover_after_growth()
+        probe, opens = self.opened_under_lock()
+        with probe:
+            binding = acquire(self.workspaces, self.outcome, str(self.repo))
+        self.assertEqual(binding['path'], str(self.path))
+        self.assert_restored()
+        # compare_checkouts read the archive once without the lock. Under the lock, unpack used that read.
+        self.assertEqual(opens, [False])
+
+    def test_an_adoption_without_an_unlocked_comparison_compares_under_the_lock(self):
+        self.leftover_after_growth()
+        probe, opens = self.opened_under_lock()
+        # The binding changed after the unlocked comparison, so the comparison has no entry for it.
+        real = work_workspace.compare_checkouts
+        calls = []
+
+        def missing_first(bindings):
+            bindings = list(bindings)
+            calls.append(bindings)
+            return {} if len(calls) == 1 else real(bindings)
+        with probe, patch.object(work_workspace, 'compare_checkouts', side_effect=missing_first):
+            self.assertEqual(acquire(self.workspaces, self.outcome, str(self.repo))['path'], str(self.path))
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(opens, [True])
+        self.assert_restored()
+
+    def test_a_replaced_archive_is_compared_again_and_refused(self):
+        self.leftover_after_growth()
+        real = work_workspace.compare_checkouts
+        calls = []
+
+        def replace_after(bindings):
+            result = real(bindings)
+            if not calls:
+                # Another file takes the archive's name after the unlocked read. Its patches are not the saved ones.
+                other = self.archive.with_name('.other')
+                with tarfile.open(fileobj=io.BytesIO(self.archive_bytes)) as source, tarfile.open(other, 'w:gz') as target:
+                    for member in source.getmembers():
+                        data = source.extractfile(member).read() if member.isfile() else None
+                        if member.name == 'unstaged.patch':
+                            data = data.replace(b'QA change of index.tsx', b'QA change of other.tsx')
+                            member.size = len(data)
+                        target.addfile(member, io.BytesIO(data) if data is not None else None)
+                os.replace(other, self.archive)
+            calls.append(result)
+            return result
+        with patch.object(work_workspace, 'compare_checkouts', side_effect=replace_after):
+            with self.assertRaisesRegex(ValueError, 'is not empty and does not match the archive'):
+                acquire(self.workspaces, self.outcome, str(self.repo))
+        self.assertEqual(len(calls), 2)
+        # The checkout and the archive stay, and the restore is fenced.
+        self.assertTrue((self.path / '.git').is_file())
+        self.assertTrue(self.archive.exists())
+        self.assertIn('restore_failed', self.registry()[self.identity]['retired'])
+
+    def test_files_changed_after_the_unlocked_comparison_are_refused(self):
+        self.leftover_after_growth()
+        real = work_workspace.compare_checkouts
+
+        def edit_after(bindings):
+            result = real(bindings)
+            (self.path / EVIDENCE / 'ledger.json').write_text('{"run": 2}\n')
+            return result
+        with patch.object(work_workspace, 'compare_checkouts', side_effect=edit_after):
+            with self.assertRaisesRegex(ValueError, 'is not empty and does not match the archive'):
+                acquire(self.workspaces, self.outcome, str(self.repo))
+        self.assertEqual((self.path / EVIDENCE / 'ledger.json').read_text(), '{"run": 2}\n')
+        self.assertTrue(self.archive.exists())
 
     def test_the_owner_restores_after_the_saved_digest_failure_and_keeps_every_record(self):
         records = {}
