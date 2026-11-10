@@ -6,8 +6,8 @@ and the routines of a bot that no gateway serves are paused (gateway_chat.gatewa
 
 A cron run executes in a Hermes cron session, often in a separate worker process, outside a Coconut chat turn. When a
 run in a bot's profile starts, the hooks (hooks.py) open a Coconut turn for it with `POST /v1/gateway/cron`. The
-service makes a routine task in the bot's chat. The run then reports to that turn as a chat turn does: streamed text,
-commentary, the final answer (post_llm_call) and the end (on_session_end). The coconut tools act for that task. A
+service makes a routine task in the bot's chat. The run then reports to that turn as a chat turn does: commentary,
+the final answer (post_llm_call) and the end (on_session_end). The coconut tools act for that task. A
 card of coconut_ask ends the run, as in a chat turn, and its answer continues the routine task in the bot's chat.
 
 The run finds its identity with `cron.execution_identity.current_cron_execution`, which Hermes binds for each fire.
@@ -18,7 +18,7 @@ import logging
 import os
 import threading
 
-from .adapter import DEFAULT_BRIDGE, PAUSED, REQUEST_SECONDS, WAITED, Bridge, StreamRelay
+from .adapter import DEFAULT_BRIDGE, PAUSED, REQUEST_SECONDS, WAITED, Bridge
 
 LOG = logging.getLogger(__name__)
 _RUNS: dict[str, 'CronRun'] = {}
@@ -36,7 +36,7 @@ def _bridge_path():
     return DEFAULT_BRIDGE
 
 
-class CronRun(StreamRelay):
+class CronRun:
     """The Coconut turn of one cron run. It offers what the hooks and the tools use of an adapter."""
 
     def __init__(self, execution, session_id=''):
@@ -44,7 +44,6 @@ class CronRun(StreamRelay):
         # The Hermes session of the run. An answer to a card of the run continues this session.
         self.session_id = str(session_id or '')
         self._bridge = Bridge(_bridge_path())
-        self._init_relay()
         self.turn = None
         self.count = 0
 
@@ -102,7 +101,6 @@ def finish(outcome):
     """Report the end of the cron run of this context, and forget the run."""
     run = current()
     if run is not None:
-        run.flush_stream(run.turn)
         for delay in (1, 2, 5, None):
             if run.report('done', outcome=outcome):
                 break

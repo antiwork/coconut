@@ -145,6 +145,10 @@ class Model(BaseHTTPRequestHandler):
                 data.update(object='chat.completion.chunk', choices=[
                     dict(index=0, delta=delta, finish_reason=finish if index == len(deltas) - 1 else None)])
                 self.wfile.write(('data: ' + json.dumps(data) + '\n\n').encode())
+                if message.get('content') == REPLY and index == 0:
+                    # A streaming platform would show this first piece before the rest arrives.
+                    self.wfile.flush()
+                    time.sleep(.5)
             data.update(choices=[], usage=usage)
             self.wfile.write(('data: ' + json.dumps(data) + '\n\n').encode())
             self.wfile.write(b'data: [DONE]\n\n')
@@ -176,6 +180,9 @@ class NativeGatewayChatTests(unittest.TestCase):
         (home / 'config.yaml').write_text(json.dumps({
             'model': {'default': 'stub-model', 'provider': 'custom', 'api_key': 'stub-key', 'context_length': 131072,
                       'base_url': f'http://127.0.0.1:{self.model.server_port}/v1'},
+            # The person may stream to other platforms, here with each piece at once. Hermes streams nothing to the
+            # coconut platform.
+            'streaming': {'enabled': True, 'edit_interval': 0.05, 'buffer_threshold': 1},
             'gateway': {'platforms': {'coconut': {'enabled': True,
                                                   'extra': {'bridge': str(data / 'gateway/bridge.json')}}}}}))
         environment = {key: os.environ[key] for key in ('PATH', 'HOME', 'USER', 'LANG') if key in os.environ}
@@ -209,6 +216,9 @@ class NativeGatewayChatTests(unittest.TestCase):
 
         os.environ['HERMES_DISABLE_LAZY_INSTALLS'] = '1'
         service = Service(data, Provider(data), start_workers=False, hermes_home=home)
+        events = []
+        record = service.gateway_bridge.event
+        service.gateway_bridge.event = lambda event: (events.append(dict(event)), record(event))[1]
         server = APIServer(('127.0.0.1', 0), service)
         threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .1}, daemon=True).start()
         log = data / 'gateway/gateway.log'
@@ -242,8 +252,10 @@ class NativeGatewayChatTests(unittest.TestCase):
             service._run_task(task['id'])
             replies = [m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
             self.assertEqual(service._get('tasks', task['id'])['status'], 'completed', diagnostics())
-            # The streamed pieces and the final send make one reply.
+            # The reply comes whole with one send. No partial text and no edit reach Coconut.
             self.assertEqual(replies, [REPLY], diagnostics())
+            self.assertEqual([(event['kind'], event.get('text')) for event in events
+                              if event['kind'] in ('delta', 'send', 'edit')], [('send', REPLY)], diagnostics())
             turn = [request for request in Model.requests if 'Say hello.' in json.dumps(request['messages'])]
             self.assertTrue(turn, diagnostics())
             # The gateway turn continues the bot's native conversation, and it has the coconut tools.

@@ -611,38 +611,21 @@ class GatewayAdapterTests(unittest.TestCase):
         from gateway.session_context import SESSION
         return SESSION.set({'HERMES_SESSION_PLATFORM': 'coconut', 'HERMES_SESSION_CHAT_ID': chat_id})
 
-    def test_streamed_text_of_the_hooks_reaches_the_reply_before_the_final_send(self):
-        hooks = sys.modules['hermes_plugins.coconut.hooks']
+    def test_the_reply_reaches_the_chat_whole_with_the_final_send(self):
+        # Without message edits, Hermes streams no partial text to the platform, whatever the person's settings.
+        self.assertIs(self.adapter_module.CoconutAdapter.SUPPORTS_MESSAGE_EDITING, False)
         seen = []
         async def runner(event):
-            def model_call():
-                token = self.session(event.source.chat_id)
-                try:
-                    hooks.stream_start()
-                    for piece in ('Hello', ' from', ' the stream.'):
-                        hooks.stream_delta(delta=piece, kind='text', surface='coconut')
-                    hooks.stream_delta(delta='private', kind='reasoning')
-                    hooks.stream_end(final_text='Hello from the stream.')
-                finally:
-                    from gateway.session_context import SESSION
-                    SESSION.reset(token)
-            await asyncio.to_thread(model_call)
-            # The service translates the streamed pieces in the thread of the turn.
-            for _ in range(100):
-                with self.service.lock:
-                    texts = [m['text'] for m in self.service._task_messages(task['id']) if m['role'] == 'assistant']
-                if texts == ['Hello from the stream.']:
-                    break
-                await asyncio.sleep(.02)
-            seen.append(texts)
-            return 'Hello from the stream.'
+            # The model writes. The chat shows no text of the reply before the gateway sends it.
+            await asyncio.sleep(.1)
+            with self.service.lock:
+                seen.append([m['text'] for m in self.service._task_messages(task['id']) if m['role'] == 'assistant'])
+            return 'Hello, in one piece.'
         self.connect(runner)
-        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Stream, please.'})
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Say hello.'})
         self.service._run_task(task['id'])
-        self.assertEqual(seen, [['Hello from the stream.']])
-        self.assertEqual(self.replies(task), [('Hello from the stream.', False)])
-        # Outside a Coconut chat the hooks do nothing.
-        hooks.stream_delta(delta='ignored', kind='text')
+        self.assertEqual(seen, [[]])
+        self.assertEqual(self.replies(task), [('Hello, in one piece.', False)])
 
     def test_a_clarify_question_and_an_approval_become_cards_and_their_answers_return_to_hermes(self):
         import tools.approval
@@ -817,8 +800,6 @@ class GatewayAdapterTests(unittest.TestCase):
             try:
                 with patch.dict(os.environ, HERMES_HOME=str(self.home)):
                     hooks.cron_start(session_id='cron-session', platform='cron')
-                    hooks.stream_start()
-                    hooks.stream_delta(delta='Checking the queue.', kind='text')
                     hooks.cron_interim(text='Checking the queue.')
                     proposals.append(json.loads(tools._service_tool('suggest')({
                         'key': 'intake', 'title': 'File two items?', 'context': 'Two items wait.',
@@ -1371,8 +1352,7 @@ class GatewayAdapterTests(unittest.TestCase):
                                                              'coconut_kanban_schedule', 'coconut_kanban_heartbeat',
                                                              'coconut_kanban_request_review', 'coconut_kanban_link',
                                                              'coconut_kanban_unblock'])
-        self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end',
-                                      'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
+        self.assertEqual(hook_names, ['pre_gateway_dispatch', 'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
                                       'pre_tool_call', 'post_tool_call', 'post_api_request', 'on_session_reset'])
         # The card tool states the order rule, as the worker's tool does.
         self.assertIn('must be the first item of options',

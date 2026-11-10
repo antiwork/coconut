@@ -159,9 +159,8 @@ def verify_gateway_contract():
     # A Coconut turn waits while the gateway runs another turn in its session (hooks.session_busy).
     require_keywords(GatewayRunner._is_session_running, ['session_key'])
     require_keywords(GatewayRunner._session_key_for_source, ['source'])
-    missing = {'pre_gateway_dispatch', 'on_stream_start', 'on_stream_delta', 'on_stream_end', 'on_session_start',
-               'on_interim_message', 'post_llm_call', 'on_session_end', 'pre_tool_call', 'post_api_request',
-               'on_session_reset'} - set(VALID_HOOKS)
+    missing = {'pre_gateway_dispatch', 'on_session_start', 'on_interim_message', 'post_llm_call', 'on_session_end',
+               'pre_tool_call', 'post_api_request', 'on_session_reset'} - set(VALID_HOOKS)
     if missing:
         raise ValueError('Hermes removed plugin hooks of the coconut platform: ' + ', '.join(sorted(missing)))
     # The card rules go into the system prompt of each Coconut session with the hint of the platform

@@ -8,8 +8,8 @@ run in the Coconut worker until phase 5 moves them. Both continue the same nativ
 provider runs every turn.
 
 Hermes also runs a bot's chat by itself, for example when a background process of an earlier turn finishes. The adapter
-asks for a Coconut turn for such a run (gateway_hermes_run), so its text streams and the coconut tools act for it. A
-send that still comes outside any turn (gateway_message) becomes a message of the bot in a finished task of its chat.
+asks for a Coconut turn for such a run (gateway_hermes_run), so its messages go to the chat and the coconut tools act
+for it. A send that still comes outside any turn (gateway_message) becomes a message of the bot in a finished task of its chat.
 
 A gateway turn reaches Coconut in two more ways. A question of Hermes (clarify, command approval, coconut_ask) becomes a
 decision card, and its answer returns to the waiting turn (record_gateway_question, answer_gateway_question). A tool of
@@ -497,7 +497,7 @@ class GatewayChat:
                     current.pop('_preempted', None)
                     self._put('tasks', current)
             return
-        # The reply that the stopped turn streamed so far is not its answer.
+        # The reply that the stopped turn sent so far is not its answer.
         emit('text_delta', {'text': '', 'replace': True})
         with self.transaction():
             task = self._get('tasks', task_id)
@@ -707,7 +707,7 @@ class GatewayChat:
             if kind in ('phase', 'interim_message', 'completed'):
                 return None
             if kind == 'interim_seal':
-                # The streamed text so far was commentary, not the answer.
+                # An earlier segment is not the answer. The answer is the newest segment.
                 return emit('text_delta', {'text': '', 'replace': True})
             if kind == 'gateway_question':
                 raise ServiceError(409, 'A follow-up on a card cannot ask the person.')
@@ -1193,7 +1193,7 @@ class GatewayChat:
         home = os.path.realpath(require_text(data, 'home', 4096))
         chat_id, message_id = require_text(data, 'chat_id', 200), require_text(data, 'message_id', 200)
         # The chat of a work session or of a status question belongs to its bot. The message goes to the bot's chat.
-        # The Hermes chat stays on the message, so a message ID and a streamed reply belong to one Hermes chat.
+        # The Hermes chat stays on the message, so a message ID belongs to one Hermes chat.
         hermes_chat, chat_id = chat_id, chat_bot(chat_id)
         if (self._gateway_profile(home) or {}).get('bot_id') != chat_id:
             raise ServiceError(404, 'This chat is not the bot of this Hermes profile.')
@@ -1211,7 +1211,7 @@ class GatewayChat:
             if kind != 'send':
                 if message is None:
                     return {'recorded': False, 'reason': 'The chat does not show this message.'}
-                return self._change_gateway_message(bot, message, kind, text, bool(data.get('finalize')))
+                return self._change_gateway_message(bot, message, kind, text)
             if message is not None:
                 return {'recorded': True, 'task_id': message['task_id']}
             if not text.strip():
@@ -1219,16 +1219,9 @@ class GatewayChat:
             job_id = data.get('job_id')
             if isinstance(job_id, str) and job_id and self._gateway_cron_shown(chat_id, job_id):
                 return {'recorded': False, 'reason': 'A routine task in the chat shows this cron run.'}
-            # A streamed reply whose last edit never came ends with the next message of its Hermes chat.
-            for (raw,) in self.db.execute(
-                    "SELECT data FROM messages WHERE json_extract(data,'$.bot_id')=? "
-                    "AND json_extract(data,'$._gateway_message_id') IS NOT NULL "
-                    "AND coalesce(json_extract(data,'$._gateway_chat_id'), json_extract(data,'$.bot_id'))=? "
-                    "AND json_extract(data,'$.streaming') IN (1, 'true')", (chat_id, hermes_chat)).fetchall():
-                self._change_gateway_message(bot, json.loads(raw), 'edit', json.loads(raw)['text'], True)
             task = self._gateway_outside_task(bot, text)
-            # A reply that Hermes streams arrives as a first piece and then edits. It pushes when the last edit ends it.
-            message = self._message(bot['id'], text, task_id=task['id'], streaming=data.get('streaming') is True)
+            # Hermes streams no partial text to the platform, so each send is a complete message.
+            message = self._message(bot['id'], text, task_id=task['id'])
             message['_gateway_message_id'], message['_gateway_chat_id'] = message_id, hermes_chat
             self._put('messages', message)
             self._refresh_bot(bot['id'])
@@ -1240,7 +1233,7 @@ class GatewayChat:
         return next((row for row in list((self.profiles.rows or {}).values())
                      if row.get('state') == 'active' and os.path.realpath(row['home']) == home), None)
 
-    def _change_gateway_message(self, bot: dict, message: dict, kind: str, text: str, finalize: bool) -> dict:
+    def _change_gateway_message(self, bot: dict, message: dict, kind: str, text: str) -> dict:
         """Edit or delete a message outside a turn, and keep the bot's preview and unread count true. The caller holds
         the transaction.
 
@@ -1249,7 +1242,6 @@ class GatewayChat:
         """
         if message.get('_hidden'):
             return {'recorded': False, 'reason': 'The chat no longer shows this message.'}
-        finished = bool(message.get('streaming')) and finalize
         visible = ("json_extract(data,'$.bot_id')=? AND COALESCE(json_extract(data,'$._hidden'),0)=0 "
                    "AND COALESCE(json_extract(data,'$._deleted'),0)=0")
         previews = [json.loads(raw) for (raw,) in self.db.execute(
@@ -1262,21 +1254,17 @@ class GatewayChat:
                 "ORDER BY rowid DESC LIMIT ?", (bot['id'], max(0, bot['unread_count'])))}
             if message['id'] in unread:
                 bot['unread_count'] -= 1
-            message.update(_hidden=True, streaming=False)
+            message['_hidden'] = True
             if newest:
                 bot['last_message'] = previews[1]['text'][:160] if len(previews) > 1 else ''
         else:
             message['text'] = text
-            if finished:
-                message['streaming'] = False
             if newest:
                 bot['last_message'] = text[:160]
         self._put('bots', bot)
         self._put('messages', message)
         self._event('message.updated', dict(self._public(message), _hidden=bool(message.get('_hidden'))),
                     message['bot_id'], message['task_id'])
-        if finished:
-            self.push.record('message.completed', message, message['bot_id'], message['task_id'])
         self._refresh_bot(message['bot_id'])
         return {'recorded': True, 'task_id': message['task_id']}
 
@@ -1477,8 +1465,8 @@ class GatewayChat:
 
     def gateway_hermes_run(self, data: dict) -> dict:
         """POST /v1/gateway/wake: Hermes runs a bot's chat by itself, for example when a background process of an
-        earlier turn finishes. Open a Coconut turn for that run, as for a cron run, so that its text streams and the
-        coconut tools act for it. Without a turn, a tool such as coconut_message_bot refused the run.
+        earlier turn finishes. Open a Coconut turn for that run, as for a cron run, so that its messages go to the chat and
+        the coconut tools act for it. Without a turn, a tool such as coconut_message_bot refused the run.
 
         Return {skip: true} for a profile that is not a bot, for another chat, and while the bot's chat runs a turn.
         The run's input stays out of the chat: it is a notice of Hermes, not a message of the person.

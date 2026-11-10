@@ -1,4 +1,4 @@
-"""Plugin hooks of the `coconut` platform: one conversation for each bot, and streamed text.
+"""Plugin hooks of the `coconut` platform: one conversation for each bot.
 
 One conversation. A Coconut bot has one native conversation in its profile's state.db. The Coconut worker resumes it
 from a root session ID and records the newest session as the tip in the `state_meta` table of Hermes
@@ -26,10 +26,8 @@ Compression. `note_prompt_size` (post_api_request) marks a Coconut chat whose mo
 threshold of Hermes, and the adapter compresses that chat after the turn. `follow_new_session` (on_session_reset) keeps
 the bot's conversation in the new session after /new.
 
-Streamed text. The `on_stream_*` hooks receive the text deltas of each model call, also when the gateway streams nothing
-to the platform (`streaming.enabled` off). A hook runs in a Hermes dispatcher thread with the session context of the
-turn, so `get_session_env` names the chat. Only a turn of a Coconut chat that an adapter of this process runs goes to
-the service. The person's streaming settings stay as they are.
+Text. The plugin sends no partial text. The phone shows a message of the bot only when it is complete: each send of
+the gateway, and for a cron run each commentary and the answer (cron.py).
 """
 from __future__ import annotations
 
@@ -46,9 +44,6 @@ TIP_KEY = 'coconut.session-tip.'
 
 def register(ctx):
     ctx.register_hook('pre_gateway_dispatch', join_conversation)
-    ctx.register_hook('on_stream_start', stream_start)
-    ctx.register_hook('on_stream_delta', stream_delta)
-    ctx.register_hook('on_stream_end', stream_end)
     # A cron run of the gateway in a bot's profile is a Coconut turn (cron.py).
     ctx.register_hook('on_session_start', cron_start)
     ctx.register_hook('on_interim_message', cron_interim)
@@ -468,11 +463,10 @@ def cron_start(session_id='', **_):
     cron.current(session_id)
 
 
-def cron_interim(text='', already_streamed=False, **_):
+def cron_interim(text='', **_):
     from . import cron
     run = cron.current()
     if run is not None and str(text).strip():
-        run.flush_stream(run.turn)
         run.send(text, interim=True)
 
 
@@ -480,7 +474,6 @@ def cron_answer(assistant_response='', **_):
     from . import cron
     run = cron.current()
     if run is not None and str(assistant_response or '').strip():
-        run.flush_stream(run.turn)
         run.send(assistant_response)
 
 
@@ -488,23 +481,3 @@ def cron_end(completed=False, failed=False, interrupted=False, **_):
     from . import cron
     cron.finish('cancelled' if interrupted else 'success' if completed and not failed else 'failure')
 
-
-def stream_start(**_):
-    adapter, turn = _turn()
-    if turn is not None:
-        adapter.flush_stream(turn)
-        adapter._stream_numbers[turn] = adapter._stream_numbers.get(turn, 0) + 1
-
-
-def stream_delta(delta='', kind='text', **_):
-    if kind != 'text' or not delta:
-        return
-    adapter, turn = _turn()
-    if turn is not None:
-        adapter.stream(turn, adapter._stream_numbers.get(turn, 0), str(delta))
-
-
-def stream_end(**_):
-    adapter, turn = _turn()
-    if turn is not None:
-        adapter.flush_stream(turn)
