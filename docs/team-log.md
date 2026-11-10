@@ -74,7 +74,7 @@ Each payload has these fields:
 | Field | Meaning |
 | --- | --- |
 | `kind` | The kind of the entry. |
-| `rev` | An integer from 1. It grows with each replacement of the entry. |
+| `rev` | A whole number from 1 to 2^53 - 1 (9007199254740991). It grows with each replacement of the entry. |
 | `at` | The time of the author's Mac, ISO 8601 in UTC. |
 
 | Kind | `kept` | Author | Fields |
@@ -91,12 +91,14 @@ The kinds `member` and `delete` are complete. Each other kind gets its fields in
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
-The Mac counts Unicode code points for the limits of `name`, `avatar` and `color`, because the Python standard library cannot count the characters that a person sees. A `member` entry that does not fit stays in the store and changes no member. When a member has more than one `member` entry, the one with the highest `seq` counts, so each Mac shows the same member.
+A text field must be valid Unicode text. JSON can carry a lone surrogate, for example `"\ud800"`, and the store of a Mac cannot keep it as text.
+
+The Mac counts Unicode code points for the limits of `name`, `avatar` and `color`, because the Python standard library cannot count the characters that a person sees. A `member` entry that does not fit, or that has a `name`, `avatar` or `color` that is not valid Unicode text, stays in the store and changes no member. When a member has more than one `member` entry, the one with the highest `seq` counts, so each Mac shows the same member.
 
 ### Rules for a Mac that reads an entry
 
 1. If the version of the body is later than the Mac knows, keep the bytes and try again after the next update of Coconut. This check comes first, because a later version can have another form.
-2. Open the body with the room key of its epoch. Then check the signature with `member`. If one of them fails, drop the entry and write a log line. Do the same when the payload is not a JSON object with a `kind` (1 to 64 characters) and an integer `rev` from 1.
+2. Open the body with the room key of its epoch. Then check the signature with `member`. If one of them fails, drop the entry and write a log line. Do the same when the payload is not a JSON object with a `kind` (1 to 64 characters of valid Unicode text) and a whole `rev` from 1 to 2^53 - 1.
    - If the Mac has no room key for the epoch, and the epoch is before the first epoch that the Mac has a key for, skip the entry. A member that joins later never gets the keys of earlier epochs.
    - If the epoch is later, keep the bytes until the key comes in a `key` entry.
 3. If the Mac already has this entry ID, accept the entry only from the same member and only with a higher `rev`.
@@ -124,6 +126,7 @@ The routes of a room start with `/v1/rooms/<room ID>`. The room ID is 32 random 
 - `proof` is the Ed25519 signature of the member key over `"coconut room member v1" | room ID (32 bytes) | hash (32 bytes)`. It shows that the Mac has the key of its member ID. Without it, a Mac could take the ID of a removed member and replace the entries that this member left.
 - `welcome`, `body` and `proof` are standard base64 in JSON.
 - An entry in an answer has the fields of the [entry table](#entry).
+- Each number of an answer (`seq`, `first`, `at` and `last`) is a whole number from 0 to 2^53 - 1, so JavaScript and SQLite keep it exact. A Mac takes an answer with another number as no answer.
 - One answer of `GET .../entries` holds at most 256 entries and at most 1 MiB of bodies. An entry that is larger than the rest of that limit comes alone. A Mac reads again while `last` is higher than the last `seq` that it got.
 
 ### Socket

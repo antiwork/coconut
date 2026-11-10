@@ -22,6 +22,14 @@ HEX64 = re.compile(r'[a-f0-9]{64}')
 HEX32 = re.compile(r'[a-f0-9]{32}')
 BASE64 = re.compile(r'(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?')
 HOST = re.compile(r'[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+')
+# The largest whole number of the contract. JavaScript keeps each number up to this one exact, and SQLite stores it.
+# A larger number from the relay or in a payload makes the binding of SQLite fail.
+MAX_NUMBER = 2 ** 53 - 1
+
+
+def number(value, low: int = 0) -> bool:
+    """True when a value of JSON is a whole number from `low` to MAX_NUMBER. A bool is no number here."""
+    return type(value) is int and low <= value <= MAX_NUMBER
 
 
 class TeamRelayError(Exception):
@@ -147,7 +155,7 @@ class TeamRelay:
         value = self._expect(self.request(relay, 'POST', f'{room}/entries', authorization='Bearer ' + token, tries=tries,
                                           body={'id': entry, 'kept': kept, 'body': body}), 200)
         seq, first = value.get('seq'), value.get('first')
-        if type(seq) is not int or type(first) is not int or not 1 <= first <= seq:
+        if not number(first, 1) or not number(seq, first):
             raise TeamRelayError(0, 'The relay gave no position for the entry.')
         return {'seq': seq, 'first': first}
 
@@ -157,7 +165,7 @@ class TeamRelay:
                                           authorization='Bearer ' + token), 200)
         entries, last = value.get('entries'), value.get('last')
         position = after
-        if not isinstance(entries, list) or type(last) is not int:
+        if not isinstance(entries, list) or not number(last):
             raise TeamRelayError(0, 'The relay gave no entries.')
         for entry in entries:
             if not valid_entry(entry) or entry['seq'] <= position:
@@ -172,9 +180,8 @@ class TeamRelay:
 
 def valid_entry(entry) -> bool:
     """True when an entry of an answer has the fields of the entry table of the contract."""
-    return (isinstance(entry, dict) and type(entry.get('seq')) is int and type(entry.get('first')) is int
-            and 1 <= entry['first'] <= entry['seq']
+    return (isinstance(entry, dict) and number(entry.get('first'), 1) and number(entry.get('seq'), entry['first'])
             and isinstance(entry.get('id'), str) and bool(HEX32.fullmatch(entry['id']))
             and isinstance(entry.get('member'), str) and bool(HEX64.fullmatch(entry['member']))
-            and type(entry.get('at')) is int and type(entry.get('kept')) is bool
+            and number(entry.get('at')) and type(entry.get('kept')) is bool
             and isinstance(entry.get('body'), str) and bool(entry['body']) and bool(BASE64.fullmatch(entry['body'])))

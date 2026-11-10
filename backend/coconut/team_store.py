@@ -18,6 +18,8 @@ import base64
 import json
 import re
 
+from .team_relay import number
+
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS team_rooms (room TEXT PRIMARY KEY, relay TEXT NOT NULL, name TEXT NOT NULL,
     member TEXT NOT NULL, admin TEXT NOT NULL, state TEXT NOT NULL, epoch INTEGER NOT NULL,
@@ -61,8 +63,24 @@ MEMBER_LIMITS = {'name': 80, 'avatar': 80, 'color': 20}
 AGREEMENT = re.compile(r'[A-Za-z0-9_-]{43}')
 
 
+def unicode_text(value) -> bool:
+    """True when a value is a str that UTF-8 can encode.
+
+    JSON can carry a lone surrogate such as "\\ud800", and json.loads gives it. The binding of SQLite cannot store
+    such a str, so a field with one does not fit.
+    """
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def read_payload(data) -> tuple[str, dict] | None:
-    """The text and the fields of a payload: one JSON object in UTF-8 with a `kind` and a `rev` from 1. Else None."""
+    """The text and the fields of a payload: one JSON object in UTF-8 with a `kind` and a `rev` from 1 to
+    MAX_NUMBER. Else None."""
     try:
         text = bytes(data).decode('utf-8')
         fields = json.loads(text)
@@ -71,8 +89,9 @@ def read_payload(data) -> tuple[str, dict] | None:
     if not isinstance(fields, dict):
         return None
     kind, rev = fields.get('kind'), fields.get('rev')
-    if not isinstance(kind, str) or not 0 < len(kind) <= MAX_KIND or type(rev) is not int or rev < 1:
+    if not unicode_text(kind) or not 0 < len(kind) <= MAX_KIND or not number(rev, 1):
         return None
+    # The text is the bytes of the payload, which are valid UTF-8, so SQLite can store it.
     return text, fields
 
 
@@ -81,7 +100,7 @@ def member_fields(fields: dict) -> dict | None:
     result = {}
     for name, limit in MEMBER_LIMITS.items():
         value = fields.get(name, '')
-        if not isinstance(value, str) or len(value) > limit:
+        if not unicode_text(value) or len(value) > limit:
             return None
         result[name] = value
     agreement = fields.get('agreement')

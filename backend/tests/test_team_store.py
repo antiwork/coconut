@@ -140,6 +140,19 @@ class TeamStoreTests(unittest.TestCase):
                 self.assertEqual(self.write(1, payload), (DROPPED, 'payload'))
         self.assertEqual(self.store.counts(ROOM), (0, 0))
 
+    def test_a_rev_is_a_whole_number_up_to_2_to_the_53_minus_1(self):
+        # A larger number does not fit the binding of SQLite, and the error stopped the sync of the room.
+        for rev in (2 ** 53, 2 ** 63, 2 ** 64):
+            with self.subTest(rev=rev):
+                self.assertEqual(self.write(1, {'kind': 'message', 'rev': rev}), (DROPPED, 'payload'))
+        self.assertEqual(self.write(1, {'kind': 'message', 'rev': 2 ** 53 - 1}), (STORED, None))
+        self.assertEqual(self.store.entry(ROOM, entry_id(1))['rev'], 2 ** 53 - 1)
+
+    def test_a_kind_that_is_not_valid_unicode_text_is_dropped(self):
+        # The JSON is valid UTF-8, but json.loads gives a lone surrogate, which SQLite cannot store.
+        self.assertEqual(self.write(1, b'{"kind":"\\ud800","rev":1}'), (DROPPED, 'payload'))
+        self.assertEqual(self.store.counts(ROOM), (0, 0))
+
     # Rule 3: a replacement
 
     def test_the_member_of_an_entry_replaces_it_with_a_higher_rev(self):
@@ -233,6 +246,17 @@ class TeamStoreTests(unittest.TestCase):
                 self.assertEqual(self.names(), [])
         self.assertEqual(self.write(1, self.member('Ada again', rev=20)), (STORED, None))
         self.assertEqual(self.names(), ['Ada again'])
+
+    def test_a_member_field_that_is_not_valid_unicode_text_stays_in_the_store_and_changes_no_member(self):
+        self.write(1, self.member('Ada'))
+        for rev, field in enumerate(('name', 'avatar', 'color'), start=2):
+            with self.subTest(field=field):
+                text = json.dumps(dict(self.member('Ada', rev=rev), **{field: 'x\ud800'}))
+                self.assertIn('\\ud800', text)
+                self.assertEqual(self.write(1, text.encode()), (STORED, None))
+                # The store keeps the payload as its member wrote it: valid UTF-8 with the escape in it.
+                self.assertEqual(self.store.entry(ROOM, entry_id(1))['payload'], text)
+                self.assertEqual(self.names(), [])
 
     def test_the_longest_fields_of_a_member_fit(self):
         self.write(1, self.member('n' * 80, avatar='a' * 80, color='c' * 20))

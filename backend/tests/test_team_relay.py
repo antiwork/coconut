@@ -113,6 +113,15 @@ class TeamRelayTests(unittest.TestCase):
             (self.relay.read, (self.url, ROOM, TOKEN, 0), {'entries': [dict(ENTRY, kept=1)], 'last': 3}),
             (self.relay.read, (self.url, ROOM, TOKEN, 0), {'entries': [dict(ENTRY, body='')], 'last': 3}),
             (self.relay.read, (self.url, ROOM, TOKEN, 0), {'entries': [ENTRY]}),
+            # A number over 2^53 - 1 does not fit the store.
+            (self.relay.write, (self.url, ROOM, TOKEN, ENTRY['id'], True, 'Ym9keQ=='), {'seq': 2 ** 53, 'first': 1}),
+            (self.relay.write, (self.url, ROOM, TOKEN, ENTRY['id'], True, 'Ym9keQ=='), {'seq': 2 ** 64, 'first': 2 ** 64}),
+            (self.relay.read, (self.url, ROOM, TOKEN, 0), {'entries': [], 'last': 2 ** 53}),
+            (self.relay.read, (self.url, ROOM, TOKEN, 0), {'entries': [], 'last': -1}),
+            (self.relay.read, (self.url, ROOM, TOKEN, 0), {'entries': [dict(ENTRY, seq=2 ** 53)], 'last': 2 ** 53}),
+            (self.relay.read, (self.url, ROOM, TOKEN, 0), {'entries': [dict(ENTRY, seq=2 ** 63, first=2 ** 63)], 'last': 3}),
+            (self.relay.read, (self.url, ROOM, TOKEN, 0), {'entries': [dict(ENTRY, at=2 ** 63)], 'last': 3}),
+            (self.relay.read, (self.url, ROOM, TOKEN, 0), {'entries': [dict(ENTRY, at=-1)], 'last': 3}),
         ]
         for call, arguments, value in cases:
             with self.subTest(call=call.__name__, value=value):
