@@ -135,7 +135,11 @@ struct MacSidebar: View {
     @State private var deleting: Bot?
 
     private var activeBots: [Bot] {
-        store.bots.filter { !$0.archived }.sorted { lastActivity($0) > lastActivity($1) }
+        // One pass over the messages for each body. A comparison of the sort read every message and parsed its date,
+        // about 3 ms for each body with 1,500 messages.
+        let latest = Self.lastMessageDates(store.messages)
+        func lastActivity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
+        return store.bots.filter { !$0.archived }.sorted { lastActivity($0) > lastActivity($1) }
     }
     private var pinned: [Bot] { activeBots.filter(\.pinned) }
     private var others: [Bot] { activeBots.filter { !$0.pinned } }
@@ -180,9 +184,14 @@ struct MacSidebar: View {
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
     }
 
-    private func lastActivity(_ bot: Bot) -> Date {
-        store.messages.filter { $0.botId == bot.id }.compactMap { $0.createdAt.apiDate }.max()
-            ?? bot.createdAt.apiDate ?? .distantPast
+    /// The date of the newest message of each bot.
+    static func lastMessageDates(_ messages: [Message]) -> [String: Date] {
+        var latest: [String: Date] = [:]
+        for message in messages {
+            guard let date = message.createdAt.apiDate else { continue }
+            if latest[message.botId].map({ date > $0 }) ?? true { latest[message.botId] = date }
+        }
+        return latest
     }
 }
 
