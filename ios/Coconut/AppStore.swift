@@ -39,6 +39,8 @@ final class AppStore {
     var learning: [LearningGroup] = []
     /// The documents of the Library, newest first, without their content. Nil until the first load.
     var documents: [BotDocument]?
+    /// The bots of other Macs that own the team pages in `documents`. They come with each list.
+    var teamBots: [TeamBot] = []
     /// Counts the pins and the deletes that the Mac confirmed to this app. A list that the app asked for before such a
     /// change can be older than the change.
     @ObservationIgnored private var documentChanges = 0
@@ -1442,9 +1444,17 @@ final class AppStore {
             let response: DocumentList = try await client.request("documents")
             // The Mac confirmed a pin or a delete during this request, so this list can be older. Ask again.
             guard changes == documentChanges else { return await loadDocuments() }
+            teamBots = response.teamBots ?? []
             documents = response.documents
             return true
         } catch { report(error); return false }
+    }
+
+    /// The updates carry no documents. They only say that a document or a team page changed, so a Library that the app
+    /// loaded before loads its list again. A Library that never loaded loads when it opens.
+    private func reloadChangedDocuments(_ page: StateUpdates) {
+        guard page.documentsChanged == true, documents != nil else { return }
+        Task { await loadDocuments() }
     }
 
     /// One document with the content of its current version. Nil when the Mac cannot send it.
@@ -1652,6 +1662,7 @@ final class AppStore {
                             self.markConnected()
                             failures = 0
                             self.refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
+                            self.reloadChangedDocuments(page)
                             Task { await self.syncPushRegistration() }
                         }
                         self.scheduleDelivery()
@@ -1705,6 +1716,7 @@ final class AppStore {
                     apply(next, persist: true)
                     markConnected()
                     refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
+                    reloadChangedDocuments(page)
                     Task { await self.syncPushRegistration() }
                     return
                 }

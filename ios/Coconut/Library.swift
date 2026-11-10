@@ -17,9 +17,17 @@ struct BotDocument: Codable, Identifiable, Equatable, Sendable {
     var content: String? = nil
     /// The person pinned the document in the Library. The Mac sends no value for a document that never had a pin.
     var pinned: Bool? = nil
+    /// The team of a page that a bot of another Mac shares. Nil for a document of this Mac.
+    var team: DocumentTeam? = nil
+    /// "team" for a document of this Mac that the Mac also shares with the teams of its bot. An older Mac sends none.
+    var audience: String? = nil
 
     var isPage: Bool { format == "html" }
     var isPinned: Bool { pinned == true }
+    var isTeamPage: Bool { team != nil }
+    var isSharedWithTeam: Bool { !isTeamPage && audience == "team" }
+    /// Only the Mac of a team page can delete it. This Mac answers 403.
+    var canDelete: Bool { !isTeamPage }
 
     /// Markdown without a top heading at its start. The page shows the title over the content, so a bot's own title
     /// heading would show a second title.
@@ -35,6 +43,43 @@ struct BotDocument: Codable, Identifiable, Equatable, Sendable {
 
 struct DocumentList: Decodable, Sendable {
     let documents: [BotDocument]
+    /// The bots of other Macs that own the team pages in `documents`. An older Mac sends none.
+    var teamBots: [TeamBot]? = nil
+}
+
+struct DocumentTeam: Codable, Equatable, Sendable {
+    var room: String
+    var name: String
+}
+
+/// A bot of another Mac of a team. Only the Library shows it, as the owner of its team pages.
+struct TeamBot: Codable, Identifiable, Equatable, Sendable {
+    struct Member: Codable, Equatable, Sendable {
+        var id: String
+        var name: String
+    }
+
+    var id: String
+    var name: String
+    var avatar: String
+    var color: String
+    var team: DocumentTeam
+    var member: Member
+}
+
+/// The owner of a group of the Library: a bot of this Mac, or a team bot with the name of its team.
+struct LibraryOwner: Equatable {
+    let id: String
+    let name: String
+    let avatar: String
+    let color: String
+    var teamName: String? = nil
+
+    init(_ bot: Bot) { id = bot.id; name = bot.name; avatar = bot.avatar; color = bot.color }
+
+    init(_ bot: TeamBot) {
+        id = bot.id; name = bot.name; avatar = bot.avatar; color = bot.color; teamName = bot.team.name
+    }
 }
 
 struct DocumentRoute: Hashable {
@@ -49,7 +94,8 @@ struct LibraryView: View {
     var botId: String? = nil
 
     var body: some View {
-        let sections = LibrarySections(documents: store.documents ?? [], bots: store.bots, botId: botId)
+        let sections = LibrarySections(documents: store.documents ?? [], bots: store.bots, teamBots: store.teamBots,
+                                       botId: botId)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if store.documents?.isEmpty == true {
@@ -64,8 +110,11 @@ struct LibraryView: View {
                     }
                     ForEach(sections.pinned) { row($0) }
                 }
-                ForEach(sections.groups, id: \.bot.id) { group in
-                    header(group.bot.name) { BotAvatar(bot: group.bot, size: 24, animated: false) }
+                ForEach(sections.groups, id: \.owner.id) { group in
+                    header(group.owner.name, detail: group.owner.teamName) {
+                        BotAvatar(symbol: group.owner.avatar, color: group.owner.color, size: 24,
+                                  identity: group.owner.id, animated: false)
+                    }
                     ForEach(group.documents) { row($0) }
                 }
             }
@@ -79,11 +128,16 @@ struct LibraryView: View {
         .task(id: store.connection) { await store.loadDocuments() }
     }
 
-    private func header(_ title: String, @ViewBuilder icon: () -> some View) -> some View {
+    /// `detail` is the name of the team of a team bot. It is quieter than the name of the bot.
+    private func header(_ title: String, detail: String? = nil, @ViewBuilder icon: () -> some View) -> some View {
         HStack(spacing: 8) {
             icon()
-            Text(title).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+            Text(title).font(.subheadline.weight(.medium)).foregroundStyle(.secondary).layoutPriority(1)
+            if let detail {
+                Text(detail).font(.subheadline).foregroundStyle(.tertiary)
+            }
         }
+        .lineLimit(1)
         .padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 4)
         .accessibilityAddTraits(.isHeader)
     }
@@ -95,8 +149,10 @@ struct LibraryView: View {
         .buttonStyle(HomePressStyle())
         .contextMenu {
             PinDocumentButton(document: document)
-            Button(role: .destructive) { Task { await store.deleteDocument(document) } } label: {
-                Label("Delete", systemImage: "trash")
+            if document.canDelete {
+                Button(role: .destructive) { Task { await store.deleteDocument(document) } } label: {
+                    Label("Delete", systemImage: "trash")
+                }
             }
         }
         .accessibilityIdentifier("library-document-\(document.key)")
@@ -117,18 +173,23 @@ struct LibraryView: View {
 /// The documents of the Library in the order of the list. A pinned document shows once, with the pinned documents.
 struct LibrarySections {
     let pinned: [BotDocument]
-    let groups: [(bot: Bot, documents: [BotDocument])]
+    let groups: [(owner: LibraryOwner, documents: [BotDocument])]
 
-    init(documents: [BotDocument], bots: [Bot], botId: String? = nil) {
-        let bots = Dictionary(uniqueKeysWithValues: bots.map { ($0.id, $0) })
-        let shown = documents.filter { (botId == nil || $0.botId == botId) && bots[$0.botId] != nil }
+    /// `botId` keeps the documents of one bot of this Mac. A team page has the ID of a team bot, so it never shows
+    /// there.
+    init(documents: [BotDocument], bots: [Bot], teamBots: [TeamBot] = [], botId: String? = nil) {
+        // A team bot ID has the form "t-<room>-<entry>" and a bot of this Mac has a UUID, so the two never meet.
+        var owners = Dictionary(teamBots.map { ($0.id, LibraryOwner($0)) }) { first, _ in first }
+        for bot in bots { owners[bot.id] = LibraryOwner(bot) }
+        // A document of an owner that the app does not know stays hidden.
+        let shown = documents.filter { (botId == nil || $0.botId == botId) && owners[$0.botId] != nil }
             .sorted { $0.updatedAt > $1.updatedAt }
         pinned = shown.filter(\.isPinned)
-        // The latest update of a bot counts its pinned documents, so a pin does not move the bot in the list.
+        // The latest update of an owner counts its pinned documents, so a pin does not move the owner in the list.
         let latest = Dictionary(shown.map { ($0.botId, $0.updatedAt) }) { first, _ in first }
         groups = Dictionary(grouping: shown.filter { !$0.isPinned }, by: \.botId)
-            .compactMap { id, documents in bots[id].map { (bot: $0, documents: documents) } }
-            .sorted { (latest[$0.bot.id] ?? "") > (latest[$1.bot.id] ?? "") }
+            .compactMap { id, documents in owners[id].map { (owner: $0, documents: documents) } }
+            .sorted { (latest[$0.owner.id] ?? "") > (latest[$1.owner.id] ?? "") }
     }
 }
 
@@ -138,6 +199,8 @@ private struct PinDocumentButton: View {
     let document: BotDocument
 
     var body: some View {
+        // The menu of a row can keep the document of an earlier list. The current list has the current pin.
+        let document = store.documents?.first { $0.id == self.document.id } ?? self.document
         Button { Task { await store.pinDocument(document, pinned: !document.isPinned) } } label: {
             Label(document.isPinned ? "Unpin" : "Pin", systemImage: document.isPinned ? "pin.slash" : "pin")
         }
@@ -161,6 +224,10 @@ private struct DocumentRow: View {
             Spacer(minLength: 0)
             if let ends = document.endText {
                 Text(ends).font(.caption).foregroundStyle(.secondary)
+            }
+            if document.isSharedWithTeam {
+                Image(systemName: "person.2.fill").font(.caption).foregroundStyle(.secondary)
+                    .accessibilityLabel("Shared with the team")
             }
         }
         .padding(.vertical, 10)
@@ -190,10 +257,12 @@ extension BotDocument {
                                    : date.formatted(.dateTime.month(.abbreviated).day()))
     }
 
-    /// The line under the title of an open document: "Tuner · updated 8:00 AM · ends Fri".
+    /// The line under the title of an open document: "Tuner · updated 8:00 AM · ends Fri". A team page names its
+    /// team after its bot.
     func meta(botName: String?) -> String {
         func lowered(_ text: String) -> String { text.prefix(1).lowercased() + text.dropFirst() }
-        return ([botName, lowered(updatedText), endText.map(lowered)].compactMap { $0 }.filter { !$0.isEmpty })
+        return ([botName, team?.name, lowered(updatedText), endText.map(lowered)].compactMap { $0 }
+            .filter { !$0.isEmpty })
             .joined(separator: " · ")
     }
 }
@@ -211,13 +280,18 @@ struct DocumentView: View {
     @State private var link: URL?
 
     private var listed: BotDocument? { store.documents?.first { $0.id == documentId } }
+    /// A bot of this Mac. A team page has none, so the actions that need one are not there.
     private var bot: Bot? { (document ?? listed).flatMap { item in store.bots.first { $0.id == item.botId } } }
+    private var botName: String? {
+        guard let item = document ?? listed else { return nil }
+        return bot?.name ?? store.teamBots.first { $0.id == item.botId }?.name
+    }
 
     var body: some View {
         Group {
             if let document, let content = document.content {
                 // Markdown and HTML share the page view, its article style and its blocks.
-                DocumentPage(document: document, meta: document.meta(botName: bot?.name), content: content) {
+                DocumentPage(document: document, meta: document.meta(botName: botName), content: content) {
                     link = $0
                 }
                     .ignoresSafeArea(edges: .bottom)
@@ -251,9 +325,11 @@ struct DocumentView: View {
                         ShareLink(item: content, subject: Text(document.title)) {
                             Label("Share", systemImage: "square.and.arrow.up")
                         }
-                        Button(role: .destructive) {
-                            Task { if await store.deleteDocument(document) { dismiss() } }
-                        } label: { Label("Delete", systemImage: "trash") }
+                        if document.canDelete {
+                            Button(role: .destructive) {
+                                Task { if await store.deleteDocument(document) { dismiss() } }
+                            } label: { Label("Delete", systemImage: "trash") }
+                        }
                     } label: { Image(systemName: "ellipsis") }
                         .accessibilityLabel("Document actions")
                 }
