@@ -142,6 +142,8 @@ class TeamSync:
                 self._team_pass_started += 1
                 number = self._team_pass_started
             try:
+                # Each pass, also one without a room, drops the saved answers of the team writes past their time.
+                self.team_drop_old_replies()
                 self.team_sync_pass()
             except Exception:
                 if self.stopping.is_set():

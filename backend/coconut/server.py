@@ -211,9 +211,13 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError) as error:
             raise ServiceError(400, str(error)) from None
 
-    def _team(self, service, method, path):
-        """The routes of the team rooms. The caller checked the token of a device or of the bridge file. See team.py."""
-        self._json(200, service.team_request(method, path, {} if method == 'GET' else self._body()))
+    def _team(self, service, method, path, device=''):
+        """The routes of the team rooms. The caller checked the token of a device or of the bridge file. See team.py.
+
+        Only a paired device gives its `Idempotency-Key`, because the app repeats a write after a lost answer. A tool
+        of this Mac sends no key, and its request runs each time."""
+        key = self.headers.get('Idempotency-Key', '') if device else ''
+        self._json(200, service.team_request(method, path, {} if method == 'GET' else self._body(), key, device))
 
     def _handle(self, method):
         """Serve one request. Log the time of each request from the phone (see request_timing)."""
@@ -266,7 +270,7 @@ class Handler(BaseHTTPRequestHandler):
             if team:
                 # The request log of the tunnel listener keeps the route without its IDs, and never a body, so an
                 # invite link in a join stays out of it.
-                self._team(service, method, url.path)
+                self._team(service, method, url.path, device)
                 return
             if method == 'POST' and url.path == '/v1/maintenance/workspace-recovery':
                 self._json(200, service.request_workspace_recovery(

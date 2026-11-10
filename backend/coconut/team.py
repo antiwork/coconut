@@ -20,11 +20,17 @@ error texts are for a person, because the app shows them.
 - `DELETE /v1/team/rooms/<room>/bots/<bot_id>`: stop sharing the bot with the room.
 
 No answer has a key, a token or an invite secret. Only the invite link, which the person shares, carries a secret.
+
+A write of a paired device with an `Idempotency-Key` is safe to repeat (team_request). A leave of a `joining` room
+always removes the room from this Mac (team_leave).
 """
 from __future__ import annotations
 
 import base64
 import contextlib
+import copy
+import hashlib
+import hmac
 import json
 import logging
 import re
@@ -32,6 +38,7 @@ from secrets import token_bytes, token_hex
 import threading
 import time
 import unicodedata
+from uuid import UUID
 
 from . import team_keys
 from .push_relay import RELAY_URL
@@ -57,6 +64,12 @@ INVITE_USES = (1, 64)
 DEFAULT_INVITE_SECONDS = 86400
 # `POST /v1/team/sync` waits this long for the pass that it started.
 SYNC_WAIT_SECONDS = 60
+# The app repeats a write one time, at once, after a lost or slow answer (APIClient.swift). A repeat later than this
+# runs again. The limit keeps the memory small when a device sends many keys.
+REPLY_SECONDS = 600
+REPLY_LIMIT = 256
+# The clock of the saved answers. A test replaces it, so it needs no wait of 10 minutes.
+clock = time.monotonic
 
 log = logging.getLogger(__name__)
 
@@ -144,6 +157,11 @@ class Team(TeamSync, TeamPages):
         self.team_helper = TeamHelper(self.root)
         # One room operation runs at a time. It calls the relay and the helper, so it does not hold the service lock.
         self._team_operation = threading.Lock()
+        # The answers of the writes of the devices, for a repeat with the same key (team_request). They stay in memory
+        # only, because the answer of the invite route has the invite link. The Mac holds this lock only for a change
+        # of the dict, and takes no other lock while it holds it.
+        self._team_replies = {}
+        self._team_replies_lock = threading.Lock()
         self._init_team_sync()
         self._init_team_pages()
 
@@ -153,8 +171,71 @@ class Team(TeamSync, TeamPages):
     def _close_team(self):
         self._close_team_sync()
 
-    def team_request(self, method: str, path: str, data: dict) -> dict:
-        """One of the routes at the top of this module. server.py checked the token of the device or of the bridge."""
+    def team_request(self, method: str, path: str, data: dict, key: str = '', device: str = '') -> dict:
+        """One of the routes at the top of this module. server.py checked the token of the device or of the bridge.
+
+        A write calls the relay and can take seconds. When the answer does not reach the phone, the app sends the same
+        request again with the same `Idempotency-Key`. That repeat must not make a second room, or answer "already in
+        this team" after a join that worked. So the first successful answer for a key of a device stays in memory for
+        REPLY_SECONDS, and a repeat gets it and does nothing else. A repeat that comes while the first request runs
+        waits for it. A failure keeps no answer, because the person tries again. A request without a key, for example
+        of a tool on this Mac, runs as before. `POST /v1/team/sync` and the reads need no key.
+        """
+        from .service import ServiceError
+        if not key or method == 'GET' or path.rstrip('/') == '/v1/team/sync':
+            return self._team_route(method, path, data)
+        try:
+            UUID(key)
+        except (ValueError, TypeError, AttributeError):
+            raise ServiceError(400, 'Supply a UUID in Idempotency-Key.') from None
+        # The digest keeps no part of a link in a join, only its hash.
+        fingerprint = hashlib.sha256(json.dumps([method, path, data], sort_keys=True).encode()).hexdigest()
+        slot = (device, key)
+        while True:
+            with self._team_replies_lock:
+                self._team_prune_replies()
+                reply = self._team_replies.get(slot)
+                if reply is None:
+                    reply = {'fingerprint': fingerprint, 'at': clock(), 'answer': None, 'done': threading.Event()}
+                    self._team_replies[slot] = reply
+                    break
+                if not hmac.compare_digest(reply['fingerprint'], fingerprint):
+                    raise ServiceError(409, 'This idempotency key belongs to a different request.')
+                if reply['done'].is_set():
+                    return copy.deepcopy(reply['answer'])
+            # The first request runs. When it fails, it removes its slot, and this request runs itself.
+            reply['done'].wait()
+        try:
+            answer = self._team_route(method, path, data)
+        except BaseException:
+            with self._team_replies_lock:
+                self._team_replies.pop(slot, None)
+            reply['done'].set()
+            raise
+        with self._team_replies_lock:
+            reply['answer'], reply['at'], reply['stored'] = copy.deepcopy(answer), clock(), True
+            # The limit holds after each write, not only at the next one.
+            self._team_prune_replies()
+        reply['done'].set()
+        return answer
+
+    def team_drop_old_replies(self) -> None:
+        """Drop the saved answers past their time. The sync thread calls this on each pass, also on a Mac without a
+        room, so an answer with an invite link goes when no other write comes."""
+        with self._team_replies_lock:
+            self._team_prune_replies()
+
+    def _team_prune_replies(self) -> None:
+        """Drop the answers older than REPLY_SECONDS, then the oldest answers over REPLY_LIMIT. A request that runs
+        keeps its slot. The caller holds the lock of the replies."""
+        done = sorted((reply['at'], slot) for slot, reply in self._team_replies.items() if reply.get('stored'))
+        old = clock() - REPLY_SECONDS
+        over = len(done) - REPLY_LIMIT
+        for number, (at, slot) in enumerate(done):
+            if at < old or number < over:
+                del self._team_replies[slot]
+
+    def _team_route(self, method: str, path: str, data: dict) -> dict:
         from .service import ServiceError
         parts = path.strip('/').split('/')[2:]
         if parts == ['rooms'] and method == 'GET':
@@ -367,13 +448,18 @@ class Team(TeamSync, TeamPages):
     def team_leave(self, room_id: str) -> dict:
         """Leave a room. The Mac tells the other members, leaves at the relay, and deletes its copy and its keys.
 
+        A failure of the relay stops the leave of an `active` room, because the Mac is still a member there. A
+        `joining` room always goes: the Mac asks the relay, as for an `active` room, then deletes its copy and its keys.
+
         The relay deletes the kept entries of a member that leaves, but the other Macs already have a copy of its
         `member` entry. So the Mac first replaces that entry with a `delete` entry, when its helper works (see
         _team_retire_member). An admin leaves only a room without other members, and the relay then deletes the room.
         """
         from .service import ServiceError
-        room = self._team_room(room_id)
+        self._team_room(room_id)
         with self._team_operation, team_errors():
+            # An operation before this one can have changed the room, for example a join that made it `active`.
+            room = self._team_room(room_id)
             try:
                 secrets = team_keys.read(self.root, room_id)
             except TeamKeysError:
@@ -390,11 +476,18 @@ class Team(TeamSync, TeamPages):
                             self._team_retire_member(room)
                         self.team_relay.remove_member(room['relay'], room_id, secrets['token'], room['member'], tries=2)
                     except TeamRelayError as error:
-                        if error.status == 409:
+                        if room['state'] == JOINING:
+                            # The relay never answered the join, and it can never answer, for example when the link
+                            # named a server that does not exist. The room must not stay on the Team screen for ever.
+                            # A relay that took the join keeps this Mac as a member without a Mac, until the member
+                            # removal of the contract exists.
+                            log.warning('coconut.team_log room %s: the relay did not take the leave of a join that did '
+                                        'not finish, so this Mac removes only its copy. %s', room_id[:8], error)
+                        elif error.status == 409:
                             raise ServiceError(409, 'The admin can leave the team only when no other member is in it.') from None
-                        if error.status not in (401, 404):
+                        elif error.status not in (401, 404):
                             raise
-                        # The relay no longer knows this Mac or the room, so the Mac is out already.
+                        # Else the relay no longer knows this Mac or the room, so the Mac is out already.
                 self._team_forget(room_id)
         return {'room': room_id, 'left': True}
 

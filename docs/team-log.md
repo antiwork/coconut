@@ -319,7 +319,7 @@ A request without a valid authorization gets 401.
 | `PATCH /v1/team/rooms/<room>`, body `{member_name, avatar, color}` | Changes what the team sees for this Mac. A field that the body leaves out keeps its value. The Mac first reads back an earlier write without an answer. Then it takes each field that the body leaves out from what the log has for this Mac, and writes its `member` entry again with the next `rev`. A failure changes nothing on this Mac. A room that is not `active` answers 409. |
 | `POST /v1/team/rooms/<room>/invites`, body `{ttl, uses}` | The invite link. Only the admin makes one. The defaults are one day and one use. |
 | `POST /v1/team/join`, body `{link, member_name, avatar, color}` | Joins a room. |
-| `DELETE /v1/team/rooms/<room>` | Leaves the room, and deletes its copy and its keys. |
+| `DELETE /v1/team/rooms/<room>` | Leaves the room, and deletes its copy and its keys. A failure of the relay stops the leave of an `active` room. A `joining` room always goes: see [Leave a join that did not finish](#leave-a-join-that-did-not-finish). |
 | `POST /v1/team/sync` | Starts a pass, waits up to 60 seconds for it, and returns the rooms with `complete`. |
 | `POST /v1/team/rooms/<room>/bots`, body `{bot_id}` | Shares a bot of this Mac with the room. An archived or deleted bot answers 409 or 404. |
 | `DELETE /v1/team/rooms/<room>/bots/<bot_id>` | Stops sharing the bot with the room. |
@@ -342,6 +342,28 @@ Each error text of these routes is for a person, because the app shows it: what 
 When something changes that the Team screen shows, the Mac adds one `team.updated` event with `{"team": <room ID>}` in the same transaction: this Mac makes, joins or leaves a room, a room becomes `active`, `removed` or `gone`, a member joins, leaves or changes its name, avatar or color, a bot enters or leaves the team, or `sync.error` or `sync.refused` appears, changes or clears. A failed try with the same error adds no event. `GET /v1/updates` then has `team_changed`, and the app reads `GET /v1/team/rooms` again. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again. A change of a bot of this Mac, for example a new name, comes with its own `bot.updated` event.
 
 No answer has a key, a token or an invite secret, and so no answer has the public agreement key of a member. Only the answer of the invite route has the link. The request log of the tunnel listener keeps the route without its IDs and never a body, so the link of a join stays out of it. `scripts/team.py join` reads the link from standard input, so the link is never an argument of a command. `scripts/team.py share <room> <bot>` and `unshare <room> <bot>` call the bot routes.
+
+#### Repeat a write
+
+The app sends a write again with the same `Idempotency-Key` when the answer does not come: after a lost connection, a timeout or a relay that does not answer (`APIClient.swift`). A team write calls the relay and can take seconds, so the first request can still run or be finished. Without a rule, a repeat makes a second team, or a join answers "already in this team" after a join that worked.
+
+- A paired device can send an `Idempotency-Key` (a UUID) with each write: each route of the table except the `GET` and `POST /v1/team/sync`. A key that is not a UUID answers 400.
+- The Mac keeps the first successful answer for a key of a device. A second request with the same key from the same device gets that answer and does nothing else.
+- A second request that comes while the first one runs waits for it, then gets its answer. When the first request fails, the Mac keeps no answer, and the second request runs.
+- The same key with another method, path or body answers 409. The same key from another device runs as its own request.
+- The answers stay in the memory of the service only, for 10 minutes, and at most 256 of them. The sync thread drops an old answer on its next pass, at most 30 seconds later, also on a Mac without a room. A new answer drops the oldest answer over the limit at once. A stop of the service drops them all. A later repeat runs again.
+- The answer of the invite route has the invite link, so the answers never go to the database or to a log. The `requests` table of the other writes of the phone keeps each answer with no end, so these routes do not use it.
+- A request without a key runs each time, as before. A tool on this Mac sends no key, and the Mac ignores a key from a tool.
+
+#### Leave a join that did not finish
+
+A room stays `joining` when the relay does not answer the join. The relay can never answer, for example when the link named a server that does not exist. So the leave of a `joining` room always removes the room from this Mac:
+
+1. The Mac asks the relay to remove its member, as for an `active` room, because the relay can have taken the join.
+2. When the relay does not answer or refuses, the Mac writes a log line without a secret.
+3. The Mac deletes its copy and its key file, and answers `{"room": <room ID>, "left": true}`.
+
+A relay that took the join keeps this Mac as a member without a Mac: the member token stays valid there, and the admin sees no `member` entry of this Mac. This stays until the member removal of the contract exists. For an `active` room, a failure of the relay still stops the leave, because the Mac is still a member there.
 
 ### Bots and pages
 
