@@ -11,7 +11,12 @@ final class AppStore {
     private static let pairingLog = Logger(subsystem: "com.gumroad.coconut", category: "pairing")
     var bots: [Bot] = []
     var tasks: [AgentTask] = []
-    var messages: [Message] = []
+    var messages: [Message] = [] {
+        // Each row of a chat looks up its saved message. A scan of all messages for each row cost about 450 ms when a
+        // chat of 1,270 rows opened. The index comes from the messages here only, so it cannot lag behind them.
+        didSet { messageIndex = MessageIndex(messages) }
+    }
+    @ObservationIgnored private(set) var messageIndex = MessageIndex([])
     var outgoingMessages: [OutgoingMessage] = []
     var outgoingAnswers: [OutgoingAnswer] = []
     @ObservationIgnored private var deliveryTasks: [String: Task<Void, Never>] = [:]
@@ -855,7 +860,7 @@ final class AppStore {
     func messageReference(for message: Message) -> MessageReference? {
         guard message.kind == "text", ["user", "assistant"].contains(message.role),
               !message.streaming, message.reactionEvent == nil, !message.isBotExchange,
-              let saved = messages.first(where: { $0.id == message.id || (message.clientRequestId != nil && $0.clientRequestId == message.clientRequestId) }) else { return nil }
+              let saved = messageIndex.first(id: message.id, clientRequestId: message.clientRequestId).map({ messages[$0] }) else { return nil }
         // A photo message quotes as "Photo: <caption>", not as its address.
         return MessageReference(messageId: saved.id, text: saved.photo?.preview ?? saved.text,
             author: saved.role == "user" ? "You" : bots.first { $0.id == (saved.senderBotId ?? saved.botId) }?.name ?? "Bot",
@@ -864,7 +869,7 @@ final class AppStore {
 
     func reactions(for message: Message) -> [String] {
         guard let reference = messageReference(for: message) else { return message.reactions ?? [] }
-        return reactionOverrides[reference.messageId] ?? messages.first { $0.id == reference.messageId }?.reactions ?? []
+        return reactionOverrides[reference.messageId] ?? savedMessage(id: reference.messageId)?.reactions ?? []
     }
 
     func react(to message: Message, emoji: String) async {
@@ -875,7 +880,7 @@ final class AppStore {
         let active = !current.contains(emoji)
         let updated = active ? current + [emoji] : current.filter { $0 != emoji }
         if isDemo {
-            if let index = messages.firstIndex(where: { $0.id == id }) { messages[index].reactions = updated }
+            if let index = messageIndex.first(id: id) { messages[index].reactions = updated }
             return
         }
         let generation = connectionGeneration
@@ -886,15 +891,20 @@ final class AppStore {
                 guard generation == self.connectionGeneration else { return }
                 self.snapshotEpoch = UUID()
                 self.snapshotRequest = nil
-                if let index = self.messages.firstIndex(where: { $0.id == id }) { self.messages[index].reactions = receipt.reactions }
+                if let index = self.messageIndex.first(id: id) { self.messages[index].reactions = receipt.reactions }
                 if let index = self.cachedState?.messages.firstIndex(where: { $0.id == id }) { self.cachedState?.messages[index].reactions = receipt.reactions }
             })
         if result == nil && generation == connectionGeneration { error = "Reaction not confirmed. Try again." }
     }
 
     func displayedMessageId(for serverId: String) -> String {
-        guard let requestId = messages.first(where: { $0.id == serverId })?.clientRequestId else { return serverId }
+        guard let requestId = savedMessage(id: serverId)?.clientRequestId else { return serverId }
         return "outgoing-" + requestId
+    }
+
+    /// The first saved message with this ID, as `messages.first { $0.id == id }` finds it, without a scan.
+    func savedMessage(id: String) -> Message? {
+        messageIndex.first(id: id).map { messages[$0] }
     }
 
     func conversationMessages(for botId: String) -> [Message] {
@@ -1784,7 +1794,7 @@ final class AppStore {
             }
             var callbackIsCurrent = receiptIsCurrent
             if let receipt = result as? Message {
-                callbackIsCurrent = receiptMessages.first(where: { $0.id == receipt.id })?.reactions == messages.first(where: { $0.id == receipt.id })?.reactions
+                callbackIsCurrent = receiptMessages.first(where: { $0.id == receipt.id })?.reactions == savedMessage(id: receipt.id)?.reactions
             } else if let receipt = result as? Decision {
                 callbackIsCurrent = receiptDecisions.first(where: { $0.id == receipt.id }) == decisions.first(where: { $0.id == receipt.id })
             }

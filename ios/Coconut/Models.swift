@@ -751,3 +751,25 @@ struct APIFallbackSettings: Codable, Equatable, Sendable {
 struct APIFallbackRequest: Encodable {
     let enabled: Bool
 }
+
+/// The position of the first message with each ID and each client request ID. AppStore makes it again each time its
+/// messages change, so a lookup finds what a scan from the start finds.
+struct MessageIndex: Sendable {
+    private var byId: [String: Int] = [:]
+    private var byRequest: [String: Int] = [:]
+
+    init(_ messages: [Message]) {
+        byId.reserveCapacity(messages.count)
+        for (position, message) in messages.enumerated() {
+            if byId[message.id] == nil { byId[message.id] = position }
+            if let request = message.clientRequestId, byRequest[request] == nil { byRequest[request] = position }
+        }
+    }
+
+    /// The first position whose message has this ID, or, when `clientRequestId` is set, this client request ID.
+    func first(id: String, clientRequestId: String? = nil) -> Int? {
+        let request = clientRequestId.flatMap { byRequest[$0] }
+        if let found = byId[id], let request { return min(found, request) }
+        return byId[id] ?? request
+    }
+}

@@ -36,6 +36,45 @@ final class MessageInteractionTests: XCTestCase {
         XCTAssertEqual(TranscriptPresentation.visibleMessages([reaction, restored.message], artifacts: []), [restored.message])
     }
 
+    /// The index must find what a scan from the start finds, after each kind of change of the messages.
+    @MainActor
+    func testMessageIndexFollowsEveryChangeOfTheMessages() {
+        let store = AppStore(demo: true)
+        func message(_ id: String, request: String? = nil) -> Message {
+            Message(id: id, botId: "desk", role: "user", kind: "text", text: "Text \(id)",
+                    createdAt: "2026-11-10T12:00:00Z", streaming: false, clientRequestId: request)
+        }
+        func assertMatchesScan(_ step: String, file: StaticString = #filePath, line: UInt = #line) {
+            for id in ["a", "b", "c", "d", "r1", "r2", "missing"] {
+                XCTAssertEqual(store.savedMessage(id: id), store.messages.first { $0.id == id }, "\(step): \(id)", file: file, line: line)
+                for request in [nil, "r1", "r2", "missing"] {
+                    let probe = message(id, request: request)
+                    let scan = store.messages.first { $0.id == id || (request != nil && $0.clientRequestId == request) }
+                    XCTAssertEqual(store.messageIndex.first(id: id, clientRequestId: request).map { store.messages[$0] }, scan,
+                                   "\(step): \(id) \(request ?? "-")", file: file, line: line)
+                    XCTAssertEqual(store.messageReference(for: probe)?.messageId, scan?.id, "\(step): reference", file: file, line: line)
+                }
+                XCTAssertEqual(store.displayedMessageId(for: id),
+                               store.messages.first { $0.id == id }?.clientRequestId.map { "outgoing-" + $0 } ?? id, step, file: file, line: line)
+            }
+        }
+        store.messages = [message("a"), message("b", request: "r1"), message("c")]
+        assertMatchesScan("replace")
+        store.messages.append(message("d", request: "r2"))
+        assertMatchesScan("append")
+        store.messages.insert(message("r1"), at: 0)
+        assertMatchesScan("insert at the start")
+        // A second message with the same ID: the first one wins, as in a scan.
+        store.messages.append(message("a", request: "r1"))
+        assertMatchesScan("duplicate")
+        store.messages.removeAll { $0.id == "b" }
+        assertMatchesScan("remove")
+        store.messages[0].clientRequestId = "r2"
+        assertMatchesScan("change in place")
+        store.messages = []
+        assertMatchesScan("empty")
+    }
+
     @MainActor
     func testFixedReactionsCanBeAddedAndRemoved() async throws {
         let store = AppStore(demo: true)
