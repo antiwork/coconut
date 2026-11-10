@@ -95,6 +95,8 @@ A text field must be valid Unicode text. JSON can carry a lone surrogate, for ex
 
 The Mac counts Unicode code points for the limits of `name`, `avatar` and `color`, because the Python standard library cannot count the characters that a person sees. A `member` entry that does not fit, or that has a `name`, `avatar` or `color` that is not valid Unicode text, stays in the store and changes no member. When a member has more than one `member` entry, the one with the highest `seq` counts, so each Mac shows the same member.
 
+A Mac writes the `name` of its own `member` entry by a stricter rule: 1 to 80 code points, no space at its start or end, no line break, no control character, and no format character except the zero width joiner (U+200D) and the tag characters (U+E0020 to U+E007F) of emoji sequences. So a name with an emoji sequence, such as a woman and a laptop with a joiner between them, is valid, and a mark that changes the direction of text is not. A Mac reads each `name` that is valid Unicode text, so the rule of the reader is wider than the rule of the writer.
+
 ### Rules for a Mac that reads an entry
 
 1. If the version of the body is later than the Mac knows, keep the bytes and try again after the next update of Coconut. This check comes first, because a later version can have another form.
@@ -184,7 +186,7 @@ The token is unpadded lowercase base32 (RFC 4648) of these bytes. The pairing li
 | Length of `relay` | `relay`, UTF-8 |
 | The rest | `name` of the team, UTF-8 |
 
-`relay` is an HTTPS origin without a path, a query or account details, as in a pairing link, and its host is a name, not an address in numbers. So a changed link cannot send a Mac over plain HTTP or to an address that the link gives in numbers. The rule does not know where a host name points. `name` has 1 to 80 characters, no space at its start or end, and no control character, because the app shows it before the person joins. A Mac refuses a link or a welcome with a `relay` or a `name` that does not follow these rules. A Mac also refuses a link after its `expires`.
+`relay` is an HTTPS origin without a path, a query or account details, as in a pairing link, and its host is a name, not an address in numbers. So a changed link cannot send a Mac over plain HTTP or to an address that the link gives in numbers. The rule does not know where a host name points. `name` has 1 to 80 characters, no space at its start or end, and no control character, because the app shows it before the person joins. The helper counts the characters that a person sees, and refuses each control and format character (`validName` in `ios/Tunnel/TeamLog.swift`). The Mac backend checks a new team name before the helper: it counts code points, and it refuses each Unicode category that starts with "C" and each line break. So its rule is never wider than the rule of the helper, and a team name has no emoji with a joiner. A Mac refuses a link or a welcome with a `relay` or a `name` that does not follow these rules. A Mac also refuses a link after its `expires`.
 
 Both Macs derive these values from the invite secret with HKDF-SHA256, an empty salt, and a 32-byte output:
 
@@ -253,7 +255,7 @@ The relay accepts a member ID only with a proof of its key, so one member cannot
 
 ## Mac
 
-The Mac backend does the steps of this contract for the tools on the Mac. The modules are in `backend/coconut`: `team.py` (the room operations and the routes), `team_sync.py` (the copy of each log), `team_store.py` (the tables and the reading rules), `team_keys.py` (the secrets), `team_relay.py` (the relay routes) and `team_helper.py` (the helper).
+The Mac backend does the steps of this contract for the Team screen of the app and for the tools on the Mac. The modules are in `backend/coconut`: `team.py` (the room operations and the routes), `team_sync.py` (the copy of each log), `team_store.py` (the tables and the reading rules), `team_keys.py` (the secrets), `team_relay.py` (the relay routes) and `team_helper.py` (the helper).
 
 ### Helper
 
@@ -300,14 +302,20 @@ One thread, `coconut-team-sync`, reads each `active` room after its `seq`, one a
 
 A log line names a room by the start of its ID, and an entry by its ID and its `seq`. The relay sees these values too. No log line and no error text has an invite link, a token, a key, a ticket, a welcome or a proof. `backend/tests/test_team_routes.py` checks this.
 
-### Routes for the tools
+### Routes
 
-Only the main listener serves these routes, with the token of `<data>/gateway/bridge.json`. The tunnel listener of the phone does not serve them. `scripts/team.py` calls them.
+Two callers use these routes, and one handler (`Team.team_request`) serves both:
+
+- A paired device, for the Team screen of the app. It calls the routes on the tunnel listener or on the main listener, with the authorization of its other routes: its device token, and on the tunnel listener the static key of the phone.
+- A tool on this Mac, for example `scripts/team.py`. It calls the routes on the main listener with the token of `<data>/gateway/bridge.json`.
+
+A request without a valid authorization gets 401.
 
 | Request | Answer |
 | --- | --- |
-| `GET /v1/team/rooms` | The rooms with their members and their sync state. |
+| `GET /v1/team/rooms` | The rooms with their members, their bots and their sync state, and `helper`. |
 | `POST /v1/team/rooms`, body `{name, member_name, avatar, color, relay}` | Makes a room. This Mac is its admin. |
+| `PATCH /v1/team/rooms/<room>`, body `{member_name, avatar, color}` | Changes what the team sees for this Mac. A field that the body leaves out keeps its value. The Mac writes its `member` entry again with the next `rev`, and saves the new profile only after the relay took the write. A room that is not `active` answers 409. |
 | `POST /v1/team/rooms/<room>/invites`, body `{ttl, uses}` | The invite link. Only the admin makes one. The defaults are one day and one use. |
 | `POST /v1/team/join`, body `{link, member_name, avatar, color}` | Joins a room. |
 | `DELETE /v1/team/rooms/<room>` | Leaves the room, and deletes its copy and its keys. |
@@ -315,9 +323,24 @@ Only the main listener serves these routes, with the token of `<data>/gateway/br
 | `POST /v1/team/rooms/<room>/bots`, body `{bot_id}` | Shares a bot of this Mac with the room. An archived or deleted bot answers 409 or 404. |
 | `DELETE /v1/team/rooms/<room>/bots/<bot_id>` | Stops sharing the bot with the room. |
 
-A room in an answer has `bots`: the bots that this Mac shares with it, with `bot_id`, `name`, `entry` and `shown` (false for an archived or deleted bot). Its `sync` has `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)).
+A room in an answer has what the Team screen shows, so the app needs no other request:
 
-No answer has a key or a token. Only the invite link carries a secret. `scripts/team.py join` reads the link from standard input, so the link is never an argument of a command. `scripts/team.py share <room> <bot>` and `unshare <room> <bot>` call the bot routes.
+| Field | Value |
+| --- | --- |
+| `room`, `name`, `state`, `created_at` | The room ID, the name of the team, `joining`, `active`, `removed` or `gone`, and the time that this Mac made or joined the room. |
+| `is_admin`, `can_invite` | True when this Mac is the admin. `can_invite` is true only for the admin of an `active` room. |
+| `members` | In the order of their first `member` entry: `member` (the member ID), `name`, `avatar`, `color`, `admin` and `this_mac`. |
+| `bots` | Each bot of the team, while the room is `active` and the member of the bot is in `members`: `id`, `name`, `avatar`, `color`, `member` (the ID of the Mac that runs the bot), `member_name` and `this_mac`. A bot of this Mac also has `bot_id`, its ID on this Mac, and its profile comes from that bot. An archived or deleted bot of this Mac is not in the list. The bots follow the order of the members, then their names. |
+| `sync` | `synced_at`, and `error`: one sentence for a person, or null. Also `seq`, `entries`, `waiting` and `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)). |
+| `relay`, `member`, `admin`, `epoch` | For the tools. |
+
+The `id` of a bot is `t-<room ID>-<entry ID>`, as in `team_bots` of `GET /v1/documents`.
+
+Each error text of these routes is for a person, because the app shows it: what happened and what to do, without a word of the code. For example: "This Mac is no longer in the team." A Mac without a helper answers 503 with "Update Coconut on this Mac, then try again."
+
+When something changes that the Team screen shows, the Mac adds one `team.updated` event with `{"team": <room ID>}` in the same transaction: this Mac makes, joins or leaves a room, a room becomes `active`, `removed` or `gone`, a member joins, leaves or changes its name, avatar or color, or a bot enters or leaves the team. `GET /v1/updates` then has `team_changed`, and the app reads `GET /v1/team/rooms` again. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again. A change of a bot of this Mac, for example a new name, comes with its own `bot.updated` event.
+
+No answer has a key, a token or an invite secret, and so no answer has the public agreement key of a member. Only the answer of the invite route has the link. The request log of the tunnel listener keeps the route without its IDs and never a body, so the link of a join stays out of it. `scripts/team.py join` reads the link from standard input, so the link is never an argument of a command. `scripts/team.py share <room> <bot>` and `unshare <room> <bot>` call the bot routes.
 
 ### Bots and pages
 

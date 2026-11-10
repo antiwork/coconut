@@ -80,7 +80,7 @@ class TeamSyncTests(TeamMacs, unittest.TestCase):
         self.relay.down = True
         with self.assertLogs('coconut.team_sync', 'WARNING') as logs:
             view = self.sync_view(self.second)
-        self.assertEqual(view['error'], 'The relay did not answer.')
+        self.assertEqual(view['error'], 'Coconut could not reach its server. Try again later.')
         self.assertIn('The next try is in 60 seconds.', logs.output[0])
         self.assertEqual(self.second._team_failures[self.room_id][0], 1)
         # The next pass does not ask the relay while the room waits.
@@ -135,7 +135,7 @@ class TeamSyncTests(TeamMacs, unittest.TestCase):
             write(*arguments, **options)
             raise TeamRelayError(0, 'The relay did not answer.')
         renamed = {'kind': 'member', 'name': 'Grace H.', 'avatar': '', 'color': '',
-                   'agreement': self.joined['members'][0]['agreement']}
+                   'agreement': json.loads(self.second.team_store.room(self.room_id)['profile'])['agreement']}
         with mock.patch.object(self.relay, 'write', lose_the_answer), self.second._team_room_lock(self.room_id):
             with self.assertRaises(TeamRelayError):
                 self.second._team_write(self.second.team_store.room(self.room_id), own, True, renamed)
@@ -205,7 +205,7 @@ class TeamSyncTests(TeamMacs, unittest.TestCase):
         self.assertIn('RuntimeError: A defect of this code.', '\n'.join(logs.output))
         self.assertEqual(self.second._team_failures[self.room_id][0], 1)
         self.assertEqual(self.second._team_status[self.room_id]['error'],
-                         'The sync of this room failed. The log of the service has the reason.')
+                         'Coconut could not update this team. It tries again later.')
         self.assertEqual(self.second._team_status[other['room']]['error'], None)
         self.assertNotIn(other['room'], self.second._team_failures)
 

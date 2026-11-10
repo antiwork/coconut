@@ -16,6 +16,7 @@ from uuid import uuid4
 from coconut import documents, team_keys, team_store, team_sync
 from coconut.documents import MAX_CONTENT
 from coconut.service import ServiceError
+from coconut.team_pages import team_ids
 from coconut.team_relay import MAX_NUMBER, TeamRelayError
 from team_fakes import RELAY, FakeHelper, TeamMacs, decode
 
@@ -26,6 +27,12 @@ PAGE = dict(key='weekly-report', title='Weekly report', format='markdown', summa
 END = (date.today() + timedelta(days=30)).isoformat()
 REQUIRED = {'id': str, 'bot_id': str, 'key': str, 'title': str, 'format': str, 'version': int, 'created_at': str,
             'updated_at': str}
+
+
+def own_entry(room: dict) -> str:
+    """The entry ID of the `bot` entry of the one bot that this Mac shares with the room."""
+    (bot,) = (bot for bot in room['bots'] if bot['this_mac'])
+    return team_ids(bot['id'])[1]
 
 
 class TeamPageTests(TeamMacs, unittest.TestCase):
@@ -83,17 +90,17 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
                     **fields)
 
     def bot_entry_id(self) -> str:
-        return self.share()['bots'][0]['entry']
+        return own_entry(self.share())
 
     # Sharing a bot
 
     def test_a_shared_bot_gets_one_bot_entry_and_the_other_mac_lists_it(self):
         room = self.share()
-        self.assertEqual([(bot['bot_id'], bot['name'], bot['shown']) for bot in room['bots']],
+        self.assertEqual([(bot['bot_id'], bot['name'], bot['this_mac']) for bot in room['bots']],
                          [(self.bot['id'], 'Reporter', True)])
         self.sync()
         (written,) = self.entries('bot')
-        self.assertEqual((written['kept'], written['id'], written['payload']['name']), (True, room['bots'][0]['entry'],
+        self.assertEqual((written['kept'], written['id'], written['payload']['name']), (True, own_entry(room),
                                                                                       'Reporter'))
         (team_bot,) = self.library()['team_bots']
         self.assertEqual(team_bot, {
@@ -102,7 +109,7 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
             'member': {'id': self.room['member'], 'name': 'Ada'}})
         # The Mac that runs the bot does not list it as a team bot. A second share changes nothing.
         self.assertEqual(self.library(self.first)['team_bots'], [])
-        self.assertEqual(self.share()['bots'][0]['entry'], written['id'])
+        self.assertEqual(own_entry(self.share()), written['id'])
         before = len(self.relay.requests)
         self.first.team_sync_pass()
         self.assertEqual([request[0] for request in self.relay.requests[before:]], ['read'])
@@ -125,7 +132,7 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
                                       {'bot_id': 'not-a-bot'})[0], 404)
         self.assertEqual(self.refusal(self.first.team_request, 'POST', f'/v1/team/rooms/{self.room_id}/bots', {})[0], 400)
         self.first.mutate('PATCH', f'/v1/bots/{self.bot["id"]}', {'archived': True}, str(uuid4()), 'phone')
-        self.assertEqual(self.refusal(self.share), (409, 'The bot is archived. Restore it, then share it.'))
+        self.assertEqual(self.refusal(self.share), (409, 'The bot is archived. Restore it, then add it to the team.'))
         self.assertEqual(self.refusal(self.first.team_request, 'POST', f'/v1/team/rooms/{"0" * 64}/bots',
                                       {'bot_id': self.bot['id']})[0], 404)
 
@@ -185,7 +192,7 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
         with self.assertRaises(ServiceError) as raised:
             self.publish(audience='team', content='\x01' * MAX_CONTENT)
         self.assertEqual(raised.exception.status, 413)
-        self.assertIn('one entry takes at most 1048479', str(raised.exception))
+        self.assertIn('the limit is 1048479', str(raised.exception))
         # The payload has no ASCII escapes, so text outside ASCII keeps its size in UTF-8.
         self.assertEqual(self.publish(audience='team', content='é' * (MAX_CONTENT // 2))['status'], 'saved')
         # A private page has no such limit.
@@ -566,7 +573,7 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
     def test_a_page_of_another_member_that_names_a_bot_of_this_member_shows_nothing(self):
         # The second Mac shares a bot. The first Mac writes a page that names the bot entry of the second Mac.
         other = self.second.mutate('POST', '/v1/bots', {'name': 'Helper'}, str(uuid4()), 'phone')
-        their_bot = self.share(other, self.second)['bots'][0]['entry']
+        their_bot = own_entry(self.share(other, self.second))
         self.second.team_sync_pass()
         self.first.team_sync_pass()
         self.write(self.hostile_page(their_bot))

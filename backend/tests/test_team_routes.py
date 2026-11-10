@@ -1,9 +1,9 @@
-"""The team routes on the real listener: the token they need, the listener that serves them, and the logs they write.
+"""The team routes on the real listeners: who can call them, on which listener, and the logs they write.
 
-test_team_rooms.py covers the room steps through the service. This file goes through the listener that
-scripts/team.py talks to, so the path prefix in server.py, the token of the bridge file and the answers are covered.
-It also checks that no log line and no error text of a room operation carries a secret: the invite link, a token, a
-key, a ticket, a welcome or a proof.
+test_team_rooms.py covers the room steps through the service. This file goes through the listeners that the app and
+scripts/team.py talk to, so the path prefix in server.py, the token of a device, the token of the bridge file and
+the answers are covered. It also checks that no log line and no error text of a room operation carries a secret: the
+invite link, a token, a key, a ticket, a welcome or a proof.
 """
 import http.client
 import json
@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 import threading
 import unittest
+from uuid import uuid4
 
 from coconut import team_keys
 from coconut.server import APIServer, TunnelServer
@@ -19,15 +20,20 @@ from team_fakes import RELAY, TeamMacs
 
 # The static key of a paired phone, as the tunnel sidecar names it.
 PHONE = {'X-Coconut-Peer': 'a' * 64}
+PAIR = 'Pair this phone with the Mac to continue.'
 
 
 class Mac:
-    """The main listener of one service, and the token of its bridge file."""
+    """The main listener and the tunnel listener of one service, the token of its bridge file, and two paired
+    devices: one on the main listener and one through the tunnel."""
 
     def __init__(self, test, service):
         self.server = test.serve(APIServer(('127.0.0.1', 0), service))
+        self.tunnel = test.serve(TunnelServer(0, service))
         service.gateway_bridge.publish(f'http://127.0.0.1:{self.server.server_port}')
         self.token = json.loads((Path(service.root) / 'gateway' / 'bridge.json').read_text())['token']
+        self.device = service.pair({'code': service.pairing_code()})['token']
+        self.phone = service.pair({'code': service.pairing_code(600, tunnel=True)}, PHONE['X-Coconut-Peer'])['token']
 
 
 class TeamRouteTests(TeamMacs, unittest.TestCase):
@@ -61,57 +67,88 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
         response = connection.getresponse()
         return response.status, json.load(response)
 
+    def callers(self, mac: Mac) -> dict:
+        """The three callers of the team routes on one Mac, each as the options of `call`."""
+        return {'tool': dict(token=mac.token, server=mac.server), 'device': dict(token=mac.device, server=mac.server),
+                'phone': dict(token=mac.phone, server=mac.tunnel, headers=PHONE)}
+
     def make_room(self) -> dict:
         status, answer = self.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada', 'relay': RELAY},
                                    self.mac_one.token)
         self.assertEqual(status, 200, answer)
         return answer['room']
 
-    def test_the_token_of_the_bridge_opens_the_routes(self):
-        room = self.make_room()
-        status, invite = self.call('POST', f'/v1/team/rooms/{room["room"]}/invites', {}, self.mac_one.token)
-        self.assertEqual((status, set(invite)), (200, {'link', 'expires', 'uses'}))
-        status, joined = self.call('POST', '/v1/team/join', {'link': invite['link'], 'member_name': 'Grace'},
-                                   self.mac_two.token, server=self.mac_two.server)
-        self.assertEqual((status, joined['room']['state']), (200, 'active'))
-        # The sync route waits for a pass of the thread.
+    def test_each_caller_reaches_each_team_route(self):
+        bot = self.first.mutate('POST', '/v1/bots', {'name': 'Reporter'}, str(uuid4()), 'phone')
         self.first._start_team()
-        status, answer = self.call('POST', '/v1/team/sync', {}, self.mac_one.token)
-        self.assertTrue(answer['complete'])
-        self.assertEqual((status, [member['name'] for member in answer['rooms'][0]['members']]), (200, ['Ada', 'Grace']))
-        status, answer = self.call('GET', '/v1/team/rooms', None, self.mac_one.token)
-        self.assertEqual((status, answer['helper'], len(answer['rooms'])), (200, True, 1))
-        status, answer = self.call('DELETE', f'/v1/team/rooms/{room["room"]}', None, self.mac_two.token,
-                                   server=self.mac_two.server)
-        self.assertEqual((status, answer), (200, {'room': room['room'], 'left': True}))
-        # An error of a room operation comes back as the JSON of the service.
-        status, answer = self.call('DELETE', f'/v1/team/rooms/{room["room"]}', None, self.mac_two.token,
-                                   server=self.mac_two.server)
-        self.assertEqual((status, answer), (404, {'error': 'This Mac is not in this room.'}))
+        for name, one in self.callers(self.mac_one).items():
+            two = self.callers(self.mac_two)[name]
+            with self.subTest(caller=name):
+                status, answer = self.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                                      'relay': RELAY}, **one)
+                self.assertEqual(status, 200, answer)
+                room = answer['room']['room']
+                status, invite = self.call('POST', f'/v1/team/rooms/{room}/invites', {}, **one)
+                self.assertEqual((status, set(invite)), (200, {'link', 'expires', 'uses'}))
+                status, joined = self.call('POST', '/v1/team/join', {'link': invite['link'], 'member_name': 'Grace'}, **two)
+                self.assertEqual((status, joined['room']['state']), (200, 'active'), joined)
+                status, answer = self.call('PATCH', f'/v1/team/rooms/{room}', {'member_name': 'Ada L.'}, **one)
+                self.assertEqual((status, [member['name'] for member in answer['room']['members'] if member['this_mac']]),
+                                 (200, ['Ada L.']))
+                status, answer = self.call('POST', f'/v1/team/rooms/{room}/bots', {'bot_id': bot['id']}, **one)
+                self.assertEqual((status, [row['bot_id'] for row in answer['room']['bots']]), (200, [bot['id']]))
+                status, answer = self.call('POST', '/v1/team/sync', {}, **one)
+                self.assertEqual((status, answer['complete']), (200, True))
+                status, answer = self.call('GET', '/v1/team/rooms', None, **one)
+                (view,) = (row for row in answer['rooms'] if row['room'] == room)
+                self.assertEqual((status, [member['name'] for member in view['members']]), (200, ['Ada L.', 'Grace']))
+                status, answer = self.call('DELETE', f'/v1/team/rooms/{room}/bots/{bot["id"]}', None, **one)
+                self.assertEqual((status, answer['room']['bots']), (200, []))
+                self.assertEqual(self.call('DELETE', f'/v1/team/rooms/{room}', None, **two), (200, {'room': room, 'left': True}))
+                self.assertEqual(self.call('DELETE', f'/v1/team/rooms/{room}', None, **one), (200, {'room': room, 'left': True}))
+                # An error of a room operation comes back as the JSON of the service.
+                self.assertEqual(self.call('DELETE', f'/v1/team/rooms/{room}', None, **one),
+                                 (404, {'error': 'This Mac is not in this team.'}))
 
-    def test_no_token_another_token_and_a_device_token_get_401(self):
-        device = self.first.pair({'code': self.first.pairing_code()})['token']
-        for token in (None, 'not-the-token', device, self.mac_two.token):
-            with self.subTest(token=token and token[:4]):
-                for method, path, data in (('GET', '/v1/team/rooms', None), ('POST', '/v1/team/rooms', {'name': 'Example Team'}),
-                                           ('POST', '/v1/team/join', {'link': 'coconut://team/x'})):
-                    status, answer = self.call(method, path, data, token)
-                    self.assertEqual(status, 401)
-                    self.assertIn('bridge.json', answer['error'])
+    def test_a_request_without_a_valid_token_gets_401(self):
+        routes = (('GET', '/v1/team/rooms', None), ('POST', '/v1/team/rooms', {'name': 'Example Team'}),
+                  ('POST', '/v1/team/join', {'link': 'coconut://team/x'}), ('PATCH', f'/v1/team/rooms/{"a" * 64}', {}))
+        main = {'no token': {}, 'another token': {'token': 'not-the-token'},
+                'the bridge token of another Mac': {'token': self.mac_two.token},
+                'a device of another Mac': {'token': self.mac_two.device},
+                # A device that paired through the tunnel must connect with its static key.
+                'a phone without the tunnel': {'token': self.mac_one.phone}}
+        tunnel = {'no peer': {'token': self.mac_one.phone},
+                  'the bridge token': {'token': self.mac_one.token, 'headers': PHONE},
+                  'another peer': {'token': self.mac_one.phone, 'headers': {'X-Coconut-Peer': 'b' * 64}},
+                  'a device of the main listener': {'token': self.mac_one.device, 'headers': PHONE}}
+        cases = [(name, dict(options, server=self.mac_one.server)) for name, options in main.items()]
+        cases += [(name, dict(options, server=self.mac_one.tunnel)) for name, options in tunnel.items()]
+        for name, options in cases:
+            for method, path, data in routes:
+                with self.subTest(caller=name, path=path, method=method):
+                    self.assertEqual(self.call(method, path, data, **options), (401, {'error': PAIR}))
         self.assertEqual((self.relay.requests, self.first.team_store.rooms()), ([], []))
 
-    def test_the_tunnel_listener_does_not_serve_the_routes(self):
-        tunnel = self.serve(TunnelServer(0, self.first))
-        secret = self.first.pairing_code(600, tunnel=True)
-        device = self.first.pair({'code': secret}, PHONE['X-Coconut-Peer'])['token']
-        for headers in ({}, PHONE):
-            with self.subTest(headers=headers):
-                status, answer = self.call('GET', '/v1/team/rooms', None, self.mac_one.token, server=tunnel, headers=headers)
-                self.assertEqual((status, answer['error']), (401, 'Pair this phone with the Mac to continue.'))
-        # The phone has no team route yet.
-        status, answer = self.call('GET', '/v1/team/rooms', None, device, server=tunnel, headers=PHONE)
-        self.assertEqual((status, answer['error']), (404, 'This route was not found.'))
-        self.assertEqual(self.relay.requests, [])
+    def test_the_request_log_of_the_phone_has_routes_and_no_invite_link(self):
+        records = []
+        handler = logging.Handler(logging.DEBUG)
+        handler.emit = records.append
+        logger = logging.getLogger('coconut.server')
+        logger.addHandler(handler)
+        self.addCleanup(logger.removeHandler, handler)
+        one, two = self.callers(self.mac_one)['phone'], self.callers(self.mac_two)['phone']
+        room = self.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada', 'relay': RELAY}, **one)[1]['room']
+        link = self.call('POST', f'/v1/team/rooms/{room["room"]}/invites', {}, **one)[1]['link']
+        self.assertEqual(self.call('POST', '/v1/team/join', {'link': link, 'member_name': 'Grace'}, **two)[0], 200)
+        # A join with a link that is not valid writes its route too, and the link stays out of the log.
+        self.assertEqual(self.call('POST', '/v1/team/join', {'link': link + 'x'}, **two)[0], 400)
+        output = '\n'.join(record.getMessage() for record in records)
+        routes = [json.loads(line.split(' ', 1)[1])['route'] for line in output.splitlines()]
+        self.assertEqual(routes, ['/v1/team/rooms', '/v1/team/rooms/:id/invites', '/v1/team/join', '/v1/team/join'])
+        secrets = team_keys.read(self.first.root, room['room'])
+        for secret in (link, link.removeprefix('coconut://team/'), secrets['token'], secrets['keys']['0']):
+            self.assertNotIn(secret, output)
 
     def test_no_log_line_and_no_error_has_a_secret(self):
         records, texts = [], []

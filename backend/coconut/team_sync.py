@@ -22,10 +22,10 @@ import threading
 import time
 
 from . import team_keys
-from .team_helper import TeamFormatError, TeamHelperError
+from .team_helper import TeamFormatError, TeamHelperError, TeamHelperMissing
 from .team_keys import TeamKeysError
 from .team_relay import TeamRelayError
-from .team_store import ACTIVE, DROPPED, GONE, PENDING, REFUSED, REMOVED, SKIPPED, read_entry
+from .team_store import ACTIVE, DROPPED, GONE, JOINING, PENDING, REFUSED, REMOVED, SKIPPED, read_entry
 
 POLL_SECONDS = 30
 MAX_WAIT_SECONDS = 900
@@ -37,7 +37,14 @@ ROOM_ERRORS = (TeamRelayError, TeamHelperError, TeamFormatError, TeamKeysError)
 # that entry. A database failure, for example a full disk, is not here: it stops the answer, so no entry gets lost.
 DATA_ERRORS = (ValueError, TypeError, OverflowError, sqlite3.DataError, sqlite3.InterfaceError)
 # The error of a room that failed for a defect of this code. The log has the reason, and the app needs no more.
-DEFECT = 'The sync of this room failed. The log of the service has the reason.'
+DEFECT = 'Coconut could not update this team. It tries again later.'
+# The event of each transaction that changes what the Team screen of the app shows. GET /v1/updates then has
+# `team_changed`.
+TEAM_EVENT = 'team.updated'
+# What a person reads when a room is not active on this Mac.
+INACTIVE = {JOINING: 'This Mac did not finish its join. Join again with the same link.',
+            REMOVED: 'This Mac is no longer in the team.',
+            GONE: 'This team no longer exists.'}
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +57,32 @@ def utc_now() -> str:
 def encode_payload(fields: dict, rev: int, at: str) -> bytes:
     """The payload of an entry of this Mac. JSON without ASCII escapes, so text outside ASCII does not grow."""
     return json.dumps(dict(fields, rev=rev, at=at), ensure_ascii=False, separators=(',', ':')).encode()
+
+
+def room_error(error: Exception) -> str:
+    """What a person reads about a failure of the helper, the key file or the relay: what happened and what to do,
+    without a word of the code. The log of the service keeps the technical reason."""
+    if isinstance(error, TeamHelperMissing):
+        return 'Update Coconut on this Mac, then try again.'
+    if isinstance(error, (TeamHelperError, TeamFormatError)):
+        return 'Coconut on this Mac could not finish this step. Try again later.'
+    if isinstance(error, TeamKeysError):
+        return 'This Mac can no longer read the team. Leave the team on this Mac, then join again.'
+    if isinstance(error, TeamRelayError):
+        if error.temporary:
+            return 'Coconut could not reach its server. Try again later.'
+        if error.status == 401:
+            return 'This Mac is no longer in the team.'
+        if error.status == 404:
+            return 'This team no longer exists.'
+        return 'The Coconut server refused this step. Try again later.'
+    return DEFECT
+
+
+def member_payload(profile: dict) -> dict:
+    """The fields of the `member` entry of this Mac, from the profile of its room."""
+    return {'kind': 'member', 'name': profile['name'], 'avatar': profile['avatar'], 'color': profile['color'],
+            'agreement': profile['agreement']}
 
 
 def retry_delay(failures: int) -> int:
@@ -140,7 +173,7 @@ class TeamSync:
                 delay = retry_delay(failures + 1)
                 self._team_failures[room] = (failures + 1, time.monotonic() + delay)
                 if isinstance(error, ROOM_ERRORS):
-                    self._team_status.setdefault(room, {})['error'] = str(error)
+                    self._team_status.setdefault(room, {})['error'] = room_error(error)
                     log.warning('coconut.team_log room %s: %s The next try is in %d seconds.', room[:8], error, delay)
                 else:
                     self._team_status.setdefault(room, {})['error'] = DEFECT
@@ -184,6 +217,7 @@ class TeamSync:
                 # The Library shows a room only while it is active, so the phone reads the list again.
                 if self.team_store.shows(room_id):
                     self._event('document.updated', {'team': room_id})
+                self._event(TEAM_EVENT, {'team': room_id})
                 self.team_store.update_room(room_id, state=state)
             log.warning('coconut.team_log room %s: the relay answered %d. The room is now %s on this Mac.',
                         room_id[:8], error.status, state)
@@ -205,7 +239,7 @@ class TeamSync:
             for entry, result in zip(entries, opened):
                 results.append((entry, *self._team_accept(current, entry, result, first_epoch)))
             self.team_store.update_room(room_id, seq=entries[-1]['seq'])
-            self._team_tell_library(room_id)
+            self._team_tell(room_id)
         self._team_report(room_id, results)
         return answer['last'] > entries[-1]['seq']
 
@@ -235,7 +269,7 @@ class TeamSync:
                     if outcome != PENDING:
                         self.team_store.drop_pending(room_id, entry['id'])
                     results.append((entry, outcome, reason))
-                self._team_tell_library(room_id)
+                self._team_tell(room_id)
             self._team_report(room_id, results)
 
     def _team_prepare(self, room_id: str, entry: dict, opened: dict) -> dict:
@@ -270,16 +304,20 @@ class TeamSync:
         self.db.execute('RELEASE team_entry')
         return result
 
-    def _team_tell_library(self, room_id: str) -> None:
-        """Add one event when the entries of this transaction changed the team pages or bots that the Library shows.
+    def _team_tell(self, room_id: str) -> None:
+        """Add one event when the entries of this transaction changed what the phone shows of the room.
 
-        The phone learns of a local document from its `document.*` event in GET /v1/updates, so a team page uses the
-        same type. A phone of today knows the type, so the event does not make it read the whole state again. The
-        caller holds the transaction.
+        The phone learns of a local document from its `document.*` event in GET /v1/updates, so a change of the team
+        pages or bots of the Library uses the same type. A change of the members or of the bots of the team adds
+        TEAM_EVENT for the Team screen. A phone of today knows both types, so an event does not make it read the
+        whole state again. The caller holds the transaction.
         """
         if room_id in self.team_store.touched:
             self.team_store.touched.discard(room_id)
             self._event('document.updated', {'team': room_id})
+        if room_id in self.team_store.changed:
+            self.team_store.changed.discard(room_id)
+            self._event(TEAM_EVENT, {'team': room_id})
 
     def _team_report(self, room_id: str, results: list) -> None:
         """Write a log line for each entry that the Mac dropped or refused, and one for those that it skipped or
@@ -310,9 +348,7 @@ class TeamSync:
             return
         self._team_announced[room_id] = time.monotonic()
         profile = json.loads(room['profile'])
-        self._team_write(room, profile['entry'], True, {
-            'kind': 'member', 'name': profile['name'], 'avatar': profile['avatar'], 'color': profile['color'],
-            'agreement': profile['agreement']})
+        self._team_write(room, profile['entry'], True, member_payload(profile))
 
     def _team_write(self, room: dict, entry_id: str, kept: bool, fields: dict, tries: int = 1) -> None:
         """Seal an entry of this Mac, write it to the relay, and put it into the store.
@@ -342,6 +378,7 @@ class TeamSync:
             if current is not None:
                 # The sync reads this write again later. The store then has it already.
                 self.team_store.accept(current, entry, opened)
+                self._team_tell(room['room'])
 
     def _team_settle(self, room_id: str) -> None:
         """Read the room to its end when a write of this Mac got no answer. The relay can have that write. Without

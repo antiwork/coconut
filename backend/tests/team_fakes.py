@@ -15,7 +15,7 @@ import time
 
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError
-from coconut.team_helper import TeamFormatError, TeamHelperError
+from coconut.team_helper import TeamFormatError, TeamHelperMissing
 from coconut.team_relay import TeamRelayError
 
 RELAY = 'https://relay.example'
@@ -43,7 +43,7 @@ class FakeHelper:
 
     def _call(self, name: str):
         if not self.available:
-            raise TeamHelperError('This Mac has no team helper. Run python3 scripts/team.py build.')
+            raise TeamHelperMissing('This Mac has no team helper. Run python3 scripts/team.py build.')
         self.calls.append(name)
 
     def member(self) -> dict:

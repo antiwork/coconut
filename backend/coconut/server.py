@@ -33,7 +33,8 @@ PEER_KEY = re.compile(r'[0-9a-f]{64}')
 # Only the main listener serves these. The tunnel listener carries the phone's requests.
 GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/tools', '/v1/gateway/cron',
                   '/v1/gateway/wake', '/v1/gateway/messages', '/v1/gateway/files', '/v1/gateway/document')
-# The routes of the team rooms (team.py). Also only the main listener serves them: a phone has no team route yet.
+# The routes of the team rooms (team.py). A paired device calls them on each listener. A tool on this Mac calls them
+# on the main listener with the token of the bridge file.
 TEAM_ROUTES = '/v1/team/'
 
 
@@ -211,9 +212,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ServiceError(400, str(error)) from None
 
     def _team(self, service, method, path):
-        """The routes of the team rooms, for the tools on this Mac. They use the token of the gateway routes. See team.py."""
-        if not service.gateway_bridge.authorized(self.headers.get('Authorization', '')):
-            raise ServiceError(401, 'Use the token in <data>/gateway/bridge.json.')
+        """The routes of the team rooms. The caller checked the token of a device or of the bridge file. See team.py."""
         self._json(200, service.team_request(method, path, {} if method == 'GET' else self._body()))
 
     def _handle(self, method):
@@ -241,7 +240,9 @@ class Handler(BaseHTTPRequestHandler):
             if method == 'POST' and url.path in GATEWAY_ROUTES and not self.server.tunnel and hasattr(service, 'gateway_bridge'):
                 self._gateway(service.gateway_bridge, url.path)
                 return
-            if url.path.startswith(TEAM_ROUTES) and not self.server.tunnel and hasattr(service, 'team_request'):
+            team = url.path.startswith(TEAM_ROUTES) and hasattr(service, 'team_request')
+            if (team and not self.server.tunnel
+                    and service.gateway_bridge.authorized(self.headers.get('Authorization', ''))):
                 self._team(service, method, url.path)
                 return
             peer = None
@@ -262,6 +263,11 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(service, UnavailableService) and not (method == 'GET' and url.path == '/v1/setup'):
                 # Without Hermes, only the setup status answers. See hermes_unavailable.
                 service.refuse()
+            if team:
+                # The request log of the tunnel listener keeps the route without its IDs, and never a body, so an
+                # invite link in a join stays out of it.
+                self._team(service, method, url.path)
+                return
             if method == 'POST' and url.path == '/v1/maintenance/workspace-recovery':
                 self._json(200, service.request_workspace_recovery(
                     self._body(), self.headers.get('Idempotency-Key', ''), device))

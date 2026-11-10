@@ -28,6 +28,10 @@ class TeamHelperError(Exception):
     """The helper is missing, or it did not run to its end."""
 
 
+class TeamHelperMissing(TeamHelperError):
+    """This Mac has no usable helper. An update of Coconut brings one, so the app tells the person to update."""
+
+
 class TeamFormatError(Exception):
     """The helper refused a value. `code` is malformed, unknown_version, unknown_epoch, seal or signature."""
 
@@ -60,7 +64,7 @@ class TeamHelper:
     def call(self, operation: str, **fields) -> dict:
         path = helper_path(self.root)
         if path is None:
-            raise TeamHelperError('This Mac has no team helper. Run python3 scripts/team.py build.')
+            raise TeamHelperMissing('This Mac has no team helper. Run python3 scripts/team.py build.')
         answer = None
         try:
             result = subprocess.run([str(path)], input=json.dumps(dict(fields, operation=operation)).encode(),
