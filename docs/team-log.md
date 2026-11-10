@@ -343,6 +343,18 @@ When something changes that the Team screen shows, the Mac adds one `team.update
 
 No answer has a key, a token or an invite secret, and so no answer has the public agreement key of a member. Only the answer of the invite route has the link. The request log of the tunnel listener keeps the route without its IDs and never a body, so the link of a join stays out of it. `scripts/team.py join` reads the link from standard input, so the link is never an argument of a command. `scripts/team.py share <room> <bot>` and `unshare <room> <bot>` call the bot routes.
 
+#### Repeat a write
+
+The app sends a write again with the same `Idempotency-Key` when the answer does not come: after a lost connection, a timeout or a relay that does not answer (`APIClient.swift`). A team write calls the relay and can take seconds, so the first request can still run or be finished. Without a rule, a repeat makes a second team, or a join answers "already in this team" after a join that worked.
+
+- A paired device can send an `Idempotency-Key` (a UUID) with each write: each route of the table except the `GET` and `POST /v1/team/sync`. A key that is not a UUID answers 400.
+- The Mac keeps the first successful answer for a key of a device. A second request with the same key from the same device gets that answer and does nothing else.
+- A second request that comes while the first one runs waits for it, then gets its answer. When the first request fails, the Mac keeps no answer, and the second request runs.
+- The same key with another method, path or body answers 409. The same key from another device runs as its own request.
+- The answers stay in the memory of the service only, for 10 minutes, and at most 256 of them. A stop of the service drops them. A later repeat runs again.
+- The answer of the invite route has the invite link, so the answers never go to the database or to a log. The `requests` table of the other writes of the phone keeps each answer with no end, so these routes do not use it.
+- A request without a key runs each time, as before. A tool on this Mac sends no key, and the Mac ignores a key from a tool.
+
 ### Bots and pages
 
 `backend/coconut/team_pages.py` shares the bots of this Mac and their pages. `TeamStore` reads the bots and pages of the other members.
