@@ -91,6 +91,11 @@ final class CoconutKitTests: XCTestCase {
                                             "COCONUT_LOGIN_ITEM": "com.gumroad.coconut.service"])
         XCTAssertEqual(launch.standardOutput?.path, "/Users/a/Coconut/.runtime/host/logs/service.log")
         XCTAssertEqual(launch.standardError?.path, "/Users/a/Coconut/.runtime/host/logs/error.log")
+        // The service runs the team helper of the bundle, so a Mac without the Command Line Tools has one.
+        let bundled = Launch.service(install: install, python: URL(fileURLWithPath: "/opt/homebrew/bin/python3"),
+                                     environment: ["PATH": "/bin"],
+                                     teamHelper: URL(fileURLWithPath: "/App/Contents/Helpers/team-helper"))
+        XCTAssertEqual(bundled.environment["COCONUT_TEAM_HELPER"], "/App/Contents/Helpers/team-helper")
     }
 
     func testTheSidecarForwardsToTheTunnelListener() {
@@ -330,11 +335,13 @@ final class CoconutKitTests: XCTestCase {
         let install = Install(root: URL(fileURLWithPath: "/Users/a/Coconut"))
         let launch = Launch.update(install: install, source: source, directory: "Coconut",
                                    python: URL(fileURLWithPath: "/opt/homebrew/bin/python3"),
-                                   sidecar: URL(fileURLWithPath: "/App/Contents/Helpers/tunnel-sidecar"), environment: ["PATH": "/bin"],
-                                   home: URL(fileURLWithPath: "/Users/a"))
+                                   sidecar: URL(fileURLWithPath: "/App/Contents/Helpers/tunnel-sidecar"),
+                                   teamHelper: URL(fileURLWithPath: "/App/Contents/Helpers/team-helper"),
+                                   environment: ["PATH": "/bin"], home: URL(fileURLWithPath: "/Users/a"))
         XCTAssertEqual(launch.arguments, ["/opt/homebrew/bin/python3", source.deployScript.path, "receive", "--directory", "Coconut"])
         XCTAssertEqual(launch.environment["COCONUT_APP_MANAGED"], "1")
         XCTAssertEqual(launch.environment["COCONUT_SIDECAR"], "/App/Contents/Helpers/tunnel-sidecar")
+        XCTAssertEqual(launch.environment["COCONUT_TEAM_HELPER"], "/App/Contents/Helpers/team-helper")
         XCTAssertEqual(launch.environment["PATH"], "/bin")
         // Only a setup that the person asked for lets deploy.py change the Hermes config.
         XCTAssertNil(launch.environment["COCONUT_SET_UP"])

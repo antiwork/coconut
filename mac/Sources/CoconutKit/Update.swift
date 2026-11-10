@@ -62,18 +62,22 @@ extension Launch {
     ///
     /// deploy.py drains the running turns, stops the service, replaces the source, checks Hermes and health, and
     /// restores the earlier source when a check fails. With COCONUT_APP_MANAGED, a first install starts the login item
-    /// instead of a LaunchAgent. COCONUT_SIDECAR names the sidecar of this bundle for scripts/tunnel.py. With
+    /// instead of a LaunchAgent. COCONUT_SIDECAR names the sidecar of this bundle for scripts/tunnel.py, and
+    /// COCONUT_TEAM_HELPER names its team helper for scripts/team.py, so neither script compiles. With
     /// `setUp`, the person asked for the setup. deploy.py now sets Coconut's own Hermes entries at each install, so
     /// COCONUT_SET_UP no longer changes what it does.
     public static func update(install: Install, source: BundledSource, directory: String, python: URL, sidecar: URL,
-                              environment: [String: String], home: URL = Install.homeFolder(),
-                              setUp: Bool = false) -> Launch {
+                              teamHelper: URL? = nil, environment: [String: String],
+                              home: URL = Install.homeFolder(), setUp: Bool = false) -> Launch {
         var environment = environment
         environment["COCONUT_APP_MANAGED"] = "1"
         if setUp {
             environment["COCONUT_SET_UP"] = "1"
         }
         environment["COCONUT_SIDECAR"] = sidecar.path
+        if let teamHelper {
+            environment["COCONUT_TEAM_HELPER"] = teamHelper.path
+        }
         environment["PYTHONUNBUFFERED"] = "1"
         return Launch(executable: python,
                       arguments: [python.path, source.deployScript.path, "receive", "--directory", directory],
