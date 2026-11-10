@@ -43,7 +43,7 @@ struct DaySeparatorRow: View {
 
     var body: some View {
         Text(DaySeparator.label(for: date, now: now))
-            .font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
             .accessibilityAddTraits(.isHeader)
