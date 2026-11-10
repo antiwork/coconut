@@ -5,7 +5,7 @@ import ServiceManagement
 ///
 /// The agents start the service and the relay. The app opens too, so the menu bar icon shows and Sparkle, which runs
 /// in the app, checks for updates after a restart of the Mac.
-public enum LoginItem: Hashable, CaseIterable {
+public enum LoginItem: Hashable, CaseIterable, Sendable {
     case app
     case agent(Agent)
 
