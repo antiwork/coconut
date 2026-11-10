@@ -18,6 +18,7 @@ from pathlib import Path
 import re
 import signal
 import socket
+import socketserver
 import sqlite3
 import sys
 import threading
@@ -71,6 +72,13 @@ class APIServer(ThreadingHTTPServer):
             self.address_family = socket.AF_INET6
         super().__init__(address, Handler)
         self.service = service
+
+    def server_bind(self):
+        # HTTPServer.server_bind sets server_name with socket.getfqdn, a reverse name lookup. On a CI Mac that lookup
+        # of 127.0.0.1 blocked the start for more than 30 seconds. Each listener is on loopback, and nothing reads
+        # server_name, so the bound host is enough.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def service_actions(self):
         if self.service is not None and self.service.take_service_restart():
