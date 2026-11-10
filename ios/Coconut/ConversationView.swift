@@ -110,11 +110,10 @@ struct ConversationView: View {
                                     }.buttonStyle(.plain)
                                 }
                             }
-                            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                            ForEach(entries) { entry in
                                 let message = entry.message
                                 VStack(spacing: 0) {
-                                if let date = message.createdAt.apiDate,
-                                   DaySeparator.starts(date, after: index > 0 ? entries[index - 1].message.createdAt.apiDate : nil) {
+                                if entry.startsDay, let date = message.createdAt.apiDate {
                                     DaySeparatorRow(date: date)
                                 }
                                 if entry.isExchange {

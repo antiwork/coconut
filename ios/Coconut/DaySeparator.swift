@@ -17,13 +17,6 @@ enum DaySeparator {
         return sameYear ? date.formatted(dated) : date.formatted(dated.year())
     }
 
-    /// Whether `entry` is the first of its calendar day after `previous`.
-    static func starts(_ date: Date?, after previous: Date?, calendar: Calendar = .current) -> Bool {
-        guard let date else { return false }
-        guard let previous else { return true }
-        return !calendar.isDate(date, inSameDayAs: previous)
-    }
-
     /// Whether two messages belong to one calendar day. Messages without a date stay together, because a group
     /// that crosses midnight would leave the new day with no separator.
     static func sameDay(_ first: String?, _ second: String?, calendar: Calendar = .current) -> Bool {

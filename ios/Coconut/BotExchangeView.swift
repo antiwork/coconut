@@ -10,6 +10,8 @@ struct TranscriptEntry: Identifiable {
     var isExchange: Bool = false
     /// The photos of consecutive photo messages from one sender. They show as one carousel.
     var photos: [MessagePhoto] = []
+    /// Whether the row is the first of its calendar day. The chat shows the day separator above such a row.
+    var startsDay = false
     var id: String { messages[0].id + (isExchange ? "-exchange" : "") }
     var message: Message { messages[0] }
 
@@ -19,7 +21,7 @@ struct TranscriptEntry: Identifiable {
     }
 
     /// A carousel or an exchange never crosses midnight: a row belongs to one calendar day, so the day separator
-    /// above it is the only one that day needs.
+    /// above it is the only one that day needs. The first row of each day has `startsDay`.
     static func grouped(_ messages: [Message], botId: String? = nil,
                         calendar: Calendar = .current) -> [TranscriptEntry] {
         var entries: [TranscriptEntry] = []
@@ -45,6 +47,13 @@ struct TranscriptEntry: Identifiable {
             } else {
                 entries.append(TranscriptEntry(messages: [message], isExchange: true))
             }
+        }
+        // A row without a date starts no day. The next row compares its day with the last row that has a date.
+        var previous: Date?
+        for index in entries.indices {
+            guard let date = entries[index].message.createdAt.apiDate else { continue }
+            entries[index].startsDay = previous.map { !calendar.isDate(date, inSameDayAs: $0) } ?? true
+            previous = date
         }
         return entries
     }

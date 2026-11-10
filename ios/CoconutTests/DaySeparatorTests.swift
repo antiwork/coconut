@@ -36,15 +36,21 @@ final class DaySeparatorTests: XCTestCase {
         XCTAssertEqual(DaySeparator.label(for: sent, now: date("2026-11-09T06:00:00Z"), calendar: calendar, locale: locale), "Yesterday")
     }
 
-    func testOneSeparatorPerDay() {
-        let times = ["2026-11-07T14:00:00Z", "2026-11-07T15:00:00Z", "2026-11-08T14:00:00Z", "2026-11-08T15:00:00Z"].map(date)
-        var previous: Date?
-        var starts = 0
-        for t in times {
-            if DaySeparator.starts(t, after: previous, calendar: calendar) { starts += 1 }
-            previous = t
-        }
-        XCTAssertEqual(starts, 2)
+    /// Each day with messages has exactly one row that starts it. The chat shows the separator above that row.
+    func testOneRowStartsEachDay() {
+        let entries = TranscriptEntry.grouped([
+            message("a", at: "2026-11-07T14:00:00Z"), message("b", at: "2026-11-07T15:00:00Z"),
+            message("c", at: "2026-11-08T14:00:00Z"), message("d", at: "2026-11-08T15:00:00Z"),
+        ], calendar: calendar)
+        XCTAssertEqual(entries.map(\.startsDay), [true, false, true, false])
+    }
+
+    /// A message without a date starts no day, and the message after it does not start the same day again.
+    func testRowWithoutDateStartsNoDay() {
+        let entries = TranscriptEntry.grouped([
+            message("a", at: "2026-11-08T14:00:00Z"), message("b", at: ""), message("c", at: "2026-11-08T15:00:00Z"),
+        ], calendar: calendar)
+        XCTAssertEqual(entries.map(\.startsDay), [true, false, false])
     }
 
     /// 23:59 and 00:01 in New York are 04:59Z and 05:01Z on these dates.
@@ -69,24 +75,14 @@ final class DaySeparatorTests: XCTestCase {
         XCTAssertEqual(exchange.map(\.id), ["ask-exchange", "reply-exchange"])
     }
 
-    /// Each day with messages has exactly one separator, even when a carousel crosses midnight.
-    func testOneSeparatorPerDayThroughGroupedRows() {
+    /// A carousel that crosses midnight gives the new day a row of its own, and that row starts the day.
+    func testRowAfterMidnightStartsTheNewDay() {
         let entries = TranscriptEntry.grouped([
             message("photo-1", at: "2026-11-09T04:59:00Z", photo: true),
             message("photo-2", at: "2026-11-09T05:01:00Z", photo: true),
             message("note", at: "2026-11-09T05:02:00Z"),
         ], calendar: calendar)
-        var previous: Date?
-        var separatorDays: [Date] = []
-        for entry in entries {
-            let day = entry.message.createdAt.apiDate
-            if let day, DaySeparator.starts(day, after: previous, calendar: calendar) {
-                separatorDays.append(calendar.startOfDay(for: day))
-            }
-            previous = day
-        }
-        let messageDays = Set(entries.compactMap(\.message.createdAt.apiDate).map { calendar.startOfDay(for: $0) })
-        XCTAssertEqual(messageDays.count, 2)
-        XCTAssertEqual(separatorDays, messageDays.sorted())
+        XCTAssertEqual(entries.map(\.id), ["photo-1", "photo-2", "note"])
+        XCTAssertEqual(entries.map(\.startsDay), [true, true, false])
     }
 }
