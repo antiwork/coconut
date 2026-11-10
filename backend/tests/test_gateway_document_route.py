@@ -17,8 +17,8 @@ from coconut.server import APIServer, TunnelServer
 from coconut.service import Service
 from test_gateway_chat import Provider
 
-PAGE = dict(key='dashboard-home', title='Home', format='markdown', summary='32 past SLA',
-            content='32 items are past their SLA.\n\n| Queue | Open |\n|---|---|\n| Issues | 32 |\n')
+PAGE = dict(key='weekly-report', title='Weekly report', format='markdown', summary='3 open tasks',
+            content='3 tasks are open.\n\n| State | Tasks |\n|---|---|\n| Open | 3 |\n| Done | 5 |\n')
 # The static key of a paired phone, as the tunnel sidecar names it.
 PHONE = {'X-Coconut-Peer': 'a' * 64}
 
@@ -29,7 +29,7 @@ class GatewayPageRouteTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.service = Service(self.temp.name, Provider(), start_workers=False)
         self.addCleanup(self.service.close)
-        self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Desk'}, str(uuid4()), 'phone')
+        self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Ada'}, str(uuid4()), 'phone')
         self.home = str(self.service.profiles.home(self.bot))
         self.server = self.serve(APIServer(('127.0.0.1', 0), self.service))
         # The service writes the address and the token of the bridge file that the adapter of the gateway reads.
@@ -60,11 +60,11 @@ class GatewayPageRouteTests(unittest.TestCase):
 
     def test_the_route_saves_a_page_for_the_bot_of_a_hermes_home(self):
         status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home), self.token)
-        self.assertEqual((status, answer), (200, {'status': 'saved', 'key': 'dashboard-home', 'version': 1,
+        self.assertEqual((status, answer), (200, {'status': 'saved', 'key': 'weekly-report', 'version': 1,
                                                   'expires_at': None}))
         documents = self.service.documents()['documents']
         self.assertEqual([(row['key'], row['title'], row['bot_id']) for row in documents],
-                         [('dashboard-home', 'Home', self.bot['id'])])
+                         [('weekly-report', 'Weekly report', self.bot['id'])])
         self.assertEqual(self.service.document(documents[0]['id'])['content'], PAGE['content'])
 
     def test_a_second_save_of_the_same_page_writes_nothing(self):
