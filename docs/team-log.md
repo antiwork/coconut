@@ -170,7 +170,7 @@ The token is unpadded lowercase base32 (RFC 4648) of these bytes. The pairing li
 | Length of `relay` | `relay`, UTF-8 |
 | The rest | `name` of the team, UTF-8 |
 
-`relay` is an HTTPS origin without a path, a query or account details, as in a pairing link. So a changed link cannot send the ticket of a Mac to a local address or over plain HTTP. `name` has 1 to 80 characters, no space at its start or end, and no control character, because the app shows it before the person joins. A Mac refuses a link or a welcome with another `relay` or `name`.
+`relay` is an HTTPS origin without a path, a query or account details, as in a pairing link, and its host is a name, not an address in numbers. So a changed link cannot send a Mac over plain HTTP or to an address that the link gives in numbers. The rule does not know where a host name points. `name` has 1 to 80 characters, no space at its start or end, and no control character, because the app shows it before the person joins. A Mac refuses a link or a welcome with another `relay` or `name`.
 
 Both Macs derive these values from the invite secret with HKDF-SHA256, an empty salt, and a 32-byte output:
 

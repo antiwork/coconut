@@ -61,7 +61,7 @@ enum TeamLog {
               let first = body.first else { throw Failure.malformed }
         // The version comes first: a body of a later version can have another form, and the Mac keeps it.
         guard first <= version else { throw Failure.unknownVersion }
-        guard first == version, body.count >= minimumBody else { throw Failure.malformed }
+        guard first == version, (minimumBody...maximumBody).contains(body.count) else { throw Failure.malformed }
         let epoch = uint32(body[1..<5])
         guard let key = key(epoch) else { throw Failure.unknownEpoch }
         let data = additionalData(epoch: epoch, room: room, entry: entry, member: member)
@@ -136,7 +136,9 @@ enum TeamLog {
     }
 
     static func open(welcome sealed: Data, room: Data, secret: Data) throws -> Welcome {
-        guard room.count == longLength, secret.count == longLength else { throw Failure.malformed }
+        guard room.count == longLength, secret.count == longLength, sealed.count <= maximumWelcome else {
+            throw Failure.malformed
+        }
         guard let box = try? ChaChaPoly.SealedBox(combined: sealed),
               let plain = try? ChaChaPoly.open(box, using: welcomeKey(secret: secret), authenticating: room) else {
             throw Failure.seal
@@ -192,8 +194,10 @@ enum TeamLog {
 
     private static let linkPrefix = "coconut://team/"
 
-    /// An HTTPS origin without a path or account details, as for a pairing link. A crafted link must not send the
-    /// ticket of a Mac to a local address or over plain HTTP. A debug build also accepts the loopback test relay.
+    /// An HTTPS origin without a path or account details, as for a pairing link, and with a host name: not an
+    /// address in numbers and not a name without a dot, such as `localhost`. So a changed link cannot send a Mac
+    /// over plain HTTP or to an address that the link gives in numbers. The check does not know where a host name
+    /// points. A debug build also accepts the loopback test relay.
     private static func validRelay(_ value: String) -> Bool {
         guard value.utf8.count <= 255, value.utf8.allSatisfy({ (33...126).contains($0) }),
               let parts = URLComponents(string: value), parts.user == nil, parts.password == nil, parts.query == nil,
@@ -201,7 +205,11 @@ enum TeamLog {
               parts.port.map({ (1...65_535).contains($0) }) ?? true,
               host.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 46 })
         else { return false }
-        if parts.scheme == "https" { return true }
+        // The last part of a host name has a letter. The last part of an IPv4 address has only digits.
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false)
+        if parts.scheme == "https" {
+            return labels.count >= 2 && !labels.contains(where: \.isEmpty) && labels.last?.contains(where: \.isLetter) == true
+        }
         #if DEBUG
         if parts.scheme == "http" && host == "127.0.0.1" && parts.port != nil { return true }
         #endif

@@ -90,6 +90,8 @@ final class TeamLogTests: XCTestCase {
         XCTAssertEqual(failure { _ = try open(body, key: { _ in nil }) }, .unknownEpoch)
         XCTAssertEqual(failure { _ = try open(body.prefix(TeamLog.minimumBody - 1)) }, .malformed)
         XCTAssertEqual(failure { _ = try open(Data()) }, .malformed)
+        // The relay takes no larger body, so the Mac opens none.
+        XCTAssertEqual(failure { _ = try open(body + Data(count: TeamLog.maximumBody)) }, .malformed)
         // A body of a later version can have another form, also a shorter one. A Mac keeps it for a later update.
         XCTAssertEqual(failure { _ = try open(Data([2]) + body.dropFirst()) }, .unknownVersion)
         XCTAssertEqual(failure { _ = try open(Data([2, 0, 0])) }, .unknownVersion)
@@ -155,7 +157,11 @@ final class TeamLogTests: XCTestCase {
         XCTAssertEqual(try refusal(welcomeText.replacingOccurrences(of: "3f7708", with: "3F7708")), .malformed)
         XCTAssertEqual(try refusal(welcomeText.replacingOccurrences(of: #","name":"Antiwork""#, with: "")), .malformed)
         XCTAssertEqual(try refusal("not json"), .malformed)
-        // A name that makes the welcome larger than the relay takes.
+        // The relay takes no larger welcome, so the Mac opens none, also when its seal is valid.
+        let large = #"{"version":1,"epoch":0,"pad":""# + String(repeating: "a", count: 1024) + #""}"#
+        XCTAssertGreaterThan(try sealed(large).count, TeamLog.maximumWelcome)
+        XCTAssertEqual(try refusal(large), .malformed)
+        // A name that the rule for a name refuses.
         let long = TeamLog.Welcome(epoch: 0, key: roomKey, admin: memberID, name: String(repeating: "a", count: 81))
         XCTAssertEqual(failure { _ = try TeamLog.seal(long, room: room, secret: secret) }, .malformed)
         // The longest name, with characters of four bytes each, still fits in the welcome that the relay takes.
@@ -216,7 +222,9 @@ final class TeamLogTests: XCTestCase {
         var invite = try TeamLog.invite(link: link)
         for relay in ["relay.example", "http://relay.example", "http://169.254.169.254/latest", "https://relay.example/path",
                       "https://relay.example?x=1", "https://user@relay.example", "https://relay.example:99999",
-                      "https://relay.example#part", "https://rel ay.example", "https://", "ftp://relay.example"] {
+                      "https://relay.example#part", "https://rel ay.example", "https://", "ftp://relay.example",
+                      "https://127.0.0.1:8443", "https://10.0.0.5", "https://localhost", "https://localhost:8443",
+                      "https://relay..example", "https://relay.example.", "https://[::1]"] {
             XCTAssertEqual(failure { _ = try TeamLog.invite(link: packedLink(relay: relay)) }, .malformed, relay)
             invite.relay = relay
             XCTAssertEqual(failure { _ = try TeamLog.link(invite) }, .malformed, relay)
