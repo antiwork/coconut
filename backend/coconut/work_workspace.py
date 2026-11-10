@@ -227,6 +227,48 @@ def changes_digest(staged, unstaged, names):
     return value.hexdigest()
 
 
+# The header line of a file in a patch that names its old and new blob, and its mode when that stays.
+INDEX_LINE = re.compile(rb'index ([0-9a-f]+)\.\.([0-9a-f]+)( [0-7]{6})?')
+
+
+def same_patch(archived, full):
+    """Return True when `full`, a patch with full object names, holds the changes of the `archived` patch.
+
+    Git abbreviates the blob names in the index lines of a text patch by the number of objects in the repository.
+    --binary writes full names only for binary files. A fetch after retirement can make the names longer, so the same
+    changes give other bytes. Every other line must be the same, and each archived name must start the full name.
+    """
+    old, new = archived.split(b'\n'), full.split(b'\n')
+    if len(old) != len(new):
+        return False
+    for line, other in zip(old, new):
+        if line == other:
+            continue
+        short, long = INDEX_LINE.fullmatch(line), INDEX_LINE.fullmatch(other)
+        if not (short and long and short.group(3) == long.group(3)
+                and all(len(short.group(i)) >= 4 and long.group(i).startswith(short.group(i)) for i in (1, 2))):
+            return False
+    return True
+
+
+def matches_archive(path, patches, expected):
+    """Return True when the checkout at path holds the archived changes: their digest `expected` (changes_digest).
+
+    `patches()` returns the archived staged and unstaged patches. Coconut reads them only when the digest of the
+    checkout differs, because a read can decompress a large archive. When it differs only because Git now abbreviates
+    object names with more characters (same_patch), the checkout still holds the archived changes. The archived
+    patches and the untracked names of the checkout must then give the saved digest themselves.
+    """
+    current = changes(path)
+    if changes_digest(*current) == expected:
+        return True
+    staged, unstaged = patches()
+    if changes_digest(staged, unstaged, current[2]) != expected:
+        return False
+    return (same_patch(staged, git_output(path, 'diff', '--cached', *DIFF, '--full-index', 'HEAD'))
+            and same_patch(unstaged, git_output(path, 'diff', *DIFF, '--full-index')))
+
+
 def rebuildable(name):
     parts = name.rstrip('/').split('/')
     return (any(part in REBUILDABLE_NAMES for part in parts)
@@ -1837,7 +1879,7 @@ def empty_scratch_trash(root):
 def drop_other_archives(directory, identity, keep, saved):
     """Keep one archive for each worktree. Never delete an archive that a binding names."""
     named = {(b.get(key) or {}).get('archive') for b in saved.values()
-             for key in ('retired', 'retire_failed', 'residue_recovery')}
+             for key in ('retired', 'retire_failed', 'residue_recovery', 'digest_recovery')}
     for old in [directory / (identity + '.tar.gz'), *directory.glob(identity + '-*.tar.gz')]:
         if old != keep and str(old) not in named:
             old.unlink(missing_ok=True)
@@ -1941,7 +1983,7 @@ def named_retirement_archives(root):
     for binding in saved.values():
         if not isinstance(binding, dict):
             continue
-        for key in ('retired', 'retire_failed', ORPHAN_REMOVAL, 'handoff', 'residue_recovery'):
+        for key in ('retired', 'retire_failed', ORPHAN_REMOVAL, 'handoff', 'residue_recovery', 'digest_recovery'):
             record = binding.get(key)
             if isinstance(record, dict) and isinstance(record.get('archive'), str) and record['archive']:
                 named.add(Path(record['archive']).resolve())
@@ -2066,34 +2108,48 @@ def checkout_marks(path, names):
     return result
 
 
+def archive_mark(archive):
+    """Return the inode, size, and times of an archive file. A replaced or rewritten archive gives another mark."""
+    status = os.stat(archive)
+    return status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns
+
+
 def archived_marks(path, archive):
-    """Return (matching fingerprint or None, starting fingerprint) for archived files."""
-    with tarfile.open(archive) as tar:
+    """Return (matching fingerprint or None, starting fingerprint, patches, archive mark) for archived files.
+
+    `patches` are the archived staged and unstaged patches of a matching checkout, or None. They come from the same
+    read as the files, so unpack can compare the checkout's patches under the registry lock without another read of
+    the archive (matches_archive). `archive mark` is archive_mark of the file that this read opened.
+    """
+    with open(archive, 'rb') as stream, tarfile.open(fileobj=stream) as tar:
+        status = os.fstat(stream.fileno())
+        mark = status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns
         members = list(archived_members(tar))
         names = [name for _, name in members]
         marks = checkout_marks(path, names)
-        if any(len(mark) == 2 for mark in marks):
+        if any(len(entry) == 2 for entry in marks):
             # A file appearing during comparison must not make a missing starting file look intact.
-            return None, marks
+            return None, marks, None, mark
         for member, name in members:
             target = path / name
             if member.issym():
                 if not target.is_symlink() or os.readlink(target) != member.linkname:
-                    return None, marks
+                    return None, marks, None, mark
             elif (not target.is_file() or target.is_symlink() or target.stat().st_size != member.size
                     or path_digest(target) != file_digest(tar.extractfile(member))):
                 # Same size is not enough. Compare the contents with the archived copy.
-                return None, marks
-    return marks, marks
+                return None, marks, None, mark
+        patches = tuple(tar.extractfile(name).read() for name in PATCHES)
+    return marks, marks, patches, mark
 
 
 def compare_checkouts(bindings):
     """Compare each checkout at the path of a retired binding with its archive. Run without the registry lock.
 
     The archived files can total hundreds of megabytes, so Coconut reads them before it takes the lock.
-    Return a map from each binding, as JSON, to the fingerprint of its archived files, or to None when
-    the checkout does not match. Under the lock, unpack accepts a checkout only when its binding and its
-    fingerprint did not change.
+    Return a map from each binding, as JSON, to the result of archived_marks, or to None when the comparison
+    failed. Under the lock, unpack accepts a checkout only when its binding, its fingerprint, and the archive file
+    did not change. It then uses the archived patches of this read.
     """
     checked = {}
     for binding in bindings:
@@ -2271,6 +2327,146 @@ def recover_residue(binding, root, persist):
     validate_binding(binding)
 
 
+def digest_failure(failure):
+    # A first restore put the archive back, and only its last comparison failed. No later recovery has run since.
+    return (isinstance(failure, dict) and set(failure) == {'at', 'error'}
+            and failure['error'] == 'The restored files do not match the archive.')
+
+
+def round_trip(repository, head, staged, unstaged, scratch, attributes=()):
+    """Return the archived and current lengths of object names when Git writes `staged` and `unstaged` itself, or raise.
+
+    Coconut applies the archived patches to the commit `head` in a private index, with a private object folder that
+    borrows the repository's objects, and has Git write both patches again. They must hold the archived changes
+    (same_patch). This proves, before any checkout, that the archive restores the same tracked changes on this
+    repository today, whatever length Git now gives object names. `attributes` lists the archived untracked and ignored
+    .gitattributes files as (name, bytes). A checkout reads them as Git reads tracked ones, so they decide, for
+    example, which patches are binary. They join only the tree that Git reads attributes from, never the compared
+    trees. It writes objects and indexes only in `scratch`, and
+    no checkout, index, ref, or object of the repository, and runs no hook. As for any write, Git can update the time
+    of a repository pack that already holds an object (freshening). Missing objects of a partial clone are not
+    fetched, and the proof then fails. The repository's fsmonitor and split index do not apply to the private indexes.
+    """
+    common = Path(git(repository, 'rev-parse', '--path-format=absolute', '--git-common-dir'))
+    objects = Path(scratch) / 'objects'
+    objects.mkdir()
+    env = dict(GIT_OBJECT_DIRECTORY=str(objects), GIT_ALTERNATE_OBJECT_DIRECTORIES=str(common / 'objects'),
+               GIT_NO_LAZY_FETCH='1')
+    # The repository's config still applies. Keep its fsmonitor hook or daemon and its split index, which writes into
+    # the repository's Git folder, away from the private indexes.
+    private = ('-c', 'core.fsmonitor=false', '-c', 'core.splitIndex=false', '-c', 'core.untrackedCache=false')
+    trees = []
+    for name, patch in (('staged', staged), ('unstaged', unstaged)):
+        # The unstaged patch applies to the index that the staged patch made, as it does in a checkout.
+        env['GIT_INDEX_FILE'] = str(Path(scratch) / name)
+        git_output(repository, *private, 'read-tree', trees[-1] if trees else head + '^{tree}', env=env)
+        if patch:
+            git_output(repository, *private, 'apply', '--cached', '--binary', '--whitespace=nowarn', '-', data=patch, env=env)
+        trees.append(git_output(repository, *private, 'write-tree', env=env).decode().strip())
+    # A checkout reads attributes from its own files: the tracked ones of the tree with both patches, and the
+    # archived files that unpack extracts before its last comparison.
+    source = trees[1]
+    if attributes:
+        env['GIT_INDEX_FILE'] = str(Path(scratch) / 'attributes')
+        git_output(repository, *private, 'read-tree', source, env=env)
+        tracked = set(git_output(repository, *private, 'ls-files', '-z', env=env).split(b'\0'))
+        for name, data in attributes:
+            if os.fsencode(name) in tracked:
+                raise ValueError('An archived attributes file has the name of a tracked file.')
+            blob = git_output(repository, *private, 'hash-object', '-w', '--no-filters', '--stdin', data=data, env=env).decode().strip()
+            git_output(repository, *private, 'update-index', '--add', '--cacheinfo', f'100644,{blob},{name}', env=env)
+        source = git_output(repository, *private, 'write-tree', env=env).decode().strip()
+    env['GIT_ATTR_SOURCE'] = source
+    lengths = set()
+    for patch, old, new in ((staged, head, trees[0]), (unstaged, trees[0], trees[1])):
+        if not same_patch(patch, git_output(repository, *private, 'diff', *DIFF, '--full-index', old, new, env=env)):
+            raise ValueError('The archived patches do not give the archived changes on the saved commit.')
+        current = git_output(repository, *private, 'diff', *DIFF, old, new, env=env)
+        lengths |= {(len(a), len(b)) for line, other in zip(patch.split(b'\n'), current.split(b'\n'))
+                    if (x := INDEX_LINE.fullmatch(line)) and (y := INDEX_LINE.fullmatch(other))
+                    for a, b in zip(x.group(1, 2), y.group(1, 2)) if a.strip(b'0')}
+    return sorted(lengths)
+
+
+def recover_digest(binding, root, persist):
+    """Restore a retired worktree again whose first restore failed only its last comparison. Hold the registry lock.
+
+    Only an explicit acquire of the owner calls this, for a binding whose only failure is that comparison
+    (digest_failure). Before a version that compares with full object names (same_patch), a fetch after retirement
+    that made Git abbreviate object names with more characters failed every restore, and the rollback left the path
+    empty. Git sizes these names by a count of packed objects that a later git gc can lower again, so the length that
+    Git gives them now proves nothing. Coconut checks that the path is still missing or empty and not redirected,
+    that the archive is the saved one and not from an earlier archive writer, that the branch did not move and no
+    worktree holds it or the path, and that Git writes the archived patches again on the saved commit (round_trip,
+    in a private index under `root`). A refusal changes nothing. It then restores as usual. The archive stays, and
+    the binding names it in `digest_recovery`. Other records of the binding, such as `residue_recovery`, stay. The
+    binding names the place of a partial checkout before the restore. A failure keeps a partial checkout whole
+    there, and marks the failure, so Coconut never tries again without a person.
+    """
+    retired, failure = binding['retired'], binding['retired']['restore_failed']
+    path, archive, repository = Path(binding['path']), Path(retired['archive']), Path(binding['repository'])
+    if path.is_symlink() or path.resolve() != path or occupied(path):
+        raise ValueError('The saved path is not missing or empty.')
+    if archive.is_symlink() or not archive.is_file():
+        raise ValueError(f'The archive {archive} is missing.')
+    with tarfile.open(archive) as tar:
+        members, duplicates = archive_inventory(tar)
+        metadata = json.loads(tar.extractfile('retirement.json').read())
+        staged, unstaged = (tar.extractfile(name).read() for name in PATCHES)
+        # Git does not read a .gitattributes that is a link, so only regular files count.
+        attributes = [(name, tar.extractfile(member).read()) for member, name in members
+                      if member.isfile() and name.rsplit('/', 1)[-1] == '.gitattributes']
+    if duplicates:
+        # Only an earlier archive writer wrote an entry twice, and earlier restores of such an archive failed for
+        # other reasons (unpack's legacy recoveries). Its digest failure keeps the fence.
+        raise ValueError('The archive is from an earlier archive writer.')
+    if (any(metadata.get(key) != binding[key] for key in ('outcome', 'repository', 'path', 'branch'))
+            or metadata.get('head') != retired['head'] or metadata.get('at') != retired['at']):
+        raise ValueError('The archive belongs to another owner, path, branch, or commit.')
+    if changes_digest(staged, unstaged, [name for member, name in members if member.name.startswith(UNTRACKED)]) != retired['changes']:
+        raise ValueError('The archive does not hold the saved changes.')
+    if git(repository, 'rev-parse', '--verify', 'refs/heads/' + binding['branch']) != retired['head']:
+        raise ValueError('The saved branch moved after retirement.')
+    if any(r['path'] == path or r['branch'] == 'refs/heads/' + binding['branch'] for r in registered(repository)):
+        raise ValueError('Git registers a worktree at the saved path or on the saved branch.')
+    with tempfile.TemporaryDirectory(dir=root, prefix='.proof-') as scratch:
+        lengths = round_trip(repository, retired['head'], staged, unstaged, scratch, attributes)
+    directory = Path(root) / 'archive' / RESIDUE
+    directory.parent.mkdir(mode=0o700, exist_ok=True)
+    directory.mkdir(mode=0o700, exist_ok=True)
+    checkout = directory / f'{path.name}-{time.time_ns()}-checkout'
+    if directory.is_symlink() or os.path.lexists(checkout):
+        raise ValueError('The residue folder is not safe.')
+    # The binding names the place of a partial checkout before the restore, so a stop cannot lose it. A later
+    # acquire then refuses.
+    binding['retired'] = dict(retired, residue=dict(checkout=str(checkout), at=stamp(datetime.now(timezone.utc))))
+    try:
+        persist()
+    except BaseException:
+        binding['retired'] = retired
+        raise
+    try:
+        unpack(dict(binding, retired=dict(retired, restore_failed=None)), {}, aside=checkout)
+    except BaseException as error:
+        message = str(error)[:1000]
+        if os.path.lexists(checkout):
+            message += (f' The partial checkout, with any file written during the restore, is in {checkout}. '
+                        'Its .git file is renamed to .git-detached.')
+        binding['retired'] = dict(retired, restore_failed=dict(
+            at=stamp(datetime.now(timezone.utc)), error=message, digest_retry_failed=True,
+            residue_retry_failed=True, duplicate_retry_failed=True, intent_retry_failed=True))
+        if os.path.lexists(checkout):
+            binding['retired']['residue'] = dict(checkout=str(checkout))
+        logging.getLogger(__name__).warning('Coconut could not restore %s again: %s', path, message)
+        raise
+    binding.pop('retired')
+    binding['digest_recovery'] = dict(archive=str(archive), failure=failure, abbreviation=lengths,
+                                      at=stamp(datetime.now(timezone.utc)))
+    logging.getLogger(__name__).warning('Coconut restored %s from %s again. The archived and current lengths of its '
+                                        'object names: %s.', path, archive, lengths)
+    validate_binding(binding)
+
+
 def intent_failure(failure):
     # PR92's duplicate retry reached the final digest check, then rolled back.
     # Do not admit generic digest failures or another failure of this recovery.
@@ -2373,25 +2569,32 @@ def unpack(binding, checked, *, retry_failure=None, aside=None):
         raise ValueError('A failed restore cannot be retried over an occupied path.')
     if occupied(path):
         # Retirement stopped before Git removed the checkout, or a restore stopped before the registry changed.
-        # compare_checkouts read the files without the lock. Here Coconut compares only their fingerprint.
+        # compare_checkouts read the files and the patches without the lock. Here Coconut compares only their
+        # fingerprint, and the checkout's own patches with the archived ones.
         key = json.dumps(binding, sort_keys=True)
         if key not in checked:
             # A checkout appeared or the binding changed since the unlocked read.
             checked = compare_checkouts([binding])
         elif checked[key] is not None:
-            match, starting = checked[key]
-            if match is None and checkout_marks(path, [name for name, *_ in starting]) != starting:
-                # A partial checkout finished after comparison; retry only when its files changed.
+            match, starting, _, read = checked[key]
+            try:
+                current = archive_mark(archive)
+            except OSError:
+                current = None
+            if (match is None and checkout_marks(path, [name for name, *_ in starting]) != starting
+                    or match is not None and read != current):
+                # A partial checkout finished after comparison, or another file now has the archive's name. Compare
+                # again. Only then does Coconut read the archive under the lock.
                 checked = compare_checkouts([binding])
         record = checked.get(key)
-        marks = record[0] if record is not None else None
+        marks, patches = (record[0], record[2]) if record is not None else (None, None)
         try:
             validate_binding(dict(binding))
             intact = (marks is not None
                       and git(path, 'rev-parse', 'HEAD') == retired['head']
-                      and changes_digest(*changes(path)) == retired['changes']
+                      and matches_archive(path, lambda: patches, retired['changes'])
                       and checkout_marks(path, [name for name, *_ in marks]) == marks)
-        except GIT_ERRORS:
+        except RESTORE_ERRORS:
             intact = False
         if not intact:
             raise ValueError(f'The path {path} is not empty and does not match the archive.')
@@ -2455,7 +2658,7 @@ def unpack(binding, checked, *, retry_failure=None, aside=None):
             # Create links last, so that no archived file is written through a link.
             for name, target in links:
                 place_link(path, name, target)
-        if git(path, 'rev-parse', 'HEAD') != retired['head'] or changes_digest(*changes(path)) != retired['changes']:
+        if git(path, 'rev-parse', 'HEAD') != retired['head'] or not matches_archive(path, lambda: (staged, unstaged), retired['changes']):
             raise ValueError('The restored files do not match the archive.')
         if retired.get('held'):
             # Git ignores these folders, so they do not change the digest above. One that aged out is gone, and the
@@ -2504,7 +2707,8 @@ def restore(binding, checked, *, retry_duplicates=False, keep_archive=False, res
     explicit same-owner acquire can retry a proven legacy identical-duplicate collision
     or its proven post-PR92 intent-to-add mismatch into a missing or empty path.
     With `residue_root`, that acquire can also restore over the newer evidence that a first restore found at the path
-    (recover_residue). `persist()` saves the registry. All other failures retain the operator fence.
+    (recover_residue), and restore again after a last comparison that failed only on longer object names
+    (recover_digest). `persist()` saves the registry. All other failures retain the operator fence.
     """
     retired = binding['retired']
     if retired.get('done'):
@@ -2586,6 +2790,23 @@ def restore(binding, checked, *, retry_duplicates=False, keep_archive=False, res
             if not failure.get('residue_retry_failed'):
                 raise ValueError(f'Coconut retired this worktree and could not restore it: {failure["error"]} '
                                  f'Coconut did not restore it over the newer files: {str(error)[:1000]} '
+                                 f'The archive {archive} holds its uncommitted changes. The branch {binding["branch"]} '
+                                 'holds its commits. Ask the operator to restore it.') from None
+    # One recovery for each binding, so its record keeps naming the archive.
+    if (residue_root and retry_duplicates and digest_failure(failure) and 'residue' not in retired
+            and 'digest_recovery' not in binding):
+        try:
+            recover_digest(binding, residue_root, persist)
+            return
+        except RESTORE_ERRORS as error:
+            if 'retired' not in binding:
+                # The checkout is back. Only its last check failed, as after an ordinary restore below.
+                raise
+            # A refusal keeps the first failure as it is. A failure of the restore marks it (recover_digest).
+            failure = binding['retired']['restore_failed']
+            if not failure.get('digest_retry_failed'):
+                raise ValueError(f'Coconut retired this worktree and could not restore it: {failure["error"]} '
+                                 f'Coconut did not restore it again: {str(error)[:1000]} '
                                  f'The archive {archive} holds its uncommitted changes. The branch {binding["branch"]} '
                                  'holds its commits. Ask the operator to restore it.') from None
     if not failure or retry:

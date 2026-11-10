@@ -37,6 +37,9 @@ final class AppStore {
     var learning: [LearningGroup] = []
     /// The documents of the Library, newest first, without their content. Nil until the first load.
     var documents: [BotDocument]?
+    /// Counts the pins and the deletes that the Mac confirmed to this app. A list that the app asked for before such a
+    /// change can be older than the change.
+    @ObservationIgnored private var documentChanges = 0
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
     var pageQuotes: [String: MessageReference] = [:]
     var connection: ConnectionState = .unconfigured {
@@ -194,7 +197,11 @@ final class AppStore {
             connection = .preview
             return
         }
-        if let configuration: PairingConfiguration = ProtectedCache.read("pairing.json"), PairingToken.read() != nil {
+        // A token that the Keychain cannot read now still belongs to this pairing, and polling reads it again. Without
+        // this, the first start after an update showed the pairing page until the person restarted the app.
+        let hasToken: Bool
+        do { hasToken = try PairingToken.lookup() != nil } catch { hasToken = true }
+        if let configuration: PairingConfiguration = ProtectedCache.read("pairing.json"), hasToken {
             pairing = configuration
             connection = .disconnected
             if let cache: OutgoingCache = ProtectedCache.read("outgoing.json"), cache.deviceId == configuration.deviceId {
@@ -313,7 +320,8 @@ final class AppStore {
             throw TunnelError.needsRepair
         }
         if let tunnel, tunnel.endpoint == pairing.tunnelEndpoint { return APIClient(tunnel: tunnel, token: token) }
-        guard let endpoint = pairing.tunnelEndpoint, let credentials = TunnelCredentials.read(),
+        // Only missing credentials need a new pairing. A Keychain that cannot read them now throws, and polling tries again.
+        guard let endpoint = pairing.tunnelEndpoint, let credentials = try TunnelCredentials.lookup(),
               let phoneKey = credentials.phoneKey else { throw TunnelError.needsRepair }
         let connection = TunnelConnection(endpoint: endpoint, phoneKey: phoneKey, credential: .token(credentials.clientToken),
                                           makeSocket: tunnelSocketFactory)
@@ -409,8 +417,21 @@ final class AppStore {
         guard !isDemo else { return }
         repairRequired = false
         stopPolling()
-        guard let pairing, let token = PairingToken.read() else {
+        guard let pairing else {
             connection = .unconfigured
+            return
+        }
+        let token: String
+        do {
+            guard let found = try PairingToken.lookup() else {
+                connection = .unconfigured
+                return
+            }
+            token = found
+        } catch {
+            // The Keychain cannot read the token now. Polling tries again.
+            recordSyncFailure(error)
+            if foreground { beginPolling() }
             return
         }
         let generation = connectionGeneration
@@ -1338,10 +1359,17 @@ final class AppStore {
     /// Loads the Library list. True when the list is fresh from the Mac.
     @discardableResult
     func loadDocuments() async -> Bool {
-        if isDemo { documents = BotDocument.previews(bots: bots); return true }
+        if isDemo {
+            // The demo keeps its pins and deletes. A new load must not bring the first documents back.
+            if documents == nil { documents = BotDocument.previews(bots: bots) }
+            return true
+        }
         guard let client else { return false }
+        let changes = documentChanges
         do {
             let response: DocumentList = try await client.request("documents")
+            // The Mac confirmed a pin or a delete during this request, so this list can be older. Ask again.
+            guard changes == documentChanges else { return await loadDocuments() }
             documents = response.documents
             return true
         } catch { report(error); return false }
@@ -1362,13 +1390,33 @@ final class AppStore {
             let result: Acknowledgement? = await write("documents/\(document.id)", method: "DELETE",
                                                        payload: EmptyRequest(), as: Acknowledgement.self)
             guard result?.ok == true else { return false }
+            documentChanges += 1
         }
         documents?.removeAll { $0.id == document.id }
         return true
     }
 
+    /// Pin a document in the Library, or remove its pin. The document moves only after the Mac confirms.
+    func pinDocument(_ document: BotDocument, pinned: Bool) async {
+        if !isDemo {
+            let result: BotDocument? = await write("documents/\(document.id)", method: "PATCH",
+                                                   payload: PinRequest(pinned: pinned), as: BotDocument.self,
+                                                   refreshInBackground: true)
+            guard result != nil else { return }
+            documentChanges += 1
+        }
+        // An open document reads its pin from the list. A list without the document is not loaded yet.
+        if documents?.contains(where: { $0.id == document.id }) != true { await loadDocuments() }
+        if let index = documents?.firstIndex(where: { $0.id == document.id }) { documents?[index].pinned = pinned }
+    }
+
     private func write<Response: Decodable & Sendable, Payload: Encodable>(_ path: String, method: String = "POST", payload: Payload, as type: Response.Type, quiet: Bool = false, refreshInBackground: Bool = false, idempotencyKey: String? = nil, onFailure: ((Error) -> Void)? = nil, onSuccess: ((Response) -> Void)? = nil) async -> Response? {
-        guard let pairing, let token = PairingToken.read() else {
+        let storedToken: String?
+        do { storedToken = try PairingToken.lookup() } catch {
+            if !quiet { self.error = error.localizedDescription }
+            return nil
+        }
+        guard let pairing, let token = storedToken else {
             if !quiet { error = "Pair with your Mac in Settings to continue." }
             return nil
         }
@@ -1509,7 +1557,8 @@ final class AppStore {
             while !Task.isCancelled, self.foreground, self.connectionGeneration == generation {
                 do {
                     if self.client == nil {
-                        guard let pairing = self.pairing, let token = PairingToken.read() else { self.connection = .unconfigured; break }
+                        // A Keychain that cannot read the token now throws, and the loop tries again after its pause.
+                        guard let pairing = self.pairing, let token = try PairingToken.lookup() else { self.connection = .unconfigured; break }
                         self.client = try makeClient(pairing, token: token)
                     }
                     guard let client = self.client else { break }

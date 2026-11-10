@@ -169,11 +169,18 @@ class TunnelLoopbackTests(unittest.TestCase):
         print(json.dumps(steps, indent=1), file=sys.stderr)
 
         # Another host socket replaces the sidecar's socket. The sidecar connects again, and a new link pairs.
-        before = self.status()['connected_since']
+        # status.json has connected_since only while the sidecar is connected.
+        before = self.status().get('connected_since')
+        self.assertIsNotNone(before, 'The sidecar is not connected after the first client run.')
         host_token = json.loads((self.data / 'tunnel/route.json').read_text())['host_token']
         host = self.upgrade('host', f'Bearer {host_token}')
-        wait(lambda: self.status()['state'] == 'connected' and self.status()['connected_since'] != before, 30,
-             'The sidecar did not reconnect.')
+
+        # The sidecar is between two sockets here. Each check reads the status one time, because two reads can disagree.
+        def reconnected():
+            status = self.status()
+            return status['state'] == 'connected' and status.get('connected_since') not in (None, before)
+
+        wait(reconnected, 30, 'The sidecar did not reconnect.')
         host.close()
         # The sidecar records the cause from the relay's close frame, and its event log holds no secret.
         last = wait(lambda: self.status().get('last_disconnect'), 10, 'The status has no last disconnect.')
