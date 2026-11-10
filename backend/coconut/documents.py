@@ -309,9 +309,10 @@ class Documents:
 
     def _page_is_like(self, document: dict, title: str, document_format: str, content: str, summary: str | None,
                       ends) -> bool:
-        """Whether the page of a key is already what the tooling would write. An end date that comes with the save
-        counts as a change, and an omitted one keeps the end date of the document."""
-        return (ends is ... and document['title'] == title and document['format'] == document_format
+        """Whether the page of a key is already what the tooling would write. An omitted end date keeps the end date
+        of the document, so only an end date that differs from the stored one is a change."""
+        return ((ends is ... or ends == document.get('expires_at'))
+                and document['title'] == title and document['format'] == document_format
                 and (document.get('summary') or '') == (summary or '').strip()
                 and self._document_content(document) == content)
 

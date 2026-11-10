@@ -534,6 +534,12 @@ class GatewayPageTests(unittest.TestCase):
                     content='Needs attention: 29 items past 8h.', summary='29 past 8h')
         return self.service.gateway_document(dict(page, **arguments))
 
+    # These helpers of the turn tests need only the service and `write`, so the tests of the tooling use them too.
+    pin, listed, replays = DocumentServiceTests.pin, DocumentServiceTests.listed, DocumentServiceTests.replays
+
+    def rows(self, table):
+        return self.service.db.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
+
     def test_the_tooling_keeps_a_page_of_a_bot_without_a_turn(self):
         self.assertEqual(self.publish(), {'status': 'saved', 'key': 'dashboard-home', 'version': 1,
                                           'expires_at': None})
@@ -548,11 +554,74 @@ class GatewayPageTests(unittest.TestCase):
     def test_a_save_that_changes_nothing_writes_nothing(self):
         self.publish()
         self.assertEqual(self.publish()['version'], 1)
-        self.assertEqual(self.service.db.execute('SELECT count(*) FROM document_versions').fetchone()[0], 1)
+        self.assertEqual(self.rows('document_versions'), 1)
         self.assertEqual(self.publish(content='Needs attention: 31 items past 8h.')['version'], 2)
-        # An end date that comes with the save is a change, also when the content is the same.
+
+    def test_a_save_that_changes_nothing_adds_no_event_and_keeps_the_update_time(self):
+        self.publish()
+        # An old update time shows a write.
+        self.service.db.execute("UPDATE documents SET data=json_set(data,'$.updated_at','2026-01-01T00:00:00Z')")
+
+        def stored():
+            return self.listed('dashboard-home'), self.rows('document_versions'), self.service._cursor()
+        before = stored()
+        self.assertEqual(self.publish(), {'status': 'unchanged', 'key': 'dashboard-home', 'version': 1,
+                                          'expires_at': None})
+        self.assertEqual(stored(), before)
+
+    def test_only_a_new_end_date_is_a_change(self):
+        self.publish()
+        # A new end date is a change, also when the content is the same.
         ends = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
-        self.assertEqual(self.publish(content='Needs attention: 31 items past 8h.', expires_at=ends)['version'], 3)
+        saved = self.publish(expires_at=ends)
+        self.assertEqual(saved, {'status': 'saved', 'key': 'dashboard-home', 'version': 2,
+                                 'expires_at': end_time(ends, datetime.now(timezone.utc))})
+        # The same end date again, or no end date, keeps the page as it is.
+        for arguments in ({'expires_at': ends}, {}):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.publish(**arguments), dict(saved, status='unchanged'))
+        # A date ends at the end of its day, so the same date gives the same end.
+        day = (datetime.now() + timedelta(days=3)).date().isoformat()
+        self.assertEqual(self.publish(expires_at=day)['version'], 3)
+        self.assertEqual(self.publish(expires_at=day)['status'], 'unchanged')
+        # An empty text removes the end date one time.
+        self.assertEqual(self.publish(expires_at=''), {'status': 'saved', 'key': 'dashboard-home', 'version': 4,
+                                                       'expires_at': None})
+        self.assertEqual(self.publish(expires_at='')['status'], 'unchanged')
+        self.assertEqual(self.rows('document_versions'), 4)
+
+    def test_a_save_of_the_tooling_keeps_the_pin(self):
+        self.publish()
+        self.pin(self.listed('dashboard-home'))
+        self.assertEqual(self.publish()['status'], 'unchanged')
+        self.assertTrue(self.listed('dashboard-home')['pinned'])
+        self.assertEqual(self.publish(content='Needs attention: 31 items past 8h.')['status'], 'saved')
+        page = self.listed('dashboard-home')
+        self.assertEqual((page['version'], page['pinned']), (2, True))
+
+    def test_a_save_of_the_tooling_replays_without_a_task_and_a_card(self):
+        for content in ('Needs attention: 29 items past 8h.', 'Needs attention: 31 items past 8h.'):
+            cursor = self.service._cursor()
+            self.assertEqual(self.publish(content=content)['status'], 'saved')
+            self.assertEqual(self.service._cursor(), cursor + 1)
+            # No turn asked for the page, so its event sends no task and no message. The phone reads the Library.
+            for page in self.replays(cursor):
+                self.assertEqual((page['tasks'], page['messages'], page['removed_messages']), ([], [], []))
+
+    def test_an_archived_a_deleted_or_an_unknown_bot_keeps_no_page(self):
+        page = dict(key='dashboard-home', title='Home', format='markdown', content='Needs attention: 29 items.')
+        self.write('PATCH', f'/v1/bots/{self.bot["id"]}', {'archived': True})
+        with self.assertRaisesRegex(ServiceError, 'archived or deleted') as refused:
+            self.publish()
+        self.assertEqual(refused.exception.status, 409)
+        # The route finds no profile for a deleted bot (test_gateway_document_route.py). A bot that goes after the
+        # route found its profile is refused in the transaction of the save.
+        self.write('DELETE', f'/v1/bots/{self.bot["id"]}')
+        with self.assertRaisesRegex(ServiceError, 'archived or deleted'):
+            self.service.publish_page(self.bot['id'], page)
+        with self.assertRaisesRegex(ServiceError, 'Bot was not found'):
+            self.service.publish_page('no-such-bot', page)
+        self.assertEqual(self.rows('documents'), 0)
 
     def test_a_page_of_the_tooling_comes_back_when_it_has_ended(self):
         self.publish(expires_at=(datetime.now(timezone.utc) + timedelta(days=2)).isoformat())
