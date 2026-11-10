@@ -46,6 +46,11 @@ def retry_delay(failures: int) -> int:
     return min(POLL_SECONDS * 2 ** min(failures, 10), MAX_WAIT_SECONDS)
 
 
+def first_key(secrets: dict) -> int:
+    """The first epoch for which the key file of a room has a room key."""
+    return min(map(int, secrets['keys']), default=0)
+
+
 class TeamSync:
     def _init_team_sync(self):
         self._team_wake = threading.Event()
@@ -58,6 +63,8 @@ class TeamSync:
         # The rooms whose waiting bodies this process tried again.
         self._team_retried: set[str] = set()
         self._team_announced: dict[str, float] = {}
+        # The rooms with a write that got no answer. The relay can have that write, so the next write reads first.
+        self._team_unsure: set[str] = set()
         # The number of the pass that started last and of the pass that ended last. See team_sync_now.
         self._team_passes = threading.Condition()
         self._team_pass_started = self._team_pass_ended = 0
@@ -164,7 +171,7 @@ class TeamSync:
             return False
         opened = self.team_helper.open(room_id, secrets['keys'], entries)
         entries = [dict(entry, body=base64.b64decode(entry['body'])) for entry in entries]
-        first_epoch = min(map(int, secrets['keys']), default=0)
+        first_epoch = first_key(secrets)
         results = []
         with self.transaction():
             current = self.team_store.room(room_id)
@@ -191,7 +198,7 @@ class TeamSync:
             secrets = team_keys.read(self.root, room_id)
             opened = self.team_helper.open(room_id, secrets['keys'], [
                 dict(entry, body=base64.b64encode(entry['body']).decode()) for entry in waiting])
-            first_epoch = min(map(int, secrets['keys']), default=0)
+            first_epoch = first_key(secrets)
             results = []
             with self.transaction():
                 current = self.team_store.room(room_id)
@@ -247,12 +254,23 @@ class TeamSync:
         key = secrets['keys'].get(str(room['epoch']))
         if key is None:
             raise TeamKeysError('This Mac has no room key for its epoch.')
+        if room['room'] in self._team_unsure:
+            # An earlier write got no answer, and the relay can have it. Without this read, this write could repeat
+            # the `rev` of that write, and the other Macs would refuse it.
+            while self._team_read(room['room']):
+                pass
+            self._team_unsure.discard(room['room'])
         with self.lock:
             existing = self.team_store.entry(room['room'], entry_id)
         payload = json.dumps(dict(fields, rev=(existing['rev'] if existing else 0) + 1, at=utc_now()),
                              ensure_ascii=False, separators=(',', ':')).encode()
         body = self.team_helper.seal(room['room'], entry_id, room['epoch'], key, secrets['member_key'], payload)
-        position = self.team_relay.write(room['relay'], room['room'], secrets['token'], entry_id, kept, body, tries=tries)
+        try:
+            position = self.team_relay.write(room['relay'], room['room'], secrets['token'], entry_id, kept, body, tries=tries)
+        except TeamRelayError as error:
+            if error.status == 0:
+                self._team_unsure.add(room['room'])
+            raise
         entry = dict(position, id=entry_id, member=room['member'], at=int(time.time() * 1000), kept=kept, body=b'')
         with self.transaction():
             current = self.team_store.room(room['room'])

@@ -5,60 +5,15 @@ nothing (team_fakes.py). scripts/test_team_log.py runs the same steps with the r
 """
 import base64
 import json
-from pathlib import Path
-import tempfile
 import time
 import unittest
 
 from coconut import team_keys
-from coconut.providers import FixtureProvider
-from coconut.service import Service, ServiceError
 from coconut.team_relay import TeamRelayError
-from team_fakes import FakeHelper, FakeRelay, decode, digest, encode
-
-RELAY = 'https://relay.example'
+from team_fakes import RELAY, TeamMacs, decode, digest, encode
 
 
-class TeamRoomTests(unittest.TestCase):
-    def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.relay = FakeRelay()
-        self.first, self.second, self.third = (self.mac(name) for name in ('first', 'second', 'third'))
-
-    def mac(self, name: str) -> Service:
-        root = Path(self.temp.name) / name
-        service = Service(root, FixtureProvider(root), start_workers=False)
-        self.addCleanup(service.close)
-        service.team_relay, service.team_helper = self.relay, FakeHelper()
-        return service
-
-    def create(self, service=None, **fields) -> dict:
-        body = {'name': 'Example Team', 'member_name': 'Ada', 'relay': RELAY, **fields}
-        return (service or self.first).team_request('POST', '/v1/team/rooms', body)['room']
-
-    def invite(self, room: dict, service=None, **fields) -> dict:
-        return (service or self.first).team_request('POST', f'/v1/team/rooms/{room["room"]}/invites', fields)
-
-    def join(self, service, link: str, name: str = 'Grace') -> dict:
-        return service.team_request('POST', '/v1/team/join', {'link': link, 'member_name': name})['room']
-
-    def rooms(self, service, *, sync: bool = True) -> list[dict]:
-        if sync:
-            service.team_sync_pass()
-        return service.team_request('GET', '/v1/team/rooms', {})['rooms']
-
-    def names(self, service, **options) -> list[str]:
-        return [member['name'] for member in self.rooms(service, **options)[0]['members']]
-
-    def refusal(self, call, *arguments) -> tuple[int, str]:
-        with self.assertRaises(ServiceError) as raised:
-            call(*arguments)
-        return raised.exception.status, str(raised.exception)
-
-    def key_file(self, service, room: str) -> Path:
-        return service.root / 'team' / f'{room}.json'
-
+class TeamRoomTests(TeamMacs, unittest.TestCase):
     # Make a room
 
     def test_the_mac_that_makes_a_room_is_its_admin_and_writes_its_member_entry(self):
@@ -301,6 +256,20 @@ class TeamRoomTests(unittest.TestCase):
         deleted = [entry for entry in self.relay.rooms[room['room']]['entries'].values() if entry['seq'] == 3]
         self.assertEqual([(entry['kept'], entry['first']) for entry in deleted], [(False, 2)])
         self.assertEqual(self.names(self.first), ['Ada'])
+
+    def test_a_member_leaves_also_without_a_working_helper(self):
+        room = self.create()
+        self.join(self.second, self.invite(room)['link'])
+        self.assertEqual(self.names(self.first), ['Ada', 'Grace'])
+        self.second.team_helper.available = False
+        with self.assertLogs('coconut.team', 'WARNING') as logs:
+            self.assertEqual(self.leave(self.second, room), {'room': room['room'], 'left': True})
+        self.assertIn('leaves without a delete entry', logs.output[0])
+        self.assertEqual(list(self.relay.rooms[room['room']]['members']), [room['member']])
+        self.assertEqual(self.rooms(self.second, sync=False), [])
+        self.assertFalse(self.key_file(self.second, room['room']).exists())
+        # Without the `delete` entry, the first Mac keeps the copy of the member entry (docs/team-log.md, "To leave").
+        self.assertEqual(self.names(self.first), ['Ada', 'Grace'])
 
     def test_the_admin_leaves_only_a_room_without_other_members(self):
         room = self.create()

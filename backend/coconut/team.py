@@ -311,8 +311,8 @@ class Team(TeamSync):
         """Leave a room. The Mac tells the other members, leaves at the relay, and deletes its copy and its keys.
 
         The relay deletes the kept entries of a member that leaves, but the other Macs already have a copy of its
-        `member` entry. So the Mac first replaces that entry with a `delete` entry. An admin leaves only a room
-        without other members, and the relay then deletes the room.
+        `member` entry. So the Mac first replaces that entry with a `delete` entry, when its helper works (see
+        _team_retire_member). An admin leaves only a room without other members, and the relay then deletes the room.
         """
         from .service import ServiceError
         room = self._team_room(room_id)
@@ -367,13 +367,22 @@ class Team(TeamSync):
         self.team_wake()
 
     def _team_retire_member(self, room: dict) -> None:
-        """Replace the `member` entry of this Mac with a `delete` entry, so each other Mac takes it out of its list."""
+        """Replace the `member` entry of this Mac with a `delete` entry, so each other Mac takes it out of its list.
+
+        A member must always be able to leave. Without a working helper or room key, the Mac leaves without the
+        `delete` entry, and the other Macs show it until the member removal of the contract exists.
+        """
         entry_id = json.loads(room['profile'])['entry']
         with self._team_room_lock(room['room']):
             with self.lock:
                 entry = self.team_store.entry(room['room'], entry_id)
-            if entry is not None and entry['kind'] == 'member':
+            if entry is None or entry['kind'] != 'member':
+                return
+            try:
                 self._team_write(room, entry_id, False, {'kind': 'delete'}, tries=2)
+            except (TeamHelperError, TeamFormatError, TeamKeysError) as error:
+                log.warning('coconut.team_log room %s: this Mac leaves without a delete entry, so the other Macs can '
+                            'still show it. %s', room['room'][:8], error)
 
     def _team_drop_membership(self, room: dict, secrets: dict) -> None:
         """Leave a room that this Mac joined and cannot read. The keys stay only when the relay does not answer, so
@@ -395,3 +404,4 @@ class Team(TeamSync):
         for state in (self._team_failures, self._team_status, self._team_announced, self._team_locks):
             state.pop(room_id, None)
         self._team_retried.discard(room_id)
+        self._team_unsure.discard(room_id)

@@ -8,11 +8,17 @@ the real helper and of the real relay are in scripts/test_team_log.py.
 import base64
 import hashlib
 import json
+from pathlib import Path
 import secrets
+import tempfile
 import time
 
+from coconut.providers import FixtureProvider
+from coconut.service import Service, ServiceError
 from coconut.team_helper import TeamFormatError, TeamHelperError
 from coconut.team_relay import TeamRelayError
+
+RELAY = 'https://relay.example'
 
 
 def digest(text: str) -> str:
@@ -222,3 +228,51 @@ class FakeRelay:
         state, _ = self._member(room, token)
         entries = sorted((dict(row) for row in state['entries'].values() if row['seq'] > after), key=lambda row: row['seq'])
         return {'entries': entries[:self.page], 'last': max((row['seq'] for row in state['entries'].values()), default=0)}
+
+
+class TeamMacs:
+    """The Macs of a team test, for a TestCase. Each Mac is a Service with its own data folder, and the Macs share
+    one FakeRelay."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.relay = FakeRelay()
+        self.first, self.second, self.third = (self.mac(name) for name in ('first', 'second', 'third'))
+
+    def mac(self, name: str) -> Service:
+        root = Path(self.temp.name) / name
+        service = Service(root, FixtureProvider(root), start_workers=False)
+        # A test can close a Mac itself. Service.close sets `stopping` first.
+        self.addCleanup(lambda: service.stopping.is_set() or service.close())
+        service.team_relay, service.team_helper = self.relay, FakeHelper()
+        return service
+
+    def create(self, service=None, **fields) -> dict:
+        body = {'name': 'Example Team', 'member_name': 'Ada', 'relay': RELAY, **fields}
+        return (service or self.first).team_request('POST', '/v1/team/rooms', body)['room']
+
+    def invite(self, room: dict, service=None, **fields) -> dict:
+        return (service or self.first).team_request('POST', f'/v1/team/rooms/{room["room"]}/invites', fields)
+
+    def join(self, service, link: str, name: str = 'Grace') -> dict:
+        return service.team_request('POST', '/v1/team/join', {'link': link, 'member_name': name})['room']
+
+    def leave(self, service, room: dict) -> dict:
+        return service.team_request('DELETE', f'/v1/team/rooms/{room["room"]}', {})
+
+    def rooms(self, service, *, sync: bool = True) -> list[dict]:
+        if sync:
+            service.team_sync_pass()
+        return service.team_request('GET', '/v1/team/rooms', {})['rooms']
+
+    def names(self, service, **options) -> list[str]:
+        return [member['name'] for member in self.rooms(service, **options)[0]['members']]
+
+    def refusal(self, call, *arguments) -> tuple[int, str]:
+        with self.assertRaises(ServiceError) as raised:
+            call(*arguments)
+        return raised.exception.status, str(raised.exception)
+
+    def key_file(self, service, room: str) -> Path:
+        return service.root / 'team' / f'{room}.json'

@@ -41,7 +41,8 @@ def relay_origin(value) -> str:
     """Check the address of a relay: an HTTPS origin with a host name, without a path or account details.
 
     This is the rule of an invite link. The loopback relay of a test is the one exception, as in a debug build of
-    the app: a release helper refuses to put it into a link.
+    the app: a release helper refuses to put it into a link. The result has the host in lowercase, because the rule
+    of the link (ios/Tunnel/TeamLog.swift) accepts a host with capital letters, and one relay has one address.
     """
     try:
         url = urlsplit(value)
@@ -50,9 +51,11 @@ def relay_origin(value) -> str:
         url = port = None
     if url is not None and not (url.path or url.query or url.fragment or url.username or url.password) and url.hostname:
         loopback = url.scheme == 'http' and url.hostname == '127.0.0.1' and port
-        named = url.scheme == 'https' and HOST.fullmatch(url.hostname) and re.search(r'[A-Za-z]', url.hostname.rsplit('.', 1)[1])
-        if (loopback or named) and value == f'{url.scheme}://{url.hostname}' + (f':{port}' if port else ''):
-            return value
+        named = url.scheme == 'https' and HOST.fullmatch(url.hostname) and re.search(r'[a-z]', url.hostname.rsplit('.', 1)[1])
+        origin = f'{url.scheme}://{url.hostname}' + (f':{port}' if port else '')
+        # urlsplit makes the scheme and the host lowercase. The link rule takes only a lowercase scheme.
+        if (loopback or named) and value.startswith(url.scheme + '://') and value.lower() == origin:
+            return origin
     raise ValueError('Use the HTTPS address of a relay, without a path.')
 
 
