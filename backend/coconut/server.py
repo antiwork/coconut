@@ -32,6 +32,8 @@ PEER_KEY = re.compile(r'[0-9a-f]{64}')
 # Only the main listener serves these. The tunnel listener carries the phone's requests.
 GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/tools', '/v1/gateway/cron',
                   '/v1/gateway/wake', '/v1/gateway/messages', '/v1/gateway/files', '/v1/gateway/document')
+# The routes of the team rooms (team.py). Also only the main listener serves them: a phone has no team route yet.
+TEAM_ROUTES = '/v1/team/'
 
 
 # A path segment with a digit and at least 8 characters is an ID. The log keeps the route, not private IDs.
@@ -200,6 +202,12 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError) as error:
             raise ServiceError(400, str(error)) from None
 
+    def _team(self, service, method, path):
+        """The routes of the team rooms, for the tools on this Mac. They use the token of the gateway routes. See team.py."""
+        if not service.gateway_bridge.authorized(self.headers.get('Authorization', '')):
+            raise ServiceError(401, 'Use the token in <data>/gateway/bridge.json.')
+        self._json(200, service.team_request(method, path, {} if method == 'GET' else self._body()))
+
     def _handle(self, method):
         """Serve one request. Log the time of each request from the phone (see request_timing)."""
         started = time.perf_counter()
@@ -224,6 +232,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == 'POST' and url.path in GATEWAY_ROUTES and not self.server.tunnel and hasattr(service, 'gateway_bridge'):
                 self._gateway(service.gateway_bridge, url.path)
+                return
+            if url.path.startswith(TEAM_ROUTES) and not self.server.tunnel and hasattr(service, 'team_request'):
+                self._team(service, method, url.path)
                 return
             peer = None
             if self.server.tunnel:
