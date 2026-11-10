@@ -47,7 +47,9 @@ SILENT_SECONDS = 90
 CRON_SILENT_SECONDS = 3 * 3600
 ADAPTER_SECONDS = 60
 MAX_TEXT = 200_000
-KINDS = ('typing', 'send', 'edit', 'delete', 'question', 'done')
+# `delta` stays known: a gateway that still runs the plugin of an earlier version sends partial text for each turn.
+# The bridge drops it (event), so the turn goes on with its complete sends. Remove `delta` when no install has that plugin.
+KINDS = ('typing', 'send', 'edit', 'delete', 'question', 'done', 'delta')
 QUESTION_KINDS = ('clarify', 'approval')
 
 # The chat of a turn (gateway_chat.run_gateway_chat). A turn of the bot's conversation runs in the bot's chat
@@ -232,6 +234,8 @@ class GatewayBridge:
                 # A cancelled or finished turn. The gateway may still send its last messages.
                 return {'ok': False}
             turn.seen = time.monotonic()
+            if kind == 'delta':
+                return {'ok': True}
             turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome',
                                                            'question_id', 'question_kind', 'detail', 'choices')
                                 if key in data})

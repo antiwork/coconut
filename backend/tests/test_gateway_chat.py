@@ -269,8 +269,7 @@ class BridgeTests(unittest.TestCase):
     def test_events_of_unknown_turns_are_refused_and_bad_events_raise(self):
         self.assertEqual(self.bridge.event({'turn_id': 'gone', 'kind': 'send', 'message_id': 'm', 'text': 'x'}), {'ok': False})
         for event in ({'kind': 'other'}, {'kind': 'send', 'text': 'no message'}, {'kind': 'edit', 'message_id': 'm', 'text': 1},
-                      # The plugin sends no partial text. An earlier plugin's piece is refused.
-                      {'kind': 'delta', 'stream': 1, 'text': 'I will '}, {'kind': 'question', 'question_id': 'q', 'question_kind': 'poll',
+                      {'kind': 'question', 'question_id': 'q', 'question_kind': 'poll',
                                                                'text': 'x'},
                       {'kind': 'question', 'question_id': 'q', 'question_kind': 'ask', 'text': 'x',
                        'choices': [{'id': 'a', 'label': 'A'}, {'id': 'a', 'label': 'B'}]}):
@@ -487,6 +486,28 @@ class ServiceRoutingTests(unittest.TestCase):
         # While the bot works, the chat shows that it works: the typing event of the gateway sets the phase.
         phases = [data.get('phase') for _, data in self.published(task, 'task.updated') if data.get('phase')]
         self.assertEqual(phases[:2], ['thinking', 'writing'])
+
+    def test_partial_text_of_an_earlier_plugin_is_dropped_and_the_segments_stay_complete(self):
+        # A gateway that still runs the plugin of an earlier version sends `delta` events between its sends.
+        segments = ['I will check the test.', 'The test passes.', 'I also updated the notes.']
+        task = self.send('Check the test.')
+        self.run_in_gateway(task, [
+            {'kind': 'typing'},
+            {'kind': 'delta', 'stream': 1, 'text': 'I will '}, {'kind': 'delta', 'stream': 1, 'text': 'check'},
+            {'kind': 'send', 'message_id': 'c:1', 'text': segments[0], 'interim': True},
+            {'kind': 'delta', 'stream': 2, 'text': 'The test'},
+            {'kind': 'send', 'message_id': 'm:1', 'text': segments[1]},
+            {'kind': 'delta', 'stream': 3, 'text': 'I also'},
+            {'kind': 'send', 'message_id': 'm:2', 'text': segments[2]},
+            {'kind': 'done', 'outcome': 'success'}])
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.replies(task), [(segments[0], False, True), (segments[1], False, True),
+                                              (segments[2], False, False)])
+        messages = [(kind, data) for kind, data in self.published(task, 'message.created', 'message.updated')
+                    if data['role'] == 'assistant' and data['kind'] == 'text']
+        self.assertEqual([data['text'] for kind, data in messages if kind == 'message.created'], segments)
+        final = {data['id']: data['text'] for _, data in messages}
+        self.assertTrue(all(data['text'] == final[data['id']] for _, data in messages), messages)
 
     def bot_reply(self, text):
         first = self.send('Hello.')
