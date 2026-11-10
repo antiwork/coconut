@@ -139,10 +139,19 @@ struct CoconutHome: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar { rootToolbar(inbox: tab != .bots) }
                 .safeAreaInset(edge: .top, spacing: 0) {
-                    if !store.isDemo, let notice = store.connection.notice {
-                        ConnectionBanner(notice: notice) {
-                            onboardingFirstRun = false
-                            onboardingOpen = true
+                    // The banners take their own space, so the page starts below them and they cover no row.
+                    let notice = store.isDemo ? nil : store.connection.notice
+                    if notice != nil || store.error != nil {
+                        VStack(spacing: 8) {
+                            if let notice {
+                                ConnectionBanner(notice: notice) {
+                                    onboardingFirstRun = false
+                                    onboardingOpen = true
+                                }
+                            }
+                            if let error = store.error {
+                                ErrorBanner(message: error) { store.error = nil }
+                            }
                         }
                         .padding(.horizontal, 16).padding(.bottom, 8)
                     }
@@ -166,11 +175,6 @@ struct CoconutHome: View {
                     DocumentView(documentId: route.id)
                 }
                 .background(BoardStyle.paper)
-                .overlay(alignment: .top) {
-                    if let error = store.error {
-                        ErrorBanner(message: error) { store.error = nil }.padding(.horizontal, 16)
-                    }
-                }
         }
         // On the stack itself, so that the pushed pages get it too.
         .environment(\.pushRoute) { route in path.wrappedValue.append(route) }

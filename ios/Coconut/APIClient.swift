@@ -10,6 +10,9 @@ enum ServiceError: LocalizedError {
     // The Keychain has the pairing but refused to read it, for example just after an update started the app again.
     case keychainUnavailable(OSStatus)
 
+    /// The Mac does not know a route that this app uses, so its Coconut is older than the app.
+    static let olderMac = "Your Mac has an older Coconut than this app. Update Coconut on your Mac and try again."
+
     var errorDescription: String? {
         switch self {
         case .configuration(let message): return message
@@ -128,10 +131,16 @@ final class APIClient: @unchecked Sendable {
         throw ServiceError.invalidResponse
     }
 
-    private static func checked(_ data: Data, status: Int) throws -> Data {
+    /// The body of a successful answer. Each other answer becomes an error with the text of the Mac.
+    static func checked(_ data: Data, status: Int) throws -> Data {
         guard (200..<300).contains(status) else {
-            let error = try? JSONDecoder().decode(ErrorBody.self, from: data)
-            throw ServiceError.response(status, error?.error ?? "The Mac could not complete this request (\(status)).")
+            let reason = (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error
+            // An older Coconut answers "This route was not found." to a route of a newer app (backend/coconut/server.py
+            // and service.py). That text gives the person nothing to do, so the app says what to do.
+            if status == 404, reason?.hasSuffix("route was not found.") == true {
+                throw ServiceError.response(status, ServiceError.olderMac)
+            }
+            throw ServiceError.response(status, reason ?? "The Mac could not complete this request (\(status)).")
         }
         return data
     }
