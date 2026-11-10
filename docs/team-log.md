@@ -4,7 +4,14 @@ A team is a set of Macs that share one log. The log lives on the Cloudflare rela
 
 The log carries everything that a team shares: the people and bots of the team, the messages of the Team chat, and the shared pages. A phone talks only to its own Mac, as before.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac side does not exist yet, so no Mac makes or joins a room.
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac (see [Mac](#mac)). These parts are not built yet:
+
+- The socket on the Mac. The Mac reads each room every 30 seconds.
+- A call of `GET .../members` that finds a member that left without a `delete` entry.
+- A record of the open invites on the Mac.
+- The member removal and the key change.
+- The routes of the phone.
+- The kinds `message`, `page` and `bot`.
 
 ## Terms
 
@@ -72,7 +79,7 @@ Each payload has these fields:
 
 | Kind | `kept` | Author | Fields |
 | --- | --- | --- | --- |
-| `member` | `true` | Each member, one entry | `name` (at most 80 characters), `avatar` (at most 80), `color` (at most 20), `agreement` (the public agreement key) |
+| `member` | `true` | Each member, one entry | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20), `agreement` (the public agreement key) |
 | `delete` | `false` | The member of the replaced entry | None. It replaces an entry that its author deletes. |
 | `bot` | `true` | The Mac that runs the bot | The name and the picture of a team bot. |
 | `page` | `true` | The Mac that runs the bot of the page | One shared page. |
@@ -84,10 +91,14 @@ The kinds `member` and `delete` are complete. Each other kind gets its fields in
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
+The Mac counts Unicode code points for the limits of `name`, `avatar` and `color`, because the Python standard library cannot count the characters that a person sees. A `member` entry that does not fit stays in the store and changes no member. When a member has more than one `member` entry, the one with the highest `seq` counts, so each Mac shows the same member.
+
 ### Rules for a Mac that reads an entry
 
 1. If the version of the body is later than the Mac knows, keep the bytes and try again after the next update of Coconut. This check comes first, because a later version can have another form.
-2. Open the body with the room key of its epoch. Then check the signature with `member`. If one of them fails, drop the entry and write a log line.
+2. Open the body with the room key of its epoch. Then check the signature with `member`. If one of them fails, drop the entry and write a log line. Do the same when the payload is not a JSON object with a `kind` (1 to 64 characters) and an integer `rev` from 1.
+   - If the Mac has no room key for the epoch, and the epoch is before the first epoch that the Mac has a key for, skip the entry. A member that joins later never gets the keys of earlier epochs.
+   - If the epoch is later, keep the bytes until the key comes in a `key` entry.
 3. If the Mac already has this entry ID, accept the entry only from the same member and only with a higher `rev`.
 4. Accept `remove` and `key` only from the admin. The admin is the member ID that the welcome names.
 5. If the kind is unknown, keep the payload and show nothing.
@@ -170,7 +181,7 @@ The token is unpadded lowercase base32 (RFC 4648) of these bytes. The pairing li
 | Length of `relay` | `relay`, UTF-8 |
 | The rest | `name` of the team, UTF-8 |
 
-`relay` is an HTTPS origin without a path, a query or account details, as in a pairing link, and its host is a name, not an address in numbers. So a changed link cannot send a Mac over plain HTTP or to an address that the link gives in numbers. The rule does not know where a host name points. `name` has 1 to 80 characters, no space at its start or end, and no control character, because the app shows it before the person joins. A Mac refuses a link or a welcome with another `relay` or `name`.
+`relay` is an HTTPS origin without a path, a query or account details, as in a pairing link, and its host is a name, not an address in numbers. So a changed link cannot send a Mac over plain HTTP or to an address that the link gives in numbers. The rule does not know where a host name points. `name` has 1 to 80 characters, no space at its start or end, and no control character, because the app shows it before the person joins. A Mac refuses a link or a welcome with a `relay` or a `name` that does not follow these rules. A Mac also refuses a link after its `expires`.
 
 Both Macs derive these values from the invite secret with HKDF-SHA256, an empty salt, and a 32-byte output:
 
@@ -205,6 +216,16 @@ To join:
 4. The Mac opens the welcome. If the welcome does not open, the Mac leaves the room with `DELETE .../members/<m>`.
 5. The Mac writes its `member` entry, reads the log from `after=0`, and opens the socket.
 
+The room takes its name from the welcome, because the admin sealed it. The name in the link is only for the screen before the join. The Mac keeps its keys and its token before step 3. When the relay does not answer step 3, the same link asks again with the same member and token.
+
+To leave:
+
+1. A member replaces its `member` entry with a `delete` entry, so each other Mac takes it out of its list.
+2. The Mac sends `DELETE .../members/<m>`.
+3. The Mac deletes its copy of the log and its keys.
+
+A member can always leave. When the Mac cannot seal the `delete` entry, for example without its helper, it leaves without that entry. The other Macs then show the member until the member removal is built. The admin leaves only a room without other members, and the relay then deletes the room.
+
 The link passes through the chat service that carries it, for example Telegram. Someone who reads the link while its ticket has a use left can join the room. Each Mac then shows the new member, and the admin can remove it.
 
 After its last use, a ticket admits no new member. The relay keeps the ticket and its welcome until the `ttl` ends. A Mac that lost the answer of its join can then ask again with the same `member` and `hash`. After the `ttl`, the relay deletes both, and the link is useless. The admin can remove a ticket earlier.
@@ -226,6 +247,61 @@ A removed Mac keeps what it already read. Without the key change, a removed memb
 The relay stores the room ID, the member IDs, the hashes of tokens and tickets, and for each entry the fields of the entry table. It sees which member writes, when, and how many bytes. It sees no name, no message, no page, and no room key. `relay/README.md` allows no plaintext field, and this contract adds none.
 
 The relay accepts a member ID only with a proof of its key, so one member cannot write as another member. The relay itself can hold back an entry or give an old one. It cannot make an entry, change one, or move one to another member, entry ID or room. The `rev` rule stops an old write of an entry on a Mac that already has a newer one.
+
+## Mac
+
+The Mac backend does the steps of this contract for the tools on the Mac. The modules are in `backend/coconut`: `team.py` (the room operations and the routes), `team_sync.py` (the copy of each log), `team_store.py` (the tables and the reading rules), `team_keys.py` (the secrets), `team_relay.py` (the relay routes) and `team_helper.py` (the helper).
+
+### Helper
+
+`scripts/team-helper.swift` compiles with `ios/Tunnel/TeamLog.swift`, which holds the format. It seals, opens, signs, and reads and makes links and welcomes. It takes no argument and touches no file: it reads one JSON object from standard input and writes one to standard output. So a key, a token or a secret is never in a command line, a file or a log. A failure is `{"error": "<code>"}`, and a code names no value of the input.
+
+- Coconut.app carries the helper in `Contents/Helpers/team-helper`, as a binary for both architectures. `coconut service` and `coconut update` name it in `COCONUT_TEAM_HELPER`.
+- A source install compiles it into `<data>/team/team-helper` with `python3 scripts/team.py build`. `deploy.py` runs that command in each update, and the receipt `helper.sha256` stops a second build of the same sources. With `COCONUT_TEAM_HELPER` set, the command compiles nothing.
+- The service uses `COCONUT_TEAM_HELPER` when it names an executable file. Else it uses `<data>/team/team-helper` when that file is private: no symbolic link, and no permission for the group or others.
+
+### Keys and tables
+
+`<data>/team/<room ID>.json` holds the secrets of one room: the member key, the agreement key, the member token, and the room key of each epoch. The folder has mode 0700 and each file mode 0600. The Mac replaces a file in one step.
+
+Everything else is in `coconut.sqlite3`:
+
+| Table | Holds |
+| --- | --- |
+| `team_rooms` | One row for each room: its relay, its name, the member ID of this Mac, the admin, the state, the epoch, the read position (`seq`), and the profile that this Mac writes in its `member` entry. |
+| `team_entries` | The newest accepted write of each entry ID, with its payload. |
+| `team_members` | The members that a Mac shows: the newest valid `member` entry of each member. |
+| `team_pending` | The bodies that the Mac cannot open yet, for a later version or a later epoch. |
+
+A room is `joining` (the relay did not answer the join yet), `active`, `removed` (the relay answered 401) or `gone` (the relay answered 404). The copy of a `removed` or `gone` room stays until the person leaves the room on the Mac.
+
+### Sync
+
+One thread, `coconut-team-sync`, reads each `active` room after its `seq`, one answer at a time. Each answer goes into the store in one transaction. The thread reads again while `last` is higher.
+
+- The thread reads every 30 seconds. A room operation and `POST /v1/team/sync` start a pass at once. A later socket only needs to call `TeamSync.team_wake`.
+- After a failure, a room waits 60, 120, 240 and 480 seconds, then 900 seconds for each later try.
+- After each start of the service, the thread tries the waiting bodies again, because an update of Coconut starts the service again.
+- When the log shows no `member` entry of this Mac, the thread writes it, at most every 5 minutes. This repairs a stop between a join and its first write.
+- A write of this Mac goes into the store at once. When a write gets no answer, the relay can have it. So before the next write in that room, the Mac reads the room to its end, and its next `rev` is then higher.
+- No call to the relay or to the helper holds the lock of the service.
+
+A log line names a room by the start of its ID, and an entry by its ID and its `seq`. The relay sees these values too. No log line and no error text has an invite link, a token, a key, a ticket, a welcome or a proof. `backend/tests/test_team_routes.py` checks this.
+
+### Routes for the tools
+
+Only the main listener serves these routes, with the token of `<data>/gateway/bridge.json`. The tunnel listener of the phone does not serve them. `scripts/team.py` calls them.
+
+| Request | Answer |
+| --- | --- |
+| `GET /v1/team/rooms` | The rooms with their members and their sync state. |
+| `POST /v1/team/rooms`, body `{name, member_name, avatar, color, relay}` | Makes a room. This Mac is its admin. |
+| `POST /v1/team/rooms/<room>/invites`, body `{ttl, uses}` | The invite link. Only the admin makes one. The defaults are one day and one use. |
+| `POST /v1/team/join`, body `{link, member_name, avatar, color}` | Joins a room. |
+| `DELETE /v1/team/rooms/<room>` | Leaves the room, and deletes its copy and its keys. |
+| `POST /v1/team/sync` | Starts a pass, waits up to 60 seconds for it, and returns the rooms with `complete`. |
+
+No answer has a key or a token. Only the invite link carries a secret. `scripts/team.py join` reads the link from standard input, so the link is never an argument of a command.
 
 ## Test vectors
 
