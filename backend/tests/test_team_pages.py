@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 from uuid import uuid4
 
-from coconut import team_keys, team_store
+from coconut import documents, team_keys, team_store, team_sync
 from coconut.documents import MAX_CONTENT
 from coconut.service import ServiceError
 from coconut.team_relay import MAX_NUMBER, TeamRelayError
@@ -515,6 +515,53 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
         self.write(self.hostile_page(bot))
         self.second.team_sync_pass()
         self.assertEqual(len(self.team_pages()), 1)
+
+    def test_a_page_whose_check_raises_stays_in_the_store_and_the_room_goes_on(self):
+        bot = self.bot_entry_id()
+        self.sync()
+        page_fields = team_store.SHOWN['page']
+
+        def check(fields):
+            if '<![foo]>' in fields['content']:
+                # Some versions of Python raise this in the HTML parser for a marked section with an unknown
+                # keyword. page_problems catches it, so this check stands for any other defect of a check.
+                raise AssertionError('unknown status keyword')
+            return page_fields(fields)
+        broken = self.write(self.hostile_page(bot, format='html', content='<p>x</p><![foo]>'))
+        self.write(self.hostile_page(bot, key='other-page'))
+        with mock.patch.dict(team_store.SHOWN, page=check), self.assertLogs('coconut.team_store', 'ERROR') as logs:
+            self.second.team_sync_pass()
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn('AssertionError: unknown status keyword', logs.output[0])
+        # The parser itself raising makes the page not valid, and it does not stop the room either.
+        feed = documents._PageCode.feed
+        with mock.patch.object(documents._PageCode, 'feed', side_effect=AssertionError('unknown status keyword')):
+            self.assertIsNone(team_store.page_fields(self.hostile_page(bot, format='html', content='<p>x</p>')))
+        self.assertIs(documents._PageCode.feed, feed)
+        (room,) = self.rooms(self.second, sync=False)
+        self.assertEqual((room['sync']['error'], room['sync']['seq']), (None, self.relay.rooms[self.room_id]['seq']))
+        self.assertEqual(self.second.team_store.entry(self.room_id, broken)['kind'], 'page')
+        self.assertEqual([page['key'] for page in self.team_pages()], ['other-page'])
+
+    def test_an_error_in_the_first_part_of_the_read_drops_only_its_entry(self):
+        bot = self.bot_entry_id()
+        self.sync()
+        read_entry = team_sync.read_entry
+
+        def fail_for_one(opened):
+            if b'broken-page' in (opened.get('payload') or b''):
+                raise RuntimeError('A defect of this code.')
+            return read_entry(opened)
+        broken = self.write(self.hostile_page(bot, key='broken-page'))
+        self.write(self.hostile_page(bot, key='other-page'))
+        with mock.patch.object(team_sync, 'read_entry', fail_for_one), \
+                self.assertLogs('coconut.team_sync', 'WARNING') as logs:
+            self.second.team_sync_pass()
+        self.assertIn('RuntimeError: A defect of this code.', '\n'.join(logs.output))
+        (room,) = self.rooms(self.second, sync=False)
+        self.assertEqual((room['sync']['error'], room['sync']['seq']), (None, self.relay.rooms[self.room_id]['seq']))
+        self.assertIsNone(self.second.team_store.entry(self.room_id, broken))
+        self.assertEqual([page['key'] for page in self.team_pages()], ['other-page'])
 
     def test_a_page_of_another_member_that_names_a_bot_of_this_member_shows_nothing(self):
         # The second Mac shares a bot. The first Mac writes a page that names the bot entry of the second Mac.

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
+from coconut import documents
 from coconut.documents import KEPT_VERSIONS, MAX_CONTENT, end_time, page_problems
 from coconut.library_replies import document_of, is_report, report_key
 from coconut.service import Service, ServiceError
@@ -58,6 +59,17 @@ class PageRuleTests(unittest.TestCase):
         self.assertTrue(page_problems('<style>p{border: 1px solid; color: x red}</style>'))
         self.assertEqual(page_problems('<style>p{margin: 0; x: red} .a{color: var(--text)}</style>'), [])
         self.assertTrue(page_problems('<p style="background-color:\n navy">x</p>'))
+
+    def test_html_that_the_parser_cannot_read_is_a_problem_of_the_page(self):
+        # Some versions of Python raise AssertionError for this marked section, and others read it.
+        self.assertIn(page_problems('<p>x</p><![foo]>'), ([], [documents._UNREADABLE]))
+        for error in (AssertionError('unknown status keyword'), ValueError('x')):
+            with self.subTest(error=error), patch.object(documents._PageCode, 'feed', side_effect=error):
+                self.assertEqual(page_problems('<p>x</p>'), [documents._UNREADABLE])
+                with self.assertRaises(ServiceError) as raised:
+                    documents.page_to_save(dict(key='page', title='Page', format='html', content='<p>x</p>'))
+                self.assertEqual(raised.exception.status, 400)
+                self.assertIn('HTML that Coconut cannot read', str(raised.exception))
 
     def test_each_rule_names_its_fix(self):
         cases = {'<p style="font-family: Comic Sans">x</p>': 'font',

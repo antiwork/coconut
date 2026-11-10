@@ -240,10 +240,15 @@ class TeamSync:
 
     def _team_prepare(self, room_id: str, entry: dict, opened: dict) -> dict:
         """read_entry for one entry, the part of the reading rules without the database. The caller holds no lock of
-        the service. A data error of one entry drops that entry, as in _team_accept."""
+        the service.
+
+        This part touches no database, so an error can come only from the data of the entry or from a defect of the
+        code. Each error drops only this entry, so one entry never stops a room. _team_accept keeps DATA_ERRORS,
+        because a database failure there must drop no entry.
+        """
         try:
             return read_entry(opened)
-        except DATA_ERRORS as error:
+        except Exception as error:
             log.exception('coconut.team_log room %s: the store cannot take the entry %s at seq %d.', room_id[:8],
                           entry['id'], entry['seq'])
             return {'error': type(error).__name__}

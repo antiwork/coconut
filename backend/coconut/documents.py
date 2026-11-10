@@ -49,6 +49,8 @@ _COLOR_ADVICE = ('Use a token: var(--c1) to var(--c6), var(--text), var(--text-2
 _FONT = 'The page sets a font. Remove it: Coconut sets the font of each page.'
 _HEX_REASON = 'The page writes a color as a hex value. ' + _COLOR_ADVICE
 _NAME_REASON = 'The page writes a color by name. ' + _COLOR_ADVICE
+_UNREADABLE = ('The page has HTML that Coconut cannot read. Write plain HTML: give each tag its end, and remove '
+               'sections such as <![...]>.')
 _FILE = 'The page loads another file. Coconut gives d3 and Plot to each page. Put everything else in the page.'
 _NETWORK = 'The page loads something from the network. Pages have no network access. Put the data in the page.'
 _COLOR_PROPERTY = r'(?:color|background(?:-color)?|fill|stroke|border(?:-[a-z]+)?|outline|box-shadow|text-shadow)'
@@ -223,10 +225,18 @@ class _PageCode(HTMLParser):
 
 
 def page_problems(content: str) -> list[str]:
-    """The page rules that an HTML document breaks, each reason once."""
+    """The page rules that an HTML document breaks, each reason once.
+
+    The HTML parser of Python can raise on some markup, for example an AssertionError for a marked section with an
+    unknown keyword such as <![foo]> on some versions. That is a problem of the page, not of the service: a local save
+    answers 400 with the reason, and a team page with that markup is not valid.
+    """
     page = _PageCode()
-    page.feed(content)
-    page.close()
+    try:
+        page.feed(content)
+        page.close()
+    except Exception:
+        return [_UNREADABLE]
     parts = dict(page.parts, code=page.parts['css'] + page.parts['scripts'])
     problems = list(dict.fromkeys(page.reasons))
     for part, pattern, reason in HTML_RULES:

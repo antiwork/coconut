@@ -22,9 +22,12 @@ from __future__ import annotations
 import base64
 from datetime import datetime, timezone
 import json
+import logging
 import re
 
 from .team_relay import HEX32, number
+
+log = logging.getLogger(__name__)
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS team_rooms (room TEXT PRIMARY KEY, relay TEXT NOT NULL, name TEXT NOT NULL,
@@ -203,7 +206,16 @@ def read_entry(opened: dict) -> dict:
         return opened
     payload = read_payload(opened.get('payload'))
     check = SHOWN.get(payload[1]['kind']) if payload else None
-    return dict(opened, read=payload, shown=check(payload[1]) if check else None)
+    shown = None
+    if check:
+        try:
+            shown = check(payload[1])
+        except Exception:
+            # A check that fails is the rule of an entry that does not fit: the entry stays in the store and shows
+            # nothing, and its bytes stay for a later version of Coconut.
+            log.exception('coconut.team_log: the check of a %s entry failed, so the entry shows nothing.',
+                          payload[1]['kind'])
+    return dict(opened, read=payload, shown=shown)
 
 
 class TeamStore:
@@ -402,6 +414,9 @@ class TeamStore:
             page = dict.fromkeys(('bot', 'key', 'title', 'format', 'summary', 'size', 'expires_at'))
         valid = page['bot'] is not None
         bot, version = (page['bot'], None) if other else (fields.get('bot'), fields.get('version'))
+        # This Mac wrote the own payload, but its row keeps only values that SQLite stores as they are.
+        bot = bot if isinstance(bot, str) and HEX32.fullmatch(bot) else None
+        version = version if number(version) else None
         self.db.execute('DELETE FROM team_bots WHERE room=? AND entry=?', (room, entry['id']))
         self.db.execute('''INSERT INTO team_pages (room, entry, member, valid, bot, version, key, title, format,
             summary, size, rev, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
