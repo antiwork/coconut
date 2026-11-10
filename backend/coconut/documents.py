@@ -327,8 +327,7 @@ class Documents:
 
         A pin is how this Mac shows the Library to its person. It is not content of the page: it changes no version
         and no update time, a bot does not read it, and a save of the page keeps it. A pin adds no event: the phone
-        reads the pin with the Library list, and a document event makes each phone load its full state again
-        (state_sync._replay_changes).
+        reads the pin with the Library list.
         """
         from .service import ServiceError
         pinned = data.get('pinned')
