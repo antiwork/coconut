@@ -15,8 +15,11 @@ struct BotDocument: Codable, Identifiable, Equatable, Sendable {
     var updatedAt: String
     var expiresAt: String? = nil
     var content: String? = nil
+    /// The person pinned the document in the Library. The Mac sends no value for a document that never had a pin.
+    var pinned: Bool? = nil
 
     var isPage: Bool { format == "html" }
+    var isPinned: Bool { pinned == true }
 
     /// Markdown without a top heading at its start. The page shows the title over the content, so a bot's own title
     /// heading would show a second title.
@@ -38,55 +41,66 @@ struct DocumentRoute: Hashable {
     let id: String
 }
 
-/// The Library tab: the documents of the bots, grouped by bot. The bot with the latest update comes first.
+/// The Library tab: the pinned documents, then the other documents of the bots, grouped by bot. The bot with the
+/// latest update comes first, and a pin does not move a bot.
 struct LibraryView: View {
     @Environment(AppStore.self) private var store
     /// Shows the documents of this bot only, as the inspector of a Mac chat does.
     var botId: String? = nil
 
-    private var groups: [(bot: Bot, documents: [BotDocument])] {
-        let bots = Dictionary(uniqueKeysWithValues: store.bots.map { ($0.id, $0) })
-        let documents = (store.documents ?? []).filter { botId == nil || $0.botId == botId }
-        let grouped = Dictionary(grouping: documents, by: \.botId)
-        return grouped.compactMap { id, documents in
-            bots[id].map { (bot: $0, documents: documents.sorted { $0.updatedAt > $1.updatedAt }) }
-        }.sorted { ($0.documents.first?.updatedAt ?? "") > ($1.documents.first?.updatedAt ?? "") }
-    }
-
     var body: some View {
+        let sections = LibrarySections(documents: store.documents ?? [], bots: store.bots, botId: botId)
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
                 if store.documents?.isEmpty == true {
                     emptyLibrary
                 }
-                ForEach(groups, id: \.bot.id) { group in
-                    HStack(spacing: 8) {
-                        BotAvatar(bot: group.bot, size: 24, animated: false)
-                        Text(group.bot.name).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+                if !sections.pinned.isEmpty {
+                    header("Pinned") {
+                        // The frame of a bot's avatar, so the title sits in one line with the names of the bots.
+                        Image(systemName: "pin.fill").font(.footnote).foregroundStyle(.secondary)
+                            .frame(width: 24 * BotAvatar.scale, height: 24 * BotAvatar.scale)
+                            .accessibilityHidden(true)
                     }
-                    .padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 4)
-                    .accessibilityAddTraits(.isHeader)
-                    ForEach(group.documents) { document in
-                        NavigationLink(value: DocumentRoute(id: document.id)) {
-                            DocumentRow(document: document)
-                        }
-                        .buttonStyle(HomePressStyle())
-                        .contextMenu {
-                            Button(role: .destructive) { Task { await store.deleteDocument(document) } } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
-                        .accessibilityIdentifier("library-document-\(document.key)")
-                        .padding(.horizontal, 24)
-                    }
+                    ForEach(sections.pinned) { row($0) }
+                }
+                ForEach(sections.groups, id: \.bot.id) { group in
+                    header(group.bot.name) { BotAvatar(bot: group.bot, size: 24, animated: false) }
+                    ForEach(group.documents) { row($0) }
                 }
             }
             .padding(.bottom, 20)
+            // A document moves between the pinned documents and its bot.
+            .animation(.snappy, value: sections.pinned.map(\.id))
         }
         .background(BoardStyle.paper)
         .refreshable { await store.loadDocuments() }
         // A load without a connection does nothing, so the Library loads again when the Mac connects.
         .task(id: store.connection) { await store.loadDocuments() }
+    }
+
+    private func header(_ title: String, @ViewBuilder icon: () -> some View) -> some View {
+        HStack(spacing: 8) {
+            icon()
+            Text(title).font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 24).padding(.top, 22).padding(.bottom, 4)
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    private func row(_ document: BotDocument) -> some View {
+        NavigationLink(value: DocumentRoute(id: document.id)) {
+            DocumentRow(document: document)
+        }
+        .buttonStyle(HomePressStyle())
+        .contextMenu {
+            PinDocumentButton(document: document)
+            Button(role: .destructive) { Task { await store.deleteDocument(document) } } label: {
+                Label("Delete", systemImage: "trash")
+            }
+        }
+        .accessibilityIdentifier("library-document-\(document.key)")
+        .padding(.horizontal, 24)
     }
 
     private var emptyLibrary: some View {
@@ -97,6 +111,37 @@ struct LibraryView: View {
                 .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(.horizontal, 40).padding(.top, 120)
+    }
+}
+
+/// The documents of the Library in the order of the list. A pinned document shows once, with the pinned documents.
+struct LibrarySections {
+    let pinned: [BotDocument]
+    let groups: [(bot: Bot, documents: [BotDocument])]
+
+    init(documents: [BotDocument], bots: [Bot], botId: String? = nil) {
+        let bots = Dictionary(uniqueKeysWithValues: bots.map { ($0.id, $0) })
+        let shown = documents.filter { (botId == nil || $0.botId == botId) && bots[$0.botId] != nil }
+            .sorted { $0.updatedAt > $1.updatedAt }
+        pinned = shown.filter(\.isPinned)
+        // The latest update of a bot counts its pinned documents, so a pin does not move the bot in the list.
+        let latest = Dictionary(shown.map { ($0.botId, $0.updatedAt) }) { first, _ in first }
+        groups = Dictionary(grouping: shown.filter { !$0.isPinned }, by: \.botId)
+            .compactMap { id, documents in bots[id].map { (bot: $0, documents: documents) } }
+            .sorted { (latest[$0.bot.id] ?? "") > (latest[$1.bot.id] ?? "") }
+    }
+}
+
+/// Pins a document in the Library, or removes its pin.
+private struct PinDocumentButton: View {
+    @Environment(AppStore.self) private var store
+    let document: BotDocument
+
+    var body: some View {
+        Button { Task { await store.pinDocument(document, pinned: !document.isPinned) } } label: {
+            Label(document.isPinned ? "Unpin" : "Pin", systemImage: document.isPinned ? "pin.slash" : "pin")
+        }
+        .accessibilityIdentifier("document-pin")
     }
 }
 
@@ -201,6 +246,8 @@ struct DocumentView: View {
                             }
                             .accessibilityIdentifier("document-ask")
                         }
+                        // The list has the current pin. The open document has the pin of the time it loaded.
+                        PinDocumentButton(document: listed ?? document)
                         ShareLink(item: content, subject: Text(document.title)) {
                             Label("Share", systemImage: "square.and.arrow.up")
                         }
@@ -313,7 +360,7 @@ extension BotDocument {
                         updatedAt: time(0.5), content: previewWaitlist),
             BotDocument(id: "preview-revenue", botId: first.id, key: "revenue-by-category", title: "Revenue by category",
                         format: "html", summary: "$95,000 this month, up 6%", version: 14, createdAt: time(400),
-                        updatedAt: time(1), content: previewTreemap),
+                        updatedAt: time(1), content: previewTreemap, pinned: true),
             BotDocument(id: "preview-summary", botId: first.id, key: "weekly-summary", title: "Weekly summary",
                         format: "markdown", summary: nil, version: 3, createdAt: time(200), updatedAt: time(30),
                         content: "## Highlights\n\n- Signups grew 9% to 412 a day.\n- Refunds fell to 1.2%.\n\n"

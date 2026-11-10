@@ -1134,9 +1134,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 with self.transaction():
                     self.db.execute('INSERT INTO requests(key,fingerprint,response) VALUES (?,?,?)', (key, fingerprint, encoded(result)))
                 return result
-        if method == 'DELETE' and path.startswith('/v1/documents/') and path.count('/') == 3:
-            # A delete is the same each time, so it needs no saved response.
-            return self.delete_document(path.rsplit('/', 1)[1])
+        if method in ('DELETE', 'PATCH') and path.startswith('/v1/documents/') and path.count('/') == 3:
+            # A delete or a pin is the same each time, so it needs no saved response.
+            document_id = path.rsplit('/', 1)[1]
+            return self.delete_document(document_id) if method == 'DELETE' else self.pin_document(document_id, data)
         if method == 'POST' and path.startswith('/v1/settings/google/'):
             return self.google_connection(path.rsplit('/', 1)[1], data, device_id, key)
         if method == 'PUT' and path == '/v1/settings/api-fallback' and hasattr(self.provider, 'native_settings'):
