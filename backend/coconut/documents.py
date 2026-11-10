@@ -7,6 +7,7 @@ the phone draws natively, or HTML, which the phone shows in a closed web view wi
 Coconut owns the style of a page and the bot owns its structure. A save of HTML fails when the code of the page sets
 its own font, writes a color as a value and not as a token, or loads something from the network. The reason goes back
 to the bot, which then fixes the page. A document can end on a date. After that date the Library no longer shows it.
+The person can pin a document, and the Library shows the pinned documents first.
 
 This module imports only the standard library at its top, so the gateway plugin can load its schemas
 (hermes_plugin/coconut/tools.py).
@@ -295,25 +296,22 @@ class Documents:
         return {'status': 'deleted', 'key': key}
 
     def documents(self) -> dict:
-        """GET /v1/documents: the documents of the bots that the phone shows, newest first, without content."""
+        """GET /v1/documents: the documents of the bots that the phone shows, without content. The pinned documents
+        come first. Each part has its newest document first."""
         from .service import now
         current = now()
         with self._read_view() as view, view._read_transaction():
             bots = {bot['id'] for bot in view._all('bots') if not bot.get('_deleted')}
             rows = view._all('documents')
         shown = [document for document in rows if document['bot_id'] in bots and not expired(document, current)]
-        shown.sort(key=lambda document: (document['updated_at'], document['id']), reverse=True)
+        shown.sort(key=lambda document: (document.get('pinned') is True, document['updated_at'], document['id']),
+                   reverse=True)
         return {'documents': shown}
 
     def document(self, document_id: str) -> dict:
         """GET /v1/documents/<id>: one document with the content of its current version."""
-        from .service import ServiceError, now
         with self._read_view() as view, view._read_transaction():
-            document = view._get('documents', document_id)
-            if view._get('bots', document['bot_id']).get('_deleted'):
-                raise ServiceError(404, 'Document was not found.')
-            if expired(document, now()):
-                raise ServiceError(404, 'This document ended.')
+            document = view._shown_document(document_id)
             return dict(document, content=view._document_content(document))
 
     def delete_document(self, document_id: str) -> dict:
@@ -323,6 +321,24 @@ class Documents:
             if row:
                 self._remove_document(json.loads(row[0]), None)
         return {'ok': True}
+
+    def pin_document(self, document_id: str, data: dict) -> dict:
+        """PATCH /v1/documents/<id> from the phone: pin the document in the Library, or remove its pin.
+
+        A pin is how this Mac shows the Library to its person. It is not content of the page: it changes no version
+        and no update time, a bot does not read it, and a save of the page keeps it. A pin adds no event: the phone
+        reads the pin with the Library list.
+        """
+        from .service import ServiceError
+        pinned = data.get('pinned')
+        if not isinstance(pinned, bool):
+            raise ServiceError(400, 'pinned must be true or false.')
+        with self.transaction():
+            document = self._shown_document(document_id)
+            if (document.get('pinned') is True) != pinned:
+                document['pinned'] = pinned
+                self._put('documents', document)
+        return document
 
     def _write_document(self, task: dict, bot: dict, key: str, title: str, document_format: str, content: str,
                         summary: str | None, *, expires) -> dict:
@@ -360,6 +376,16 @@ class Documents:
         if task['status'] != 'working' or self.stopping.is_set():
             raise YieldForDecision('This task no longer accepts provider output.')
         return task
+
+    def _shown_document(self, document_id: str) -> dict:
+        """A document that the Library shows, or the reason for the phone. The caller holds the transaction."""
+        from .service import ServiceError, now
+        document = self._get('documents', document_id)
+        if self._get('bots', document['bot_id']).get('_deleted'):
+            raise ServiceError(404, 'Document was not found.')
+        if expired(document, now()):
+            raise ServiceError(404, 'This document ended.')
+        return document
 
     def _document_of_key(self, bot_id: str, key: str) -> dict | None:
         row = self.db.execute("SELECT data FROM documents WHERE json_extract(data,'$.bot_id')=? "

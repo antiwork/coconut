@@ -4,16 +4,25 @@ struct ErrorBanner: View {
     let message: String
     let dismiss: () -> Void
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "exclamationmark.circle").padding(.top, 3)
-            Text(message).font(.footnote).textSelection(.enabled)
+        // The icon and the X sit on the baseline of the first text line, so a long message grows below them.
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "exclamationmark.circle")
+            // The X is 44 points high, so a message of one line has the height of ConnectionBanner.
+            Text(message).textSelection(.enabled).padding(.vertical, 12)
             Spacer(minLength: 0)
-            Button(action: dismiss) { Image(systemName: "xmark").font(.body).frame(minWidth: 44, minHeight: 44) }
-                .accessibilityLabel("Dismiss error")
+            Button(action: dismiss) {
+                Image(systemName: "xmark").fontWeight(.semibold)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            // The default button of a Mac draws a bezel around the X. An iPhone shows the same button as before.
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Dismiss error")
         }
+        .font(.footnote)
         .foregroundStyle(.secondary)
         .padding(.leading, 14)
-        .padding(.vertical, 8)
+        .padding(.trailing, 4)
         .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: 16))
         .accessibilityIdentifier("action-error")
     }

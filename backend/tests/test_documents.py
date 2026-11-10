@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 from uuid import uuid4
 
 from coconut.documents import KEPT_VERSIONS, end_time, page_problems
@@ -225,6 +227,62 @@ class DocumentServiceTests(unittest.TestCase):
         events = [row[0] for row in self.service.db.execute("SELECT type FROM events WHERE type LIKE 'document.%'")]
         self.assertEqual(events, ['document.created', 'document.created', 'document.deleted', 'document.deleted'])
 
+    def pin(self, document, pinned=True):
+        return self.write('PATCH', f'/v1/documents/{document["id"]}', {'pinned': pinned})
+
+    def listed(self, key):
+        return next(d for d in self.service.documents()['documents'] if d['key'] == key)
+
+    def test_the_person_pins_a_document_and_the_library_shows_it_first(self):
+        for key in ('signups-daily', 'launch-checklist', 'weekly-summary'):
+            self.save(key=key)
+
+        def keys():
+            return [d['key'] for d in self.service.documents()['documents']]
+        self.assertEqual(keys(), ['weekly-summary', 'launch-checklist', 'signups-daily'])
+        cursor = self.service._cursor()
+        oldest = self.listed('signups-daily')
+        # A pin is not a change of the page: the version and the update time stay.
+        self.assertEqual(self.pin(oldest), dict(oldest, pinned=True))
+        self.assertEqual(keys(), ['signups-daily', 'weekly-summary', 'launch-checklist'])
+        # The pinned documents have their newest first, as the other documents do.
+        self.pin(self.listed('launch-checklist'))
+        self.assertEqual(keys(), ['launch-checklist', 'signups-daily', 'weekly-summary'])
+        self.assertFalse(self.pin(oldest, False)['pinned'])
+        self.assertEqual(keys(), ['launch-checklist', 'weekly-summary', 'signups-daily'])
+        # A pin adds no event, so no phone loads its state again.
+        self.assertEqual(self.service._cursor(), cursor)
+
+    def test_a_save_and_a_restart_keep_the_pin(self):
+        self.save()
+        self.pin(self.listed('signups-daily'))
+        self.assertEqual(self.save(content='# Signups\n\n430 today.', summary='430 today')['version'], 2)
+        document = self.listed('signups-daily')
+        self.assertEqual((document['version'], document['summary'], document['pinned']), (2, '430 today', True))
+        # The pin belongs to the person. The bot does not read it.
+        self.assertNotIn('pinned', self.tool('read_document', {'key': 'signups-daily'}))
+        # A save brings back an ended document with its pin.
+        self.service.db.execute("UPDATE documents SET data=json_set(data,'$.expires_at','2026-01-01T00:00:00Z')")
+        self.save()
+        self.assertTrue(self.listed('signups-daily')['pinned'])
+        self.finish()
+        self.service.close()
+        self.service = Service(self.temp.name, Provider(), start_workers=False)
+        self.assertTrue(self.listed('signups-daily')['pinned'])
+
+    def test_a_pin_needs_a_document_of_the_library_and_true_or_false(self):
+        self.save()
+        document = self.listed('signups-daily')
+        for data in ({}, {'pinned': 'yes'}, {'pinned': 1}):
+            with self.subTest(data=data), self.assertRaisesRegex(ServiceError, 'true or false'):
+                self.write('PATCH', f'/v1/documents/{document["id"]}', data)
+        with self.assertRaisesRegex(ServiceError, 'not found'):
+            self.pin({'id': 'missing'})
+        self.service.db.execute("UPDATE documents SET data=json_set(data,'$.expires_at','2026-01-01T00:00:00Z')")
+        with self.assertRaisesRegex(ServiceError, 'ended'):
+            self.pin(document)
+        self.assertNotIn('pinned', self.service._get('documents', document['id']))
+
     def test_the_library_leaves_out_the_documents_of_a_deleted_bot(self):
         self.save()
         self.finish()
@@ -250,6 +308,65 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(self.cards(), [('Signups', document['id'])])
         card = next(m for m in self.service._task_messages(self.task_id) if m['kind'] == 'document')
         self.assertEqual(card['bot_id'], self.bot['id'])
+
+    def replays(self, cursor):
+        """The update after the cursor for each version of the feed, as the server reads X-Coconut-Updates. Version 1
+        is a request without the header. Versions 3 and 4 follow the native outcomes of Hermes."""
+        # The feed reads the clock at the time of the last event that the phone has. No time passed, so only the
+        # events send rows.
+        timestamp = self.service.db.execute('SELECT created_at FROM events WHERE seq=?', (cursor,)).fetchone()[0]
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={}, observed_at=timestamp)), \
+             patch('coconut.service.now', return_value=timestamp):
+            pages = [self.service.updates(cursor, collection_deltas=version >= 2, native_events=version >= 3,
+                                          compact_history=version == 4) for version in (1, 2, 3, 4)]
+        for page in pages:
+            # A reset sends the full state to each phone.
+            self.assertNotIn('reset', page)
+            self.assertEqual((page['after'], page['cursor']), (cursor, self.service._cursor()))
+            # A document changes no Work row and no card, so the update does not send them again.
+            self.assertNotIn('artifacts', page)
+            self.assertNotIn('decisions', page)
+        return pages
+
+    def test_a_save_in_a_turn_replays_with_its_card(self):
+        cursor = self.service._cursor()
+        self.save()
+        document = self.listed('signups-daily')
+        for page in self.replays(cursor):
+            self.assertEqual([(m['kind'], m['text'], m['document_id']) for m in page['messages']],
+                             [('document', 'Signups', document['id'])])
+            self.assertEqual([t['id'] for t in page['tasks']], [self.task_id])
+        # An update with a new title changes the card of the turn.
+        cursor = self.service._cursor()
+        self.save(title='Signups today', content='# Signups\n\n430 today.')
+        for page in self.replays(cursor):
+            self.assertEqual([(m['kind'], m['text'], m['document_id']) for m in page['messages']],
+                             [('document', 'Signups today', document['id'])])
+        # An update with the same title changes only the Library.
+        cursor = self.service._cursor()
+        self.save(title='Signups today', content='# Signups\n\n441 today.')
+        for page in self.replays(cursor):
+            self.assertEqual((page['messages'], [t['id'] for t in page['tasks']]), ([], [self.task_id]))
+
+    def test_a_delete_of_a_document_replays(self):
+        self.save()
+        self.save(key='launch-checklist', title='Launch checklist')
+        cursor = self.service._cursor()
+        self.tool('delete_document', {'key': 'signups-daily'})
+        for page in self.replays(cursor):
+            self.assertEqual((page['messages'], page['removed_messages']), ([], []))
+        cursor = self.service._cursor()
+        self.write('DELETE', f'/v1/documents/{self.listed("launch-checklist")["id"]}')
+        for page in self.replays(cursor):
+            self.assertEqual((page['tasks'], page['messages'], page['removed_messages']), ([], [], []))
+
+    def test_a_kept_report_replays_with_its_reply_and_its_card(self):
+        cursor = self.service._cursor()
+        self.reply(REPORT)
+        with patch.object(self.service, 'kanban', SimpleNamespace(tasks={}, observed_at='2099-01-01T00:00:00Z')):
+            page = self.service.updates(cursor, collection_deltas=True, native_events=True, compact_history=True)
+        self.assertNotIn('reset', page)
+        self.assertEqual([m['kind'] for m in page['messages']], ['text', 'document'])
 
     def test_a_report_in_the_chat_goes_to_the_library_after_the_reply(self):
         self.reply(REPORT)
