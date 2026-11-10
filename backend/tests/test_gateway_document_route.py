@@ -13,12 +13,14 @@ import threading
 import unittest
 from uuid import uuid4
 
-from coconut.server import APIServer
+from coconut.server import APIServer, TunnelServer
 from coconut.service import Service
 from test_gateway_chat import Provider
 
 PAGE = dict(key='dashboard-home', title='Home', format='markdown', summary='32 past SLA',
             content='32 items are past their SLA.\n\n| Queue | Open |\n|---|---|\n| Issues | 32 |\n')
+# The static key of a paired phone, as the tunnel sidecar names it.
+PHONE = {'X-Coconut-Peer': 'a' * 64}
 
 
 class GatewayPageRouteTests(unittest.TestCase):
@@ -29,24 +31,27 @@ class GatewayPageRouteTests(unittest.TestCase):
         self.addCleanup(self.service.close)
         self.bot = self.service.mutate('POST', '/v1/bots', {'name': 'Desk'}, str(uuid4()), 'phone')
         self.home = str(self.service.profiles.home(self.bot))
-        self.server = APIServer(('127.0.0.1', 0), self.service)
-        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .02}, daemon=True)
-        self.thread.start()
-        self.addCleanup(self.close)
+        self.server = self.serve(APIServer(('127.0.0.1', 0), self.service))
         # The service writes the address and the token of the bridge file that the adapter of the gateway reads.
         self.service.gateway_bridge.publish(f'http://127.0.0.1:{self.server.server_port}')
         self.token = json.loads((Path(self.temp.name) / 'gateway' / 'bridge.json').read_text())['token']
 
-    def close(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join(2)
-        self.assertFalse(self.thread.is_alive())
+    def serve(self, server):
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .02}, daemon=True)
+        thread.start()
+        self.addCleanup(self.close, server, thread)
+        return server
 
-    def post(self, path, data, token=None):
-        connection = http.client.HTTPConnection('127.0.0.1', self.server.server_port, timeout=5)
+    def close(self, server, thread):
+        server.shutdown()
+        server.server_close()
+        thread.join(2)
+        self.assertFalse(thread.is_alive())
+
+    def post(self, path, data, token=None, *, server=None, headers=None):
+        connection = http.client.HTTPConnection('127.0.0.1', (server or self.server).server_port, timeout=5)
         self.addCleanup(connection.close)
-        headers = {'Content-Type': 'application/json'}
+        headers = {'Content-Type': 'application/json', **(headers or {})}
         if token:
             headers['Authorization'] = f'Bearer {token}'
         connection.request('POST', path, body=json.dumps(data), headers=headers)
@@ -75,11 +80,50 @@ class GatewayPageRouteTests(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertEqual(self.service.documents()['documents'], [])
 
+    def test_a_device_token_does_not_open_the_route(self):
+        device = self.service.pair({'code': self.service.pairing_code()})['token']
+        status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home), device)
+        self.assertEqual(status, 401)
+        self.assertIn('bridge.json', answer['error'])
+        self.assertEqual(self.service.documents()['documents'], [])
+
+    def test_the_tunnel_listener_does_not_serve_the_route(self):
+        # The tunnel listener carries the requests of a paired phone. A phone keeps no page for a bot.
+        tunnel = self.serve(TunnelServer(0, self.service))
+        secret = self.service.pairing_code(600, tunnel=True)
+        device = self.service.pair({'code': secret}, PHONE['X-Coconut-Peer'])['token']
+        page = dict(PAGE, home=self.home)
+        # The token of the bridge is not the token of a device, with the key of a phone and without it.
+        for headers in ({}, PHONE):
+            with self.subTest(headers=headers):
+                status, answer = self.post('/v1/gateway/document', page, self.token, server=tunnel, headers=headers)
+                self.assertEqual((status, answer['error']), (401, 'Pair this phone with the Mac to continue.'))
+        # The phone has no such route.
+        status, answer = self.post('/v1/gateway/document', page, device, server=tunnel,
+                                   headers={**PHONE, 'Idempotency-Key': str(uuid4())})
+        self.assertEqual((status, answer['error']), (404, 'This route was not found.'))
+        self.assertEqual(self.service.documents()['documents'], [])
+        # The same token saves the page on the main listener.
+        self.assertEqual(self.post('/v1/gateway/document', page, self.token)[1]['status'], 'saved')
+
     def test_a_home_that_is_not_a_profile_of_a_bot_keeps_no_page(self):
         status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.temp.name), self.token)
         self.assertEqual(status, 404)
         self.assertIn('not the profile of a bot', answer['error'])
         self.assertEqual(self.service.documents()['documents'], [])
+
+    def test_an_archived_bot_and_a_deleted_bot_keep_no_page(self):
+        def write(method, data=None):
+            self.service.mutate(method, f'/v1/bots/{self.bot["id"]}', data or {}, str(uuid4()), 'phone')
+        write('PATCH', {'archived': True})
+        status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home), self.token)
+        self.assertEqual((status, answer['error']), (409, 'The bot is archived or deleted.'))
+        # The profile of a deleted bot goes with it, so its Hermes home is no longer the profile of a bot.
+        write('DELETE')
+        status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home), self.token)
+        self.assertEqual(status, 404)
+        self.assertIn('not the profile of a bot', answer['error'])
+        self.assertEqual(self.service.db.execute('SELECT count(*) FROM documents').fetchone()[0], 0)
 
 
 if __name__ == '__main__':
