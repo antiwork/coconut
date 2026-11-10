@@ -4,6 +4,8 @@ import { handleTunnel } from './tunnel.js';
 export { Tunnel } from './tunnel.js';
 import { handleRendezvous } from './rendezvous.js';
 export { Rendezvous } from './rendezvous.js';
+import { handleRoom } from './room.js';
+export { Room } from './room.js';
 
 export default {
   async fetch(request, env) {
@@ -14,6 +16,8 @@ export default {
       if (tunnel) return tunnel;
       const rendezvous = await handleRendezvous(request, env);
       if (rendezvous) return rendezvous;
+      const room = await handleRoom(request, env);
+      if (room) return room;
       // The 24 KB body cap applies to the push routes only.
       if (Number(request.headers.get('content-length') || 0) > 24000) return new Response(null, { status: 413 });
       const chunks = [];
