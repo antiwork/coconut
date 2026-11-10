@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build Coconut.app: the menu bar app, the `coconut` tool, the relay sidecar and the two login items.
+"""Build Coconut.app: the menu bar app, the `coconut` tool, the relay sidecar, the team helper and the two login items.
 
 The bundle:
   Contents/MacOS/Coconut                      the menu bar app (mac/Sources/CoconutApp)
   Contents/Helpers/coconut                    the tool that the login items run (mac/Sources/CoconutTool)
   Contents/Helpers/tunnel-sidecar             the relay sidecar (scripts/tunnel-sidecar.swift)
+  Contents/Helpers/team-helper                the helper of the team log (scripts/team-helper.swift)
   Contents/Frameworks/Sparkle.framework       the updater, which reads FEED_URL
   Contents/Library/LaunchAgents/*.plist       the login items (mac/LaunchAgents)
   Contents/Resources/coconut-source.tar.gz    the source package of scripts/remote.py, which `coconut update` installs
@@ -34,6 +35,7 @@ import subprocess
 import tempfile
 
 import remote
+from team import SOURCES as TEAM_HELPER_SOURCES
 from tunnel import SOURCES as SIDECAR_SOURCES
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -126,12 +128,13 @@ def xcode_app() -> Path:
     return XCODE_BUILD / 'Build/Products/Release/Coconut.app'
 
 
-def compile_sidecar(output: Path, scratch: Path) -> None:
+def compile_helper(sources: list, output: Path, scratch: Path) -> None:
+    """Compile the Swift sources of a helper into one binary for both architectures."""
     slices = []
     for architecture in ARCHITECTURES:
-        binary = scratch / f'tunnel-sidecar-{architecture}'
+        binary = scratch / f'{output.name}-{architecture}'
         run(['xcrun', 'swiftc', '-parse-as-library', '-O', '-target', f'{architecture}-apple-macos{MINIMUM_SYSTEM}',
-             *SIDECAR_SOURCES, '-o', binary])
+             *sources, '-o', binary])
         slices.append(binary)
     run(['lipo', '-create', *slices, '-output', output])
 
@@ -153,7 +156,9 @@ def assemble(output: Path, version: str, build: str) -> Path:
             copy(resource, contents / 'Resources' / resource.name)
         shutil.copy2(swift_tool(MAC / '.build'), contents / 'Helpers/coconut')
         add_sparkle(built / 'Contents/Frameworks/Sparkle.framework', contents / 'Frameworks/Sparkle.framework')
-        compile_sidecar(contents / 'Helpers/tunnel-sidecar', scratch)
+        compile_helper(SIDECAR_SOURCES, contents / 'Helpers/tunnel-sidecar', scratch)
+        # The service of a Mac without the Command Line Tools uses this helper (backend/coconut/team_helper.py).
+        compile_helper(TEAM_HELPER_SOURCES, contents / 'Helpers/team-helper', scratch)
         make_icon(contents / 'Resources/Coconut.icns', scratch)
     for agent in sorted((MAC / 'LaunchAgents').glob('*.plist')):
         shutil.copy2(agent, contents / 'Library/LaunchAgents' / agent.name)

@@ -18,6 +18,7 @@ from pathlib import Path
 import re
 import signal
 import socket
+import socketserver
 import sqlite3
 import sys
 import threading
@@ -32,6 +33,8 @@ PEER_KEY = re.compile(r'[0-9a-f]{64}')
 # Only the main listener serves these. The tunnel listener carries the phone's requests.
 GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/tools', '/v1/gateway/cron',
                   '/v1/gateway/wake', '/v1/gateway/messages', '/v1/gateway/files', '/v1/gateway/document')
+# The routes of the team rooms (team.py). Also only the main listener serves them: a phone has no team route yet.
+TEAM_ROUTES = '/v1/team/'
 
 
 # A path segment with a digit and at least 8 characters is an ID. The log keeps the route, not private IDs.
@@ -69,6 +72,13 @@ class APIServer(ThreadingHTTPServer):
             self.address_family = socket.AF_INET6
         super().__init__(address, Handler)
         self.service = service
+
+    def server_bind(self):
+        # HTTPServer.server_bind sets server_name with socket.getfqdn, a reverse name lookup. On a CI Mac that lookup
+        # of 127.0.0.1 blocked the start for more than 30 seconds. Each listener is on loopback, and nothing reads
+        # server_name, so the bound host is enough.
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
 
     def service_actions(self):
         if self.service is not None and self.service.take_service_restart():
@@ -200,6 +210,12 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError) as error:
             raise ServiceError(400, str(error)) from None
 
+    def _team(self, service, method, path):
+        """The routes of the team rooms, for the tools on this Mac. They use the token of the gateway routes. See team.py."""
+        if not service.gateway_bridge.authorized(self.headers.get('Authorization', '')):
+            raise ServiceError(401, 'Use the token in <data>/gateway/bridge.json.')
+        self._json(200, service.team_request(method, path, {} if method == 'GET' else self._body()))
+
     def _handle(self, method):
         """Serve one request. Log the time of each request from the phone (see request_timing)."""
         started = time.perf_counter()
@@ -224,6 +240,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if method == 'POST' and url.path in GATEWAY_ROUTES and not self.server.tunnel and hasattr(service, 'gateway_bridge'):
                 self._gateway(service.gateway_bridge, url.path)
+                return
+            if url.path.startswith(TEAM_ROUTES) and not self.server.tunnel and hasattr(service, 'team_request'):
+                self._team(service, method, url.path)
                 return
             peer = None
             if self.server.tunnel:

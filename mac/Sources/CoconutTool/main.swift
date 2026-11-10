@@ -218,7 +218,8 @@ case "service":
     guard let python = PythonLocator(environment: environment).locate() else {
         waitAndExit("Coconut found no Python 3.11 or later. Install Hermes, or Python 3.11 or later from Homebrew.")
     }
-    run(.service(install: install, python: python, environment: environment))
+    run(.service(install: install, python: python, environment: environment,
+                 teamHelper: helpers.appendingPathComponent("team-helper")))
 case "sidecar":
     guard install.hasRelayRoute() else { waitAndExit("This Mac has no relay route yet. Pair an iPhone first.") }
     run(.sidecar(install: install, binary: helpers.appendingPathComponent("tunnel-sidecar"),
@@ -254,7 +255,8 @@ case "install-source":
         fail("Coconut found no Python 3.11 or later. Install Hermes, or Python 3.11 or later from Homebrew.")
     }
     let launch = Launch.update(install: install, source: source, directory: directory, python: python,
-                               sidecar: helpers.appendingPathComponent("tunnel-sidecar"), environment: environment,
+                               sidecar: helpers.appendingPathComponent("tunnel-sidecar"),
+                               teamHelper: helpers.appendingPathComponent("team-helper"), environment: environment,
                                setUp: CommandLine.arguments.contains("--set-up"))
     let process = Process()
     process.executableURL = launch.executable

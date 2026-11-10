@@ -20,6 +20,8 @@ A future execution provider can move work to another host without changing bot, 
 | Avatar, pinning, notification preference | Coconut presentation data |
 | Pairing, transcript replay, Inbox, routing | Coconut SQLite database |
 | Tool and dispatch receipts | Coconut coordination data |
+| Team rooms, their members and the copy of each team log | Coconut SQLite database (`team_*` tables), copied from the relay. See [team log](team-log.md#mac). |
+| Keys and member tokens of the team rooms | One private file for each room in `<data>/team` |
 
 Coconut retains small projections for phone display. Native files own behavior.
 Inbox threads group decisions. They do not restrict a bot's recall of its own conversation.

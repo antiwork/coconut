@@ -1,9 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
 import worker from '../src/worker.js';
+import { roomRuntime } from './room-runtime.mjs';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const token = () => randomBytes(32).toString('hex');
@@ -22,26 +21,8 @@ const claim = (who, room, signer = who) => {
 };
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-function relay(t, { limits = {}, create = 100, requests = 100000 } = {}) {
-  const runtime = new Miniflare(convertV4MiniflareOptions({
-    compatibilityDate: '2026-09-10', compatibilityFlags: ['nodejs_compat'],
-    modules: [
-      { type: 'ESModule', path: 'entry.js', contents: `
-        import { handleRoom } from './room.js';
-        export { Room } from './room.js';
-        export default { async fetch(request, env) {
-          return (await handleRoom(request, env)) || new Response(null, { status: 404 });
-        }};` },
-      ...['room.js', 'tunnel.js'].map(name => (
-        { type: 'ESModule', path: name, contents: readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8') })),
-    ],
-    bindings: { ROOM_LIMITS: JSON.stringify(limits) },
-    durableObjects: { ROOMS: { className: 'Room', useSQLite: true } },
-    ratelimits: {
-      ROOM_CREATE: { namespace_id: '7', simple: { limit: create, period: 60 } },
-      ROOM_LIMIT: { namespace_id: '8', simple: { limit: requests, period: 60 } },
-    },
-  }));
+function relay(t, options) {
+  const runtime = roomRuntime(options);
   t.after(() => runtime.dispose());
   const call = (method, path, { bearer, ticket, body, headers = {}, text } = {}) => {
     const authorization = bearer ? `Bearer ${bearer}` : ticket ? `Ticket ${ticket}` : undefined;

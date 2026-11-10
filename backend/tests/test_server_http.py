@@ -1,9 +1,11 @@
 import http.client
 import json
+import socket
 import threading
 import unittest
+from unittest import mock
 
-from coconut.server import APIServer
+from coconut.server import APIServer, TunnelServer
 
 
 class LoopbackHTTPTests(unittest.TestCase):
@@ -85,6 +87,22 @@ class LoopbackHTTPTests(unittest.TestCase):
         self.assertTrue(response.will_close)
         response.read()
         self.health()
+
+
+class ListenerBindTests(unittest.TestCase):
+    def test_a_listener_starts_without_a_name_lookup(self):
+        # On a CI Mac, the reverse lookup of 127.0.0.1 in HTTPServer.server_bind blocked the start for 30 seconds.
+        def lookup(*arguments):
+            raise AssertionError('The listener looked up a host name.')
+        with mock.patch.object(socket, 'getfqdn', lookup), mock.patch.object(socket, 'gethostbyaddr', lookup):
+            for make in (lambda: APIServer(('127.0.0.1', 0), None), lambda: TunnelServer(0, None)):
+                server = make()
+                self.addCleanup(server.server_close)
+                with self.subTest(listener=type(server).__name__):
+                    host, port = server.server_address[:2]
+                    self.assertEqual(host, '127.0.0.1')
+                    self.assertGreater(port, 0)
+                    self.assertEqual((server.server_name, server.server_port), (host, port))
 
 
 if __name__ == '__main__':

@@ -11,9 +11,14 @@ public struct Launch: Equatable {
     public var standardError: URL?
 
     /// The service: `host.py serve`. host.py finds the person's Hermes and starts again under its Python.
-    public static func service(install: Install, python: URL, environment: [String: String]) -> Launch {
+    /// `teamHelper` is the helper of the team log in this bundle, which the service runs (team_helper.py).
+    public static func service(install: Install, python: URL, environment: [String: String],
+                               teamHelper: URL? = nil) -> Launch {
         var environment = environment
         environment["PYTHONUNBUFFERED"] = "1"
+        if let teamHelper {
+            environment["COCONUT_TEAM_HELPER"] = teamHelper.path
+        }
         // host.py asks launchd whether this login item runs this process. Then a bot can ask for a restart: the service
         // exits, and launchd starts it again.
         environment["COCONUT_LOGIN_ITEM"] = Agent.service.rawValue

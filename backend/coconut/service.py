@@ -184,6 +184,7 @@ from .hermes_setup import HermesSetup
 from .bot_profiles import BotProfiles
 from .gateway_chat import GatewayChat
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
+from .team import SCHEMA as TEAM_SCHEMA, Team
 
 
 # The statements of Service._refresh_bot. Each needs an index and no sort. A test reads the plan of each one.
@@ -213,7 +214,7 @@ def marked(field):
     return f"json_type(data,'$.{field}') IN ('object','true')"
 
 
-class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat, Documents):
+class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, StateSync, DecisionFreshness, WithdrawalCorrections, WorkRecovery, WorkSources, SilentResponses, TrackedWork, WorkStatus, WorkProgress, PullRequestReviews, DecisionInbox, BackgroundProcesses, NativeExecution, NativeRoutines, ApprovalUpdates, ParallelWorkUpdates, ServiceRestart, WorkspaceRecovery, WorktreeRetirement, SessionMaintenance, DatabaseMaintenance, TechnicalLane, HermesSetup, BotProfiles, GatewayChat, Documents, Team):
     ACTIVE = {'queued', 'working', 'scheduled', 'needs_you', 'paused', 'waiting'}
     TABLES = ('bots', 'tasks', 'messages', 'decisions', 'artifacts', 'routines')
     BOT_CHANGE_LIMIT = 8
@@ -257,6 +258,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             self.db.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
         self.db.executescript(TASK_CHANGES_SCHEMA)
         self.db.executescript(DOCUMENTS_SCHEMA)
+        self.db.executescript(TEAM_SCHEMA)
         # The committed task states that the writer and the read views share. See task_cache.py.
         self._task_states = TaskStates()
         # The kept history of each bot, with the message changes that update it. See history_cache.py.
@@ -334,6 +336,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._message_interaction = None
         self.stopping = threading.Event()
         self._init_gateway_chat()
+        self._init_team()
         self.generation = uid()
         self.restart_enabled = False
         self.restart_pending = False
@@ -2913,6 +2916,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self._start_profile_watcher()
         self._start_hermes_entries()
         self._start_gateway_supervisor()
+        self._start_team()
         self.push.start()
 
     def _register_pr_artifact(self, task_id: str | None, payload: dict, *, bot_id=None):
@@ -4472,6 +4476,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             retirement.join(timeout=RETIREMENT_CLOSE_SECONDS)
         if getattr(self, 'profile_watcher', None):
             self.profile_watcher.join(timeout=10)
+        self._close_team()
         self.push.close()
         self._close_gateway_chat()
         with self.lock:

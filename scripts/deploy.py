@@ -433,6 +433,8 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
 
     def prepare(self, root, package):
         self.command([sys.executable, str(root / 'scripts/push.py'), '--rebuild'], root, 'Notification encryption build')
+        # The helper of the team log (docs/team-log.md). Under Coconut.app nothing compiles: the app carries it.
+        self.command([sys.executable, str(root / 'scripts/team.py'), 'build'], root, 'Team helper build')
 
     def tunnel(self, root):
         """Give the tunnel sidecar the new code, and install it on a Mac that never had it. See tunnel.rebuild.
