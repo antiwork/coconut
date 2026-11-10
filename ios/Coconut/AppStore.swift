@@ -7,6 +7,8 @@ import OSLog
 @MainActor @Observable
 final class AppStore {
     private static let deliveryLog = Logger(subsystem: "com.gumroad.coconut", category: "delivery")
+    /// Each line names a reason why the app has no usable pairing. A line holds no token, key or code.
+    private static let pairingLog = Logger(subsystem: "com.gumroad.coconut", category: "pairing")
     var bots: [Bot] = []
     var tasks: [AgentTask] = []
     var messages: [Message] = []
@@ -68,6 +70,11 @@ final class AppStore {
     let isDemo: Bool
 
     private var pairing: PairingConfiguration?
+    /// True while pairing.json exists but the device cannot read it now. The file has complete protection, so a Mac
+    /// with a locked screen refuses the read, and a locked iPhone too. An update often starts the Mac app again behind
+    /// a locked screen. The pairing is saved, not missing: the app shows no pairing page and reads the file again.
+    private var savedPairingLocked = false
+    @ObservationIgnored private var savedPairingRetry: Task<Void, Never>?
     private var writeCount = 0
     @ObservationIgnored private var client: APIClient?
     // The one tunnel socket of a version 2 pairing. Every client of the pairing shares it.
@@ -101,9 +108,9 @@ final class AppStore {
     @ObservationIgnored private var snapshotEpoch = UUID()
     @ObservationIgnored private var snapshotRequest: (id: UUID, generation: UUID, epoch: UUID, client: APIClient, task: Task<StateSnapshot, Error>)?
 
-    var hasPairing: Bool { pairing != nil }
+    var hasPairing: Bool { pairing != nil || savedPairingLocked }
     var pairedMacDescription: String {
-        guard let pairing else { return "no Mac" }
+        guard let pairing else { return savedPairingLocked ? "your Mac" : "no Mac" }
         return pairing.macName ?? "your Mac"
     }
     var canSubmitDecision: Bool { isDemo || hasPairing }
@@ -197,26 +204,73 @@ final class AppStore {
             connection = .preview
             return
         }
-        // A token that the Keychain cannot read now still belongs to this pairing, and polling reads it again. Without
-        // this, the first start after an update showed the pairing page until the person restarted the app.
-        let hasToken: Bool
-        do { hasToken = try PairingToken.lookup() != nil } catch { hasToken = true }
-        if let configuration: PairingConfiguration = ProtectedCache.read("pairing.json"), hasToken {
-            pairing = configuration
-            connection = .disconnected
-            if let cache: OutgoingCache = ProtectedCache.read("outgoing.json"), cache.deviceId == configuration.deviceId {
-                outgoingMessages = cache.messages.map(\.afterRestart)
-                outgoingAnswers = cache.answers ?? []
-                answeringDecisionIds = Set(outgoingAnswers.map(\.decisionId))
-            }
-            if let cache: SnapshotCache = ProtectedCache.read("snapshot.json") {
-                apply(cache.snapshotForRestore, persist: false)
-                lastSync = cache.syncedAt
-            }
-        }
+        loadSavedPairing()
         #if DEBUG && targetEnvironment(simulator)
         configureFromLaunchEnvironment()
         #endif
+    }
+
+    /// Reads the saved pairing and the saved state. A device that cannot read the files now keeps the pairing, and
+    /// the store reads them again each second. Before this, a Mac app that an update started behind a locked screen
+    /// showed the pairing page until the person started it again.
+    private func loadSavedPairing() {
+        let saved: (configuration: PairingConfiguration, outgoing: OutgoingCache?, snapshot: SnapshotCache?)?
+        do { saved = try Self.readSavedPairing() } catch {
+            // The retry below runs already.
+            guard !savedPairingLocked else { return }
+            savedPairingLocked = true
+            connection = .disconnected
+            let failure = error as NSError
+            Self.pairingLog.notice("The device cannot read the saved pairing now (\(failure.domain, privacy: .public) \(failure.code)). The app keeps the pairing and reads it again.")
+            savedPairingRetry = Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    guard let self, !Task.isCancelled, self.savedPairingLocked else { return }
+                    self.loadSavedPairing()
+                }
+            }
+            return
+        }
+        let wasLocked = savedPairingLocked
+        savedPairingLocked = false
+        savedPairingRetry?.cancel()
+        savedPairingRetry = nil
+        guard let saved else {
+            connection = .unconfigured
+            return
+        }
+        pairing = saved.configuration
+        connection = .disconnected
+        if let cache = saved.outgoing, cache.deviceId == saved.configuration.deviceId {
+            outgoingMessages = cache.messages.map(\.afterRestart)
+            outgoingAnswers = cache.answers ?? []
+            answeringDecisionIds = Set(outgoingAnswers.map(\.decisionId))
+        }
+        if let cache = saved.snapshot {
+            apply(cache.snapshotForRestore, persist: false)
+            lastSync = cache.syncedAt
+        }
+        if wasLocked {
+            Self.pairingLog.notice("The device reads the saved pairing again.")
+            resumePolling()
+        }
+    }
+
+    /// The saved pairing with its saved state, or nil when this device has none. Throws when the device cannot read
+    /// a file now.
+    private static func readSavedPairing() throws -> (configuration: PairingConfiguration, outgoing: OutgoingCache?, snapshot: SnapshotCache?)? {
+        guard let configuration: PairingConfiguration = try ProtectedCache.lookup("pairing.json") else {
+            pairingLog.notice("The app has no usable pairing file, so it has no pairing.")
+            return nil
+        }
+        // A token that the Keychain cannot read now still belongs to this pairing, and polling reads it again.
+        let hasToken: Bool
+        do { hasToken = try PairingToken.lookup() != nil } catch { hasToken = true }
+        guard hasToken else {
+            pairingLog.notice("The Keychain has no token for the pairing file, so the app has no pairing.")
+            return nil
+        }
+        return (configuration, try ProtectedCache.lookup("outgoing.json"), try ProtectedCache.lookup("snapshot.json"))
     }
 
     func start() {
@@ -272,14 +326,21 @@ final class AppStore {
                 return
             }
             #endif
-            guard pairing != nil, pollTask == nil, !repairRequired else { return }
-            if lastSync.map({ Date().timeIntervalSince($0) > 30 }) ?? true { connection = .connecting }
-            beginPolling()
+            // An iPhone that started the app while it was locked can read the saved pairing now.
+            if savedPairingLocked { loadSavedPairing() }
+            resumePolling()
         } else {
             stopPolling()
             if let cachedState { saveCache(cachedState, immediately: true) }
             if outgoingAnswers.isEmpty { closeTunnelWhenIdle() } else { sendAnswersThenClose() }
         }
+    }
+
+    /// Starts polling in the foreground. A state that is older than 30 seconds shows "Connecting" first.
+    private func resumePolling() {
+        guard foreground, pairing != nil, pollTask == nil, !repairRequired else { return }
+        if lastSync.map({ Date().timeIntervalSince($0) > 30 }) ?? true { connection = .connecting }
+        beginPolling()
     }
 
     // An answer can wait for its Undo window when the app leaves the foreground. Background time lets it send.
@@ -362,7 +423,7 @@ final class AppStore {
             return true
         } catch {
             if !(error is CancellationError) { self.error = Self.pairingFailure(error) }
-            connection = pairing == nil ? .unconfigured : previousConnection
+            connection = hasPairing ? previousConnection : .unconfigured
             return false
         }
     }
@@ -407,7 +468,7 @@ final class AppStore {
             await adopt(configuration)
         } catch {
             report(error)
-            connection = pairing == nil ? .unconfigured : .disconnected
+            connection = hasPairing ? .disconnected : .unconfigured
         }
     }
     #endif
@@ -417,6 +478,11 @@ final class AppStore {
         guard !isDemo else { return }
         repairRequired = false
         stopPolling()
+        if savedPairingLocked {
+            // The device cannot read the saved pairing yet. The store polls as soon as the read works.
+            loadSavedPairing()
+            return
+        }
         guard let pairing else {
             connection = .unconfigured
             return
@@ -479,8 +545,12 @@ final class AppStore {
         resetDelivery()
         outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; sendingAnswerIds = []; restoredDecisionId = nil
         pairing = nil
+        savedPairingLocked = false
+        savedPairingRetry?.cancel()
+        savedPairingRetry = nil
         repairRequired = false
         if !isDemo {
+            Self.pairingLog.notice("The app removes its saved pairing.")
             PairingToken.delete()
             TunnelCredentials.delete()
             ProtectedCache.remove("pairing.json")
@@ -1417,7 +1487,10 @@ final class AppStore {
             return nil
         }
         guard let pairing, let token = storedToken else {
-            if !quiet { error = "Pair with your Mac in Settings to continue." }
+            if !quiet {
+                error = savedPairingLocked ? "Coconut cannot read its pairing right now. Try again in a moment."
+                    : "Pair with your Mac in Settings to continue."
+            }
             return nil
         }
         func belongsToPairing() -> Bool {
@@ -2187,8 +2260,15 @@ enum ProtectedCache {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(TestIsolation.name("Coconut"), isDirectory: true)
     }
 
-    static func read<T: Decodable>(_ name: String, in location: URL? = nil) -> T? {
-        guard let data = try? Data(contentsOf: (location ?? directory).appendingPathComponent(name)) else { return nil }
+    static func read<T: Decodable>(_ name: String, in location: URL? = nil) -> T? { try? lookup(name, in: location) }
+
+    /// The saved value, or nil when there is no file or the file holds another format. Throws when the file exists
+    /// but the device cannot read it now. The files have complete protection, so a Mac with a locked screen refuses
+    /// the read, and a locked iPhone too. That is not a missing file.
+    static func lookup<T: Decodable>(_ name: String, in location: URL? = nil) throws -> T? {
+        let data: Data
+        do { data = try Data(contentsOf: (location ?? directory).appendingPathComponent(name)) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
     }
 

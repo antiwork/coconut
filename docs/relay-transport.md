@@ -235,6 +235,8 @@ The app shows these connection states:
 
 The phone's static key and the relay client token live in the Keychain (`local.coconut.tunnel`). Each pairing makes a new key. `pairing.json` holds `{version: 2, relay, route, macKey, deviceId, macName}`.
 
+`pairing.json` and the saved state have complete file protection. A locked iPhone refuses to read them, and a Mac with a locked screen too. An update often starts the Mac app again behind a locked screen. An app that starts then keeps its pairing and shows no pairing page. It reads the files again each second, and it connects when the read works. The app writes each such start to the system log (subsystem `com.gumroad.coconut`, category `pairing`).
+
 ## Backend listeners
 
 The backend listens with plain HTTP on two loopback ports:
