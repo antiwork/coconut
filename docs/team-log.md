@@ -244,7 +244,7 @@ Inputs, as hex:
 | Nonce of the entry | The bytes `90` to `9b` |
 | Nonce of the welcome | The bytes `a0` to `ab` |
 | Payload | `{"kind":"member","rev":1,"name":"Ada"}` |
-| Relay, name, expires | `https://relay.example`, `Antiwork`, 1800000000 |
+| Relay, name, expires | `https://relay.example`, `Example Team`, 1800000000 |
 | Member token | The bytes `b0` to `cf`, as 64 hex characters |
 
 Results:
@@ -266,13 +266,13 @@ CryptoKit adds random bytes to each Ed25519 signature, so a body that CryptoKit 
 Plaintext of the welcome:
 
 ```json
-{"version":1,"epoch":0,"key":"cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8","admin":"3f7708d5f5cc2bc633b59d2b3a2ed92e7479220c6f08ade208bebcd8580ab93b","name":"Antiwork"}
+{"version":1,"epoch":0,"key":"cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8","admin":"3f7708d5f5cc2bc633b59d2b3a2ed92e7479220c6f08ade208bebcd8580ab93b","name":"Example Team"}
 ```
 
-Welcome, 196 bytes. A seal of the plaintext with the nonce above must give exactly these bytes:
+Welcome, 200 bytes. A seal of the plaintext with the nonce above must give exactly these bytes:
 
 ```
-a0a1a2a3a4a5a6a7a8a9aaabda8922b84e01f1b512a2cf53cff6685c32a45a60612033abab0e79079016c0888927292eeeb3cc2d461f9c01fffdba1769b9351e70d02f7fb5d2111569322ca3b369c82d5c3fc250b9dac19e1b908c7bb52d8528191575c5337909dedb65a86dddba2d39407cce1a90e75318e7825291e5f0543b4085f777e121daa5157c498170b6cee22dc9d7c8f4444acd196b02877565f016aefc07ba26506462f1ae44f3402d9420c45453f8193c3b26f2d535eeee6409740e7905ef
+a0a1a2a3a4a5a6a7a8a9aaabda8922b84e01f1b512a2cf53cff6685c32a45a60612033abab0e79079016c0888927292eeeb3cc2d461f9c01fffdba1769b9351e70d02f7fb5d2111569322ca3b369c82d5c3fc250b9dac19e1b908c7bb52d8528191575c5337909dedb65a86dddba2d39407cce1a90e75318e7825291e5f0543b4085f777e121daa5157c498170b6cee22dc9d7c8f4444acd196b02877565f016aefc07ba26506462f1ae40e555299323d31f25e0ef44f5563707469473e4f402151b7e88aff20ed3
 ```
 
 Proof of the member for this room and this member token:
@@ -285,5 +285,5 @@ The relay's check (WebCrypto) and CryptoKit accept this proof, and the relay acc
 Link:
 
 ```
-coconut://team/aeqccirdeqssmjzifevcwlbnfyxtamjsgm2dknrxha4tuoz4hu7d6aabaibqibiga4eascqlbqgq4dyqcejbgfavcylrqgi2dmob2hq7nne5eaaacvuhi5dqom5c6l3smvwgc6jomv4gc3lqnrsuc3tunf3w64tl
+coconut://team/aeqccirdeqssmjzifevcwlbnfyxtamjsgm2dknrxha4tuoz4hu7d6aabaibqibiga4eascqlbqgq4dyqcejbgfavcylrqgi2dmob2hq7nne5eaaacvuhi5dqom5c6l3smvwgc6jomv4gc3lqnrsuk6dbnvygyzjakrswc3i
 ```

@@ -16,9 +16,9 @@ final class TeamLogTests: XCTestCase {
     private let payload = Data(#"{"kind":"member","rev":1,"name":"Ada"}"#.utf8)
     private let memberID = TeamLog.bytes(hex: "3f7708d5f5cc2bc633b59d2b3a2ed92e7479220c6f08ade208bebcd8580ab93b")!
     private let body = TeamLog.bytes(hex: "0100000000909192939495969798999a9b3dc6466e523666ef6e740edf8ec9e63d7cb603f63968e207c181b8a81597764cc292af10ed9bd3b58b46badbf645e0b0a2bb6315ccba94c7b089151d14927bf4494f5ccec298f0d72467ae0d11cca33a42029f69407325375b2dc8da1e906baa85545c47a14ef9ab7c4a29555af5b8ffd519c73fd373")!
-    private let welcomeText = #"{"version":1,"epoch":0,"key":"cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8","admin":"3f7708d5f5cc2bc633b59d2b3a2ed92e7479220c6f08ade208bebcd8580ab93b","name":"Antiwork"}"#
-    private let welcome = TeamLog.bytes(hex: "a0a1a2a3a4a5a6a7a8a9aaabda8922b84e01f1b512a2cf53cff6685c32a45a60612033abab0e79079016c0888927292eeeb3cc2d461f9c01fffdba1769b9351e70d02f7fb5d2111569322ca3b369c82d5c3fc250b9dac19e1b908c7bb52d8528191575c5337909dedb65a86dddba2d39407cce1a90e75318e7825291e5f0543b4085f777e121daa5157c498170b6cee22dc9d7c8f4444acd196b02877565f016aefc07ba26506462f1ae44f3402d9420c45453f8193c3b26f2d535eeee6409740e7905ef")!
-    private let link = "coconut://team/aeqccirdeqssmjzifevcwlbnfyxtamjsgm2dknrxha4tuoz4hu7d6aabaibqibiga4eascqlbqgq4dyqcejbgfavcylrqgi2dmob2hq7nne5eaaacvuhi5dqom5c6l3smvwgc6jomv4gc3lqnrsuc3tunf3w64tl"
+    private let welcomeText = #"{"version":1,"epoch":0,"key":"cHFyc3R1dnd4eXp7fH1-f4CBgoOEhYaHiImKi4yNjo8","admin":"3f7708d5f5cc2bc633b59d2b3a2ed92e7479220c6f08ade208bebcd8580ab93b","name":"Example Team"}"#
+    private let welcome = TeamLog.bytes(hex: "a0a1a2a3a4a5a6a7a8a9aaabda8922b84e01f1b512a2cf53cff6685c32a45a60612033abab0e79079016c0888927292eeeb3cc2d461f9c01fffdba1769b9351e70d02f7fb5d2111569322ca3b369c82d5c3fc250b9dac19e1b908c7bb52d8528191575c5337909dedb65a86dddba2d39407cce1a90e75318e7825291e5f0543b4085f777e121daa5157c498170b6cee22dc9d7c8f4444acd196b02877565f016aefc07ba26506462f1ae40e555299323d31f25e0ef44f5563707469473e4f402151b7e88aff20ed3")!
+    private let link = "coconut://team/aeqccirdeqssmjzifevcwlbnfyxtamjsgm2dknrxha4tuoz4hu7d6aabaibqibiga4eascqlbqgq4dyqcejbgfavcylrqgi2dmob2hq7nne5eaaacvuhi5dqom5c6l3smvwgc6jomv4gc3lqnrsuk6dbnvygyzjakrswc3i"
 
     private func member() throws -> Curve25519.Signing.PrivateKey { try Curve25519.Signing.PrivateKey(rawRepresentation: seed) }
     /// The welcome key, as the contract derives it. The tests use it to seal a welcome with their own plaintext.
@@ -26,7 +26,7 @@ final class TeamLogTests: XCTestCase {
         HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: secret), info: Data("coconut room welcome".utf8), outputByteCount: 32)
     }
     /// A link with these parts, packed as the contract says, also when a part is not valid.
-    private func packedLink(version: UInt8 = 1, relay: String = "https://relay.example", name: Data = Data("Antiwork".utf8)) -> String {
+    private func packedLink(version: UInt8 = 1, relay: String = "https://relay.example", name: Data = Data("Example Team".utf8)) -> String {
         let relayBytes = Data(relay.utf8)
         let packed = Data([version]) + room + secret + Data([0x6b, 0x49, 0xd2, 0x00])
             + Data([UInt8(relayBytes.count >> 8), UInt8(relayBytes.count & 0xff)]) + relayBytes + name
@@ -124,7 +124,7 @@ final class TeamLogTests: XCTestCase {
     }
 
     func testTheWelcomeOfTheContract() throws {
-        let expected = TeamLog.Welcome(epoch: 0, key: roomKey, admin: memberID, name: "Antiwork")
+        let expected = TeamLog.Welcome(epoch: 0, key: roomKey, admin: memberID, name: "Example Team")
         XCTAssertEqual(try TeamLog.open(welcome: welcome, room: room, secret: secret), expected)
         // A seal of the plaintext of the contract with its nonce gives exactly its bytes.
         let exact = try ChaChaPoly.seal(Data(welcomeText.utf8), using: welcomeKey,
@@ -152,10 +152,10 @@ final class TeamLogTests: XCTestCase {
         XCTAssertEqual(try refusal(welcomeText.replacingOccurrences(of: "cHFy", with: "cHF")), .malformed)
         // The last character of the key has unused bits. With another value in them, the text is not the one of the key.
         XCTAssertEqual(try refusal(welcomeText.replacingOccurrences(of: "jo8", with: "jo9")), .malformed)
-        XCTAssertEqual(try refusal(welcomeText.replacingOccurrences(of: "Antiwork", with: " Antiwork")), .malformed)
-        XCTAssertEqual(try refusal(welcomeText.replacingOccurrences(of: "Antiwork", with: "")), .malformed)
+        XCTAssertEqual(try refusal(welcomeText.replacingOccurrences(of: "Example Team", with: " Example Team")), .malformed)
+        XCTAssertEqual(try refusal(welcomeText.replacingOccurrences(of: "Example Team", with: "")), .malformed)
         XCTAssertEqual(try refusal(welcomeText.replacingOccurrences(of: "3f7708", with: "3F7708")), .malformed)
-        XCTAssertEqual(try refusal(welcomeText.replacingOccurrences(of: #","name":"Antiwork""#, with: "")), .malformed)
+        XCTAssertEqual(try refusal(welcomeText.replacingOccurrences(of: #","name":"Example Team""#, with: "")), .malformed)
         XCTAssertEqual(try refusal("not json"), .malformed)
         // The relay takes no larger welcome, so the Mac opens none, also when its seal is valid.
         let large = #"{"version":1,"epoch":0,"pad":""# + String(repeating: "a", count: 1024) + #""}"#
@@ -189,7 +189,7 @@ final class TeamLogTests: XCTestCase {
     }
 
     func testTheLinkOfTheContract() throws {
-        let invite = TeamLog.Invite(room: room, secret: secret, expires: 1_800_000_000, relay: "https://relay.example", name: "Antiwork")
+        let invite = TeamLog.Invite(room: room, secret: secret, expires: 1_800_000_000, relay: "https://relay.example", name: "Example Team")
         XCTAssertEqual(try TeamLog.invite(link: link), invite)
         XCTAssertEqual(try TeamLog.link(invite), link)
         XCTAssertEqual(packedLink(), link)
@@ -235,7 +235,7 @@ final class TeamLogTests: XCTestCase {
         XCTAssertEqual(failure { _ = try TeamLog.invite(link: packedLink(relay: "http://127.0.0.1")) }, .malformed)
         // The app shows the name before the person joins.
         invite.relay = "https://relay.example"
-        for name in ["", " Antiwork", "Antiwork\n", "Anti\u{202E}work", "\u{FEFF}Antiwork", "Anti\u{0}work", String(repeating: "a", count: 81)] {
+        for name in ["", " Example Team", "Example Team\n", "Example\u{202E}Team", "\u{FEFF}Example Team", "Example\u{0}Team", String(repeating: "a", count: 81)] {
             XCTAssertEqual(failure { _ = try TeamLog.invite(link: packedLink(name: Data(name.utf8))) }, .malformed, name.debugDescription)
             invite.name = name
             XCTAssertEqual(failure { _ = try TeamLog.link(invite) }, .malformed, name.debugDescription)
