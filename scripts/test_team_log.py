@@ -8,7 +8,11 @@ It needs macOS, the Xcode Command Line Tools, and `npm ci` in relay/.
     python3 scripts/test_team_log.py
 
 scripts/test_tunnel_loopback.py loads this test too, so the Mac app job of CI runs it after its `npm ci`.
+TeamLogVectorTests checks the test vectors of docs/team-log.md with the real helper.
 """
+from __future__ import annotations
+
+import base64
 from pathlib import Path
 import http.client
 import json
@@ -28,8 +32,14 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 sys.path.insert(0, str(ROOT / 'backend'))
 
 import team  # noqa: E402
-from coconut.team_helper import TeamHelper  # noqa: E402
+from coconut.team_helper import TeamFormatError, TeamHelper  # noqa: E402
 from coconut.team_relay import TeamRelay, TeamRelayError  # noqa: E402
+
+
+def compile_helper(output: Path) -> None:
+    # DEBUG lets the link code accept the http relay on 127.0.0.1, as for the client of the tunnel test.
+    subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-O', '-D', 'DEBUG', *map(str, team.SOURCES),
+                    '-o', str(output)], check=True)
 
 
 def free_port() -> int:
@@ -75,10 +85,8 @@ class TeamLogTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory()
         folder = Path(cls.temp.name)
         cls.processes = []
-        # DEBUG lets the link code accept the http relay on 127.0.0.1, as for the client of the tunnel test.
         cls.helper_path = folder / 'team-helper'
-        subprocess.run(['xcrun', 'swiftc', '-parse-as-library', '-O', '-D', 'DEBUG', *map(str, team.SOURCES),
-                        '-o', str(cls.helper_path)], check=True)
+        compile_helper(cls.helper_path)
         relay = subprocess.Popen(['node', 'test/room-server.mjs', '0'], cwd=ROOT / 'relay', stdout=subprocess.PIPE, text=True)
         cls.processes.append(relay)
         cls.url = relay.stdout.readline().strip()
@@ -246,6 +254,102 @@ class TeamLogTests(unittest.TestCase):
         """The seq, first and rev of an entry in the store of a Mac, or None."""
         with self.database(mac) as database:
             return database.execute('SELECT seq, first, rev FROM team_entries WHERE room=? AND id=?', (room, entry)).fetchone()
+
+
+def run_of(start: int, count: int) -> bytes:
+    """The bytes from `start`, one higher each time, as the inputs of the test vectors name them."""
+    return bytes(range(start, start + count))
+
+
+def b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
+
+# The inputs and the results of "Test vectors" in docs/team-log.md.
+SECRET, ROOM, ENTRY, MEMBER_KEY, ROOM_KEY = (b64(run_of(0x00, 32)), run_of(0x20, 32).hex(), run_of(0x40, 16).hex(),
+                                             b64(run_of(0x50, 32)), b64(run_of(0x70, 32)))
+TOKEN = run_of(0xb0, 32).hex()
+PAYLOAD = b'{"kind":"member","rev":1,"name":"Ada"}'
+RELAY, NAME, EXPIRES = 'https://relay.example', 'Example Team', 1800000000
+MEMBER = '3f7708d5f5cc2bc633b59d2b3a2ed92e7479220c6f08ade208bebcd8580ab93b'
+TICKET = 'c1bcb375f34955ef6b9e75cc15059d55bf46a85b0e61fa98e4d7a9de16e3b5e1'
+TICKET_HASH = 'f22e44d35d61359d57e918b9e46b805a3591a804b845080fd7416cdc2a612eb0'
+TOKEN_HASH = '796b2e4cd51a1e5c8c5346d578100dd667264b6c26b5a1dfca876f2e0fb104a5'
+BODY = bytes.fromhex(
+    '0100000000909192939495969798999a9b3dc6466e523666ef6e740edf8ec9e63d7cb603f63968e207c181b8a81597764cc292af10ed9bd3b5'
+    '8b46badbf645e0b0a2bb6315ccba94c7b089151d14927bf4494f5ccec298f0d72467ae0d11cca33a42029f69407325375b2dc8da1e906baa'
+    '85545c47a14ef9ab7c4a29555af5b8ffd519c73fd373')
+WELCOME = bytes.fromhex(
+    'a0a1a2a3a4a5a6a7a8a9aaabda8922b84e01f1b512a2cf53cff6685c32a45a60612033abab0e79079016c0888927292eeeb3cc2d461f9c01ff'
+    'fdba1769b9351e70d02f7fb5d2111569322ca3b369c82d5c3fc250b9dac19e1b908c7bb52d8528191575c5337909dedb65a86dddba2d3940'
+    '7cce1a90e75318e7825291e5f0543b4085f777e121daa5157c498170b6cee22dc9d7c8f4444acd196b02877565f016aefc07ba26506462f1'
+    'ae40e555299323d31f25e0ef44f5563707469473e4f402151b7e88aff20ed3')
+LINK = ('coconut://team/aeqccirdeqssmjzifevcwlbnfyxtamjsgm2dknrxha4tuoz4hu7d6aabaibqibiga4eascqlbqgq4dyqcejbgfavcylrqgi'
+        '2dmob2hq7nne5eaaacvuhi5dqom5c6l3smvwgc6jomv4gc3lqnrsuk6dbnvygyzjakrswc3i')
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun'),
+                     'The test vectors need macOS and the Xcode Command Line Tools.')
+class TeamLogVectorTests(unittest.TestCase):
+    """The helper that the Mac ships gives the values of the contract. The relay tests check the same values."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        folder = Path(cls.temp.name) / 'team'
+        folder.mkdir(mode=0o700)
+        compile_helper(folder / 'team-helper')
+        # The service takes a helper in <data>/team only when it is private, as scripts/team.py build makes it.
+        (folder / 'team-helper').chmod(0o700)
+        cls.helper = TeamHelper(cls.temp.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    def open(self, body: bytes, *, entry: str = ENTRY, member: str = MEMBER, keys: dict | None = None) -> dict:
+        (result,) = self.helper.open(ROOM, keys or {'0': ROOM_KEY}, [{'id': entry, 'member': member, 'body': b64(body)}])
+        return result
+
+    def test_the_body_opens_and_is_bound_to_its_entry_member_and_epoch(self):
+        self.assertEqual(len(BODY), 135)
+        self.assertEqual(self.open(BODY), {'epoch': 0, 'payload': PAYLOAD})
+        self.assertEqual(self.open(BODY, entry='41' + ENTRY[2:])['error'], 'seal')
+        self.assertEqual(self.open(BODY, member='40' + MEMBER[2:])['error'], 'seal')
+        # Another epoch in the header changes the additional data, also when the Mac has the same key for it.
+        other_epoch = BODY[:4] + b'\x01' + BODY[5:]
+        self.assertEqual(self.open(other_epoch, keys={'0': ROOM_KEY, '1': ROOM_KEY})['error'], 'seal')
+        self.assertEqual(self.open(other_epoch), {'error': 'unknown_epoch', 'epoch': 1})
+        for index in (0, 5, 20, len(BODY) - 1):
+            with self.subTest(index=index):
+                changed = bytearray(BODY)
+                changed[index] ^= 1
+                self.assertIn('error', self.open(bytes(changed)))
+        self.assertEqual(self.open(b'\x02' + BODY[1:])['error'], 'unknown_version')
+
+    def test_a_body_that_the_helper_seals_opens_with_the_same_payload(self):
+        body = base64.b64decode(self.helper.seal(ROOM, ENTRY, 0, ROOM_KEY, MEMBER_KEY, PAYLOAD))
+        self.assertEqual(len(body), len(BODY))
+        self.assertNotEqual(body, BODY)
+        self.assertEqual(self.open(body), {'epoch': 0, 'payload': PAYLOAD})
+
+    def test_the_welcome_opens_to_the_plaintext_of_the_contract(self):
+        self.assertEqual(len(WELCOME), 200)
+        self.assertEqual(self.helper.open_welcome(ROOM, SECRET, b64(WELCOME)),
+                         {'epoch': 0, 'key': ROOM_KEY, 'admin': MEMBER, 'name': NAME})
+        with self.assertRaises(TeamFormatError):
+            self.helper.open_welcome('21' + ROOM[2:], SECRET, b64(WELCOME))
+        sealed = self.helper.seal_welcome(ROOM, SECRET, 0, ROOM_KEY, MEMBER, NAME)
+        self.assertEqual(self.helper.open_welcome(ROOM, SECRET, sealed)['name'], NAME)
+
+    def test_the_link_the_ticket_and_the_proof(self):
+        self.assertEqual(self.helper.link(ROOM, SECRET, EXPIRES, RELAY, NAME), LINK)
+        self.assertEqual(self.helper.invite(LINK),
+                         {'room': ROOM, 'secret': SECRET, 'expires': EXPIRES, 'relay': RELAY, 'name': NAME})
+        self.assertEqual(self.helper.ticket(SECRET), {'ticket': TICKET, 'hash': TICKET_HASH})
+        # CryptoKit adds random bytes to each signature, so only the hash of the token is a fixed value.
+        proof = self.helper.proof(ROOM, TOKEN, MEMBER_KEY)
+        self.assertEqual((proof['hash'], len(base64.b64decode(proof['proof']))), (TOKEN_HASH, 64))
 
 
 if __name__ == '__main__':

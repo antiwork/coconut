@@ -262,5 +262,8 @@ class TunnelLoopbackTests(unittest.TestCase):
         print(json.dumps(reset), file=sys.stderr)
 
 
+# The Mac app job of CI runs this file after its `npm ci`, so the team log tests run there too.
+from test_team_log import TeamLogTests, TeamLogVectorTests  # noqa: E402,F401
+
 if __name__ == '__main__':
     unittest.main()

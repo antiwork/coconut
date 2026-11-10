@@ -21,7 +21,7 @@ class MacAppTests(unittest.TestCase):
         self.folder = Path(tempfile.mkdtemp())
         self.app = self.folder / 'Coconut.app'
         (self.app / 'Contents/Helpers').mkdir(parents=True)
-        for name in ('coconut', 'tunnel-sidecar'):
+        for name in ('coconut', 'team-helper', 'tunnel-sidecar'):
             (self.app / 'Contents/Helpers' / name).write_text('')
         with (self.app / 'Contents/Info.plist').open('wb') as handle:
             plistlib.dump(mac_app.info_plist('1.2.0', '512'), handle)
@@ -106,10 +106,24 @@ class MacAppTests(unittest.TestCase):
         # Sparkle's helpers come before the framework, and everything comes before the app.
         self.assertEqual([command[-1] for command in commands],
                          [sparkle / 'Versions/B/Autoupdate', sparkle / 'Versions/B/Updater.app', sparkle,
-                          self.app / 'Contents/Helpers/coconut', self.app / 'Contents/Helpers/tunnel-sidecar', self.app, self.app])
-        for command in commands[:6]:
+                          self.app / 'Contents/Helpers/coconut', self.app / 'Contents/Helpers/team-helper',
+                          self.app / 'Contents/Helpers/tunnel-sidecar', self.app, self.app])
+        for command in commands[:7]:
             self.assertEqual(command[:7], ['codesign', '--force', '--options', 'runtime', '--sign', 'ABCDEF', '--timestamp'])
-        self.assertEqual(commands[6][:4], ['codesign', '--verify', '--deep', '--strict'])
+        self.assertEqual(commands[7][:4], ['codesign', '--verify', '--deep', '--strict'])
+
+    def test_each_helper_is_one_binary_for_both_architectures(self):
+        with mock.patch.object(mac_app, 'run') as run:
+            mac_app.compile_helper(mac_app.TEAM_HELPER_SOURCES, self.folder / 'team-helper', self.folder)
+        commands = [call.args[0] for call in run.call_args_list]
+        slices = [self.folder / f'team-helper-{architecture}' for architecture in mac_app.ARCHITECTURES]
+        self.assertEqual([command[-1] for command in commands], [*slices, self.folder / 'team-helper'])
+        for command, architecture in zip(commands, mac_app.ARCHITECTURES):
+            self.assertEqual(command[:6], ['xcrun', 'swiftc', '-parse-as-library', '-O', '-target',
+                                           f'{architecture}-apple-macos{mac_app.MINIMUM_SYSTEM}'])
+            # The helper compiles the format code of the app, without the DEBUG rule for a loopback relay.
+            self.assertEqual(command[6:-2], [mac_app.ROOT / 'scripts/team-helper.swift', mac_app.ROOT / 'ios/Tunnel/TeamLog.swift'])
+        self.assertEqual(commands[-1], ['lipo', '-create', *slices, '-output', self.folder / 'team-helper'])
 
     def test_an_ad_hoc_signature_has_no_timestamp_and_no_hardened_runtime(self):
         with mock.patch.object(mac_app, 'run') as run:
