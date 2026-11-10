@@ -83,6 +83,40 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertEqual(window.range(of: rows), (50 - TranscriptWindow.batchRows)..<60)
     }
 
+    // The hold. A header row of 10 points, then the transcript: the oldest row of the window is at position 1.
+    private let rowsBefore: [CGFloat] = [10, 120, 80, 200, 60, 90, 20]
+
+    func testAReplyAtTheBottomWithAnArmedHoldGivesNoCorrection() {
+        // The window will add 5 rows above. A reply alone arrives first: the hold waits.
+        XCTAssertFalse(TranscriptHoldRule.hasArrived(rowsBefore: 7, rowsAfter: 8, rowsAbove: 5))
+        // A reply with no rows above corrects nothing.
+        let after = Array(rowsBefore.dropLast()) + [150, rowsBefore.last!]
+        XCTAssertEqual(TranscriptHoldRule.correction(heightsBefore: rowsBefore, firstRow: 1,
+                                                     heightsAfter: after, rowsAbove: 0), 0)
+    }
+
+    func testRowsAboveGiveACorrectionOfTheirHeight() {
+        let after = [rowsBefore[0], 300, 45, 130] + rowsBefore.dropFirst()
+        XCTAssertTrue(TranscriptHoldRule.hasArrived(rowsBefore: 7, rowsAfter: 10, rowsAbove: 3))
+        XCTAssertEqual(TranscriptHoldRule.correction(heightsBefore: rowsBefore, firstRow: 1,
+                                                     heightsAfter: Array(after), rowsAbove: 3), 475)
+    }
+
+    func testAGrowthAndAReplyInOneUpdateCorrectOnlyForTheRowsAbove() {
+        let grown = [rowsBefore[0], 300, 45] + rowsBefore.dropFirst()
+        let after = Array(grown.dropLast()) + [500, rowsBefore.last!]
+        XCTAssertTrue(TranscriptHoldRule.hasArrived(rowsBefore: 7, rowsAfter: 10, rowsAbove: 2))
+        XCTAssertEqual(TranscriptHoldRule.correction(heightsBefore: rowsBefore, firstRow: 1,
+                                                     heightsAfter: after, rowsAbove: 2), 345)
+    }
+
+    func testRowsThatAppearAboveTheTranscriptCountWithTheNewRows() {
+        // The window reaches the first row: a button row of 44 points comes with 2 transcript rows.
+        let after = [rowsBefore[0], 44, 300, 45] + rowsBefore.dropFirst()
+        XCTAssertEqual(TranscriptHoldRule.correction(heightsBefore: rowsBefore, firstRow: 1,
+                                                     heightsAfter: Array(after), rowsAbove: 3), 389)
+    }
+
     func testARemovedFirstRowCountsTheWindowFromTheEnd() {
         var window = TranscriptWindow()
         window.settle()

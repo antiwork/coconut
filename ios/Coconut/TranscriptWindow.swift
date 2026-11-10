@@ -1,5 +1,21 @@
 import SwiftUI
 
+/// The content height of a chat, with the offset and the container height at that moment. Two values are equal when the
+/// heights are equal, so only a change of the content counts as a change.
+struct ContentSizeChange: Equatable {
+    let height: CGFloat
+    let offset: CGFloat
+    let container: CGFloat
+
+    init(_ geometry: ScrollGeometry) {
+        height = geometry.contentSize.height
+        offset = geometry.contentOffset.y
+        container = geometry.containerSize.height
+    }
+
+    static func == (a: ContentSizeChange, b: ContentSizeChange) -> Bool { a.height == b.height }
+}
+
 /// What the reader of a chat does, for the growth of its window. A class: the scroll observers write it on each frame,
 /// and a change must not draw the chat again.
 @MainActor

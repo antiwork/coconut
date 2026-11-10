@@ -82,8 +82,8 @@ struct ConversationView: View {
         }
         let row = TranscriptEntry.rowId(for: store.displayedMessageId(for: id), in: current.entries)
         // The quoted message can be older than the rows that the list holds. The list builds it before the scroll.
-        if let entry = Self.entryId(containing: row, in: current.entries), window.include(entry, in: current.entries.map(\.id)) {
-            tableHold.prepare()
+        if let entry = Self.entryId(containing: row, in: current.entries) {
+            changeWindow { $0.include(entry, in: $1) }
         }
         await Task.yield()
         guard !Task.isCancelled else { return }
@@ -102,8 +102,40 @@ struct ConversationView: View {
             let focus = windowFocus
             let built = window.range(of: ids, focusId: focus).count
             guard reader.nearTop || (reader.idle && built < TranscriptWindow.idleRows) else { continue }
-            if window.growTop(in: ids, focusId: focus) { tableHold.prepare() }
+            changeWindow { $0.growTop(in: $1, focusId: focus) }
         }
+    }
+
+    /// The tasks that this bot runs for another chat. Each one has a link to that chat above the transcript.
+    private var originTasks: [AgentTask] {
+        store.tasks.filter { task in
+            task.botId == botId && task.sourceBotId == nil && (task.conversationBotId ?? botId) != botId
+                && store.bots.contains { $0.id == task.conversationBotId }
+        }
+    }
+
+    /// The rows of the list above the transcript: the header, and while the window holds the first row, the button for
+    /// older history and the links to other chats.
+    private func rowsBeforeTranscript(startsAtFirstRow: Bool) -> Int {
+        guard startsAtFirstRow else { return 1 }
+        return 1 + (store.hasOlderMessages(botId) ? 1 : 0) + originTasks.count
+    }
+
+    /// Changes the window and tells the hold how many rows the change adds above the oldest row of the window, so the
+    /// rows on screen stay in place. A change that adds no row above records nothing.
+    @discardableResult
+    private func changeWindow(_ change: (inout TranscriptWindow, [String]) -> Bool) -> Bool {
+        let ids = current.entries.map(\.id)
+        let focus = windowFocus
+        var next = window
+        guard change(&next, ids) else { return false }
+        let before = window.range(of: ids, focusId: focus).lowerBound
+        let after = next.range(of: ids, focusId: focus).lowerBound
+        let headerBefore = rowsBeforeTranscript(startsAtFirstRow: before == 0)
+        let headerAfter = rowsBeforeTranscript(startsAtFirstRow: after == 0)
+        tableHold.prepare(rowsAbove: before - after + headerAfter - headerBefore, firstRow: headerBefore)
+        window = next
+        return true
     }
 
     /// The row that shows a message, also a message inside a group of photos or of bot messages.
@@ -139,7 +171,9 @@ struct ConversationView: View {
                                     window.pinStart(in: ids, focusId: focusRow)
                                     Task {
                                         await store.loadOlderMessages(botId)
-                                        if window.growTop(in: current.entries.map(\.id), focusId: windowFocus) { tableHold.prepare() }
+                                        // The page replaces the button row above the transcript, so the hold cannot count the rows
+                                        // above; the scroll to the earlier first row below places the chat.
+                                        window.growTop(in: current.entries.map(\.id), focusId: windowFocus)
                                         await Task.yield()
                                         if let anchor, let entry = current.entries.first(where: { $0.messages.contains { $0.id == anchor } }) {
                                             let target = entry.message.kind == "decision" ? (entry.message.decisionId ?? entry.id) : entry.id
@@ -154,9 +188,7 @@ struct ConversationView: View {
                                 .disabled(store.historyLoading.contains(botId))
                                 .accessibilityIdentifier("load-earlier-messages")
                             }
-                            ForEach(startsAtFirstRow ? store.tasks.filter {
-                                $0.botId == botId && $0.sourceBotId == nil && ($0.conversationBotId ?? botId) != botId
-                            } : []) { task in
+                            ForEach(startsAtFirstRow ? originTasks : []) { task in
                                 if let origin = store.bots.first(where: { $0.id == task.conversationBotId }) {
                                     NavigationLink(value: ConversationRoute(botId: origin.id)) {
                                         Label("In \(origin.name)", systemImage: "arrow.up.left")
@@ -230,21 +262,26 @@ struct ConversationView: View {
                         if next != footerScroll { footerScroll = next }
                     }
                     .onScrollGeometryChange(for: [CGFloat].self) { [$0.contentOffset.y, $0.contentSize.height, $0.containerSize.height, $0.contentInsets.top + $0.contentInsets.bottom] } action: { old, new in
-                        // Older rows arrived above the screen. The hold keeps the rows on screen in place; this move of
-                        // the offset is not the reader's.
-                        if tableHold.finishIfReady() || tableHold.movedRecently { return }
-                        // A move of the offset is the reader's. The window grows on its own only while the reader rests.
-                        if abs(new[0] - old[0]) > 0.5 { reader.lastAction = Date() }
-                        #if os(macOS)
-                        // A mouse wheel, and some trackpad scrolls, report no scroll phase on the Mac, so userScrolling
-                        // stays false. Then the chat never learned that the reader left the bottom, and each new line of
-                        // a bot pulled it back down. An upward move while the content does not shrink is the reader's,
-                        // and a downward move that reaches the bottom follows new messages again.
-                        // A taller window or a new inset moves the offset too, so only a move in an unchanged viewport counts.
-                        let sameViewport = abs(new[2] - old[2]) < 0.5 && abs(new[3] - old[3]) < 0.5
-                        if sameViewport && new[0] < old[0] - 0.5 && new[1] >= old[1] - 0.5 { nearBottom = false }
-                        else if new[0] > old[0] + 0.5 && new[0] + new[2] >= new[1] - 4 { nearBottom = true }
-                        #endif
+                        // The last move of the hold shows here a frame later. It is not the reader's.
+                        let ownMove = tableHold.isOwnMove(new[0] - old[0])
+                        if !ownMove {
+                            // A move of the offset is the reader's. The window grows on its own only while the reader rests.
+                            if abs(new[0] - old[0]) > 0.5 { reader.lastAction = Date() }
+                            #if os(macOS)
+                            // A mouse wheel, and some trackpad scrolls, report no scroll phase on the Mac, so userScrolling
+                            // stays false. Then the chat never learned that the reader left the bottom, and each new line
+                            // of a bot pulled it back down. An upward move while the content does not shrink is the
+                            // reader's, and a downward move that reaches the bottom follows new messages again.
+                            // A taller window or a new inset moves the offset too, so only a move in an unchanged viewport
+                            // counts.
+                            let sameViewport = abs(new[2] - old[2]) < 0.5 && abs(new[3] - old[3]) < 0.5
+                            if sameViewport && new[0] < old[0] - 0.5 && new[1] >= old[1] - 0.5 { nearBottom = false }
+                            else if new[0] > old[0] + 0.5 && new[0] + new[2] >= new[1] - 4 { nearBottom = true }
+                            #endif
+                        }
+                        // Older rows arrived above the screen: the hold keeps the rows on screen in place. The same
+                        // change can carry a scroll of the reader, so the reader's move counts first.
+                        if tableHold.finishIfReady() || ownMove { return }
                         let change = zip(old.prefix(2), new.prefix(2)).map { abs($1 - $0) }.max() ?? 0
                         if let row = rowHold.rowToRestore(layoutChange: change, userScrolling: userScrolling, followsBottom: nearBottom) {
                             proxy.scrollTo(row, anchor: .top)
@@ -269,9 +306,12 @@ struct ConversationView: View {
                             }
                         }
                     }
-                    .onScrollGeometryChange(for: CGSize.self) { $0.contentSize } action: { _, _ in
+                    .onScrollGeometryChange(for: ContentSizeChange.self) { ContentSizeChange($0) } action: { old, new in
                         // A scroll of the reader wins over new content: the chat follows again when the scroll ends.
-                        if nearBottom && !userScrolling && (focusTarget == nil || didFocusDecision) {
+                        // A Mac wheel reports no scroll phase, and its first move can come in the same frame as new
+                        // rows: then the offset is no longer at the bottom, and the chat does not pull the reader back.
+                        let atBottom = new.offset + new.container >= old.height - 100
+                        if nearBottom && atBottom && !userScrolling && (focusTarget == nil || didFocusDecision) {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
                     }
@@ -331,15 +371,14 @@ struct ConversationView: View {
                     // window, so the reader can scroll up at once.
                     .task {
                         await Task.yield()
-                        tableHold.prepare()
-                        window.settle()
+                        // A chat that opens at an older message can hold 40 rows already; then settle adds nothing
+                        // and the hold records nothing.
+                        changeWindow { window, _ in window.settle(); return true }
                         await growWindow()
                     }
                     .task(id: "\(focusMessageId ?? ""):\(store.connection.rawValue):\(store.hasOlderMessages(botId))") {
                         guard store.connection == .connected || store.isDemo else { return }
                         while focusMessageId != nil && !focusTargetExists(in: current.messages) && store.hasOlderMessages(botId) && !Task.isCancelled {
-                            // The page that holds the message widens the window above the screen.
-                            tableHold.prepare()
                             if !(await store.loadOlderMessages(botId)) { break }
                         }
                     }
