@@ -308,6 +308,20 @@ final class LibraryDocumentTests: XCTestCase {
             XCTAssertNil(store.documents, "A list of the earlier pairing must not come back.")
             XCTAssertTrue(store.teamBots.isEmpty)
         }
+        // A list request of the earlier pairing that fails after the unpair shows no error in the new state.
+        try await withPairedStore(address: address) { store in
+            server.failLists(true)
+            defer { server.failLists(false) }
+            server.holdLists()
+            let late = Task { await store.loadDocuments() }
+            try await waitUntil { server.heldLists == 1 }
+            store.disconnect()
+            store.error = nil
+            server.releaseLists()
+            let fresh = await late.value
+            XCTAssertFalse(fresh)
+            XCTAssertNil(store.error, "An error of the earlier pairing must not show.")
+        }
         #endif
     }
 
@@ -402,6 +416,7 @@ private final class LibraryServer: @unchecked Sendable {
     private var cursor: Int
     private var changePending = false
     private var resetState: Data?
+    private var failing = false
     private var changes = 0
     private var lists = 0
     var heldLists: Int { lock.withLock { held.count } }
@@ -426,6 +441,9 @@ private final class LibraryServer: @unchecked Sendable {
 
     /// Deletes the page as another device would. The next lists do not have it.
     func removePage() { lock.withLock { deleted = true } }
+
+    /// Answers each list request with 500 while `fail` is true.
+    func failLists(_ fail: Bool) { lock.withLock { failing = fail } }
 
     private func page(pinned: Bool) -> String {
         let summary = summary.map { #""summary": "\#($0)", "# } ?? ""
@@ -478,7 +496,9 @@ private final class LibraryServer: @unchecked Sendable {
                 default: body = "{}"
                 }
                 let content = body.map { Data($0.utf8) } ?? state
-                var reply = Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(content.count)\r\nConnection: close\r\n\r\n".utf8)
+                let status = route == "GET /v1/documents" && lock.withLock { failing }
+                    ? "500 Internal Server Error" : "200 OK"
+                var reply = Data("HTTP/1.1 \(status)\r\nContent-Type: application/json\r\nContent-Length: \(content.count)\r\nConnection: close\r\n\r\n".utf8)
                 reply.append(content)
                 let answer = reply
                 let send: @Sendable () -> Void = { [queue] in

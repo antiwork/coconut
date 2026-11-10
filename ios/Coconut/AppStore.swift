@@ -1460,6 +1460,7 @@ final class AppStore {
         let changes = documentChanges
         let response: DocumentList
         do { response = try await client.request("documents") } catch {
+            // An error of a request of an earlier pairing has no message for the state of this pairing.
             guard self.client === client else { return false }
             if request != documentRequests { return await latestDocumentLoad?.value ?? false }
             report(error)
