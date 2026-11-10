@@ -7,6 +7,7 @@ this Mac.
 import base64
 import json
 import secrets
+import sqlite3
 import threading
 import unittest
 from unittest import mock
@@ -146,6 +147,121 @@ class TeamSyncTests(TeamMacs, unittest.TestCase):
         body = decode(next(row['body'] for row in self.relay.rooms[self.room_id]['entries'].values() if row['id'] == own))
         self.assertEqual(json.loads(base64.b64decode(body['payload']))['rev'], 3)
         self.assertEqual(self.names(self.first), ['Ada'])
+
+    def test_a_leave_reads_back_a_member_entry_without_an_answer_and_deletes_it(self):
+        write = self.relay.write
+
+        def lose_the_answer(*arguments, **options):
+            write(*arguments, **options)
+            raise TeamRelayError(0, 'The relay did not answer.')
+        with mock.patch.object(self.relay, 'write', lose_the_answer), self.assertLogs('coconut.team', 'WARNING'):
+            joined = self.join(self.third, self.invite(self.room)['link'], 'Edsger')
+        # The relay has the `member` entry of the third Mac, and its store does not.
+        self.assertEqual(joined['members'], [])
+        self.assertEqual(self.names(self.first), ['Ada', 'Grace', 'Edsger'])
+        self.leave(self.third, self.room)
+        self.assertEqual(self.names(self.first), ['Ada', 'Grace'])
+
+    def test_the_sync_writes_no_member_entry_between_the_delete_entry_and_the_leave(self):
+        own = json.loads(self.second.team_store.room(self.room_id)['profile'])['entry']
+        threads, errors = [], []
+
+        def sync():
+            try:
+                self.second.team_sync_room(self.room_id)
+            except Exception as error:
+                errors.append(error)
+
+        def start_the_sync():
+            if self.relay.requests[-1][0] == 'remove_member' and not threads:
+                threads.append(threading.Thread(target=sync))
+                threads[0].start()
+                # Without the lock of the room, the sync writes the `member` entry of this Mac again now.
+                threads[0].join(.5)
+        with mock.patch.object(team_sync, 'ANNOUNCE_SECONDS', 0):
+            self.relay.before = start_the_sync
+            self.leave(self.second, self.room)
+            threads[0].join(5)
+        self.relay.before = None
+        self.assertEqual((errors, threads[0].is_alive()), ([], False))
+        # The relay keeps the `delete` entry, which is not kept, and no later `member` entry of the Mac.
+        row = self.relay.rooms[self.room_id]['entries'][own]
+        payload = json.loads(base64.b64decode(decode(row['body'])['payload']))
+        self.assertEqual((row['kept'], payload['kind']), (False, 'delete'))
+        self.assertEqual(self.names(self.first), ['Ada'])
+
+    def test_an_unexpected_error_in_one_room_does_not_stop_the_other_rooms(self):
+        other = self.create(name='Other Team')
+        self.join(self.second, self.invite(other)['link'])
+        sync_room = self.second.team_sync_room
+
+        def fail_in_one_room(room):
+            if room == self.room_id:
+                raise RuntimeError('A defect of this code.')
+            sync_room(room)
+        with mock.patch.object(self.second, 'team_sync_room', fail_in_one_room), \
+                self.assertLogs('coconut.team_sync', 'ERROR') as logs:
+            self.second.team_sync_pass()
+        self.assertIn('RuntimeError: A defect of this code.', '\n'.join(logs.output))
+        self.assertEqual(self.second._team_failures[self.room_id][0], 1)
+        self.assertEqual(self.second._team_status[self.room_id]['error'],
+                         'The sync of this room failed. The log of the service has the reason.')
+        self.assertEqual(self.second._team_status[other['room']]['error'], None)
+        self.assertNotIn(other['room'], self.second._team_failures)
+
+    def test_an_entry_that_the_store_cannot_take_is_dropped_and_the_next_entries_go_in(self):
+        bad, good = (self.write(self.first, {'kind': 'later', 'rev': 1}) for _ in range(2))
+        accept = self.second.team_store.accept
+
+        def fail_for_one(room, entry, *arguments):
+            result = accept(room, entry, *arguments)
+            if entry['id'] == bad:
+                # The store wrote the entry before the error. The savepoint takes it back.
+                raise ValueError('A defect of this code.')
+            return result
+        with mock.patch.object(self.second.team_store, 'accept', fail_for_one), \
+                self.assertLogs('coconut.team_sync', 'WARNING') as logs:
+            view = self.sync_view(self.second)
+        self.assertEqual((view['seq'], view['entries'], view['error']), (4, 3, None))
+        self.assertIsNone(self.second.team_store.entry(self.room_id, bad))
+        self.assertEqual(self.second.team_store.entry(self.room_id, good)['seq'], 4)
+        self.assertIn(f'dropped the entry {bad} at seq 3', '\n'.join(logs.output))
+
+    def test_a_waiting_body_that_the_store_cannot_take_is_dropped(self):
+        bad, good = (self.write(self.first, {'kind': 'later', 'rev': 1}, version=2) for _ in range(2))
+        with self.assertLogs('coconut.team_sync', 'WARNING'):
+            self.assertEqual(self.sync_view(self.second)['waiting'], 2)
+        self.second.team_helper = FakeHelper(version=2)
+        self.second._team_retried.clear()
+        accept = self.second.team_store.accept
+
+        def fail_for_one(room, entry, *arguments):
+            if entry['id'] == bad:
+                raise OverflowError('A defect of this code.')
+            return accept(room, entry, *arguments)
+        with mock.patch.object(self.second.team_store, 'accept', fail_for_one), self.assertLogs('coconut.team_sync', 'WARNING'):
+            view = self.sync_view(self.second)
+        self.assertEqual((view['waiting'], view['error']), (0, None))
+        self.assertIsNone(self.second.team_store.entry(self.room_id, bad))
+        self.assertEqual(self.second.team_store.entry(self.room_id, good)['kind'], 'later')
+
+    def test_a_database_failure_drops_no_entry(self):
+        entry = self.write(self.first, {'kind': 'later', 'rev': 1})
+        seq = self.second.team_store.room(self.room_id)['seq']
+        accept = self.second.team_store.accept
+
+        def full_disk(room, row, *arguments):
+            if row['id'] == entry:
+                raise sqlite3.OperationalError('database or disk is full')
+            return accept(room, row, *arguments)
+        with mock.patch.object(self.second.team_store, 'accept', full_disk), self.assertLogs('coconut.team_sync', 'ERROR'):
+            self.second.team_sync_pass()
+        # The answer rolled back, so the next pass reads the entry again.
+        self.assertEqual(self.second.team_store.room(self.room_id)['seq'], seq)
+        self.assertIsNone(self.second.team_store.entry(self.room_id, entry))
+        self.second.team_wake(retry=True)
+        self.assertEqual(self.sync_view(self.second)['seq'], 3)
+        self.assertEqual(self.second.team_store.entry(self.room_id, entry)['kind'], 'later')
 
     def test_no_relay_call_holds_the_service_lock(self):
         held = []

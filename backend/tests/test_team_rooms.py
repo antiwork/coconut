@@ -218,6 +218,20 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
         self.assertEqual(self.relay.rooms[room['room']]['members'][waiting['member']]['hash'], digest(token))
         self.assertEqual(self.names(self.first), ['Ada', 'Grace H.'])
 
+    def test_a_second_join_of_a_joining_room_must_name_the_relay_of_the_first(self):
+        room = self.create()
+        link = self.invite(room)['link']
+        self.relay.down = True
+        self.assertEqual(self.refusal(self.join, self.second, link)[0], 503)
+        self.relay.down = False
+        # The first relay can have taken the join, so the member token of this Mac goes to no other relay.
+        other = 'coconut://team/' + encode(dict(self.first.team_helper.invite(link), version=1, relay='https://other.example'))
+        self.assertEqual(self.refusal(self.join, self.second, other), (
+            409, 'This Mac already tries to join this room at another relay. Leave the room on this Mac, then join again.'))
+        self.assertEqual([request for request in self.relay.requests if request[1] != RELAY], [])
+        self.assertEqual(self.rooms(self.second, sync=False)[0]['relay'], RELAY)
+        self.assertEqual(self.join(self.second, link)['state'], 'active')
+
     def test_a_mac_that_cannot_open_the_welcome_leaves_the_room(self):
         room = self.create()
         link = self.invite(room)['link']

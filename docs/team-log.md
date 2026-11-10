@@ -219,7 +219,7 @@ To join:
 4. The Mac opens the welcome. If the welcome does not open, the Mac leaves the room with `DELETE .../members/<m>`.
 5. The Mac writes its `member` entry, reads the log from `after=0`, and opens the socket.
 
-The room takes its name from the welcome, because the admin sealed it. The name in the link is only for the screen before the join. The Mac keeps its keys and its token before step 3. When the relay does not answer step 3, the same link asks again with the same member and token.
+The room takes its name from the welcome, because the admin sealed it. The name in the link is only for the screen before the join. The Mac keeps its keys and its token before step 3. When the relay does not answer step 3, the same link asks again with the same member and token. A second join of that room must name the same relay, because the first relay can have taken the join. Else the Mac refuses the join, and the member token goes to no other relay. The person then leaves the room on the Mac and joins again.
 
 To leave:
 
@@ -286,7 +286,11 @@ One thread, `coconut-team-sync`, reads each `active` room after its `seq`, one a
 - After a failure, a room waits 60, 120, 240 and 480 seconds, then 900 seconds for each later try.
 - After each start of the service, the thread tries the waiting bodies again, because an update of Coconut starts the service again.
 - When the log shows no `member` entry of this Mac, the thread writes it, at most every 5 minutes. This repairs a stop between a join and its first write.
-- A write of this Mac goes into the store at once. When a write gets no answer, the relay can have it. So before the next write in that room, the Mac reads the room to its end, and its next `rev` is then higher.
+- A write of this Mac goes into the store at once. When a write gets no answer, the relay can have it. So before the next write or leave in that room, the Mac reads the room to its end. Its next `rev` is then higher, and a leave finds a `member` entry that only the relay has.
+- A leave holds the lock of the room from its `delete` entry until the relay removed the member and the Mac deleted its copy. So the thread cannot write the `member` entry again in between. When the relay does not answer the leave, the room stays `active`, and the Mac is still a member.
+- The member token of a room goes only to the relay of that room.
+- When the store cannot take one entry for a fault of the Mac code, the Mac drops that entry with a log line, and the next entries of the answer go in. A database failure, for example a full disk, drops no entry: the answer rolls back, and the room tries again later.
+- An unexpected failure in one room fails only that room, with the same waits. The other rooms go on.
 - No call to the relay or to the helper holds the lock of the service.
 
 A log line names a room by the start of its ID, and an entry by its ID and its `seq`. The relay sees these values too. No log line and no error text has an invite link, a token, a key, a ticket, a welcome or a proof. `backend/tests/test_team_routes.py` checks this.

@@ -17,6 +17,7 @@ import base64
 from datetime import datetime, timezone
 import json
 import logging
+import sqlite3
 import threading
 import time
 
@@ -32,6 +33,11 @@ MAX_WAIT_SECONDS = 900
 ANNOUNCE_SECONDS = 300
 # What can fail for one room without a fault of this code: the relay, the helper, or the key file of the room.
 ROOM_ERRORS = (TeamRelayError, TeamHelperError, TeamFormatError, TeamKeysError)
+# What TeamStore.accept can raise for the data of one entry, when a check of the store misses a value. The Mac drops
+# that entry. A database failure, for example a full disk, is not here: it stops the answer, so no entry gets lost.
+DATA_ERRORS = (ValueError, TypeError, OverflowError, sqlite3.DataError, sqlite3.InterfaceError)
+# The error of a room that failed for a defect of this code. The log has the reason, and the app needs no more.
+DEFECT = 'The sync of this room failed. The log of the service has the reason.'
 
 log = logging.getLogger(__name__)
 
@@ -119,7 +125,8 @@ class TeamSync:
                 continue
             try:
                 self.team_sync_room(room)
-            except ROOM_ERRORS as error:
+            except Exception as error:
+                # Also a defect of this code fails only this room until its next try, so the other rooms go on.
                 with self.lock:
                     left = self.team_store.room(room) is None
                 if left:
@@ -127,8 +134,13 @@ class TeamSync:
                     continue
                 delay = retry_delay(failures + 1)
                 self._team_failures[room] = (failures + 1, time.monotonic() + delay)
-                self._team_status.setdefault(room, {})['error'] = str(error)
-                log.warning('coconut.team_log room %s: %s The next try is in %d seconds.', room[:8], error, delay)
+                if isinstance(error, ROOM_ERRORS):
+                    self._team_status.setdefault(room, {})['error'] = str(error)
+                    log.warning('coconut.team_log room %s: %s The next try is in %d seconds.', room[:8], error, delay)
+                else:
+                    self._team_status.setdefault(room, {})['error'] = DEFECT
+                    log.exception('coconut.team_log room %s: the sync failed. The next try is in %d seconds.',
+                                  room[:8], delay)
             else:
                 self._team_failures.pop(room, None)
                 self._team_status[room] = {'synced_at': utc_now(), 'error': None}
@@ -179,7 +191,7 @@ class TeamSync:
             if current is None or current['state'] != ACTIVE or current['seq'] != room['seq']:
                 return False
             for entry, result in zip(entries, opened):
-                results.append((entry, *self.team_store.accept(current, entry, result, first_epoch)))
+                results.append((entry, *self._team_accept(current, entry, result, first_epoch)))
             self.team_store.update_room(room_id, seq=entries[-1]['seq'])
         self._team_report(room_id, results)
         return answer['last'] > entries[-1]['seq']
@@ -205,11 +217,28 @@ class TeamSync:
                 if current is None:
                     return
                 for entry, result in zip(waiting, opened):
-                    outcome, reason = self.team_store.accept(current, entry, result, first_epoch)
+                    outcome, reason = self._team_accept(current, entry, result, first_epoch)
                     if outcome != PENDING:
                         self.team_store.drop_pending(room_id, entry['id'])
                     results.append((entry, outcome, reason))
             self._team_report(room_id, results)
+
+    def _team_accept(self, room: dict, entry: dict, opened: dict, first_epoch: int) -> tuple[str, str | None]:
+        """TeamStore.accept for one entry, in a savepoint of the transaction of the caller.
+
+        A data error of one entry drops that entry, and the savepoint takes back what `accept` wrote of it. Without
+        this, the answer would roll back, `seq` would stay, and each later pass would fail on the same entry.
+        """
+        self.db.execute('SAVEPOINT team_entry')
+        try:
+            result = self.team_store.accept(room, entry, opened, first_epoch)
+        except DATA_ERRORS as error:
+            self.db.execute('ROLLBACK TO team_entry')
+            log.exception('coconut.team_log room %s: the store cannot take the entry %s at seq %d.', room['room'][:8],
+                          entry['id'], entry['seq'])
+            result = DROPPED, type(error).__name__
+        self.db.execute('RELEASE team_entry')
+        return result
 
     def _team_report(self, room_id: str, results: list) -> None:
         """Write a log line for each entry that the Mac dropped or refused, and one for those that it skipped or
@@ -254,12 +283,7 @@ class TeamSync:
         key = secrets['keys'].get(str(room['epoch']))
         if key is None:
             raise TeamKeysError('This Mac has no room key for its epoch.')
-        if room['room'] in self._team_unsure:
-            # An earlier write got no answer, and the relay can have it. Without this read, this write could repeat
-            # the `rev` of that write, and the other Macs would refuse it.
-            while self._team_read(room['room']):
-                pass
-            self._team_unsure.discard(room['room'])
+        self._team_settle(room['room'])
         with self.lock:
             existing = self.team_store.entry(room['room'], entry_id)
         payload = json.dumps(dict(fields, rev=(existing['rev'] if existing else 0) + 1, at=utc_now()),
@@ -277,3 +301,12 @@ class TeamSync:
             if current is not None:
                 # The sync reads this write again later. The store then has it already.
                 self.team_store.accept(current, entry, {'epoch': room['epoch'], 'payload': payload})
+
+    def _team_settle(self, room_id: str) -> None:
+        """Read the room to its end when a write of this Mac got no answer. The relay can have that write. Without
+        this read, the next write could repeat its `rev`, or a leave could miss its `member` entry. The caller holds
+        the lock of the room."""
+        if room_id in self._team_unsure:
+            while self._team_read(room_id):
+                pass
+            self._team_unsure.discard(room_id)

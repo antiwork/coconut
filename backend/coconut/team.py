@@ -240,7 +240,8 @@ class Team(TeamSync):
         entry of this Mac. The sync then reads the log from its start.
 
         The Mac saves its keys before it asks the relay. When the relay does not answer, the room stays `joining`,
-        and a join with the same link asks again with the same member and token, as the contract allows.
+        and a join with a link of the same room and relay asks again with the same member and token, as the
+        contract allows.
         """
         from .service import ServiceError
         link = data.get('link')
@@ -271,10 +272,15 @@ class Team(TeamSync):
                         room=room_id, relay=relay, name=invite['name'], member=made['member'], admin='', state=JOINING,
                         epoch=0, profile=json.dumps(dict(profile, entry=token_hex(16), agreement=made['agreement'])),
                         created_at=utc_now())
+            elif room['relay'] != relay:
+                # The relay of the earlier join can have taken the join, so the member token of this Mac is valid
+                # there. The token goes to no other relay.
+                raise ServiceError(409, 'This Mac already tries to join this room at another relay. Leave the room '
+                                        'on this Mac, then join again.')
             else:
-                # An earlier join got no answer. This one asks the relay of this link, with the keys of that join.
+                # An earlier join got no answer. This one asks the same relay again, with the keys of that join.
                 with self.transaction():
-                    self.team_store.update_room(room_id, relay=relay, name=invite['name'])
+                    self.team_store.update_room(room_id, name=invite['name'])
             with self.lock:
                 room = self.team_store.room(room_id)
             secrets = team_keys.read(self.root, room_id)
@@ -302,7 +308,7 @@ class Team(TeamSync):
             with self.transaction():
                 # The admin sealed this name. The name of the link is only what the app shows before the join.
                 self.team_store.update_room(
-                    room_id, state=ACTIVE, relay=relay, admin=opened['admin'], name=opened['name'], epoch=opened['epoch'],
+                    room_id, state=ACTIVE, admin=opened['admin'], name=opened['name'], epoch=opened['epoch'],
                     profile=json.dumps(dict(json.loads(room['profile']), **profile)))
         self._team_first_write(room_id)
         return self._team_answer(room_id)
@@ -322,18 +328,23 @@ class Team(TeamSync):
             except TeamKeysError:
                 # Without its token, the Mac cannot tell the relay. Only its own copy remains to delete.
                 secrets = None
-            if secrets is not None and room['state'] in (ACTIVE, JOINING):
-                try:
-                    if room['state'] == ACTIVE and room['admin'] != room['member']:
-                        self._team_retire_member(room)
-                    self.team_relay.remove_member(room['relay'], room_id, secrets['token'], room['member'], tries=2)
-                except TeamRelayError as error:
-                    if error.status == 409:
-                        raise ServiceError(409, 'The admin cannot leave a room that has other members.') from None
-                    if error.status not in (401, 404):
-                        raise
-                    # The relay no longer knows this Mac or the room, so the Mac is out already.
-            self._team_forget(room_id)
+            # The lock of the room holds from the `delete` entry to the end of the leave. Without it, the sync could
+            # write the `member` entry again in the gap, the relay would delete that kept entry with the member, and
+            # no `delete` entry would stay for the other Macs. When the relay does not answer the leave, the lock
+            # goes, the room stays `active` and the Mac is still a member, so a later `member` entry is correct.
+            with self._team_room_lock(room_id):
+                if secrets is not None and room['state'] in (ACTIVE, JOINING):
+                    try:
+                        if room['state'] == ACTIVE and room['admin'] != room['member']:
+                            self._team_retire_member(room)
+                        self.team_relay.remove_member(room['relay'], room_id, secrets['token'], room['member'], tries=2)
+                    except TeamRelayError as error:
+                        if error.status == 409:
+                            raise ServiceError(409, 'The admin cannot leave a room that has other members.') from None
+                        if error.status not in (401, 404):
+                            raise
+                        # The relay no longer knows this Mac or the room, so the Mac is out already.
+                self._team_forget(room_id)
         return {'room': room_id, 'left': True}
 
     def team_sync_now(self) -> dict:
@@ -370,19 +381,21 @@ class Team(TeamSync):
         """Replace the `member` entry of this Mac with a `delete` entry, so each other Mac takes it out of its list.
 
         A member must always be able to leave. Without a working helper or room key, the Mac leaves without the
-        `delete` entry, and the other Macs show it until the member removal of the contract exists.
+        `delete` entry, and the other Macs show it until the member removal of the contract exists. The caller holds
+        the lock of the room.
         """
+        # The first `member` entry can be on the relay without an answer. A failure of this read fails the leave.
+        self._team_settle(room['room'])
         entry_id = json.loads(room['profile'])['entry']
-        with self._team_room_lock(room['room']):
-            with self.lock:
-                entry = self.team_store.entry(room['room'], entry_id)
-            if entry is None or entry['kind'] != 'member':
-                return
-            try:
-                self._team_write(room, entry_id, False, {'kind': 'delete'}, tries=2)
-            except (TeamHelperError, TeamFormatError, TeamKeysError) as error:
-                log.warning('coconut.team_log room %s: this Mac leaves without a delete entry, so the other Macs can '
-                            'still show it. %s', room['room'][:8], error)
+        with self.lock:
+            entry = self.team_store.entry(room['room'], entry_id)
+        if entry is None or entry['kind'] != 'member':
+            return
+        try:
+            self._team_write(room, entry_id, False, {'kind': 'delete'}, tries=2)
+        except (TeamHelperError, TeamFormatError, TeamKeysError) as error:
+            log.warning('coconut.team_log room %s: this Mac leaves without a delete entry, so the other Macs can '
+                        'still show it. %s', room['room'][:8], error)
 
     def _team_drop_membership(self, room: dict, secrets: dict) -> None:
         """Leave a room that this Mac joined and cannot read. The keys stay only when the relay does not answer, so
