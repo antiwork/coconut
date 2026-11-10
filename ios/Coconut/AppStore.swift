@@ -44,6 +44,8 @@ final class AppStore {
     /// Counts the pins and the deletes that the Mac confirmed to this app. A list that the app asked for before such a
     /// change can be older than the change.
     @ObservationIgnored private var documentChanges = 0
+    /// Numbers the list requests. Only the answer of the latest request replaces the list.
+    @ObservationIgnored private var documentRequests = 0
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
     var pageQuotes: [String: MessageReference] = [:]
     var connection: ConnectionState = .unconfigured {
@@ -563,6 +565,8 @@ final class AppStore {
         }
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
+        // The team bots name the team pages of the earlier Mac, so the Library of a later pairing would show them.
+        documents = nil; teamBots = []
         approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
@@ -1440,20 +1444,30 @@ final class AppStore {
         }
         guard let client else { return false }
         let changes = documentChanges
+        documentRequests += 1
+        let request = documentRequests
         do {
             let response: DocumentList = try await client.request("documents")
+            // A list of the Mac of an earlier pairing is not the list of this pairing.
+            guard self.client === client else { return false }
+            // A later request asks for a newer list, so this list can be older. The later answer replaces the list.
+            guard request == documentRequests else { return false }
             // The Mac confirmed a pin or a delete during this request, so this list can be older. Ask again.
             guard changes == documentChanges else { return await loadDocuments() }
             teamBots = response.teamBots ?? []
             documents = response.documents
             return true
-        } catch { report(error); return false }
+        } catch {
+            if self.client === client { report(error) }
+            return false
+        }
     }
 
-    /// The updates carry no documents. They only say that a document or a team page changed, so a Library that the app
-    /// loaded before loads its list again. A Library that never loaded loads when it opens.
+    /// The updates carry no documents. They say that a document or a team page changed, so a Library that the app
+    /// loaded before loads its list again. A reset skips the events between the cursors, also the changes of
+    /// documents. A Library that never loaded loads when it opens.
     private func reloadChangedDocuments(_ page: StateUpdates) {
-        guard page.documentsChanged == true, documents != nil else { return }
+        guard page.documentsChanged == true || page.reset != nil, documents != nil else { return }
         Task { await loadDocuments() }
     }
 

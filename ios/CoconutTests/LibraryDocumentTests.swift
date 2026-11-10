@@ -192,6 +192,92 @@ final class LibraryDocumentTests: XCTestCase {
         #endif
     }
 
+    /// Two list requests overlap, and the answer of the first arrives last. It has the older list.
+    @MainActor
+    func testAnAnswerOfAnEarlierListRequestDoesNotReplaceALaterList() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try LibraryServer(state: APIJSON.encoder().encode(state), botId: state.bots[0].id)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.changeDocuments(summary: "First", announce: false)
+            server.holdLists()
+            let earlier = Task { await store.loadDocuments() }
+            try await waitUntil { server.heldLists == 1 }
+            server.stopHolding()
+            server.changeDocuments(summary: "Second", announce: false)
+            let later = await store.loadDocuments()
+            XCTAssertTrue(later)
+            XCTAssertEqual(store.documents?.first?.summary, "Second")
+            server.releaseLists()
+            _ = await earlier.value
+            XCTAssertEqual(store.documents?.first?.summary, "Second", "The older list must not replace the newer list.")
+        }
+        #endif
+    }
+
+    /// A reset of the updates skips the events between the cursors and has no `documents_changed`.
+    @MainActor
+    func testAResetOfTheUpdatesLoadsTheLibraryAgain() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        var reset = state
+        reset.cursor = 11
+        let server = try LibraryServer(state: APIJSON.encoder().encode(state), botId: state.bots[0].id,
+                                       cursor: state.cursor)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.changeDocuments(summary: "First", announce: false)
+            await store.loadDocuments()
+            XCTAssertEqual(store.documents?.first?.summary, "First")
+            server.changeDocuments(summary: "Second", reset: try APIJSON.encoder().encode(reset))
+            store.setForeground(true)
+            try await waitUntil(timeout: .seconds(5)) { store.documents?.first?.summary == "Second" }
+            XCTAssertEqual(server.changesSent, 1)
+            XCTAssertEqual(store.documents?.first?.summary, "Second", "A reset must load the Library again.")
+        }
+        #endif
+    }
+
+    /// The Library of the earlier Mac goes with its pairing, also its team bots and a list that is still on its way.
+    @MainActor
+    func testAnUnpairClearsTheLibraryAndDropsALateListOfTheEarlierMac() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try LibraryServer(state: APIJSON.encoder().encode(state), botId: state.bots[0].id)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            await store.loadDocuments()
+            XCTAssertEqual(store.documents?.count, 1)
+            XCTAssertEqual(store.teamBots.map(\.name), ["Reporter"])
+            store.disconnect()
+            XCTAssertNil(store.documents)
+            XCTAssertTrue(store.teamBots.isEmpty)
+        }
+        try await withPairedStore(address: address) { store in
+            server.holdLists()
+            let late = Task { await store.loadDocuments() }
+            try await waitUntil { server.heldLists == 1 }
+            store.disconnect()
+            server.releaseLists()
+            let fresh = await late.value
+            XCTAssertFalse(fresh)
+            XCTAssertNil(store.documents, "A list of the earlier pairing must not come back.")
+            XCTAssertTrue(store.teamBots.isEmpty)
+        }
+        #endif
+    }
+
     /// A Markdown page travels as JSON in a data block, which a "</script>" in the text cannot end.
     @MainActor
     func testAMarkdownPageTravelsAsJSONThatTheTextCannotEnd() throws {
@@ -282,6 +368,7 @@ private final class LibraryServer: @unchecked Sendable {
     private var summary: String?
     private var cursor: Int
     private var changePending = false
+    private var resetState: Data?
     private var changes = 0
     private var lists = 0
     var heldLists: Int { lock.withLock { held.count } }
@@ -294,10 +381,15 @@ private final class LibraryServer: @unchecked Sendable {
         listener = try NWListener(using: .tcp, on: .any)
     }
 
-    /// Gives the page a new summary. The next updates answer moves the cursor and says that a document changed.
-    func changeDocuments(summary: String) {
-        lock.withLock { self.summary = summary; changePending = true }
+    /// Gives the page a new summary. With `announce`, the next updates answer moves the cursor and says that a document
+    /// changed. With `reset` as well, that answer is a reset to this state, without `documents_changed`, as the Mac
+    /// sends it after a gap in its events.
+    func changeDocuments(summary: String, announce: Bool = true, reset: Data? = nil) {
+        lock.withLock { self.summary = summary; changePending = announce; resetState = reset }
     }
+
+    /// Keeps the held answers, and answers later list requests at once.
+    func stopHolding() { lock.withLock { holding = false } }
 
     private func page(pinned: Bool) -> String {
         let summary = summary.map { #""summary": "\#($0)", "# } ?? ""
@@ -322,7 +414,11 @@ private final class LibraryServer: @unchecked Sendable {
                 case "GET /v1/documents":
                     body = lock.withLock {
                         lists += 1
-                        return deleted ? #"{"documents": []}"# : "{\"documents\": [\(page(pinned: pinned))]}"
+                        // A team bot of another Mac comes with each list, as the list of a Mac in a team has it.
+                        let teamBots = #""team_bots": [{"id": "t-room-b1", "name": "Reporter", "avatar": "fruit.kiwi", "#
+                            + #""color": "A68456", "team": {"room": "room", "name": "Example Team"}, "#
+                            + #""member": {"id": "m1", "name": "Grace"}}]"#
+                        return "{\"documents\": [\(deleted ? "" : page(pinned: pinned))], \(teamBots)}"
                     }
                 case "PATCH /v1/documents/page":
                     body = lock.withLock { pinned = true; return page(pinned: true) }
@@ -337,8 +433,11 @@ private final class LibraryServer: @unchecked Sendable {
                             return #"{"after": \#(after), "cursor": \#(after), "server_time": "2026-11-09T00:00:00Z"}"#
                         }
                         changePending = false; changes += 1; cursor += 1
-                        return #"{"after": \#(after), "cursor": \#(cursor), "server_time": "2026-11-09T00:00:00Z", "#
-                            + #""documents_changed": true}"#
+                        let head = #"{"after": \#(after), "cursor": \#(cursor), "server_time": "2026-11-09T00:00:00Z", "#
+                        if let resetState {
+                            return head + #""reset": "# + String(decoding: resetState, as: UTF8.self) + "}"
+                        }
+                        return head + #""documents_changed": true}"#
                     }
                 default: body = "{}"
                 }
