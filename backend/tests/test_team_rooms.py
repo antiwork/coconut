@@ -439,6 +439,47 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
         self.assertEqual(self.refusal(lambda: self.rename(self.first, {'room': 'a' * 64}, member_name='Ada'))[0], 404)
         self.assertEqual(self.names(self.second), [CODER, 'Grace'])
 
+    def test_a_change_after_a_name_without_an_answer_keeps_the_new_name(self):
+        room = self.create(avatar='coconut', color='green')
+        self.join(self.second, self.invite(room)['link'])
+        write = self.relay.write
+
+        def lose_the_answer(*arguments, **options):
+            write(*arguments, **options)
+            raise TeamRelayError(0, 'The relay did not answer.')
+        with mock.patch.object(self.relay, 'write', lose_the_answer):
+            self.assertEqual(self.refusal(lambda: self.rename(self.first, room, member_name='Ada L.'))[0], 503)
+        # The relay has the new name. A change of only the color reads it back first, so the name stays.
+        answer = self.rename(self.first, room, color='blue')
+        self.assertEqual([(member['name'], member['color']) for member in answer['members'] if member['this_mac']],
+                         [('Ada L.', 'blue')])
+        entry = json.loads(self.first.team_store.room(room['room'])['profile'])['entry']
+        payload = json.loads(base64.b64decode(decode(self.relay.rooms[room['room']]['entries'][entry]['body'])['payload']))
+        self.assertEqual((payload['rev'], payload['name'], payload['color']), (3, 'Ada L.', 'blue'))
+        self.assertEqual([(member['name'], member['color']) for member in self.rooms(self.second)[0]['members']],
+                         [('Ada L.', 'blue'), ('Grace', '')])
+
+    def test_the_saved_profile_follows_a_member_entry_that_the_sync_reads_back(self):
+        room = self.create()
+        write = self.relay.write
+
+        def lose_the_answer(*arguments, **options):
+            write(*arguments, **options)
+            raise TeamRelayError(0, 'The relay did not answer.')
+        with mock.patch.object(self.relay, 'write', lose_the_answer):
+            self.refusal(lambda: self.rename(self.first, room, member_name='Ada L.'))
+        self.first.team_sync_pass()
+        # A `member` entry that the sync writes again after a loss has the newest name too.
+        self.assertEqual(json.loads(self.first.team_store.room(room['room'])['profile'])['name'], 'Ada L.')
+
+    def test_a_link_that_is_not_exactly_an_invite_link_is_refused(self):
+        link = self.invite(self.create())['link']
+        for changed in (link + 'x', link + 'xx', link + 'xxx', link + '=', link + '==', link[:-1], link + '!', link + ' x'):
+            with self.subTest(changed=changed[-4:]):
+                self.assertEqual(self.refusal(self.join, self.second, changed),
+                                 (400, 'This is not the invite link of a team. Check the link, then try again.'))
+        self.assertEqual(self.rooms(self.second, sync=False), [])
+
     def test_a_name_has_one_text_for_each_problem(self):
         noun = {'member_name': 'your name', 'name': 'the name of the team'}
         texts = {'': 'Give {}.', 'n' * 81: 'Use at most 80 characters for {}.', '\ud800': 'Use only valid text for {}.',

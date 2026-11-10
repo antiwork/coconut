@@ -76,6 +76,28 @@ class TeamSyncTests(TeamMacs, unittest.TestCase):
                           '\n'.join(logs.output))
         self.assertEqual(self.names(self.second, sync=False), ['Ada', 'Grace'])
 
+    def test_the_app_learns_when_the_sync_error_appears_and_clears(self):
+        self.sync_view(self.second)
+
+        def events(step) -> int:
+            cursor = self.second._cursor()
+            step()
+            return self.second.db.execute("SELECT COUNT(*) FROM events WHERE seq>? AND type='team.updated'",
+                                          (cursor,)).fetchone()[0]
+
+        def retry():
+            self.second.team_wake(retry=True)
+            self.second.team_sync_pass()
+        self.assertEqual(events(retry), 0)
+        self.relay.down = True
+        with self.assertLogs('coconut.team_sync', 'WARNING'):
+            self.assertEqual(events(retry), 1)
+            self.assertEqual(events(retry), 0)
+        self.relay.down = False
+        self.assertEqual(events(retry), 1)
+        self.assertEqual(events(retry), 0)
+        self.assertIsNone(self.sync_view(self.second)['error'])
+
     def test_a_room_whose_relay_fails_waits_longer_until_a_wake_with_retry(self):
         self.relay.down = True
         with self.assertLogs('coconut.team_sync', 'WARNING') as logs:

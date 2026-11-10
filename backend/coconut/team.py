@@ -402,14 +402,16 @@ class Team(TeamSync, TeamPages):
         """Change what the team sees for this Mac: its name, avatar and color. The Mac writes its `member` entry
         again with the next `rev`, as its first write does, and a failure of the relay is an error for the caller.
 
-        The lock of the room holds from the read of the profile to its save, so the sync cannot write the old
-        profile in between. The profile changes only after the relay took the write, so a failure changes nothing on
-        this Mac, and the person tries again. A write without an answer can still be on the relay. The next write
-        then reads it first (TeamSync._team_settle), so its `rev` is higher.
+        The saved profile follows each accepted `member` entry of this Mac (TeamStore._follow_profile), so it is what
+        the log has for this Mac. An earlier write without an answer can be on the relay with other values, so the
+        Mac first reads the room back (TeamSync._team_settle). Only then does it take the fields that the caller
+        leaves out from the profile. The lock of the room holds from that read to the end of the write, so the sync
+        cannot write between them. A failure changes nothing on this Mac, and the person tries again.
         """
         from .service import ServiceError
         self._team_room(room_id)
         with self._team_operation, team_errors(), self._team_room_lock(room_id):
+            self._team_settle(room_id)
             with self.lock:
                 room = self.team_store.room(room_id)
             if room is None:
@@ -418,9 +420,8 @@ class Team(TeamSync, TeamPages):
                 raise ServiceError(409, INACTIVE[room['state']])
             current = json.loads(room['profile'])
             profile = dict(current, **member_profile(data, current))
+            # The accepted write of this Mac saves the profile in the same transaction.
             self._team_write(room, profile['entry'], True, member_payload(profile), tries=2)
-            with self.transaction():
-                self.team_store.update_room(room_id, profile=json.dumps(profile))
         return self._team_answer(room_id)
 
     def team_sync_now(self) -> dict:
@@ -451,6 +452,7 @@ class Team(TeamSync, TeamPages):
         except ROOM_ERRORS as error:
             self._team_status.setdefault(room_id, {})['error'] = room_error(error)
             log.warning('coconut.team_log room %s: the member entry waits for the next pass. %s', room_id[:8], error)
+            self._team_tell_sync(room_id)
         self.team_wake()
 
     def _team_retire_member(self, room: dict) -> None:
@@ -497,7 +499,7 @@ class Team(TeamSync, TeamPages):
             self.team_store.remove_room(room_id)
         team_keys.remove(self.root, room_id)
         for state in (self._team_failures, self._team_status, self._team_announced, self._team_locks,
-                      self._team_refusals):
+                      self._team_refusals, self._team_told):
             state.pop(room_id, None)
         self._team_retried.discard(room_id)
         self._team_unsure.discard(room_id)

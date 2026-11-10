@@ -293,6 +293,7 @@ One thread, `coconut-team-sync`, reads each `active` room after its `seq`, one a
 - After each start of the service, the thread tries the waiting bodies again, because an update of Coconut starts the service again.
 - When the log shows no `member` entry of this Mac, the thread writes it, at most every 5 minutes. This repairs a stop between a join and its first write.
 - After the read, the thread makes the log equal to the bots and the pages that this Mac shares. See [Bots and pages](#bots-and-pages).
+- The profile of a room on this Mac follows each accepted `member` entry of this Mac, also one that the sync reads back after a write without an answer. So a later change of one field, or a new `member` entry after a loss, never writes an older name.
 - A write of this Mac goes into the store at once. When a write gets no answer, the relay can have it. So before the next write or leave in that room, the Mac reads the room to its end. Its next `rev` is then higher, and a leave finds a `member` entry that only the relay has.
 - A leave holds the lock of the room from its `delete` entry until the relay removed the member and the Mac deleted its copy. So the thread cannot write the `member` entry again in between. When the relay does not answer the leave, the room stays `active`, and the Mac is still a member.
 - The member token of a room goes only to the relay of that room.
@@ -315,7 +316,7 @@ A request without a valid authorization gets 401.
 | --- | --- |
 | `GET /v1/team/rooms` | The rooms with their members, their bots and their sync state, and `helper`. |
 | `POST /v1/team/rooms`, body `{name, member_name, avatar, color, relay}` | Makes a room. This Mac is its admin. |
-| `PATCH /v1/team/rooms/<room>`, body `{member_name, avatar, color}` | Changes what the team sees for this Mac. A field that the body leaves out keeps its value. The Mac writes its `member` entry again with the next `rev`, and saves the new profile only after the relay took the write. A room that is not `active` answers 409. |
+| `PATCH /v1/team/rooms/<room>`, body `{member_name, avatar, color}` | Changes what the team sees for this Mac. A field that the body leaves out keeps its value. The Mac first reads back an earlier write without an answer. Then it takes each field that the body leaves out from what the log has for this Mac, and writes its `member` entry again with the next `rev`. A failure changes nothing on this Mac. A room that is not `active` answers 409. |
 | `POST /v1/team/rooms/<room>/invites`, body `{ttl, uses}` | The invite link. Only the admin makes one. The defaults are one day and one use. |
 | `POST /v1/team/join`, body `{link, member_name, avatar, color}` | Joins a room. |
 | `DELETE /v1/team/rooms/<room>` | Leaves the room, and deletes its copy and its keys. |
@@ -338,7 +339,7 @@ The `id` of a bot is `t-<room ID>-<entry ID>`, as in `team_bots` of `GET /v1/doc
 
 Each error text of these routes is for a person, because the app shows it: what happened and what to do, without a word of the code. For example: "This Mac is no longer in the team." A Mac without a helper answers 503 with "Update Coconut on this Mac, then try again."
 
-When something changes that the Team screen shows, the Mac adds one `team.updated` event with `{"team": <room ID>}` in the same transaction: this Mac makes, joins or leaves a room, a room becomes `active`, `removed` or `gone`, a member joins, leaves or changes its name, avatar or color, or a bot enters or leaves the team. `GET /v1/updates` then has `team_changed`, and the app reads `GET /v1/team/rooms` again. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again. A change of a bot of this Mac, for example a new name, comes with its own `bot.updated` event.
+When something changes that the Team screen shows, the Mac adds one `team.updated` event with `{"team": <room ID>}` in the same transaction: this Mac makes, joins or leaves a room, a room becomes `active`, `removed` or `gone`, a member joins, leaves or changes its name, avatar or color, a bot enters or leaves the team, or `sync.error` or `sync.refused` appears, changes or clears. A failed try with the same error adds no event. `GET /v1/updates` then has `team_changed`, and the app reads `GET /v1/team/rooms` again. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again. A change of a bot of this Mac, for example a new name, comes with its own `bot.updated` event.
 
 No answer has a key, a token or an invite secret, and so no answer has the public agreement key of a member. Only the answer of the invite route has the link. The request log of the tunnel listener keeps the route without its IDs and never a body, so the link of a join stays out of it. `scripts/team.py join` reads the link from standard input, so the link is never an argument of a command. `scripts/team.py share <room> <bot>` and `unshare <room> <bot>` call the bot routes.
 

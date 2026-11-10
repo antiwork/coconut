@@ -338,6 +338,8 @@ class TeamStore:
         other = entry['member'] != room['member']
         if 'member' in kinds:
             self.show_member(room['room'], entry['member'], (entry['id'], shown) if fields['kind'] == 'member' else None)
+            if not other and fields['kind'] == 'member' and shown:
+                self._follow_profile(room['room'], shown)
             # The Library shows a bot only while its member is in the list, and it names that member.
             if other and self.db.execute('SELECT 1 FROM team_bots WHERE room=? AND member=? LIMIT 1',
                                          (room['room'], entry['member'])).fetchone():
@@ -358,6 +360,20 @@ class TeamStore:
             if other:
                 self.touched.add(room['room'])
         return STORED, None
+
+    def _follow_profile(self, room: str, shown: dict) -> None:
+        """Make the saved profile of this Mac equal to its newest accepted `member` entry.
+
+        The log is the one source of truth for what the team sees. A write of a new name can reach the relay without
+        an answer, and the sync then reads it back. Without this step, the saved profile would keep the old name, and
+        a later change of one field or a new `member` entry after a loss (TeamSync._team_announce) would write the
+        old name again. The entry ID and the agreement key stay: this Mac made them.
+        """
+        row = self.db.execute('SELECT profile FROM team_rooms WHERE room=?', (room,)).fetchone()
+        profile = json.loads(row[0])
+        followed = dict(profile, **{name: shown[name] for name in MEMBER_LIMITS})
+        if followed != profile:
+            self.update_room(room, profile=json.dumps(followed))
 
     def _keep(self, room: dict, entry: dict, reason: str) -> tuple[str, str | None]:
         """Keep the bytes of a body that the Mac cannot open yet. One entry ID keeps its newest write."""

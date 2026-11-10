@@ -304,6 +304,8 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
     # The refusals of the relay
 
     def test_a_page_that_the_relay_refuses_does_not_stop_the_others_and_is_not_sent_again(self):
+        # The first Mac reads the member entry of the second one, so a later pass changes no member.
+        self.sync()
         self.share()
         self.publish(audience='team')
         self.publish(key='large-page', title='Large page', audience='team')
@@ -317,12 +319,12 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
                 attempts.append(entry)
                 raise TeamRelayError(507, 'The relay answered 507.')
             return write(relay, room, token, entry, kept, body, tries)
-        # Each write of the large page fails, and the other writes go on.
+        # Each write of the large page fails, and the other writes go on. The app learns of the refusal once.
         with mock.patch.object(self.relay, 'write', refuse_one), self.assertLogs('coconut.team_pages', 'WARNING'):
-            self.sync()
+            self.assertEqual(self.team_events(self.sync), 1)
             self.publish(content='Version 2.', audience='team')
-            self.sync()
-            self.sync()
+            self.assertEqual(self.team_events(self.sync), 0)
+            self.assertEqual(self.team_events(self.sync), 0)
         refused_entry = self.first.team_store.page_entries(self.room_id)[large]
         self.assertEqual(len(attempts), 1)
         self.assertEqual([page['key'] for page in self.team_pages()], ['weekly-report'])
@@ -333,9 +335,18 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
             'reason': 'The relay refused the entry with status 507.'}]))
         # A new version of the page tries again.
         self.publish(key='large-page', title='Large page', content='Smaller.')
-        self.sync()
+        # The refusal clears, and the app learns of that once.
+        self.assertEqual(self.team_events(self.sync), 1)
         self.assertEqual(sorted(page['key'] for page in self.team_pages()), ['large-page', 'weekly-report'])
         self.assertEqual(self.rooms(self.first, sync=False)[0]['sync']['refused'], [])
+        self.assertEqual(self.team_events(self.sync), 0)
+
+    def team_events(self, step) -> int:
+        """How many `team.updated` events the first Mac adds in a step."""
+        cursor = self.first._cursor()
+        step()
+        return self.first.db.execute("SELECT COUNT(*) FROM events WHERE seq>? AND type='team.updated'",
+                                     (cursor,)).fetchone()[0]
 
     # The publish step in each pass
 

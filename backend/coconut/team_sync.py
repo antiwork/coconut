@@ -109,6 +109,8 @@ class TeamSync:
         self._team_announced: dict[str, float] = {}
         # The rooms with a write that got no answer. The relay can have that write, so the next write reads first.
         self._team_unsure: set[str] = set()
+        # For each room: the sync error and the refused writes that the app last got an event for (_team_tell_sync).
+        self._team_told: dict[str, tuple] = {}
         # The number of the pass that started last and of the pass that ended last. See team_sync_now.
         self._team_passes = threading.Condition()
         self._team_pass_started = self._team_pass_ended = 0
@@ -182,6 +184,24 @@ class TeamSync:
             else:
                 self._team_failures.pop(room, None)
                 self._team_status[room] = {'synced_at': utc_now(), 'error': None}
+            self._team_tell_sync(room)
+
+    def _team_tell_sync(self, room_id: str) -> None:
+        """Add TEAM_EVENT when the sync error or the refused writes of a room changed: they appear, change or clear.
+
+        The Team screen shows both, and a pass can change them without a change of a member, a bot or the state of
+        the room. A pass with the same error or the same refusals as the last event adds none. The state is of this
+        process only, as `_team_status` is.
+        """
+        seen = (self._team_status.get(room_id, {}).get('error'),
+                tuple(sorted((entry, refusal['reason']) for entry, refusal in self._team_refusals.get(room_id, {}).items())))
+        if self._team_told.get(room_id, (None, ())) == seen:
+            return
+        self._team_told[room_id] = seen
+        with self.transaction():
+            # The person can have left the room while the pass read it.
+            if self.team_store.room(room_id) is not None:
+                self._event(TEAM_EVENT, {'team': room_id})
 
     def team_sync_room(self, room: str) -> None:
         """Read the room until the store has each entry of the relay. Then make sure that the log shows this Mac, and
