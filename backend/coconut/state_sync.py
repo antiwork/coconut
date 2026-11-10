@@ -306,7 +306,10 @@ class StateSync:
             context.completed context.failed execution.started execution.completed execution.uncertain work.updated work.recovery_queued
             bot.read bot.updated bot.settings_pending bot_message.delivered bots.addressed settings.updated settings.pending
             settings.update_unconfirmed model_catalog.updated routine.created routine.updated routine.deleted routine.triggered
-            routine.reconciliation_required routines.unavailable google.updated device.paired maintenance.withdrawal_corrected""".split())
+            routine.reconciliation_required routines.unavailable google.updated device.paired maintenance.withdrawal_corrected
+            document.created document.updated document.deleted""".split())
+        # The state holds no document, because the phone reads the Library with GET /v1/documents. A document event
+        # sends only its task. The save of a turn also adds the message of its card, which has its own event.
         if (after > cursor or len(rows) > 1000 or len(rows) != cursor - after
                 or any(row[0] != after + index + 1 for index, row in enumerate(rows))
                 or any(r[1] not in known for r in rows)):
@@ -402,8 +405,10 @@ class StateSync:
                     "WHERE json_type(data,'$.client_request_id')='text' AND EXISTS(SELECT 1 FROM bots "
                     "WHERE id=json_extract(messages.data,'$.bot_id') AND NOT COALESCE(json_extract(bots.data,'$._deleted'),0))").fetchone()
                 result['confirmed_request_ids'] = json.loads(receipts[0])
-        # Native task changes publish work.updated. Age alone changes no native state.
-        structural = not rows or refresh_activity or any(r[1] not in ('message.created', 'message.updated', 'bot.read', 'bot.updated') for r in rows)
+        # Native task changes publish work.updated. Age alone changes no native state. A document event changes no
+        # Work row and no card.
+        structural = not rows or refresh_activity or any(r[1] not in ('message.created', 'message.updated', 'bot.read', 'bot.updated',
+            'document.created', 'document.updated', 'document.deleted') for r in rows)
         if structural:
             work_outcomes = set()
             if not collection_deltas:
