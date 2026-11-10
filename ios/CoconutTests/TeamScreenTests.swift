@@ -166,7 +166,89 @@ final class TeamScreenTests: XCTestCase {
         XCTAssertEqual(TeamMemberName.remembered(defaults), "Ada L.")
     }
 
+    /// A link that comes while the pairing page of Settings shows waits, and its sheet shows when the page closes.
+    /// That page has its own state, so the count of the pairing pages decides, not the state of the home view.
+    @MainActor
+    func testALinkThatWaitsBehindAPairingPageOpensWhenThePageCloses() {
+        let pages = PairingPages()
+        let request = TeamJoinRequest(link: "coconut://team/abc")
+        XCTAssertFalse(TeamJoinGate.canShow(nil, showing: nil, pairingOpen: false), "No link, no sheet.")
+        pages.opened()
+        XCTAssertTrue(pages.isOpen)
+        XCTAssertFalse(TeamJoinGate.canShow(request, showing: nil, pairingOpen: pages.isOpen))
+        pages.closed()
+        XCTAssertFalse(pages.isOpen)
+        XCTAssertTrue(TeamJoinGate.canShow(request, showing: nil, pairingOpen: pages.isOpen),
+                      "The sheet shows when the page closes, without a second tap on the link.")
+        XCTAssertFalse(TeamJoinGate.canShow(request, showing: request.id, pairingOpen: false), "It shows once.")
+        // Two pages, for example the first run and a second one: the sheet waits for both.
+        pages.opened(); pages.opened(); pages.closed()
+        XCTAssertFalse(TeamJoinGate.canShow(request, showing: nil, pairingOpen: pages.isOpen))
+        pages.closed(); pages.closed()
+        XCTAssertEqual(pages.count, 0, "A close too many does not count below zero.")
+    }
+
     // MARK: The store
+
+    /// A member joins while the first list request runs. The update moves the cursor, so it must start a later
+    /// request: the answer of the first one is from before the join.
+    @MainActor
+    func testATeamChangeDuringTheFirstLoadGivesAListFromAfterTheChange() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try TeamServer(state: APIJSON.encoder().encode(state), cursor: state.cursor)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.holdLists()
+            let first = Task { await store.loadTeam() }
+            try await waitUntil { server.heldLists == 1 }
+            server.stopHolding()
+            server.addMember("Grace")
+            store.setForeground(true)
+            try await waitUntil { server.changesSent == 1 }
+            try await waitUntil(timeout: .seconds(5)) { server.listRequests == 2 }
+            server.releaseLists()
+            _ = await first.value
+            try await waitUntil(timeout: .seconds(5)) { store.team?.rooms.first?.memberList.count == 2 }
+            XCTAssertEqual(store.team?.rooms.first?.memberList.map(\.name), ["Ada", "Grace"],
+                           "The list on screen must be from after the change.")
+        }
+        #endif
+    }
+
+    /// The person removes two bots one after the other, and the answer of the first removal comes last. It has the
+    /// second bot, which the Mac removed after it.
+    @MainActor
+    func testTwoRemovalsWhoseAnswersArriveInTheOtherOrderEndWithBothBotsGone() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state), bots: ["b1", "b2"])
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            await store.loadTeam()
+            let room = try XCTUnwrap(store.team?.rooms.first)
+            XCTAssertEqual(room.botsOfThisMac, ["b1", "b2"])
+            server.holdRemovals()
+            let first = Task { await store.setTeamBot("b1", in: room, shared: false) }
+            try await waitUntil { server.heldRemovals == 1 }
+            let second = Task { await store.setTeamBot("b2", in: room, shared: false) }
+            try await waitUntil { server.heldRemovals == 2 }
+            server.releaseRemovalsLastFirst()
+            let results = [await first.value, await second.value]
+            XCTAssertEqual(results, [true, true])
+            XCTAssertEqual(store.team?.rooms.first?.botsOfThisMac, [], "The older answer must not bring a bot back.")
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(store.team?.rooms.first?.botsOfThisMac, [])
+        }
+        #endif
+    }
 
     func testUpdatesDecodeTheTeamChange() throws {
         let page = #"{"after": 4, "cursor": 5, "server_time": "2026-11-09T00:00:00Z", "team_changed": true}"#
@@ -283,7 +365,8 @@ final class TeamScreenTests: XCTestCase {
             // Leave: the older list must not bring the team back.
             server.holdLists()
             let second = Task { await store.loadTeam() }
-            try await waitUntil { server.heldLists == 1 }
+            // The reload after the confirmed bot can wait there too.
+            try await waitUntil { server.heldLists >= 1 }
             let left = await store.leaveTeam(room)
             XCTAssertTrue(left)
             server.releaseLists()
@@ -391,7 +474,10 @@ private final class TeamServer: @unchecked Sendable {
     private let state: Data
     private let older: Bool
     private var members = ["Ada"]
-    private var bots: [String] = []
+    private var bots: [String]
+    private var holdingRemovals = false
+    private var heldRemoval: [@Sendable (Double) -> Void] = []
+    var heldRemovals: Int { lock.withLock { heldRemoval.count } }
     private var left = false
     private var holding = false
     private var held: [@Sendable () -> Void] = []
@@ -406,8 +492,8 @@ private final class TeamServer: @unchecked Sendable {
     var changesSent: Int { lock.withLock { changes } }
     var listRequests: Int { lock.withLock { lists } }
 
-    init(state: Data, cursor: Int = 0, older: Bool = false) throws {
-        self.state = state; self.cursor = cursor; self.older = older
+    init(state: Data, cursor: Int = 0, older: Bool = false, bots: [String] = []) throws {
+        self.state = state; self.cursor = cursor; self.older = older; self.bots = bots
         listener = try NWListener(using: .tcp, on: .any)
     }
 
@@ -418,6 +504,19 @@ private final class TeamServer: @unchecked Sendable {
     }
 
     func stopHolding() { lock.withLock { holding = false } }
+
+    /// Keeps the answer of each bot removal. The Mac removes the bot at once, so an answer has the room as it is then.
+    func holdRemovals() { lock.withLock { holdingRemovals = true } }
+
+    /// Sends the held removal answers, the last one first.
+    func releaseRemovalsLastFirst() {
+        let answers = lock.withLock {
+            holdingRemovals = false
+            defer { heldRemoval = [] }
+            return heldRemoval
+        }
+        for (index, answer) in answers.reversed().enumerated() { answer(0.05 + 0.25 * Double(index)) }
+    }
     func failLists(_ fail: Bool) { lock.withLock { failing = fail } }
     func holdLists() { lock.withLock { holding = true } }
 
@@ -470,6 +569,9 @@ private final class TeamServer: @unchecked Sendable {
                     }
                 case "POST /v1/team/rooms/r1/bots":
                     body = lock.withLock { bots.append("bot-reporter"); return #"{"room": \#(room())}"# }
+                case _ where route.hasPrefix("DELETE /v1/team/rooms/r1/bots/"):
+                    let id = String(route.split(separator: "/").last ?? "")
+                    body = lock.withLock { bots.removeAll { $0 == id }; return #"{"room": \#(room())}"# }
                 case "DELETE /v1/team/rooms/r1":
                     body = lock.withLock { left = true; return #"{"room": "r1", "left": true}"# }
                 case "GET /v1/updates":
@@ -495,6 +597,15 @@ private final class TeamServer: @unchecked Sendable {
                     queue.asyncAfter(deadline: .now() + (route == "GET /v1/updates" ? 0.25 : 0.05)) {
                         connection.send(content: answer, completion: .contentProcessed { _ in connection.cancel() })
                     }
+                }
+                if route.hasPrefix("DELETE /v1/team/rooms/r1/bots/"), lock.withLock({ holdingRemovals }) {
+                    let delayed: @Sendable (Double) -> Void = { [queue] delay in
+                        queue.asyncAfter(deadline: .now() + delay) {
+                            connection.send(content: answer, completion: .contentProcessed { _ in connection.cancel() })
+                        }
+                    }
+                    lock.withLock { heldRemoval.append(delayed) }
+                    return
                 }
                 let hold = route == "GET /v1/team/rooms" && lock.withLock {
                     if holding { held.append(send) }

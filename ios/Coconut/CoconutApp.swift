@@ -128,8 +128,10 @@ struct CoconutHome: View {
             if store.teamJoin?.id == shownTeamJoin { store.teamJoin = nil }
         }) { TeamJoinView(link: $0.link) }
         .onChange(of: store.teamJoin, initial: true) { _, _ in showTeamJoin() }
-        // A link that came while the pairing page showed opens its sheet after the page, also after a new pairing.
+        // A link that came while a pairing page showed opens its sheet after the page, also after a new pairing. The
+        // page of Settings has its own state, so the count of the pages decides.
         .onChange(of: onboardingOpen) { _, _ in showTeamJoin() }
+        .onChange(of: PairingPages.shared.isOpen) { _, _ in showTeamJoin() }
         .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
         .onChange(of: store.lastSync) { _, _ in openNotification() }
         .onChange(of: store.connection) { _, _ in openNotification() }
@@ -214,7 +216,9 @@ struct CoconutHome: View {
     /// Shows the join sheet of a tapped invite link. An open sheet closes first, because a second sheet cannot show
     /// over it.
     private func showTeamJoin() {
-        guard let request = store.teamJoin, teamJoin?.id != request.id, !onboardingOpen, !OnboardingView.isOpen else { return }
+        guard TeamJoinGate.canShow(store.teamJoin, showing: teamJoin?.id,
+                                   pairingOpen: onboardingOpen || PairingPages.shared.isOpen),
+              let request = store.teamJoin else { return }
         let sheetOpen = settingsOpen || createOpen || teamJoin != nil
         settingsOpen = false
         createOpen = false

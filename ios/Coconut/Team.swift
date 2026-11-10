@@ -146,6 +146,27 @@ enum TeamLinkCheck: Equatable {
     static func isLink(_ url: URL) -> Bool { url.scheme?.lowercased() == "coconut" && url.host?.lowercased() == "team" }
 }
 
+/// The pairing pages on screen: the first run, "Pair with your Mac" in Settings, and the Mac window. Each page counts
+/// itself, so a view can wait until the last page closes, whichever view opened it.
+@MainActor @Observable
+final class PairingPages {
+    static let shared = PairingPages()
+    private(set) var count = 0
+    var isOpen: Bool { count > 0 }
+
+    func opened() { count += 1 }
+    func closed() { count = max(0, count - 1) }
+}
+
+/// When the join sheet of a tapped invite link can show: a link waits, its sheet does not show yet, and no pairing
+/// page covers the screen. A pairing page that closes, also one that Settings opened, lets the sheet show.
+enum TeamJoinGate {
+    static func canShow(_ request: TeamJoinRequest?, showing: UUID?, pairingOpen: Bool) -> Bool {
+        guard let request else { return false }
+        return request.id != showing && !pairingOpen
+    }
+}
+
 /// The name that the team sees for this person. The app fills it in for the next team, so the person types it once.
 enum TeamMemberName {
     static let key = "teamMemberName"

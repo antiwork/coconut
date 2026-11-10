@@ -61,7 +61,11 @@ struct MacMainWindow: View {
         .sheet(isPresented: $createOpen) { BotEditorView() }
         .sheet(isPresented: $pairingOpen) { MacPairingView(model: model).frame(width: 520, height: 600) }
         .onChange(of: store.setupLink) { _, link in if link != nil { pairingOpen = true } }
-        .sheet(item: Binding(get: { pairingOpen ? nil : store.teamJoin }, set: { store.teamJoin = $0 })) {
+        // The sheet waits for each pairing page: the sheet of a link, and the page of a window without a pairing.
+        .sheet(item: Binding(get: {
+            TeamJoinGate.canShow(store.teamJoin, showing: nil, pairingOpen: pairingOpen || PairingPages.shared.isOpen)
+                ? store.teamJoin : nil
+        }, set: { store.teamJoin = $0 })) {
             TeamJoinView(link: $0.link)
         }
         // Each choice in the sidebar starts at its own root, so another bot never shows the last bot's pages.
