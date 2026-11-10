@@ -86,7 +86,7 @@ A key in a payload is unpadded base64url, as in a pairing setup.
 
 ### Rules for a Mac that reads an entry
 
-1. If the version of the body is unknown, keep the bytes and try again after the next update of Coconut.
+1. If the version of the body is later than the Mac knows, keep the bytes and try again after the next update of Coconut. This check comes first, because a later version can have another form.
 2. Open the body with the room key of its epoch. Then check the signature with `member`. If one of them fails, drop the entry and write a log line.
 3. If the Mac already has this entry ID, accept the entry only from the same member and only with a higher `rev`.
 4. Accept `remove` and `key` only from the admin. The admin is the member ID that the welcome names.
@@ -169,6 +169,8 @@ The token is unpadded lowercase base32 (RFC 4648) of these bytes. The pairing li
 | 2 | Length of `relay`, big-endian |
 | Length of `relay` | `relay`, UTF-8 |
 | The rest | `name` of the team, UTF-8 |
+
+`relay` is an HTTPS origin without a path, a query or account details, as in a pairing link. So a changed link cannot send the ticket of a Mac to a local address or over plain HTTP. `name` has 1 to 80 characters, no space at its start or end, and no control character, because the app shows it before the person joins. A Mac refuses a link or a welcome with another `relay` or `name`.
 
 Both Macs derive these values from the invite secret with HKDF-SHA256, an empty salt, and a 32-byte output:
 
