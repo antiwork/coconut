@@ -15,7 +15,7 @@ import time
 
 from coconut.providers import FixtureProvider
 from coconut.service import Service, ServiceError
-from coconut.team_helper import TeamFormatError, TeamHelperError
+from coconut.team_helper import TeamFormatError, TeamHelperMissing
 from coconut.team_relay import TeamRelayError
 
 RELAY = 'https://relay.example'
@@ -29,8 +29,27 @@ def encode(value) -> str:
     return base64.b64encode(json.dumps(value).encode()).decode()
 
 
+def strict_base64(text) -> bytes:
+    """The bytes of a base64 text that `base64.b64encode` makes, and of no other text. A ValueError else.
+
+    `base64.b64decode` without `validate` drops characters outside the alphabet, and what it does with data after
+    the padding differs between Python versions. So the fakes take only the one canonical text of each value, as the
+    helper and the relay do, and a test gives the same result on each version.
+    """
+    if not isinstance(text, str) or not text.isascii():
+        raise ValueError('This is not base64 text.')
+    data = base64.b64decode(text, validate=True)
+    if base64.b64encode(data).decode() != text:
+        raise ValueError('This is not the canonical base64 text of its bytes.')
+    return data
+
+
 def decode(text: str):
-    return json.loads(base64.b64decode(text))
+    """The JSON value of a text that `encode` made. A ValueError for each other text."""
+    value = json.loads(strict_base64(text))
+    if encode(value) != text:
+        raise ValueError('This is not a text that encode made.')
+    return value
 
 
 class FakeHelper:
@@ -43,7 +62,7 @@ class FakeHelper:
 
     def _call(self, name: str):
         if not self.available:
-            raise TeamHelperError('This Mac has no team helper. Run python3 scripts/team.py build.')
+            raise TeamHelperMissing('This Mac has no team helper. Run python3 scripts/team.py build.')
         self.calls.append(name)
 
     def member(self) -> dict:
@@ -67,7 +86,12 @@ class FakeHelper:
         self._call('open')
         results = []
         for entry in entries:
-            body = decode(entry['body'])
+            try:
+                body = decode(entry['body'])
+                payload = strict_base64(body['payload'])
+            except (ValueError, TypeError, KeyError):
+                results.append({'error': 'malformed'})
+                continue
             if body['version'] > self.version:
                 results.append({'error': 'unknown_version'})
             elif str(body['epoch']) not in keys:
@@ -77,7 +101,7 @@ class FakeHelper:
             elif body['signer'] != entry['member']:
                 results.append({'error': 'signature'})
             else:
-                results.append({'epoch': body['epoch'], 'payload': base64.b64decode(body['payload'])})
+                results.append({'epoch': body['epoch'], 'payload': payload})
         return results
 
     def ticket(self, secret: str) -> dict:
@@ -91,7 +115,10 @@ class FakeHelper:
 
     def open_welcome(self, room: str, secret: str, welcome: str) -> dict:
         self._call('open_welcome')
-        fields = decode(welcome)
+        try:
+            fields = decode(welcome)
+        except ValueError:
+            raise TeamFormatError('malformed') from None
         if fields.get('version', 1) > 1:
             raise TeamFormatError('unknown_version')
         if fields['room'] != room or fields['secret'] != secret:
@@ -145,7 +172,10 @@ class FakeRelay:
         raise TeamRelayError(401, 'The relay answered 401.')
 
     def _check(self, room: str, claim: dict):
-        proof = decode(claim['proof'])
+        try:
+            proof = decode(claim['proof'])
+        except ValueError:
+            raise TeamRelayError(401, 'The relay answered 401.') from None
         if proof != {'room': room, 'hash': claim['hash'], 'signer': claim['member']}:
             raise TeamRelayError(401, 'The relay answered 401.')
 

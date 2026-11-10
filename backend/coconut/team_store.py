@@ -62,6 +62,7 @@ PAGE_FIELDS = ('key', 'title', 'format', 'summary', 'size', 'rev', 'expires_at',
 # What the Library of the phone gets for a team page and a team bot. TeamStore.library reads these rows.
 LIBRARY_PAGE = ('room', 'entry', 'bot', 'team', *PAGE_FIELDS)
 LIBRARY_BOT = ('room', 'entry', 'name', 'avatar', 'color', 'team', 'member', 'member_name')
+TEAM_BOT = ('entry', 'member', 'name', 'avatar', 'color')
 # The end date of a page as documents.end_time writes it.
 PAGE_END = re.compile(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ')
 
@@ -221,8 +222,10 @@ def read_entry(opened: dict) -> dict:
 class TeamStore:
     def __init__(self, db):
         self.db = db
-        # The rooms whose Library rows `accept` changed. TeamSync tells the phone and empties the set.
+        # The rooms whose Library rows `accept` changed, and the rooms whose members or team bots it changed. TeamSync
+        # tells the phone and empties each set.
         self.touched: set[str] = set()
+        self.changed: set[str] = set()
 
     def _rows(self, fields, query, values=()) -> list[dict]:
         return [dict(zip(fields, row)) for row in self.db.execute(query, values).fetchall()]
@@ -335,10 +338,15 @@ class TeamStore:
         other = entry['member'] != room['member']
         if 'member' in kinds:
             self.show_member(room['room'], entry['member'], (entry['id'], shown) if fields['kind'] == 'member' else None)
+            if not other and fields['kind'] == 'member' and shown:
+                self._follow_profile(room['room'], shown)
             # The Library shows a bot only while its member is in the list, and it names that member.
             if other and self.db.execute('SELECT 1 FROM team_bots WHERE room=? AND member=? LIMIT 1',
                                          (room['room'], entry['member'])).fetchone():
                 self.touched.add(room['room'])
+        # The Team screen shows the bots of the other members. It takes the own bots from the shares of this Mac.
+        if other and 'bot' in kinds:
+            self.changed.add(room['room'])
         # The rows of the own entries keep the form that the publish step compares (see `written`). The Library
         # leaves them out: the Mac that wrote a page has the document already.
         if kinds & {'bot', 'page'}:
@@ -352,6 +360,20 @@ class TeamStore:
             if other:
                 self.touched.add(room['room'])
         return STORED, None
+
+    def _follow_profile(self, room: str, shown: dict) -> None:
+        """Make the saved profile of this Mac equal to its newest accepted `member` entry.
+
+        The log is the one source of truth for what the team sees. A write of a new name can reach the relay without
+        an answer, and the sync then reads it back. Without this step, the saved profile would keep the old name, and
+        a later change of one field or a new `member` entry after a loss (TeamSync._team_announce) would write the
+        old name again. The entry ID and the agreement key stay: this Mac made them.
+        """
+        row = self.db.execute('SELECT profile FROM team_rooms WHERE room=?', (room,)).fetchone()
+        profile = json.loads(row[0])
+        followed = dict(profile, **{name: shown[name] for name in MEMBER_LIMITS})
+        if followed != profile:
+            self.update_room(room, profile=json.dumps(followed))
 
     def _keep(self, room: dict, entry: dict, reason: str) -> tuple[str, str | None]:
         """Keep the bytes of a body that the Mac cannot open yet. One entry ID keeps its newest write."""
@@ -372,7 +394,14 @@ class TeamStore:
         A member has one `member` entry. When it wrote more, the one with the highest `seq` counts, so each Mac
         shows the same member. A `delete` over that entry takes the member out of the list. `known` is the entry ID
         and the fields that read_entry found for the entry of the caller, so the store does not parse it again.
+        A row that changes puts the room into `changed`, so a new write of the same profile adds no event.
         """
+        before = self.member(room, member)
+        self._show_member(room, member, known)
+        if self.member(room, member) != before:
+            self.changed.add(room)
+
+    def _show_member(self, room: str, member: str, known: tuple[str, dict | None] | None) -> None:
         rows = self.db.execute("SELECT id FROM team_entries WHERE room=? AND member=? AND kind='member' "
                                'ORDER BY seq DESC', (room, member)).fetchall()
         for (entry,) in rows:
@@ -436,12 +465,14 @@ class TeamStore:
     def shared(self, bot: str) -> bool:
         return self.db.execute('SELECT 1 FROM team_shares WHERE bot=? LIMIT 1', (bot,)).fetchone() is not None
 
-    def share(self, room: str, bot: str, entry: str) -> None:
-        """Share a bot with the room. A bot that the room has keeps its entry ID."""
-        self.db.execute('INSERT OR IGNORE INTO team_shares (room, bot, entry) VALUES (?, ?, ?)', (room, bot, entry))
+    def share(self, room: str, bot: str, entry: str) -> bool:
+        """Share a bot with the room. A bot that the room has keeps its entry ID. True when the bot is new there."""
+        return self.db.execute('INSERT OR IGNORE INTO team_shares (room, bot, entry) VALUES (?, ?, ?)',
+                               (room, bot, entry)).rowcount > 0
 
-    def unshare(self, room: str, bot: str) -> None:
-        self.db.execute('DELETE FROM team_shares WHERE room=? AND bot=?', (room, bot))
+    def unshare(self, room: str, bot: str) -> bool:
+        """Stop sharing a bot with the room. True when the room had the bot."""
+        return self.db.execute('DELETE FROM team_shares WHERE room=? AND bot=?', (room, bot)).rowcount > 0
 
     def page_entries(self, room: str) -> dict[str, str]:
         """The entry ID of each document of this Mac that the room has or had as a `page` entry."""
@@ -466,6 +497,12 @@ class TeamStore:
         """True when the Library shows something of the room now: a bot of another member."""
         return self.db.execute('''SELECT 1 FROM team_bots b JOIN team_rooms r ON r.room=b.room
             WHERE b.room=? AND b.member!=r.member LIMIT 1''', (room,)).fetchone() is not None
+
+    def bots(self, room: str) -> list[dict]:
+        """The valid `bot` entries of the other members of the room, for the Team screen."""
+        return self._rows(TEAM_BOT, '''SELECT b.entry, b.member, b.name, b.avatar, b.color FROM team_bots b
+            JOIN team_rooms r ON r.room=b.room WHERE b.room=? AND b.member!=r.member ORDER BY b.name, b.entry''',
+                          (room,))
 
     # The Library of the phone
 

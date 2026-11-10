@@ -4,12 +4,14 @@ A team is a set of Macs that share one sealed log on the relay. This module hold
 Mac. team_sync.py copies the log, team_store.py keeps it, team_keys.py keeps the secrets of each room, team_relay.py
 talks to the relay, and team_helper.py does the cryptography.
 
-The routes are for the tools on this Mac: only the main listener serves them, with the token of
-<data>/gateway/bridge.json (server.py). scripts/team.py calls them. The phone has no team route yet: it sees the team
-pages in GET /v1/documents (team_pages.py).
+The routes are for the Team screen of the app and for the tools on this Mac (server.py). A paired device calls them
+on the tunnel listener or on the main listener, with the authorization of its other routes. A tool calls them on the
+main listener with the token of <data>/gateway/bridge.json, as scripts/team.py does. One handler serves both. The
+error texts are for a person, because the app shows them.
 
-- `GET /v1/team/rooms`: the rooms with their members and their sync state.
+- `GET /v1/team/rooms`: the rooms with their members, their bots and their sync state.
 - `POST /v1/team/rooms` with `{name, member_name, avatar, color, relay}`: make a room. This Mac is its admin.
+- `PATCH /v1/team/rooms/<room>` with `{member_name, avatar, color}`: change what the team sees for this Mac.
 - `POST /v1/team/rooms/<room>/invites` with `{ttl, uses}`: make an invite link. Only the admin can do this.
 - `POST /v1/team/join` with `{link, member_name, avatar, color}`: join a room.
 - `DELETE /v1/team/rooms/<room>`: leave the room, and delete its copy and its keys on this Mac.
@@ -25,6 +27,7 @@ import base64
 import contextlib
 import json
 import logging
+import re
 from secrets import token_bytes, token_hex
 import threading
 import time
@@ -36,14 +39,18 @@ from .team_helper import TeamFormatError, TeamHelper, TeamHelperError
 from .team_keys import ROOM_ID, TeamKeysError
 from .team_pages import TeamPages
 from .team_relay import TeamRelay, TeamRelayError, relay_origin
-from .team_store import ACTIVE, JOINING, MEMBER_LIMITS, SCHEMA, TeamStore
-from .team_sync import ROOM_ERRORS, TeamSync, utc_now
+from .team_store import ACTIVE, JOINING, MEMBER_LIMITS, SCHEMA, TeamStore, unicode_text
+from .team_sync import INACTIVE, ROOM_ERRORS, TEAM_EVENT, TeamSync, member_payload, room_error, utc_now
 
 __all__ = ['SCHEMA', 'Team']
 
-# The name of this Mac's member when the caller gives none. A later change gives the name of the person.
+# The name of this Mac's member when the caller gives none.
 MEMBER_NAME = 'Member'
 MAX_NAME = 80
+# The format characters that the name of a person can have: the zero width joiner of an emoji sequence, and
+# the tag characters of a flag such as the flag of Scotland. Other format characters, for example the marks that
+# change the direction of text, can hide what a name says.
+EMOJI_FORMAT = re.compile('[\u200d\U000e0020-\U000e007f]')
 # The limits of the relay for a ticket (docs/team-log.md, "Limits").
 INVITE_SECONDS = (60, 7 * 86400)
 INVITE_USES = (1, 64)
@@ -54,56 +61,78 @@ SYNC_WAIT_SECONDS = 60
 log = logging.getLogger(__name__)
 
 
-def plain_name(value, what: str) -> str:
-    """Check a name by the rule of the contract for the name of a team: 1 to 80 characters, no space at its start
-    or end, and no control character. The helper has the same rule, and this one is never wider."""
+def checked_name(value, noun: str, *, person: bool) -> str:
+    """Check a name, with one text for each problem. `noun` names the name in the text, for example "your name".
+
+    The name of a team follows the rule of a link (docs/team-log.md, "Invite and join"). The helper counts the
+    characters that a person sees, trims white space and line breaks, and refuses each control and format character
+    (`validName` in ios/Tunnel/TeamLog.swift). This rule counts code points, which are never fewer, and refuses each
+    category that starts with "C" and each line break, so it is never wider than the rule of the helper.
+
+    The name of a person (`person`) goes only into a sealed `member` entry, so no rule of the helper applies. It can
+    have an emoji with a joiner. It has no control character, no line break, no lone surrogate, no format character
+    outside EMOJI_FORMAT, and no space at its start or end. A name with a character that this Python does not know
+    yet, for example a new emoji, is valid.
+    """
     from .service import ServiceError
-    if (not isinstance(value, str) or not 0 < len(value) <= MAX_NAME or value != value.strip()
-            or any(unicodedata.category(character).startswith('C') for character in value)):
-        raise ServiceError(400, f'Give {what} a name of 1 to {MAX_NAME} characters, without a space at its start or end.')
+    if not isinstance(value, str) or not value:
+        raise ServiceError(400, f'Give {noun}.')
+    if len(value) > MAX_NAME:
+        raise ServiceError(400, f'Use at most {MAX_NAME} characters for {noun}.')
+    if not unicode_text(value):
+        raise ServiceError(400, f'Use only valid text for {noun}.')
+    for character in value:
+        category = unicodedata.category(character)
+        if category in ('Zl', 'Zp') or character in '\n\r\x0b\x0c\x1c\x1d\x1e\x85':
+            raise ServiceError(400, f'Put {noun} on one line.')
+        if category == 'Cc' or (category.startswith('C') and not person) or (
+                category == 'Cf' and not EMOJI_FORMAT.fullmatch(character)):
+            raise ServiceError(400, f'Remove the hidden characters from {noun}.')
+    if value != value.strip():
+        raise ServiceError(400, f'Remove the space at the start or end of {noun}.')
     return value
 
 
-def member_profile(data: dict) -> dict:
-    """What this Mac writes about itself in its `member` entry: name, avatar and color."""
+def member_profile(data: dict, current: dict | None = None) -> dict:
+    """What this Mac writes about itself in its `member` entry: name, avatar and color. `current` is the profile of
+    the room for a change: a field that the caller leaves out keeps its value."""
     from .service import ServiceError
-    profile = {'name': plain_name(data.get('member_name', MEMBER_NAME), 'the member')}
+    current = current or {'name': MEMBER_NAME, 'avatar': '', 'color': ''}
+    profile = {'name': checked_name(data.get('member_name', current['name']), 'your name', person=True)}
     for field in ('avatar', 'color'):
-        value = data.get(field, '')
-        if not isinstance(value, str) or len(value) > MEMBER_LIMITS[field]:
-            raise ServiceError(400, f'{field} has at most {MEMBER_LIMITS[field]} characters.')
+        value = data.get(field, current[field])
+        if not unicode_text(value) or len(value) > MEMBER_LIMITS[field]:
+            raise ServiceError(400, f'Use text of at most {MEMBER_LIMITS[field]} characters for the {field}.')
         profile[field] = value
     return profile
 
 
-def whole(data: dict, field: str, default: int, limits: tuple[int, int]) -> int:
+def whole(data: dict, field: str, default: int, limits: tuple[int, int], text: str) -> int:
     from .service import ServiceError
     value = data.get(field, default)
     if type(value) is not int or not limits[0] <= value <= limits[1]:
-        raise ServiceError(400, f'{field} is a whole number from {limits[0]} to {limits[1]}.')
+        raise ServiceError(400, text)
     return value
 
 
 @contextlib.contextmanager
 def team_errors():
-    """Give the caller of a route the reason of a failure of the helper, the key file or the relay."""
+    """Give the caller of a route a failure of the helper, the key file or the relay, as a text for a person."""
     from .service import ServiceError
     try:
         yield
-    except TeamHelperError as error:
-        raise ServiceError(503, str(error)) from None
-    except TeamFormatError:
-        raise ServiceError(500, 'The team helper refused a value of this Mac.') from None
-    except TeamKeysError as error:
-        raise ServiceError(409, str(error)) from None
-    except TeamRelayError as error:
-        if error.temporary:
-            raise ServiceError(503, 'The relay did not answer. Try again later.') from None
-        if error.status == 401:
-            raise ServiceError(409, 'This Mac is no longer a member of the room.') from None
-        if error.status == 404:
-            raise ServiceError(409, 'The relay no longer has the room.') from None
-        raise ServiceError(502, f'The relay refused the request with status {error.status}.') from None
+    except ROOM_ERRORS as error:
+        if isinstance(error, TeamHelperError):
+            status = 503
+        elif isinstance(error, TeamFormatError):
+            status = 500
+        elif isinstance(error, TeamKeysError):
+            status = 409
+        elif error.temporary:
+            status = 503
+        else:
+            status = 409 if error.status in (401, 404) else 502
+        raise ServiceError(status, room_error(error)) from None
 
 
 class Team(TeamSync, TeamPages):
@@ -125,7 +154,7 @@ class Team(TeamSync, TeamPages):
         self._close_team_sync()
 
     def team_request(self, method: str, path: str, data: dict) -> dict:
-        """One of the routes at the top of this module. server.py checked the token."""
+        """One of the routes at the top of this module. server.py checked the token of the device or of the bridge."""
         from .service import ServiceError
         parts = path.strip('/').split('/')[2:]
         if parts == ['rooms'] and method == 'GET':
@@ -138,6 +167,8 @@ class Team(TeamSync, TeamPages):
             return self.team_sync_now()
         if len(parts) == 2 and parts[0] == 'rooms' and method == 'DELETE':
             return self.team_leave(parts[1])
+        if len(parts) == 2 and parts[0] == 'rooms' and method == 'PATCH':
+            return self.team_profile(parts[1], data)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'invites' and method == 'POST':
             return self.team_invite(parts[1], data)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'bots' and method == 'POST':
@@ -154,29 +185,30 @@ class Team(TeamSync, TeamPages):
         return {'rooms': rooms, 'helper': self.team_helper.available}
 
     def _team_view(self, room: dict) -> dict:
-        """What a tool reads about a room. The caller holds the service lock."""
+        """What the Team screen and a tool read about a room, with no key. The caller holds the service lock."""
         entries, waiting = self.team_store.counts(room['room'])
         status = self._team_status.get(room['room'], {})
         refused = [{name: value for name, value in refusal.items() if name != 'form'}
                    for refusal in self._team_refusals.get(room['room'], {}).values()]
-        members = [dict(name=member['name'], avatar=member['avatar'], color=member['color'], member=member['member'],
-                        agreement=member['agreement'], admin=member['member'] == room['admin'],
-                        this_mac=member['member'] == room['member']) for member in self.team_store.members(room['room'])]
+        members = [dict(member=member['member'], name=member['name'], avatar=member['avatar'], color=member['color'],
+                        admin=member['member'] == room['admin'], this_mac=member['member'] == room['member'])
+                   for member in self.team_store.members(room['room'])]
+        is_admin = room['member'] == room['admin']
         return {'room': room['room'], 'name': room['name'], 'relay': room['relay'], 'state': room['state'],
-                'member': room['member'], 'admin': room['admin'], 'is_admin': room['member'] == room['admin'],
-                'epoch': room['epoch'], 'created_at': room['created_at'], 'members': members,
-                'bots': self._team_shared(room['room']),
+                'member': room['member'], 'admin': room['admin'], 'is_admin': is_admin,
+                'can_invite': is_admin and room['state'] == ACTIVE, 'epoch': room['epoch'],
+                'created_at': room['created_at'], 'members': members, 'bots': self._team_bots(room, members),
                 'sync': {'seq': room['seq'], 'entries': entries, 'waiting': waiting,
                          'synced_at': status.get('synced_at'), 'error': status.get('error'), 'refused': refused}}
 
     def _team_room(self, room_id) -> dict:
         from .service import ServiceError
         if not isinstance(room_id, str) or not ROOM_ID.fullmatch(room_id):
-            raise ServiceError(404, 'This Mac is not in this room.')
+            raise ServiceError(404, 'This Mac is not in this team.')
         with self.lock:
             room = self.team_store.room(room_id)
         if room is None:
-            raise ServiceError(404, 'This Mac is not in this room.')
+            raise ServiceError(404, 'This Mac is not in this team.')
         return room
 
     def _team_answer(self, room_id: str) -> dict:
@@ -188,12 +220,12 @@ class Team(TeamSync, TeamPages):
     def team_create(self, data: dict) -> dict:
         """Make a room on the relay. This Mac is its admin, and it writes its `member` entry."""
         from .service import ServiceError
-        name = plain_name(data.get('name'), 'the team')
+        name = checked_name(data.get('name'), 'the name of the team', person=False)
         profile = member_profile(data)
         try:
             relay = relay_origin(data.get('relay') or RELAY_URL)
-        except ValueError as error:
-            raise ServiceError(400, str(error)) from None
+        except ValueError:
+            raise ServiceError(400, 'Use the HTTPS address of a Coconut server, without a path.') from None
         with self._team_operation, team_errors():
             made = self.team_helper.member()
             room_id = token_hex(32)
@@ -201,7 +233,7 @@ class Team(TeamSync, TeamPages):
                 self.team_relay.create(relay, room_id, self._team_claim(room_id, made), tries=2)
             except TeamRelayError as error:
                 if error.status == 429:
-                    raise ServiceError(429, 'The relay takes no new room from this network now. Try again in an hour.') from None
+                    raise ServiceError(429, 'This network made too many teams. Try again in an hour.') from None
                 raise
             # The room exists now. A stop before the next lines leaves a room that no Mac can use: nobody else has
             # its ID or the key of its admin, and the relay deletes it after its idle time.
@@ -212,6 +244,7 @@ class Team(TeamSync, TeamPages):
                     room=room_id, relay=relay, name=name, member=made['member'], admin=made['member'], state=ACTIVE,
                     epoch=0, profile=json.dumps(dict(profile, entry=token_hex(16), agreement=made['agreement'])),
                     created_at=utc_now())
+                self._event(TEAM_EVENT, {'team': room_id})
         self._team_first_write(room_id)
         return self._team_answer(room_id)
 
@@ -220,11 +253,12 @@ class Team(TeamSync, TeamPages):
         from .service import ServiceError
         room = self._team_room(room_id)
         if room['state'] != ACTIVE:
-            raise ServiceError(409, f'This room is {room["state"]} on this Mac.')
+            raise ServiceError(409, INACTIVE[room['state']])
         if room['admin'] != room['member']:
-            raise ServiceError(403, 'Only the admin of the room makes an invite.')
-        ttl = whole(data, 'ttl', DEFAULT_INVITE_SECONDS, INVITE_SECONDS)
-        uses = whole(data, 'uses', 1, INVITE_USES)
+            raise ServiceError(403, 'Only the admin of the team can invite a person.')
+        ttl = whole(data, 'ttl', DEFAULT_INVITE_SECONDS, INVITE_SECONDS,
+                    'An invite link lasts from 1 minute to 7 days. Choose a time in that range.')
+        uses = whole(data, 'uses', 1, INVITE_USES, 'An invite link admits 1 to 64 Macs. Choose a number in that range.')
         with self._team_operation, team_errors():
             secrets = team_keys.read(self.root, room_id)
             key = secrets['keys'].get(str(room['epoch']))
@@ -238,12 +272,13 @@ class Team(TeamSync, TeamPages):
                 # The link comes before the ticket, so a link that the helper refuses leaves no ticket on the relay.
                 link = self.team_helper.link(room_id, secret, expires, room['relay'], room['name'])
             except TeamFormatError:
-                raise ServiceError(409, 'The team helper makes no invite link for the relay of this room.') from None
+                raise ServiceError(409, 'This Mac cannot make an invite link for this team. Update Coconut, then try '
+                                        'again.') from None
             try:
                 self.team_relay.add_ticket(room['relay'], room_id, secrets['token'], ticket['hash'], ttl, uses, welcome, tries=2)
             except TeamRelayError as error:
                 if error.status == 409:
-                    raise ServiceError(409, 'The room has its limit of open invites. Wait until one ends.') from None
+                    raise ServiceError(409, 'The team has 8 open invite links. Wait until one ends, then try again.') from None
                 raise
         return {'link': link, 'expires': expires, 'uses': uses}
 
@@ -258,7 +293,7 @@ class Team(TeamSync, TeamPages):
         from .service import ServiceError
         link = data.get('link')
         if not isinstance(link, str) or not 0 < len(link) <= 4096:
-            raise ServiceError(400, 'Give the invite link of the team.')
+            raise ServiceError(400, 'Paste the invite link of the team.')
         profile = member_profile(data)
         with self._team_operation, team_errors():
             try:
@@ -267,14 +302,14 @@ class Team(TeamSync, TeamPages):
             except (TeamFormatError, ValueError) as error:
                 if getattr(error, 'code', '') == 'unknown_version':
                     raise ServiceError(400, 'A newer Coconut made this invite link. Update Coconut, then join again.') from None
-                raise ServiceError(400, 'This is not the invite link of a team.') from None
+                raise ServiceError(400, 'This is not the invite link of a team. Check the link, then try again.') from None
             if invite['expires'] <= time.time():
-                raise ServiceError(410, 'This invite link is past its end. Ask the admin for a new one.')
+                raise ServiceError(410, 'The invite link is past its end. Ask for a new link.')
             room_id = invite['room']
             with self.lock:
                 room = self.team_store.room(room_id)
             if room is not None and room['state'] != JOINING:
-                raise ServiceError(409, 'This Mac already has this room. Leave the room before you join it again.')
+                raise ServiceError(409, 'This Mac is already in this team.')
             if room is None:
                 made = self.team_helper.member()
                 team_keys.write(self.root, room_id, member_key=made['member_key'], agreement_key=made['agreement_key'],
@@ -284,11 +319,12 @@ class Team(TeamSync, TeamPages):
                         room=room_id, relay=relay, name=invite['name'], member=made['member'], admin='', state=JOINING,
                         epoch=0, profile=json.dumps(dict(profile, entry=token_hex(16), agreement=made['agreement'])),
                         created_at=utc_now())
+                    self._event(TEAM_EVENT, {'team': room_id})
             elif room['relay'] != relay:
                 # The relay of the earlier join can have taken the join, so the member token of this Mac is valid
                 # there. The token goes to no other relay.
-                raise ServiceError(409, 'This Mac already tries to join this room at another relay. Leave the room '
-                                        'on this Mac, then join again.')
+                raise ServiceError(409, 'This Mac already tries to join this team with a link of another server. '
+                                        'Leave the team on this Mac, then join again.')
             else:
                 # An earlier join got no answer. This one asks the same relay again, with the keys of that join.
                 with self.transaction():
@@ -301,20 +337,22 @@ class Team(TeamSync, TeamPages):
                 welcome = self.team_relay.join(relay, room_id, self.team_helper.ticket(invite['secret'])['ticket'], claim, tries=2)
             except TeamRelayError as error:
                 if error.temporary:
-                    raise ServiceError(503, 'The relay did not answer. Join again with the same link.') from None
+                    raise ServiceError(503, 'Coconut could not reach its server. Join again with the same link.') from None
                 # The relay refused this Mac, so its keys are of no use.
                 self._team_forget(room_id)
-                reasons = {401: 'This invite is used, past its end or removed. Ask the admin for a new one.',
-                           404: 'The relay has no room for this invite.', 409: 'The room has its limit of members.'}
-                raise ServiceError(409, reasons.get(error.status, f'The relay refused the join with status {error.status}.')) from None
+                reasons = {401: 'The invite link is used, past its end or removed. Ask for a new link.',
+                           404: 'This team no longer exists.', 409: 'The team is full. It has 64 members.'}
+                raise ServiceError(409, reasons.get(error.status, 'The Coconut server refused the join. Ask for a new '
+                                                                  'link.')) from None
             try:
                 opened = self.team_helper.open_welcome(room_id, invite['secret'], welcome)
             except TeamFormatError as error:
                 # A Mac without the room key cannot read or write the log, so it leaves the room (the contract).
                 self._team_drop_membership(room, secrets)
                 if error.code == 'unknown_version':
-                    raise ServiceError(409, 'A newer Coconut made this room. Update Coconut, then join again.') from None
-                raise ServiceError(409, 'The welcome of the room did not open. This Mac is not in the room.') from None
+                    raise ServiceError(409, 'A newer Coconut made this team. Update Coconut, then join again.') from None
+                raise ServiceError(409, 'This Mac could not open the invite, so it did not join the team. Ask for a '
+                                        'new link.') from None
             team_keys.write(self.root, room_id, member_key=secrets['member_key'], agreement_key=secrets['agreement_key'],
                             token=secrets['token'], keys={opened['epoch']: opened['key']})
             with self.transaction():
@@ -322,6 +360,7 @@ class Team(TeamSync, TeamPages):
                 self.team_store.update_room(
                     room_id, state=ACTIVE, admin=opened['admin'], name=opened['name'], epoch=opened['epoch'],
                     profile=json.dumps(dict(json.loads(room['profile']), **profile)))
+                self._event(TEAM_EVENT, {'team': room_id})
         self._team_first_write(room_id)
         return self._team_answer(room_id)
 
@@ -352,12 +391,38 @@ class Team(TeamSync, TeamPages):
                         self.team_relay.remove_member(room['relay'], room_id, secrets['token'], room['member'], tries=2)
                     except TeamRelayError as error:
                         if error.status == 409:
-                            raise ServiceError(409, 'The admin cannot leave a room that has other members.') from None
+                            raise ServiceError(409, 'The admin can leave the team only when no other member is in it.') from None
                         if error.status not in (401, 404):
                             raise
                         # The relay no longer knows this Mac or the room, so the Mac is out already.
                 self._team_forget(room_id)
         return {'room': room_id, 'left': True}
+
+    def team_profile(self, room_id: str, data: dict) -> dict:
+        """Change what the team sees for this Mac: its name, avatar and color. The Mac writes its `member` entry
+        again with the next `rev`, as its first write does, and a failure of the relay is an error for the caller.
+
+        The saved profile follows each accepted `member` entry of this Mac (TeamStore._follow_profile), so it is what
+        the log has for this Mac. An earlier write without an answer can be on the relay with other values, so the
+        Mac first reads the room back (TeamSync._team_settle). Only then does it take the fields that the caller
+        leaves out from the profile. The lock of the room holds from that read to the end of the write, so the sync
+        cannot write between them. A failure changes nothing on this Mac, and the person tries again.
+        """
+        from .service import ServiceError
+        self._team_room(room_id)
+        with self._team_operation, team_errors(), self._team_room_lock(room_id):
+            self._team_settle(room_id)
+            with self.lock:
+                room = self.team_store.room(room_id)
+            if room is None:
+                raise ServiceError(404, 'This Mac is not in this team.')
+            if room['state'] != ACTIVE:
+                raise ServiceError(409, INACTIVE[room['state']])
+            current = json.loads(room['profile'])
+            profile = dict(current, **member_profile(data, current))
+            # The accepted write of this Mac saves the profile in the same transaction.
+            self._team_write(room, profile['entry'], True, member_payload(profile), tries=2)
+        return self._team_answer(room_id)
 
     def team_sync_now(self) -> dict:
         """Read each room from the relay now, also a room that waits after a failure. Return the rooms."""
@@ -385,8 +450,9 @@ class Team(TeamSync, TeamPages):
             with self._team_room_lock(room_id):
                 self._team_announce(room_id, force=True)
         except ROOM_ERRORS as error:
-            self._team_status.setdefault(room_id, {})['error'] = str(error)
+            self._team_status.setdefault(room_id, {})['error'] = room_error(error)
             log.warning('coconut.team_log room %s: the member entry waits for the next pass. %s', room_id[:8], error)
+            self._team_tell_sync(room_id)
         self.team_wake()
 
     def _team_retire_member(self, room: dict) -> None:
@@ -419,8 +485,8 @@ class Team(TeamSync, TeamPages):
             self.team_relay.remove_member(room['relay'], room['room'], secrets['token'], room['member'], tries=2)
         except TeamRelayError as error:
             if error.temporary:
-                raise ServiceError(503, 'The welcome of the room did not open, and the relay did not answer the leave. '
-                                        'Leave the room on this Mac to try again.') from None
+                raise ServiceError(503, 'This Mac could not open the invite, and it could not reach its server to '
+                                        'leave the team. Leave the team on this Mac, then try again.') from None
         self._team_forget(room['room'])
 
     def _team_forget(self, room_id: str) -> None:
@@ -429,10 +495,11 @@ class Team(TeamSync, TeamPages):
             # The bots and the pages of the room go from the Library, so the phone reads the list again.
             if self.team_store.shows(room_id):
                 self._event('document.updated', {'team': room_id})
+            self._event(TEAM_EVENT, {'team': room_id})
             self.team_store.remove_room(room_id)
         team_keys.remove(self.root, room_id)
         for state in (self._team_failures, self._team_status, self._team_announced, self._team_locks,
-                      self._team_refusals):
+                      self._team_refusals, self._team_told):
             state.pop(room_id, None)
         self._team_retried.discard(room_id)
         self._team_unsure.discard(room_id)

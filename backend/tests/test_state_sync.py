@@ -453,6 +453,26 @@ class StateSyncTests(unittest.TestCase):
         self.assertNotIn('artifacts', page)
         self.assertNotIn('decisions', page)
 
+    def test_a_team_event_is_no_reset_and_rebuilds_no_work(self):
+        cursor = self.service._cursor()
+        timestamp = self.service.db.execute('SELECT created_at FROM events WHERE seq=?', (cursor,)).fetchone()[0]
+        with self.service.transaction():
+            self.service._event('team.updated', {'team': 'a' * 64})
+        # Each update version of an app of today replays the event, and none reads its whole state again.
+        for options in ({}, {'collection_deltas': True}, {'collection_deltas': True, 'native_events': True},
+                        {'collection_deltas': True, 'native_events': True, 'compact_history': True}):
+            with self.subTest(options=options), patch('coconut.service.now', return_value=timestamp), \
+                 patch.object(Service, '_snapshot', side_effect=AssertionError('A team event must not reset')), \
+                 patch.object(Service, '_work_projection', side_effect=AssertionError('A team event must not rebuild Work')):
+                page = self.service.updates(cursor, **options)
+            self.assertEqual((page['team_changed'], page['documents_changed'], page['settings_changed']), (True, False, False))
+            self.assertNotIn('artifacts', page)
+            self.assertNotIn('decisions', page)
+        # Another event does not say that the team changed.
+        cursor = self.service._cursor()
+        self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
+        self.assertFalse(self.service.updates(cursor, collection_deltas=True)['team_changed'])
+
     def test_continuous_text_refreshes_time_dependent_work(self):
         task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
         with self.service.transaction():

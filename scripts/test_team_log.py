@@ -228,7 +228,10 @@ class TeamLogTests(unittest.TestCase):
         self.assertEqual(len(self.relay.members(self.url, room_id, secrets_of_first['token'])), 2)
 
         # The first Mac replaces its `member` entry. The second Mac takes the write with the higher `rev`.
-        agreement = next(member['agreement'] for member in first.rooms(sync=False)[0]['members'] if member['this_mac'])
+        # No answer has the public agreement key, so the test reads it from the store.
+        with self.database(first) as database:
+            agreement = database.execute('SELECT agreement FROM team_members WHERE room=? AND member=?',
+                                         (room_id, room['member'])).fetchone()[0]
         own_entry = self.own_entry(first, room_id)
         replaced = {'kind': 'member', 'name': 'Ada L.', 'avatar': '', 'color': '', 'agreement': agreement}
         position = self.write(first, room_id, own_entry, dict(replaced, rev=2), kept=True)
@@ -345,6 +348,59 @@ class TeamLogTests(unittest.TestCase):
         self.assertEqual(second.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
         for mac in (first, second):
             self.assertNotIn('coconut.team_pages', self.log(mac))
+
+    def test_the_app_makes_a_team_and_a_second_mac_joins_it(self):
+        first, second, _ = self.macs
+        # The Team screen of a paired phone calls the routes with the token of its device.
+        status, answer = first.phone('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                                'relay': self.url})
+        self.assertEqual(status, 200, answer)
+        room_id = answer['room']['room']
+        self.assertEqual((answer['room']['is_admin'], answer['room']['can_invite']), (True, True))
+        status, invite = first.phone('POST', f'/v1/team/rooms/{room_id}/invites', {})
+        self.assertEqual(status, 200, invite)
+        cursor = second.phone('GET', '/v1/updates')[1]['cursor']
+        status, answer = second.phone('POST', '/v1/team/join', {'link': invite['link'], 'member_name': 'Grace'})
+        self.assertEqual((status, answer['room']['can_invite']), (200, False), answer)
+        self.assertTrue(second.phone('GET', f'/v1/updates?after={cursor}')[1]['team_changed'])
+
+        # The first Mac adds a bot, and each Mac lists both members and the bot.
+        status, bot = first.phone('POST', '/v1/bots', {'name': 'Reporter'})
+        self.assertEqual(status, 200, bot)
+        status, answer = first.phone('POST', f'/v1/team/rooms/{room_id}/bots', {'bot_id': bot['id']})
+        self.assertEqual((status, [(row['name'], row['this_mac'], row['bot_id']) for row in answer['room']['bots']]),
+                         (200, [('Reporter', True, bot['id'])]), answer)
+        # The pass of the first Mac writes the bot entry, and the pass of the second Mac reads it.
+        views = {mac: self.team_view(mac, room_id) for mac in (first, second)}
+        for mac, view in views.items():
+            self.assertEqual([(member['name'], member['this_mac']) for member in view['members']],
+                             [('Ada', mac is first), ('Grace', mac is second)], mac.data.name)
+            self.assertEqual([(row['name'], row['member_name'], row['this_mac']) for row in view['bots']],
+                             [('Reporter', 'Ada', mac is first)], mac.data.name)
+        self.assertEqual(views[first]['bots'][0]['id'], views[second]['bots'][0]['id'])
+
+        # The first Mac takes a name with an emoji sequence, and the second Mac shows it after the real seal.
+        name = 'Ada \U0001f469\u200d\U0001f4bb'
+        status, answer = first.phone('PATCH', f'/v1/team/rooms/{room_id}', {'member_name': name})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual([member['name'] for member in self.team_view(second, room_id)['members']], [name, 'Grace'])
+        self.assertEqual(self.team_view(second, room_id)['bots'][0]['member_name'], name)
+
+        # The second Mac leaves, then the admin leaves the room without other members.
+        self.assertEqual(second.phone('DELETE', f'/v1/team/rooms/{room_id}', {}), (200, {'room': room_id, 'left': True}))
+        self.assertEqual([member['name'] for member in self.team_view(first, room_id)['members']], [name])
+        self.assertEqual(first.phone('DELETE', f'/v1/team/rooms/{room_id}', {}), (200, {'room': room_id, 'left': True}))
+        for mac in (first, second):
+            status, answer = mac.phone('GET', '/v1/team/rooms')
+            self.assertEqual((status, [row['room'] for row in answer['rooms']]), (200, []))
+            self.assertNotIn(invite['link'], self.log(mac))
+
+    def team_view(self, mac: Mac, room_id: str) -> dict:
+        """A pass of the Mac, started by the phone, then its room as the Team screen gets it."""
+        status, answer = mac.phone('POST', '/v1/team/sync', {})
+        self.assertTrue(status == 200 and answer['complete'], answer)
+        (view,) = (row for row in answer['rooms'] if row['room'] == room_id)
+        return view
 
     def team_library(self, writer: Mac, reader: Mac) -> dict:
         """A pass on the Mac that writes, one on the Mac that reads, then the Library of the reader."""

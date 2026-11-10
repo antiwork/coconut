@@ -18,7 +18,7 @@ import re
 from secrets import token_hex
 
 from .team_relay import MAX_NUMBER, TeamRelayError
-from .team_store import ACTIVE, MEMBER_LIMITS, TeamStore
+from .team_store import ACTIVE, MEMBER_LIMITS, TeamStore, unicode_text
 from .team_sync import encode_payload
 
 # The relay takes a body of at most 1 MiB. The body is the payload and 97 bytes: the version, the epoch, the nonce,
@@ -31,6 +31,8 @@ WIDEST_AT = '0000-00-00T00:00:00.000000Z'
 # The ID that the phone gets for a team page or a team bot: "t-", the room ID, "-", the entry ID. It is unique for
 # each entry of each room and safe in a URL path. The ID of a local document is a UUID, which never starts with "t".
 TEAM_ID = re.compile(r't-([a-f0-9]{64})-([a-f0-9]{32})')
+# The longest bot ID that a share takes, so a long value does not reach SQLite. A bot ID of this Mac is a UUID.
+MAX_BOT_ID = 200
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +76,7 @@ def payload_problem(fields: dict) -> str | None:
     except UnicodeEncodeError:
         return 'The page has text that is not valid Unicode.'
     if size > MAX_PAYLOAD:
-        return (f'In the team log the page needs {size} bytes, and one entry takes at most {MAX_PAYLOAD}. '
+        return (f'The page is too large for the team: it needs {size} bytes, and the limit is {MAX_PAYLOAD}. '
                 'Keep less data in the page.')
     return None
 
@@ -129,29 +131,33 @@ class TeamPages:
     def team_share(self, room_id: str, data: dict) -> dict:
         """Share a bot of this Mac with a room. The next pass writes its `bot` entry and its team pages."""
         from .service import ServiceError
+        from .team_sync import INACTIVE, TEAM_EVENT
         room = self._team_room(room_id)
         if room['state'] != ACTIVE:
-            raise ServiceError(409, f'This room is {room["state"]} on this Mac.')
+            raise ServiceError(409, INACTIVE[room['state']])
         bot_id = data.get('bot_id')
-        if not isinstance(bot_id, str) or not bot_id:
-            raise ServiceError(400, 'Give the bot_id of a bot of this Mac.')
+        if not unicode_text(bot_id) or not 0 < len(bot_id) <= MAX_BOT_ID:
+            raise ServiceError(400, 'Choose a bot of this Mac.')
         with self.transaction():
             bot = self._team_bot(bot_id)
             if bot is None or bot.get('_deleted'):
-                raise ServiceError(404, 'This Mac has no bot with this ID.')
+                raise ServiceError(404, 'This bot is no longer on this Mac.')
             if bot.get('archived'):
-                raise ServiceError(409, 'The bot is archived. Restore it, then share it.')
+                raise ServiceError(409, 'The bot is archived. Restore it, then add it to the team.')
             if self.team_store.room(room_id) is None:
-                raise ServiceError(404, 'This Mac is not in this room.')
-            self.team_store.share(room_id, bot_id, token_hex(16))
+                raise ServiceError(404, 'This Mac is not in this team.')
+            if self.team_store.share(room_id, bot_id, token_hex(16)):
+                self._event(TEAM_EVENT, {'team': room_id})
         self.team_wake()
         return self._team_answer(room_id)
 
     def team_unshare(self, room_id: str, bot_id: str) -> dict:
         """Stop sharing a bot with a room. The next pass replaces its entries with `delete` entries."""
+        from .team_sync import TEAM_EVENT
         self._team_room(room_id)
         with self.transaction():
-            self.team_store.unshare(room_id, bot_id)
+            if self.team_store.unshare(room_id, bot_id):
+                self._event(TEAM_EVENT, {'team': room_id})
         self.team_wake()
         return self._team_answer(room_id)
 
@@ -159,14 +165,38 @@ class TeamPages:
         row = self.db.execute('SELECT data FROM bots WHERE id=?', (bot_id,)).fetchone()
         return json.loads(row[0]) if row else None
 
-    def _team_shared(self, room_id: str) -> list[dict]:
-        """The bots that this Mac shares with a room, for GET /v1/team/rooms. The caller holds the service lock."""
-        shared = []
+    def _team_live_bots(self, room_id: str) -> dict[str, tuple[str, dict]]:
+        """The bots that this Mac shares with a room and that exist and are not archived, each with the entry ID of
+        its `bot` entry. The caller holds the service lock."""
+        live = {}
         for bot_id, entry in self.team_store.shares(room_id).items():
-            bot = self._team_bot(bot_id) or {'_deleted': True}
-            shared.append({'bot_id': bot_id, 'name': bot.get('name'), 'entry': entry,
-                           'shown': not bot.get('archived') and not bot.get('_deleted')})
-        return shared
+            bot = self._team_bot(bot_id)
+            if bot and not bot.get('archived') and not bot.get('_deleted'):
+                live[bot_id] = entry, bot
+        return live
+
+    def _team_bots(self, room: dict, members: list[dict]) -> list[dict]:
+        """The bots of the team as a person sees them, for GET /v1/team/rooms. The caller holds the service lock.
+
+        As in the Library, a bot shows only while the room is active and its member is in the member list. A bot of
+        another Mac has the ID of its team bot in GET /v1/documents. A bot of this Mac also has its `bot_id`, and
+        its profile comes from the bot of this Mac, so a change shows before the next pass writes it.
+        """
+        if room['state'] != ACTIVE:
+            return []
+        names = {member['member']: member['name'] for member in members}
+        bots = [dict(id=team_id(room['room'], row['entry']), name=row['name'], avatar=row['avatar'], color=row['color'],
+                     member=row['member'], member_name=names[row['member']], this_mac=False)
+                for row in self.team_store.bots(room['room']) if row['member'] in names]
+        if room['member'] in names:
+            for bot_id, (entry, bot) in self._team_live_bots(room['room']).items():
+                fields = bot_entry(bot)
+                bots.append(dict(id=team_id(room['room'], entry), name=fields['name'], avatar=fields['avatar'],
+                                 color=fields['color'], member=room['member'], member_name=names[room['member']],
+                                 this_mac=True, bot_id=bot_id))
+        # The bots follow the order of the members, then their names.
+        order = {member: index for index, member in enumerate(names)}
+        return sorted(bots, key=lambda bot: (order[bot['member']], bot['name'], bot['id']))
 
     def _team_publish(self, room_id: str) -> None:
         """Make the log of the room equal to what this Mac shares. The caller holds the lock of the room.
@@ -223,9 +253,9 @@ class TeamPages:
         from .documents import expired
         from .service import now
         room_id = room['room']
-        shares = self.team_store.shares(room_id)
-        bots = {bot_id: bot for bot_id, bot in ((bot_id, self._team_bot(bot_id)) for bot_id in shares)
-                if bot and not bot.get('archived') and not bot.get('_deleted')}
+        live = self._team_live_bots(room_id)
+        shares = {bot_id: entry for bot_id, (entry, _) in live.items()}
+        bots = {bot_id: bot for bot_id, (_, bot) in live.items()}
         current = now()
         documents = [document for document in (json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM documents WHERE json_extract(data, '$.audience')='team'"))

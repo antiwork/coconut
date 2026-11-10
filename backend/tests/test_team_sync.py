@@ -76,11 +76,56 @@ class TeamSyncTests(TeamMacs, unittest.TestCase):
                           '\n'.join(logs.output))
         self.assertEqual(self.names(self.second, sync=False), ['Ada', 'Grace'])
 
+    def test_the_app_learns_when_the_sync_error_appears_and_clears(self):
+        self.sync_view(self.second)
+
+        def events(step) -> int:
+            cursor = self.second._cursor()
+            step()
+            return self.second.db.execute("SELECT COUNT(*) FROM events WHERE seq>? AND type='team.updated'",
+                                          (cursor,)).fetchone()[0]
+
+        def retry():
+            self.second.team_wake(retry=True)
+            self.second.team_sync_pass()
+        self.assertEqual(events(retry), 0)
+        self.relay.down = True
+        with self.assertLogs('coconut.team_sync', 'WARNING'):
+            self.assertEqual(events(retry), 1)
+            self.assertEqual(events(retry), 0)
+        self.relay.down = False
+        self.assertEqual(events(retry), 1)
+        self.assertEqual(events(retry), 0)
+        self.assertIsNone(self.sync_view(self.second)['error'])
+
+    def test_an_event_of_the_sync_state_that_did_not_save_comes_with_the_next_pass(self):
+        self.sync_view(self.second)
+        event = self.second._event
+        calls = []
+
+        def fail_once(*arguments, **options):
+            calls.append(arguments[0])
+            if len(calls) == 1:
+                raise sqlite3.OperationalError('database is locked')
+            return event(*arguments, **options)
+        self.relay.down = True
+        cursor = self.second._cursor()
+        with mock.patch.object(self.second, '_event', fail_once), self.assertLogs('coconut.team_sync', 'WARNING'):
+            self.second.team_wake(retry=True)
+            self.second.team_sync_pass()
+            self.assertEqual(self.second._cursor(), cursor)
+            # The same error again: the event that did not save comes now, once.
+            for _ in range(2):
+                self.second.team_wake(retry=True)
+                self.second.team_sync_pass()
+        types = [row[0] for row in self.second.db.execute('SELECT type FROM events WHERE seq>?', (cursor,))]
+        self.assertEqual((calls, types), (['team.updated', 'team.updated'], ['team.updated']))
+
     def test_a_room_whose_relay_fails_waits_longer_until_a_wake_with_retry(self):
         self.relay.down = True
         with self.assertLogs('coconut.team_sync', 'WARNING') as logs:
             view = self.sync_view(self.second)
-        self.assertEqual(view['error'], 'The relay did not answer.')
+        self.assertEqual(view['error'], 'Coconut could not reach its server. Try again later.')
         self.assertIn('The next try is in 60 seconds.', logs.output[0])
         self.assertEqual(self.second._team_failures[self.room_id][0], 1)
         # The next pass does not ask the relay while the room waits.
@@ -135,7 +180,7 @@ class TeamSyncTests(TeamMacs, unittest.TestCase):
             write(*arguments, **options)
             raise TeamRelayError(0, 'The relay did not answer.')
         renamed = {'kind': 'member', 'name': 'Grace H.', 'avatar': '', 'color': '',
-                   'agreement': self.joined['members'][0]['agreement']}
+                   'agreement': json.loads(self.second.team_store.room(self.room_id)['profile'])['agreement']}
         with mock.patch.object(self.relay, 'write', lose_the_answer), self.second._team_room_lock(self.room_id):
             with self.assertRaises(TeamRelayError):
                 self.second._team_write(self.second.team_store.room(self.room_id), own, True, renamed)
@@ -205,7 +250,7 @@ class TeamSyncTests(TeamMacs, unittest.TestCase):
         self.assertIn('RuntimeError: A defect of this code.', '\n'.join(logs.output))
         self.assertEqual(self.second._team_failures[self.room_id][0], 1)
         self.assertEqual(self.second._team_status[self.room_id]['error'],
-                         'The sync of this room failed. The log of the service has the reason.')
+                         'Coconut could not update this team. It tries again later.')
         self.assertEqual(self.second._team_status[other['room']]['error'], None)
         self.assertNotIn(other['room'], self.second._team_failures)
 
