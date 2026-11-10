@@ -34,6 +34,13 @@ struct ConversationView: View {
     /// its rows and writes its labels again at once.
     @State private var dayReference = Date()
     @State private var pinnedDay = PinnedDay()
+    #if os(macOS)
+    /// The chat runs up under the toolbar of the window, where the title of the bot floats. The first message and the
+    /// pinned day pill start below the title.
+    private static let titleHeight: CGFloat = 52
+    #else
+    private static let titleHeight: CGFloat = 0
+    #endif
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.toggleBotDetails) private var toggleBotDetails
@@ -132,10 +139,7 @@ struct ConversationView: View {
                                 }
                                 }
                                     // The pinned day pill follows the row at the top of the chat.
-                                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
-                                        if let date { pinnedDay.place(entry.id, frame: frame, date: date, startsDay: entry.startsDay) }
-                                    }
-                                    .onDisappear { pinnedDay.remove(entry.id) }
+                                    .pinnedDayRow(pinnedDay, id: entry.id, date: date, startsDay: entry.startsDay)
                                     // Keep full text height when the list resizes or scrolls to a new message.
                                     .fixedSize(horizontal: false, vertical: true)
                                     .id(message.kind == "decision" ? (message.decisionId ?? entry.id) : entry.id)
@@ -153,9 +157,7 @@ struct ConversationView: View {
                     }
                     .listStyle(.plain)
                     #if os(macOS)
-                    // The chat runs up under the window's toolbar, where the bot's title floats. The first message
-                    // starts below the title.
-                    .contentMargins(.top, 52, for: .scrollContent)
+                    .contentMargins(.top, Self.titleHeight, for: .scrollContent)
                     #endif
                     .buttonStyle(.borderless)
                     .scrollContentBackground(.hidden)
@@ -201,7 +203,11 @@ struct ConversationView: View {
                     }
                     .onScrollPhaseChange { previous, phase, context in
                         footerScroll.phaseChanged(phase, offset: ConversationFooterScroll.offset(in: context.geometry))
+                        // A Mac reports no phase for a mouse wheel, a scroll bar or the keyboard. There the pinned day
+                        // pill follows the scroll position.
+                        #if !os(macOS)
                         pinnedDay.scrolls(phase != .idle)
+                        #endif
                         userScrolling = phase == .interacting || phase == .decelerating
                         rowHold.phaseChanged(phase)
                         if userScrolling || previous == .interacting || previous == .decelerating {
@@ -266,7 +272,7 @@ struct ConversationView: View {
                             .accessibilityIdentifier("conversation-latest")
                         }
                     }
-                    .overlay(alignment: .top) { PinnedDayPill(pinned: pinnedDay, now: dayReference) }
+                    .pinnedDayPill(pinnedDay, now: dayReference, below: Self.titleHeight)
                     .background(BoardStyle.paper)
                     .task { await store.markRead(bot) }
                     .task(id: "\(focusMessageId ?? ""):\(store.connection.rawValue):\(store.hasOlderMessages(botId))") {

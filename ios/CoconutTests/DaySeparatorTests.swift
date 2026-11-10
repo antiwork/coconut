@@ -154,7 +154,23 @@ final class DaySeparatorTests: XCTestCase {
         XCTAssertFalse(pinned.standsIn(for: "b"))
         pinned.scrolls(false)
         XCTAssertTrue(pinned.isVisible)
-        try await Task.sleep(for: .milliseconds(1300))
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertFalse(pinned.isVisible)
+    }
+
+    /// A Mac tells the pinned day each change of the scroll position. The pill stays while the changes continue, and
+    /// for one second after the last change.
+    @MainActor
+    func testPinnedPillShowsWhileThePositionChanges() async throws {
+        let pinned = pinnedDay(scrolled: 80)
+        pinned.scrolled()
+        XCTAssertTrue(pinned.standsIn(for: "a"))
+        try await Task.sleep(for: .milliseconds(500))
+        pinned.scrolled()
+        // More than one second after the first change, and less than one second after the last change.
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertTrue(pinned.isVisible)
+        try await Task.sleep(for: .milliseconds(900))
         XCTAssertFalse(pinned.isVisible)
     }
 }

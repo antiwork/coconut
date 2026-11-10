@@ -87,6 +87,8 @@ struct PinnedDayPill: View {
 
     let pinned: PinnedDay
     let now: Date
+    /// The height of a header that covers the top of the chat list. The pill stays below it.
+    var header: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -102,9 +104,37 @@ struct PinnedDayPill: View {
                         .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: pinned.isVisible)
                 }
             }
-            .padding(.top, Self.inset - DayPill.spaceAbove)
+            .padding(.top, header + Self.inset - DayPill.spaceAbove)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
+    }
+}
+
+extension View {
+    /// A row of the chat tells the pinned day where it is, and leaves it when the list removes the row.
+    func pinnedDayRow(_ pinned: PinnedDay, id: String, date: Date?, startsDay: Bool) -> some View {
+        onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+            if let date { pinned.place(id, frame: frame, date: date, startsDay: startsDay) }
+        }
+        .onDisappear { pinned.remove(id) }
+    }
+
+    /// The chat list shows the pinned pill at its top, below a header of the chat that covers the top of the list.
+    func pinnedDayPill(_ pinned: PinnedDay, now: Date, below header: CGFloat = 0) -> some View {
+        overlay(alignment: .top) { PinnedDayPill(pinned: pinned, now: now, header: header) }
+            #if os(macOS)
+            // A mouse wheel, a scroll bar and the keyboard report no scroll phase on a Mac, so the position tells
+            // that the chat scrolls. A new window size moves the position too, and so does the chat when it follows
+            // a new message to its bottom. These are not scrolls of the reader.
+            .onScrollGeometryChange(for: [CGFloat].self) {
+                [$0.contentOffset.y, $0.contentSize.height, $0.containerSize.height, $0.contentInsets.bottom,
+                 $0.containerSize.width]
+            } action: { old, new in
+                let sameWindow = old[2] == new[2] && old[3] == new[3] && old[4] == new[4]
+                let atBottom = new[0] + new[2] - new[3] >= new[1] - 1
+                if sameWindow, old[0] != new[0], !atBottom { pinned.scrolled() }
+            }
+            #endif
     }
 }
 
@@ -147,6 +177,13 @@ final class PinnedDay {
 
     func remove(_ row: String) {
         if rows.removeValue(forKey: row) != nil { update() }
+    }
+
+    /// The position of the chat changed, on a platform that reports no phase for each kind of scroll. The pill shows,
+    /// and it stays for one second after the last change.
+    func scrolled() {
+        scrolls(true)
+        scrolls(false)
     }
 
     /// The scroll of the chat starts or stops. The pill stays for one second after a stop.
