@@ -384,14 +384,16 @@ class Team(TeamSync):
         `delete` entry, and the other Macs show it until the member removal of the contract exists. The caller holds
         the lock of the room.
         """
-        # The first `member` entry can be on the relay without an answer. A failure of this read fails the leave.
-        self._team_settle(room['room'])
         entry_id = json.loads(room['profile'])['entry']
-        with self.lock:
-            entry = self.team_store.entry(room['room'], entry_id)
-        if entry is None or entry['kind'] != 'member':
-            return
         try:
+            # The first `member` entry can be on the relay without an answer, so the Mac reads the room first. A
+            # failure of the helper or of the key file in this read also lets the leave go on. A failure of the relay
+            # stops the leave, and the person tries again.
+            self._team_settle(room['room'])
+            with self.lock:
+                entry = self.team_store.entry(room['room'], entry_id)
+            if entry is None or entry['kind'] != 'member':
+                return
             self._team_write(room, entry_id, False, {'kind': 'delete'}, tries=2)
         except (TeamHelperError, TeamFormatError, TeamKeysError) as error:
             log.warning('coconut.team_log room %s: this Mac leaves without a delete entry, so the other Macs can '

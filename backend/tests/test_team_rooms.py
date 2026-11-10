@@ -7,6 +7,7 @@ import base64
 import json
 import time
 import unittest
+from unittest import mock
 
 from coconut import team_keys
 from coconut.team_relay import TeamRelayError
@@ -284,6 +285,26 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
         self.assertFalse(self.key_file(self.second, room['room']).exists())
         # Without the `delete` entry, the first Mac keeps the copy of the member entry (docs/team-log.md, "To leave").
         self.assertEqual(self.names(self.first), ['Ada', 'Grace'])
+
+    def test_a_member_leaves_also_when_the_read_back_of_a_write_without_an_answer_fails(self):
+        room = self.create()
+        write = self.relay.write
+
+        def lose_the_answer(*arguments, **options):
+            write(*arguments, **options)
+            raise TeamRelayError(0, 'The relay did not answer.')
+        with mock.patch.object(self.relay, 'write', lose_the_answer), self.assertLogs('coconut.team', 'WARNING'):
+            joined = self.join(self.second, self.invite(room)['link'])
+        # The relay has the `member` entry of the second Mac, so the leave must read the room before its `delete`.
+        self.assertIn(room['room'], self.second._team_unsure)
+        self.assertEqual(self.names(self.first), ['Ada', 'Grace'])
+        self.second.team_helper.available = False
+        with self.assertLogs('coconut.team', 'WARNING') as logs:
+            self.assertEqual(self.leave(self.second, room), {'room': room['room'], 'left': True})
+        self.assertIn('leaves without a delete entry', '\n'.join(logs.output))
+        self.assertNotIn(joined['member'], self.relay.rooms[room['room']]['members'])
+        self.assertEqual(self.rooms(self.second, sync=False), [])
+        self.assertFalse(self.key_file(self.second, room['room']).exists())
 
     def test_the_admin_leaves_only_a_room_without_other_members(self):
         room = self.create()
