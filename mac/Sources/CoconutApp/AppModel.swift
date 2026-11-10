@@ -76,7 +76,9 @@ final class AppModel: ObservableObject {
         let canRegister = legacyAgents.isEmpty && status.service != .notInstalled
         if canRegister && !couldRegister { registerIfNeeded() }
         couldRegister = canRegister
-        let loginItems = LoginItems().statuses()
+        // Each status is a request to launchd. On the main thread the three of them held the app for about 95 ms every
+        // five seconds, also while the person clicked in a chat.
+        let loginItems = await Task.detached(priority: .utility) { LoginItems().statuses() }.value
         if loginItems != self.loginItems { self.loginItems = loginItems }
     }
 

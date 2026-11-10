@@ -2,7 +2,7 @@ import Foundation
 
 /// The two login items of Coconut.app. Each one is a launch agent plist in `Contents/Library/LaunchAgents`, which the
 /// app registers with `SMAppService.agent(plistName:)`. Both start `Contents/Helpers/coconut` with one command.
-public enum Agent: String, CaseIterable {
+public enum Agent: String, CaseIterable, Sendable {
     case service = "com.gumroad.coconut.service"
     case relay = "com.gumroad.coconut.relay"
 
