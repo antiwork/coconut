@@ -50,8 +50,7 @@ class GatewayCronTests(unittest.TestCase):
         # A second start of the same run, for example after a retry, finds the same turn.
         self.assertEqual(self.start()['turn_id'], started['turn_id'])
         bridge = self.service.gateway_bridge
-        for event in ({'kind': 'delta', 'stream': 1, 'text': 'Checking the queue.'},
-                      {'kind': 'send', 'message_id': 'c:1', 'text': 'Checking the queue.', 'interim': True},
+        for event in ({'kind': 'send', 'message_id': 'c:1', 'text': 'Checking the queue.', 'interim': True},
                       {'kind': 'send', 'message_id': 'c:2', 'text': 'Two new items.'},
                       {'kind': 'done', 'outcome': 'success'}):
             self.assertEqual(bridge.event(dict(event, turn_id=started['turn_id'])), {'ok': True})

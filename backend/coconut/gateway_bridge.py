@@ -6,8 +6,8 @@ the main listener, with the token of `<data>/gateway/bridge.json`:
 
 - `POST /v1/gateway/poll` waits for turns of one Hermes home (one profile, one bot), and for turns to stop. The request
   lists the turns that still run in the gateway.
-- `POST /v1/gateway/events` reports what the gateway does with a turn: `typing`, `delta`, `send`, `edit`, `delete`,
-  `question` and `done`.
+- `POST /v1/gateway/events` reports what the gateway does with a turn: `typing`, `send`, `edit`, `delete`, `question`
+  and `done`.
 - `POST /v1/gateway/tools` runs a Coconut tool of the `coconut` toolset for the task of a running turn (gateway_chat).
 - `POST /v1/gateway/wake` opens a turn for a run that Hermes starts in a bot's chat by itself, for example after a
   background process (gateway_chat.gateway_hermes_run).
@@ -47,7 +47,9 @@ SILENT_SECONDS = 90
 CRON_SILENT_SECONDS = 3 * 3600
 ADAPTER_SECONDS = 60
 MAX_TEXT = 200_000
-KINDS = ('typing', 'delta', 'send', 'edit', 'delete', 'question', 'done')
+# `delta` stays known: a gateway that still runs the plugin of an earlier version sends partial text for each turn.
+# The bridge drops it (event), so the turn goes on with its complete sends. Remove `delta` when no install has that plugin.
+KINDS = ('typing', 'send', 'edit', 'delete', 'question', 'done', 'delta')
 QUESTION_KINDS = ('clarify', 'approval')
 
 # The chat of a turn (gateway_chat.run_gateway_chat). A turn of the bot's conversation runs in the bot's chat
@@ -224,8 +226,6 @@ class GatewayBridge:
             raise ValueError('Send a known gateway event.')
         if kind in ('send', 'edit', 'delete') and not isinstance(message_id, str):
             raise ValueError('Name the message of this event.')
-        if kind == 'delta' and (type(data.get('stream')) is not int or not text):
-            raise ValueError('Name the model call of the streamed text.')
         if kind == 'question':
             question_choices(data)
         with self.lock:
@@ -234,7 +234,9 @@ class GatewayBridge:
                 # A cancelled or finished turn. The gateway may still send its last messages.
                 return {'ok': False}
             turn.seen = time.monotonic()
-            turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome', 'stream',
+            if kind == 'delta':
+                return {'ok': True}
+            turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome',
                                                            'question_id', 'question_kind', 'detail', 'choices')
                                 if key in data})
             if kind == 'done':
@@ -392,30 +394,25 @@ def question_choices(data: dict) -> list[dict]:
 class TurnEvents:
     """Translate the gateway events of one turn into provider events, as the worker sends them.
 
-    Streamed text (`delta`) from the hooks of the plugin fills the streaming reply while the model writes. Each model
-    call has its own stream number: text of a new call starts a new segment.
-    The gateway sends a reply in segments: each `send` starts one, and `edit` replaces its text while Hermes streams.
-    The newest segment is the streaming reply of the turn. A new segment keeps the earlier one as a complete interim
-    message. A send that the gateway marks as interim, such as commentary, is a complete message at once, and it ends
-    the streamed segment of the same text. The first send that is not interim takes over from the streamed text: later
-    deltas only repeat what the gateway sends and edits.
+    The phone shows each message of the bot only when it is complete. The plugin sends no partial text, and Hermes
+    streams none to the platform (hermes_plugin/coconut/adapter.py, SUPPORTS_MESSAGE_EDITING).
+    The gateway sends a reply in segments: each `send` starts one with its complete text, and `edit` replaces that text.
+    The newest segment is the reply of the turn. A new segment keeps the earlier one as a complete interim message. A
+    send that the gateway marks as interim, such as commentary, is a complete interim message at once.
 
     A `silent` turn, such as a reaction or bot traffic, may end in silence: when Hermes sends no reply, or a reply that is
-    a silence marker, the turn ends without a message, as the worker ends it (silent_responses.is_silence_reply). Hermes drops a
-    reply that is only a marker, but the plugin streams its text, or only its start, before that. A turn without
-    `commentary`, such as a reaction, shows no commentary.
+    a silence marker, the turn ends without a message, as the worker ends it (silent_responses.is_silence_reply). A turn
+    without `commentary`, such as a reaction, shows no commentary.
     """
 
     def __init__(self, emit, turn_id=None, silent=False, commentary=True):
         self.emit = emit
         self.turn_id = turn_id
         self.silent, self.commentary = silent, commentary
-        self.stream = None
+        # The message ID and the text of the newest segment, and whether the gateway sent a reply.
+        self.segment = None
         self.text = ''
         self.phase = None
-        # The stream number of the streamed segment, the numbers that ended, and whether the gateway sends the reply.
-        self.delta_stream = None
-        self.ended_streams = set()
         self.sent = False
 
     def apply(self, event: dict) -> bool:
@@ -423,70 +420,40 @@ class TurnEvents:
         kind, text = event['kind'], event.get('text') or ''
         if kind == 'typing':
             self._phase('thinking')
-        elif kind == 'delta' and not self.commentary:
-            # A turn without commentary, such as a reaction, shows only its reply. Its streamed text could be commentary,
-            # which the phone would show until the interim send takes it back. The reply comes with the gateway's send.
-            self._phase('writing')
-        elif kind == 'delta':
-            number = event['stream']
-            if self.sent or number in self.ended_streams or (self.delta_stream is not None and number < self.delta_stream):
-                return False
-            self._phase('writing')
-            if self.stream is not None and self.delta_stream == number:
-                self.emit('text_delta', {'text': text})
-                self.text += text
-            else:
-                self._seal()
-                self.emit('text_delta', {'text': text})
-                self.stream, self.text, self.delta_stream = f'stream:{number}', text, number
         elif kind == 'question':
             self.emit('gateway_question', {key: event.get(key) for key in (
                 'question_id', 'question_kind', 'text', 'detail', 'choices')} | {'turn_id': self.turn_id})
         elif kind == 'send' and text.strip():
             self._phase('writing')
-            streamed = self.stream is not None and self.stream.startswith('stream:')
             if event.get('interim') and not self.commentary:
-                # A reaction turn shows no commentary, as in the worker. Take back the streamed text of the commentary.
-                if streamed:
-                    self.emit('text_delta', {'text': '', 'replace': True})
-                    self.ended_streams.add(self.delta_stream)
-                    self.stream, self.text = None, ''
+                # A reaction turn shows no commentary, as in the worker.
                 return False
             if event.get('interim'):
-                if streamed:
-                    # Commentary of the model call that the stream shows. Keep its exact text as the interim message.
-                    if text != self.text:
-                        self.emit('text_delta', {'text': text, 'replace': True})
-                    self._seal()
-                else:
-                    self._seal()
-                    self.emit('interim_message', {'text': text})
-            elif self.stream is not None and (text == self.text or streamed):
-                # The send of a reply that the stream already shows, maybe with small differences.
-                if text != self.text:
-                    self.emit('text_delta', {'text': text, 'replace': True})
-                self.stream, self.text, self.sent = event['message_id'], text, True
+                self._seal()
+                self.emit('interim_message', {'text': text})
+            elif self.segment is not None and text == self.text:
+                # A send that repeats the newest segment, for example the final send after an edit. It adds no message.
+                self.segment, self.sent = event['message_id'], True
             else:
                 self._seal()
                 self.emit('text_delta', {'text': text})
-                self.stream, self.text, self.sent = event['message_id'], text, True
-        elif kind == 'edit' and event['message_id'] == self.stream and text != self.text:
+                self.segment, self.text, self.sent = event['message_id'], text, True
+        elif kind == 'edit' and event['message_id'] == self.segment and text != self.text:
             self.emit('text_delta', {'text': text, 'replace': True})
             self.text = text
-        elif kind == 'delete' and event['message_id'] == self.stream:
+        elif kind == 'delete' and event['message_id'] == self.segment:
             self.emit('text_delta', {'text': '', 'replace': True})
-            self.stream, self.text = None, ''
+            self.segment, self.text = None, ''
         elif kind == 'done' and event.get('outcome') == 'busy':
-            if self.stream is not None:
+            if self.segment is not None:
                 # Text of the other turn that reached this turn before the gateway skipped it.
                 self.emit('text_delta', {'text': '', 'replace': True})
             raise GatewayBusy('The Hermes gateway runs another turn in the session of this chat.')
         elif kind == 'done':
-            # Hermes sends no reply when the model chose silence. The plugin may have streamed the marker, or only its
-            # start, which Hermes holds back.
+            # Hermes sends no reply when the model chose silence, and drops a reply that is only the marker.
             if event.get('outcome') == 'success' and self.silent and (not self.sent or is_silence_reply(self.text)):
-                if self.text:
-                    # Take back the streamed marker.
+                if self.segment is not None:
+                    # Take back a reply that is a silence marker.
                     self.emit('text_delta', {'text': '', 'replace': True})
                 self.emit('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})
             elif event.get('outcome') == 'success':
@@ -499,11 +466,9 @@ class TurnEvents:
         return False
 
     def _seal(self):
-        if self.stream is not None:
+        if self.segment is not None:
             self.emit('interim_seal', {})
-            if self.delta_stream is not None and self.stream == f'stream:{self.delta_stream}':
-                self.ended_streams.add(self.delta_stream)
-            self.stream, self.text = None, ''
+            self.segment, self.text = None, ''
 
     def _phase(self, phase):
         if self.phase != phase:

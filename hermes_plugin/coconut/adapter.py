@@ -17,8 +17,8 @@ Such a message goes to the service (`POST /v1/gateway/messages`), which shows it
 A status send outside a turn, such as a shutdown notice, stays in the gateway log.
 
 Clarify questions, command approvals and coconut_ask become decision cards on the phone, and the answer returns to
-Hermes through a later poll. The hooks (hooks.py) relay the streamed text of a turn and join the gateway session of a
-chat with the bot's native conversation. The tools (tools.py) reach the Coconut task of the chat.
+Hermes through a later poll. The hooks (hooks.py) join the gateway session of a chat with the bot's native
+conversation. The tools (tools.py) reach the Coconut task of the chat.
 """
 from __future__ import annotations
 
@@ -30,8 +30,6 @@ import logging
 import os
 from pathlib import Path
 import re
-import threading
-import time
 import urllib.error
 import urllib.request
 import uuid
@@ -51,9 +49,6 @@ RETRY_SECONDS = (1, 2, 5, 10, 30)
 REQUEST_SECONDS = 10
 # Requests go to loopback only, never through a proxy from the environment.
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-# Streamed text goes to the service in pieces of at least this age or size.
-STREAM_SECONDS = 0.2
-STREAM_CHARACTERS = 400
 # The turns whose card ended them (coconut_ask), and the mode of a turn that is not a plain chat turn, for example
 # `context`: a follow-up on a pending card. The pre_tool_call hook reads both (hooks.guard_tool).
 PAUSED: set[str] = set()
@@ -173,59 +168,11 @@ def turn_of(message_id) -> str:
     return str(message_id).partition(':')[0]
 
 
-class StreamRelay:
-    """Send the streamed text of turns to the service in small pieces. The adapter and a cron run (cron.py) use it.
-
-    hooks.py calls these methods in a Hermes dispatcher thread, never on the event loop.
-    """
-
-    def _init_relay(self):
-        # Streamed text that waits for the service: turn -> [stream number, text, time of the last report].
-        self._streams: dict[str, list] = {}
-        self._streams_lock = threading.Lock()
-        # The number of the current model call of each turn (hooks.stream_start).
-        self._stream_numbers: dict[str, int] = {}
-
-    def drop_stream(self, turn: str) -> None:
-        with self._streams_lock:
-            self._streams.pop(turn, None)
-        self._stream_numbers.pop(turn, None)
-
-    def stream(self, turn: str, number: int, text: str) -> None:
-        pending = None
-        with self._streams_lock:
-            entry = self._streams.get(turn)
-            if entry is None or entry[0] != number:
-                if entry is not None and entry[1]:
-                    pending = (entry[0], entry[1])
-                entry = self._streams[turn] = [number, '', 0.0]
-            entry[1] += text
-            due = time.monotonic() - entry[2] >= STREAM_SECONDS or len(entry[1]) >= STREAM_CHARACTERS
-        if pending is not None:
-            self._send_stream(turn, *pending)
-        if due:
-            self.flush_stream(turn)
-
-    def flush_stream(self, turn: str) -> None:
-        with self._streams_lock:
-            entry = self._streams.get(turn)
-            if entry is None or not entry[1]:
-                return
-            number, text = entry[0], entry[1]
-            entry[1], entry[2] = '', time.monotonic()
-        self._send_stream(turn, number, text)
-
-    def _send_stream(self, turn: str, number: int, text: str) -> None:
-        try:
-            self._bridge.request('/v1/gateway/events', {'turn_id': turn, 'kind': 'delta', 'stream': number,
-                                                        'text': text}, REQUEST_SECONDS)
-        except Exception as error:
-            # The final send of the turn carries the whole reply, so a lost piece only delays the preview.
-            LOG.debug('Coconut: a streamed piece did not reach the service (%s).', type(error).__name__)
-
-
-class CoconutAdapter(StreamRelay, BasePlatformAdapter):
-    SUPPORTS_MESSAGE_EDITING = True
+class CoconutAdapter(BasePlatformAdapter):
+    # The phone shows a message only when it is complete. Without message edits, Hermes streams no partial text to this
+    # platform (gateway/run_turn_runner.py, _setup_stream_consumer), whatever the person's `streaming` setting. Hermes
+    # still calls edit_message to replace a complete text.
+    SUPPORTS_MESSAGE_EDITING = False
     # A longer reply would arrive in parts, and Coconut would show the earlier parts as interim messages.
     MAX_MESSAGE_LENGTH = 100_000
     # The poll alone is not work: an auto-started gateway may idle out (NousResearch/hermes-agent#146209).
@@ -257,7 +204,6 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         # The runs that Hermes started by itself in a chat, such as the completion of a background process: the
         # message ID of the run -> the Coconut turn that the service opened for it (_open_hermes_run).
         self._hermes_runs: dict[str, str] = {}
-        self._init_relay()
         ADAPTERS.add(self)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -395,8 +341,8 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         # A turn that the service gave is a Coconut turn. Hermes also runs its own inputs through the adapter, for
-        # example the completion of a background process. Such a run gets a Coconut turn of its own, so its text
-        # streams to the chat and the coconut tools act for it.
+        # example the completion of a background process. Such a run gets a Coconut turn of its own, so its messages
+        # go to the chat and the coconut tools act for it.
         if event.message_id in self._active:
             self._turns[event.source.chat_id] = event.message_id
         elif getattr(event, 'internal', False) and event.source.chat_id not in self._turns:
@@ -425,7 +371,6 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         PAUSED.discard(turn)
         WAITED.discard(turn)
         self._typing.discard(turn)
-        self.drop_stream(turn)
         for delay in (*RETRY_SECONDS, None):
             if await self._report(turn, 'done', outcome=getattr(outcome, 'value', str(outcome))):
                 break
@@ -457,7 +402,6 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
         CONTEXTS.pop(event.message_id, None)
         FOLDERS.pop(event.message_id, None)
         FOLDER_TASKS.pop(event.message_id, None)
-        self.drop_stream(event.message_id)
         # The turn stays active in the polls until the service has its end. Otherwise the service would fail a
         # finished turn after a short outage.
         RECORDS.pop(event.message_id, None)
@@ -514,8 +458,7 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
             LOG.info('Coconut: a gateway status message for chat %s stays in the log: %s', chat_id, content[:200])
             return SendResult(success=True)
         message_id = OUTSIDE + str(uuid.uuid4())
-        # The stream consumer of Hermes marks the first piece of a streamed reply with `expect_edits`.
-        fields = dict(kind='send', message_id=message_id, text=content, streaming=bool(metadata.get('expect_edits')))
+        fields = dict(kind='send', message_id=message_id, text=content)
         if metadata.get('job_id'):
             # A cron delivery. The service shows no second copy of a run that is already a routine task in the chat.
             fields['job_id'] = str(metadata['job_id'])
@@ -591,10 +534,7 @@ class CoconutAdapter(StreamRelay, BasePlatformAdapter):
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         if str(message_id).startswith(OUTSIDE):
-            # Hermes streams the reply of its own turn: a first send, then edits of the same message.
-            # The edit with `finalize` ends the reply, and the service pushes it then.
-            result = await self._outside(str(chat_id), dict(kind='edit', message_id=str(message_id), text=str(content),
-                                                            finalize=bool(finalize)))
+            result = await self._outside(str(chat_id), dict(kind='edit', message_id=str(message_id), text=str(content)))
             return SendResult(success=True, message_id=message_id) if result is True else result
         if not await self._report(turn_of(message_id), 'edit', message_id=str(message_id), text=str(content)):
             return SendResult(success=False, error='The Coconut service did not answer.', retryable=True)

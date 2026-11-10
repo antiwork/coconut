@@ -1,5 +1,6 @@
 """Plain chat turns through the Hermes gateway: the routing rule, the event translation, the wait for the gateway, the
 gateway process, and the profile edit. test_gateway_adapter.py checks the adapter, test_native_gateway_chat.py a real gateway."""
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -153,29 +154,27 @@ class TurnEventTests(unittest.TestCase):
 
     def test_a_silent_turn_shows_no_commentary_and_a_silence_marker_ends_it_without_a_message(self):
         silent_end = ('completed', {'summary': 'Complete.', 'silent_response': True, 'reaction_silent': True})
-        # A turn without commentary streams nothing: its streamed text could be commentary or a silence marker, which
-        # the phone would show until a later event takes it back.
-        for events in ([{'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True},
-                        {'kind': 'delta', 'stream': 1, 'text': '[SILENT]'}],
-                       [{'kind': 'delta', 'stream': 1, 'text': 'Let me look.'},
-                        {'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True},
-                        {'kind': 'delta', 'stream': 2, 'text': '[SILENT]'}],
-                       # Hermes holds back the start of a marker and sends no reply.
-                       [{'kind': 'delta', 'stream': 1, 'text': '[SILEN'}]):
-            emitted, _ = self.translate(*events, {'kind': 'done', 'outcome': 'success'}, silent=True)
-            self.assertEqual(emitted, [('phase', {'phase': 'writing'}), silent_end])
-        # A useful reply of a silent turn is an ordinary reply. It comes whole with the gateway's send.
+        # A turn without commentary shows no commentary. Hermes sends no reply when the model chose silence.
+        emitted, _ = self.translate({'kind': 'send', 'message_id': 'c:1', 'text': 'Let me look.', 'interim': True},
+                                    {'kind': 'done', 'outcome': 'success'}, silent=True)
+        self.assertEqual(emitted, [('phase', {'phase': 'writing'}), silent_end])
+        emitted, _ = self.translate({'kind': 'typing'}, {'kind': 'done', 'outcome': 'success'}, silent=True)
+        self.assertEqual(emitted, [('phase', {'phase': 'thinking'}), silent_end])
+        # A reply that is only the marker goes again.
+        emitted, _ = self.translate({'kind': 'send', 'message_id': 'm:1', 'text': '[SILENT]'},
+                                    {'kind': 'done', 'outcome': 'success'}, silent=True)
+        self.assertEqual(emitted, [('phase', {'phase': 'writing'}), ('text_delta', {'text': '[SILENT]'}),
+                                   ('text_delta', {'text': '', 'replace': True}), silent_end])
+        # A useful reply of a silent turn is an ordinary reply.
         reply = 'Glad it helped. One more detail: the cache is warm.'
-        emitted, _ = self.translate(
-            {'kind': 'delta', 'stream': 1, 'text': 'Glad it '}, {'kind': 'send', 'message_id': 'm:1', 'text': reply},
-            {'kind': 'done', 'outcome': 'success'}, silent=True)
+        emitted, _ = self.translate({'kind': 'send', 'message_id': 'm:1', 'text': reply},
+                                    {'kind': 'done', 'outcome': 'success'}, silent=True)
         self.assertEqual(emitted, [('phase', {'phase': 'writing'}), ('text_delta', {'text': reply}),
                                    ('completed', {'summary': 'Complete.'})])
 
     def test_bot_traffic_keeps_its_commentary_and_may_end_in_silence(self):
         emitted, _ = self.translate(
             {'kind': 'send', 'message_id': 'c:1', 'text': 'Reading the report of Lin.', 'interim': True},
-            {'kind': 'delta', 'stream': 1, 'text': '[SILENT]'},
             {'kind': 'done', 'outcome': 'success'}, silent=True, commentary=True)
         self.assertIn(('interim_message', {'text': 'Reading the report of Lin.'}), emitted)
         self.assertEqual(emitted[-1], ('completed', {'summary': 'Complete.', 'silent_response': True,
@@ -202,26 +201,22 @@ class TurnEventTests(unittest.TestCase):
             ('completed', {'summary': 'Complete.'})])
         self.assertEqual(done, [False] * 8 + [True])
 
-    def test_streamed_text_becomes_the_reply_and_commentary_an_interim_message(self):
-        emitted, _ = self.translate(
-            {'kind': 'delta', 'stream': 1, 'text': 'I will '},
-            {'kind': 'delta', 'stream': 1, 'text': 'check.'},
-            # The gateway sends the commentary of that model call after it ends.
-            {'kind': 'send', 'message_id': 't:1', 'text': 'I will check.', 'interim': True},
-            # A late piece of the ended call changes nothing.
-            {'kind': 'delta', 'stream': 1, 'text': ' Late.'},
-            {'kind': 'delta', 'stream': 2, 'text': 'It passes'},
-            {'kind': 'send', 'message_id': 't:2', 'text': 'It passes.'},
-            # After the reply send, the gateway's own sends and edits lead.
-            {'kind': 'delta', 'stream': 2, 'text': ' again'},
+    def test_three_segments_give_three_complete_messages_in_order(self):
+        segments = ['I will check the test.', 'The test passes.', 'I also updated the notes.']
+        emitted, done = self.translate(
+            {'kind': 'typing'},
+            {'kind': 'send', 'message_id': 't:1', 'text': segments[0], 'interim': True},
+            {'kind': 'send', 'message_id': 't:2', 'text': segments[1]},
+            {'kind': 'send', 'message_id': 't:3', 'text': segments[2]},
             {'kind': 'done', 'outcome': 'success'})
+        # Each segment comes whole, once, in the order of the sends. No event adds to or replaces a text.
         self.assertEqual(emitted, [
-            ('phase', {'phase': 'writing'}),
-            ('text_delta', {'text': 'I will '}), ('text_delta', {'text': 'check.'}),
-            ('interim_seal', {}),
-            ('text_delta', {'text': 'It passes'}),
-            ('text_delta', {'text': 'It passes.', 'replace': True}),
+            ('phase', {'phase': 'thinking'}), ('phase', {'phase': 'writing'}),
+            ('interim_message', {'text': segments[0]}),
+            ('text_delta', {'text': segments[1]}),
+            ('interim_seal', {}), ('text_delta', {'text': segments[2]}),
             ('completed', {'summary': 'Complete.'})])
+        self.assertEqual(done, [False] * 4 + [True])
 
     def test_a_question_event_asks_for_a_card(self):
         emitted, done = self.translate({'kind': 'question', 'question_id': 'q', 'question_kind': 'ask', 'text': 'Which?',
@@ -274,7 +269,7 @@ class BridgeTests(unittest.TestCase):
     def test_events_of_unknown_turns_are_refused_and_bad_events_raise(self):
         self.assertEqual(self.bridge.event({'turn_id': 'gone', 'kind': 'send', 'message_id': 'm', 'text': 'x'}), {'ok': False})
         for event in ({'kind': 'other'}, {'kind': 'send', 'text': 'no message'}, {'kind': 'edit', 'message_id': 'm', 'text': 1},
-                      {'kind': 'delta', 'text': 'no stream'}, {'kind': 'question', 'question_id': 'q', 'question_kind': 'poll',
+                      {'kind': 'question', 'question_id': 'q', 'question_kind': 'poll',
                                                                'text': 'x'},
                       {'kind': 'question', 'question_id': 'q', 'question_kind': 'ask', 'text': 'x',
                        'choices': [{'id': 'a', 'label': 'A'}, {'id': 'a', 'label': 'B'}]}):
@@ -465,6 +460,55 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertIn('Attached file: photo.png\nThis attachment is binary.', text)
         self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
 
+    def published(self, task, *types):
+        """The events of a task, as the phone reads them in its updates."""
+        rows = self.service.db.execute('SELECT type, data FROM events WHERE task_id=? ORDER BY seq', (task['id'],))
+        return [(kind, json.loads(data)) for kind, data in rows if kind in types]
+
+    def test_a_turn_of_three_segments_gives_three_complete_messages_in_order(self):
+        segments = ['I will check the test.', 'The test passes.', 'I also updated the notes.']
+        task = self.send('Check the test.')
+        self.run_in_gateway(task, [
+            {'kind': 'typing'},
+            {'kind': 'send', 'message_id': 'c:1', 'text': segments[0], 'interim': True},
+            {'kind': 'send', 'message_id': 'm:1', 'text': segments[1]},
+            {'kind': 'send', 'message_id': 'm:2', 'text': segments[2]},
+            {'kind': 'done', 'outcome': 'success'}])
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.replies(task), [(segments[0], False, True), (segments[1], False, True),
+                                              (segments[2], False, False)])
+        # The phone gets each message with its complete text. No update adds to a text or replaces it.
+        messages = [(kind, data) for kind, data in self.published(task, 'message.created', 'message.updated')
+                    if data['role'] == 'assistant' and data['kind'] == 'text']
+        self.assertEqual([data['text'] for kind, data in messages if kind == 'message.created'], segments)
+        final = {data['id']: data['text'] for _, data in messages}
+        self.assertTrue(all(data['text'] == final[data['id']] for _, data in messages), messages)
+        # While the bot works, the chat shows that it works: the typing event of the gateway sets the phase.
+        phases = [data.get('phase') for _, data in self.published(task, 'task.updated') if data.get('phase')]
+        self.assertEqual(phases[:2], ['thinking', 'writing'])
+
+    def test_partial_text_of_an_earlier_plugin_is_dropped_and_the_segments_stay_complete(self):
+        # A gateway that still runs the plugin of an earlier version sends `delta` events between its sends.
+        segments = ['I will check the test.', 'The test passes.', 'I also updated the notes.']
+        task = self.send('Check the test.')
+        self.run_in_gateway(task, [
+            {'kind': 'typing'},
+            {'kind': 'delta', 'stream': 1, 'text': 'I will '}, {'kind': 'delta', 'stream': 1, 'text': 'check'},
+            {'kind': 'send', 'message_id': 'c:1', 'text': segments[0], 'interim': True},
+            {'kind': 'delta', 'stream': 2, 'text': 'The test'},
+            {'kind': 'send', 'message_id': 'm:1', 'text': segments[1]},
+            {'kind': 'delta', 'stream': 3, 'text': 'I also'},
+            {'kind': 'send', 'message_id': 'm:2', 'text': segments[2]},
+            {'kind': 'done', 'outcome': 'success'}])
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+        self.assertEqual(self.replies(task), [(segments[0], False, True), (segments[1], False, True),
+                                              (segments[2], False, False)])
+        messages = [(kind, data) for kind, data in self.published(task, 'message.created', 'message.updated')
+                    if data['role'] == 'assistant' and data['kind'] == 'text']
+        self.assertEqual([data['text'] for kind, data in messages if kind == 'message.created'], segments)
+        final = {data['id']: data['text'] for _, data in messages}
+        self.assertTrue(all(data['text'] == final[data['id']] for _, data in messages), messages)
+
     def bot_reply(self, text):
         first = self.send('Hello.')
         self.run_in_gateway(first, [{'kind': 'send', 'message_id': 'm:1', 'text': text},
@@ -480,7 +524,7 @@ class ServiceRoutingTests(unittest.TestCase):
             task = next(t for t in self.service._all('tasks') if t['status'] == 'queued')
         text = self.run_in_gateway(task, [
             {'kind': 'send', 'message_id': 'c:1', 'text': 'Thinking about the reaction.', 'interim': True},
-            {'kind': 'delta', 'stream': 1, 'text': '[SILEN'}, {'kind': 'done', 'outcome': 'success'}])
+            {'kind': 'done', 'outcome': 'success'}])
         self.assertIn('The person changed an emoji reaction on the quoted message.', text)
         self.assertIn('The build passed.', text)
         self.assertIn('return exactly [SILENT]. Do not explain the silence.', text)
@@ -893,8 +937,7 @@ class ServiceRoutingTests(unittest.TestCase):
         with self.assertRaisesRegex(ServiceError, 'only in a turn of a work session'):
             self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'workspace', 'arguments': {}})
         bridge = self.service.gateway_bridge
-        # Commentary streams before a tool call, and the gateway sends it as interim after that call.
-        bridge.event({'turn_id': turn['id'], 'kind': 'delta', 'stream': 1, 'text': 'Only the notes.'})
+        # The gateway sends commentary as interim. It is not the answer.
         bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'c:1', 'text': 'Only the notes.', 'interim': True})
         bridge.event({'turn_id': turn['id'], 'kind': 'send', 'message_id': 'm:1', 'text': 'Two fixes and the notes.'})
         bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
@@ -2340,6 +2383,28 @@ class ServiceRoutingTests(unittest.TestCase):
             {'turn_id': adapter.turns[0]['id'], 'kind': 'done', 'outcome': 'cancelled'}), {'ok': False})
 
 
+class ProviderTurnTests(unittest.TestCase):
+    """A service without a Hermes home runs each turn with its provider. Its reply is complete too."""
+
+    def test_a_provider_turn_gives_one_complete_message_and_no_partial_update(self):
+        from coconut.providers import FixtureProvider
+        with tempfile.TemporaryDirectory() as folder:
+            service = Service(folder, FixtureProvider(folder), start_workers=False)
+            try:
+                bot = service.mutate('POST', '/v1/bots', {'name': 'Ada'}, str(uuid4()), 'phone')
+                task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': 'What is 17 x 19?'},
+                                      str(uuid4()), 'phone')
+                service._run_task(task['id'])
+                rows = service.db.execute('SELECT type, data FROM events WHERE task_id=? ORDER BY seq', (task['id'],))
+                texts = [(kind, json.loads(data)['text']) for kind, data in rows
+                         if kind in ('message.created', 'message.updated') and json.loads(data)['role'] == 'assistant']
+            finally:
+                service.close()
+        reply = 'Fixture: 17 × 19 = 323. The check is complete.'
+        self.assertEqual({text for _, text in texts}, {reply})
+        self.assertEqual([kind for kind, _ in texts][0], 'message.created')
+
+
 class OutsideTurnTests(unittest.TestCase):
     """POST /v1/gateway/messages: a send of the gateway outside a Coconut turn becomes a message of the bot."""
 
@@ -2390,21 +2455,12 @@ class OutsideTurnTests(unittest.TestCase):
         self.assertEqual(self.chat(), [('The work is done.', answer['task_id'], False)])
         self.assertEqual(self.message(chat_id=self.bot['id'] + ':work:session-1', text='The work is done.'),
                          {'recorded': True, 'task_id': answer['task_id']})
-        # A send of another chat of the bot does not end a reply that the work chat still streams.
-        work = self.bot['id'] + ':work:session-2'
-        self.message(message_id='work:1', text='The', chat_id=work, streaming=True)
-        self.message(message_id='main:1', text='Hello.')
-        with self.service.lock:
-            streamed = [m for m in self.service._all('messages') if m.get('_gateway_message_id') == 'work:1']
-        self.assertTrue(streamed[0]['streaming'])
         # The same message ID in another chat is another message.
+        work = self.bot['id'] + ':work:session-2'
+        self.message(message_id='main:1', text='Hello.')
         self.assertTrue(self.message('edit', 'main:1', 'Hello again.', chat_id=work).get('recorded') is False)
-        self.message(message_id='work:2', text='Done.', chat_id=work)
-        with self.service.lock:
-            streamed = [m for m in self.service._all('messages') if m.get('_gateway_message_id') == 'work:1']
-        self.assertFalse(streamed[0]['streaming'])
 
-    def test_sends_close_together_share_a_task_and_a_streamed_reply_is_edited_and_deleted(self):
+    def test_sends_close_together_share_a_task_and_a_reply_is_edited_and_deleted(self):
         first = self.message(text='Task t_1 is done.')
         second = self.message(message_id='outside:2', text='The')
         self.assertEqual(second['task_id'], first['task_id'])
@@ -2428,29 +2484,23 @@ class OutsideTurnTests(unittest.TestCase):
             bot = self.service._get('bots', self.bot['id'])
         return bot['last_message'], bot['unread_count']
 
-    def test_a_streamed_reply_pushes_when_it_ends_and_a_deleted_reply_leaves_the_preview(self):
+    def test_each_send_is_complete_and_pushes_and_a_deleted_reply_leaves_the_preview(self):
         first = self.message(text='Task t_1 is done.')
-        self.assertEqual(len(self.pushes()), 1)
-        self.message(message_id='outside:2', text='The', streaming=True)
-        self.message('edit', 'outside:2', 'The report')
-        # No push while Hermes still streams the reply.
-        self.assertEqual(len(self.pushes()), 1)
-        self.assertEqual(self.bot_row(), ('The report', 2))
-        self.message('edit', 'outside:2', 'The report is ready.', finalize=True)
+        self.message(message_id='outside:2', text='The report is ready.')
         message_id = self.service.db.execute('SELECT id FROM messages ORDER BY rowid DESC LIMIT 1').fetchone()[0]
+        # Hermes streams no partial text to the platform. Each send is a complete message, and it pushes at once.
         self.assertEqual(self.pushes()[-1], ('message', first['task_id'], message_id))
         self.assertEqual(self.bot_row(), ('The report is ready.', 2))
+        with self.service.lock:
+            self.assertEqual([m['streaming'] for m in self.service._all('messages') if m.get('_gateway_message_id')],
+                             [False, False])
+        # An edit replaces the text with a complete text, and it pushes no second time.
+        self.message('edit', 'outside:2', 'The report is ready for review.')
+        self.assertEqual((len(self.pushes()), self.bot_row()), (2, ('The report is ready for review.', 2)))
         # A deleted reply no longer counts as unread, and the preview shows the reply before it.
         self.message('delete', 'outside:2', '')
         self.assertEqual(self.bot_row(), ('Task t_1 is done.', 1))
         self.assertFalse(self.message('edit', 'outside:2', 'Back again.')['recorded'])
-        # A streamed reply whose last edit never came ends with the next message, and it pushes then.
-        self.message(message_id='outside:3', text='Half', streaming=True)
-        self.message(message_id='outside:4', text='Next.')
-        with self.service.lock:
-            streaming = [m['streaming'] for m in self.service._all('messages') if m.get('_gateway_message_id')]
-        self.assertEqual(streaming, [False] * 4)
-        self.assertEqual([kind for kind, _, _ in self.pushes()], ['message'] * 4)
 
     def test_a_deleted_reply_that_the_person_read_leaves_the_unread_count(self):
         self.message(text='Task t_1 is done.')
