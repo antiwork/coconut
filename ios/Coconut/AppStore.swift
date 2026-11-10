@@ -39,9 +39,15 @@ final class AppStore {
     var learning: [LearningGroup] = []
     /// The documents of the Library, newest first, without their content. Nil until the first load.
     var documents: [BotDocument]?
+    /// The bots of other Macs that own the team pages in `documents`. They come with each list.
+    var teamBots: [TeamBot] = []
     /// Counts the pins and the deletes that the Mac confirmed to this app. A list that the app asked for before such a
     /// change can be older than the change.
     @ObservationIgnored private var documentChanges = 0
+    /// Numbers the list requests. Only the answer of the latest request replaces the list.
+    @ObservationIgnored private var documentRequests = 0
+    /// The load of the latest list request. The caller of an earlier request waits for its result.
+    @ObservationIgnored private var latestDocumentLoad: Task<Bool, Never>?
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
     var pageQuotes: [String: MessageReference] = [:]
     var connection: ConnectionState = .unconfigured {
@@ -561,6 +567,8 @@ final class AppStore {
         }
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
+        // The team bots name the team pages of the earlier Mac, so the Library of a later pairing would show them.
+        documents = nil; teamBots = []
         approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
@@ -1437,14 +1445,43 @@ final class AppStore {
             return true
         }
         guard let client else { return false }
+        documentRequests += 1
+        let request = documentRequests
+        // The store runs on the main actor, so the task starts only after `latestDocumentLoad` names it.
+        let load = Task { await fetchDocuments(client, request: request) }
+        latestDocumentLoad = load
+        return await load.value
+    }
+
+    /// One list request. A later request asks for a newer list, so the answer of an earlier request does not replace
+    /// the list. Its caller gets the result of the latest load. That load is always a later request, so no load waits
+    /// for itself, and a failed load gives false to each caller that waits for it.
+    private func fetchDocuments(_ client: APIClient, request: Int) async -> Bool {
         let changes = documentChanges
-        do {
-            let response: DocumentList = try await client.request("documents")
-            // The Mac confirmed a pin or a delete during this request, so this list can be older. Ask again.
-            guard changes == documentChanges else { return await loadDocuments() }
-            documents = response.documents
-            return true
-        } catch { report(error); return false }
+        let response: DocumentList
+        do { response = try await client.request("documents") } catch {
+            // An error of a request of an earlier pairing has no message for the state of this pairing.
+            guard self.client === client else { return false }
+            if request != documentRequests { return await latestDocumentLoad?.value ?? false }
+            report(error)
+            return false
+        }
+        // A list of the Mac of an earlier pairing is not the list of this pairing.
+        guard self.client === client else { return false }
+        if request != documentRequests { return await latestDocumentLoad?.value ?? false }
+        // The Mac confirmed a pin or a delete during this request, so this list can be older. Ask again.
+        guard changes == documentChanges else { return await loadDocuments() }
+        teamBots = response.teamBots ?? []
+        documents = response.documents
+        return true
+    }
+
+    /// The updates carry no documents. They say that a document or a team page changed, so a Library that the app
+    /// loaded before loads its list again. A reset skips the events between the cursors, also the changes of
+    /// documents. A Library that never loaded loads when it opens.
+    private func reloadChangedDocuments(_ page: StateUpdates) {
+        guard page.documentsChanged == true || page.reset != nil, documents != nil else { return }
+        Task { await loadDocuments() }
     }
 
     /// One document with the content of its current version. Nil when the Mac cannot send it.
@@ -1652,6 +1689,7 @@ final class AppStore {
                             self.markConnected()
                             failures = 0
                             self.refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
+                            self.reloadChangedDocuments(page)
                             Task { await self.syncPushRegistration() }
                         }
                         self.scheduleDelivery()
@@ -1705,6 +1743,7 @@ final class AppStore {
                     apply(next, persist: true)
                     markConnected()
                     refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
+                    reloadChangedDocuments(page)
                     Task { await self.syncPushRegistration() }
                     return
                 }

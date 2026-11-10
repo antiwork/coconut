@@ -16,6 +16,8 @@ struct StateUpdates: Decodable, Sendable {
     var removedArtifacts: [String]?
     var workCapacity: ParallelWorkSettings?
     var settingsChanged: Bool?
+    /// A document or a team page changed. The list of the Library is not part of the state.
+    var documentsChanged: Bool?
     var confirmedRequestIds: [String]?
 
     func applying(to snapshot: StateSnapshot) -> StateSnapshot? {
