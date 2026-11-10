@@ -4,14 +4,14 @@ A team is a set of Macs that share one log. The log lives on the Cloudflare rela
 
 The log carries everything that a team shares: the people and bots of the team, the messages of the Team chat, and the shared pages. A phone talks only to its own Mac, as before.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac (see [Mac](#mac)). These parts are not built yet:
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac (see [Mac](#mac)). It shares bots and their pages, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). These parts are not built yet:
 
 - The socket on the Mac. The Mac reads each room every 30 seconds.
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
 - A record of the open invites on the Mac.
 - The member removal and the key change.
-- The routes of the phone.
-- The kinds `message`, `page` and `bot`.
+- The screens of the app for the teams and the team pages. The app of today hides a team page, because it does not know its bot.
+- The kind `message`.
 
 ## Terms
 
@@ -81,13 +81,13 @@ Each payload has these fields:
 | --- | --- | --- | --- |
 | `member` | `true` | Each member, one entry | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20), `agreement` (the public agreement key) |
 | `delete` | `false` | The member of the replaced entry | None. It replaces an entry that its author deletes. |
-| `bot` | `true` | The Mac that runs the bot | The name and the picture of a team bot. |
-| `page` | `true` | The Mac that runs the bot of the page | One shared page. |
+| `bot` | `true` | The Mac that runs the bot, one entry for each bot | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20) |
+| `page` | `true` | The Mac that runs the bot of the page, one entry for each document | `bot` (the entry ID of the `bot` entry), `key`, `title`, `format`, `summary` (or null), `content`, `version` (the version of the document on its Mac), `expires_at` (or null) |
 | `message` | `false` | Any member | One message of the Team chat, from a person or a bot. |
 | `remove` | `true` | The admin | The removal of a member. See [Member removal](#member-removal-and-key-change). |
 | `key` | `true` | The admin | The room key of the next epoch. |
 
-The kinds `member` and `delete` are complete. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
+The kinds `member`, `delete`, `bot` and `page` are complete. See [Bots and pages](#bots-and-pages) for the rules of `bot` and `page`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
@@ -162,7 +162,7 @@ A long poll would keep the Durable Object in memory, and Cloudflare bills that t
 
 A member that leaves and joins again continues its counts: its entries that are not kept stay on the relay, and so does its count of writes in the minute.
 
-A page can have 512 KiB of content (`MAX_CONTENT` in `backend/coconut/documents.py`), so a page fits in one entry. Each Mac keeps the full history of the chat in its own store. The retention time only limits how far back a new member or a Mac that was off can read.
+A page can have 512 KiB of content (`MAX_CONTENT` in `backend/coconut/documents.py`), and one entry holds a whole page. JSON can make the content larger, so a save of a team page checks that its payload fits (see [Bots and pages](#bots-and-pages)). Each Mac keeps the full history of the chat in its own store. The retention time only limits how far back a new member or a Mac that was off can read.
 
 ## Invite and join
 
@@ -275,6 +275,10 @@ Everything else is in `coconut.sqlite3`:
 | `team_entries` | The newest accepted write of each entry ID, with its payload. |
 | `team_members` | The members that a Mac shows: the newest valid `member` entry of each member. |
 | `team_pending` | The bodies that the Mac cannot open yet, for a later version or a later epoch. |
+| `team_shares` | The bots that this Mac shares with each room, each with the entry ID of its `bot` entry. |
+| `team_page_entries` | The entry ID of each document of this Mac that a room has or had as a `page` entry. One document keeps one entry ID. |
+| `team_bots` | A view of `team_entries`: the valid `bot` entries of the other members. |
+| `team_pages` | A view of `team_entries`: the `page` entries of the other members, with the pin of this Mac and the time of the first write that this Mac saw. |
 
 A room is `joining` (the relay did not answer the join yet), `active`, `removed` (the relay answered 401) or `gone` (the relay answered 404). The copy of a `removed` or `gone` room stays until the person leaves the room on the Mac.
 
@@ -286,6 +290,7 @@ One thread, `coconut-team-sync`, reads each `active` room after its `seq`, one a
 - After a failure, a room waits 60, 120, 240 and 480 seconds, then 900 seconds for each later try.
 - After each start of the service, the thread tries the waiting bodies again, because an update of Coconut starts the service again.
 - When the log shows no `member` entry of this Mac, the thread writes it, at most every 5 minutes. This repairs a stop between a join and its first write.
+- After the read, the thread makes the log equal to the bots and the pages that this Mac shares. See [Bots and pages](#bots-and-pages).
 - A write of this Mac goes into the store at once. When a write gets no answer, the relay can have it. So before the next write or leave in that room, the Mac reads the room to its end. Its next `rev` is then higher, and a leave finds a `member` entry that only the relay has.
 - A leave holds the lock of the room from its `delete` entry until the relay removed the member and the Mac deleted its copy. So the thread cannot write the `member` entry again in between. When the relay does not answer the leave, the room stays `active`, and the Mac is still a member.
 - The member token of a room goes only to the relay of that room.
@@ -307,8 +312,51 @@ Only the main listener serves these routes, with the token of `<data>/gateway/br
 | `POST /v1/team/join`, body `{link, member_name, avatar, color}` | Joins a room. |
 | `DELETE /v1/team/rooms/<room>` | Leaves the room, and deletes its copy and its keys. |
 | `POST /v1/team/sync` | Starts a pass, waits up to 60 seconds for it, and returns the rooms with `complete`. |
+| `POST /v1/team/rooms/<room>/bots`, body `{bot_id}` | Shares a bot of this Mac with the room. An archived or deleted bot answers 409 or 404. |
+| `DELETE /v1/team/rooms/<room>/bots/<bot_id>` | Stops sharing the bot with the room. |
 
-No answer has a key or a token. Only the invite link carries a secret. `scripts/team.py join` reads the link from standard input, so the link is never an argument of a command.
+A room in an answer has `bots`: the bots that this Mac shares with it, with `bot_id`, `name`, `entry` and `shown` (false for an archived or deleted bot). Its `sync` has `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)).
+
+No answer has a key or a token. Only the invite link carries a secret. `scripts/team.py join` reads the link from standard input, so the link is never an argument of a command. `scripts/team.py share <room> <bot>` and `unshare <room> <bot>` call the bot routes.
+
+### Bots and pages
+
+`backend/coconut/team_pages.py` shares the bots of this Mac and their pages. `TeamStore` reads the bots and pages of the other members.
+
+To share:
+
+- The person shares a bot of this Mac with a room. The Mac makes the entry ID of its `bot` entry once.
+- `coconut_save_document` and `POST /v1/gateway/document` take `audience`: `"private"` or `"team"`. A new document without the field is private. A save of an existing document without the field keeps its audience. The document row and what a bot reads about its documents show the audience.
+- `"team"` means each team that the bot is shared with. A save with `"team"` of a bot that is shared with no team gets 409 with the reason.
+- The sealed body is the payload and 97 bytes, and the relay takes at most 1 MiB. So a save of a team page checks the size of its payload and answers 413 when the page does not fit. The payload is JSON without ASCII escapes, so text outside ASCII does not grow.
+
+To write:
+
+- A save only changes the document and calls `team_wake`. A save holds a transaction, and no call to the relay or the helper holds the lock of the service.
+- In each pass, after the read of a room, the Mac derives what it wants to share: its shared bots that exist and are not archived, and their documents with audience `team` that are not past their end. It compares that with its own `bot` and `page` entries in `team_entries`. It keeps no second copy of the state.
+- A bot or a page that the log does not have, or has in an older form, gets a kept entry. The form of a bot is its name, avatar and color. The form of a page is its bot entry and its version, because each save of a document gives a new version.
+- An own `bot` or `page` entry that the Mac no longer wants gets a `delete` entry: the document is deleted, private again or past its end, or the bot is no longer shared, archived or deleted.
+- A bot can have a longer name, avatar or color than the limits of the entry. The entry takes the start of each.
+- The relay can refuse one write for the entry itself: 413 for a body over the limit, 507 when the kept entries are full, or another status of the 400s except 401, 404 and 429. Then the other writes go on. The Mac keeps the refusal in memory until the form of the entry changes, and `sync.refused` of the room shows it. A failure of the relay or of the helper stops the pass of the room, as a read does.
+- A leave needs no extra step: the reading rules below hide the bots and pages of a member that left.
+
+Rules for a Mac that reads `bot` and `page` entries:
+
+1. A `bot` entry is valid with the name, avatar and color rules of a `member` entry. An entry that does not fit stays in the store and shows nothing.
+2. A `page` entry is valid only when its `bot` is an entry ID, its `expires_at` is null or a UTC time as `YYYY-MM-DDTHH:MM:SSZ`, each text field is valid Unicode text, and the page passes the rules of a local save (`page_to_save`: key, title, format, content size, summary, and for HTML no finding of `page_problems`). The Mac does not trust the check of the writer. A page that does not fit stays in the store and shows nothing.
+3. A page shows only while its `bot` names a valid `bot` entry of the same member, and while that member is in the member list. So a page of a bot of another member shows nothing, a `delete` over the `bot` entry hides its pages, and a member that leaves takes its bots and pages from each Library.
+4. A page past its `expires_at` shows nothing.
+5. The times come from the relay, not from the payload: `updated_at` is the `at` of the entry, and `created_at` is the `at` of the first write that this Mac saw. A time after the year 9999 makes the page not valid. `version` for the phone is the `rev` of the entry.
+6. The Mac that wrote a page has the document already. Its own entries show nothing more in its Library.
+
+The Library of the phone:
+
+- `GET /v1/documents` lists the team pages with the local documents. A team page has each field that the app needs for a document, `pinned`, and `team` with `room` and `name`. Its `id` is `t-<room ID>-<entry ID>`, and its `bot_id` is the ID of its team bot in the same form. A local ID is a UUID, so the two never meet.
+- The answer also has `team_bots`: for each team bot `id`, `name`, `avatar`, `color`, `team` (`room` and `name`) and `member` (`id` and `name` of the Mac that runs it). The app of today reads only `documents`, and it hides a document of a bot that it does not know.
+- A local document with audience `team` has `"audience": "team"`.
+- `GET /v1/documents/<id>` of a team page adds `content`. `PATCH` sets the pin of this Mac. `DELETE` answers 403, because only the Mac of the page can delete it. A page past its end answers 404 as an ended local document does.
+- When a read changes the team pages or bots that the Library shows, the Mac adds one `document.updated` event. `GET /v1/updates` then has `documents_changed`, also for a local document, and the app can read the list again. The app of today knows the event type, so the event does not make it read the whole state again.
+- The list reads the views `team_bots` and `team_pages` and parses no payload. The content stays in the payload of the entry, and the Mac reads it when a page opens.
 
 ## Test vectors
 

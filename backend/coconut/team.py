@@ -5,7 +5,8 @@ Mac. team_sync.py copies the log, team_store.py keeps it, team_keys.py keeps the
 talks to the relay, and team_helper.py does the cryptography.
 
 The routes are for the tools on this Mac: only the main listener serves them, with the token of
-<data>/gateway/bridge.json (server.py). scripts/team.py calls them. The phone has no team route yet.
+<data>/gateway/bridge.json (server.py). scripts/team.py calls them. The phone has no team route yet: it sees the team
+pages in GET /v1/documents (team_pages.py).
 
 - `GET /v1/team/rooms`: the rooms with their members and their sync state.
 - `POST /v1/team/rooms` with `{name, member_name, avatar, color, relay}`: make a room. This Mac is its admin.
@@ -13,6 +14,8 @@ The routes are for the tools on this Mac: only the main listener serves them, wi
 - `POST /v1/team/join` with `{link, member_name, avatar, color}`: join a room.
 - `DELETE /v1/team/rooms/<room>`: leave the room, and delete its copy and its keys on this Mac.
 - `POST /v1/team/sync`: read each room from the relay now, and return the rooms.
+- `POST /v1/team/rooms/<room>/bots` with `{bot_id}`: share a bot of this Mac with the room (team_pages.py).
+- `DELETE /v1/team/rooms/<room>/bots/<bot_id>`: stop sharing the bot with the room.
 
 No answer has a key, a token or an invite secret. Only the invite link, which the person shares, carries a secret.
 """
@@ -31,6 +34,7 @@ from . import team_keys
 from .push_relay import RELAY_URL
 from .team_helper import TeamFormatError, TeamHelper, TeamHelperError
 from .team_keys import ROOM_ID, TeamKeysError
+from .team_pages import TeamPages
 from .team_relay import TeamRelay, TeamRelayError, relay_origin
 from .team_store import ACTIVE, JOINING, MEMBER_LIMITS, SCHEMA, TeamStore
 from .team_sync import ROOM_ERRORS, TeamSync, utc_now
@@ -102,7 +106,7 @@ def team_errors():
         raise ServiceError(502, f'The relay refused the request with status {error.status}.') from None
 
 
-class Team(TeamSync):
+class Team(TeamSync, TeamPages):
     """The team rooms of this Mac: the routes of the tools, and the thread that copies each log."""
 
     def _init_team(self):
@@ -112,6 +116,7 @@ class Team(TeamSync):
         # One room operation runs at a time. It calls the relay and the helper, so it does not hold the service lock.
         self._team_operation = threading.Lock()
         self._init_team_sync()
+        self._init_team_pages()
 
     def _start_team(self):
         self._start_team_sync()
@@ -135,6 +140,10 @@ class Team(TeamSync):
             return self.team_leave(parts[1])
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'invites' and method == 'POST':
             return self.team_invite(parts[1], data)
+        if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'bots' and method == 'POST':
+            return self.team_share(parts[1], data)
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'bots' and method == 'DELETE':
+            return self.team_unshare(parts[1], parts[3])
         raise ServiceError(404, 'This route was not found.')
 
     # Reads
@@ -148,14 +157,17 @@ class Team(TeamSync):
         """What a tool reads about a room. The caller holds the service lock."""
         entries, waiting = self.team_store.counts(room['room'])
         status = self._team_status.get(room['room'], {})
+        refused = [{name: value for name, value in refusal.items() if name != 'form'}
+                   for refusal in self._team_refusals.get(room['room'], {}).values()]
         members = [dict(name=member['name'], avatar=member['avatar'], color=member['color'], member=member['member'],
                         agreement=member['agreement'], admin=member['member'] == room['admin'],
                         this_mac=member['member'] == room['member']) for member in self.team_store.members(room['room'])]
         return {'room': room['room'], 'name': room['name'], 'relay': room['relay'], 'state': room['state'],
                 'member': room['member'], 'admin': room['admin'], 'is_admin': room['member'] == room['admin'],
                 'epoch': room['epoch'], 'created_at': room['created_at'], 'members': members,
+                'bots': self._team_shared(room['room']),
                 'sync': {'seq': room['seq'], 'entries': entries, 'waiting': waiting,
-                         'synced_at': status.get('synced_at'), 'error': status.get('error')}}
+                         'synced_at': status.get('synced_at'), 'error': status.get('error'), 'refused': refused}}
 
     def _team_room(self, room_id) -> dict:
         from .service import ServiceError
@@ -416,7 +428,8 @@ class Team(TeamSync):
         with self.transaction():
             self.team_store.remove_room(room_id)
         team_keys.remove(self.root, room_id)
-        for state in (self._team_failures, self._team_status, self._team_announced, self._team_locks):
+        for state in (self._team_failures, self._team_status, self._team_announced, self._team_locks,
+                      self._team_refusals):
             state.pop(room_id, None)
         self._team_retried.discard(room_id)
         self._team_unsure.discard(room_id)

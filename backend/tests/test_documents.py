@@ -191,6 +191,24 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(sorted(d['title'] for d in self.service.documents()['documents']),
                          ['Desk signups', 'Signups'])
 
+    def test_the_audience_of_a_save_of_a_bot(self):
+        # "team" needs a team. test_team_pages.py covers what the team then sees.
+        with self.assertRaisesRegex(ServiceError, 'shared with no team'):
+            self.save(audience='team')
+        self.save()
+        self.assertEqual(self.tool('read_document', {})['documents'][0]['audience'], 'private')
+        with self.service.transaction():
+            self.service.team_store.share('a' * 64, self.bot['id'], 'b' * 32)
+        self.save(audience='team')
+        # A save without the field keeps the audience.
+        self.assertEqual(self.save(content='# Signups\n\n430 today.')['version'], 3)
+        self.assertEqual(self.tool('read_document', {'key': 'signups-daily'})['audience'], 'team')
+        self.assertEqual(self.service.documents()['documents'][0]['audience'], 'team')
+        self.save(audience='private')
+        self.assertNotIn('audience', self.service.documents()['documents'][0])
+        with self.assertRaisesRegex(ServiceError, 'audience must be private or team'):
+            self.save(audience='everyone')
+
     def test_a_temporary_document_leaves_the_library_after_its_end(self):
         ends = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
         self.assertTrue(self.save(expires_at=ends)['expires_at'])

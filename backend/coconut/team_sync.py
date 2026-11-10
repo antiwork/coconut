@@ -47,6 +47,11 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
+def encode_payload(fields: dict, rev: int, at: str) -> bytes:
+    """The payload of an entry of this Mac. JSON without ASCII escapes, so text outside ASCII does not grow."""
+    return json.dumps(dict(fields, rev=rev, at=at), ensure_ascii=False, separators=(',', ':')).encode()
+
+
 def retry_delay(failures: int) -> int:
     """The seconds that a room waits after this many failures in a row: 60, 120, 240, 480, then 900."""
     return min(POLL_SECONDS * 2 ** min(failures, 10), MAX_WAIT_SECONDS)
@@ -146,7 +151,8 @@ class TeamSync:
                 self._team_status[room] = {'synced_at': utc_now(), 'error': None}
 
     def team_sync_room(self, room: str) -> None:
-        """Read the room until the store has each entry of the relay, then make sure that the log shows this Mac."""
+        """Read the room until the store has each entry of the relay. Then make sure that the log shows this Mac, and
+        that it has the bots and the pages that this Mac shares (TeamPages._team_publish)."""
         lock = self._team_room_lock(room)
         if room not in self._team_retried:
             with lock:
@@ -158,6 +164,7 @@ class TeamSync:
                 more = self._team_read(room)
         with lock:
             self._team_announce(room)
+            self._team_publish(room)
 
     def _team_read(self, room_id: str) -> bool:
         """Read one answer of the relay after the saved `seq`, and store it. Return True when the relay has more."""
@@ -193,6 +200,7 @@ class TeamSync:
             for entry, result in zip(entries, opened):
                 results.append((entry, *self._team_accept(current, entry, result, first_epoch)))
             self.team_store.update_room(room_id, seq=entries[-1]['seq'])
+            self._team_tell_library(room_id)
         self._team_report(room_id, results)
         return answer['last'] > entries[-1]['seq']
 
@@ -221,6 +229,7 @@ class TeamSync:
                     if outcome != PENDING:
                         self.team_store.drop_pending(room_id, entry['id'])
                     results.append((entry, outcome, reason))
+                self._team_tell_library(room_id)
             self._team_report(room_id, results)
 
     def _team_accept(self, room: dict, entry: dict, opened: dict, first_epoch: int) -> tuple[str, str | None]:
@@ -239,6 +248,17 @@ class TeamSync:
             result = DROPPED, type(error).__name__
         self.db.execute('RELEASE team_entry')
         return result
+
+    def _team_tell_library(self, room_id: str) -> None:
+        """Add one event when the entries of this transaction changed the team pages or bots that the Library shows.
+
+        The phone learns of a local document from its `document.*` event in GET /v1/updates, so a team page uses the
+        same type. A phone of today knows the type, so the event does not make it read the whole state again. The
+        caller holds the transaction.
+        """
+        if room_id in self.team_store.touched:
+            self.team_store.touched.discard(room_id)
+            self._event('document.updated', {'team': room_id})
 
     def _team_report(self, room_id: str, results: list) -> None:
         """Write a log line for each entry that the Mac dropped or refused, and one for those that it skipped or
@@ -286,8 +306,7 @@ class TeamSync:
         self._team_settle(room['room'])
         with self.lock:
             existing = self.team_store.entry(room['room'], entry_id)
-        payload = json.dumps(dict(fields, rev=(existing['rev'] if existing else 0) + 1, at=utc_now()),
-                             ensure_ascii=False, separators=(',', ':')).encode()
+        payload = encode_payload(fields, (existing['rev'] if existing else 0) + 1, utc_now())
         body = self.team_helper.seal(room['room'], entry_id, room['epoch'], key, secrets['member_key'], payload)
         try:
             position = self.team_relay.write(room['relay'], room['room'], secrets['token'], entry_id, kept, body, tries=tries)

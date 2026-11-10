@@ -1426,6 +1426,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                     self._event('routine.updated', self._public(routine), bot['id'])
             bot.update(_deleted=True, archived=True, _delete_task_ids=cancelled)
             self._put('bots', bot)
+            if self.team_store.shared(bot['id']):
+                # The team sync replaces the entries of the bot with `delete` entries (team_pages.py).
+                self.team_wake()
             self._remove_bot_documents(bot['id'])
             # Remove from Coconut keeps the Hermes profile folder.
             self._remove_profile_row(bot['id'])
@@ -1562,6 +1565,9 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                         bot[field] = data[field]
                 self._sync_profile(bot)
                 self._put('bots', bot)
+                if self.team_store.shared(bot['id']):
+                    # The team sync writes the `bot` entry again, or deletes it for an archived bot (team_pages.py).
+                    self.team_wake()
                 # Publish the public row, as _refresh_bot does, so that the record and the event agree by construction.
                 self._event('bot.updated', self._public(bot), bot['id'])
                 self._note_published(bot['id'], encoded(self._public(bot)))
