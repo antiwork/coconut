@@ -213,8 +213,41 @@ final class LibraryDocumentTests: XCTestCase {
             XCTAssertTrue(later)
             XCTAssertEqual(store.documents?.first?.summary, "Second")
             server.releaseLists()
-            _ = await earlier.value
+            let earlierFresh = await earlier.value
+            XCTAssertTrue(earlierFresh, "The earlier caller gets the result of the later list.")
             XCTAssertEqual(store.documents?.first?.summary, "Second", "The older list must not replace the newer list.")
+        }
+        #endif
+    }
+
+    /// The cards of a chat load the list together. Each caller gets the result of the latest list, so the card of a
+    /// page that the list no longer has goes.
+    @MainActor
+    func testLoadsThatStartTogetherEachGetTheResultOfTheLatestList() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try LibraryServer(state: APIJSON.encoder().encode(state), botId: state.bots[0].id)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            await store.loadDocuments()
+            XCTAssertEqual(store.documents?.map(\.id), ["page"])
+            // Another device deletes the page. The cards of the chat that name it load the list together.
+            server.removePage()
+            server.holdLists()
+            let cards = (0..<3).map { _ in Task { await store.loadDocuments() } }
+            try await waitUntil { server.heldLists == 3 }
+            server.releaseLists()
+            var results: [Bool] = []
+            for card in cards { results.append(await card.value) }
+            XCTAssertEqual(results, [true, true, true], "Each card must learn that the list is fresh.")
+            XCTAssertEqual(store.documents, [])
+            // The rule of DocumentCard: a fresh list without the page hides the card of the page.
+            for fresh in results {
+                XCTAssertTrue(fresh && store.documents != nil && store.documents?.first { $0.id == "page" } == nil)
+            }
         }
         #endif
     }
@@ -390,6 +423,9 @@ private final class LibraryServer: @unchecked Sendable {
 
     /// Keeps the held answers, and answers later list requests at once.
     func stopHolding() { lock.withLock { holding = false } }
+
+    /// Deletes the page as another device would. The next lists do not have it.
+    func removePage() { lock.withLock { deleted = true } }
 
     private func page(pinned: Bool) -> String {
         let summary = summary.map { #""summary": "\#($0)", "# } ?? ""
