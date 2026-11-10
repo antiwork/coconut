@@ -30,6 +30,17 @@ struct ConversationView: View {
     @State private var footerScroll = ConversationFooterScroll()
     @State private var isVisible = false
     @State private var transcript = TranscriptCache()
+    /// The moment that the day labels count from. A new day or a new time zone replaces it, so an open chat groups
+    /// its rows and writes its labels again at once.
+    @State private var dayReference = Date()
+    @State private var pinnedDay = PinnedDay()
+    #if os(macOS)
+    /// The chat runs up under the toolbar of the window, where the title of the bot floats. The first message and the
+    /// pinned day pill start below the title.
+    private static let titleHeight: CGFloat = 52
+    #else
+    private static let titleHeight: CGFloat = 0
+    #endif
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.toggleBotDetails) private var toggleBotDetails
@@ -44,7 +55,9 @@ struct ConversationView: View {
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var current: (messages: [Message], entries: [TranscriptEntry]) {
-        transcript.current(in: store, botId: botId, focusDecisionId: focusDecisionId)
+        // A snapshot of the calendar, not the auto-updating one: two auto-updating calendars are always equal, so the
+        // cache could not see a new time zone.
+        transcript.current(in: store, botId: botId, focusDecisionId: focusDecisionId, calendar: .current)
     }
     private var activity: ConversationActivity? { store.conversationActivity(botId) }
     private var activeTask: AgentTask? {
@@ -112,7 +125,11 @@ struct ConversationView: View {
                             }
                             ForEach(entries) { entry in
                                 let message = entry.message
-                                Group {
+                                let date = message.createdAt.apiDate
+                                VStack(spacing: 0) {
+                                if entry.startsDay, let date {
+                                    DaySeparatorRow(date: date, now: dayReference, row: entry.id, pinned: pinnedDay)
+                                }
                                 if entry.isExchange {
                                     BotExchangeRow(messages: entry.messages, botId: botId)
                                 } else {
@@ -121,6 +138,8 @@ struct ConversationView: View {
                                 }
                                 }
                                 }
+                                    // The pinned day pill follows the row at the top of the chat.
+                                    .pinnedDayRow(pinnedDay, id: entry.id, date: date, startsDay: entry.startsDay)
                                     // Keep full text height when the list resizes or scrolls to a new message.
                                     .fixedSize(horizontal: false, vertical: true)
                                     .id(message.kind == "decision" ? (message.decisionId ?? entry.id) : entry.id)
@@ -138,9 +157,7 @@ struct ConversationView: View {
                     }
                     .listStyle(.plain)
                     #if os(macOS)
-                    // The chat runs up under the window's toolbar, where the bot's title floats. The first message
-                    // starts below the title.
-                    .contentMargins(.top, 52, for: .scrollContent)
+                    .contentMargins(.top, Self.titleHeight, for: .scrollContent)
                     #endif
                     .buttonStyle(.borderless)
                     .scrollContentBackground(.hidden)
@@ -186,6 +203,11 @@ struct ConversationView: View {
                     }
                     .onScrollPhaseChange { previous, phase, context in
                         footerScroll.phaseChanged(phase, offset: ConversationFooterScroll.offset(in: context.geometry))
+                        // A Mac reports no phase for a mouse wheel, a scroll bar or the keyboard. There the pinned day
+                        // pill follows the scroll position.
+                        #if !os(macOS)
+                        pinnedDay.scrolls(phase != .idle)
+                        #endif
                         userScrolling = phase == .interacting || phase == .decelerating
                         rowHold.phaseChanged(phase)
                         if userScrolling || previous == .interacting || previous == .decelerating {
@@ -250,6 +272,7 @@ struct ConversationView: View {
                             .accessibilityIdentifier("conversation-latest")
                         }
                     }
+                    .pinnedDayPill(pinnedDay, now: dayReference, below: Self.titleHeight)
                     .background(BoardStyle.paper)
                     .task { await store.markRead(bot) }
                     .task(id: "\(focusMessageId ?? ""):\(store.connection.rawValue):\(store.hasOlderMessages(botId))") {
@@ -276,6 +299,7 @@ struct ConversationView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .onAppear { isVisible = true; footerScroll.reset() }
+                .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
                 .onDisappear { isVisible = false; composerFocused = false; footerScroll.reset() }
                 // "Ask the bot about this page" opens the chat with the page quoted in the composer.
                 .onChange(of: store.pageQuotes[botId], initial: true) { _, quote in
@@ -374,11 +398,6 @@ struct ConversationView: View {
             if let error = store.error {
                 ErrorBanner(message: error) { store.error = nil }
             }
-            if let date = messages.first?.createdAt.apiDate {
-                Text(date.formatted(date: .abbreviated, time: .omitted))
-                    .font(.caption2).foregroundStyle(.secondary)
-                    .padding(.vertical, 12)
-            }
             if messages.isEmpty {
                 VStack(spacing: 10) {
                     BotAvatar(bot: bot, size: 68)
@@ -411,8 +430,8 @@ struct ConversationView: View {
 }
 
 /// Scrolling changes the conversation's own state several times per swipe, and each change redraws it.
-/// The transcript changes only with the store, so a redraw reuses it. Comparing the inputs still reads them,
-/// so the redraw keeps observing the store.
+/// The transcript changes only with the store and with the calendar of the device, so a redraw reuses it. Comparing
+/// the inputs still reads them, so the redraw keeps observing the store.
 @MainActor
 private final class TranscriptCache {
     private struct Inputs: Equatable {
@@ -424,19 +443,23 @@ private final class TranscriptCache {
         let decisions: [Decision]
         let artifacts: [Artifact]
         let tasks: [AgentTask]
+        /// The rows group by the days of this calendar. A new time zone gives a different calendar.
+        let calendar: Calendar
     }
 
     private var inputs: Inputs?
     private var value: (messages: [Message], entries: [TranscriptEntry]) = ([], [])
 
-    func current(in store: AppStore, botId: String, focusDecisionId: String?) -> (messages: [Message], entries: [TranscriptEntry]) {
+    func current(in store: AppStore, botId: String, focusDecisionId: String?,
+                 calendar: Calendar) -> (messages: [Message], entries: [TranscriptEntry]) {
         let latest = Inputs(botId: botId, focusDecisionId: focusDecisionId, messages: store.messages,
                             outgoingMessages: store.outgoingMessages, outgoingAnswers: store.outgoingAnswers,
-                            decisions: store.decisions, artifacts: store.transcriptArtifacts, tasks: store.tasks)
+                            decisions: store.decisions, artifacts: store.transcriptArtifacts, tasks: store.tasks,
+                            calendar: calendar)
         if latest != inputs {
             inputs = latest
             let messages = store.conversationTranscript(for: botId, focusDecisionId: focusDecisionId)
-            value = (messages, TranscriptEntry.grouped(messages, botId: botId))
+            value = (messages, TranscriptEntry.grouped(messages, botId: botId, calendar: calendar))
         }
         return value
     }
