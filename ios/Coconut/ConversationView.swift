@@ -33,6 +33,7 @@ struct ConversationView: View {
     /// The moment that the day labels count from. A new day or a new time zone replaces it, so an open chat groups
     /// its rows and writes its labels again at once.
     @State private var dayReference = Date()
+    @State private var pinnedDay = PinnedDay()
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.toggleBotDetails) private var toggleBotDetails
@@ -117,9 +118,10 @@ struct ConversationView: View {
                             }
                             ForEach(entries) { entry in
                                 let message = entry.message
+                                let date = message.createdAt.apiDate
                                 VStack(spacing: 0) {
-                                if entry.startsDay, let date = message.createdAt.apiDate {
-                                    DaySeparatorRow(date: date, now: dayReference)
+                                if entry.startsDay, let date {
+                                    DaySeparatorRow(date: date, now: dayReference, row: entry.id, pinned: pinnedDay)
                                 }
                                 if entry.isExchange {
                                     BotExchangeRow(messages: entry.messages, botId: botId)
@@ -129,6 +131,11 @@ struct ConversationView: View {
                                 }
                                 }
                                 }
+                                    // The pinned day pill follows the row at the top of the chat.
+                                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                                        if let date { pinnedDay.place(entry.id, frame: frame, date: date, startsDay: entry.startsDay) }
+                                    }
+                                    .onDisappear { pinnedDay.remove(entry.id) }
                                     // Keep full text height when the list resizes or scrolls to a new message.
                                     .fixedSize(horizontal: false, vertical: true)
                                     .id(message.kind == "decision" ? (message.decisionId ?? entry.id) : entry.id)
@@ -194,6 +201,7 @@ struct ConversationView: View {
                     }
                     .onScrollPhaseChange { previous, phase, context in
                         footerScroll.phaseChanged(phase, offset: ConversationFooterScroll.offset(in: context.geometry))
+                        pinnedDay.scrolls(phase != .idle)
                         userScrolling = phase == .interacting || phase == .decelerating
                         rowHold.phaseChanged(phase)
                         if userScrolling || previous == .interacting || previous == .decelerating {
@@ -258,6 +266,7 @@ struct ConversationView: View {
                             .accessibilityIdentifier("conversation-latest")
                         }
                     }
+                    .overlay(alignment: .top) { PinnedDayPill(pinned: pinnedDay, now: dayReference) }
                     .background(BoardStyle.paper)
                     .task { await store.markRead(bot) }
                     .task(id: "\(focusMessageId ?? ""):\(store.connection.rawValue):\(store.hasOlderMessages(botId))") {

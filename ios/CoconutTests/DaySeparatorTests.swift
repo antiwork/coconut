@@ -98,4 +98,63 @@ final class DaySeparatorTests: XCTestCase {
         // The chat groups its rows again when the calendar is not equal to the one it used.
         XCTAssertNotEqual(calendar, west)
     }
+
+    /// Three rows of a chat, 80 points high with 10 points between them. The third row starts the second day.
+    /// `scrolled` moves them up, as a scroll of the chat does. The pinned pill is 50 points high, at 100 points.
+    @MainActor
+    private func pinnedDay(scrolled offset: CGFloat, thirdRowAt third: CGFloat = 180) -> PinnedDay {
+        let pinned = PinnedDay()
+        pinned.line = 100
+        pinned.height = 50
+        let first = date("2026-11-07T14:00:00Z"), second = date("2026-11-08T14:00:00Z")
+        for (id, top, day, starts) in [("a", 0.0, first, true), ("b", 90.0, first, false), ("c", third, second, true)] {
+            pinned.place(id, frame: CGRect(x: 0, y: top + 140 - offset, width: 300, height: 80), date: day, startsDay: starts)
+        }
+        return pinned
+    }
+
+    @MainActor
+    func testPinnedDayIsTheDayOfTheTopRow() {
+        // The first row is below the line: the chat is at its start, and no day is pinned.
+        XCTAssertNil(pinnedDay(scrolled: 0).day)
+
+        // The first row passes the line. Its day is pinned, and its own pill gives its place to the pinned pill.
+        let start = pinnedDay(scrolled: 80)
+        XCTAssertEqual(start.day, date("2026-11-07T14:00:00Z"))
+        XCTAssertEqual(start.source, "a")
+        XCTAssertEqual(start.push, 0)
+
+        // The second row is at the top, and the first row of the next day is 20 points below the line. That row
+        // pushes the pinned pill up by the 30 points that the pill does not have, and the pill fades.
+        let pushed = pinnedDay(scrolled: 200)
+        XCTAssertEqual(pushed.day, date("2026-11-07T14:00:00Z"))
+        XCTAssertEqual(pushed.source, "a")
+        XCTAssertEqual(pushed.push, -30)
+        XCTAssertEqual(pushed.strength, 0.4, accuracy: 0.001)
+
+        // The first row of the next day reaches the line. The next day is pinned.
+        let next = pinnedDay(scrolled: 220)
+        XCTAssertEqual(next.day, date("2026-11-08T14:00:00Z"))
+        XCTAssertEqual(next.source, "c")
+        XCTAssertEqual(next.push, 0)
+    }
+
+    /// A row that is not a message is at the line, between the second row and the third row. No day is pinned.
+    @MainActor
+    func testNoDayIsPinnedBetweenMessages() {
+        XCTAssertNil(pinnedDay(scrolled: 240, thirdRowAt: 260).day)
+    }
+
+    @MainActor
+    func testPinnedPillShowsDuringAScrollAndOneSecondAfterIt() async throws {
+        let pinned = pinnedDay(scrolled: 80)
+        XCTAssertFalse(pinned.standsIn(for: "a"))
+        pinned.scrolls(true)
+        XCTAssertTrue(pinned.standsIn(for: "a"))
+        XCTAssertFalse(pinned.standsIn(for: "b"))
+        pinned.scrolls(false)
+        XCTAssertTrue(pinned.isVisible)
+        try await Task.sleep(for: .milliseconds(1300))
+        XCTAssertFalse(pinned.isVisible)
+    }
 }
