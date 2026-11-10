@@ -14,7 +14,27 @@ final class TranscriptTableHold {
     #if os(macOS)
     fileprivate weak var table: NSTableView?
     private var pending: (rows: Int, height: CGFloat, offset: CGFloat, at: Date)?
+    private var movedAt = Date.distantPast
     #endif
+
+    /// The hold moved the scroll position less than 0.15 s ago. The scroll observers see that move a frame later and
+    /// must not take it for the reader's.
+    var movedRecently: Bool {
+        #if os(macOS)
+        Date().timeIntervalSince(movedAt) < 0.15
+        #else
+        false
+        #endif
+    }
+
+    /// A growth waits for the list to add its rows.
+    var isPending: Bool {
+        #if os(macOS)
+        pending.map { Date().timeIntervalSince($0.at) < 1 } ?? false
+        #else
+        false
+        #endif
+    }
 
     /// Records the list before the window grows at the top.
     func prepare() {
@@ -49,6 +69,7 @@ final class TranscriptTableHold {
         }
         clip.scroll(to: NSPoint(x: clip.bounds.minX, y: pending.offset + table.frame.height - pending.height))
         scroll.reflectScrolledClipView(clip)
+        movedAt = Date()
         return true
         #else
         return false

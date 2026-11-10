@@ -33,6 +33,7 @@ struct ConversationView: View {
     /// The rows that the list builds (see TranscriptWindow).
     @State private var window = TranscriptWindow()
     @State private var tableHold = TranscriptTableHold()
+    @State private var reader = TranscriptReader()
     /// The moment that the day labels count from. A new day or a new time zone replaces it, so an open chat groups
     /// its rows and writes its labels again at once.
     @State private var dayReference = Date()
@@ -87,6 +88,22 @@ struct ConversationView: View {
         await Task.yield()
         guard !Task.isCancelled else { return }
         show(row, proxy: proxy)
+    }
+
+    /// Adds small batches of older rows above the window while the chat is on screen: when the reader comes near the
+    /// oldest row that the list holds, and while the reader does nothing, up to `TranscriptWindow.idleRows`. One batch
+    /// at a time, so the main thread never holds a new message for longer than one batch.
+    private func growWindow() async {
+        guard TranscriptWindow.isUsed else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(30))
+            guard !tableHold.isPending else { continue }
+            let ids = current.entries.map(\.id)
+            let focus = windowFocus
+            let built = window.range(of: ids, focusId: focus).count
+            guard reader.nearTop || (reader.idle && built < TranscriptWindow.idleRows) else { continue }
+            if window.growTop(in: ids, focusId: focus) { tableHold.prepare() }
+        }
     }
 
     /// The row that shows a message, also a message inside a group of photos or of bot messages.
@@ -215,7 +232,9 @@ struct ConversationView: View {
                     .onScrollGeometryChange(for: [CGFloat].self) { [$0.contentOffset.y, $0.contentSize.height, $0.containerSize.height, $0.contentInsets.top + $0.contentInsets.bottom] } action: { old, new in
                         // Older rows arrived above the screen. The hold keeps the rows on screen in place; this move of
                         // the offset is not the reader's.
-                        if tableHold.finishIfReady() { return }
+                        if tableHold.finishIfReady() || tableHold.movedRecently { return }
+                        // A move of the offset is the reader's. The window grows on its own only while the reader rests.
+                        if abs(new[0] - old[0]) > 0.5 { reader.lastAction = Date() }
                         #if os(macOS)
                         // A mouse wheel, and some trackpad scrolls, report no scroll phase on the Mac, so userScrolling
                         // stays false. Then the chat never learned that the reader left the bottom, and each new line of
@@ -263,10 +282,8 @@ struct ConversationView: View {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
                     }
-                    // Within one screen of the oldest row that the list holds, the list adds older rows above it.
-                    .onScrollGeometryChange(for: TopEdge.self) { TopEdge($0) } action: { _, edge in
-                        guard edge.near, TranscriptWindow.isUsed else { return }
-                        if window.growTop(in: current.entries.map(\.id), focusId: windowFocus) { tableHold.prepare() }
+                    .onScrollGeometryChange(for: Bool.self) { TranscriptReader.nearTop($0) } action: { _, near in
+                        reader.nearTop = near
                     }
                     .onChange(of: nearBottom) { _, following in
                         if following { rowHold.release() }
@@ -316,6 +333,7 @@ struct ConversationView: View {
                         await Task.yield()
                         tableHold.prepare()
                         window.settle()
+                        await growWindow()
                     }
                     .task(id: "\(focusMessageId ?? ""):\(store.connection.rawValue):\(store.hasOlderMessages(botId))") {
                         guard store.connection == .connected || store.isDemo else { return }
@@ -364,6 +382,8 @@ struct ConversationView: View {
                     composerFocused = true
                 }
                 .onChange(of: composerFocused) { _, _ in footerScroll.reset() }
+                // Typing is an action of the reader too. The window waits while the person writes.
+                .onChange(of: messageDraft) { _, _ in reader.lastAction = Date() }
                 .toolbar {
                     #if os(iOS)
                     if #available(iOS 26.0, *) {

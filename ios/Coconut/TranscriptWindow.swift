@@ -1,27 +1,28 @@
 import SwiftUI
 
-/// Whether the reader is within one screen of the top of a chat, with the offset and the content height at that moment.
-/// Two values are equal when `near` is equal, so a scroll causes a change only when it reaches or leaves that screen.
-struct TopEdge: Equatable {
-    let near: Bool
-    let offset: CGFloat
-    let height: CGFloat
+/// What the reader of a chat does, for the growth of its window. A class: the scroll observers write it on each frame,
+/// and a change must not draw the chat again.
+@MainActor
+final class TranscriptReader {
+    /// The reader is within `TranscriptWindow.nearScreens` screens of the oldest row that the list holds.
+    var nearTop = false
+    /// The last scroll or keystroke of the reader.
+    var lastAction = Date.distantPast
 
-    init(_ geometry: ScrollGeometry) {
-        near = geometry.contentOffset.y + geometry.contentInsets.top < geometry.containerSize.height
-        offset = geometry.contentOffset.y
-        height = geometry.contentSize.height
+    /// The reader did nothing for half a second.
+    var idle: Bool { Date().timeIntervalSince(lastAction) > 0.5 }
+
+    static func nearTop(_ geometry: ScrollGeometry) -> Bool {
+        geometry.contentOffset.y + geometry.contentInsets.top < geometry.containerSize.height * TranscriptWindow.nearScreens
     }
-
-    static func == (a: TopEdge, b: TopEdge) -> Bool { a.near == b.near }
 }
 
 /// The rows of a chat that its list builds: the newest rows, from one row down to the end.
 ///
 /// A Mac list measures the height of every row that it holds when it opens. A chat of 1,270 rows took about 2 seconds
 /// to show. The chat builds only the rows that fill its view first, then a window of `settledRows` right after the first
-/// frame, and an older batch each time the reader reaches the top of the window. The rows stay in memory; only the
-/// list holds fewer of them.
+/// frame. Then it adds small batches of older rows: while the reader is near the top of the window, and while the
+/// reader does nothing, up to `idleRows`. The rows stay in memory; only the list holds fewer of them.
 ///
 /// The window keeps the ID of its oldest row, not a count. New rows at the bottom, and a page of older history from the
 /// Mac, then leave the rows on screen where they are.
@@ -31,9 +32,14 @@ struct TranscriptWindow: Equatable {
     static let openRows = 18
     /// The rows that the chat builds after its first frame.
     static let settledRows = 40
-    /// The rows that the chat adds when the reader reaches the top of the window. The Mac measures them at once, about
-    /// 2 ms a row, so a small batch keeps each pause short.
-    static let batchRows = 20
+    /// The rows of one batch. The Mac measures a new batch at once. A batch costs about 40 ms and 4 ms more for each
+    /// row, so 5 rows keep the pause near 50 ms; the longest pause of a scroll through the whole chat was 160 ms.
+    static let batchRows = 5
+    /// The window grows while the reader is within this many screens of its oldest row, so a scroll seldom reaches it.
+    static let nearScreens: CGFloat = 3
+    /// The rows that the window grows to while the reader does nothing. An update of an open chat cost the same with 40
+    /// and with 400 rows, but a switch to another chat removes each row: about 0.2 ms a row.
+    static let idleRows = 200
     /// The rows above a message that the chat opens at, so the reader sees what came before it.
     static let contextRows = 5
 
