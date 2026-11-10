@@ -2,12 +2,13 @@
 from datetime import datetime, timedelta, timezone
 import tempfile
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
-from coconut.documents import KEPT_VERSIONS, end_time, page_problems
+from coconut.documents import KEPT_VERSIONS, MAX_CONTENT, end_time, page_problems
 from coconut.library_replies import document_of, is_report, report_key
 from coconut.service import Service, ServiceError
 from test_gateway_chat import Adapter, Provider
@@ -42,6 +43,21 @@ class PageRuleTests(unittest.TestCase):
                                        'red. Use style="color:red" here.</p><a href="#add">Up</a>'), [])
         # A link that the person opens is not a load.
         self.assertEqual(page_problems('<a href="https://github.com/antiwork/coconut/pull/1">PR</a>'), [])
+
+    def test_the_rules_check_a_hostile_page_of_512_kb_in_a_short_time(self):
+        # A team page of another Mac goes through these rules. Each of these pages took more than 30 seconds with
+        # a pattern that read to the end of the text again from each start. The limit is wide for a slow CI Mac.
+        def fill(start, unit, end=''):
+            return start + unit * ((MAX_CONTENT - len(start) - len(end)) // len(unit)) + end
+        for page in (fill('<style>p{', 'color:'), fill('<p style="', 'border-top:', '">'),
+                     fill('<script>`', '${', '`'), fill('<script>`${', '/*', '}`')):
+            started = time.monotonic()
+            self.assertEqual(page_problems(page), [])
+            self.assertLess(time.monotonic() - started, 10, page[:20])
+        # The rule of a color by name keeps its meaning: the value of a color property up to ; { or }.
+        self.assertTrue(page_problems('<style>p{border: 1px solid; color: x red}</style>'))
+        self.assertEqual(page_problems('<style>p{margin: 0; x: red} .a{color: var(--text)}</style>'), [])
+        self.assertTrue(page_problems('<p style="background-color:\n navy">x</p>'))
 
     def test_each_rule_names_its_fix(self):
         cases = {'<p style="font-family: Comic Sans">x</p>': 'font',

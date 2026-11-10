@@ -52,6 +52,31 @@ _NAME_REASON = 'The page writes a color by name. ' + _COLOR_ADVICE
 _FILE = 'The page loads another file. Coconut gives d3 and Plot to each page. Put everything else in the page.'
 _NETWORK = 'The page loads something from the network. Pages have no network access. Put the data in the page.'
 _COLOR_PROPERTY = r'(?:color|background(?:-color)?|fill|stroke|border(?:-[a-z]+)?|outline|box-shadow|text-shadow)'
+
+
+class _ColorByName:
+    """The rule "a color by name": a color property whose value has a color name, or a color name in quotes.
+
+    It has the `search` of a pattern. One pattern with a lazy scan from each property to the end of its value took
+    minutes on a long value without an end, for example "color:" 80,000 times. Here the value of the first property
+    of each declaration is read once. A later property of the same declaration has its value inside that one.
+    """
+    _property = re.compile(_COLOR_PROPERTY + r'\s*:', re.I)
+    _name = re.compile(r'\b(?:' + _COLOR_NAMES + r')\b', re.I)
+    _quoted = re.compile(r'[\'"`]\s*(?:' + _COLOR_NAMES + r')\s*[\'"`]', re.I)
+    _end = re.compile(r'[;{}]')
+
+    def search(self, text: str) -> bool:
+        if self._quoted.search(text):
+            return True
+        start = 0
+        while found := self._property.search(text, start):
+            end = self._end.search(text, found.end())
+            stop = end.start() if end else len(text)
+            if self._name.search(text, found.end(), stop):
+                return True
+            start = stop
+        return False
 _COLOR_ATTRIBUTES = {'fill', 'stroke', 'color', 'bgcolor', 'stop-color', 'flood-color', 'lighting-color'}
 _FILE_TAGS = {'link', 'iframe', 'object', 'embed', 'base', 'frame', 'applet'}
 _LOAD_ATTRIBUTES = {'src', 'srcset', 'poster', 'action', 'data', 'href', 'xlink:href', 'background'}
@@ -66,8 +91,7 @@ HTML_RULES = (
      _HEX_REASON + ' If it is an element ID or a number, write it another way, for example "No. 377".'),
     ('code', re.compile(r'\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color-mix)\s*\(', re.I),
      'The page writes a color as a function. ' + _COLOR_ADVICE),
-    ('code', re.compile(_COLOR_PROPERTY + r'\s*:[^;{}]*?\b(?:' + _COLOR_NAMES + r')\b|[\'"`]\s*(?:' + _COLOR_NAMES
-                        + r')\s*[\'"`]', re.I), _NAME_REASON),
+    ('code', _ColorByName(), _NAME_REASON),
     ('scripts', re.compile(r'\bd3\.(?:scheme|interpolate(?:Rgb|Hsl|Lab|Hcl|Cubehelix|Turbo|Viridis|Inferno|Magma|'
                            r'Plasma|Warm|Cool|Rainbow|Sinebow|Blues|Greens|Greys|Oranges|Purples|Reds|Spectral|RdBu|'
                            r'RdYlGn))'),
@@ -84,7 +108,9 @@ _SCRIPT_TOKENS = re.compile(r'("(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|`(?:\\
                             re.S)
 
 
-_TEMPLATE_EXPRESSION = re.compile(r'\$\{[^}]*\}')
+# An expression without its "}" runs to the end of the string. With a "}" that must come, a template string with
+# many "${" took more than 30 seconds to check, because each "${" read to the end of the string again.
+_TEMPLATE_EXPRESSION = re.compile(r'\$\{[^}]*\}?')
 _COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
 
 
