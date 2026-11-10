@@ -30,6 +30,9 @@ struct ConversationView: View {
     @State private var footerScroll = ConversationFooterScroll()
     @State private var isVisible = false
     @State private var transcript = TranscriptCache()
+    /// The rows that the list builds (see TranscriptWindow).
+    @State private var window = TranscriptWindow()
+    @State private var tableHold = TranscriptTableHold()
     /// The moment that the day labels count from. A new day or a new time zone replaces it, so an open chat groups
     /// its rows and writes its labels again at once.
     @State private var dayReference = Date()
@@ -60,6 +63,8 @@ struct ConversationView: View {
         transcript.current(in: store, botId: botId, focusDecisionId: focusDecisionId, calendar: .current)
     }
     private var activity: ConversationActivity? { store.conversationActivity(botId) }
+    /// The row that the window must hold: the card or the message that the chat opens at.
+    private var windowFocus: String? { focusTarget.flatMap { Self.entryId(containing: $0, in: current.entries) } }
     private var activeTask: AgentTask? {
         store.tasks.last { $0.chatBotId == botId && $0.isRunning }
             ?? store.tasks.last { $0.chatBotId == botId && ["needs_you", "waiting"].contains($0.status) }
@@ -69,12 +74,24 @@ struct ConversationView: View {
     @MainActor
     private func loadAndScrollToMessage(_ id: String, proxy: ScrollViewProxy) async {
         nearBottom = false
+        // Pages of history from the Mac stay above the window until the window takes the quoted message.
+        window.pinStart(in: current.entries.map(\.id), focusId: windowFocus)
         while !store.messages.contains(where: { $0.id == id || ($0.kind == "decision" && $0.decisionId == id) }) && store.hasOlderMessages(botId) && !Task.isCancelled {
             if !(await store.loadOlderMessages(botId)) { break }
         }
+        let row = TranscriptEntry.rowId(for: store.displayedMessageId(for: id), in: current.entries)
+        // The quoted message can be older than the rows that the list holds. The list builds it before the scroll.
+        if let entry = Self.entryId(containing: row, in: current.entries), window.include(entry, in: current.entries.map(\.id)) {
+            tableHold.prepare()
+        }
         await Task.yield()
         guard !Task.isCancelled else { return }
-        show(TranscriptEntry.rowId(for: store.displayedMessageId(for: id), in: current.entries), proxy: proxy)
+        show(row, proxy: proxy)
+    }
+
+    /// The row that shows a message, also a message inside a group of photos or of bot messages.
+    private static func entryId(containing id: String, in entries: [TranscriptEntry]) -> String? {
+        entries.first { $0.id == id || $0.messages.contains { $0.id == id } }?.id
     }
 
     private func show(_ row: String, proxy: ScrollViewProxy) {
@@ -84,6 +101,11 @@ struct ConversationView: View {
 
     var body: some View {
         let (messages, entries) = current
+        let ids = TranscriptWindow.isUsed ? entries.map(\.id) : []
+        let focusRow = TranscriptWindow.isUsed ? windowFocus : nil
+        let shown = TranscriptWindow.isUsed ? window.range(of: ids, focusId: focusRow) : entries.indices
+        // The rows that come before the first row of the chat show only when the list holds that first row.
+        let startsAtFirstRow = shown.lowerBound == 0
         Group {
             if let bot {
                 ScrollViewReader { proxy in
@@ -92,12 +114,15 @@ struct ConversationView: View {
                     List {
                         Group {
                             conversationHeader(bot: bot, messages: messages)
-                            if store.hasOlderMessages(botId) {
+                            if startsAtFirstRow && store.hasOlderMessages(botId) {
                                 Button {
                                     let anchor = entries.first?.message.id
                                     nearBottom = false
+                                    // The page from the Mac arrives above the window, then the window grows to show it.
+                                    window.pinStart(in: ids, focusId: focusRow)
                                     Task {
                                         await store.loadOlderMessages(botId)
+                                        if window.growTop(in: current.entries.map(\.id), focusId: windowFocus) { tableHold.prepare() }
                                         await Task.yield()
                                         if let anchor, let entry = current.entries.first(where: { $0.messages.contains { $0.id == anchor } }) {
                                             let target = entry.message.kind == "decision" ? (entry.message.decisionId ?? entry.id) : entry.id
@@ -112,9 +137,9 @@ struct ConversationView: View {
                                 .disabled(store.historyLoading.contains(botId))
                                 .accessibilityIdentifier("load-earlier-messages")
                             }
-                            ForEach(store.tasks.filter {
+                            ForEach(startsAtFirstRow ? store.tasks.filter {
                                 $0.botId == botId && $0.sourceBotId == nil && ($0.conversationBotId ?? botId) != botId
-                            }) { task in
+                            } : []) { task in
                                 if let origin = store.bots.first(where: { $0.id == task.conversationBotId }) {
                                     NavigationLink(value: ConversationRoute(botId: origin.id)) {
                                         Label("In \(origin.name)", systemImage: "arrow.up.left")
@@ -123,7 +148,7 @@ struct ConversationView: View {
                                     }.buttonStyle(.plain)
                                 }
                             }
-                            ForEach(entries) { entry in
+                            ForEach(entries[shown]) { entry in
                                 let message = entry.message
                                 let date = message.createdAt.apiDate
                                 VStack(spacing: 0) {
@@ -149,7 +174,9 @@ struct ConversationView: View {
                                     .transition(.opacity.animation(BoardStyle.fade(reduceMotion: reduceMotion)))
                             }
                             // The row inset and this padding keep 14 points below the last row.
-                            Color.clear.frame(height: 1).padding(.bottom, 9).id("conversation-bottom")
+                            Color.clear.frame(height: 1).padding(.bottom, 9)
+                                .background(TranscriptTableFinder(hold: tableHold))
+                                .id("conversation-bottom")
                         }
                         .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
                         .listRowSeparator(.hidden)
@@ -186,6 +213,9 @@ struct ConversationView: View {
                         if next != footerScroll { footerScroll = next }
                     }
                     .onScrollGeometryChange(for: [CGFloat].self) { [$0.contentOffset.y, $0.contentSize.height, $0.containerSize.height, $0.contentInsets.top + $0.contentInsets.bottom] } action: { old, new in
+                        // Older rows arrived above the screen. The hold keeps the rows on screen in place; this move of
+                        // the offset is not the reader's.
+                        if tableHold.finishIfReady() { return }
                         #if os(macOS)
                         // A mouse wheel, and some trackpad scrolls, report no scroll phase on the Mac, so userScrolling
                         // stays false. Then the chat never learned that the reader left the bottom, and each new line of
@@ -233,6 +263,11 @@ struct ConversationView: View {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
                     }
+                    // Within one screen of the oldest row that the list holds, the list adds older rows above it.
+                    .onScrollGeometryChange(for: TopEdge.self) { TopEdge($0) } action: { _, edge in
+                        guard edge.near, TranscriptWindow.isUsed else { return }
+                        if window.growTop(in: current.entries.map(\.id), focusId: windowFocus) { tableHold.prepare() }
+                    }
                     .onChange(of: nearBottom) { _, following in
                         if following { rowHold.release() }
                     }
@@ -275,9 +310,18 @@ struct ConversationView: View {
                     .pinnedDayPill(pinnedDay, now: dayReference, below: Self.titleHeight)
                     .background(BoardStyle.paper)
                     .task { await store.markRead(bot) }
+                    // The first frame shows only the rows that fill the view. Then the list takes the rest of its
+                    // window, so the reader can scroll up at once.
+                    .task {
+                        await Task.yield()
+                        tableHold.prepare()
+                        window.settle()
+                    }
                     .task(id: "\(focusMessageId ?? ""):\(store.connection.rawValue):\(store.hasOlderMessages(botId))") {
                         guard store.connection == .connected || store.isDemo else { return }
                         while focusMessageId != nil && !focusTargetExists(in: current.messages) && store.hasOlderMessages(botId) && !Task.isCancelled {
+                            // The page that holds the message widens the window above the screen.
+                            tableHold.prepare()
                             if !(await store.loadOlderMessages(botId)) { break }
                         }
                     }

@@ -233,6 +233,18 @@ final class BackgroundTask {
     }
 }
 
+extension TranscriptWindow {
+    /// A Mac list measures the height of each of its rows when it opens, so a Mac chat holds only a window of rows.
+    /// An iPhone list measures only the rows on screen and builds the whole chat.
+    static var isUsed: Bool {
+        #if os(macOS)
+        true
+        #else
+        false
+        #endif
+    }
+}
+
 enum Haptics {
     /// The light tick of a choice. A Mac has no tick for it.
     @MainActor static func selection() {
