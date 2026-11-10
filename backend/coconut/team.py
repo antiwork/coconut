@@ -21,7 +21,8 @@ error texts are for a person, because the app shows them.
 
 No answer has a key, a token or an invite secret. Only the invite link, which the person shares, carries a secret.
 
-A write of a paired device with an `Idempotency-Key` is safe to repeat (team_request).
+A write of a paired device with an `Idempotency-Key` is safe to repeat (team_request). A leave of a `joining` room
+always removes the room from this Mac (team_leave).
 """
 from __future__ import annotations
 
@@ -437,13 +438,18 @@ class Team(TeamSync, TeamPages):
     def team_leave(self, room_id: str) -> dict:
         """Leave a room. The Mac tells the other members, leaves at the relay, and deletes its copy and its keys.
 
+        A failure of the relay stops the leave of an `active` room, because the Mac is still a member there. A
+        `joining` room always goes: the Mac asks the relay, as for an `active` room, then deletes its copy and its keys.
+
         The relay deletes the kept entries of a member that leaves, but the other Macs already have a copy of its
         `member` entry. So the Mac first replaces that entry with a `delete` entry, when its helper works (see
         _team_retire_member). An admin leaves only a room without other members, and the relay then deletes the room.
         """
         from .service import ServiceError
-        room = self._team_room(room_id)
+        self._team_room(room_id)
         with self._team_operation, team_errors():
+            # An operation before this one can have changed the room, for example a join that made it `active`.
+            room = self._team_room(room_id)
             try:
                 secrets = team_keys.read(self.root, room_id)
             except TeamKeysError:
@@ -460,11 +466,18 @@ class Team(TeamSync, TeamPages):
                             self._team_retire_member(room)
                         self.team_relay.remove_member(room['relay'], room_id, secrets['token'], room['member'], tries=2)
                     except TeamRelayError as error:
-                        if error.status == 409:
+                        if room['state'] == JOINING:
+                            # The relay never answered the join, and it can never answer, for example when the link
+                            # named a server that does not exist. The room must not stay on the Team screen for ever.
+                            # A relay that took the join keeps this Mac as a member without a Mac, until the member
+                            # removal of the contract exists.
+                            log.warning('coconut.team_log room %s: the relay did not take the leave of a join that did '
+                                        'not finish, so this Mac removes only its copy. %s', room_id[:8], error)
+                        elif error.status == 409:
                             raise ServiceError(409, 'The admin can leave the team only when no other member is in it.') from None
-                        if error.status not in (401, 404):
+                        elif error.status not in (401, 404):
                             raise
-                        # The relay no longer knows this Mac or the room, so the Mac is out already.
+                        # Else the relay no longer knows this Mac or the room, so the Mac is out already.
                 self._team_forget(room_id)
         return {'room': room_id, 'left': True}
 

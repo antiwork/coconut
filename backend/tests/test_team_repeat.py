@@ -1,7 +1,8 @@
-"""A repeated team write.
+"""A repeated team write, and the leave of a join that did not finish.
 
 The app sends a write again with the same Idempotency-Key after a lost or slow answer (APIClient.swift). The repeat
-must get the answer of the first request and do nothing else, also while the first request still runs.
+must get the answer of the first request and do nothing else, also while the first request still runs. A room that
+stays `joining` because its relay never answers must still go from the Team screen.
 """
 import contextlib
 import http.client
@@ -278,6 +279,29 @@ class TeamRepeatTests(TeamMacs, unittest.TestCase):
         self.assertTrue(rows)
         for row in rows:
             self.assertNotIn(secret.encode() if isinstance(row, bytes) else secret, row)
+
+    # The leave of a join that did not finish
+
+    def test_the_leave_of_a_joining_room_without_an_answer_of_the_relay_removes_the_room(self):
+        room = self.create()
+        link = self.invite(room)['link']
+        self.relay.down = True
+        self.assertEqual(self.refusal(self.join, self.second, link)[0], 503)
+        self.assertEqual(self.rooms(self.second, sync=False)[0]['state'], 'joining')
+        self.assertTrue(self.key_file(self.second, room['room']).exists())
+        asked = len(self.relay.requests)
+        self.assertEqual(self.leave(self.second, room), {'room': room['room'], 'left': True})
+        # The Mac asked the relay one time, then removed its copy and its keys.
+        self.assertEqual([request[0] for request in self.relay.requests[asked:]], ['remove_member'])
+        self.assertEqual(self.rooms(self.second, sync=False), [])
+        self.assertFalse(self.key_file(self.second, room['room']).exists())
+
+    def test_the_leave_of_an_active_room_still_needs_the_relay(self):
+        room, _ = self.joined()
+        self.relay.down = True
+        self.assertEqual(self.refusal(self.leave, self.second, room)[0], 503)
+        self.assertEqual(self.rooms(self.second, sync=False)[0]['state'], 'active')
+        self.assertTrue(self.key_file(self.second, room['room']).exists())
 
 
 if __name__ == '__main__':
