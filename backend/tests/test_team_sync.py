@@ -98,6 +98,29 @@ class TeamSyncTests(TeamMacs, unittest.TestCase):
         self.assertEqual(events(retry), 0)
         self.assertIsNone(self.sync_view(self.second)['error'])
 
+    def test_an_event_of_the_sync_state_that_did_not_save_comes_with_the_next_pass(self):
+        self.sync_view(self.second)
+        event = self.second._event
+        calls = []
+
+        def fail_once(*arguments, **options):
+            calls.append(arguments[0])
+            if len(calls) == 1:
+                raise sqlite3.OperationalError('database is locked')
+            return event(*arguments, **options)
+        self.relay.down = True
+        cursor = self.second._cursor()
+        with mock.patch.object(self.second, '_event', fail_once), self.assertLogs('coconut.team_sync', 'WARNING'):
+            self.second.team_wake(retry=True)
+            self.second.team_sync_pass()
+            self.assertEqual(self.second._cursor(), cursor)
+            # The same error again: the event that did not save comes now, once.
+            for _ in range(2):
+                self.second.team_wake(retry=True)
+                self.second.team_sync_pass()
+        types = [row[0] for row in self.second.db.execute('SELECT type FROM events WHERE seq>?', (cursor,))]
+        self.assertEqual((calls, types), (['team.updated', 'team.updated'], ['team.updated']))
+
     def test_a_room_whose_relay_fails_waits_longer_until_a_wake_with_retry(self):
         self.relay.down = True
         with self.assertLogs('coconut.team_sync', 'WARNING') as logs:

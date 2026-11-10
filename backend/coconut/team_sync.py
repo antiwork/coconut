@@ -192,16 +192,29 @@ class TeamSync:
         The Team screen shows both, and a pass can change them without a change of a member, a bot or the state of
         the room. A pass with the same error or the same refusals as the last event adds none. The state is of this
         process only, as `_team_status` is.
+
+        `_team_told` changes only after the event commits. When the database write fails, the next pass tries the
+        event again, so the app never keeps an old error state. A failure fails no other room. A room that the
+        person left gets no event and keeps no state here.
         """
         seen = (self._team_status.get(room_id, {}).get('error'),
                 tuple(sorted((entry, refusal['reason']) for entry, refusal in self._team_refusals.get(room_id, {}).items())))
         if self._team_told.get(room_id, (None, ())) == seen:
             return
-        self._team_told[room_id] = seen
-        with self.transaction():
-            # The person can have left the room while the pass read it.
-            if self.team_store.room(room_id) is not None:
-                self._event(TEAM_EVENT, {'team': room_id})
+        try:
+            with self.transaction():
+                # The person can have left the room while the pass read it.
+                present = self.team_store.room(room_id) is not None
+                if present:
+                    self._event(TEAM_EVENT, {'team': room_id})
+        except sqlite3.Error:
+            log.exception('coconut.team_log room %s: the event of the sync state did not save. The next pass tries '
+                          'again.', room_id[:8])
+            return
+        if present:
+            self._team_told[room_id] = seen
+        else:
+            self._team_told.pop(room_id, None)
 
     def team_sync_room(self, room: str) -> None:
         """Read the room until the store has each entry of the relay. Then make sure that the log shows this Mac, and
