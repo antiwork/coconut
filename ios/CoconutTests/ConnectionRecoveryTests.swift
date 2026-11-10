@@ -160,6 +160,47 @@ final class ConnectionRecoveryTests: XCTestCase {
         XCTAssertEqual(server.requests, 1)
         #endif
     }
+
+    /// The saved state helps the display. It is no part of the pairing, so a file of it that cannot be read must
+    /// not keep a usable pairing offline.
+    @MainActor
+    func testPollingConnectsWhenOnlyTheSavedStateCannotBeRead() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let server = try ConnectionServer(snapshot: APIJSON.encoder().encode(PreviewStateFixture.load()))
+        let address = try await server.start()
+        server.releaseState()
+        defer { server.stop() }
+        let savedToken = PairingToken.read()
+        let folder = URL.applicationSupportDirectory.appendingPathComponent(TestIsolation.name("Coconut"))
+        let paths = ["pairing.json", "snapshot.json", "outgoing.json"].map { folder.appendingPathComponent($0) }
+        let savedFiles = paths.map { try? Data(contentsOf: $0) }
+        for path in paths { try? FileManager.default.removeItem(at: path) }
+        try PairingToken.save("fixture-only")
+        try ProtectedCache.write(PairingConfiguration(loopback: address, deviceId: "device"), name: "pairing.json")
+        // The pairing file reads. The two files of the saved state exist and do not read.
+        for path in paths.dropFirst() {
+            try Data("{}".utf8).write(to: path, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: path.path)
+        }
+        let store = AppStore(demo: false)
+        defer {
+            for path in paths { try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: path.path) }
+            store.setForeground(false)
+            store.disconnect()
+            if let savedToken { try? PairingToken.save(savedToken) } else { PairingToken.delete() }
+            for (path, data) in zip(paths, savedFiles) {
+                if let data { try? data.write(to: path, options: .atomic) }
+                else { try? FileManager.default.removeItem(at: path) }
+            }
+        }
+        XCTAssertTrue(store.hasPairing)
+        store.setForeground(true)
+        try await waitUntil { store.connection == .connected }
+        XCTAssertGreaterThanOrEqual(server.requests, 1)
+        #endif
+    }
 }
 
 private final class ConnectionServer: @unchecked Sendable {

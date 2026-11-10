@@ -270,7 +270,9 @@ final class AppStore {
             pairingLog.notice("The Keychain has no token for the pairing file, so the app has no pairing.")
             return nil
         }
-        return (configuration, try ProtectedCache.lookup("outgoing.json"), try ProtectedCache.lookup("snapshot.json"))
+        // The saved state helps the display. It is no part of the pairing, so a file of it that the device cannot read
+        // is skipped, and it cannot keep a usable pairing offline.
+        return (configuration, ProtectedCache.read("outgoing.json"), ProtectedCache.read("snapshot.json"))
     }
 
     func start() {
