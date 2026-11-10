@@ -30,6 +30,9 @@ struct ConversationView: View {
     @State private var footerScroll = ConversationFooterScroll()
     @State private var isVisible = false
     @State private var transcript = TranscriptCache()
+    /// The moment that the day labels count from. A new day or a new time zone replaces it, so an open chat groups
+    /// its rows and writes its labels again at once.
+    @State private var dayReference = Date()
     @FocusState private var composerFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.toggleBotDetails) private var toggleBotDetails
@@ -44,7 +47,9 @@ struct ConversationView: View {
 
     private var bot: Bot? { store.bots.first { $0.id == botId } }
     private var current: (messages: [Message], entries: [TranscriptEntry]) {
-        transcript.current(in: store, botId: botId, focusDecisionId: focusDecisionId)
+        // A snapshot of the calendar, not the auto-updating one: two auto-updating calendars are always equal, so the
+        // cache could not see a new time zone.
+        transcript.current(in: store, botId: botId, focusDecisionId: focusDecisionId, calendar: .current)
     }
     private var activity: ConversationActivity? { store.conversationActivity(botId) }
     private var activeTask: AgentTask? {
@@ -114,7 +119,7 @@ struct ConversationView: View {
                                 let message = entry.message
                                 VStack(spacing: 0) {
                                 if entry.startsDay, let date = message.createdAt.apiDate {
-                                    DaySeparatorRow(date: date)
+                                    DaySeparatorRow(date: date, now: dayReference)
                                 }
                                 if entry.isExchange {
                                     BotExchangeRow(messages: entry.messages, botId: botId)
@@ -279,6 +284,7 @@ struct ConversationView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .onAppear { isVisible = true; footerScroll.reset() }
+                .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
                 .onDisappear { isVisible = false; composerFocused = false; footerScroll.reset() }
                 // "Ask the bot about this page" opens the chat with the page quoted in the composer.
                 .onChange(of: store.pageQuotes[botId], initial: true) { _, quote in
@@ -409,8 +415,8 @@ struct ConversationView: View {
 }
 
 /// Scrolling changes the conversation's own state several times per swipe, and each change redraws it.
-/// The transcript changes only with the store, so a redraw reuses it. Comparing the inputs still reads them,
-/// so the redraw keeps observing the store.
+/// The transcript changes only with the store and with the calendar of the device, so a redraw reuses it. Comparing
+/// the inputs still reads them, so the redraw keeps observing the store.
 @MainActor
 private final class TranscriptCache {
     private struct Inputs: Equatable {
@@ -422,21 +428,23 @@ private final class TranscriptCache {
         let decisions: [Decision]
         let artifacts: [Artifact]
         let tasks: [AgentTask]
-        let timeZone: String
+        /// The rows group by the days of this calendar. A new time zone gives a different calendar.
+        let calendar: Calendar
     }
 
     private var inputs: Inputs?
     private var value: (messages: [Message], entries: [TranscriptEntry]) = ([], [])
 
-    func current(in store: AppStore, botId: String, focusDecisionId: String?) -> (messages: [Message], entries: [TranscriptEntry]) {
+    func current(in store: AppStore, botId: String, focusDecisionId: String?,
+                 calendar: Calendar) -> (messages: [Message], entries: [TranscriptEntry]) {
         let latest = Inputs(botId: botId, focusDecisionId: focusDecisionId, messages: store.messages,
                             outgoingMessages: store.outgoingMessages, outgoingAnswers: store.outgoingAnswers,
                             decisions: store.decisions, artifacts: store.transcriptArtifacts, tasks: store.tasks,
-                            timeZone: TimeZone.autoupdatingCurrent.identifier)
+                            calendar: calendar)
         if latest != inputs {
             inputs = latest
             let messages = store.conversationTranscript(for: botId, focusDecisionId: focusDecisionId)
-            value = (messages, TranscriptEntry.grouped(messages, botId: botId, calendar: .autoupdatingCurrent))
+            value = (messages, TranscriptEntry.grouped(messages, botId: botId, calendar: calendar))
         }
         return value
     }

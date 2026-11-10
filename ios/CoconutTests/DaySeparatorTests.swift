@@ -85,4 +85,17 @@ final class DaySeparatorTests: XCTestCase {
         XCTAssertEqual(entries.map(\.id), ["photo-1", "photo-2", "note"])
         XCTAssertEqual(entries.map(\.startsDay), [true, true, false])
     }
+
+    /// The rows group by the days of the calendar that the chat passes, so a new time zone moves the start of a day.
+    /// 04:30Z and 05:30Z are 23:30 and 00:30 in New York, and 20:30 and 21:30 in Los Angeles.
+    func testTimeZoneMovesTheStartOfDay() {
+        let photos = [message("photo-1", at: "2026-11-09T04:30:00Z", photo: true),
+                      message("photo-2", at: "2026-11-09T05:30:00Z", photo: true)]
+        var west = calendar
+        west.timeZone = TimeZone(identifier: "America/Los_Angeles")!
+        XCTAssertEqual(TranscriptEntry.grouped(photos, calendar: calendar).map(\.startsDay), [true, true])
+        XCTAssertEqual(TranscriptEntry.grouped(photos, calendar: west).map(\.startsDay), [true])
+        // The chat groups its rows again when the calendar is not equal to the one it used.
+        XCTAssertNotEqual(calendar, west)
+    }
 }

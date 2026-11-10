@@ -1,6 +1,16 @@
+import Combine
 import SwiftUI
 
 enum DaySeparator {
+    /// Fires on the main thread when the calendar day or the time zone of the device changes. The system posts both
+    /// notifications on any thread. An open chat then groups its rows and writes its day labels again.
+    @MainActor static let changes: AnyPublisher<Void, Never> = NotificationCenter.default
+        .publisher(for: .NSCalendarDayChanged)
+        .merge(with: NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange))
+        .map { _ in }
+        .receive(on: DispatchQueue.main)
+        .eraseToAnyPublisher()
+
     /// The day label shown above the first message of each calendar day.
     static func label(for date: Date, now: Date = .now, calendar: Calendar = .current, locale: Locale = .current) -> String {
         // The label reads in the calendar's zone, the same one the day test below uses, so an evening message never
@@ -27,7 +37,9 @@ enum DaySeparator {
 
 struct DaySeparatorRow: View {
     let date: Date
-    @State private var now = Date()
+    /// The moment that "Today" counts from. The chat replaces it when the day or the time zone changes, and the label
+    /// then reads the calendar of the device again.
+    let now: Date
 
     var body: some View {
         Text(DaySeparator.label(for: date, now: now))
@@ -36,6 +48,5 @@ struct DaySeparatorRow: View {
             .padding(.vertical, 8)
             .accessibilityAddTraits(.isHeader)
             .accessibilityIdentifier("day-separator")
-            .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in now = Date() }
     }
 }
