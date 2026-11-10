@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 from uuid import uuid4
 
-from coconut import team_keys
+from coconut import team_keys, team_store
 from coconut.documents import MAX_CONTENT
 from coconut.service import ServiceError
 from coconut.team_relay import MAX_NUMBER, TeamRelayError
@@ -302,23 +302,21 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
         self.publish(key='large-page', title='Large page', audience='team')
         large = next(document['id'] for document in self.library(self.first)['documents']
                      if document['key'] == 'large-page')
-        self.first.team_sync_pass()
-        refused_entry = self.first.team_store.page_entries(self.room_id)[large]
         write = self.relay.write
         attempts = []
 
         def refuse_one(relay, room, token, entry, kept, body, tries=1):
-            if entry == refused_entry:
+            if entry == self.first.team_store.page_entries(self.room_id).get(large):
                 attempts.append(entry)
                 raise TeamRelayError(507, 'The relay answered 507.')
             return write(relay, room, token, entry, kept, body, tries)
-        # The relay has the bot and the first page already. Each later write of the large page fails.
-        self.relay.rooms[self.room_id]['entries'].pop(refused_entry)
-        self.first.team_store.db.execute('DELETE FROM team_entries WHERE id=?', (refused_entry,))
+        # Each write of the large page fails, and the other writes go on.
         with mock.patch.object(self.relay, 'write', refuse_one), self.assertLogs('coconut.team_pages', 'WARNING'):
+            self.sync()
             self.publish(content='Version 2.', audience='team')
             self.sync()
             self.sync()
+        refused_entry = self.first.team_store.page_entries(self.room_id)[large]
         self.assertEqual(len(attempts), 1)
         self.assertEqual([page['key'] for page in self.team_pages()], ['weekly-report'])
         self.assertEqual(self.team_pages()[0]['version'], 2)
@@ -331,6 +329,111 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
         self.sync()
         self.assertEqual(sorted(page['key'] for page in self.team_pages()), ['large-page', 'weekly-report'])
         self.assertEqual(self.rooms(self.first, sync=False)[0]['sync']['refused'], [])
+
+    # The publish step in each pass
+
+    def writes(self) -> int:
+        return sum(request[0] == 'write' for request in self.relay.requests)
+
+    def test_a_pass_after_the_writes_makes_no_write_and_opens_no_write_transaction(self):
+        self.share()
+        self.publish(audience='team')
+        # The first pass writes the bot and the page, and the second one reads them back.
+        self.first.team_sync_pass()
+        self.first.team_sync_pass()
+        before, opened = self.writes(), []
+        transaction = self.first.transaction
+
+        def count():
+            opened.append(1)
+            return transaction()
+        with mock.patch.object(self.first, 'transaction', count):
+            self.first.team_sync_pass()
+        self.assertEqual((self.writes() - before, opened), (0, []))
+
+    def test_unusual_text_in_a_bot_and_a_page_is_written_once(self):
+        name = 'Re\x00port\x1fer   \U0001f600 é'
+        self.first.mutate('PATCH', f'/v1/bots/{self.bot["id"]}', {'name': name, 'avatar': 'a\x00b'}, str(uuid4()),
+                          'phone')
+        self.share()
+        self.publish(audience='team', title='Weekly \x00 report  ', summary='\x00 \U0001f600',
+                     content='Text \x00 with   and \U0001f600.')
+        self.first.team_sync_pass()
+        self.first.team_sync_pass()
+        before = self.writes()
+        self.first.team_sync_pass()
+        self.first.team_sync_pass()
+        self.assertEqual(self.writes(), before)
+        (written,) = self.entries('bot')
+        self.assertEqual(written['payload']['name'], name)
+        self.second.team_sync_pass()
+        self.assertEqual(self.library()['team_bots'][0]['name'], name)
+
+    def test_an_own_page_that_the_reading_rules_refuse_is_not_written_again(self):
+        self.share()
+        self.publish(audience='team')
+        # A rule of a later version refuses the page, for example a page that a former version saved.
+        with mock.patch.dict('coconut.team_store.SHOWN', page=lambda fields: None):
+            self.first.team_sync_pass()
+            self.first.team_sync_pass()
+            before = self.writes()
+            self.first.team_sync_pass()
+        self.assertEqual(self.writes(), before)
+
+    def test_the_checks_of_a_page_run_without_the_lock_of_the_service(self):
+        held = []
+        page_fields = team_store.SHOWN['page']
+
+        def probe(fields):
+            def check():
+                free = self.second.lock.acquire(timeout=0)
+                if free:
+                    self.second.lock.release()
+                held.append(not free)
+            thread = threading.Thread(target=check)
+            thread.start()
+            thread.join()
+            return page_fields(fields)
+        self.share()
+        self.publish(audience='team')
+        self.first.team_sync_pass()
+        with mock.patch.dict('coconut.team_store.SHOWN', page=probe):
+            self.second.team_sync_pass()
+        self.assertEqual(held, [False])
+        self.assertEqual(len(self.team_pages()), 1)
+
+    # The state of the room
+
+    def test_the_library_shows_a_room_only_while_it_is_active(self):
+        for state, change in (('removed', self.remove_second), ('gone', self.drop_room)):
+            with self.subTest(state):
+                self.share()
+                self.publish(audience='team')
+                self.sync()
+                (page,) = self.team_pages()
+                change()
+                after = self.second._cursor()
+                with self.assertLogs('coconut.team_sync', 'WARNING'):
+                    self.assertEqual(self.rooms(self.second)[0]['state'], state)
+                # The phone learns that the Library changed.
+                self.assertTrue(self.second.updates(after, 0, collection_deltas=True)['documents_changed'])
+                self.assertEqual((self.team_pages(), self.library()['team_bots']), ([], []))
+                self.assertEqual(self.refusal(self.second.document, page['id']), (404, 'Document was not found.'))
+                with self.assertRaises(ServiceError):
+                    self.second.mutate('PATCH', f'/v1/documents/{page["id"]}', {'pinned': True}, str(uuid4()), 'phone')
+                # The copy stays in the store until the person leaves the room on this Mac.
+                self.assertEqual(self.second.team_store.page(*page['id'][2:].split('-')), None)
+                self.assertTrue(self.second.team_store.counts(self.room_id)[0])
+                self.leave(self.second, self.room)
+                if state == 'removed':
+                    self.relay.rooms[self.room_id]['members'].pop(self.joined['member'], None)
+                    self.joined = self.join(self.second, self.invite(self.room)['link'])
+
+    def remove_second(self):
+        del self.relay.rooms[self.room_id]['members'][self.joined['member']]
+
+    def drop_room(self):
+        del self.relay.rooms[self.room_id]
 
     def test_a_relay_that_does_not_answer_fails_the_room_and_the_next_pass_writes(self):
         self.share()

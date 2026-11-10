@@ -42,7 +42,8 @@ class TeamStoreTests(unittest.TestCase):
                     at=1_800_000_000_000 + self.seq, kept=kept, body=b'sealed ' + str(self.seq).encode())
 
     def accept(self, entry: dict, opened: dict, *, room: str = ROOM, first_epoch: int = 0):
-        return self.store.accept(self.store.room(room), entry, opened, first_epoch)
+        # The sync runs the first part of the rules before its transaction (read_entry), and accept after it.
+        return self.store.accept(self.store.room(room), entry, team_store.read_entry(opened), first_epoch)
 
     def write(self, number: int, payload, member: str = MEMBER, **options):
         """Accept an entry whose body opens with this payload."""

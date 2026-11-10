@@ -426,6 +426,9 @@ class Team(TeamSync, TeamPages):
     def _team_forget(self, room_id: str) -> None:
         """Delete what this Mac has of a room: the rows of the store first, then the key file."""
         with self.transaction():
+            # The bots and the pages of the room go from the Library, so the phone reads the list again.
+            if self.team_store.shows(room_id):
+                self._event('document.updated', {'team': room_id})
             self.team_store.remove_room(room_id)
         team_keys.remove(self.root, room_id)
         for state in (self._team_failures, self._team_status, self._team_announced, self._team_locks,

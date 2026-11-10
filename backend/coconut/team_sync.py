@@ -25,7 +25,7 @@ from . import team_keys
 from .team_helper import TeamFormatError, TeamHelperError
 from .team_keys import TeamKeysError
 from .team_relay import TeamRelayError
-from .team_store import ACTIVE, DROPPED, GONE, PENDING, REFUSED, REMOVED, SKIPPED
+from .team_store import ACTIVE, DROPPED, GONE, PENDING, REFUSED, REMOVED, SKIPPED, read_entry
 
 POLL_SECONDS = 30
 MAX_WAIT_SECONDS = 900
@@ -181,6 +181,9 @@ class TeamSync:
             # 401: the token of this Mac is no longer a member's. 404: the relay has no such room. The copy stays.
             state = REMOVED if error.status == 401 else GONE
             with self.transaction():
+                # The Library shows a room only while it is active, so the phone reads the list again.
+                if self.team_store.shows(room_id):
+                    self._event('document.updated', {'team': room_id})
                 self.team_store.update_room(room_id, state=state)
             log.warning('coconut.team_log room %s: the relay answered %d. The room is now %s on this Mac.',
                         room_id[:8], error.status, state)
@@ -190,6 +193,8 @@ class TeamSync:
             return False
         opened = self.team_helper.open(room_id, secrets['keys'], entries)
         entries = [dict(entry, body=base64.b64decode(entry['body'])) for entry in entries]
+        # The checks of the text run here, before the transaction and without the lock of the service.
+        opened = [self._team_prepare(room_id, entry, result) for entry, result in zip(entries, opened)]
         first_epoch = first_key(secrets)
         results = []
         with self.transaction():
@@ -216,8 +221,9 @@ class TeamSync:
                 return
             after = waiting[-1]['seq']
             secrets = team_keys.read(self.root, room_id)
-            opened = self.team_helper.open(room_id, secrets['keys'], [
-                dict(entry, body=base64.b64encode(entry['body']).decode()) for entry in waiting])
+            opened = [self._team_prepare(room_id, entry, result)
+                      for entry, result in zip(waiting, self.team_helper.open(room_id, secrets['keys'], [
+                          dict(entry, body=base64.b64encode(entry['body']).decode()) for entry in waiting]))]
             first_epoch = first_key(secrets)
             results = []
             with self.transaction():
@@ -231,6 +237,16 @@ class TeamSync:
                     results.append((entry, outcome, reason))
                 self._team_tell_library(room_id)
             self._team_report(room_id, results)
+
+    def _team_prepare(self, room_id: str, entry: dict, opened: dict) -> dict:
+        """read_entry for one entry, the part of the reading rules without the database. The caller holds no lock of
+        the service. A data error of one entry drops that entry, as in _team_accept."""
+        try:
+            return read_entry(opened)
+        except DATA_ERRORS as error:
+            log.exception('coconut.team_log room %s: the store cannot take the entry %s at seq %d.', room_id[:8],
+                          entry['id'], entry['seq'])
+            return {'error': type(error).__name__}
 
     def _team_accept(self, room: dict, entry: dict, opened: dict, first_epoch: int) -> tuple[str, str | None]:
         """TeamStore.accept for one entry, in a savepoint of the transaction of the caller.
@@ -315,11 +331,12 @@ class TeamSync:
                 self._team_unsure.add(room['room'])
             raise
         entry = dict(position, id=entry_id, member=room['member'], at=int(time.time() * 1000), kept=kept, body=b'')
+        opened = read_entry({'epoch': room['epoch'], 'payload': payload})
         with self.transaction():
             current = self.team_store.room(room['room'])
             if current is not None:
                 # The sync reads this write again later. The store then has it already.
-                self.team_store.accept(current, entry, {'epoch': room['epoch'], 'payload': payload})
+                self.team_store.accept(current, entry, opened)
 
     def _team_settle(self, room_id: str) -> None:
         """Read the room to its end when a write of this Mac got no answer. The relay can have that write. Without

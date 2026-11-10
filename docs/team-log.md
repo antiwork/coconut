@@ -277,14 +277,14 @@ Everything else is in `coconut.sqlite3`:
 | `team_pending` | The bodies that the Mac cannot open yet, for a later version or a later epoch. |
 | `team_shares` | The bots that this Mac shares with each room, each with the entry ID of its `bot` entry. |
 | `team_page_entries` | The entry ID of each document of this Mac that a room has or had as a `page` entry. One document keeps one entry ID. |
-| `team_bots` | A view of `team_entries`: the valid `bot` entries of the other members. |
-| `team_pages` | A view of `team_entries`: the `page` entries of the other members, with the pin of this Mac and the time of the first write that this Mac saw. |
+| `team_bots` | A view of `team_entries`: the valid `bot` entries of the other members, and the `bot` entries of this Mac with the profile that it wrote. |
+| `team_pages` | A view of `team_entries`: the `page` entries of the other members, with the pin of this Mac and the time of the first write that this Mac saw, and the `page` entries of this Mac with the bot and the version that it wrote. |
 
-A room is `joining` (the relay did not answer the join yet), `active`, `removed` (the relay answered 401) or `gone` (the relay answered 404). The copy of a `removed` or `gone` room stays until the person leaves the room on the Mac.
+A room is `joining` (the relay did not answer the join yet), `active`, `removed` (the relay answered 401) or `gone` (the relay answered 404). The copy of a `removed` or `gone` room stays until the person leaves the room on the Mac. The Library does not show the bots and the pages of such a room.
 
 ### Sync
 
-One thread, `coconut-team-sync`, reads each `active` room after its `seq`, one answer at a time. Each answer goes into the store in one transaction. The thread reads again while `last` is higher.
+One thread, `coconut-team-sync`, reads each `active` room after its `seq`, one answer at a time. Each answer goes into the store in one transaction. Before that transaction, and without the lock of the service, the Mac reads each payload and checks the fields of each `member`, `bot` and `page` entry. So a page that is slow to check slows only the thread, not the requests of the phone. The transaction then applies the rules that need the store. The thread reads again while `last` is higher.
 
 - The thread reads every 30 seconds. A room operation and `POST /v1/team/sync` start a pass at once. A later socket only needs to call `TeamSync.team_wake`.
 - After a failure, a room waits 60, 120, 240 and 480 seconds, then 900 seconds for each later try.
@@ -334,7 +334,7 @@ To write:
 
 - A save only changes the document and calls `team_wake`. A save holds a transaction, and no call to the relay or the helper holds the lock of the service.
 - In each pass, after the read of a room, the Mac derives what it wants to share: its shared bots that exist and are not archived, and their documents with audience `team` that are not past their end. It compares that with its own `bot` and `page` entries in `team_entries`. It keeps no second copy of the state.
-- A bot or a page that the log does not have, or has in an older form, gets a kept entry. The form of a bot is its name, avatar and color. The form of a page is its bot entry and its version, because each save of a document gives a new version.
+- A bot or a page that the log does not have, or has in an older form, gets a kept entry. The form of a bot is its name, avatar and color. The form of a page is its bot entry and its version, because each save of a document gives a new version. The store keeps the form of each own entry in the columns of `team_bots` and `team_pages`, also for an own page that the reading rules refuse. So a pass parses no payload, and a pass after the writes writes nothing and opens no write transaction.
 - An own `bot` or `page` entry that the Mac no longer wants gets a `delete` entry: the document is deleted, private again or past its end, or the bot is no longer shared, archived or deleted.
 - A bot can have a longer name, avatar or color than the limits of the entry. The entry takes the start of each.
 - The relay can refuse one write for the entry itself: 413 for a body over the limit, 507 when the kept entries are full, or another status of the 400s except 401, 404 and 429. Then the other writes go on. The Mac keeps the refusal in memory until the form of the entry changes, and `sync.refused` of the room shows it. A failure of the relay or of the helper stops the pass of the room, as a read does.
@@ -348,6 +348,7 @@ Rules for a Mac that reads `bot` and `page` entries:
 4. A page past its `expires_at` shows nothing.
 5. The times come from the relay, not from the payload: `updated_at` is the `at` of the entry, and `created_at` is the `at` of the first write that this Mac saw. A time after the year 9999 makes the page not valid. `version` for the phone is the `rev` of the entry.
 6. The Mac that wrote a page has the document already. Its own entries show nothing more in its Library.
+7. The Library shows the bots and the pages of a room only while the room is `active` on this Mac. A person that is no longer in a team does not keep its pages, and the pages of a room that is gone can never get an update.
 
 The Library of the phone:
 
@@ -355,7 +356,7 @@ The Library of the phone:
 - The answer also has `team_bots`: for each team bot `id`, `name`, `avatar`, `color`, `team` (`room` and `name`) and `member` (`id` and `name` of the Mac that runs it). The app of today reads only `documents`, and it hides a document of a bot that it does not know.
 - A local document with audience `team` has `"audience": "team"`.
 - `GET /v1/documents/<id>` of a team page adds `content`. `PATCH` sets the pin of this Mac. `DELETE` answers 403, because only the Mac of the page can delete it. A page past its end answers 404 as an ended local document does.
-- When a read changes the team pages or bots that the Library shows, the Mac adds one `document.updated` event. `GET /v1/updates` then has `documents_changed`, also for a local document, and the app can read the list again. The app of today knows the event type, so the event does not make it read the whole state again.
+- When a read changes the team pages or bots that the Library shows, or a room with team bots stops being `active` or goes from this Mac, the Mac adds one `document.updated` event with `{"team": <room ID>}`. `GET /v1/updates` then has `documents_changed`, also for a local document, and the app can read the list again. The app of today knows the event type, so the event does not make it read the whole state again.
 - The list reads the views `team_bots` and `team_pages` and parses no payload. The content stays in the payload of the entry, and the Mac reads it when a page opens.
 
 ## Test vectors
