@@ -351,7 +351,7 @@ The app sends a write again with the same `Idempotency-Key` when the answer does
 - The Mac keeps the first successful answer for a key of a device. A second request with the same key from the same device gets that answer and does nothing else.
 - A second request that comes while the first one runs waits for it, then gets its answer. When the first request fails, the Mac keeps no answer, and the second request runs.
 - The same key with another method, path or body answers 409. The same key from another device runs as its own request.
-- The answers stay in the memory of the service only, for 10 minutes, and at most 256 of them. A stop of the service drops them. A later repeat runs again.
+- The answers stay in the memory of the service only, for 10 minutes, and at most 256 of them. The sync thread drops an old answer on its next pass, at most 30 seconds later, also on a Mac without a room. A new answer drops the oldest answer over the limit at once. A stop of the service drops them all. A later repeat runs again.
 - The answer of the invite route has the invite link, so the answers never go to the database or to a log. The `requests` table of the other writes of the phone keeps each answer with no end, so these routes do not use it.
 - A request without a key runs each time, as before. A tool on this Mac sends no key, and the Mac ignores a key from a tool.
 

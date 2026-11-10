@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import time
 import unittest
+from unittest import mock
 from uuid import uuid4
 
 from coconut import team
@@ -217,14 +218,45 @@ class TeamRepeatTests(TeamMacs, unittest.TestCase):
         keys = [str(uuid4()) for _ in range(4)]
         for key in keys:
             self.send(self.first, 'POST', '/v1/team/rooms', self.body(), key)
-        self.assertLessEqual(len(self.first._team_replies), 3)
+        self.assertLessEqual(len(self.first._team_replies), 2)
         # The first key has no answer now, so its repeat runs again.
         self.send(self.first, 'POST', '/v1/team/rooms', self.body(), keys[0])
         self.assertEqual(len(self.relay.rooms), 5)
+        # A request drops the answers past their time.
         team.REPLY_SECONDS = 0
         time.sleep(.01)
-        self.send(self.first, 'POST', '/v1/team/rooms', self.body(), str(uuid4()))
+        self.relay.down = True
+        self.refusal(self.send, self.first, 'POST', '/v1/team/rooms', self.body(), str(uuid4()))
+        self.assertEqual(self.first._team_replies, {})
+
+    def test_the_sync_thread_drops_an_old_answer_without_another_request(self):
+        now = [1000.0]
+        patch = mock.patch.object(team, 'clock', lambda: now[0], create=True)
+        patch.start()
+        self.addCleanup(patch.stop)
+        # The answer of a leave stays, and the Mac then has no room.
+        room = self.create()
+        self.send(self.first, 'DELETE', f'/v1/team/rooms/{room["room"]}', {}, str(uuid4()))
+        self.assertEqual((len(self.first._team_replies), self.first.team_store.rooms()), (1, []))
+        self.first._start_team()
+        self.addCleanup(self.first.close)
+        now[0] += team.REPLY_SECONDS - 1
+        self.assertTrue(self.first.team_sync_now()['complete'])
         self.assertEqual(len(self.first._team_replies), 1)
+        now[0] += 2
+        self.assertTrue(self.first.team_sync_now()['complete'])
+        self.assertEqual(self.first._team_replies, {})
+
+    def test_a_finished_write_leaves_no_more_answers_than_the_limit(self):
+        self.addCleanup(setattr, team, 'REPLY_LIMIT', team.REPLY_LIMIT)
+        team.REPLY_LIMIT = 2
+        keys = []
+        for _ in range(4):
+            keys.append(str(uuid4()))
+            self.send(self.first, 'POST', '/v1/team/rooms', self.body(), keys[-1])
+            self.assertLessEqual(len(self.first._team_replies), 2)
+        # The newest answers stay.
+        self.assertEqual({slot[1] for slot in self.first._team_replies}, set(keys[2:]))
 
     # The invite link
 

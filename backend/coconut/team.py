@@ -68,6 +68,8 @@ SYNC_WAIT_SECONDS = 60
 # runs again. The limit keeps the memory small when a device sends many keys.
 REPLY_SECONDS = 600
 REPLY_LIMIT = 256
+# The clock of the saved answers. A test replaces it, so it needs no wait of 10 minutes.
+clock = time.monotonic
 
 log = logging.getLogger(__name__)
 
@@ -194,7 +196,7 @@ class Team(TeamSync, TeamPages):
                 self._team_prune_replies()
                 reply = self._team_replies.get(slot)
                 if reply is None:
-                    reply = {'fingerprint': fingerprint, 'at': time.monotonic(), 'answer': None, 'done': threading.Event()}
+                    reply = {'fingerprint': fingerprint, 'at': clock(), 'answer': None, 'done': threading.Event()}
                     self._team_replies[slot] = reply
                     break
                 if not hmac.compare_digest(reply['fingerprint'], fingerprint):
@@ -211,15 +213,23 @@ class Team(TeamSync, TeamPages):
             reply['done'].set()
             raise
         with self._team_replies_lock:
-            reply['answer'], reply['at'] = copy.deepcopy(answer), time.monotonic()
+            reply['answer'], reply['at'], reply['stored'] = copy.deepcopy(answer), clock(), True
+            # The limit holds after each write, not only at the next one.
+            self._team_prune_replies()
         reply['done'].set()
         return answer
+
+    def team_drop_old_replies(self) -> None:
+        """Drop the saved answers past their time. The sync thread calls this on each pass, also on a Mac without a
+        room, so an answer with an invite link goes when no other write comes."""
+        with self._team_replies_lock:
+            self._team_prune_replies()
 
     def _team_prune_replies(self) -> None:
         """Drop the answers older than REPLY_SECONDS, then the oldest answers over REPLY_LIMIT. A request that runs
         keeps its slot. The caller holds the lock of the replies."""
-        done = sorted((reply['at'], slot) for slot, reply in self._team_replies.items() if reply['done'].is_set())
-        old = time.monotonic() - REPLY_SECONDS
+        done = sorted((reply['at'], slot) for slot, reply in self._team_replies.items() if reply.get('stored'))
+        old = clock() - REPLY_SECONDS
         over = len(done) - REPLY_LIMIT
         for number, (at, slot) in enumerate(done):
             if at < old or number < over:
