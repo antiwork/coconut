@@ -25,7 +25,7 @@ from . import team_keys
 from .team_helper import TeamFormatError, TeamHelperError
 from .team_keys import TeamKeysError
 from .team_relay import TeamRelayError
-from .team_store import ACTIVE, DROPPED, GONE, PENDING, REFUSED, REMOVED, SKIPPED
+from .team_store import ACTIVE, DROPPED, GONE, PENDING, REFUSED, REMOVED, SKIPPED, read_entry
 
 POLL_SECONDS = 30
 MAX_WAIT_SECONDS = 900
@@ -45,6 +45,11 @@ log = logging.getLogger(__name__)
 def utc_now() -> str:
     """The time of this Mac in ISO 8601, as the `at` of a payload."""
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def encode_payload(fields: dict, rev: int, at: str) -> bytes:
+    """The payload of an entry of this Mac. JSON without ASCII escapes, so text outside ASCII does not grow."""
+    return json.dumps(dict(fields, rev=rev, at=at), ensure_ascii=False, separators=(',', ':')).encode()
 
 
 def retry_delay(failures: int) -> int:
@@ -146,7 +151,8 @@ class TeamSync:
                 self._team_status[room] = {'synced_at': utc_now(), 'error': None}
 
     def team_sync_room(self, room: str) -> None:
-        """Read the room until the store has each entry of the relay, then make sure that the log shows this Mac."""
+        """Read the room until the store has each entry of the relay. Then make sure that the log shows this Mac, and
+        that it has the bots and the pages that this Mac shares (TeamPages._team_publish)."""
         lock = self._team_room_lock(room)
         if room not in self._team_retried:
             with lock:
@@ -158,6 +164,7 @@ class TeamSync:
                 more = self._team_read(room)
         with lock:
             self._team_announce(room)
+            self._team_publish(room)
 
     def _team_read(self, room_id: str) -> bool:
         """Read one answer of the relay after the saved `seq`, and store it. Return True when the relay has more."""
@@ -174,6 +181,9 @@ class TeamSync:
             # 401: the token of this Mac is no longer a member's. 404: the relay has no such room. The copy stays.
             state = REMOVED if error.status == 401 else GONE
             with self.transaction():
+                # The Library shows a room only while it is active, so the phone reads the list again.
+                if self.team_store.shows(room_id):
+                    self._event('document.updated', {'team': room_id})
                 self.team_store.update_room(room_id, state=state)
             log.warning('coconut.team_log room %s: the relay answered %d. The room is now %s on this Mac.',
                         room_id[:8], error.status, state)
@@ -183,6 +193,8 @@ class TeamSync:
             return False
         opened = self.team_helper.open(room_id, secrets['keys'], entries)
         entries = [dict(entry, body=base64.b64decode(entry['body'])) for entry in entries]
+        # The checks of the text run here, before the transaction and without the lock of the service.
+        opened = [self._team_prepare(room_id, entry, result) for entry, result in zip(entries, opened)]
         first_epoch = first_key(secrets)
         results = []
         with self.transaction():
@@ -193,6 +205,7 @@ class TeamSync:
             for entry, result in zip(entries, opened):
                 results.append((entry, *self._team_accept(current, entry, result, first_epoch)))
             self.team_store.update_room(room_id, seq=entries[-1]['seq'])
+            self._team_tell_library(room_id)
         self._team_report(room_id, results)
         return answer['last'] > entries[-1]['seq']
 
@@ -208,8 +221,9 @@ class TeamSync:
                 return
             after = waiting[-1]['seq']
             secrets = team_keys.read(self.root, room_id)
-            opened = self.team_helper.open(room_id, secrets['keys'], [
-                dict(entry, body=base64.b64encode(entry['body']).decode()) for entry in waiting])
+            opened = [self._team_prepare(room_id, entry, result)
+                      for entry, result in zip(waiting, self.team_helper.open(room_id, secrets['keys'], [
+                          dict(entry, body=base64.b64encode(entry['body']).decode()) for entry in waiting]))]
             first_epoch = first_key(secrets)
             results = []
             with self.transaction():
@@ -221,7 +235,23 @@ class TeamSync:
                     if outcome != PENDING:
                         self.team_store.drop_pending(room_id, entry['id'])
                     results.append((entry, outcome, reason))
+                self._team_tell_library(room_id)
             self._team_report(room_id, results)
+
+    def _team_prepare(self, room_id: str, entry: dict, opened: dict) -> dict:
+        """read_entry for one entry, the part of the reading rules without the database. The caller holds no lock of
+        the service.
+
+        This part touches no database, so an error can come only from the data of the entry or from a defect of the
+        code. Each error drops only this entry, so one entry never stops a room. _team_accept keeps DATA_ERRORS,
+        because a database failure there must drop no entry.
+        """
+        try:
+            return read_entry(opened)
+        except Exception as error:
+            log.exception('coconut.team_log room %s: the store cannot take the entry %s at seq %d.', room_id[:8],
+                          entry['id'], entry['seq'])
+            return {'error': type(error).__name__}
 
     def _team_accept(self, room: dict, entry: dict, opened: dict, first_epoch: int) -> tuple[str, str | None]:
         """TeamStore.accept for one entry, in a savepoint of the transaction of the caller.
@@ -239,6 +269,17 @@ class TeamSync:
             result = DROPPED, type(error).__name__
         self.db.execute('RELEASE team_entry')
         return result
+
+    def _team_tell_library(self, room_id: str) -> None:
+        """Add one event when the entries of this transaction changed the team pages or bots that the Library shows.
+
+        The phone learns of a local document from its `document.*` event in GET /v1/updates, so a team page uses the
+        same type. A phone of today knows the type, so the event does not make it read the whole state again. The
+        caller holds the transaction.
+        """
+        if room_id in self.team_store.touched:
+            self.team_store.touched.discard(room_id)
+            self._event('document.updated', {'team': room_id})
 
     def _team_report(self, room_id: str, results: list) -> None:
         """Write a log line for each entry that the Mac dropped or refused, and one for those that it skipped or
@@ -286,8 +327,7 @@ class TeamSync:
         self._team_settle(room['room'])
         with self.lock:
             existing = self.team_store.entry(room['room'], entry_id)
-        payload = json.dumps(dict(fields, rev=(existing['rev'] if existing else 0) + 1, at=utc_now()),
-                             ensure_ascii=False, separators=(',', ':')).encode()
+        payload = encode_payload(fields, (existing['rev'] if existing else 0) + 1, utc_now())
         body = self.team_helper.seal(room['room'], entry_id, room['epoch'], key, secrets['member_key'], payload)
         try:
             position = self.team_relay.write(room['relay'], room['room'], secrets['token'], entry_id, kept, body, tries=tries)
@@ -296,11 +336,12 @@ class TeamSync:
                 self._team_unsure.add(room['room'])
             raise
         entry = dict(position, id=entry_id, member=room['member'], at=int(time.time() * 1000), kept=kept, body=b'')
+        opened = read_entry({'epoch': room['epoch'], 'payload': payload})
         with self.transaction():
             current = self.team_store.room(room['room'])
             if current is not None:
                 # The sync reads this write again later. The store then has it already.
-                self.team_store.accept(current, entry, {'epoch': room['epoch'], 'payload': payload})
+                self.team_store.accept(current, entry, opened)
 
     def _team_settle(self, room_id: str) -> None:
         """Read the room to its end when a write of this Mac got no answer. The relay can have that write. Without

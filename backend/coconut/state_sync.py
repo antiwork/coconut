@@ -399,7 +399,9 @@ class StateSync:
                 else:
                     messages.append(self._public(value))
             result.update(tasks=tasks, messages=sorted(messages, key=lambda m: (m['created_at'], m['id'])), removed_messages=removed,
-                          settings_changed=any(r[1].startswith(('settings.', 'model_catalog.', 'routine.', 'routines.')) for r in rows))
+                          settings_changed=any(r[1].startswith(('settings.', 'model_catalog.', 'routine.', 'routines.')) for r in rows),
+                          # The Library reads GET /v1/documents again: a local document or a team page changed.
+                          documents_changed=any(r[1].startswith('document.') for r in rows))
             if any(m.get('client_request_id') for m in messages):
                 receipts = self.db.execute("SELECT json_group_array(DISTINCT json_extract(data,'$.client_request_id')) FROM messages "
                     "WHERE json_type(data,'$.client_request_id')='text' AND EXISTS(SELECT 1 FROM bots "

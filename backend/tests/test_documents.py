@@ -2,12 +2,14 @@
 from datetime import datetime, timedelta, timezone
 import tempfile
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
-from coconut.documents import KEPT_VERSIONS, end_time, page_problems
+from coconut import documents
+from coconut.documents import KEPT_VERSIONS, MAX_CONTENT, end_time, page_problems
 from coconut.library_replies import document_of, is_report, report_key
 from coconut.service import Service, ServiceError
 from test_gateway_chat import Adapter, Provider
@@ -42,6 +44,32 @@ class PageRuleTests(unittest.TestCase):
                                        'red. Use style="color:red" here.</p><a href="#add">Up</a>'), [])
         # A link that the person opens is not a load.
         self.assertEqual(page_problems('<a href="https://github.com/antiwork/coconut/pull/1">PR</a>'), [])
+
+    def test_the_rules_check_a_hostile_page_of_512_kb_in_a_short_time(self):
+        # A team page of another Mac goes through these rules. Each of these pages took more than 30 seconds with
+        # a pattern that read to the end of the text again from each start. The limit is wide for a slow CI Mac.
+        def fill(start, unit, end=''):
+            return start + unit * ((MAX_CONTENT - len(start) - len(end)) // len(unit)) + end
+        for page in (fill('<style>p{', 'color:'), fill('<p style="', 'border-top:', '">'),
+                     fill('<script>`', '${', '`'), fill('<script>`${', '/*', '}`')):
+            started = time.monotonic()
+            self.assertEqual(page_problems(page), [])
+            self.assertLess(time.monotonic() - started, 10, page[:20])
+        # The rule of a color by name keeps its meaning: the value of a color property up to ; { or }.
+        self.assertTrue(page_problems('<style>p{border: 1px solid; color: x red}</style>'))
+        self.assertEqual(page_problems('<style>p{margin: 0; x: red} .a{color: var(--text)}</style>'), [])
+        self.assertTrue(page_problems('<p style="background-color:\n navy">x</p>'))
+
+    def test_html_that_the_parser_cannot_read_is_a_problem_of_the_page(self):
+        # Some versions of Python raise AssertionError for this marked section, and others read it.
+        self.assertIn(page_problems('<p>x</p><![foo]>'), ([], [documents._UNREADABLE]))
+        for error in (AssertionError('unknown status keyword'), ValueError('x')):
+            with self.subTest(error=error), patch.object(documents._PageCode, 'feed', side_effect=error):
+                self.assertEqual(page_problems('<p>x</p>'), [documents._UNREADABLE])
+                with self.assertRaises(ServiceError) as raised:
+                    documents.page_to_save(dict(key='page', title='Page', format='html', content='<p>x</p>'))
+                self.assertEqual(raised.exception.status, 400)
+                self.assertIn('HTML that Coconut cannot read', str(raised.exception))
 
     def test_each_rule_names_its_fix(self):
         cases = {'<p style="font-family: Comic Sans">x</p>': 'font',
@@ -190,6 +218,24 @@ class DocumentServiceTests(unittest.TestCase):
             finish()
         self.assertEqual(sorted(d['title'] for d in self.service.documents()['documents']),
                          ['Desk signups', 'Signups'])
+
+    def test_the_audience_of_a_save_of_a_bot(self):
+        # "team" needs a team. test_team_pages.py covers what the team then sees.
+        with self.assertRaisesRegex(ServiceError, 'shared with no team'):
+            self.save(audience='team')
+        self.save()
+        self.assertEqual(self.tool('read_document', {})['documents'][0]['audience'], 'private')
+        with self.service.transaction():
+            self.service.team_store.share('a' * 64, self.bot['id'], 'b' * 32)
+        self.save(audience='team')
+        # A save without the field keeps the audience.
+        self.assertEqual(self.save(content='# Signups\n\n430 today.')['version'], 3)
+        self.assertEqual(self.tool('read_document', {'key': 'signups-daily'})['audience'], 'team')
+        self.assertEqual(self.service.documents()['documents'][0]['audience'], 'team')
+        self.save(audience='private')
+        self.assertNotIn('audience', self.service.documents()['documents'][0])
+        with self.assertRaisesRegex(ServiceError, 'audience must be private or team'):
+            self.save(audience='everyone')
 
     def test_a_temporary_document_leaves_the_library_after_its_end(self):
         ends = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()

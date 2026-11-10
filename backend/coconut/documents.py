@@ -33,6 +33,8 @@ MAX_TITLE = 120
 MAX_SUMMARY = 200
 KEPT_VERSIONS = 10
 LONGEST_LIFE = timedelta(days=366)
+# "team": the Mac also shares the document with each team that the bot is shared with (team_pages.py).
+AUDIENCES = ('private', 'team')
 
 # The page rules of HTML read only the code of a page, which an HTML parser finds: the CSS of its <style> elements
 # and style attributes, its scripts and event attributes, its tags, and the color attributes of its tags. The text of
@@ -47,9 +49,36 @@ _COLOR_ADVICE = ('Use a token: var(--c1) to var(--c6), var(--text), var(--text-2
 _FONT = 'The page sets a font. Remove it: Coconut sets the font of each page.'
 _HEX_REASON = 'The page writes a color as a hex value. ' + _COLOR_ADVICE
 _NAME_REASON = 'The page writes a color by name. ' + _COLOR_ADVICE
+_UNREADABLE = ('The page has HTML that Coconut cannot read. Write plain HTML: give each tag its end, and remove '
+               'sections such as <![...]>.')
 _FILE = 'The page loads another file. Coconut gives d3 and Plot to each page. Put everything else in the page.'
 _NETWORK = 'The page loads something from the network. Pages have no network access. Put the data in the page.'
 _COLOR_PROPERTY = r'(?:color|background(?:-color)?|fill|stroke|border(?:-[a-z]+)?|outline|box-shadow|text-shadow)'
+
+
+class _ColorByName:
+    """The rule "a color by name": a color property whose value has a color name, or a color name in quotes.
+
+    It has the `search` of a pattern. One pattern with a lazy scan from each property to the end of its value took
+    minutes on a long value without an end, for example "color:" 80,000 times. Here the value of the first property
+    of each declaration is read once. A later property of the same declaration has its value inside that one.
+    """
+    _property = re.compile(_COLOR_PROPERTY + r'\s*:', re.I)
+    _name = re.compile(r'\b(?:' + _COLOR_NAMES + r')\b', re.I)
+    _quoted = re.compile(r'[\'"`]\s*(?:' + _COLOR_NAMES + r')\s*[\'"`]', re.I)
+    _end = re.compile(r'[;{}]')
+
+    def search(self, text: str) -> bool:
+        if self._quoted.search(text):
+            return True
+        start = 0
+        while found := self._property.search(text, start):
+            end = self._end.search(text, found.end())
+            stop = end.start() if end else len(text)
+            if self._name.search(text, found.end(), stop):
+                return True
+            start = stop
+        return False
 _COLOR_ATTRIBUTES = {'fill', 'stroke', 'color', 'bgcolor', 'stop-color', 'flood-color', 'lighting-color'}
 _FILE_TAGS = {'link', 'iframe', 'object', 'embed', 'base', 'frame', 'applet'}
 _LOAD_ATTRIBUTES = {'src', 'srcset', 'poster', 'action', 'data', 'href', 'xlink:href', 'background'}
@@ -64,8 +93,7 @@ HTML_RULES = (
      _HEX_REASON + ' If it is an element ID or a number, write it another way, for example "No. 377".'),
     ('code', re.compile(r'\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color-mix)\s*\(', re.I),
      'The page writes a color as a function. ' + _COLOR_ADVICE),
-    ('code', re.compile(_COLOR_PROPERTY + r'\s*:[^;{}]*?\b(?:' + _COLOR_NAMES + r')\b|[\'"`]\s*(?:' + _COLOR_NAMES
-                        + r')\s*[\'"`]', re.I), _NAME_REASON),
+    ('code', _ColorByName(), _NAME_REASON),
     ('scripts', re.compile(r'\bd3\.(?:scheme|interpolate(?:Rgb|Hsl|Lab|Hcl|Cubehelix|Turbo|Viridis|Inferno|Magma|'
                            r'Plasma|Warm|Cool|Rainbow|Sinebow|Blues|Greens|Greys|Oranges|Purples|Reds|Spectral|RdBu|'
                            r'RdYlGn))'),
@@ -82,7 +110,9 @@ _SCRIPT_TOKENS = re.compile(r'("(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'|`(?:\\
                             re.S)
 
 
-_TEMPLATE_EXPRESSION = re.compile(r'\$\{[^}]*\}')
+# An expression without its "}" runs to the end of the string. With a "}" that must come, a template string with
+# many "${" took more than 30 seconds to check, because each "${" read to the end of the string again.
+_TEMPLATE_EXPRESSION = re.compile(r'\$\{[^}]*\}?')
 _COMMENT = re.compile(r'/\*.*?\*/|//[^\n]*', re.S)
 
 
@@ -136,7 +166,10 @@ SAVE_SCHEMA = {'name': 'coconut_save_document', 'description': (
             'One short line about the current content, for example "412 signups today, up 9%".')},
         'expires_at': {'type': 'string', 'description': (
             'For a temporary document: the date (YYYY-MM-DD) or the time (ISO 8601) after which the Library no '
-            'longer shows it. Omit it for a document that stays. Send an empty text to remove an end date.')}},
+            'longer shows it. Omit it for a document that stays. Send an empty text to remove an end date.')},
+        'audience': {'type': 'string', 'enum': list(AUDIENCES), 'description': (
+            'Who sees the document: "private" (the person only) or "team" (also each team that the person shared '
+            'this bot with). A new document is private. Omit it to keep the audience of an existing document.')}},
         'required': ['key', 'title', 'format', 'content']}}
 READ_SCHEMA = {'name': 'coconut_read_document', 'description': (
     'Read a document of this bot from the Library of Coconut, with its content, to update it. Without a key, list '
@@ -192,10 +225,18 @@ class _PageCode(HTMLParser):
 
 
 def page_problems(content: str) -> list[str]:
-    """The page rules that an HTML document breaks, each reason once."""
+    """The page rules that an HTML document breaks, each reason once.
+
+    The HTML parser of Python can raise on some markup, for example an AssertionError for a marked section with an
+    unknown keyword such as <![foo]> on some versions. That is a problem of the page, not of the service: a local save
+    answers 400 with the reason, and a team page with that markup is not valid.
+    """
     page = _PageCode()
-    page.feed(content)
-    page.close()
+    try:
+        page.feed(content)
+        page.close()
+    except Exception:
+        return [_UNREADABLE]
     parts = dict(page.parts, code=page.parts['css'] + page.parts['scripts'])
     problems = list(dict.fromkeys(page.reasons))
     for part, pattern, reason in HTML_RULES:
@@ -280,7 +321,10 @@ class Documents:
             bot = self._get('bots', task['bot_id'])
             if bot['archived'] or bot.get('_deleted'):
                 raise ServiceError(409, 'The bot is archived or deleted.')
-            document = self._write_document(task, bot, key, title, document_format, content, summary, expires=ends)
+            audience = self._page_audience(bot['id'], arguments, self._document_of_key(bot['id'], key),
+                                           (key, title, document_format, content, summary))
+            document = self._write_document(task, bot, key, title, document_format, content, summary, expires=ends,
+                                            audience=audience)
         return {'status': 'saved', 'key': key, 'version': document['version'],
                 'expires_at': document.get('expires_at')}
 
@@ -299,19 +343,46 @@ class Documents:
             if bot['archived'] or bot.get('_deleted'):
                 raise ServiceError(409, 'The bot is archived or deleted.')
             document = self._document_of_key(bot_id, key)
+            audience = self._page_audience(bot_id, arguments, document, (key, title, document_format, content, summary))
             if (document is not None and not expired(document, now())
-                    and self._page_is_like(document, title, document_format, content, summary, ends)):
+                    and self._page_is_like(document, title, document_format, content, summary, ends, audience)):
                 return {'status': 'unchanged', 'key': key, 'version': document['version'],
                         'expires_at': document.get('expires_at')}
-            document, _ = self._store_page(bot, key, title, document_format, content, summary, ends)
+            document, _ = self._store_page(bot, key, title, document_format, content, summary, ends, audience)
         return {'status': 'saved', 'key': key, 'version': document['version'],
                 'expires_at': document.get('expires_at')}
 
+    def _page_audience(self, bot_id: str, arguments: dict, document: dict | None, page: tuple) -> str:
+        """The audience of a save: the one of the arguments, else the one of the existing document, else private.
+
+        "team" needs a team: the person shares the bot with a team first. A team page must fit in one entry of the
+        log, so the save refuses a page that does not fit, and the bot can make it smaller.
+        """
+        from .service import ServiceError
+        from .team_pages import WIDEST, WIDEST_BOT, page_entry, payload_problem
+        audience = arguments.get('audience')
+        if audience is None:
+            audience = (document or {}).get('audience', 'private')
+        elif audience not in AUDIENCES:
+            raise ServiceError(400, 'audience must be private or team.')
+        elif audience == 'team' and not self.team_store.shared(bot_id):
+            raise ServiceError(409, 'This bot is shared with no team, so Coconut did not save the page for a team. '
+                                    'Save it with audience "private", or ask the person to share the bot with a team.')
+        if audience == 'team':
+            key, title, document_format, content, summary = page
+            # The bot, the version and the end date of the entry are not known yet, so the check takes the longest.
+            problem = payload_problem(page_entry(
+                dict(WIDEST, key=key, title=title, format=document_format, summary=summary), content, WIDEST_BOT))
+            if problem:
+                raise ServiceError(413, f'Coconut did not save the page for the team. {problem}')
+        return audience
+
     def _page_is_like(self, document: dict, title: str, document_format: str, content: str, summary: str | None,
-                      ends) -> bool:
+                      ends, audience: str) -> bool:
         """Whether the page of a key is already what the tooling would write. An omitted end date keeps the end date
         of the document, so only an end date that differs from the stored one is a change."""
         return ((ends is ... or ends == document.get('expires_at'))
+                and audience == document.get('audience', 'private')
                 and document['title'] == title and document['format'] == document_format
                 and (document.get('summary') or '') == (summary or '').strip()
                 and self._document_content(document) == content)
@@ -343,26 +414,44 @@ class Documents:
 
     def documents(self) -> dict:
         """GET /v1/documents: the documents of the bots that the phone shows, without content. The pinned documents
-        come first. Each part has its newest document first."""
+        come first. Each part has its newest document first.
+
+        The list also has the team pages of the other Macs of each team (team_pages.py). `team_bots` names their
+        bots. A phone that does not know these bots hides their pages.
+        """
         from .service import now
+        from .team_pages import team_library
         current = now()
         with self._read_view() as view, view._read_transaction():
             bots = {bot['id'] for bot in view._all('bots') if not bot.get('_deleted')}
             rows = view._all('documents')
+            team_pages, team_bots = team_library(view.db, current)
         shown = [document for document in rows if document['bot_id'] in bots and not expired(document, current)]
+        shown += team_pages
         shown.sort(key=lambda document: (document.get('pinned') is True, document['updated_at'], document['id']),
                    reverse=True)
-        return {'documents': shown}
+        return {'documents': shown, 'team_bots': team_bots}
 
     def document(self, document_id: str) -> dict:
         """GET /v1/documents/<id>: one document with the content of its current version."""
+        from .team_pages import team_ids, team_page
         with self._read_view() as view, view._read_transaction():
+            if team_ids(document_id):
+                return team_page(view.db, document_id, content=True)
             document = view._shown_document(document_id)
             return dict(document, content=view._document_content(document))
 
     def delete_document(self, document_id: str) -> dict:
-        """DELETE /v1/documents/<id> from the phone. A document that is already gone counts as deleted."""
+        """DELETE /v1/documents/<id> from the phone. A document that is already gone counts as deleted. Only the Mac
+        that shares a team page can delete it."""
+        from .service import ServiceError
+        from .team_pages import team_ids
         with self.transaction():
+            ids = team_ids(document_id)
+            if ids:
+                if self.team_store.page(*ids):
+                    raise ServiceError(403, 'This page belongs to another Mac of the team. Only that Mac can delete it.')
+                return {'ok': True}
             row = self.db.execute('SELECT data FROM documents WHERE id=?', (document_id,)).fetchone()
             if row:
                 self._remove_document(json.loads(row[0]), None)
@@ -376,10 +465,17 @@ class Documents:
         reads the pin with the Library list.
         """
         from .service import ServiceError
+        from .team_pages import team_ids, team_page
         pinned = data.get('pinned')
         if not isinstance(pinned, bool):
             raise ServiceError(400, 'pinned must be true or false.')
         with self.transaction():
+            ids = team_ids(document_id)
+            if ids:
+                # The pin of a team page is of this Mac only. The other Macs of the team do not see it. A page that
+                # the Library does not show raises here, and the transaction takes the pin back.
+                self.team_store.pin(*ids, pinned)
+                return team_page(self.db, document_id)
             document = self._shown_document(document_id)
             if (document.get('pinned') is True) != pinned:
                 document['pinned'] = pinned
@@ -387,17 +483,18 @@ class Documents:
         return document
 
     def _write_document(self, task: dict, bot: dict, key: str, title: str, document_format: str, content: str,
-                        summary: str | None, *, expires) -> dict:
+                        summary: str | None, *, expires, audience: str | None = None) -> dict:
         """Create the document of the key, or add a version to it, and show it in the chat. `expires` is the new end
-        date, None to remove it, or ... to keep it. The caller holds the transaction."""
+        date, None to remove it, or ... to keep it. `audience` None keeps the audience of the document. The caller
+        holds the transaction."""
         from .library_replies import show_card
-        document, created = self._store_page(bot, key, title, document_format, content, summary, expires,
+        document, created = self._store_page(bot, key, title, document_format, content, summary, expires, audience,
                                              task_id=task['id'])
         show_card(self, task, document, created)
         return document
 
     def _store_page(self, bot: dict, key: str, title: str, document_format: str, content: str, summary: str | None,
-                    expires, task_id: str | None = None) -> tuple[dict, bool]:
+                    expires, audience: str | None = None, task_id: str | None = None) -> tuple[dict, bool]:
         """Create the page of the key, or add a version to it, with its version record and its event. task_id is the
         turn that asked for the page, or None for a page that the tooling of the Mac keeps. The caller holds the
         transaction and returns the document and whether the save created it."""
@@ -410,6 +507,15 @@ class Documents:
         elif expired(document, current):
             # A save brings back an ended document. Its old end date would hide it again at once.
             document['expires_at'] = None
+        # The sync of the team log writes the page entries. A save does not call the relay, because it holds the
+        # transaction (team_pages.py).
+        if 'team' in (audience, document.get('audience')):
+            self.team_wake()
+        # Only a team document has the field, so the rows of a private document stay as they were.
+        if audience == 'private':
+            document.pop('audience', None)
+        elif audience == 'team':
+            document['audience'] = audience
         document.update(title=title, format=document_format, summary=(summary or '').strip() or None,
                         version=document['version'] + 1, updated_at=current, task_id=task_id,
                         size=len(content.encode()))
@@ -461,6 +567,9 @@ class Documents:
         return row[0] if row else ''
 
     def _remove_document(self, document: dict, task_id: str | None):
+        if document.get('audience') == 'team':
+            # The next pass of the team sync deletes the page entry.
+            self.team_wake()
         self.db.execute('DELETE FROM document_versions WHERE document_id=?', (document['id'],))
         self.db.execute('DELETE FROM documents WHERE id=?', (document['id'],))
         self._event('document.deleted', {'id': document['id']}, document['bot_id'], task_id)
@@ -474,6 +583,7 @@ class Documents:
 
 def _summary(document: dict) -> dict:
     """What a bot reads about one of its documents."""
-    return {name: document.get(name) for name in
-            ('key', 'title', 'format', 'summary', 'version', 'updated_at', 'expires_at')}
+    return dict({name: document.get(name) for name in
+                 ('key', 'title', 'format', 'summary', 'version', 'updated_at', 'expires_at')},
+                audience=document.get('audience', 'private'))
 

@@ -8,6 +8,11 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_members`: the members that the app shows. It is a view of `team_entries`: the newest valid `member` entry
   of each member.
 - `team_pending`: bodies that this Mac cannot open yet. It keeps the bytes and tries again later.
+- `team_shares`: the bots that this Mac shares with the room, each with the entry ID of its `bot` entry.
+- `team_page_entries`: the entry ID of each document of this Mac that the room has or had as a `page` entry.
+- `team_bots` and `team_pages`: views of `team_entries` for the Library: the valid `bot` entries and the `page`
+  entries of the other members. The Library list reads them and parses no payload. A page row also keeps the pin of
+  this Mac and the time of the first write that this Mac saw.
 
 `TeamStore.accept` holds the "Rules for a Mac that reads an entry" of the contract. The secrets of a room are not
 here: team_keys.py keeps them in a private file. The caller holds the transaction of each write.
@@ -15,10 +20,14 @@ here: team_keys.py keeps them in a private file. The caller holds the transactio
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
 import json
+import logging
 import re
 
-from .team_relay import number
+from .team_relay import HEX32, number
+
+log = logging.getLogger(__name__)
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS team_rooms (room TEXT PRIMARY KEY, relay TEXT NOT NULL, name TEXT NOT NULL,
@@ -33,12 +42,28 @@ CREATE TABLE IF NOT EXISTS team_members (room TEXT NOT NULL, member TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS team_pending (room TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
     first INTEGER NOT NULL, member TEXT NOT NULL, at INTEGER NOT NULL, kept INTEGER NOT NULL, body BLOB NOT NULL,
     reason TEXT NOT NULL, PRIMARY KEY (room, id));
+CREATE TABLE IF NOT EXISTS team_shares (room TEXT NOT NULL, bot TEXT NOT NULL, entry TEXT NOT NULL,
+    PRIMARY KEY (room, bot));
+CREATE TABLE IF NOT EXISTS team_page_entries (room TEXT NOT NULL, document TEXT NOT NULL, entry TEXT NOT NULL,
+    PRIMARY KEY (room, document));
+CREATE TABLE IF NOT EXISTS team_bots (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL,
+    name TEXT NOT NULL, avatar TEXT NOT NULL, color TEXT NOT NULL, PRIMARY KEY (room, entry));
+CREATE TABLE IF NOT EXISTS team_pages (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL,
+    valid INTEGER NOT NULL, bot TEXT, version INTEGER, key TEXT, title TEXT, format TEXT, summary TEXT, size INTEGER, rev INTEGER,
+    expires_at TEXT, created_at TEXT, updated_at TEXT, pinned INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (room, entry));
 '''
-TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending')
+TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_shares', 'team_page_entries',
+          'team_bots', 'team_pages')
 ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
 MEMBER_FIELDS = ('member', 'name', 'avatar', 'color', 'agreement', 'entry')
 PENDING_FIELDS = ('id', 'seq', 'first', 'member', 'at', 'kept', 'body', 'reason')
+PAGE_FIELDS = ('key', 'title', 'format', 'summary', 'size', 'rev', 'expires_at', 'created_at', 'updated_at', 'pinned')
+# What the Library of the phone gets for a team page and a team bot. TeamStore.library reads these rows.
+LIBRARY_PAGE = ('room', 'entry', 'bot', 'team', *PAGE_FIELDS)
+LIBRARY_BOT = ('room', 'entry', 'name', 'avatar', 'color', 'team', 'member', 'member_name')
+# The end date of a page as documents.end_time writes it.
+PAGE_END = re.compile(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ')
 
 # The states of a room on this Mac.
 JOINING = 'joining'  # The Mac has its keys, and the relay did not answer the join yet.
@@ -95,16 +120,22 @@ def read_payload(data) -> tuple[str, dict] | None:
     return text, fields
 
 
-def member_fields(fields: dict) -> dict | None:
-    """The name, avatar, color and agreement key of a `member` payload, or None when a field does not fit."""
+def profile_fields(fields: dict) -> dict | None:
+    """The name, avatar and color of a `member` or a `bot` payload, or None when a field does not fit."""
     result = {}
     for name, limit in MEMBER_LIMITS.items():
         value = fields.get(name, '')
         if not unicode_text(value) or len(value) > limit:
             return None
         result[name] = value
+    return result if result['name'] else None
+
+
+def member_fields(fields: dict) -> dict | None:
+    """The name, avatar, color and agreement key of a `member` payload, or None when a field does not fit."""
+    result = profile_fields(fields)
     agreement = fields.get('agreement')
-    if not result['name'] or not isinstance(agreement, str) or not AGREEMENT.fullmatch(agreement):
+    if not result or not isinstance(agreement, str) or not AGREEMENT.fullmatch(agreement):
         return None
     # One key has one text: the unused bits of the last character are zero.
     if base64.urlsafe_b64encode(base64.urlsafe_b64decode(agreement + '=')).decode().rstrip('=') != agreement:
@@ -112,9 +143,86 @@ def member_fields(fields: dict) -> dict | None:
     return dict(result, agreement=agreement)
 
 
+def page_fields(fields: dict) -> dict | None:
+    """What the Library shows of a `page` payload, or None when the page breaks a rule of a local save.
+
+    The writer checked the page too, but this Mac does not trust that check. The rules are the ones of
+    documents.page_to_save, and the text must be valid Unicode text before a rule or SQLite reads it.
+    """
+    from .documents import page_to_save
+    from .service import ServiceError
+    bot, ends, summary = fields.get('bot'), fields.get('expires_at'), fields.get('summary')
+    if not isinstance(bot, str) or not HEX32.fullmatch(bot):
+        return None
+    if ends is not None and not page_end(ends):
+        return None
+    if not all(unicode_text(fields.get(name)) for name in ('key', 'title', 'format', 'content')):
+        return None
+    if summary is not None and not unicode_text(summary):
+        return None
+    try:
+        key, title, document_format, content, summary = page_to_save(fields)
+    except ServiceError:
+        return None
+    return dict(bot=bot, key=key, title=title, format=document_format, summary=(summary or '').strip() or None,
+                size=len(content.encode()), expires_at=ends)
+
+
+def page_end(value) -> bool:
+    """True when an end date of a page is a real UTC time as documents.end_time writes it. The pattern alone takes,
+    for example, a 13th month, and strptime alone takes a month of one digit."""
+    if not isinstance(value, str) or not PAGE_END.fullmatch(value):
+        return False
+    try:
+        datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ')
+    except ValueError:
+        return False
+    return True
+
+
+def relay_time(at: int) -> str | None:
+    """The `at` of the relay (milliseconds since 1970) as the UTC text of a local document, or None when the time
+    is past the year 9999. The relay sends a whole number up to 2^53 - 1, and Python has no date that late."""
+    try:
+        moment = datetime.fromtimestamp(at / 1000, timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+    return moment.isoformat(timespec='microseconds').replace('+00:00', 'Z')
+
+
+SHOWN = {'member': member_fields, 'bot': profile_fields, 'page': page_fields}
+
+
+def read_entry(opened: dict) -> dict:
+    """The first part of the reading rules for one entry: the work that needs no database.
+
+    It reads the payload (rule 2), and for a `member`, `bot` or `page` entry it checks the fields that the store
+    shows. The page rules run an HTML parser on up to 512 KiB that another member wrote, so a caller runs this part
+    before its transaction and without the lock of the service. A page that is slow to check then slows only the
+    sync thread. The result is `opened` with `read` (the text and the fields of the payload, or None) and `shown`
+    (the checked fields, or None). TeamStore.accept is the second part.
+    """
+    if opened.get('error'):
+        return opened
+    payload = read_payload(opened.get('payload'))
+    check = SHOWN.get(payload[1]['kind']) if payload else None
+    shown = None
+    if check:
+        try:
+            shown = check(payload[1])
+        except Exception:
+            # A check that fails is the rule of an entry that does not fit: the entry stays in the store and shows
+            # nothing, and its bytes stay for a later version of Coconut.
+            log.exception('coconut.team_log: the check of a %s entry failed, so the entry shows nothing.',
+                          payload[1]['kind'])
+    return dict(opened, read=payload, shown=shown)
+
+
 class TeamStore:
     def __init__(self, db):
         self.db = db
+        # The rooms whose Library rows `accept` changed. TeamSync tells the phone and empties the set.
+        self.touched: set[str] = set()
 
     def _rows(self, fields, query, values=()) -> list[dict]:
         return [dict(zip(fields, row)) for row in self.db.execute(query, values).fetchall()]
@@ -177,7 +285,9 @@ class TeamStore:
         """Apply the "Rules for a Mac that reads an entry" of docs/team-log.md to one entry.
 
         `room` is the row of the room. `entry` has the fields that the relay keeps: seq, first, id, member, at, kept,
-        and body as bytes. `opened` is the answer of the helper for the body: `epoch` and `payload`, or `error`.
+        and body as bytes. `opened` is the answer of the helper for the body after read_entry: `epoch`, `read` and
+        `shown`, or `error`. read_entry does each check of the text, so this part only applies the rules that need
+        the store, and a caller holds its transaction for a short time.
         `first_epoch` is the first epoch for which this Mac has a room key. The result is what happened to the
         entry, and the reason when the entry did not go into the store.
         """
@@ -195,10 +305,10 @@ class TeamStore:
         # Rule 2. The seal or the signature failed, or the bytes are not a body.
         if error:
             return DROPPED, str(error)
-        payload = read_payload(opened.get('payload'))
-        if payload is None:
+        if opened['read'] is None:
             return DROPPED, 'payload'
-        text, fields = payload
+        text, fields = opened['read']
+        shown = opened['shown']
         # Rule 3. Only the member of an entry replaces it, and only with a higher `rev`.
         existing = self.entry(room['room'], entry['id'])
         if existing:
@@ -221,8 +331,26 @@ class TeamStore:
         # The relay keeps only the newest write of an entry ID, so an earlier body that waits is gone there.
         self.db.execute('DELETE FROM team_pending WHERE room=? AND id=? AND seq<=?',
                         (room['room'], entry['id'], entry['seq']))
-        if fields['kind'] == 'member' or (existing and existing['kind'] == 'member'):
-            self.show_member(room['room'], entry['member'])
+        kinds = {fields['kind'], existing['kind'] if existing else None}
+        other = entry['member'] != room['member']
+        if 'member' in kinds:
+            self.show_member(room['room'], entry['member'], (entry['id'], shown) if fields['kind'] == 'member' else None)
+            # The Library shows a bot only while its member is in the list, and it names that member.
+            if other and self.db.execute('SELECT 1 FROM team_bots WHERE room=? AND member=? LIMIT 1',
+                                         (room['room'], entry['member'])).fetchone():
+                self.touched.add(room['room'])
+        # The rows of the own entries keep the form that the publish step compares (see `written`). The Library
+        # leaves them out: the Mac that wrote a page has the document already.
+        if kinds & {'bot', 'page'}:
+            if fields['kind'] == 'bot':
+                self._show_bot(room['room'], entry, fields if not other else shown)
+            elif fields['kind'] == 'page':
+                self._show_page(room['room'], entry, fields, shown, other)
+            else:
+                for table in ('team_bots', 'team_pages'):
+                    self.db.execute(f'DELETE FROM {table} WHERE room=? AND entry=?', (room['room'], entry['id']))
+            if other:
+                self.touched.add(room['room'])
         return STORED, None
 
     def _keep(self, room: dict, entry: dict, reason: str) -> tuple[str, str | None]:
@@ -238,16 +366,21 @@ class TeamStore:
                          int(bool(entry['kept'])), entry['body'], reason))
         return PENDING, reason
 
-    def show_member(self, room: str, member: str) -> None:
+    def show_member(self, room: str, member: str, known: tuple[str, dict | None] | None = None) -> None:
         """Set the row of a member from its `member` entries: the newest one with fields that fit, or no row.
 
         A member has one `member` entry. When it wrote more, the one with the highest `seq` counts, so each Mac
-        shows the same member. A `delete` over that entry takes the member out of the list.
+        shows the same member. A `delete` over that entry takes the member out of the list. `known` is the entry ID
+        and the fields that read_entry found for the entry of the caller, so the store does not parse it again.
         """
-        rows = self.db.execute("SELECT id, payload FROM team_entries WHERE room=? AND member=? AND kind='member' "
+        rows = self.db.execute("SELECT id FROM team_entries WHERE room=? AND member=? AND kind='member' "
                                'ORDER BY seq DESC', (room, member)).fetchall()
-        for entry, payload in rows:
-            fields = member_fields(json.loads(payload))
+        for (entry,) in rows:
+            if known and known[0] == entry:
+                fields = known[1]
+            else:
+                payload = self.db.execute('SELECT payload FROM team_entries WHERE room=? AND id=?', (room, entry))
+                fields = member_fields(json.loads(payload.fetchone()[0]))
             if fields:
                 self.db.execute('''INSERT INTO team_members (room, member, name, avatar, color, agreement, entry)
                     VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, member) DO UPDATE SET name=excluded.name,
@@ -255,3 +388,118 @@ class TeamStore:
                                 (room, member, fields['name'], fields['avatar'], fields['color'], fields['agreement'], entry))
                 return
         self.db.execute('DELETE FROM team_members WHERE room=? AND member=?', (room, member))
+
+    def _show_bot(self, room: str, entry: dict, profile: dict | None) -> None:
+        """Set the row of a `bot` entry: the profile that read_entry found valid for another member, or the profile
+        of an own entry as this Mac wrote it. No row when a field does not fit."""
+        self.db.execute('DELETE FROM team_pages WHERE room=? AND entry=?', (room, entry['id']))
+        if profile is None:
+            self.db.execute('DELETE FROM team_bots WHERE room=? AND entry=?', (room, entry['id']))
+            return
+        self.db.execute('''INSERT INTO team_bots (room, entry, member, name, avatar, color) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (room, entry) DO UPDATE SET member=excluded.member, name=excluded.name, avatar=excluded.avatar,
+            color=excluded.color''', (room, entry['id'], entry['member'], profile['name'], profile['avatar'],
+                                      profile['color']))
+
+    def _show_page(self, room: str, entry: dict, fields: dict, page: dict | None, other: bool) -> None:
+        """Set the row of a `page` entry. `page` is what read_entry found valid, or None.
+
+        A page that breaks a rule keeps a row that is not valid, so the pin of this Mac and the time of the first
+        write stay. The relay gives the times: `updated_at` is the `at` of this write. The row of an own page keeps
+        the bot and the version that this Mac wrote, also when the page is not valid, so that the publish step does
+        not write it again in each pass.
+        """
+        at = relay_time(entry['at'])
+        if page is None or at is None:
+            page = dict.fromkeys(('bot', 'key', 'title', 'format', 'summary', 'size', 'expires_at'))
+        valid = page['bot'] is not None
+        bot, version = (page['bot'], None) if other else (fields.get('bot'), fields.get('version'))
+        # This Mac wrote the own payload, but its row keeps only values that SQLite stores as they are.
+        bot = bot if isinstance(bot, str) and HEX32.fullmatch(bot) else None
+        version = version if number(version) else None
+        self.db.execute('DELETE FROM team_bots WHERE room=? AND entry=?', (room, entry['id']))
+        self.db.execute('''INSERT INTO team_pages (room, entry, member, valid, bot, version, key, title, format,
+            summary, size, rev, expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (room, entry) DO UPDATE SET member=excluded.member, valid=excluded.valid, bot=excluded.bot,
+            version=excluded.version, key=excluded.key, title=excluded.title, format=excluded.format,
+            summary=excluded.summary, size=excluded.size, rev=excluded.rev, expires_at=excluded.expires_at,
+            updated_at=excluded.updated_at, created_at=COALESCE(team_pages.created_at, excluded.created_at)''',
+                        (room, entry['id'], entry['member'], int(valid), bot, version, page['key'], page['title'],
+                         page['format'], page['summary'], page['size'], fields['rev'], page['expires_at'], at, at))
+
+    # What this Mac shares
+
+    def shares(self, room: str) -> dict[str, str]:
+        """The bots that this Mac shares with the room, each with the entry ID of its `bot` entry."""
+        return dict(self.db.execute('SELECT bot, entry FROM team_shares WHERE room=? ORDER BY bot', (room,)).fetchall())
+
+    def shared(self, bot: str) -> bool:
+        return self.db.execute('SELECT 1 FROM team_shares WHERE bot=? LIMIT 1', (bot,)).fetchone() is not None
+
+    def share(self, room: str, bot: str, entry: str) -> None:
+        """Share a bot with the room. A bot that the room has keeps its entry ID."""
+        self.db.execute('INSERT OR IGNORE INTO team_shares (room, bot, entry) VALUES (?, ?, ?)', (room, bot, entry))
+
+    def unshare(self, room: str, bot: str) -> None:
+        self.db.execute('DELETE FROM team_shares WHERE room=? AND bot=?', (room, bot))
+
+    def page_entries(self, room: str) -> dict[str, str]:
+        """The entry ID of each document of this Mac that the room has or had as a `page` entry."""
+        return dict(self.db.execute('SELECT document, entry FROM team_page_entries WHERE room=?', (room,)).fetchall())
+
+    def add_page_entry(self, room: str, document: str, entry: str) -> None:
+        self.db.execute('INSERT INTO team_page_entries (room, document, entry) VALUES (?, ?, ?)', (room, document, entry))
+
+    def drop_page_entry(self, room: str, document: str) -> None:
+        self.db.execute('DELETE FROM team_page_entries WHERE room=? AND document=?', (room, document))
+
+    def written(self, room: str, member: str) -> dict[str, tuple]:
+        """The `bot` and `page` entries that this Mac wrote and did not delete, each with its form: the profile of a
+        bot, or the bot and the version of a page. `accept` keeps the form in columns, so no payload is parsed."""
+        bots = self.db.execute('SELECT entry, name, avatar, color FROM team_bots WHERE room=? AND member=?',
+                               (room, member)).fetchall()
+        pages = self.db.execute('SELECT entry, bot, version FROM team_pages WHERE room=? AND member=?',
+                                (room, member)).fetchall()
+        return {entry: ('bot', *form) for entry, *form in bots} | {entry: ('page', *form) for entry, *form in pages}
+
+    def shows(self, room: str) -> bool:
+        """True when the Library shows something of the room now: a bot of another member."""
+        return self.db.execute('''SELECT 1 FROM team_bots b JOIN team_rooms r ON r.room=b.room
+            WHERE b.room=? AND b.member!=r.member LIMIT 1''', (room,)).fetchone() is not None
+
+    # The Library of the phone
+
+    def library(self, current: str) -> tuple[list[dict], list[dict]]:
+        """The team pages that this Mac shows, without the pages past their end, and the team bots.
+
+        A page shows only while its `bot` entry is valid and belongs to the member of the page, and while that
+        member is in the member list. So a `delete` over the bot entry or over the `member` entry hides the page.
+        The Library shows a room only while it is active on this Mac, and never the own entries of this Mac.
+        """
+        pages = self._pages('(p.expires_at IS NULL OR p.expires_at > ?)', (current,))
+        bots = self._rows(LIBRARY_BOT, f'''SELECT b.room, b.entry, b.name, b.avatar, b.color, r.name, b.member, m.name
+            FROM team_bots b JOIN team_members m ON m.room=b.room AND m.member=b.member
+            JOIN team_rooms r ON r.room=b.room WHERE b.member!=r.member AND r.state='{ACTIVE}'
+            ORDER BY r.created_at, b.room, b.name, b.entry''')
+        return pages, bots
+
+    def page(self, room: str, entry: str) -> dict | None:
+        """A team page that this Mac shows, also one past its end. Else None."""
+        rows = self._pages('p.room=? AND p.entry=?', (room, entry))
+        return rows[0] if rows else None
+
+    def content(self, room: str, entry: str) -> str:
+        """The content of a valid team page, from the payload of its entry."""
+        payload = self.db.execute('SELECT payload FROM team_entries WHERE room=? AND id=?', (room, entry)).fetchone()[0]
+        # Python reads the payload as page_fields did. SQLite can take another value of a key that comes twice.
+        return json.loads(payload)['content']
+
+    def pin(self, room: str, entry: str, pinned: bool) -> None:
+        self.db.execute('UPDATE team_pages SET pinned=? WHERE room=? AND entry=?', (int(pinned), room, entry))
+
+    def _pages(self, where: str, values: tuple) -> list[dict]:
+        columns = ', '.join('p.' + name for name in PAGE_FIELDS)
+        return self._rows(LIBRARY_PAGE, f'''SELECT p.room, p.entry, p.bot, r.name, {columns} FROM team_pages p
+            JOIN team_bots b ON b.room=p.room AND b.entry=p.bot AND b.member=p.member
+            JOIN team_members m ON m.room=p.room AND m.member=p.member JOIN team_rooms r ON r.room=p.room
+            WHERE p.valid=1 AND p.member!=r.member AND r.state='{ACTIVE}' AND {where}''', values)

@@ -74,13 +74,29 @@ class Mac:
         self.port = free_port()
         self.log = folder.with_name(f'{folder.name}.log')
         self.process = None
+        self.device_token = None
 
     def call(self, method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
         token = json.loads((self.data / 'gateway/bridge.json').read_text())['token']
+        return self.request(method, path, body, {'Authorization': f'Bearer {token}'})
+
+    def phone(self, method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
+        """A request of a paired phone on the main listener. The first call pairs with a 10-digit code, as a tool on
+        this Mac does."""
+        if self.device_token is None:
+            from coconut.server import create_pairing_code
+            status, answer = self.request('POST', '/v1/pair', {'code': create_pairing_code(self.data),
+                                                               'device_name': 'Test phone'})
+            assert status == 200, answer
+            self.device_token = answer['token']
+        return self.request(method, path, body, {'Authorization': f'Bearer {self.device_token}',
+                                                 'Idempotency-Key': secrets.token_hex(16)})
+
+    def request(self, method: str, path: str, body: dict | None, headers: dict | None = None) -> tuple[int, dict]:
         connection = http.client.HTTPConnection('127.0.0.1', self.port, timeout=90)
         try:
-            headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-            connection.request(method, path, json.dumps(body) if body is not None else None, headers)
+            connection.request(method, path, json.dumps(body) if body is not None else None,
+                               dict(headers or {}, **{'Content-Type': 'application/json'}))
             response = connection.getresponse()
             return response.status, json.loads(response.read())
         finally:
@@ -267,6 +283,76 @@ class TeamLogTests(unittest.TestCase):
             for secret in (*secrets_of_first['keys'].values(), secrets_of_first['member_key'], secrets_of_first['token'],
                            secrets_of_second['member_key'], secrets_of_second['token'], invite['link']):
                 self.assertNotIn(secret, self.log(mac))
+
+    def test_a_mac_shares_a_bot_and_its_page_with_the_team(self):
+        first, second, _ = self.macs
+        # The second Mac makes the room, so the first Mac can leave it at the end.
+        status, answer = second.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Grace',
+                                                                'relay': self.url})
+        self.assertEqual(status, 200, answer)
+        room_id = answer['room']['room']
+        link = second.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
+        self.assertEqual(first.call('POST', '/v1/team/join', {'link': link, 'member_name': 'Ada'})[0], 200)
+
+        # The first Mac runs a bot, shares it, and its tooling saves a page for the team.
+        status, bot = first.phone('POST', '/v1/bots', {'name': 'Reporter'})
+        self.assertEqual(status, 200, bot)
+        status, answer = first.call('POST', f'/v1/team/rooms/{room_id}/bots', {'bot_id': bot['id']})
+        self.assertEqual((status, [row['name'] for row in answer['room']['bots']]), (200, ['Reporter']), answer)
+        with self.database(first) as database:
+            home = database.execute('SELECT home FROM profiles WHERE bot_id=?', (bot['id'],)).fetchone()[0]
+        page = {'home': home, 'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
+                'content': '3 tasks are open.', 'audience': 'team'}
+        status, answer = first.call('POST', '/v1/gateway/document', page)
+        self.assertEqual((status, answer['version']), (200, 1), answer)
+
+        # The second Mac lists the page with the fields of a local document, opens it and pins it.
+        listed = self.team_library(first, second)
+        (shared,) = listed['documents']
+        (team_bot,) = listed['team_bots']
+        self.assertEqual((shared['title'], shared['version'], shared['bot_id'], shared['team']['name']),
+                         ('Weekly report', 1, team_bot['id'], 'Example Team'))
+        self.assertEqual((team_bot['name'], team_bot['member']['name']), ('Reporter', 'Ada'))
+        for field, kind in (('id', str), ('bot_id', str), ('key', str), ('title', str), ('format', str),
+                            ('version', int), ('created_at', str), ('updated_at', str)):
+            self.assertIsInstance(shared[field], kind, field)
+        status, opened = second.phone('GET', f'/v1/documents/{shared["id"]}')
+        self.assertEqual((status, opened.get('content')), (200, '3 tasks are open.'), opened)
+        status, pinned = second.phone('PATCH', f'/v1/documents/{shared["id"]}', {'pinned': True})
+        self.assertEqual((status, pinned.get('pinned')), (200, True), pinned)
+        status, answer = second.phone('DELETE', f'/v1/documents/{shared["id"]}', {})
+        self.assertEqual(status, 403, answer)
+        # The first Mac shows its own page once, as a local document.
+        status, local = first.phone('GET', '/v1/documents')
+        self.assertEqual(([row['audience'] for row in local['documents']], local['team_bots']), (['team'], []))
+
+        # A new version reaches the second Mac, and the pin stays.
+        self.assertEqual(first.call('POST', '/v1/gateway/document', dict(page, content='4 tasks are open.'))[0], 200)
+        (shared,) = self.team_library(first, second)['documents']
+        self.assertEqual((shared['version'], shared['pinned']), (2, True))
+        self.assertEqual(second.phone('GET', f'/v1/documents/{shared["id"]}')[1]['content'], '4 tasks are open.')
+
+        # A private page goes from the second Mac. The bot stays.
+        self.assertEqual(first.call('POST', '/v1/gateway/document', dict(page, audience='private'))[0], 200)
+        listed = self.team_library(first, second)
+        self.assertEqual((listed['documents'], [row['name'] for row in listed['team_bots']]), ([], ['Reporter']))
+
+        # The first Mac leaves the room, and its bot and its pages go from the second Mac.
+        self.assertEqual(first.call('POST', '/v1/gateway/document', page)[0], 200)
+        self.assertEqual(len(self.team_library(first, second)['documents']), 1)
+        self.assertEqual(first.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
+        self.assertEqual(self.team_library(first, second), {'documents': [], 'team_bots': []})
+        self.assertEqual(second.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
+        for mac in (first, second):
+            self.assertNotIn('coconut.team_pages', self.log(mac))
+
+    def team_library(self, writer: Mac, reader: Mac) -> dict:
+        """A pass on the Mac that writes, one on the Mac that reads, then the Library of the reader."""
+        writer.rooms()
+        reader.rooms()
+        status, answer = reader.phone('GET', '/v1/documents')
+        self.assertEqual(status, 200, answer)
+        return answer
 
     def database(self, mac: Mac):
         import sqlite3
