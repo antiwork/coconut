@@ -512,5 +512,141 @@ class ReportShapeTests(unittest.TestCase):
         self.assertTrue(all(len(key) <= 64 for key in keys))
 
 
+class GatewayPageTests(unittest.TestCase):
+    """The tooling of the Mac keeps a page of a bot, without a turn and without a card in the chat."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.service = Service(self.temp.name, Provider(), start_workers=False)
+        self.service.gateway_enabled = lambda: True
+        self.bot = self.write('POST', '/v1/bots', {'name': 'Ada'})
+        self.home = str(self.service.profiles.home(self.bot))
+
+    def tearDown(self):
+        self.service.close()
+        self.temp.cleanup()
+
+    def write(self, method, path, data=None):
+        return self.service.mutate(method, path, data or {}, str(uuid4()), 'phone')
+
+    def publish(self, **arguments):
+        page = dict(home=self.home, key='weekly-report', title='Weekly report', format='markdown',
+                    content='3 tasks are open.', summary='3 open tasks')
+        return self.service.gateway_document(dict(page, **arguments))
+
+    # These helpers of the turn tests need only the service and `write`, so the tests of the tooling use them too.
+    pin, listed, replays = DocumentServiceTests.pin, DocumentServiceTests.listed, DocumentServiceTests.replays
+
+    def rows(self, table):
+        return self.service.db.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
+
+    def test_the_tooling_keeps_a_page_of_a_bot_without_a_turn(self):
+        self.assertEqual(self.publish(), {'status': 'saved', 'key': 'weekly-report', 'version': 1,
+                                          'expires_at': None})
+        documents = self.service.documents()['documents']
+        self.assertEqual([(d['key'], d['title'], d['bot_id'], d['version']) for d in documents],
+                         [('weekly-report', 'Weekly report', self.bot['id'], 1)])
+        self.assertEqual(self.service.document(documents[0]['id'])['content'],
+                         '3 tasks are open.')
+        # No turn asked for the page, so the chat shows nothing.
+        self.assertEqual((self.service._all('tasks'), self.service._all('messages')), ([], []))
+
+    def test_a_save_that_changes_nothing_writes_nothing(self):
+        self.publish()
+        self.assertEqual(self.publish()['version'], 1)
+        self.assertEqual(self.rows('document_versions'), 1)
+        self.assertEqual(self.publish(content='4 tasks are open.')['version'], 2)
+
+    def test_a_save_that_changes_nothing_adds_no_event_and_keeps_the_update_time(self):
+        self.publish()
+        # An old update time shows a write.
+        self.service.db.execute("UPDATE documents SET data=json_set(data,'$.updated_at','2026-01-01T00:00:00Z')")
+
+        def stored():
+            return self.listed('weekly-report'), self.rows('document_versions'), self.service._cursor()
+        before = stored()
+        self.assertEqual(self.publish(), {'status': 'unchanged', 'key': 'weekly-report', 'version': 1,
+                                          'expires_at': None})
+        self.assertEqual(stored(), before)
+
+    def test_only_a_new_end_date_is_a_change(self):
+        self.publish()
+        # A new end date is a change, also when the content is the same.
+        ends = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+        saved = self.publish(expires_at=ends)
+        self.assertEqual(saved, {'status': 'saved', 'key': 'weekly-report', 'version': 2,
+                                 'expires_at': end_time(ends, datetime.now(timezone.utc))})
+        # The same end date again, or no end date, keeps the page as it is.
+        for arguments in ({'expires_at': ends}, {}):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.publish(**arguments), dict(saved, status='unchanged'))
+        # A date ends at the end of its day, so the same date gives the same end.
+        day = (datetime.now() + timedelta(days=3)).date().isoformat()
+        self.assertEqual(self.publish(expires_at=day)['version'], 3)
+        self.assertEqual(self.publish(expires_at=day)['status'], 'unchanged')
+        # An empty text removes the end date one time.
+        self.assertEqual(self.publish(expires_at=''), {'status': 'saved', 'key': 'weekly-report', 'version': 4,
+                                                       'expires_at': None})
+        self.assertEqual(self.publish(expires_at='')['status'], 'unchanged')
+        self.assertEqual(self.rows('document_versions'), 4)
+
+    def test_a_save_of_the_tooling_keeps_the_pin(self):
+        self.publish()
+        self.pin(self.listed('weekly-report'))
+        self.assertEqual(self.publish()['status'], 'unchanged')
+        self.assertTrue(self.listed('weekly-report')['pinned'])
+        self.assertEqual(self.publish(content='4 tasks are open.')['status'], 'saved')
+        page = self.listed('weekly-report')
+        self.assertEqual((page['version'], page['pinned']), (2, True))
+
+    def test_a_save_of_the_tooling_replays_without_a_task_and_a_card(self):
+        for content in ('3 tasks are open.', '4 tasks are open.'):
+            cursor = self.service._cursor()
+            self.assertEqual(self.publish(content=content)['status'], 'saved')
+            self.assertEqual(self.service._cursor(), cursor + 1)
+            # No turn asked for the page, so its event sends no task and no message. The phone reads the Library.
+            for page in self.replays(cursor):
+                self.assertEqual((page['tasks'], page['messages'], page['removed_messages']), ([], [], []))
+
+    def test_an_archived_a_deleted_or_an_unknown_bot_keeps_no_page(self):
+        page = dict(key='weekly-report', title='Weekly report', format='markdown', content='3 tasks are open.')
+        self.write('PATCH', f'/v1/bots/{self.bot["id"]}', {'archived': True})
+        with self.assertRaisesRegex(ServiceError, 'archived or deleted') as refused:
+            self.publish()
+        self.assertEqual(refused.exception.status, 409)
+        # The route finds no profile for a deleted bot (test_gateway_document_route.py). A bot that goes after the
+        # route found its profile is refused in the transaction of the save.
+        self.write('DELETE', f'/v1/bots/{self.bot["id"]}')
+        with self.assertRaisesRegex(ServiceError, 'archived or deleted'):
+            self.service.publish_page(self.bot['id'], page)
+        with self.assertRaisesRegex(ServiceError, 'Bot was not found'):
+            self.service.publish_page('no-such-bot', page)
+        self.assertEqual(self.rows('documents'), 0)
+
+    def test_a_page_of_the_tooling_comes_back_when_it_has_ended(self):
+        self.publish(expires_at=(datetime.now(timezone.utc) + timedelta(days=2)).isoformat())
+        self.service.db.execute("UPDATE documents SET data=json_set(data,'$.expires_at','2026-01-01T00:00:00Z')")
+        self.assertEqual(self.service.documents()['documents'], [])
+        # The same content brings it back: an ended page is never what the tooling would write, and its old end
+        # date would hide it again at once.
+        self.assertEqual(self.publish(), {'status': 'saved', 'key': 'weekly-report', 'version': 2,
+                                          'expires_at': None})
+        self.assertEqual([d['key'] for d in self.service.documents()['documents']], ['weekly-report'])
+
+    def test_a_home_that_is_not_the_profile_of_a_bot_keeps_no_page(self):
+        with self.assertRaisesRegex(ServiceError, 'not the profile of a bot'):
+            self.publish(home=f'{self.temp.name}/somewhere-else')
+
+    def test_a_page_that_the_tooling_keeps_follows_the_page_rules(self):
+        for arguments, reason in (({'key': 'Weekly Report'}, 'lowercase'), ({'format': 'pdf'}, 'markdown or html'),
+                                  ({'content': ' '}, 'empty'), ({'content': 'x' * (512 * 1024 + 1)}, '512 KB'),
+                                  ({'expires_at': 'soon'}, 'ISO 8601')):
+            with self.subTest(arguments=arguments), self.assertRaisesRegex(ServiceError, reason):
+                self.publish(**arguments)
+        with self.assertRaisesRegex(ServiceError, 'did not save the page. The page sets a font'):
+            self.publish(format='html', content='<p style="font-family: serif">x</p>')
+        self.assertEqual(self.service.documents()['documents'], [])
+
+
 if __name__ == '__main__':
     unittest.main()
