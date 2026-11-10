@@ -19,6 +19,7 @@ import json
 import os
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -48,12 +49,31 @@ def free_port() -> int:
         return probe.getsockname()[1]
 
 
+def start_failure(message: str, process: subprocess.Popen, log: Path) -> AssertionError:
+    """The error for a service that did not answer /health, with its exit status and the end of its log.
+
+    CI shows only this error. The service runs with -X faulthandler, so SIGABRT writes the stack of each thread into
+    the log before the process stops. The log of a test service has no secret: its provider is the fixture.
+    """
+    status = process.poll()
+    if status is None:
+        process.send_signal(signal.SIGABRT)
+        try:
+            status = f'{process.wait(10)} after SIGABRT, so the process was still running'
+        except subprocess.TimeoutExpired:
+            status = 'none, the process still runs 10 seconds after SIGABRT'
+    text = log.read_text(errors='replace') if log.exists() else '(no log file)'
+    return AssertionError(f'{message} Exit status: {status}. The end of {log.name}:\n{text[-6000:]}')
+
+
 class Mac:
     """One Coconut service with its own data folder, and the calls of a tool on that Mac."""
 
     def __init__(self, folder: Path):
         self.data = folder
         self.port = free_port()
+        self.log = folder.with_name(f'{folder.name}.log')
+        self.process = None
 
     def call(self, method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
         token = json.loads((self.data / 'gateway/bridge.json').read_text())['token']
@@ -95,12 +115,19 @@ class TeamLogTests(unittest.TestCase):
         cls.macs = [Mac(folder / name) for name in ('first', 'second', 'third')]
         environment = dict(os.environ, COCONUT_TEAM_HELPER=str(cls.helper_path))
         for mac in cls.macs:
-            with (folder / f'{mac.data.name}.log').open('w') as output:
-                cls.processes.append(subprocess.Popen(
-                    [sys.executable, '-m', 'coconut', '--data-dir', str(mac.data), '--port', str(mac.port),
-                     '--provider', 'fixture'], cwd=ROOT / 'backend', env=environment, stdout=output, stderr=subprocess.STDOUT))
-        for mac in cls.macs:
-            cls.wait_for_health(mac)
+            with mac.log.open('w') as output:
+                mac.process = subprocess.Popen(
+                    [sys.executable, '-X', 'faulthandler', '-m', 'coconut', '--data-dir', str(mac.data), '--port',
+                     str(mac.port), '--provider', 'fixture'], cwd=ROOT / 'backend', env=environment, stdout=output,
+                    stderr=subprocess.STDOUT)
+                cls.processes.append(mac.process)
+        try:
+            for mac in cls.macs:
+                cls.wait_for_health(mac)
+        except AssertionError:
+            # unittest does not call tearDownClass when setUpClass fails, so stop the relay and the services here.
+            cls.tearDownClass()
+            raise
         os.environ['COCONUT_TEAM_HELPER'] = str(cls.helper_path)
         cls.helper = TeamHelper(folder)
         cls.relay = TeamRelay()
@@ -114,7 +141,7 @@ class TeamLogTests(unittest.TestCase):
                     return
             except OSError:
                 time.sleep(.2)
-        raise AssertionError(f'The service of the {mac.data.name} Mac did not start.')
+        raise start_failure(f'The service of the {mac.data.name} Mac did not start.', mac.process, mac.log)
 
     @classmethod
     def tearDownClass(cls):
@@ -129,7 +156,7 @@ class TeamLogTests(unittest.TestCase):
         cls.temp.cleanup()
 
     def log(self, mac: Mac) -> str:
-        return (Path(self.temp.name) / f'{mac.data.name}.log').read_text()
+        return mac.log.read_text()
 
     def write(self, mac: Mac, room: str, entry: str, fields: dict, *, kept: bool, signer: str | None = None) -> dict:
         """Write an entry to the relay with the token of a Mac. `signer` is another member key for its signature."""

@@ -25,6 +25,8 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 
 import pairing  # noqa: E402
 import tunnel  # noqa: E402
+# The Mac app job of CI runs this file after its `npm ci`, so the team log tests run there too.
+from test_team_log import TeamLogTests, TeamLogVectorTests, start_failure  # noqa: E402,F401
 
 
 def free_port() -> int:
@@ -143,10 +145,14 @@ class TunnelLoopbackTests(unittest.TestCase):
         relay.stdout.close()
         self.assertTrue(url.startswith('http://127.0.0.1:'), url)
         port, tunnel_port = free_port(), free_port()
-        self.start([sys.executable, '-m', 'coconut', '--data-dir', str(self.data), '--port', str(port),
-                    '--tunnel-port', str(tunnel_port), '--provider', 'fixture'], log='backend.log', cwd=ROOT / 'backend')
-        wait(lambda: urllib.request.urlopen(f'http://127.0.0.1:{tunnel_port}/health', timeout=1).status == 200, 30,
-             'The backend did not start.')
+        backend = self.start([sys.executable, '-X', 'faulthandler', '-m', 'coconut', '--data-dir', str(self.data),
+                              '--port', str(port), '--tunnel-port', str(tunnel_port), '--provider', 'fixture'],
+                             log='backend.log', cwd=ROOT / 'backend')
+        try:
+            wait(lambda: urllib.request.urlopen(f'http://127.0.0.1:{tunnel_port}/health', timeout=1).status == 200, 30,
+                 'The backend did not start.')
+        except AssertionError as error:
+            raise start_failure(str(error), backend, Path(self.temp.name) / 'backend.log') from None
 
         route = self.route = json.loads(subprocess.run([str(self.sidecar), 'setup', '--data-dir', str(self.data), '--relay', url],
                                           check=True, capture_output=True, text=True).stdout)
@@ -261,9 +267,6 @@ class TunnelLoopbackTests(unittest.TestCase):
         self.assertLess(reset['seconds'], 6)
         print(json.dumps(reset), file=sys.stderr)
 
-
-# The Mac app job of CI runs this file after its `npm ci`, so the team log tests run there too.
-from test_team_log import TeamLogTests, TeamLogVectorTests  # noqa: E402,F401
 
 if __name__ == '__main__':
     unittest.main()
