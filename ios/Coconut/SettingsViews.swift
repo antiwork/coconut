@@ -32,6 +32,7 @@ struct AppSettingsView: View {
                         SettingsNavigationLabel(title: "Connections", subtitle: "Google and other tools")
                     }
                     .accessibilityIdentifier("mcp-settings")
+                    TeamSettingsRow()
                 }
                 let bots = store.bots.filter { !$0.archived }
                 if !bots.isEmpty {
@@ -65,6 +66,8 @@ struct AppSettingsView: View {
             #endif
             .settingsBackground()
             .navigationTitle("Settings").inlineNavigationTitle()
+            // The Team row names the team, so Settings reads the teams of a connected Mac.
+            .task(id: store.connection) { if store.connection == .connected { await store.loadTeam() } }
             .toolbar {
                 ToolbarItem(placement: .leadingBar) {
                     Button { dismiss() } label: {

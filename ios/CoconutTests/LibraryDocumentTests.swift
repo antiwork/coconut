@@ -192,6 +192,37 @@ final class LibraryDocumentTests: XCTestCase {
         #endif
     }
 
+    /// A team page changes while the first list request runs. The update moves the cursor, so it must start a later
+    /// request: the answer of the first one is from before the change.
+    @MainActor
+    func testADocumentChangeDuringTheFirstLoadGivesAListFromAfterTheChange() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try LibraryServer(state: APIJSON.encoder().encode(state), botId: state.bots[0].id,
+                                       cursor: state.cursor)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.changeDocuments(summary: "First", announce: false)
+            server.holdLists()
+            let first = Task { await store.loadDocuments() }
+            try await waitUntil { server.heldLists == 1 }
+            server.stopHolding()
+            server.changeDocuments(summary: "Second")
+            store.setForeground(true)
+            try await waitUntil { server.changesSent == 1 }
+            try await waitUntil(timeout: .seconds(5)) { server.listRequests == 2 }
+            server.releaseLists()
+            _ = await first.value
+            try await waitUntil(timeout: .seconds(5)) { store.documents?.first?.summary == "Second" }
+            XCTAssertEqual(store.documents?.first?.summary, "Second", "The list on screen must be from after the change.")
+        }
+        #endif
+    }
+
     /// Two list requests overlap, and the answer of the first arrives last. It has the older list.
     @MainActor
     func testAnAnswerOfAnEarlierListRequestDoesNotReplaceALaterList() async throws {

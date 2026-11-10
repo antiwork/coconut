@@ -48,6 +48,21 @@ final class AppStore {
     @ObservationIgnored private var documentRequests = 0
     /// The load of the latest list request. The caller of an earlier request waits for its result.
     @ObservationIgnored private var latestDocumentLoad: Task<Bool, Never>?
+    /// The teams of the paired Mac, for the Team screen. Nil until the first load.
+    var team: TeamRooms?
+    /// The text of the last failed load of the teams. The screen shows it only while it has no list.
+    var teamLoadError: String?
+    /// An invite link that the person tapped. The join sheet takes it. It stays in memory only.
+    var teamJoin: TeamJoinRequest?
+    /// Counts the team changes that the Mac confirmed to this app. A list that the app asked for before such a
+    /// change can be older than the change.
+    @ObservationIgnored private var teamChanges = 0
+    /// Numbers the list requests of the teams. Only the answer of the latest request replaces the list.
+    @ObservationIgnored private var teamRequests = 0
+    @ObservationIgnored private var latestTeamLoad: Task<Bool, Never>?
+    /// The number of the latest write that the app started, by room. The answer of an earlier write is older.
+    @ObservationIgnored private var teamWrites: [String: Int] = [:]
+    @ObservationIgnored private var teamWriteCount = 0
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
     var pageQuotes: [String: MessageReference] = [:]
     var connection: ConnectionState = .unconfigured {
@@ -568,7 +583,10 @@ final class AppStore {
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
         // The team bots name the team pages of the earlier Mac, so the Library of a later pairing would show them.
-        documents = nil; teamBots = []
+        documents = nil; teamBots = []; latestDocumentLoad = nil
+        // The teams are the teams of the earlier Mac. A list request of that Mac that is still on its way gets no
+        // place to go: its client is not the client of the store.
+        team = nil; teamLoadError = nil; latestTeamLoad = nil; teamWrites = [:]
         approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
@@ -1480,8 +1498,162 @@ final class AppStore {
     /// loaded before loads its list again. A reset skips the events between the cursors, also the changes of
     /// documents. A Library that never loaded loads when it opens.
     private func reloadChangedDocuments(_ page: StateUpdates) {
-        guard page.documentsChanged == true || page.reset != nil, documents != nil else { return }
+        // A Library whose first request runs also loads again: that request can be older than the change.
+        guard page.documentsChanged == true || page.reset != nil, documents != nil || latestDocumentLoad != nil else { return }
         Task { await loadDocuments() }
+    }
+
+    // MARK: Team
+
+    /// Loads the teams of the paired Mac. True when the list is fresh from the Mac. The same rules as the Library
+    /// list: only the answer of the latest request replaces the list, and a list of an earlier pairing goes nowhere.
+    @discardableResult
+    func loadTeam() async -> Bool {
+        if isDemo {
+            if team == nil { team = TeamRooms(rooms: [], helper: true) }
+            return true
+        }
+        guard let client else { return false }
+        teamRequests += 1
+        let request = teamRequests
+        let load = Task { await fetchTeam(client, request: request) }
+        latestTeamLoad = load
+        return await load.value
+    }
+
+    private func fetchTeam(_ client: APIClient, request: Int) async -> Bool {
+        let changes = teamChanges
+        let response: TeamRooms
+        do { response = try await client.request("team/rooms") } catch {
+            guard self.client === client else { return false }
+            if request != teamRequests { return await latestTeamLoad?.value ?? false }
+            // A screen with a list keeps it. The banner of the connection says when the Mac is away.
+            if !(error is CancellationError) { teamLoadError = Self.teamMessage(error) }
+            return false
+        }
+        guard self.client === client else { return false }
+        if request != teamRequests { return await latestTeamLoad?.value ?? false }
+        // The Mac confirmed a change during this request, so this list can be older. Ask again.
+        guard changes == teamChanges else { return await loadTeam() }
+        team = response
+        teamLoadError = nil
+        return true
+    }
+
+    /// The text of a failed load. The text of the Mac when it sent one, else the text of a failed request.
+    private static func teamMessage(_ error: Error) -> String {
+        if let error = error as? ServiceError { return error.localizedDescription }
+        if let error = error as? TunnelError, error == .needsRepair { return error.message }
+        return "Couldn't complete this request. Try again."
+    }
+
+    /// A Team screen that loaded before loads again when a team changed. A reset of the updates skips the events
+    /// between the cursors, also the team changes. A screen that never loaded loads when it opens.
+    private func reloadChangedTeam(_ page: StateUpdates) {
+        guard page.teamChanged == true || page.reset != nil, teamAsked else { return }
+        Task { await loadTeam() }
+    }
+
+    /// The Team screen asked for the list: it has one, or its first request runs. A change during that first request
+    /// starts a later one, so the earlier answer, made before the change, does not stay on screen.
+    private var teamAsked: Bool { team != nil || latestTeamLoad != nil }
+
+    /// Numbers a write of a room. Only the answer of the latest write of the room goes on screen.
+    private func startTeamWrite(_ room: String) -> Int {
+        teamWriteCount += 1
+        teamWrites[room] = teamWriteCount
+        return teamWriteCount
+    }
+
+    /// Puts the room of a confirmed change into the list, or removes it. Writes of one room can answer in another
+    /// order than they started, so the answer of an earlier write does not go on screen, and the list loads again:
+    /// the load keeps only the newest list, which has each write that the Mac confirmed.
+    private func applyTeamChange(room: TeamRoom?, removing id: String? = nil, write: Int? = nil) {
+        teamChanges += 1
+        defer { Task { await loadTeam() } }
+        if let room, let write, teamWrites[room.room] != write { return }
+        var rooms = team ?? TeamRooms(rooms: [], helper: true)
+        if let room {
+            if let index = rooms.rooms.firstIndex(where: { $0.room == room.room }) { rooms.rooms[index] = room }
+            else { rooms.rooms.append(room) }
+        }
+        if let id { rooms.rooms.removeAll { $0.room == id } }
+        team = rooms
+        teamLoadError = nil
+    }
+
+    /// Makes a team. This Mac is its admin. Return whether the Mac made it.
+    func createTeam(name: String, memberName: String) async -> Bool {
+        let room: TeamRoomAnswer? = await write("team/rooms", payload: TeamCreateRequest(name: name, memberName: memberName),
+                                                as: TeamRoomAnswer.self, refreshInBackground: true)
+        guard let room else { return false }
+        TeamMemberName.remember(memberName)
+        applyTeamChange(room: room.room)
+        return true
+    }
+
+    /// Joins a team with an invite link. Return the team, or nil when the Mac did not join.
+    func joinTeam(link: String, memberName: String) async -> TeamRoom? {
+        let link = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        let room: TeamRoomAnswer? = await write("team/join", payload: TeamJoinBody(link: link, memberName: memberName),
+                                                as: TeamRoomAnswer.self, refreshInBackground: true)
+        guard let room else {
+            // A join that did not finish leaves a room that waits. The list shows it.
+            await loadTeam()
+            return nil
+        }
+        TeamMemberName.remember(memberName)
+        applyTeamChange(room: room.room)
+        return room.room
+    }
+
+    /// Changes the name that the team sees for this person.
+    func renameTeamMember(_ room: TeamRoom, to memberName: String) async -> Bool {
+        let ticket = startTeamWrite(room.room)
+        let answer: TeamRoomAnswer? = await write("team/rooms/\(room.room)", method: "PATCH",
+                                                  payload: TeamProfileRequest(memberName: memberName),
+                                                  as: TeamRoomAnswer.self, refreshInBackground: true)
+        guard let answer else { return false }
+        TeamMemberName.remember(memberName)
+        applyTeamChange(room: answer.room, write: ticket)
+        return true
+    }
+
+    /// Adds a bot of this Mac to the team, or takes it out.
+    func setTeamBot(_ botId: String, in room: TeamRoom, shared: Bool) async -> Bool {
+        let ticket = startTeamWrite(room.room)
+        // The service reads the path as it comes, so a bot ID keeps its unreserved characters, such as the dashes of a
+        // UUID.
+        let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
+        let path = "team/rooms/\(room.room)/bots"
+            + (shared ? "" : "/" + (botId.addingPercentEncoding(withAllowedCharacters: unreserved) ?? botId))
+        let answer: TeamRoomAnswer? = shared
+            ? await write(path, payload: TeamBotRequest(botId: botId), as: TeamRoomAnswer.self, refreshInBackground: true)
+            : await write(path, method: "DELETE", payload: EmptyRequest(), as: TeamRoomAnswer.self, refreshInBackground: true)
+        guard let answer else { return false }
+        applyTeamChange(room: answer.room, write: ticket)
+        return true
+    }
+
+    /// Asks the Mac for a new invite link. The link is a secret: the caller gives it to the share sheet and keeps no
+    /// copy.
+    func teamInviteLink(_ room: TeamRoom) async -> URL? {
+        // Each tap makes a new link, so a request never reuses the key of an earlier one.
+        let invite: TeamInvite? = await write("team/rooms/\(room.room)/invites", payload: EmptyRequest(),
+                                              as: TeamInvite.self, refreshInBackground: true,
+                                              idempotencyKey: UUID().uuidString)
+        return invite.flatMap { URL(string: $0.link) }
+    }
+
+    /// Leaves a team, or removes a team that this Mac is no longer in. The Mac deletes its copy and its keys.
+    func leaveTeam(_ room: TeamRoom) async -> Bool {
+        // An answer of an earlier write of the room must not bring the room back.
+        _ = startTeamWrite(room.room)
+        let answer: TeamLeaveAnswer? = await write("team/rooms/\(room.room)", method: "DELETE", payload: EmptyRequest(),
+                                                   as: TeamLeaveAnswer.self, refreshInBackground: true)
+        guard answer != nil else { return false }
+        applyTeamChange(room: nil, removing: room.room)
+        return true
     }
 
     /// One document with the content of its current version. Nil when the Mac cannot send it.
@@ -1690,6 +1862,7 @@ final class AppStore {
                             failures = 0
                             self.refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
                             self.reloadChangedDocuments(page)
+                            self.reloadChangedTeam(page)
                             Task { await self.syncPushRegistration() }
                         }
                         self.scheduleDelivery()
@@ -1744,6 +1917,7 @@ final class AppStore {
                     markConnected()
                     refreshNativeSettings(using: client, force: page.settingsChanged == true || page.reset != nil)
                     reloadChangedDocuments(page)
+                    reloadChangedTeam(page)
                     Task { await self.syncPushRegistration() }
                     return
                 }
@@ -1771,7 +1945,10 @@ final class AppStore {
         try Task.checkCancellation()
         guard self.client === client, connectionGeneration == generation else { throw CancellationError() }
         guard request.epoch == snapshotEpoch else { return }
-        if snapshot.cursor >= cursor { apply(snapshot, persist: true) }
+        let replaced = snapshot.cursor >= cursor
+        if replaced { apply(snapshot, persist: true) }
+        // A full state skips the events between the cursors, also the team changes, so a loaded Team screen loads again.
+        if replaced, teamAsked { Task { await loadTeam() } }
         markConnected()
         Task { await syncPushRegistration() }
         refreshNativeSettings(using: client)
@@ -2236,6 +2413,10 @@ private struct EmptyRequest: Encodable {}
 private struct Acknowledgement: Decodable, Sendable { let ok: Bool }
 private struct BotRequest: Encodable { let name: String; let role: String; let avatar: String; let color: String; let instructions: String; let memory: String; let pinned: Bool? }
 private struct PinRequest: Encodable { let pinned: Bool }
+private struct TeamCreateRequest: Encodable { let name: String; let memberName: String }
+private struct TeamJoinBody: Encodable { let link: String; let memberName: String }
+private struct TeamProfileRequest: Encodable { let memberName: String }
+private struct TeamBotRequest: Encodable { let botId: String }
 private struct InstructionsRequest: Encodable { let instructions: String }
 private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }

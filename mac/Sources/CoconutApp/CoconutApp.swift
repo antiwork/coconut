@@ -21,9 +21,19 @@ struct CoconutApp: App {
                 .onOpenURL { url in
                     // A Hermes agent sends this link. Coconut shows the Mac name before it pairs.
                     if PairingSetup.isLink(url) { store.setupLink = url.absoluteString }
+                    // An invite link of a team opens the join sheet. The link stays in memory only.
+                    if TeamLinkCheck.isLink(url) { store.teamJoin = TeamJoinRequest(link: url.absoluteString) }
                 }
         }
         .defaultSize(width: 1100, height: 760)
+
+        // Coconut > Settings: the settings of the chat client. The Team screen is its one page today.
+        Settings {
+            NavigationStack { TeamView() }
+                .environment(store)
+                .tint(.primary)
+                .frame(width: 480, height: 560)
+        }
 
         MenuBarExtra {
             MenuContent(model: model, updater: updater)

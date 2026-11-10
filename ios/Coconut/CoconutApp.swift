@@ -15,6 +15,8 @@ struct CoconutApp: App {
                 .onOpenURL { url in
                     // A Hermes agent sends this link. Coconut shows the Mac address before it pairs.
                     if PairingSetup.isLink(url) { store.setupLink = url.absoluteString }
+                    // An invite link of a team opens the join sheet. The link stays in memory only.
+                    if TeamLinkCheck.isLink(url) { store.teamJoin = TeamJoinRequest(link: url.absoluteString) }
                 }
                 .onChange(of: store.reconciledBadgeCount, initial: true) { _, _ in
                     if !store.isDemo { store.reconcileBadge() }
@@ -54,6 +56,8 @@ struct CoconutHome: View {
     @State private var libraryPath = NavigationPath()
     @State private var keyboardVisible = false
     @State private var conversationFooters: [HomeTab: Bool] = [:]
+    @State private var teamJoin: TeamJoinRequest?
+    @State private var shownTeamJoin: UUID?
 
     private var conversationCanMinimize: Bool? { conversationFooters[selectedTab] }
 
@@ -119,6 +123,15 @@ struct CoconutHome: View {
             }
         }
         .sheet(isPresented: $createOpen) { BotEditorView() }
+        .sheet(item: $teamJoin, onDismiss: {
+            // A newer link can wait for this sheet to close. Only the link of this sheet goes.
+            if store.teamJoin?.id == shownTeamJoin { store.teamJoin = nil }
+        }) { TeamJoinView(link: $0.link) }
+        .onChange(of: store.teamJoin, initial: true) { _, _ in showTeamJoin() }
+        // A link that came while a pairing page showed opens its sheet after the page, also after a new pairing. The
+        // page of Settings has its own state, so the count of the pages decides.
+        .onChange(of: onboardingOpen) { _, _ in showTeamJoin() }
+        .onChange(of: PairingPages.shared.isOpen) { _, _ in showTeamJoin() }
         .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
         .onChange(of: store.lastSync) { _, _ in openNotification() }
         .onChange(of: store.connection) { _, _ in openNotification() }
@@ -197,6 +210,24 @@ struct CoconutHome: View {
                     Image(systemName: "plus")
                 }.accessibilityLabel("Create bot").accessibilityIdentifier("create-bot")
             }
+        }
+    }
+
+    /// Shows the join sheet of a tapped invite link. An open sheet closes first, because a second sheet cannot show
+    /// over it.
+    private func showTeamJoin() {
+        guard TeamJoinGate.canShow(store.teamJoin, showing: teamJoin?.id,
+                                   pairingOpen: onboardingOpen || PairingPages.shared.isOpen),
+              let request = store.teamJoin else { return }
+        let sheetOpen = settingsOpen || createOpen || teamJoin != nil
+        settingsOpen = false
+        createOpen = false
+        teamJoin = nil
+        Task {
+            if sheetOpen { try? await Task.sleep(for: .milliseconds(450)) }
+            guard store.teamJoin?.id == request.id else { return }
+            shownTeamJoin = request.id
+            teamJoin = request
         }
     }
 

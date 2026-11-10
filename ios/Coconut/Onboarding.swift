@@ -7,9 +7,8 @@ struct OnboardingView: View {
     static let completedKey = "coconut.onboarding.completed"
     // The download link of Coconut.app for a manual install (updates/README.md).
     static let downloadURL = URL(string: "https://coconut-updates.gumroad.workers.dev/mac/download")!
-    // The number of pairing screens on screen. A screen that shows takes a tapped pairing link itself.
-    private(set) static var openCount = 0
-    static var isOpen: Bool { openCount > 0 }
+    // A pairing screen on screen takes a tapped pairing link itself. PairingPages counts them.
+    static var isOpen: Bool { PairingPages.shared.isOpen }
 
     private enum Phase: Equatable {
         // The iPhone makes the code and its box on the relay.
@@ -140,11 +139,11 @@ struct OnboardingView: View {
             Text(store.hasPairing ? "This replaces the pairing with \(store.pairedMacDescription)." : "Check that this is your Mac.")
         }
         .onAppear {
-            Self.openCount += 1
+            PairingPages.shared.opened()
             closed = false
         }
         .onDisappear {
-            Self.openCount -= 1
+            PairingPages.shared.closed()
             closed = true
             linkPairing?.cancel()
         }
