@@ -25,12 +25,12 @@ Before 0.21.6, Hermes used calendar versions, such as 2026.9.24. Coconut treats 
 `.github/workflows/hermes-compatibility.yml` has these jobs:
 
 - `contracts` runs every backend test file, each in its own process, on Python 3.11 without Hermes. The native tests skip there.
-- `native-kanban (Hermes <minimum>)` checks the `minimum` release.
-- `native-kanban (latest Hermes release)` checks the latest stable Hermes release.
-- `native-kanban` passes only when both of the legs above pass.
-- `native-kanban (Hermes main)` runs each night against the tip of Hermes `main`.
+- `native-kanban (Hermes <minimum>, part 1)`, `part 2`, and `part 3` check the `minimum` release.
+- `native-kanban (latest Hermes release, part 1)`, `part 2`, and `part 3` check the latest stable Hermes release.
+- `native-kanban` passes only when all six parts above pass.
+- `native-kanban (Hermes main, part 1)`, `part 2`, and `part 3` run each night against the tip of Hermes `main`.
 
-Each Hermes leg installs Hermes with the official installer, as a person does, into a temporary `HERMES_HOME`. Then Coconut finds that Hermes with `hermes_runtime.find()` and runs the contract check. Then the leg runs the native tests under the Python of that Hermes.
+Each part installs Hermes with the official installer, as a person does, into a temporary `HERMES_HOME`. Then Coconut finds that Hermes with `hermes_runtime.find()` and runs the contract check. Then the part runs its share of the native test files under the Python of that Hermes. The three parts of a leg run at the same time. Each part has about one third of the test time. When you add a native test file, put it in the part with the least time.
 
 A failure of the nightly `main` leg is a warning in the run summary, not a failed check run. A change of Hermes `main` is not a fault of the Coconut commit.
 
