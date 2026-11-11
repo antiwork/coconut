@@ -34,6 +34,9 @@ SECOND = 'Start with the export.'
 # A turn that runs a slow command, then asks the model again with its result.
 SLOW = 'SLOWTOOL'
 AFTER = 'The slow command is done.'
+# The files that the slow command writes before and after its sleep. A test sets them in its scratch folder.
+MARKERS = {}
+SLEEP_SECONDS = 6
 
 
 def answer(request):
@@ -45,7 +48,7 @@ def answer(request):
     if SLOW in last and request.get('tools'):
         if any(message.get('role') == 'tool' for message in messages[users[-1]:]):
             return dict(role='assistant', content=AFTER)
-        arguments = dict(command='sleep 6; echo slow-tool-done')
+        arguments = dict(command=f"touch '{MARKERS['started']}'; sleep {SLEEP_SECONDS}; touch '{MARKERS['ended']}'")
         return dict(role='assistant', content=None, tool_calls=[dict(
             id='call-slow', type='function', function=dict(name='terminal', arguments=json.dumps(arguments)))])
     return dict(role='assistant', content=SECOND if 'Which one first' in last else FIRST)
@@ -64,6 +67,8 @@ class NativeTeamChatTests(TeamOnlyMacs, unittest.TestCase):
         test_native_gateway_chat.answer, self.saved = answer, test_native_gateway_chat.answer
         self.addCleanup(setattr, test_native_gateway_chat, 'answer', self.saved)
         Model.requests.clear()
+        MARKERS.update(started=Path(self.temp.name) / 'slow-started', ended=Path(self.temp.name) / 'slow-ended')
+        self.addCleanup(MARKERS.clear)
         self.model = ThreadingHTTPServer(('127.0.0.1', 0), Model)
         threading.Thread(target=self.model.serve_forever, daemon=True).start()
         self.addCleanup(self.model.server_close)
@@ -185,11 +190,15 @@ class NativeTeamChatTests(TeamOnlyMacs, unittest.TestCase):
         turn_id = self.wait_until(lambda: [turn.id for turn in self.only.gateway_bridge.turns.values()
                                            if turn.chat_id.startswith(self.only.team_store.answering(self.room)[0][0])
                                            and turn.state == 'active'])[0]
+        # The command runs: it wrote its first marker and sleeps now.
+        self.wait_until(lambda: MARKERS['started'].exists(), seconds=60)
         stop()
         self.wait_until(lambda: [event for event in self.events if event.get('turn_id') == turn_id
                                  and event['kind'] == 'done'], seconds=60)
-        # The command takes 6 seconds. Hermes would ask the model again after it, if the turn went on.
-        time.sleep(10)
+        # Hermes interrupted the command: its second marker never comes, also after longer than its sleep, and the
+        # model gets no request with its result.
+        time.sleep(SLEEP_SECONDS + 4)
+        self.assertFalse(MARKERS['ended'].exists(), self.diagnostics())
         self.assertEqual([request for request in Model.requests if results(request)], [], self.diagnostics())
         self.assertNotIn(AFTER, [row['text'] for row in self.bot_messages()])
         # The `/stop` reaches the session of the member itself. A `/stop` of another user would stop the turn only
@@ -206,8 +215,11 @@ class NativeTeamChatTests(TeamOnlyMacs, unittest.TestCase):
     def test_a_turn_past_its_time_ends_in_hermes(self):
         from coconut import team_turns
         self.start_chat()
-        with mock.patch.object(team_turns, 'TURN_SECONDS', 3):
-            self.stop_in_the_tool(lambda: None)
+        # The limit starts when the bridge registers the turn. The first marker comes about one second later, and the
+        # limit ends while the command sleeps: the test checks both orders below.
+        with mock.patch.object(team_turns, 'TURN_SECONDS', 4):
+            started = time.monotonic()
+            self.stop_in_the_tool(lambda: self.assertLess(time.monotonic() - started, 4, 'The limit came first.'))
         # The chat gets the notice of a turn past its time, and no text of the stop of Hermes.
         texts = self.wait_until(lambda: [row['text'] for row in self.bot_messages()])
         self.assertEqual(texts, [team_turns.UNFINISHED])
