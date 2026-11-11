@@ -18,10 +18,12 @@ each change that the command makes or made, and `problems`, or `error`.
 A disconnect judges each of the three parts by itself (`without_team`). A part is done when Coconut removed it, or
 when the home proves that it has nothing of Coconut there. A part whose form cannot be read is not proved: the
 disconnect removes what it can, and `problems` has one line for each part that the operator must correct. The caller
-then keeps the guard of the bot, and a second run after the correction finishes the job. The edit uses the config reader of Hermes and the round-trip
-writer of Coconut (native_settings), so comments, key order and the other keys stay. A plan reads the file with the safe
-YAML loader of Hermes's dependencies instead: an import of the config module of Hermes makes the folders of a Hermes
-home and a copy of config.yaml in `backups/config`, as each start of Hermes does, and a plan must change nothing.
+then keeps the guard of the bot, and a second run after the correction finishes the job.
+
+The edit uses the config reader and the round-trip writer of Hermes (`save`), so comments, key order, the layout and
+the other keys stay. A plan reads the file with the safe YAML loader of Hermes's dependencies instead: an import of the
+config module of Hermes makes the folders of a Hermes home and a copy of config.yaml in `backups/config`, as each start
+of Hermes does, and a plan must change nothing.
 
 A home whose `plugins/coconut` is another file, or whose `gateway.platforms.coconut` belongs to a full Coconut (a block
 with `enabled` and without `mode: team`), gets an error and no change: those are not Coconut's to change here. A block
@@ -156,6 +158,14 @@ def read_only(home: Path) -> dict:
     return config
 
 
+def save(home: Path, config: dict) -> None:
+    """Save the config with the round-trip writer of Hermes, which keeps comments, key order and the layout of each
+    node that does not change. Coconut's save_config (model_catalog.save_yaml) first rewrites each flow list and
+    mapping in block style, for the configs that Coconut made as JSON: a production config keeps its layout here."""
+    from utils import atomic_roundtrip_yaml_save
+    atomic_roundtrip_yaml_save(home / 'config.yaml', config)
+
+
 def run(action: str, home: Path, bridge: str, folder: Path = PLUGIN) -> tuple[list[str], list[str]]:
     """Plan or make the change. Return the lines of the changes and of the parts that a disconnect did not prove."""
     present = action in ('plan', 'connect')
@@ -169,7 +179,7 @@ def run(action: str, home: Path, bridge: str, folder: Path = PLUGIN) -> tuple[li
     # Hermes checks some writes against the active home.
     os.environ['HERMES_HOME'] = str(home)
     if write:
-        from native_settings import raw_config, save_config
+        from native_settings import raw_config
     changed, changes, problems = None, [], []
     if present and config_file.is_file():
         changed, changes = with_team(raw_config(home) if write else read_only(home), config_file, bridge)
@@ -190,7 +200,7 @@ def run(action: str, home: Path, bridge: str, folder: Path = PLUGIN) -> tuple[li
         if present:
             set_link(home, folder, True)
         if changed is not None:
-            save_config(home, changed)
+            save(home, changed)
         if not present:
             set_link(home, folder, False)
     return changes, problems

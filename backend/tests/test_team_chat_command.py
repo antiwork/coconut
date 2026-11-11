@@ -300,6 +300,32 @@ class CommandTests(TeamOnlyMacs, unittest.TestCase):
         self.assertEqual(self.plugin_config(), dict(old, plugins={'enabled': []}))
         self.assertEqual(self.changed(before, self.files()), {'config.yaml'})
 
+    def test_the_layout_of_a_production_config_stays_outside_the_three_changes(self):
+        start = ('# The agent of the team.\n'
+                 'platform_toolsets: {telegram: [web, file], api_server: [web]}  # flow, as the operator wrote it\n'
+                 'model:\n'
+                 '  provider: custom   # an inline comment\n'
+                 '  default: example-model\n'
+                 'plugins:\n'
+                 '  enabled: [disk-cleanup]\n'
+                 '\n'
+                 '# The end.\n'
+                 'agent: {max_turns: 40}\n')
+        (self.home / 'config.yaml').write_text(start)
+        self.assertEqual(self.run_command('connect', 'Reporter', '--confirm').status, 0)
+        after = (self.home / 'config.yaml').read_text()
+        # Each line of the start stays, except the list that gets coconut, and the new lines are only the platform.
+        self.assertIn('  enabled: [disk-cleanup, coconut]\n', after)
+        for line in start.splitlines():
+            if 'disk-cleanup' not in line:
+                self.assertIn(line + '\n', after)
+        added = [line for line in after.splitlines() if line not in start.splitlines()]
+        self.assertEqual(added[0], '  enabled: [disk-cleanup, coconut]')
+        self.assertEqual([line.split(':')[0].strip() for line in added[1:]],
+                         ['gateway', 'platforms', 'coconut', 'enabled', 'extra', 'mode', 'bridge'])
+        self.assertEqual(self.run_command('disconnect', 'Reporter').status, 0)
+        self.assertEqual((self.home / 'config.yaml').read_text(), start)
+
     def test_a_reconnect_keeps_the_keys_of_the_operator_and_ends_where_the_first_disconnect_ended(self):
         self.assertEqual(self.run_command('connect', 'Reporter', '--confirm').status, 0)
         # The operator adds a key to the block and one to `extra`, with the round-trip YAML of Hermes.

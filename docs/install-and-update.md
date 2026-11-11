@@ -290,7 +290,7 @@ Each member of the teams of the bot can then name the bot in the team chat, and 
    - a link `plugins/coconut` to the Coconut plugin,
    - `coconut` in `plugins.enabled` of `config.yaml`,
    - in `gateway.platforms.coconut` of `config.yaml`: `enabled: true`, `extra.mode: team` and `extra.bridge` (the address file of the Coconut service).
-2. Read the changes. Then run `coconut team connect-chat Reporter --confirm`. Expect `The team chat of Reporter is connected.`
+2. Read the changes. Then run `coconut team connect-chat Reporter --confirm`. Expect `The team chat of Reporter is connected.` The command writes with the writer of Hermes, so each comment, the order of the keys and the layout of what it does not change stay as they are. Hermes keeps its own copy of `config.yaml` in `backups/config`.
 3. Restart the Hermes gateway of that Hermes home yourself, for example with `hermes gateway restart`. The gateway loads the plugin at its start.
 4. Run `coconut status`. Expect `Team chat of Reporter: on. Hermes takes the messages.` If the line says that Hermes does not take the messages, the gateway did not load the plugin: restart it, then look at its log. If the line names a path, the Hermes home misses a part of the team chat (the link `plugins/coconut`, the plugin behind it, or the entries in `config.yaml`), and the line gives the command that repairs it. Hermes skips a plugin folder without its plugin and writes no log line about it, so a restart alone does not help there.
 
