@@ -233,6 +233,29 @@ class TeamSocketTests(TeamMacs, unittest.TestCase):
         with self.second.lock:
             return self.second.team_store.room(self.room_id)['member']
 
+    def test_a_room_that_leaves_the_set_or_gets_a_new_token_is_not_connected(self):
+        self.start()
+        other = self.create(self.third, name='Other Team', member_name='Edsger')
+        self.join(self.second, self.invite(other, self.third)['link'])
+        self.second.team_sync_pass()
+        self.wait(lambda: self.watched() == sorted([self.room_id, other['room']]))
+        self.open()
+        self.emit(event='open', room=other['room'])
+        self.wait(lambda: self.second.team_socket_open(other['room']))
+        # The person leaves one room. The helper closes its socket without an event, and the other room stays open.
+        self.leave(self.second, other)
+        self.wait(lambda: self.watched() == [self.room_id])
+        self.assertFalse(self.second.team_socket_open(other['room']))
+        self.assertTrue(self.second.team_socket_open(self.room_id))
+        # A new token of the room: the helper connects again, so the room is not connected until its next `open`.
+        keys = team_keys.read(self.second.root, self.room_id)
+        team_keys.write(self.second.root, self.room_id, member_key=keys['member_key'],
+                        agreement_key=keys['agreement_key'], token='e' * 64, keys=keys['keys'])
+        self.second._team_watcher.refresh()
+        self.wait(lambda: self.lines()[-1]['rooms'][0]['token'] == 'e' * 64)
+        self.assertFalse(self.second.team_socket_open(self.room_id))
+        self.open()
+
     def test_a_refused_socket_wakes_the_room_so_that_the_read_finds_out_why(self):
         self.start()
         self.open()

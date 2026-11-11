@@ -81,7 +81,8 @@ class TeamWatcher:
         self._reader = None
         # The last line of rooms that the process got. It holds the tokens, so it never goes into a log.
         self._line = None
-        self._watched = frozenset()
+        # The rooms of that line, each with its relay and token. It stays in memory only, as the line does.
+        self._watched: dict[str, tuple[str, str]] = {}
         self._started = 0.0
         self._failures = 0
         self._next_start = 0.0
@@ -212,6 +213,18 @@ class TeamWatcher:
         return 'failed'
 
     def _send(self, line: str, rooms: list[dict]) -> bool:
+        """Write a line of rooms to the helper.
+
+        The helper closes the socket of a room that leaves the set, and of a room whose relay or token changed, with
+        no `closed` event (Watch.update). So only a room with the same relay and token stays connected. The others
+        are connected again when their `open` comes. This happens before the write, so an `open` that answers the
+        line is never lost.
+        """
+        watched = {room['room']: (room['relay'], room['token']) for room in rooms}
+        with self._lock:
+            self._connected = {room for room in self._connected if room in watched
+                               and self._watched.get(room) == watched[room]}
+            self._watched = watched
         try:
             self._process.stdin.write(line.encode() + b'\n')
             self._process.stdin.flush()
@@ -219,14 +232,13 @@ class TeamWatcher:
             # The process ended. The reader sees the end of its output and wakes the thread.
             return False
         self._line = line
-        self._watched = frozenset(room['room'] for room in rooms)
         return True
 
     def _stop_process(self) -> None:
         process, reader = self._process, self._reader
         self._process = self._reader = self._line = None
-        self._watched = frozenset()
         with self._lock:
+            self._watched = {}
             self._connected.clear()
         if process is None:
             return
