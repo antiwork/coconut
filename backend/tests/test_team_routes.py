@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from coconut import team_keys
 from coconut.server import APIServer, TunnelServer
+from coconut.team import PERSON_ONLY
 from coconut.team_pages import PERSONAL_BOTS
 from coconut.team_relay import TeamRelayError
 from team_fakes import RELAY, TeamMacs
@@ -99,7 +100,12 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
                 status, answer = self.call('PATCH', f'/v1/team/rooms/{room}', {'member_name': 'Ada L.'}, **one)
                 self.assertEqual((status, [member['name'] for member in answer['room']['members'] if member['this_mac']]),
                                  (200, ['Ada L.']))
+                # Only a paired device shares a page. The token of the bridge file, which a bot can read, cannot.
                 status, answer = self.call('PUT', f'/v1/team/rooms/{room}/pages/{document}', {}, **one)
+                if name == 'tool':
+                    self.assertEqual((status, answer), (403, {'error': PERSON_ONLY}))
+                    status, answer = self.call('PUT', f'/v1/team/rooms/{room}/pages/{document}', {},
+                                               **self.callers(self.mac_one)['device'])
                 self.assertEqual((status, answer['document']['teams']), (200, [{'room': room, 'name': 'Example Team'}]))
                 # A person's Mac does not share a bot. An app of today gets the reason.
                 status, answer = self.call('POST', f'/v1/team/rooms/{room}/bots', {'bot_id': bot['id']}, **one)
@@ -110,6 +116,10 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
                 (view,) = (row for row in answer['rooms'] if row['room'] == room)
                 self.assertEqual((status, [member['name'] for member in view['members']]), (200, ['Ada L.', 'Grace']))
                 status, answer = self.call('DELETE', f'/v1/team/rooms/{room}/pages/{document}', None, **one)
+                if name == 'tool':
+                    self.assertEqual((status, answer), (403, {'error': PERSON_ONLY}))
+                    status, answer = self.call('DELETE', f'/v1/team/rooms/{room}/pages/{document}', None,
+                                               **self.callers(self.mac_one)['device'])
                 self.assertEqual((status, answer['document']['teams'], answer['document']['audience']),
                                  (200, [], 'private'))
                 self.assertEqual(self.call('DELETE', f'/v1/team/rooms/{room}', None, **two), (200, {'room': room, 'left': True}))

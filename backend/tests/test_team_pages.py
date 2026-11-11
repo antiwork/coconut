@@ -17,9 +17,10 @@ from uuid import uuid4
 from coconut import documents, team_keys, team_store, team_sync
 from coconut.documents import MAX_CONTENT
 from coconut.service import Service, ServiceError
+from coconut.team import PERSON_ONLY
 from coconut.team_pages import NO_PAGE_SHARE, PERSONAL_BOTS, team_ids
 from coconut.team_relay import MAX_NUMBER, TeamRelayError
-from team_fakes import RELAY, FakeHelper, TeamMacs, decode
+from team_fakes import DEVICE, RELAY, FakeHelper, TeamMacs, decode
 
 PAGE = dict(key='weekly-report', title='Weekly report', format='markdown', summary='3 open tasks',
             content='3 tasks are open.\n\n| State | Tasks |\n|---|---|\n| Open | 3 |\n')
@@ -57,11 +58,11 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
     def share(self, key: str = 'weekly-report', bot=None, room=None, service=None) -> dict:
         """Ada shares the page of the key with the room, as on the page in the Library. Return the document."""
         path = f'/v1/team/rooms/{room or self.room_id}/pages/{self.document_id(key, bot, service)}'
-        return (service or self.first).team_request('PUT', path, {})['document']
+        return (service or self.first).team_request('PUT', path, {}, '', DEVICE)['document']
 
     def stop(self, key: str = 'weekly-report', bot=None, room=None, service=None) -> dict:
         path = f'/v1/team/rooms/{room or self.room_id}/pages/{self.document_id(key, bot, service)}'
-        return (service or self.first).team_request('DELETE', path, {})['document']
+        return (service or self.first).team_request('DELETE', path, {}, '', DEVICE)['document']
 
     def view(self, service=None) -> dict:
         """The room as the Team screen of the first Mac reads it, without a pass."""
@@ -322,9 +323,9 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
         for name, room, page, answer in cases:
             with self.subTest(name):
                 self.assertEqual(self.refusal(self.first.team_request, 'PUT', f'/v1/team/rooms/{room}/pages/{page}',
-                                              {}), answer)
+                                              {}, '', DEVICE), answer)
                 self.assertEqual(self.refusal(self.first.team_request, 'DELETE',
-                                              f'/v1/team/rooms/{room}/pages/{page}', {}), answer)
+                                              f'/v1/team/rooms/{room}/pages/{page}', {}, '', DEVICE), answer)
         # A page past its end cannot be shared.
         self.publish(key='old-note', title='Old note', expires_at=END)
         later = (date.today() + timedelta(days=60)).isoformat() + 'T00:00:00.000000Z'
@@ -422,6 +423,23 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
         self.assertEqual(self.second.db.execute('SELECT COUNT(*) FROM team_page_shares').fetchone()[0], 0)
         self.first.team_sync_pass()
         self.assertEqual((self.team_pages(self.first), self.library(self.first)['team_bots']), ([], []))
+
+    def test_only_a_paired_device_shares_a_page_or_stops(self):
+        # A bot can read the token of the bridge file, so a tool of this Mac cannot share or stop, with or without an
+        # Idempotency-Key. The refusal changes nothing.
+        self.publish()
+        path = f'/v1/team/rooms/{self.room_id}/pages/{self.document_id()}'
+        for method in ('PUT', 'DELETE'):
+            for key in ('', str(uuid4())):
+                with self.subTest(method=method, key=key):
+                    self.assertEqual(self.refusal(self.first.team_request, method, path, {}, key), (403, PERSON_ONLY))
+                    self.assertEqual(self.own()['teams'], [])
+        self.share()
+        cursor = self.first._cursor()
+        self.assertEqual(self.refusal(self.first.team_request, 'DELETE', path, {}), (403, PERSON_ONLY))
+        self.assertEqual(self.own()['teams'], [{'room': self.room_id, 'name': 'Example Team'}])
+        self.assertEqual(self.first._cursor(), cursor, 'A refusal adds no event.')
+        self.assertEqual(self.stop()['teams'], [])
 
     def test_a_mac_that_runs_coconut_for_a_team_only_takes_no_page_share(self):
         self.publish()

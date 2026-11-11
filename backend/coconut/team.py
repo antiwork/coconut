@@ -76,6 +76,9 @@ SYNC_WAIT_SECONDS = 60
 # runs again. The limit keeps the memory small when a device sends many keys.
 REPLY_SECONDS = 600
 REPLY_LIMIT = 256
+# The route of a share and a stop of a page, and the answer to a caller that is not a paired device.
+PAGE_ROUTE = re.compile(r'/v1/team/rooms/[^/]+/pages/[^/]+/?')
+PERSON_ONLY = 'Only the person can share a page with a team, in the Coconut app.'
 # The clock of the saved answers. A test replaces it, so it needs no wait of 10 minutes.
 clock = time.monotonic
 
@@ -197,6 +200,11 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         of a tool on this Mac, runs as before. `POST /v1/team/sync` and the reads need no key.
         """
         from .service_base import ServiceError
+        if not device and self.library_reader and method in ('PUT', 'DELETE') and PAGE_ROUTE.fullmatch(path):
+            # Only the person shares a page. A paired device is the app of the person. The token of the bridge file
+            # is the token of the tools of this Mac, and a bot can read that file, so it cannot share or stop. This
+            # closes the plain path only: a process of the same macOS account can still read other files of this Mac.
+            raise ServiceError(403, PERSON_ONLY)
         if not key or method == 'GET' or path.rstrip('/') == '/v1/team/sync':
             return self._team_route(method, path, data)
         try:

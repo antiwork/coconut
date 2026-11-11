@@ -367,7 +367,7 @@ A request without a valid authorization gets 401.
 | `POST /v1/team/join`, body `{link, member_name, avatar, color}` | Joins a room. |
 | `DELETE /v1/team/rooms/<room>` | Leaves the room, and deletes its copy and its keys. A failure of the relay stops the leave of an `active` room. A `joining` room always goes: see [Leave a join that did not finish](#leave-a-join-that-did-not-finish). |
 | `POST /v1/team/sync` | Starts a pass, waits up to 60 seconds for it, and returns the rooms with `complete`. |
-| `PUT /v1/team/rooms/<room>/pages/<document>` | The person shares a page of this Mac with the room. See [Bots and pages](#bots-and-pages). |
+| `PUT /v1/team/rooms/<room>/pages/<document>` | The person shares a page of this Mac with the room. See [Bots and pages](#bots-and-pages). Only a paired device can share or stop: on a person's Mac the token of the bridge file gets 403, because a bot can read that file. |
 | `DELETE /v1/team/rooms/<room>/pages/<document>` | The person stops sharing the page with the room. |
 | `POST /v1/team/rooms/<room>/bots`, body `{bot_id}` | On a Mac for a team only: shares a bot of this Mac with the room. An archived or deleted bot answers 409 or 404. A person's Mac answers 409 with the text "The bots of this Mac stay yours, so a team does not get them. To share a page with the team, open it in the Library of the Coconut app." An app of today shows that text. |
 | `DELETE /v1/team/rooms/<room>/bots/<bot_id>` | On a Mac for a team only: stops sharing the bot with the room. A person's Mac answers 409 as above. |
