@@ -50,7 +50,9 @@ final class ModelSettingsFlowTests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
         app.buttons["close-settings"].tap()
-        XCTAssertTrue(app.buttons["home-inbox"].waitForExistence(timeout: 5))
+        // Settings is a sheet. The Chats list must be back before the next step opens Settings again.
+        XCTAssertTrue(app.navigationBars["Settings"].waitForNonExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["bot-conversation-" + forgeId].waitForExistence(timeout: 5))
         openBotModelSettings(in: app)
         assertInheritedModel("Preview Focused", effort: "High", in: app)
         capture("Bot inherits the changed host model and effort")
@@ -63,7 +65,7 @@ final class ModelSettingsFlowTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 10))
         app.tabBars.buttons["Chats"].tap()
-        XCTAssertTrue(app.buttons["home-inbox"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["bot-conversation-" + forgeId].waitForExistence(timeout: 10))
         return app
     }
 
