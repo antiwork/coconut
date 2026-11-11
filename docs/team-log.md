@@ -372,7 +372,7 @@ A relay that took the join keeps this Mac as a member without a Mac: the member 
 To share:
 
 - The person shares a bot of this Mac with a room. The Mac makes the entry ID of its `bot` entry once.
-- `coconut_save_document` and `POST /v1/gateway/document` take `audience`: `"private"` or `"team"`. A new document without the field is private. A save of an existing document without the field keeps its audience. The document row and what a bot reads about its documents show the audience.
+- `coconut_save_document` and `POST /v1/gateway/document` take `audience`: `"private"` or `"team"`. Outside a Coconut chat turn, `coconut_save_document` saves through `POST /v1/gateway/document`, so a shared bot can keep a team page from another messaging app too (see [architecture](architecture.md#messages-outside-a-coconut-turn)). A new document without the field is private. A save of an existing document without the field keeps its audience. The document row and what a bot reads about its documents show the audience.
 - `"team"` means each team that the bot is shared with. A save with `"team"` of a bot that is shared with no team gets 409 with the reason.
 - The sealed body is the payload and 97 bytes, and the relay takes at most 1 MiB. So a save of a team page checks the size of its payload and answers 413 when the page does not fit. The payload is JSON without ASCII escapes, so text outside ASCII does not grow.
 

@@ -753,6 +753,85 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertIn('error', json.loads(tools._service_tool('ask')(card)))
         self.assertIn('error', json.loads(tools._service_tool('track_pr')({'url': 'x'})))
 
+    def test_the_document_tools_act_for_the_bot_of_the_running_profile_outside_a_coconut_turn(self):
+        # A conversation of another messaging app has no Coconut turn. The tool names the Hermes home of the profile
+        # that runs it, and the plugin finds the bridge file in the config of that profile.
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        from hermes_cli import config
+        from coconut.documents import OUTSIDE_SAVE_NOTE
+        from coconut.service import ServiceError
+        other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+        bridge = {'gateway': {'platforms': {'coconut': {'extra': {
+            'bridge': str(self.service.gateway_bridge.address_file)}}}}}
+        page = dict(key='weekly-report', title='Weekly report', format='markdown', content='3 tasks are open.')
+
+        def call(name, arguments, home):
+            with patch.dict(config.CONFIG, bridge), patch.dict(os.environ, HERMES_HOME=str(home)):
+                return json.loads(tools._service_tool(name)(arguments))
+
+        def listed(bot):
+            return [(d['key'], d['version']) for d in
+                    call('read_document', {}, self.service.profiles.home(bot))['documents']]
+        # An argument cannot name another profile: the page goes to the bot of the running profile.
+        saved = call('save_document', dict(page, home=str(self.service.profiles.home(other))), self.home)
+        self.assertEqual(saved, {'status': 'saved', 'key': 'weekly-report', 'version': 1, 'expires_at': None,
+                                 'note': OUTSIDE_SAVE_NOTE})
+        self.assertEqual([(d['bot_id'], d['key']) for d in self.service.documents()['documents']],
+                         [(self.bot['id'], 'weekly-report')])
+        # No Coconut chat asked for the page, so no chat shows a card or a message.
+        self.assertEqual((self.service._all('tasks'), self.service._all('messages')), ([], []))
+        self.assertEqual((listed(self.bot), listed(other)), ([('weekly-report', 1)], []))
+        self.assertIn('no document with this key', call('read_document', {'key': 'weekly-report'},
+                                                        self.service.profiles.home(other))['error'])
+        self.assertIn('no document with this key', call('delete_document', {'key': 'weekly-report'},
+                                                        self.service.profiles.home(other))['error'])
+        # The page rules of a save in a turn apply.
+        refused = call('save_document', dict(page, format='html', content='<p style="font-family: serif">x</p>'),
+                       self.home)
+        self.assertIn('The page sets a font', refused['error'])
+        self.assertEqual(call('read_document', {'key': 'weekly-report'}, self.home)['content'], '3 tasks are open.')
+        self.assertEqual(call('delete_document', {'key': 'weekly-report'}, self.home),
+                         {'status': 'deleted', 'key': 'weekly-report'})
+        self.assertEqual(self.service.documents()['documents'], [])
+        # A home that is not the profile of a bot gets a clear refusal.
+        for name, arguments in (('save_document', page), ('read_document', {})):
+            self.assertIn('not the profile of a bot', call(name, arguments, Path(self.temp.name) / 'elsewhere')['error'])
+        # The other tools still need a Coconut chat turn.
+        for name, arguments in (('ask', {'title': 'Ship it?'}), ('track_pr', {'url': 'x'}), ('kanban_list', {})):
+            self.assertEqual(call(name, arguments, self.home),
+                             {'error': f'{name} works only during a Coconut chat turn.'})
+        # A service that knows only turns refuses a read without a turn. The model gets the reason, and the turn of
+        # the conversation goes on.
+        with patch.object(self.service, 'gateway_page_tool',
+                          side_effect=ServiceError(409, 'This Coconut turn no longer runs.')):
+            self.assertEqual(call('read_document', {}, self.home), {'error': tools.OLDER_SERVICE_ERROR})
+        # Without the service, the tool says so.
+        with patch.object(tools, '_BRIDGES', {}), patch.dict(config.CONFIG, {'gateway': {'platforms': {'coconut': {
+                'extra': {'bridge': str(Path(self.temp.name) / 'missing.json')}}}}}), \
+                patch.dict(os.environ, HERMES_HOME=str(self.home)):
+            self.assertIn('did not answer', json.loads(tools._service_tool('read_document')({}))['error'])
+
+    def test_a_save_in_a_coconut_turn_still_shows_its_card(self):
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        results = []
+        async def runner(event):
+            def tool_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    results.append(json.loads(tools._service_tool('save_document')(dict(
+                        key='weekly-report', title='Weekly report', format='markdown', content='3 tasks are open.'))))
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            await asyncio.to_thread(tool_calls)
+            return 'The report is in the Library.'
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Write the weekly report.'})
+        self.service._run_task(task['id'])
+        self.assertEqual(results, [{'status': 'saved', 'key': 'weekly-report', 'version': 1, 'expires_at': None}])
+        cards = [m for m in self.service._task_messages(task['id']) if m['kind'] == 'document']
+        self.assertEqual([card['bot_id'] for card in cards], [self.bot['id']])
+
     def test_a_dismissed_card_of_coconut_ask_continues_nothing(self):
         tools = sys.modules['hermes_plugins.coconut.tools']
         results = []

@@ -694,5 +694,99 @@ class GatewayPageTests(unittest.TestCase):
         self.assertEqual(self.service.documents()['documents'], [])
 
 
+class OutsideTurnPageTests(unittest.TestCase):
+    """The document tools in a conversation of a bot that is not a Coconut chat turn, for example a chat of another
+    messaging app. The plugin names the Hermes home of the running profile. A save goes to POST /v1/gateway/document,
+    and a read and a delete go to POST /v1/gateway/tools with the home in place of a turn."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.service = Service(self.temp.name, Provider(), start_workers=False)
+        self.service.gateway_enabled = lambda: True
+        self.bot = self.write('POST', '/v1/bots', {'name': 'Ada'})
+        self.other = self.write('POST', '/v1/bots', {'name': 'Lin'})
+
+    def tearDown(self):
+        self.service.close()
+        self.temp.cleanup()
+
+    def write(self, method, path, data=None):
+        return self.service.mutate(method, path, data or {}, str(uuid4()), 'phone')
+
+    def home(self, bot):
+        return str(self.service.profiles.home(bot))
+
+    def save(self, bot, **arguments):
+        page = dict(key='weekly-report', title='Weekly report', format='markdown', content='3 tasks are open.')
+        return self.service.gateway_document(dict(page, **arguments, home=self.home(bot)))
+
+    def tool(self, bot, name, arguments=None, home=None):
+        return self.service.gateway_tool({'home': home or self.home(bot), 'tool': name, 'arguments': arguments or {}})
+
+    def test_each_bot_reads_and_deletes_only_its_own_pages(self):
+        self.save(self.bot, content='Ada has 3 open tasks.')
+        self.save(self.other, content='Lin has 5 open tasks.')
+        for bot, text in ((self.bot, 'Ada has 3 open tasks.'), (self.other, 'Lin has 5 open tasks.')):
+            with self.subTest(bot=bot['name']):
+                listed = self.tool(bot, 'read_document')['documents']
+                self.assertEqual([(d['key'], d['version'], d['audience']) for d in listed],
+                                 [('weekly-report', 1, 'private')])
+                self.assertEqual(self.tool(bot, 'read_document', {'key': 'weekly-report'})['content'], text)
+        cursor = self.service._cursor()
+        self.assertEqual(self.tool(self.bot, 'delete_document', {'key': 'weekly-report'}),
+                         {'status': 'deleted', 'key': 'weekly-report'})
+        # The page of the other bot with the same key stays.
+        self.assertEqual([(d['bot_id'], d['key']) for d in self.service.documents()['documents']],
+                         [(self.other['id'], 'weekly-report')])
+        with self.assertRaisesRegex(ServiceError, 'no document with this key') as missing:
+            self.tool(self.bot, 'read_document', {'key': 'weekly-report'})
+        self.assertEqual(missing.exception.status, 404)
+        with self.assertRaisesRegex(ServiceError, 'no document with this key'):
+            self.tool(self.bot, 'delete_document', {'key': 'weekly-report'})
+        # No turn asked for the delete, so its event names no task, as a delete from the phone.
+        (event,) = self.service.db.execute('SELECT type, task_id FROM events WHERE seq>?', (cursor,)).fetchall()
+        self.assertEqual(event, ('document.deleted', None))
+
+    def test_a_save_outside_a_turn_shows_no_card_and_writes_no_message(self):
+        self.assertEqual(self.save(self.bot)['status'], 'saved')
+        self.assertEqual(self.save(self.bot, content='4 tasks are open.')['version'], 2)
+        self.assertEqual((self.service._all('tasks'), self.service._all('messages')), ([], []))
+
+    def test_a_page_for_the_team_outside_a_turn_needs_a_shared_bot(self):
+        with self.assertRaisesRegex(ServiceError, 'shared with no team') as refused:
+            self.save(self.bot, audience='team')
+        self.assertEqual(refused.exception.status, 409)
+        with self.service.transaction():
+            self.service.team_store.share('room-1', self.bot['id'], 'entry-1')
+        with patch.object(self.service, 'team_wake') as wake:
+            self.assertEqual(self.save(self.bot, audience='team')['status'], 'saved')
+        wake.assert_called()
+        self.assertEqual(self.tool(self.bot, 'read_document', {'key': 'weekly-report'})['audience'], 'team')
+        # The other bot is shared with no team.
+        with self.assertRaisesRegex(ServiceError, 'shared with no team'):
+            self.save(self.other, audience='team')
+
+    def test_a_home_that_is_not_the_profile_of_a_bot_gets_a_clear_refusal(self):
+        for name, arguments in (('read_document', {}), ('delete_document', {'key': 'weekly-report'})):
+            with self.subTest(tool=name), self.assertRaisesRegex(ServiceError, 'not the profile of a bot') as refused:
+                self.tool(None, name, arguments, home=f'{self.temp.name}/somewhere-else')
+            self.assertEqual(refused.exception.status, 404)
+
+    def test_the_other_tools_and_a_save_refuse_without_a_turn(self):
+        # A save without a turn goes to POST /v1/gateway/document, which follows the rules of a page of the tooling.
+        for name in ('ask', 'track_pr', 'message_bot', 'kanban_list', 'save_document', 'nonsense'):
+            with self.subTest(tool=name), self.assertRaisesRegex(ServiceError, 'only during a Coconut chat') as refused:
+                self.tool(self.bot, name, {'key': 'weekly-report'})
+            self.assertEqual(refused.exception.status, 409)
+        self.assertEqual(self.service._all('decisions'), [])
+
+    def test_an_archived_bot_deletes_no_page(self):
+        self.save(self.bot)
+        self.write('PATCH', f'/v1/bots/{self.bot["id"]}', {'archived': True})
+        with self.assertRaisesRegex(ServiceError, 'archived or deleted'):
+            self.tool(self.bot, 'delete_document', {'key': 'weekly-report'})
+        self.assertEqual(len(self.service.documents()['documents']), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
