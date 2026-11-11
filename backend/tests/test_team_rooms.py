@@ -352,7 +352,8 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
         return service.mutate('POST', '/v1/bots', {'name': name}, str(uuid4()), 'phone')
 
     def share(self, service, room: dict, bot: dict) -> dict:
-        return service.team_request('POST', f'/v1/team/rooms/{room["room"]}/bots', {'bot_id': bot['id']})['room']
+        """Share a page of the bot with the room, so the bot is the author of a page there."""
+        return self.share_page(service, room['room'], bot)
 
     def rename(self, service, room: dict, **fields) -> dict:
         return service.team_request('PATCH', f'/v1/team/rooms/{room["room"]}', fields)['room']
@@ -526,12 +527,16 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
             ('this Mac changes its name', self.first, lambda: self.rename(self.first, room, member_name='Ada L.'), True),
             ('a member changes its name', self.second, self.second.team_sync_pass, True),
             ('the same name again', self.first, lambda: self.rename(self.first, room, member_name='Ada L.'), False),
-            ('this Mac adds a bot', self.first, lambda: self.share(self.first, room, bot), True),
-            ('the same bot again', self.first, lambda: self.share(self.first, room, bot), False),
+            ('this Mac shares the first page of a bot', self.first, lambda: self.share(self.first, room, bot), True),
+            ('the same page again', self.first, lambda: self.share(self.first, room, bot), False),
+            ('a second page of the bot', self.first, lambda: self.share_page(self.first, room['room'], bot,
+                                                                           'second-page'), False),
             ('the pass writes the bot', self.first, self.first.team_sync_pass, False),
             ('a bot enters the team', self.second, self.second.team_sync_pass, True),
-            ('this Mac takes the bot out', self.first, lambda: self.first.team_request(
-                'DELETE', f'/v1/team/rooms/{room["room"]}/bots/{bot["id"]}', {}), True),
+            ('this Mac stops one page', self.first, lambda: self.stop_page(self.first, room['room'], bot,
+                                                                          'second-page'), False),
+            ('this Mac stops the last page of the bot', self.first, lambda: self.stop_page(
+                self.first, room['room'], bot), True),
             ('the pass deletes the bot entry', self.first, self.first.team_sync_pass, False),
             ('a bot leaves the team', self.second, self.second.team_sync_pass, True),
             ('this Mac leaves', self.second, lambda: self.leave(self.second, room), True),

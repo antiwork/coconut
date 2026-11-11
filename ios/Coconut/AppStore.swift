@@ -67,6 +67,9 @@ final class AppStore {
     @ObservationIgnored private var latestTeamLoad: Task<Bool, Never>?
     /// The number of the latest write that the app started, by room. The answer of an earlier write is older.
     @ObservationIgnored private var teamWrites: [String: Int] = [:]
+    /// The number of the latest share or stop of each page. Only the answer of that act goes into the list.
+    @ObservationIgnored private var pageShareActs: [String: Int] = [:]
+    @ObservationIgnored private var pageShareCount = 0
     @ObservationIgnored private var teamWriteCount = 0
     /// The filter chip of the Chats list. It stays while the app runs. A new pairing, an unpair and a Mac without a
     /// team set it to "All" (`ChatFilter.effective`).
@@ -616,7 +619,7 @@ final class AppStore {
         bots = []; tasks = []; messages = []; decisions = []; artifacts = []; learning = []
         routines = []
         // The team bots name the team pages of the earlier Mac, so the Library of a later pairing would show them.
-        documents = nil; teamBots = []; latestDocumentLoad = nil
+        documents = nil; teamBots = []; latestDocumentLoad = nil; pageShareActs = [:]
         // The teams are the teams of the earlier Mac. A list request of that Mac that is still on its way gets no
         // place to go: its client is not the client of the store.
         team = nil; teamLoadError = nil; latestTeamLoad = nil; teamWrites = [:]
@@ -1679,19 +1682,30 @@ final class AppStore {
         return true
     }
 
-    /// Adds a bot of this Mac to the team, or takes it out.
-    func setTeamBot(_ botId: String, in room: TeamRoom, shared: Bool) async -> Bool {
-        let ticket = startTeamWrite(room.room)
-        // The service reads the path as it comes, so a bot ID keeps its unreserved characters, such as the dashes of a
+    /// Shares a page of this Mac with a team, or stops (backend/coconut/team_pages.py). Return whether the Mac did it.
+    ///
+    /// The person can tap again before the Mac answers, and the answers can come in another order. So each act on a page
+    /// has a number, and only the answer of the latest act goes into the list. The list then loads again, and the load
+    /// keeps only the newest list, which has each act that the Mac confirmed.
+    @discardableResult
+    func sharePage(_ document: BotDocument, with room: String, shared: Bool) async -> Bool {
+        pageShareCount += 1
+        let act = pageShareCount
+        pageShareActs[document.id] = act
+        // The service reads the path as it comes, so an ID keeps its unreserved characters, such as the dashes of a
         // UUID.
         let unreserved = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
-        let path = "team/rooms/\(room.room)/bots"
-            + (shared ? "" : "/" + (botId.addingPercentEncoding(withAllowedCharacters: unreserved) ?? botId))
-        let answer: TeamRoomAnswer? = shared
-            ? await write(path, payload: TeamBotRequest(botId: botId), as: TeamRoomAnswer.self, refreshInBackground: true)
-            : await write(path, method: "DELETE", payload: EmptyRequest(), as: TeamRoomAnswer.self, refreshInBackground: true)
+        func part(_ text: String) -> String { text.addingPercentEncoding(withAllowedCharacters: unreserved) ?? text }
+        let answer: PageShareAnswer? = await write("team/rooms/\(part(room))/pages/\(part(document.id))",
+                                                   method: shared ? "PUT" : "DELETE", payload: EmptyRequest(),
+                                                   as: PageShareAnswer.self, refreshInBackground: true)
         guard let answer else { return false }
-        applyTeamChange(room: answer.room, write: ticket)
+        documentChanges += 1
+        if pageShareActs[document.id] == act, let index = documents?.firstIndex(where: { $0.id == document.id }) {
+            documents?[index].teams = answer.document.teams
+            documents?[index].audience = answer.document.audience
+        }
+        await loadDocuments()
         return true
     }
 
@@ -2785,7 +2799,8 @@ private struct PinRequest: Encodable { let pinned: Bool }
 private struct TeamCreateRequest: Encodable { let name: String; let memberName: String }
 private struct TeamJoinBody: Encodable { let link: String; let memberName: String }
 private struct TeamProfileRequest: Encodable { let memberName: String }
-private struct TeamBotRequest: Encodable { let botId: String }
+/// The answer of a share or a stop of a page: the document with its teams.
+private struct PageShareAnswer: Decodable, Sendable { let document: BotDocument }
 /// A nil `mentions` is not in the JSON: a message without a mention sends none.
 private struct TeamSendRequest: Encodable { let text: String; let replyTo: String?; let mentions: [String]? }
 private struct TeamEditRequest: Encodable { let text: String }

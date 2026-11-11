@@ -9,7 +9,8 @@ import Foundation
 /// The invite link lets a Mac into a team, so `join` reads it from standard input. No output of the tool has it.
 ///
 /// A Mac that runs Coconut for a team only (backend/coconut/team_only.py) takes no bot from Hermes: `new-bot` declares
-/// one for the Hermes home that it stands for.
+/// one for the Hermes home that it stands for, and `add-bot` and `remove-bot` give it to a team or take it back. On a
+/// person's Mac the bots stay the person's: the person shares a page in the Library, so these commands print how.
 public enum TeamCommand: Equatable, Sendable {
     case show(json: Bool)
     case join(name: String?)
@@ -135,7 +136,12 @@ public struct TeamFailure: Error, Equatable {
     public static let noLink = TeamFailure(
         "Give the invite link on standard input: pipe it to coconut team join. Do not put the link in the command.")
     public static let fullMac = TeamFailure(
-        "This Mac takes its bots from its Hermes profiles, so it declares no bot. Use coconut team add-bot <bot>.")
+        "This Mac takes its bots from its Hermes profiles, so it declares no bot. To share a page with a team, open it "
+        + "in the Library of the Coconut app.")
+    /// The text of the service for the bot routes on a person's Mac (backend/coconut/team_pages.py, PERSONAL_BOTS).
+    public static let personalBots = TeamFailure(
+        "The bots of this Mac stay yours, so a team does not get them. To share a page with the team, open it in the "
+        + "Library of the Coconut app.")
 }
 
 public struct TeamResponse: Sendable {
@@ -381,8 +387,9 @@ public struct TeamTool: Sendable {
 
     func addBot(_ argument: String, team: String?) async throws -> TeamOutput {
         let answer = try decode(try await call("GET", "/v1/team/rooms"))
+        guard answer.teamOnly else { throw TeamFailure.personalBots }
         let room = try choose(team, in: answer.rooms)
-        let bot = try match(argument, in: answer.macBots, declare: answer.teamOnly)
+        let bot = try match(argument, in: answer.macBots, declare: true)
         if room.bots.contains(where: { $0.thisMac && $0.botId == bot.id }) {
             return TeamOutput(lines: ["The bot \(bot.name) is already in the team \(room.name)."])
         }
@@ -396,6 +403,7 @@ public struct TeamTool: Sendable {
 
     func removeBot(_ argument: String, team: String?) async throws -> TeamOutput {
         let answer = try decode(try await call("GET", "/v1/team/rooms"))
+        guard answer.teamOnly else { throw TeamFailure.personalBots }
         let room = try choose(team, in: answer.rooms)
         // A bot of this Mac in the team can be missing from the list of bots that a team can take, for a short time.
         var bots = answer.macBots
@@ -419,7 +427,7 @@ public struct TeamTool: Sendable {
     /// What a leave does, for each form of `coconut team leave` without `--confirm`.
     static let leaveEffects = [
         "This Mac deletes its copy of the team and its keys.",
-        "The team no longer sees the bots of this Mac and their pages.",
+        "The team no longer sees the pages of this Mac.",
         "To join again, this Mac needs a new invite link.",
     ]
     static let leaveNeedsName = "A leave cannot be undone. No person can confirm it here, so the command needs the name "

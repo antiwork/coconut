@@ -296,7 +296,7 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         self.assertEqual(self.view(self.second)['unread'], 1)
         # Grace answers and names Ada and her bot.
         bot = self.first.mutate('POST', '/v1/bots', {'name': 'Reporter'}, str(uuid4()), 'phone')
-        self.first.team_request('POST', self.path('bots'), {'bot_id': bot['id']})
+        self.share_page(self.first, self.room, bot)
         self.first.team_sync_pass()
         team_bot = self.view(self.second)['bots'][0]['id']
         ada = self.view(self.second)['members'][0]['member']

@@ -192,7 +192,7 @@ class TeamOnlyService(Documents, Team):
 
     # Routes
 
-    def _team_route(self, method: str, path: str, data: dict, repeat: str = '') -> dict:
+    def _team_route(self, method: str, path: str, data: dict, repeat: str = '', device: str = '') -> dict:
         parts = path.strip('/').split('/')[2:]
         if parts == ['status'] and method == 'GET':
             return self.team_status()
@@ -204,7 +204,7 @@ class TeamOnlyService(Documents, Team):
             return self.team_change_bot(parts[1], data)
         if len(parts) == 2 and parts[0] == 'bots' and method == 'DELETE':
             return self.team_remove_bot(parts[1])
-        return super()._team_route(method, path, data, repeat)
+        return super()._team_route(method, path, data, repeat, device)
 
     def team_rooms(self) -> dict:
         """As on a full Mac, with the mode, so `coconut team add-bot` can say how to declare a missing bot."""

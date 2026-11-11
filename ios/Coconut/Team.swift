@@ -55,8 +55,6 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     var showsInvite: Bool { status == .active && canInvite == true }
     var memberList: [TeamMember] { members ?? [] }
     var botList: [TeamRoomBot] { bots ?? [] }
-    /// The IDs of the bots of this Mac that are in the team.
-    var botsOfThisMac: Set<String> { Set(botList.compactMap { $0.thisMac == true ? $0.botId : nil }) }
 }
 
 struct TeamMember: Decodable, Identifiable, Equatable, Sendable {

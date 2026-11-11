@@ -33,8 +33,10 @@ MAX_TITLE = 120
 MAX_SUMMARY = 200
 KEPT_VERSIONS = 10
 LONGEST_LIFE = timedelta(days=366)
-# "team": the Mac also shares the document with each team that the bot is shared with (team_pages.py).
+# The audience of a page on a Mac that runs Coconut for a team only (team_only.py): "team" sends the page to each team
+# of its bot. On a person's Mac only the person shares a page, so a save there names no audience (team_pages.py).
 AUDIENCES = ('private', 'team')
+BOT_SHARE = 'Only the person can share a page with a team. Save the page without audience.'
 # What a save outside a Coconut chat turn tells the bot. No chat shows a card for the page, so the bot must say where
 # the person finds it (hermes_plugin/coconut/tools.py adds it to the result).
 OUTSIDE_SAVE_NOTE = ('Coconut keeps this page in the Library of the Coconut app. No chat shows a card for it. Tell the '
@@ -172,10 +174,7 @@ SAVE_SCHEMA = {'name': 'coconut_save_document', 'description': (
             'One short line about the current content, for example "412 signups today, up 9%".')},
         'expires_at': {'type': 'string', 'description': (
             'For a temporary document: the date (YYYY-MM-DD) or the time (ISO 8601) after which the Library no '
-            'longer shows it. Omit it for a document that stays. Send an empty text to remove an end date.')},
-        'audience': {'type': 'string', 'enum': list(AUDIENCES), 'description': (
-            'Who sees the document: "private" (the person only) or "team" (also each team that the person shared '
-            'this bot with). A new document is private. Omit it to keep the audience of an existing document.')}},
+            'longer shows it. Omit it for a document that stays. Send an empty text to remove an end date.')}},
         'required': ['key', 'title', 'format', 'content']}}
 READ_SCHEMA = {'name': 'coconut_read_document', 'description': (
     'Read a document of this bot from the Library of Coconut, with its content, to update it. Without a key, list '
@@ -336,7 +335,7 @@ class Documents:
             bot = self._get('bots', task['bot_id'])
             if bot['archived'] or bot.get('_deleted'):
                 raise ServiceError(409, 'The bot is archived or deleted.')
-            audience = self._page_audience(bot['id'], arguments, self._document_of_key(bot['id'], key),
+            audience = self._page_audience(arguments, self._document_of_key(bot['id'], key),
                                            (key, title, document_format, content, summary))
             document = self._write_document(task, bot, key, title, document_format, content, summary, expires=ends,
                                             audience=audience)
@@ -358,7 +357,7 @@ class Documents:
             if bot['archived'] or bot.get('_deleted'):
                 raise ServiceError(409, 'The bot is archived or deleted.')
             document = self._document_of_key(bot_id, key)
-            audience = self._page_audience(bot_id, arguments, document, (key, title, document_format, content, summary))
+            audience = self._page_audience(arguments, document, (key, title, document_format, content, summary))
             if (document is not None and not expired(document, self._now())
                     and self._page_is_like(document, title, document_format, content, summary, ends, audience)):
                 return {'status': 'unchanged', 'key': key, 'version': document['version'],
@@ -367,23 +366,30 @@ class Documents:
         return {'status': 'saved', 'key': key, 'version': document['version'],
                 'expires_at': document.get('expires_at')}
 
-    def _page_audience(self, bot_id: str, arguments: dict, document: dict | None, page: tuple) -> str:
-        """The audience of a save: the one of the arguments, else the one of the existing document, else private.
+    def _page_audience(self, arguments: dict, document: dict | None, page: tuple) -> str | None:
+        """The audience of a save on a Mac that runs Coconut for a team only: the one of the arguments, else the one
+        of the existing document, else private. On a person's Mac a save names no audience and keeps the shares of the
+        page, so the answer is None.
 
-        "team" needs a team: the person shares the bot with a team first. A team page must fit in one entry of the
-        log, so the save refuses a page that does not fit, and the bot can make it smaller.
+        A team page must fit in one entry of the log, so the save refuses a page that does not fit, and the bot can
+        make it smaller.
         """
         from .service_base import ServiceError
         from .team_pages import WIDEST, WIDEST_BOT, page_entry, payload_problem
         audience = arguments.get('audience')
-        if audience is None:
-            audience = (document or {}).get('audience', 'private')
-        elif audience not in AUDIENCES:
-            raise ServiceError(400, 'audience must be private or team.')
-        elif audience == 'team' and self.library_reader and not self.team_store.shared(bot_id):
-            raise ServiceError(409, 'This bot is shared with no team, so Coconut did not save the page for a team. '
-                                    'Save it with audience "private", or ask the person to share the bot with a team.')
-        if audience == 'team':
+        if self.library_reader:
+            # Only the person shares a page (team_pages.py). The bot learns that in the error, and saves again.
+            if audience is not None:
+                raise ServiceError(400, BOT_SHARE)
+            # The limit holds while an active room has the page (TeamStore.shared_pages).
+            team = document is not None and bool(self.team_store.page_teams(document['id']))
+        else:
+            if audience is None:
+                audience = (document or {}).get('audience', 'private')
+            elif audience not in AUDIENCES:
+                raise ServiceError(400, 'audience must be private or team.')
+            team = audience == 'team'
+        if team:
             key, title, document_format, content, summary = page
             # The bot, the version and the end date of the entry are not known yet, so the check takes the longest.
             problem = payload_problem(page_entry(
@@ -397,7 +403,7 @@ class Documents:
         """Whether the page of a key is already what the tooling would write. An omitted end date keeps the end date
         of the document, so only an end date that differs from the stored one is a change."""
         return ((ends is ... or ends == document.get('expires_at'))
-                and audience == document.get('audience', 'private')
+                and audience in (None, document.get('audience', 'private'))
                 and document['title'] == title and document['format'] == document_format
                 and (document.get('summary') or '') == (summary or '').strip()
                 and self._document_content(document) == content)
@@ -418,11 +424,21 @@ class Documents:
         from .service_base import ServiceError
         key = arguments.get('key')
         if not key:
-            return {'documents': [_summary(document) for document in self._bot_documents(bot_id)]}
+            return {'documents': [self._page_summary(document) for document in self._bot_documents(bot_id)]}
         document = self._document_of_key(bot_id, key) if isinstance(key, str) else None
         if document is None or expired(document, self._now()):
             raise ServiceError(404, 'This bot has no document with this key.')
-        return dict(_summary(document), content=self._document_content(document))
+        return dict(self._page_summary(document), content=self._document_content(document))
+
+    def _page_summary(self, document: dict) -> dict:
+        """What a bot reads about one of its documents. On a person's Mac the audience is "team" while the person
+        shares the page with a team."""
+        from .team_store import TeamStore
+        summary = _summary(document)
+        if self.library_reader:
+            # A read view has its own connection, so the store of that connection reads the shares.
+            summary['audience'] = 'team' if TeamStore(self.db).page_teams(document['id']) else 'private'
+        return summary
 
     def delete_bot_document(self, task_id: str, arguments: dict) -> dict:
         """coconut_delete_document of a bot turn."""
@@ -455,13 +471,17 @@ class Documents:
         The list also has the team pages of the other Macs of each team (team_pages.py). `team_bots` names their
         bots. A phone that does not know these bots hides their pages.
         """
-        from .team_pages import team_library
+        from .team_pages import page_audience, team_library
+        from .team_store import TeamStore
         current = self._now()
         with self._read_view() as view, view._read_transaction():
             bots = {bot['id'] for bot in view._all('bots') if not bot.get('_deleted')}
             rows = view._all('documents')
             team_pages, team_bots = team_library(view.db, current)
-        shown = [document for document in rows if document['bot_id'] in bots and not expired(document, current)]
+            teams = TeamStore(view.db).shared_pages()
+        # A local document has its teams, and `audience` for an app of today.
+        shown = [dict(document, **page_audience(teams.get(document['id'], []))) for document in rows
+                 if document['bot_id'] in bots and not expired(document, current)]
         shown += team_pages
         shown.sort(key=lambda document: (document.get('pinned') is True, document['updated_at'], document['id']),
                    reverse=True)
@@ -474,7 +494,7 @@ class Documents:
             if team_ids(document_id):
                 return team_page(view.db, document_id, view._now(), content=True)
             document = view._shown_document(document_id)
-            return dict(document, content=view._document_content(document))
+            return dict(view._team_shared_document(document), content=view._document_content(document))
 
     def delete_document(self, document_id: str) -> dict:
         """DELETE /v1/documents/<id> from the phone. A document that is already gone counts as deleted. Only the Mac
@@ -515,7 +535,7 @@ class Documents:
             if (document.get('pinned') is True) != pinned:
                 document['pinned'] = pinned
                 self._put('documents', document)
-        return document
+            return self._team_shared_document(document)
 
     def _write_document(self, task: dict, bot: dict, key: str, title: str, document_format: str, content: str,
                         summary: str | None, *, expires, audience: str | None = None) -> dict:
@@ -544,7 +564,8 @@ class Documents:
             document['expires_at'] = None
         # The sync of the team log writes the page entries. A save does not call the relay, because it holds the
         # transaction (team_pages.py).
-        if 'team' in (audience, document.get('audience')):
+        if 'team' in (audience, document.get('audience')) or (not created and self.team_store.rooms_of_page(
+                document['id'])):
             self.team_wake()
         # Only a team document has the field, so the rows of a private document stay as they were.
         if audience == 'private':
@@ -604,6 +625,8 @@ class Documents:
         if document.get('audience') == 'team':
             # The next pass of the team sync deletes the page entry.
             self.team_wake()
+        # The shares of the page go with it, and so does the author entry of a bot without another shared page.
+        self._team_forget_page(document)
         self.db.execute('DELETE FROM document_versions WHERE document_id=?', (document['id'],))
         self.db.execute('DELETE FROM documents WHERE id=?', (document['id'],))
         self._event('document.deleted', {'id': document['id']}, document['bot_id'], task_id)

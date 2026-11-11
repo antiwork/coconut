@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// The Team screen: make or join a team, and see its members and bots (backend/coconut/team.py). Settings and the title
-/// of the Team chat open it on an iPhone, and the Settings window opens it on a Mac. A team shares the pages of its
-/// bots. Its chat is in the Chats list, so the screen shows none.
+/// The Team screen: make or join a team, and see its members (backend/coconut/team.py). Settings and the title of the
+/// Team chat open it on an iPhone, and the Settings window opens it on a Mac. A team is people who share pages and talk
+/// in one chat. A person shares a page on the page itself, so the screen has no share action. The chat is in the Chats
+/// list, so the screen shows none.
 struct TeamView: View {
     @Environment(AppStore.self) private var store
 
@@ -127,7 +128,7 @@ private struct TeamEmptyView: View {
 
     var body: some View {
         Form {
-            TeamFormNotice(symbol: "person.2", text: "A team shares the pages of its bots with each person in it.")
+            TeamFormNotice(symbol: "person.2", text: "People in a team share pages and talk in one chat.")
             Section {
                 Button("Create a team") { creating = true }
                     .teamRowButton()
@@ -143,8 +144,8 @@ private struct TeamEmptyView: View {
     }
 }
 
-/// One team: its members, its bots, the invite, and Leave. A team that this Mac cannot use has one sentence and one
-/// action instead.
+/// One team: its members, the bots that a teammate can ask, the invite, and Leave. A team that this Mac cannot use has
+/// one sentence and one action instead.
 struct TeamRoomView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -156,7 +157,6 @@ struct TeamRoomView: View {
     @State private var busy = false
     @State private var inviting = false
     @State private var joining = false
-    @State private var removingBots: Set<String> = []
 
     private var room: TeamRoom? { store.team?.rooms.first { $0.room == roomId } }
 
@@ -199,16 +199,12 @@ struct TeamRoomView: View {
             Section("Members") {
                 ForEach(room.memberList) { member in memberRow(member, in: room) }
             }
-            Section {
-                ForEach(room.botList) { bot in botRow(bot, in: room) }
-                NavigationLink { TeamAddBotView(roomId: room.room) } label: {
-                    Text("Add one of your bots")
+            // The section shows only while the team has a bot that a teammate can ask.
+            let bots = TeamMentions.bots(of: room)
+            if !bots.isEmpty {
+                Section("Bots") {
+                    ForEach(bots) { botRow($0) }
                 }
-                .accessibilityIdentifier("team-add-bot")
-            } header: {
-                Text("Bots")
-            } footer: {
-                Text("The team sees the pages that these bots save for the team, and nothing of their chats.")
             }
             if room.showsInvite {
                 Section {
@@ -247,7 +243,7 @@ struct TeamRoomView: View {
                     Button("Leave team", role: .destructive) { run { await store.leaveTeam(room) } }
                         .accessibilityIdentifier("team-leave-confirm")
                 } message: {
-                    Text("This Mac leaves the team. The pages of the team leave your Library, and the team no longer sees the pages of your bots.")
+                    Text("This Mac leaves the team. The pages of the team leave your Library, and the team no longer sees the pages that you share.")
                 }
         }
     }
@@ -267,8 +263,8 @@ struct TeamRoomView: View {
         }
     }
 
-    @ViewBuilder private func botRow(_ bot: TeamRoomBot, in room: TeamRoom) -> some View {
-        let row = HStack(spacing: 12) {
+    private func botRow(_ bot: TeamRoomBot) -> some View {
+        HStack(spacing: 12) {
             BotAvatar(symbol: bot.avatar ?? "", color: bot.color ?? "", size: avatarSize, identity: bot.id,
                       animated: false)
             VStack(alignment: .leading, spacing: 2) {
@@ -278,30 +274,11 @@ struct TeamRoomView: View {
                 }
             }
             Spacer(minLength: 0)
-            if let id = bot.botId, removingBots.contains(id) { ProgressView() }
         }
         .accessibilityElement(children: .combine)
-        if bot.thisMac == true, let id = bot.botId {
-            // The person can add the bot again, so Remove asks no question.
-            let remove = Button("Remove from team", role: .destructive) { removeBot(id, from: room) }
-            row
-                .swipeActions { remove }
-                .contextMenu { remove }
-                .accessibilityAction(named: "Remove from team") { removeBot(id, from: room) }
-        } else {
-            row
-        }
     }
 
     @ScaledMetric(relativeTo: .body) private var avatarSize = 32.0
-
-    private func removeBot(_ id: String, from room: TeamRoom) {
-        removingBots.insert(id)
-        Task {
-            _ = await store.setTeamBot(id, in: room, shared: false)
-            removingBots.remove(id)
-        }
-    }
 
     /// One action at a time. The form stays disabled until the Mac answers.
     private func run(_ action: @escaping () async -> Bool) {
@@ -310,59 +287,6 @@ struct TeamRoomView: View {
         Task {
             _ = await action()
             busy = false
-        }
-    }
-}
-
-/// The bots of this Mac that are not in the team. A tap adds one.
-struct TeamAddBotView: View {
-    @Environment(AppStore.self) private var store
-    @Environment(\.dismiss) private var dismiss
-    let roomId: String
-    @State private var adding: String?
-    @ScaledMetric(relativeTo: .body) private var avatarSize = 32.0
-
-    var body: some View {
-        let room = store.team?.rooms.first { $0.room == roomId }
-        let inTeam = room?.botsOfThisMac ?? []
-        let bots = store.bots.filter { !$0.archived && !inTeam.contains($0.id) }
-        Form {
-            if bots.isEmpty {
-                Section {
-                    Text(store.bots.contains { !$0.archived } ? "All your bots are in the team." : "This Mac has no bots yet.")
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Section {
-                    ForEach(bots) { bot in
-                        Button { add(bot, to: room) } label: {
-                            HStack(spacing: 12) {
-                                BotAvatar(bot: bot, size: avatarSize, animated: false)
-                                Text(bot.name).foregroundStyle(.primary)
-                                Spacer(minLength: 0)
-                                if adding == bot.id { ProgressView() }
-                            }
-                        }
-                        .teamRowButton()
-                        .disabled(adding != nil)
-                        .accessibilityIdentifier("team-add-\(bot.id)")
-                    }
-                }
-            }
-        }
-        .teamForm()
-        .teamBanners()
-        .navigationTitle("Add one of your bots").inlineNavigationTitle()
-    }
-
-    private func add(_ bot: Bot, to room: TeamRoom?) {
-        guard let room else { return }
-        adding = bot.id
-        store.error = nil
-        Task {
-            // The team list shows the new bot, so the page goes back to it.
-            if await store.setTeamBot(bot.id, in: room, shared: true) { dismiss() }
-            adding = nil
         }
     }
 }
@@ -602,7 +526,7 @@ struct TeamSettingsRow: View {
     }
 
     private var summary: String {
-        guard let rooms = store.team?.rooms, !rooms.isEmpty else { return "Share bot pages with people" }
+        guard let rooms = store.team?.rooms, !rooms.isEmpty else { return "Share pages with people" }
         return rooms.map(\.name).joined(separator: ", ")
     }
 }
