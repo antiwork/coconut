@@ -199,6 +199,30 @@ class TeamMessageStoreTests(unittest.TestCase):
             self.write(number, self.message(f'Message {number}'))
         self.assertEqual(self.store.unread(ROOM, MEMBER), team_store.MAX_UNREAD)
 
+    def plan(self, query: str, values: tuple) -> str:
+        return ' '.join(row[-1] for row in self.db.execute('EXPLAIN QUERY PLAN ' + query, values))
+
+    def test_a_new_name_changes_the_chat_of_a_room_with_messages(self):
+        # A room without messages gets no event for a name.
+        self.write(1, self.member('Ada'))
+        self.write(2, self.bot(), ADMIN)
+        self.assertEqual(self.store.chatted, set())
+        # The message of a bot comes before its bot entry. It shows when the bot entry comes later.
+        self.write(3, self.message('Before its bot', bot=entry_id(4)))
+        self.store.chatted.clear()
+        self.write(4, self.bot(), ADMIN)
+        self.assertEqual((self.texts(), self.store.chatted), (['Before its bot'], {ROOM}))
+        # A rename changes the names of the messages. The same profile again changes nothing.
+        for fields, chatted in ((self.member('Ada L.', rev=2), {ROOM}), (self.member('Ada L.', rev=3), set()),
+                                (dict(self.bot('Reporter 2'), rev=2), {ROOM}), (dict(self.bot('Reporter 2'), rev=3), set())):
+            self.store.chatted.clear()
+            self.write(1 if fields['kind'] == 'member' else 4, fields, ADMIN)
+            self.assertEqual(self.store.chatted, chatted, fields)
+        # A second `member` entry of the member takes the place of the first one, and its name.
+        self.store.chatted.clear()
+        self.write(5, self.member('Ada L.'), ADMIN)
+        self.assertEqual(self.store.chatted, {ROOM})
+
     def test_a_page_and_the_unread_count_stay_fast_with_10000_messages(self):
         self.write(1, self.member('Grace'), MEMBER)
         self.db.execute('BEGIN')
@@ -219,14 +243,15 @@ class TeamMessageStoreTests(unittest.TestCase):
               ', '.join(f'{name} {value:.2f}' for name, value in timings.items()))
         self.assertEqual(self.store.unread(ROOM, MEMBER), team_store.MAX_UNREAD)
         self.assertEqual([row['first'] for row in self.store.messages(ROOM, 102, 101)], list(range(101, 1, -1)))
-        # The index gives the order, so no call sorts or scans the room.
-        for query, values in (('SELECT 1 FROM team_messages m WHERE m.room=? AND m.first<? ORDER BY m.first DESC '
-                               'LIMIT 101', (ROOM, 50)),
-                              ('SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>? AND m.member!=? LIMIT 99',
-                               (ROOM, 50, MEMBER))):
-            plan = ' '.join(row[-1] for row in self.db.execute('EXPLAIN QUERY PLAN ' + query, values))
-            self.assertIn('team_messages_order', plan)
+        # The index gives the order, so no call sorts or scans the room. A page with `before` starts its search
+        # at `before`. The plan is the one of the statements that TeamStore.messages runs.
+        for before, search in ((None, '(room=?)'), (50, '(room=? AND first<?)')):
+            plan = self.plan(*self.store._page(ROOM, before, 101))
+            self.assertIn(f'SEARCH m USING INDEX team_messages_order {search}', plan)
             self.assertNotIn('TEMP B-TREE', plan)
+        plan = self.plan('SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>? AND m.member!=? LIMIT 99',
+                         (ROOM, 50, MEMBER))
+        self.assertIn('team_messages_order', plan)
         for value in timings.values():
             self.assertLess(value, 50)
 
@@ -418,6 +443,17 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
             self.second.team_sync_pass()
             self.assertEqual(changed(self.second, cursor[self.second]), [self.room], method)
             cursor[self.second] = self.second._cursor()
+
+    def test_an_edit_before_the_sync_keeps_the_relay_time_of_the_send(self):
+        sent = self.send(self.first, 'Hello')
+        stored = self.relay.rooms[self.room]['entries'][sent['id']]
+        stored['at'] += 5000
+        relay_at = stored['at']
+        # The edit replaces the send on the relay before a pass reads the send back.
+        self.first.team_request('PATCH', self.path(f'messages/{sent["id"]}'), {'text': 'Hello again'})
+        self.first.team_sync_pass()
+        (row,) = self.page(self.first, sync=False)['messages']
+        self.assertEqual((row['text'], row['created_at']), ('Hello again', team_store.relay_time(relay_at)))
 
     def test_the_own_write_takes_the_time_of_the_relay(self):
         sent = self.send(self.first, 'Hello')

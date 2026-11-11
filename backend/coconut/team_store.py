@@ -485,8 +485,9 @@ class TeamStore:
                     avatar=excluded.avatar, color=excluded.color, agreement=excluded.agreement, entry=excluded.entry''',
                                 (room, member, fields['name'], fields['avatar'], fields['color'], fields['agreement'], entry))
                 # A member has one name: the one of the entry that the list shows.
-                self.db.execute("DELETE FROM team_names WHERE room=? AND member=? AND kind='member' AND entry!=?",
-                                (room, member, entry))
+                if self.db.execute("DELETE FROM team_names WHERE room=? AND member=? AND kind='member' AND entry!=?",
+                                   (room, member, entry)).rowcount:
+                    self._names_changed(room)
                 self._name(room, entry, member, 'member', fields['name'])
                 return
         self.db.execute('DELETE FROM team_members WHERE room=? AND member=?', (room, member))
@@ -505,10 +506,23 @@ class TeamStore:
         self._name(room, entry['id'], entry['member'], 'bot', profile['name'])
 
     def _name(self, room: str, entry: str, member: str, kind: str, name: str) -> None:
-        """Keep the name that the store shows for a member or a bot. No `delete` entry removes it (see team_names)."""
-        self.db.execute('''INSERT INTO team_names (room, entry, member, kind, name) VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (room, entry) DO UPDATE SET member=excluded.member, kind=excluded.kind, name=excluded.name''',
-                        (room, entry, member, kind, name))
+        """Keep the name that the store shows for a member or a bot. No `delete` entry removes it (see team_names).
+
+        The upsert changes a row only when a value is new, so its row count tells whether the row is new or changed.
+        A same name changes nothing and adds no event.
+        """
+        if self.db.execute('''INSERT INTO team_names (room, entry, member, kind, name) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (room, entry) DO UPDATE SET member=excluded.member, kind=excluded.kind, name=excluded.name
+            WHERE team_names.member!=excluded.member OR team_names.kind!=excluded.kind
+                OR team_names.name!=excluded.name''', (room, entry, member, kind, name)).rowcount:
+            self._names_changed(room)
+
+    def _names_changed(self, room: str) -> None:
+        """A new or changed name can change the chat: a message of a bot shows once its `bot` entry comes, and the
+        names of the messages, of the quotes and of `last_message` follow team_names. So the chat of a room with
+        messages gets an event."""
+        if self.db.execute('SELECT 1 FROM team_messages WHERE room=? LIMIT 1', (room,)).fetchone():
+            self.chatted.add(room)
 
     def _relay_time(self, room: str, existing: dict, at: int) -> None:
         """Take the time of the relay for a write that the store has with another time.
@@ -621,9 +635,16 @@ class TeamStore:
     # The Team chat
 
     def messages(self, room: str, before: int | None = None, limit: int = 50) -> list[dict]:
-        """The shown messages of a room before the `first` of `before`, newest first, at most `limit`. The index
-        team_messages_order gives the rows in order, so a page reads about `limit` rows in any room."""
-        return self._messages('(? IS NULL OR m.first<?) ORDER BY m.first DESC LIMIT ?', (room, before, before, limit))
+        """The shown messages of a room before the `first` of `before`, newest first, at most `limit`."""
+        return self._rows(MESSAGE_FIELDS, *self._page(room, before, limit))
+
+    def _page(self, room: str, before: int | None, limit: int) -> tuple[str, tuple]:
+        """The statement and the values of one page. A page with `before` has `m.first<?` as a plain term, so the
+        index team_messages_order starts its search at `before`, and a page reads about `limit` rows in any room. A
+        term such as `(? IS NULL OR m.first<?)` would make SQLite walk the index from the newest row."""
+        if before is None:
+            return self._message_sql('1 ORDER BY m.first DESC LIMIT ?'), (room, limit)
+        return self._message_sql('m.first<? ORDER BY m.first DESC LIMIT ?'), (room, before, limit)
 
     def message(self, room: str, entry: str) -> dict | None:
         """One shown message, or None."""
@@ -637,12 +658,16 @@ class TeamStore:
         return {row['entry']: row for row in rows}
 
     def _messages(self, where: str, values: tuple) -> list[dict]:
+        return self._rows(MESSAGE_FIELDS, self._message_sql(where), values)
+
+    @staticmethod
+    def _message_sql(where: str) -> str:
         # The name of a member or a bot is the last one that the store showed, also after a `delete` (team_names).
-        return self._rows(MESSAGE_FIELDS, f'''SELECT m.entry, m.first, m.member, n.name, m.bot, k.name, m.text,
+        return f'''SELECT m.entry, m.first, m.member, n.name, m.bot, k.name, m.text,
             m.reply_to, m.mentions, m.created_at, m.updated_at, m.edited FROM team_messages m
             LEFT JOIN team_names n ON n.room=m.room AND n.member=m.member AND n.kind='member'
             LEFT JOIN team_names k ON k.room=m.room AND k.entry=m.bot AND k.kind='bot'
-            WHERE m.room=? AND {SHOWN_MESSAGE} AND {where}''', values)
+            WHERE m.room=? AND {SHOWN_MESSAGE} AND {where}'''
 
     def names(self, room: str, entries) -> dict[str, tuple[str, str]]:
         """The kind and the member of each entry ID that is a member or a bot of the room in team_names."""

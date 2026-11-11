@@ -103,11 +103,19 @@ class TeamMessages:
         return self._team_message_answer(room_id, entry)
 
     def team_edit(self, room_id: str, entry: str, data: dict) -> dict:
-        """Change the text of a message of this Mac's person. The other fields of the message stay."""
+        """Change the text of a message of this Mac's person. The other fields of the message stay.
+
+        The edit replaces the write of the message on the relay. The store can have that write with the clock of this
+        Mac, when the sync did not read it back yet (TeamStore._relay_time). So the Mac first reads the room to its
+        end, and the store gets the time of the relay for `created_at` before the relay drops that write. An edit
+        costs one more read of the relay. The read holds the lock of the room and no lock of the service.
+        """
         from .team import team_errors
         text = message_text(data.get('text'))
         self._team_room(room_id)
         with team_errors(), self._team_room_lock(room_id):
+            while self._team_read(room_id):
+                pass
             room, existing = self._team_own_message(room_id, entry)
             fields = {name: value for name, value in json.loads(existing['payload']).items()
                       if name not in ('rev', 'at')}
