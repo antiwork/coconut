@@ -251,7 +251,10 @@ class TeamMessages:
         last = None
         if newest:
             row = newest[0]
-            last = {'first': row['first'], 'member_name': row['member_name'], 'bot_name': row['bot_name'],
+            # The writer, as a message of a page has it, so the list can say "You" without a compare of names.
+            last = {'first': row['first'], 'member': row['member'], 'member_name': row['member_name'],
+                    'this_mac': row['member'] == room['member'],
+                    'bot': team_id(room['room'], row['bot']) if row['bot'] else None, 'bot_name': row['bot_name'],
                     'text': row['text'][:PREVIEW],
                     'created_at': row['created_at']}
         return {'unread': self.team_store.unread(room['room'], room['member']), 'last_message': last}

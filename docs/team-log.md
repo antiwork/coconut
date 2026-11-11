@@ -337,7 +337,7 @@ A room in an answer has what the Team screen shows, so the app needs no other re
 | `members` | In the order of their first `member` entry: `member` (the member ID), `name`, `avatar`, `color`, `admin` and `this_mac`. |
 | `bots` | Each bot of the team, while the room is `active` and the member of the bot is in `members`: `id`, `name`, `avatar`, `color`, `member` (the ID of the Mac that runs the bot), `member_name` and `this_mac`. A bot of this Mac also has `bot_id`, its ID on this Mac, and its profile comes from that bot. An archived or deleted bot of this Mac is not in the list. The bots follow the order of the members, then their names. |
 | `sync` | `synced_at`, and `error`: one sentence for a person, or null. Also `seq`, `entries`, `waiting` and `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)). |
-| `unread`, `last_message` | The unread count of the Team chat, from 0 to 99, and the newest message that the chat shows: `first`, `member_name`, `bot_name`, `text` (its first 200 characters) and `created_at`, or null. See [Team chat](#team-chat). |
+| `unread`, `last_message` | The unread count of the Team chat, from 0 to 99, and the newest message that the chat shows: `first`, `member`, `member_name`, `this_mac`, `bot`, `bot_name`, `text` (its first 200 characters) and `created_at`, or null. `member`, `this_mac` and `bot` have the values of a message in a page, so the Chats list of the app can show "You" for a message of this Mac's person: `this_mac` is true and `bot` is null. An older service sends none of the three. See [Team chat](#team-chat). |
 | `relay`, `member`, `admin`, `epoch` | For the tools. |
 
 The `id` of a bot is `t-<room ID>-<entry ID>`, as in `team_bots` of `GET /v1/documents`.

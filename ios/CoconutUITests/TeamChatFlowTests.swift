@@ -152,6 +152,28 @@ final class TeamChatFlowTests: XCTestCase {
         XCTAssertTrue(app.buttons["team-leave"].waitForExistence(timeout: 10))
     }
 
+    /// Example Team in dark mode. A test run sets the simulator to light, so the app gets the style as an argument.
+    @MainActor
+    func testTheTeamChatInDarkMode() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard env["COCONUT_TEAM_DARK"] != nil, let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"],
+              let example = env["COCONUT_TEAM_EXAMPLE"] else {
+            throw XCTSkip("Run with the test world of the Team chat and COCONUT_TEAM_DARK.")
+        }
+        shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
+        app = XCUIApplication()
+        app.launchArguments += ["-AppleInterfaceStyle", "Dark", "-UIUserInterfaceStyle", "Dark"]
+        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
+        let row = app.buttons["team-chat-\(example)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        row.tap()
+        XCTAssertTrue(text("Planned the week").waitForExistence(timeout: 15))
+        shot("07-iphone-team-chat-dark")
+    }
+
     // MARK: Steps
 
     private func element(_ identifier: String) -> XCUIElement {
@@ -191,7 +213,9 @@ final class TeamChatFlowTests: XCTestCase {
     private func shot(_ name: String) {
         guard let shots else { return }
         sleep(1)
-        try? app.screenshot().pngRepresentation.write(to: shots.appendingPathComponent(name + ".png"))
+        // COCONUT_TEAM_SHOT_SUFFIX keeps the screenshots of an earlier run.
+        let suffix = ProcessInfo.processInfo.environment["COCONUT_TEAM_SHOT_SUFFIX"] ?? ""
+        try? app.screenshot().pngRepresentation.write(to: shots.appendingPathComponent(name + suffix + ".png"))
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name
         attachment.lifetime = .keepAlways

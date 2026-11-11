@@ -26,6 +26,8 @@ struct HeldBubbleView<Header: View, Preview: View>: View {
     let actions: [HeldAction]
     /// Nil keeps Share off.
     let share: HeldShare?
+    /// The actions after Share. A destructive action is the last row.
+    var afterShare: [HeldAction] = []
     /// The row above the message. It gets a function that closes the view and then runs an action.
     @ViewBuilder let header: (_ close: @escaping (@escaping () -> Void) -> Void) -> Header
     /// The message, at most the given height.
@@ -44,16 +46,7 @@ struct HeldBubbleView<Header: View, Preview: View>: View {
                     // The message keeps its own height. Without this, the stack would stretch it to fill the screen.
                     preview(previewHeight).fixedSize(horizontal: false, vertical: true)
                     VStack(alignment: .leading, spacing: 0) {
-                        ForEach(actions) { action in
-                            Button { if let perform = action.perform { close(then: perform) } } label: {
-                                row(action.title, systemImage: action.systemImage)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(action.perform == nil)
-                            .foregroundStyle(action.perform == nil ? AnyShapeStyle(.secondary)
-                                             : action.destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
-                            .accessibilityIdentifier("held-\(action.title.lowercased().replacingOccurrences(of: " ", with: "-"))")
-                        }
+                        ForEach(actions, content: actionRow)
                         Group {
                             switch share {
                             case nil: row("Share", systemImage: "square.and.arrow.up").foregroundStyle(.secondary)
@@ -66,6 +59,7 @@ struct HeldBubbleView<Header: View, Preview: View>: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        ForEach(afterShare, content: actionRow)
                     }
                     .padding(.vertical, 6)
                     .frame(width: 220, alignment: .leading)
@@ -85,6 +79,17 @@ struct HeldBubbleView<Header: View, Preview: View>: View {
         .presentationBackground(.clear)
         .onAppear { withAnimation(.spring(duration: 0.3)) { shown = true } }
         .accessibilityAction(.escape) { close() }
+    }
+
+    private func actionRow(_ action: HeldAction) -> some View {
+        Button { if let perform = action.perform { close(then: perform) } } label: {
+            row(action.title, systemImage: action.systemImage)
+        }
+        .buttonStyle(.plain)
+        .disabled(action.perform == nil)
+        .foregroundStyle(action.perform == nil ? AnyShapeStyle(.secondary)
+                         : action.destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+        .accessibilityIdentifier("held-\(action.title.lowercased().replacingOccurrences(of: " ", with: "-"))")
     }
 
     private func row(_ title: String, systemImage: String) -> some View {

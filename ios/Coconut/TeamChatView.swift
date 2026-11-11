@@ -173,7 +173,8 @@ struct TeamChatView: View {
                 .accessibilityIdentifier("team-delete-confirm")
         }
         #if os(iOS)
-        .teamBanners()
+        // An error takes its own space above the chat, so no message sits under it.
+        .teamBanners(above: true)
         .toolbar {
             if #available(iOS 26.0, *) {
                 ToolbarSpacer(.fixed, placement: .leadingBar)
@@ -234,10 +235,16 @@ struct TeamChatView: View {
             }
             .frame(maxWidth: .infinity).padding(.vertical, 45)
         } else if empty && chat.before == nil {
-            Text("Messages here go to each person in \(room.name).")
-                .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity).padding(.vertical, 45)
-                .accessibilityIdentifier("team-chat-empty")
+            // The structure of the empty bot chat (ConversationView.conversationHeader): face, title, one line.
+            VStack(spacing: 10) {
+                TeamFace(size: 68)
+                Text(room.name).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
+                Text("Messages here go to each person in \(room.name).")
+                    .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 45)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("team-chat-empty")
         }
     }
 
@@ -469,7 +476,7 @@ struct TeamMessageRow: View {
             withTransaction(transaction) { held = true }
         })
         .fullScreenCover(isPresented: $held) {
-            HeldBubbleView(trailing: own, actions: menuActions, share: .text(row.text)) { _ in
+            HeldBubbleView(trailing: own, actions: menuActions, share: .text(row.text), afterShare: changeActions) { _ in
                 EmptyView()
             } preview: { maxHeight in
                 HeldTextPreview(text: text, own: own, maxHeight: maxHeight)
@@ -491,17 +498,21 @@ struct TeamMessageRow: View {
     }
 
     #if os(iOS)
+    /// Reply and Copy, in the order of the bot chat. Share follows them.
     private var menuActions: [HeldAction] {
         var items: [HeldAction] = []
         if let message, canWrite {
             items.append(HeldAction(title: "Reply", systemImage: "arrowshape.turn.up.left") { actions.reply(message) })
         }
         items.append(HeldAction(title: "Copy", systemImage: "doc.on.doc") { Pasteboard.copy(row.text) })
-        if let message, canChange {
-            items.append(HeldAction(title: "Edit", systemImage: "pencil") { actions.edit(message) })
-            items.append(HeldAction(title: "Delete", systemImage: "trash", destructive: true) { actions.delete(message) })
-        }
         return items
+    }
+
+    /// Edit and Delete of an own message, after Share. The destructive action is the last row.
+    private var changeActions: [HeldAction] {
+        guard let message, canChange else { return [] }
+        return [HeldAction(title: "Edit", systemImage: "pencil") { actions.edit(message) },
+                HeldAction(title: "Delete", systemImage: "trash", destructive: true) { actions.delete(message) }]
     }
     #endif
 
@@ -612,7 +623,7 @@ struct TeamContactRow: View {
 
     var body: some View {
         let unread = room.unread ?? 0
-        let preview = room.hasChat ? TeamChatPreview.text(room.lastMessage, ownName: room.ownMember?.name) : nil
+        let preview = room.hasChat ? TeamChatPreview.text(room.lastMessage) : nil
         let date = room.lastMessage?.createdAt?.apiDate
         HStack(spacing: 14) {
             TeamFace(size: avatarSize)

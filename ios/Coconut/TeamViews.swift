@@ -611,21 +611,34 @@ struct TeamSettingsRow: View {
 /// with the text of the Mac.
 private struct TeamBanners: ViewModifier {
     @Environment(AppStore.self) private var store
+    /// True: the banners stand above the page, which then starts below them. A chat scrolls its rows under a top
+    /// inset, so there an inset would cover a message.
+    let above: Bool
     @State private var pairing = false
 
     func body(content: Content) -> some View {
-        content
-            .safeAreaInset(edge: .top, spacing: 0) {
-                let notice = store.isDemo ? nil : store.connection.notice
-                if notice != nil || store.error != nil {
-                    VStack(spacing: 8) {
-                        if let notice { ConnectionBanner(notice: notice) { pairing = true } }
-                        if let error = store.error { ErrorBanner(message: error) { store.error = nil } }
-                    }
-                    .padding(.horizontal, 16).padding(.vertical, 8)
+        Group {
+            if above {
+                VStack(spacing: 0) {
+                    banners
+                    content
                 }
+            } else {
+                content.safeAreaInset(edge: .top, spacing: 0) { banners }
             }
-            .fullScreen(isPresented: $pairing) { OnboardingView() }
+        }
+        .fullScreen(isPresented: $pairing) { OnboardingView() }
+    }
+
+    @ViewBuilder private var banners: some View {
+        let notice = store.isDemo ? nil : store.connection.notice
+        if notice != nil || store.error != nil {
+            VStack(spacing: 8) {
+                if let notice { ConnectionBanner(notice: notice) { pairing = true } }
+                if let error = store.error { ErrorBanner(message: error) { store.error = nil } }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+        }
     }
 }
 
@@ -645,7 +658,7 @@ private struct PushedTeamPage: ViewModifier {
 
 extension View {
     /// The banners of the connection and of a failed action, for a page of a team: the Team screen and the chat.
-    func teamBanners() -> some View { modifier(TeamBanners()) }
+    func teamBanners(above: Bool = false) -> some View { modifier(TeamBanners(above: above)) }
 
     /// A button that is a row of a form. A Mac draws a bezel around a button in a form, and its rows have none.
     /// A Mac draws a borderless button in the tint of the app, so a destructive one names its red itself.

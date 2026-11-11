@@ -329,10 +329,14 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         view = self.view(self.second)
         self.assertEqual(view['unread'], 1)
         created = self.page(self.second, sync=False)['messages'][0]['created_at']
-        self.assertEqual(view['last_message'], {'first': sent['first'], 'member_name': 'Ada', 'bot_name': None,
+        self.assertEqual(view['last_message'], {'first': sent['first'], 'member': sent['member'], 'member_name': 'Ada',
+                                                'this_mac': False, 'bot': None, 'bot_name': None,
                                                 'text': 'x' * 200,
                                                 'created_at': created})
+        self.assertTrue(self.view(self.first)['last_message']['this_mac'], 'The writer sees its own message.')
         self.send(self.second, 'Mine')
+        self.assertEqual({name: self.view(self.second)['last_message'][name] for name in ('member_name', 'this_mac')},
+                         {'member_name': 'Grace', 'this_mac': True})
         self.assertEqual(self.view(self.second)['unread'], 1)
         answer = self.second.team_request('POST', self.path('read'), {'first': sent['first']})
         self.assertEqual(answer, {'room': self.room, 'read': sent['first'], 'unread': 0})
@@ -486,6 +490,11 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         bot, by_bot, to_bot, to_nothing = (f'{number:032x}' for number in range(1, 5))
         self.raw(self.second, bot, {'kind': 'bot', 'rev': 1, 'name': 'Reporter', 'avatar': '', 'color': ''})
         self.raw(self.second, by_bot, {'kind': 'message', 'rev': 1, 'text': 'Done.', 'bot': bot})
+        # The newest message of the list names its bot and the member of the bot.
+        last = self.view(self.first)['last_message']
+        self.assertEqual({name: last[name] for name in ('member', 'this_mac', 'bot', 'bot_name')},
+                         {'member': answer['member'], 'this_mac': False, 'bot': f't-{self.room}-{bot}',
+                          'bot_name': 'Reporter'})
         self.raw(self.second, to_bot, {'kind': 'message', 'rev': 1, 'text': 'Thanks', 'reply_to': by_bot})
         self.raw(self.second, to_nothing, {'kind': 'message', 'rev': 1, 'text': 'Hm', 'reply_to': 'c' * 32})
         views = {message['id']: message for message in self.page(self.first)['messages']}

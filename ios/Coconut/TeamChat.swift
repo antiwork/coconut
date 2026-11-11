@@ -7,7 +7,11 @@ import Foundation
 /// The newest message of a team, for its row in the Chats list. `text` is the start of the message.
 struct TeamLastMessage: Decodable, Equatable, Sendable {
     var first: Int? = nil
+    var member: String? = nil
     var memberName: String? = nil
+    /// True for a message of this Mac, also of a bot of this Mac. An older service sends none.
+    var thisMac: Bool? = nil
+    var bot: String? = nil
     var botName: String? = nil
     var text: String? = nil
     var createdAt: String? = nil
@@ -253,14 +257,13 @@ enum TeamChatPreview {
     static let empty = "No messages yet"
 
     /// "Ada: text" for a message of another member, "You: text" for a message of this person, and the name of the bot
-    /// for a message of a bot. The newest message of the list has no member ID, so the name of this Mac's member
-    /// tells the person's own message.
-    static func text(_ last: TeamLastMessage?, ownName: String?) -> String {
+    /// for a message of a bot. An older service does not say whose message it is, so its row never says "You".
+    static func text(_ last: TeamLastMessage?) -> String {
         guard let last, let text = last.text else { return empty }
         let body = TranscriptPresentation.previewText(text)
-        if let bot = last.botName { return bot + ": " + body }
-        guard let name = last.memberName else { return TeamNames.formerMember + ": " + body }
-        return (name == ownName ? "You" : name) + ": " + body
+        if last.bot != nil || last.botName != nil { return (last.botName ?? "Bot") + ": " + body }
+        if last.thisMac == true { return "You: " + body }
+        return (last.memberName ?? TeamNames.formerMember) + ": " + body
     }
 }
 

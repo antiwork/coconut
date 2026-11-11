@@ -199,14 +199,18 @@ final class TeamChatTests: XCTestCase {
     // MARK: The row of the Chats list
 
     func testThePreviewOfTheRowOfATeam() {
-        XCTAssertEqual(TeamChatPreview.text(nil, ownName: "Ada"), "No messages yet")
-        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(memberName: "Grace", text: "**Lunch** at [noon](https://x.example)"),
-                                            ownName: "Ada"), "Grace: Lunch at noon")
-        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(memberName: "Ada", text: "On my way"), ownName: "Ada"),
+        XCTAssertEqual(TeamChatPreview.text(nil), "No messages yet")
+        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(memberName: "Grace", thisMac: false,
+                                                            text: "**Lunch** at [noon](https://x.example)")),
+                       "Grace: Lunch at noon")
+        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(memberName: "Ada", thisMac: true, text: "On my way")),
                        "You: On my way")
-        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(memberName: "Ada", botName: "Reporter", text: "Done"),
-                                            ownName: "Ada"), "Reporter: Done")
-        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(text: "Old"), ownName: "Ada"), "Former member: Old")
+        // A bot of this Mac writes as itself.
+        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(memberName: "Ada", thisMac: true, bot: "t-r1-b1",
+                                                            botName: "Reporter", text: "Done")), "Reporter: Done")
+        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(thisMac: false, text: "Old")), "Former member: Old")
+        // An older service does not say whose message it is: the name, never "You".
+        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(memberName: "Ada", text: "On my way")), "Ada: On my way")
     }
 
     func testTheChatsListPutsTeamsAndBotsInOneOrderOfActivity() {
