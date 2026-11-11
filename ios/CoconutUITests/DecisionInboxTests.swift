@@ -75,8 +75,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch.waitForExistence(timeout: 15))
         app.tabBars.buttons["Inbox"].tap()
         let first = app.staticTexts["Publish the release notes?"]
@@ -401,8 +401,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
         XCTAssertTrue(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch.waitForExistence(timeout: 15))
         let bar = app.tabBars.firstMatch
         XCTAssertTrue(bar.exists)
@@ -412,12 +412,12 @@ final class DecisionInboxTests: XCTestCase {
         app.scrollViews.firstMatch.swipeUp()
         let collapsed = XCTAttachment(screenshot: app.screenshot())
         collapsed.name = "Native tabs collapsed"; collapsed.lifetime = .keepAlways; add(collapsed)
-        XCTAssertEqual(app.tabBars.buttons["Bots"].value as? String, "Collapsed")
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertEqual(app.tabBars.buttons["Chats"].value as? String, "Collapsed")
+        app.tabBars.buttons["Chats"].tap()
         XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 5))
         app.tabBars.buttons["Inbox"].tap()
         XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 5))
-        app.tabBars.buttons["Bots"].tap()
+        app.tabBars.buttons["Chats"].tap()
         let bot = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch
         bot.tap()
         XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))
@@ -445,7 +445,7 @@ final class DecisionInboxTests: XCTestCase {
         XCTAssertTrue(app.buttons["inbox-context-" + id].waitForNonExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["What did you verify?"].exists)
         XCTAssertFalse(app.buttons["decision-earlier-replies"].exists)
-        app.tabBars.buttons["Bots"].tap()
+        app.tabBars.buttons["Chats"].tap()
         app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Forge")).firstMatch.tap()
         XCTAssertTrue(app.staticTexts["What did you verify?"].waitForExistence(timeout: 5))
         let quote = app.descendants(matching: .any)["decision-reply-quote-" + id]
@@ -499,8 +499,8 @@ final class DecisionInboxTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
         let forge = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Forge")).firstMatch
         XCTAssertTrue(forge.waitForExistence(timeout: 10))
         forge.tap()
@@ -612,7 +612,7 @@ final class DecisionInboxTests: XCTestCase {
         app.scrollViews["inbox-card-scroll"].swipeLeft()
         XCTAssertTrue(app.buttons["inbox-review-later"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["undo-inbox-dismiss"].waitForExistence(timeout: 5))
-        app.tabBars.buttons["Bots"].tap()
+        app.tabBars.buttons["Chats"].tap()
         app.tabBars.buttons["Inbox"].tap()
         XCTAssertFalse(app.buttons["undo-inbox-dismiss"].exists)
         app.buttons["inbox-review-later"].tap()

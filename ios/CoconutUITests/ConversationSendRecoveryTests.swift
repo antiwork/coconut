@@ -8,8 +8,8 @@ final class ConversationSendRecoveryTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
         let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(bot.waitForExistence(timeout: 15))
         bot.tap()

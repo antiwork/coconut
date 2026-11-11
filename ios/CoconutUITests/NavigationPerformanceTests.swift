@@ -10,8 +10,8 @@ final class NavigationPerformanceTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "navigation-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
         let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(bot.waitForExistence(timeout: 15))
         for attempt in 1...2 {
@@ -30,7 +30,7 @@ final class NavigationPerformanceTests: XCTestCase {
             XCTAssertTrue(app.staticTexts["Review the old report?"].waitForExistence(timeout: 3))
             print("COCONUT_TABS_\(attempt)=\(tabsStart.duration(to: .now))")
             if attempt == 1 {
-                app.tabBars.buttons["Bots"].tap()
+                app.tabBars.buttons["Chats"].tap()
             }
         }
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "inbox-context-")).firstMatch.tap()

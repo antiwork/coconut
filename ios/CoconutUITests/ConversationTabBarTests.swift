@@ -23,7 +23,7 @@ final class ConversationTabBarTests: XCTestCase {
         transcript.swipeDown()
         transcript.swipeUp()
         XCTAssertTrue(app.tabBars.buttons["Inbox"].isHittable)
-        XCTAssertTrue(app.tabBars.buttons["Bots"].isHittable)
+        XCTAssertTrue(app.tabBars.buttons["Chats"].isHittable)
         app.buttons["bot-settings"].tap()
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.buttons["bot-settings"].waitForExistence(timeout: 5))

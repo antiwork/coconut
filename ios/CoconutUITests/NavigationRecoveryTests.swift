@@ -7,8 +7,8 @@ final class NavigationRecoveryTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
         let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(bot.waitForExistence(timeout: 10))
         for attempt in 0..<3 {
@@ -37,7 +37,7 @@ final class NavigationRecoveryTests: XCTestCase {
             XCTAssertTrue(bot.waitForExistence(timeout: 3))
             XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 3) && app.buttons["app-settings"].isHittable)
             app.tabBars.buttons["Inbox"].tap()
-            app.tabBars.buttons["Bots"].tap()
+            app.tabBars.buttons["Chats"].tap()
             XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 3))
             if attempt == 2 {
                 let proof = XCTAttachment(screenshot: app.screenshot())

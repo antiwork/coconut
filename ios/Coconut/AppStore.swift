@@ -68,6 +68,17 @@ final class AppStore {
     /// The number of the latest write that the app started, by room. The answer of an earlier write is older.
     @ObservationIgnored private var teamWrites: [String: Int] = [:]
     @ObservationIgnored private var teamWriteCount = 0
+    /// The chats of the teams that the person opened, by room ID. The updates keep them fresh.
+    var teamChats: [String: TeamChat] = [:]
+    /// The number of the latest request of the newest page, by room. Only its answer goes into the chat.
+    @ObservationIgnored private var teamChatRequests: [String: Int] = [:]
+    @ObservationIgnored private var teamChatRequestCount = 0
+    /// Counts the messages, edits and removals that the Mac confirmed, by room. A page that the app asked for before
+    /// such a change can be older than the change.
+    @ObservationIgnored private var teamChatChanges: [String: Int] = [:]
+    /// The read position that the Mac confirmed, and the one on its way, by room.
+    @ObservationIgnored private var teamReadPosted: [String: Int] = [:]
+    @ObservationIgnored private var teamReadPosting: [String: Int] = [:]
     /// A Library page that a chat quotes in its composer when it opens: "Ask the bot about this page". By bot ID.
     var pageQuotes: [String: MessageReference] = [:]
     var connection: ConnectionState = .unconfigured {
@@ -592,6 +603,7 @@ final class AppStore {
         // The teams are the teams of the earlier Mac. A list request of that Mac that is still on its way gets no
         // place to go: its client is not the client of the store.
         team = nil; teamLoadError = nil; latestTeamLoad = nil; teamWrites = [:]
+        teamChats = [:]; teamChatRequests = [:]; teamChatChanges = [:]; teamReadPosted = [:]; teamReadPosting = [:]
         approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
@@ -1545,8 +1557,9 @@ final class AppStore {
         if request != teamRequests { return await latestTeamLoad?.value ?? false }
         // The Mac confirmed a change during this request, so this list can be older. Ask again.
         guard changes == teamChanges else { return await loadTeam() }
-        team = response
-        teamLoadError = nil
+        // Each change of a chat loads the list. A list that changes nothing does not draw the Chats list again.
+        assign(\.team, response)
+        assign(\.teamLoadError, nil)
         return true
     }
 
@@ -1560,8 +1573,18 @@ final class AppStore {
     /// A Team screen that loaded before loads again when a team changed. A reset of the updates skips the events
     /// between the cursors, also the team changes. A screen that never loaded loads when it opens.
     private func reloadChangedTeam(_ page: StateUpdates) {
-        guard page.teamChanged == true || page.reset != nil, teamAsked else { return }
+        let chats = page.teamMessagesChanged ?? []
+        reloadTeamChats(page.reset != nil ? nil : chats)
+        // The row of a team shows its newest message and its unread count, so a change of the chat loads the list too.
+        guard page.teamChanged == true || page.reset != nil || !chats.isEmpty, teamAsked else { return }
         Task { await loadTeam() }
+    }
+
+    /// Reads the newest page again of each named chat that the app has, or of each chat for nil.
+    private func reloadTeamChats(_ rooms: [String]?) {
+        for room in rooms ?? Array(teamChats.keys) where teamChats[room] != nil {
+            Task { await loadTeamChat(room) }
+        }
     }
 
     /// The Team screen asked for the list: it has one, or its first request runs. A change during that first request
@@ -1663,7 +1686,188 @@ final class AppStore {
                                                    as: TeamLeaveAnswer.self, refreshInBackground: true)
         guard answer != nil else { return false }
         applyTeamChange(room: nil, removing: room.room)
+        // The Mac deleted its copy, so the chat has no history to show.
+        teamChats[room.room] = nil
         return true
+    }
+
+    // MARK: Team chat
+
+    /// Reads the newest page of the chat of a team and merges it by message ID. True when the page is fresh from the
+    /// Mac. Only the answer of the latest request goes into the chat, and a page of an earlier pairing goes nowhere.
+    @discardableResult
+    func loadTeamChat(_ room: String) async -> Bool {
+        if isDemo {
+            if teamChats[room] == nil { teamChats[room] = TeamChat(loaded: true) }
+            return true
+        }
+        guard let client else { return false }
+        for _ in 0..<3 {
+            teamChatRequestCount += 1
+            let request = teamChatRequestCount
+            teamChatRequests[room] = request
+            let changes = teamChatChanges[room, default: 0]
+            let page: TeamMessagePage
+            do { page = try await client.request("team/rooms/\(room)/messages?limit=\(Self.teamPage)") } catch {
+                guard self.client === client, teamChatRequests[room] == request else { return false }
+                if !(error is CancellationError) { teamChats[room, default: TeamChat()].error = Self.teamMessage(error) }
+                return false
+            }
+            guard self.client === client, teamChatRequests[room] == request else { return false }
+            // The Mac confirmed a message, an edit or a removal during this request, so the page can be older. Ask again.
+            guard changes == teamChatChanges[room, default: 0] else { continue }
+            var chat = teamChats[room] ?? TeamChat()
+            chat.merge(page, requested: nil)
+            chat.error = nil
+            // A page that changes nothing does not draw the chat again.
+            if teamChats[room] != chat { teamChats[room] = chat }
+            return true
+        }
+        return false
+    }
+
+    /// The messages of one page. The chat reads the newest page first, and one more for each "Load earlier messages".
+    static let teamPage = 50
+
+    /// Reads the next older page of a chat. The chat shows a failure in the error banner and keeps its messages.
+    @discardableResult
+    func loadEarlierTeamMessages(_ room: String) async -> Bool {
+        guard !isDemo, let client, let before = teamChats[room]?.before, teamChats[room]?.loadingEarlier == false else {
+            return false
+        }
+        teamChats[room]?.loadingEarlier = true
+        defer { if self.client === client { teamChats[room]?.loadingEarlier = false } }
+        for _ in 0..<3 {
+            let changes = teamChatChanges[room, default: 0]
+            let page: TeamMessagePage
+            do { page = try await client.request("team/rooms/\(room)/messages?before=\(before)&limit=\(Self.teamPage)") }
+            catch {
+                guard self.client === client else { return false }
+                if !(error is CancellationError) { report(error) }
+                return false
+            }
+            // A newer page can have started the chat again. This page then has no place in it.
+            guard self.client === client, teamChats[room]?.before == before else { return false }
+            guard changes == teamChatChanges[room, default: 0] else { continue }
+            teamChats[room]?.merge(page, requested: before)
+            return true
+        }
+        return false
+    }
+
+    /// Shows a message of this person at once, and sends it. A failure keeps it in the chat with a way to try again.
+    func sendTeamMessage(_ room: String, text: String, replyingTo answered: TeamMessage?) {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let quote = answered.map {
+            TeamMessageQuote(id: $0.id, member: $0.member, memberName: $0.memberName, bot: $0.bot, botName: $0.botName,
+                             text: String($0.text.prefix(200)))
+        }
+        let pending = TeamPendingMessage(id: UUID().uuidString, text: text, replyTo: answered?.id, reply: quote,
+                                         createdAt: Self.now)
+        teamChats[room, default: TeamChat()].pending.append(pending)
+        Task { await deliverTeamMessage(room, id: pending.id) }
+    }
+
+    /// Sends a message that did not send again, with the same key.
+    func retryTeamMessage(_ room: String, id: String) {
+        guard let index = teamChats[room]?.pending.firstIndex(where: { $0.id == id && $0.failed }),
+              let pending = teamChats[room]?.pending[index] else { return }
+        teamChats[room]?.pending[index] = pending.retried
+        Task { await deliverTeamMessage(room, id: id) }
+    }
+
+    /// Removes a message that did not send. The Mac never confirmed it, so nothing else changes.
+    func removeUnsentTeamMessage(_ room: String, id: String) {
+        teamChats[room]?.pending.removeAll { $0.id == id && $0.failed }
+    }
+
+    private func deliverTeamMessage(_ room: String, id: String) async {
+        guard let pending = teamChats[room]?.pending.first(where: { $0.id == id }) else { return }
+        if isDemo {
+            teamChats[room]?.pending.removeAll { $0.id == id }
+            let first = (teamChats[room]?.newestFirst ?? 0) + 1
+            teamChats[room]?.put(TeamMessage(id: id, first: first, thisMac: true, text: pending.text, replyTo: pending.replyTo,
+                                             reply: pending.reply, createdAt: pending.createdAt))
+            return
+        }
+        let answer: TeamMessageAnswer? = await write("team/rooms/\(room)/messages",
+                                                     payload: TeamSendRequest(text: pending.text, replyTo: pending.replyTo),
+                                                     as: TeamMessageAnswer.self, refreshInBackground: true,
+                                                     idempotencyKey: pending.idempotencyKey)
+        // A new pairing removed the chat. A late answer has no place to go.
+        guard let index = teamChats[room]?.pending.firstIndex(where: { $0.id == id }) else { return }
+        guard let answer else {
+            teamChats[room]?.pending[index].failed = true
+            return
+        }
+        teamChatChanges[room, default: 0] += 1
+        teamChats[room]?.pending.remove(at: index)
+        teamChats[room]?.put(answer.message)
+    }
+
+    /// Changes the text of a message of this person. The chat shows the new text while the Mac writes it. True when the
+    /// Mac confirmed it.
+    func editTeamMessage(_ room: String, _ message: TeamMessage, text: String) async -> Bool {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+        guard text != message.text else { return true }
+        if isDemo {
+            var edited = message
+            edited.text = text
+            edited.editedAt = Self.now
+            teamChats[room]?.put(edited)
+            return true
+        }
+        teamChats[room]?.editing[message.id] = text
+        let answer: TeamMessageAnswer? = await write("team/rooms/\(room)/messages/\(message.id)", method: "PATCH",
+                                                     payload: TeamEditRequest(text: text), as: TeamMessageAnswer.self,
+                                                     refreshInBackground: true)
+        teamChats[room]?.editing[message.id] = nil
+        guard let answer else { return false }
+        teamChatChanges[room, default: 0] += 1
+        teamChats[room]?.put(answer.message)
+        return true
+    }
+
+    /// Removes a message of this person for each member. The message hides while the Mac writes the removal, and comes
+    /// back when the Mac does not confirm it.
+    func deleteTeamMessage(_ room: String, _ message: TeamMessage) async -> Bool {
+        if isDemo {
+            teamChats[room]?.remove(message.id)
+            return true
+        }
+        teamChats[room]?.deleting.insert(message.id)
+        let answer: TeamDeleteAnswer? = await write("team/rooms/\(room)/messages/\(message.id)", method: "DELETE",
+                                                    payload: EmptyRequest(), as: TeamDeleteAnswer.self,
+                                                    refreshInBackground: true)
+        teamChats[room]?.deleting.remove(message.id)
+        guard answer != nil else { return false }
+        teamChatChanges[room, default: 0] += 1
+        teamChats[room]?.remove(message.id)
+        return true
+    }
+
+    /// Tells the Mac that the person read the chat up to the message with this `first`. The app sends each position
+    /// one time, and marks it as sent only after the Mac confirmed it.
+    func markTeamRead(_ room: String, first: Int) async {
+        guard !isDemo, first > teamReadMark(room) ?? 0 else { return }
+        teamReadPosting[room] = first
+        let answer: TeamReadAnswer? = await write("team/rooms/\(room)/read", payload: TeamReadRequest(first: first),
+                                                  as: TeamReadAnswer.self, quiet: true, refreshInBackground: true)
+        if teamReadPosting[room] == first { teamReadPosting[room] = nil }
+        guard let answer else { return }
+        teamReadPosted[room] = max(teamReadPosted[room] ?? 0, first)
+        // The row of the team shows the new count at once. The next list has the count of the Mac.
+        if let unread = answer.unread, let index = team?.rooms.firstIndex(where: { $0.room == room }),
+           team?.rooms[index].unread != unread {
+            team?.rooms[index].unread = unread
+        }
+    }
+
+    /// The read position that the app sent or is sending for a chat.
+    func teamReadMark(_ room: String) -> Int? {
+        [teamReadPosted[room], teamReadPosting[room]].compactMap { $0 }.max()
     }
 
     /// One document with the content of its current version. Nil when the Mac cannot send it.
@@ -1959,6 +2163,7 @@ final class AppStore {
         if replaced { apply(snapshot, persist: true) }
         // A full state skips the events between the cursors, also the team changes, so a loaded Team screen loads again.
         if replaced, teamAsked { Task { await loadTeam() } }
+        if replaced { reloadTeamChats(nil) }
         markConnected()
         Task { await syncPushRegistration() }
         refreshNativeSettings(using: client)
@@ -2026,8 +2231,11 @@ final class AppStore {
     }
 
     private func markConnected() {
+        let connecting = connection != .connected
         assign(\.connection, .connected)
         assign(\.syncIssue, nil)
+        // The Chats list shows the teams, so the app has them as soon as it reaches the Mac.
+        if connecting { Task { await loadTeam() } }
     }
 
     /// Encoding the saved state costs about as much as decoding an update. While updates stream, write it at most
@@ -2427,6 +2635,9 @@ private struct TeamCreateRequest: Encodable { let name: String; let memberName: 
 private struct TeamJoinBody: Encodable { let link: String; let memberName: String }
 private struct TeamProfileRequest: Encodable { let memberName: String }
 private struct TeamBotRequest: Encodable { let botId: String }
+private struct TeamSendRequest: Encodable { let text: String; let replyTo: String? }
+private struct TeamEditRequest: Encodable { let text: String }
+private struct TeamReadRequest: Encodable { let first: Int }
 private struct InstructionsRequest: Encodable { let instructions: String }
 private struct PreferenceRequest: Encodable { let text: String }
 private struct RoutineRequest: Encodable { let name: String; let prompt: String; let cron: String; let timezone: String; let enabled: Bool }

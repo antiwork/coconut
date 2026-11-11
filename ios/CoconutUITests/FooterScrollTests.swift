@@ -13,14 +13,14 @@ final class FooterScrollTests: XCTestCase {
         let inbox = app.tabBars.buttons["Inbox"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 15))
         XCTAssertTrue(inbox.isSelected, "Inbox must be the launch screen.")
-        XCTAssertLessThan(inbox.frame.minX, app.tabBars.buttons["Bots"].frame.minX)
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertLessThan(inbox.frame.minX, app.tabBars.buttons["Chats"].frame.minX)
+        app.tabBars.buttons["Chats"].tap()
         app.scrollViews.firstMatch.swipeUp()
         XCTAssertTrue(inbox.isHittable, "Scrolling the Bots list must keep both tabs available.")
         inbox.tap()
         app.scrollViews.firstMatch.swipeUp()
-        XCTAssertTrue(app.tabBars.buttons["Bots"].isHittable, "Reading a card must not minimize the footer.")
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].isHittable, "Reading a card must not minimize the footer.")
+        app.tabBars.buttons["Chats"].tap()
         let bot = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         for _ in 0..<5 where !bot.isHittable { app.scrollViews.firstMatch.swipeDown(velocity: .fast) }
         XCTAssertTrue(bot.isHittable)

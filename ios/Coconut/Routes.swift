@@ -12,6 +12,16 @@ struct BotSettingsRoute: Hashable {
     let botId: String
 }
 
+/// The chat of a team.
+struct TeamChatRoute: Hashable {
+    let roomId: String
+}
+
+/// The Team screen of one team. The title of its chat opens it.
+struct TeamScreenRoute: Hashable {
+    let roomId: String
+}
+
 extension EnvironmentValues {
     /// Shows or hides the details of the bot next to its chat. Only the Mac window sets it. Without it, the bot's
     /// title opens its settings.

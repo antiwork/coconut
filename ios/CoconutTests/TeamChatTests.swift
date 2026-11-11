@@ -1,0 +1,270 @@
+import XCTest
+@testable import Coconut
+
+/// The pure rules of the Team chat: the decode, the merge of a page, the runs, the preview of the row, the order of
+/// the Chats list, the read position, and the key of a retry.
+final class TeamChatTests: XCTestCase {
+    private static let utc: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar
+    }()
+
+    private func message(_ id: String, _ first: Int, member: String = "m-grace", name: String? = "Grace",
+                         own: Bool = false, bot: String? = nil, text: String? = nil,
+                         at time: String = "2026-11-10T12:00:00Z") -> TeamMessage {
+        TeamMessage(id: id, first: first, member: own ? "m-ada" : member, memberName: own ? "Ada" : name,
+                    thisMac: own, bot: bot, botName: bot.map { _ in "Reporter" }, text: text ?? "Message \(id)",
+                    createdAt: time)
+    }
+
+    private func page(_ messages: [TeamMessage], before: Int?) -> TeamMessagePage {
+        TeamMessagePage(messages: messages.reversed(), before: before)
+    }
+
+    // MARK: Decode
+
+    /// The answer of GET /v1/team/rooms/<room>/messages (backend/coconut/team_messages.py), with nulls and a message
+    /// that the app cannot read. The page keeps each other message.
+    func testAPageDecodesAndDropsOnlyAMessageThatItCannotRead() throws {
+        let answer = #"""
+        {"room": "r1", "before": 7, "messages": [
+          {"id": "e9", "first": 9, "member": "m-grace", "member_name": null, "this_mac": false, "bot": null,
+           "bot_name": null, "text": "Hello", "reply_to": "e8", "reply": null, "mentions": [],
+           "created_at": "2026-11-10T12:00:00.123456Z", "edited_at": null, "later_field": {"a": 1}},
+          {"id": "e8", "first": "eight", "text": "Not a number"},
+          {"id": "e7", "first": 7, "member": "m-ada", "member_name": "Ada", "this_mac": true, "bot": "t-r1-b1",
+           "bot_name": "Reporter", "text": "Done", "reply_to": null, "reply": null, "mentions": ["m-grace"],
+           "created_at": "2026-11-10T11:00:00Z", "edited_at": "2026-11-10T11:05:00Z"}
+        ]}
+        """#
+        let page = try APIJSON.decoder().decode(TeamMessagePage.self, from: Data(answer.utf8))
+        XCTAssertEqual(page.messages.map(\.id), ["e9", "e7"])
+        XCTAssertEqual(page.before, 7)
+        XCTAssertNil(page.messages[0].memberName)
+        XCTAssertEqual(page.messages[0].replyTo, "e8")
+        XCTAssertNil(page.messages[0].reply)
+        XCTAssertFalse(page.messages[0].isOwn)
+        // A bot of this Mac writes as itself, not as the person.
+        XCTAssertFalse(page.messages[1].isOwn)
+        XCTAssertTrue(page.messages[1].isEdited)
+        XCTAssertNotNil(page.messages[0].createdAt.apiDate)
+    }
+
+    func testTheRoomsOfAnOlderServiceHaveNoChat() throws {
+        let newer = #"{"rooms": [{"room": "r1", "name": "Example Team", "state": "active", "unread": 3,"#
+            + #" "created_at": "2026-11-01T00:00:00Z", "last_message": {"first": 4, "member_name": "Grace","#
+            + #" "bot_name": null, "text": "Hi", "created_at": "2026-11-10T12:00:00Z"}}]}"#
+        let room = try XCTUnwrap(try APIJSON.decoder().decode(TeamRooms.self, from: Data(newer.utf8)).rooms.first)
+        XCTAssertTrue(room.hasChat)
+        XCTAssertEqual(room.unread, 3)
+        XCTAssertEqual(room.lastMessage?.text, "Hi")
+        let older = #"{"rooms": [{"room": "r1", "name": "Example Team", "state": "active"}]}"#
+        let old = try XCTUnwrap(try APIJSON.decoder().decode(TeamRooms.self, from: Data(older.utf8)).rooms.first)
+        XCTAssertFalse(old.hasChat)
+        XCTAssertEqual(old.chatClosedReason, ServiceError.olderMac)
+        XCTAssertNil(room.chatClosedReason)
+        var removed = room
+        removed.state = "removed"
+        XCTAssertEqual(removed.chatClosedReason, "You are no longer in this team.")
+    }
+
+    func testUpdatesNameTheChatsThatChanged() throws {
+        let page = #"{"after": 4, "cursor": 5, "server_time": "2026-11-09T00:00:00Z", "team_messages_changed": ["r1"]}"#
+        XCTAssertEqual(try APIJSON.decoder().decode(StateUpdates.self, from: Data(page.utf8)).teamMessagesChanged, ["r1"])
+    }
+
+    // MARK: Merge
+
+    func testTheFirstPageFillsTheChatOldestFirst() {
+        var chat = TeamChat()
+        chat.merge(page([message("a", 1), message("b", 2)], before: nil), requested: nil)
+        XCTAssertTrue(chat.loaded)
+        XCTAssertEqual(chat.messages.map(\.id), ["a", "b"])
+        XCTAssertNil(chat.before)
+    }
+
+    /// The newest page again: a new message appears, an edit replaces its message, and a message of the range of the
+    /// page that is no longer in it goes. An older message outside the range stays.
+    func testTheNewestPageAddsReplacesAndRemovesInItsRange() {
+        var chat = TeamChat()
+        chat.merge(page([message("c", 30), message("d", 40), message("e", 50)], before: 30), requested: nil)
+        chat.merge(page([message("a", 10), message("b", 20)], before: nil), requested: 30)
+        XCTAssertEqual(chat.messages.map(\.id), ["a", "b", "c", "d", "e"])
+        XCTAssertNil(chat.before)
+        var edited = message("d", 40, text: "New text")
+        edited.editedAt = "2026-11-10T12:05:00Z"
+        // The page covers 40 and up. e went, and f is new.
+        chat.merge(page([edited, message("f", 60)], before: 40), requested: nil)
+        XCTAssertEqual(chat.messages.map(\.id), ["a", "b", "c", "d", "f"])
+        XCTAssertEqual(chat.messages.first { $0.id == "d" }?.text, "New text")
+        XCTAssertTrue(chat.messages.first { $0.id == "d" }?.isEdited == true)
+    }
+
+    func testAMessageUnderTheRangeOfTheNewestPageStays() {
+        var chat = TeamChat()
+        chat.merge(page([message("c", 30), message("d", 40), message("e", 50)], before: 30), requested: nil)
+        chat.merge(page([message("d", 40), message("e", 50), message("f", 60)], before: 40), requested: nil)
+        XCTAssertEqual(chat.messages.map(\.id), ["c", "d", "e", "f"])
+        XCTAssertEqual(chat.before, 30, "The chat keeps the before of its older page.")
+        // A removal in the range: e goes.
+        chat.merge(page([message("d", 40), message("f", 60)], before: 40), requested: nil)
+        XCTAssertEqual(chat.messages.map(\.id), ["c", "d", "f"])
+    }
+
+    func testAnOlderPageRemovesAMessageOfItsRangeThatWent() {
+        var chat = TeamChat()
+        chat.merge(page([message("c", 30), message("d", 40)], before: 30), requested: nil)
+        chat.messages.insert(message("x", 25), at: 0)
+        chat.merge(page([message("a", 10), message("b", 20)], before: 10), requested: 30)
+        XCTAssertEqual(chat.messages.map(\.id), ["a", "b", "c", "d"], "x is in the range 10..<30 and the page lacks it")
+        XCTAssertEqual(chat.before, 10)
+    }
+
+    /// More messages came than one page holds. The page starts the chat again, so no gap stays between the two parts.
+    func testANewestPageAfterAGapStartsTheChatAgain() {
+        var chat = TeamChat()
+        chat.merge(page([message("a", 1), message("b", 2)], before: nil), requested: nil)
+        chat.merge(page([message("y", 90), message("z", 91)], before: 90), requested: nil)
+        XCTAssertEqual(chat.messages.map(\.id), ["y", "z"])
+        XCTAssertEqual(chat.before, 90, "Load earlier messages must read the messages between.")
+        var empty = TeamChat()
+        empty.merge(page([], before: nil), requested: nil)
+        empty.merge(page([message("y", 90)], before: 90), requested: nil)
+        XCTAssertEqual(empty.before, 90)
+    }
+
+    func testAnEmptyNewestPageEmptiesTheChat() {
+        var chat = TeamChat()
+        chat.merge(page([message("a", 1)], before: nil), requested: nil)
+        chat.merge(page([], before: nil), requested: nil)
+        XCTAssertTrue(chat.messages.isEmpty)
+        XCTAssertTrue(chat.loaded)
+    }
+
+    func testAnAnsweredMessageGoesInByItsPlace() {
+        var chat = TeamChat()
+        chat.merge(page([message("a", 1), message("c", 3)], before: nil), requested: nil)
+        chat.put(message("b", 2))
+        chat.put(message("d", 4))
+        XCTAssertEqual(chat.messages.map(\.id), ["a", "b", "c", "d"])
+        chat.put(message("b", 2, text: "Edited"))
+        XCTAssertEqual(chat.messages.map(\.id), ["a", "b", "c", "d"])
+        XCTAssertEqual(chat.messages[1].text, "Edited")
+        chat.remove("c")
+        XCTAssertEqual(chat.messages.map(\.id), ["a", "b", "d"])
+    }
+
+    // MARK: Runs
+
+    func testARunIsOneWriterOnOneDayWithNoOtherWriterBetween() {
+        var chat = TeamChat()
+        chat.merge(page([
+            message("1", 1, at: "2026-11-09T09:00:00Z"),
+            message("2", 2, at: "2026-11-09T09:01:00Z"),
+            message("3", 3, at: "2026-11-10T09:00:00Z"),
+            message("4", 4, at: "2026-11-10T09:01:00Z"),
+            message("5", 5, at: "2026-11-10T09:02:00Z"),
+            message("6", 6, own: true, at: "2026-11-10T09:03:00Z"),
+            message("7", 7, bot: "t-r1-b1", at: "2026-11-10T09:04:00Z"),
+            message("8", 8, member: "m-edsger", name: nil, at: "2026-11-10T09:05:00Z"),
+            message("9", 9, member: "m-edsger", name: nil, at: "2026-11-10T09:06:00Z"),
+        ], before: nil), requested: nil)
+        chat.pending = [TeamPendingMessage(id: "p", text: "On its way", replyTo: nil, reply: nil,
+                                           createdAt: "2026-11-10T09:07:00Z")]
+        let rows = TeamChatRow.rows(chat, calendar: Self.utc)
+        XCTAssertEqual(rows.map(\.id), ["1", "2", "3", "4", "5", "6", "7", "8", "9", "pending-p"])
+        XCTAssertEqual(rows.map(\.startsDay), [true, false, true, false, false, false, false, false, false, false])
+        XCTAssertEqual(rows.map(\.startsRun), [true, false, true, false, false, true, true, true, false, true])
+        XCTAssertEqual(rows[5].writer, .you)
+        XCTAssertEqual(rows[6].writer, .bot("t-r1-b1"))
+        XCTAssertEqual(rows[9].writer, .you)
+        // A message of a member without a name shows "Former member".
+        XCTAssertEqual(rows[7].message.map(TeamNames.author(of:)), "Former member")
+        // A removal on its way hides its row.
+        chat.deleting = ["4"]
+        XCTAssertEqual(TeamChatRow.rows(chat, calendar: Self.utc).map(\.id).contains("4"), false)
+    }
+
+    func testTheAuthorOfAQuote() {
+        let grace = TeamMessageQuote(id: "e1", member: "m-grace", memberName: "Grace", text: "Hi")
+        XCTAssertEqual(TeamNames.author(of: grace, ownMember: "m-ada"), "Grace")
+        XCTAssertEqual(TeamNames.author(of: grace, ownMember: "m-grace"), "You")
+        XCTAssertEqual(TeamNames.author(of: TeamMessageQuote(id: "e2", member: "m-x"), ownMember: "m-ada"),
+                       "Former member")
+        let bot = TeamMessageQuote(id: "e3", member: "m-ada", bot: "t-r1-b1", botName: "Reporter", text: "Done")
+        XCTAssertEqual(TeamNames.author(of: bot, ownMember: "m-ada"), "Reporter", "A bot of this Mac is not you.")
+    }
+
+    // MARK: The row of the Chats list
+
+    func testThePreviewOfTheRowOfATeam() {
+        XCTAssertEqual(TeamChatPreview.text(nil, ownName: "Ada"), "No messages yet")
+        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(memberName: "Grace", text: "**Lunch** at [noon](https://x.example)"),
+                                            ownName: "Ada"), "Grace: Lunch at noon")
+        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(memberName: "Ada", text: "On my way"), ownName: "Ada"),
+                       "You: On my way")
+        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(memberName: "Ada", botName: "Reporter", text: "Done"),
+                                            ownName: "Ada"), "Reporter: Done")
+        XCTAssertEqual(TeamChatPreview.text(TeamLastMessage(text: "Old"), ownName: "Ada"), "Former member: Old")
+    }
+
+    func testTheChatsListPutsTeamsAndBotsInOneOrderOfActivity() {
+        func bot(_ id: String, created: String) -> Bot {
+            Bot(id: id, sessionId: "session-\(id)", name: id, role: "", avatar: "sparkle", color: "777777",
+                instructions: "", status: "idle", lastMessage: "", unreadCount: 0, archived: false, createdAt: created,
+                pinned: false)
+        }
+        func team(_ id: String, created: String, last: String?) -> TeamRoom {
+            TeamRoom(room: id, name: id, state: "active", createdAt: created, unread: 0,
+                     lastMessage: last.map { TeamLastMessage(text: "Hi", createdAt: $0) })
+        }
+        let bots = [bot("news", created: "2026-11-01T00:00:00Z"), bot("scout", created: "2026-11-01T00:00:00Z")]
+        let latest = ["news": "2026-11-10T12:00:00Z".apiDate!, "scout": "2026-11-08T12:00:00Z".apiDate!]
+        let rooms = [
+            team("quiet", created: "2026-11-02T00:00:00Z", last: nil),
+            team("busy", created: "2026-11-02T00:00:00Z", last: "2026-11-09T12:00:00Z"),
+            team("newest", created: "2026-11-11T00:00:00Z", last: nil),
+            team("tie", created: "2026-11-01T00:00:00Z", last: "2026-11-10T12:00:00Z"),
+        ]
+        let items = ChatList.items(bots: bots, latest: latest, rooms: rooms)
+        XCTAssertEqual(items.map(\.id), ["team-newest", "bot-news", "team-tie", "team-busy", "bot-scout", "team-quiet"])
+        XCTAssertEqual(ChatList.items(bots: [], latest: [:], rooms: []).count, 0)
+    }
+
+    func testAReactionIsNoActivityOfABot() {
+        let messages = [
+            Message(id: "1", botId: "b", role: "user", kind: "text", text: "Hi", createdAt: "2026-11-09T00:00:00Z",
+                    streaming: false),
+            Message(id: "2", botId: "b", role: "user", kind: "text", text: "", createdAt: "2026-11-10T00:00:00Z",
+                    streaming: false, reactionEvent: MessageReactionEvent(emoji: "👍", action: "add")),
+        ]
+        XCTAssertEqual(ChatList.lastMessageDates(messages)["b"], "2026-11-09T00:00:00Z".apiDate)
+    }
+
+    // MARK: Read position and retry
+
+    func testTheAppPostsTheNewestMessageOnceWhileTheChatShowsIt() {
+        XCTAssertEqual(TeamReadPosition.toPost(newest: 9, posted: nil, visible: true, atBottom: true), 9)
+        XCTAssertEqual(TeamReadPosition.toPost(newest: 9, posted: 4, visible: true, atBottom: true), 9)
+        XCTAssertNil(TeamReadPosition.toPost(newest: 9, posted: 9, visible: true, atBottom: true), "Each position once")
+        XCTAssertNil(TeamReadPosition.toPost(newest: 9, posted: 12, visible: true, atBottom: true))
+        XCTAssertNil(TeamReadPosition.toPost(newest: 9, posted: nil, visible: false, atBottom: true),
+                     "A chat that is not on screen sends nothing.")
+        XCTAssertNil(TeamReadPosition.toPost(newest: 9, posted: nil, visible: true, atBottom: false),
+                     "The reader does not see the newest message.")
+        XCTAssertNil(TeamReadPosition.toPost(newest: nil, posted: nil, visible: true, atBottom: true))
+    }
+
+    func testARetryKeepsTheKeyOfTheMessage() {
+        var pending = TeamPendingMessage(id: UUID().uuidString, text: "Hello", replyTo: nil, reply: nil,
+                                         createdAt: "2026-11-10T12:00:00Z")
+        let key = pending.idempotencyKey
+        XCTAssertNotNil(UUID(uuidString: key), "The Mac takes only a UUID as a key.")
+        pending.failed = true
+        let retried = pending.retried
+        XCTAssertFalse(retried.failed)
+        XCTAssertEqual(retried.idempotencyKey, key, "Each try of one message has the same key.")
+        XCTAssertEqual(retried.text, "Hello")
+    }
+}

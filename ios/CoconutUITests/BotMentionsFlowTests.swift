@@ -10,8 +10,8 @@ final class BotMentionsFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo", "-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
         let forge = app.buttons["bot-conversation-\(forgeId)"]
         XCTAssertTrue(forge.waitForExistence(timeout: 10))
         forge.tap()
@@ -39,8 +39,8 @@ final class BotMentionsFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
         let forge = app.buttons["bot-conversation-\(forgeId)"]
         XCTAssertTrue(forge.waitForExistence(timeout: 10))
         forge.tap()
@@ -103,8 +103,8 @@ final class BotMentionsFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": address, "COCONUT_PAIR_CODE": "layout-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
         let scout = app.buttons["bot-conversation-\(scoutId)"]
         XCTAssertTrue(scout.waitForExistence(timeout: 15)); scout.tap()
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch

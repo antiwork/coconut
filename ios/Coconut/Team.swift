@@ -26,8 +26,20 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     var members: [TeamMember]? = nil
     var bots: [TeamRoomBot]? = nil
     var sync: TeamSync? = nil
+    /// The time when this Mac made or joined the team.
+    var createdAt: String? = nil
+    /// The unread count of the Team chat, 0 to 99. An older service has no chat and sends none.
+    var unread: Int? = nil
+    var lastMessage: TeamLastMessage? = nil
 
     var id: String { room }
+
+    /// The Mac serves the Team chat of this team. An older service has no `unread`.
+    var hasChat: Bool { unread != nil }
+    /// The member of this Mac.
+    var ownMember: TeamMember? { memberList.first { $0.thisMac == true } }
+    /// The newest message, or the time when this Mac made or joined the team. The Chats list sorts by it.
+    var lastActivity: Date { lastMessage?.createdAt?.apiDate ?? createdAt?.apiDate ?? .distantPast }
 
     /// A state that this app does not know shows as an active team, without the actions that need one.
     var status: Status {

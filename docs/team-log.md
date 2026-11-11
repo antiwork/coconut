@@ -10,7 +10,7 @@ Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joi
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
 - A record of the open invites on the Mac.
 - The member removal and the key change.
-- The screens of the app for the teams, the team pages and the Team chat. The app of today hides a team page, because it does not know its bot.
+- The mentions of the Team chat in the app. The app shows each team in its Chats list, and the chat of the team sends and shows text only.
 - A bot that reads or writes the Team chat, and a push notification for a team message.
 
 ## Terms

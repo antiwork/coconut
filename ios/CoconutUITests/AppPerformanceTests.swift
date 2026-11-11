@@ -15,8 +15,8 @@ final class AppPerformanceTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": "performance-test"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
-        app.tabBars.buttons["Bots"].tap()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
         XCTAssertTrue(app.buttons[conversationId].waitForExistence(timeout: 30))
         // Later launches use the saved pairing and the saved history, as on a phone.
         app.launchEnvironment = [:]
@@ -47,7 +47,7 @@ final class AppPerformanceTests: XCTestCase {
         app.terminate()
         measure(metrics: [XCTApplicationLaunchMetric(waitUntilResponsive: true)], options: options()) {
             app.launch()
-            XCTAssertTrue(app.tabBars.buttons["Bots"].waitForExistence(timeout: 15))
+            XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
             app.terminate()
         }
     }
@@ -69,7 +69,7 @@ final class AppPerformanceTests: XCTestCase {
             closeConversation(app)
             app.tabBars.buttons["Inbox"].tap()
             XCTAssertTrue(app.buttons["app-settings"].waitForExistence(timeout: 5))
-            app.tabBars.buttons["Bots"].tap()
+            app.tabBars.buttons["Chats"].tap()
             XCTAssertTrue(app.buttons[conversationId].waitForExistence(timeout: 5))
         }
     }
