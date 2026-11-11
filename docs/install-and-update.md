@@ -115,7 +115,7 @@ A Mac with no person at it can join a team from a message, as `coconut pair <cod
 | `coconut team new-bot <name> [--home <path>]` | On a team-only Mac: declares a bot for the Hermes home that it stands for. See [A Mac without a person](#a-mac-without-a-person). |
 | `coconut team add-bot <bot> [--team <name or ID>]` | Adds a bot of this Mac to the team. `<bot>` is the ID or the name of the bot. Case does not matter. |
 | `coconut team remove-bot <bot> [--team <name or ID>]` | Removes a bot of this Mac from the team. |
-| `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team, and deletes its copy and its keys on this Mac. Without `--confirm`, it prints what a leave does and the exact command. |
+| `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team, and deletes its copy and its keys on this Mac. The name after `--confirm` chooses the team; `--team <ID>` is necessary only when two teams of this Mac have the same name. Without `--confirm`, it prints what a leave does and the exact command for each team. |
 
 - The invite link is a secret. The tool reads it only from standard input, and no output of the tool has it. In a terminal, the tool asks for the link and does not show it.
 - When this Mac is in more than one team, a command for one team needs `--team`.
@@ -285,7 +285,7 @@ Coconut.app updates itself, as on every Mac. The Mac stays in team-only mode. To
 
 ### Remove
 
-1. Leave each team: `coconut team leave --confirm "Example Team"`. Expect `This Mac left the team Example Team.` A Mac that does not leave first stays in the member lists of the other Macs, with its bots and their pages.
+1. Leave each team: `coconut team leave --confirm "Example Team"`. Do this for each team. `coconut team` lists them. Expect `This Mac left the team Example Team.` A Mac that does not leave first stays in the member lists of the other Macs, with its bots and their pages.
 2. Stop the app: `pkill -x Coconut`. This sends a signal to the process `Coconut`. An Apple event to quit the app can ask for a permission in a dialog that nobody sees. No login item starts the app again before the next step.
 3. Start it to remove Coconut: `open -g /Applications/Coconut.app --args --remove`. The app removes its login items and the data of Coconut, moves `~/Coconut` to the Trash, and quits. Nothing in Hermes changes.
 4. Run `coconut status`. Expect `Service: not installed (/Users/<you>/Coconut)`. A failure shows as `Last update error:`.

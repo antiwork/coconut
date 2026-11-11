@@ -416,20 +416,49 @@ public struct TeamTool: Sendable {
         return TeamOutput(lines: ["The bot \(bot.name) is no longer in the team \(room.name)."])
     }
 
+    /// What a leave does, for each form of `coconut team leave` without `--confirm`.
+    static let leaveEffects = [
+        "This Mac deletes its copy of the team and its keys.",
+        "The team no longer sees the bots of this Mac and their pages.",
+        "To join again, this Mac needs a new invite link.",
+    ]
+    static let leaveNeedsName = "A leave cannot be undone. No person can confirm it here, so the command needs the name "
+        + "of the team."
+
+    /// The command that leaves this team without a question. The name alone chooses the team when no other team of this
+    /// Mac has the same name. Otherwise the command needs the ID too.
+    func leaveCommand(_ room: TeamRoom, in rooms: [TeamRoom]) -> String {
+        "coconut team leave" + (rooms.filter { $0.name == room.name }.count > 1 ? " --team \(quoted(room.room))" : "")
+            + " --confirm \(quoted(room.name))"
+    }
+
     func leave(team: String?, confirm: String?) async throws -> TeamOutput {
         let answer = try decode(try await call("GET", "/v1/team/rooms"))
-        let room = try choose(team, in: answer.rooms)
-        let command = "coconut team leave" + (answer.rooms.count > 1 ? " --team \(quoted(room.room))" : "")
-            + " --confirm \(quoted(room.name))"
+        let room: TeamRoom
+        let command: String
+        if team == nil && answer.rooms.count > 1 {
+            // The name after --confirm chooses the team and confirms the leave in one, when exactly one team has it.
+            let list = answer.rooms.map { "Team: \($0.name) (ID \($0.room))" }
+            guard let confirm else {
+                throw TeamFailure(lines: [Self.leaveNeedsName] + Self.leaveEffects
+                                  + answer.rooms.map { "To leave \($0.name), run: \(leaveCommand($0, in: answer.rooms))" })
+            }
+            let named = answer.rooms.filter { $0.name == confirm }
+            guard named.count == 1 else {
+                throw TeamFailure(lines: [(named.isEmpty ? "No team of this Mac has the name \(quoted(confirm))."
+                                           : "More than one team of this Mac has the name \(quoted(confirm)).")
+                                          + " Nothing changed. Add --team <ID> with the ID of the team:"] + list)
+            }
+            room = named[0]
+            command = leaveCommand(room, in: answer.rooms)
+        } else {
+            room = try choose(team, in: answer.rooms)
+            command = "coconut team leave" + (answer.rooms.count > 1 ? " --team \(quoted(room.room))" : "")
+                + " --confirm \(quoted(room.name))"
+        }
         guard let confirm else {
-            throw TeamFailure(lines: [
-                "A leave cannot be undone. No person can confirm it here, so the command needs the name of the team.",
-                "This Mac leaves the team \(room.name).",
-                "This Mac deletes its copy of the team and its keys.",
-                "The team no longer sees the bots of this Mac and their pages.",
-                "To join again, this Mac needs a new invite link.",
-                "To leave, run: \(command)",
-            ])
+            throw TeamFailure(lines: [Self.leaveNeedsName, "This Mac leaves the team \(room.name)."] + Self.leaveEffects
+                              + ["To leave, run: \(command)"])
         }
         guard confirm == room.name else {
             throw TeamFailure(lines: ["The name after --confirm is not the name of the team \(room.name). Nothing changed.",

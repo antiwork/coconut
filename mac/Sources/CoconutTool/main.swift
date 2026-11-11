@@ -32,8 +32,9 @@ let usage = """
       team remove-bot <bot> [--team <name or ID>]
                 Remove a bot of this Mac from the team.
       team leave --confirm <name of the team> [--team <name or ID>]
-                Leave the team, and delete its copy and its keys on this Mac. Without --confirm, print what a
-                leave does.
+                Leave the team, and delete its copy and its keys on this Mac. The name after --confirm chooses the
+                team. --team <ID> is necessary only when two teams of this Mac have the same name. Without
+                --confirm, print what a leave does and the command for each team.
       version   Print the version of Coconut.app.
       install-source
                 Install the Coconut source that this app carries. --if-needed skips an install that is current.

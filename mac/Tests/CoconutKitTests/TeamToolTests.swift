@@ -468,6 +468,56 @@ final class TeamToolTests: XCTestCase {
                                            status: 1))
     }
 
+    func testTheNameAloneChoosesOneOfSeveralTeams() async throws {
+        rooms([room(), room(Self.otherID, name: "Other")])
+        service.answer("DELETE", "/v1/team/rooms/\(Self.otherID)", ["room": Self.otherID, "left": true])
+        rooms([room()], then: true)
+        let output = try await run(["leave", "--confirm", "Other"])
+        XCTAssertEqual(output, TeamOutput(lines: ["This Mac left the team Other."]))
+        XCTAssertEqual(service.sent.filter { !$0.hasPrefix("GET") }, ["DELETE /v1/team/rooms/\(Self.otherID)"])
+    }
+
+    func testALeaveWithoutConfirmOnSeveralTeamsGivesOneCommandForEachTeam() async throws {
+        rooms([room(), room(Self.otherID, name: "Other")])
+        let output = try await run(["leave"])
+        XCTAssertEqual(output, TeamOutput(lines: [
+            "A leave cannot be undone. No person can confirm it here, so the command needs the name of the team.",
+            "This Mac deletes its copy of the team and its keys.",
+            "The team no longer sees the bots of this Mac and their pages.",
+            "To join again, this Mac needs a new invite link.",
+            "To leave Example Team, run: coconut team leave --confirm 'Example Team'",
+            "To leave Other, run: coconut team leave --confirm Other"], status: 1))
+        XCTAssertEqual(service.sent, ["GET /v1/team/rooms"])
+    }
+
+    func testTwoTeamsWithOneNameOrNoMatchNeedTheID() async throws {
+        rooms([room(), room(Self.otherID)])
+        var output = try await run(["leave", "--confirm", "Example Team"])
+        XCTAssertEqual(output, TeamOutput(lines: [
+            "More than one team of this Mac has the name 'Example Team'. Nothing changed. Add --team <ID> with the ID "
+                + "of the team:",
+            "Team: Example Team (ID \(Self.roomID))", "Team: Example Team (ID \(Self.otherID))"], status: 1))
+        // Without --confirm, each command of the two teams with one name has the ID.
+        output = try await run(["leave"])
+        XCTAssertEqual(output.lines.suffix(2), [
+            "To leave Example Team, run: coconut team leave --team \(Self.roomID) --confirm 'Example Team'",
+            "To leave Example Team, run: coconut team leave --team \(Self.otherID) --confirm 'Example Team'"])
+        output = try await run(["leave", "--confirm", "example team"])
+        XCTAssertEqual(output.lines.first, "No team of this Mac has the name 'example team'. Nothing changed. Add "
+                       + "--team <ID> with the ID of the team:")
+        XCTAssertEqual(output.status, 1)
+        XCTAssertEqual(service.sent.filter { !$0.hasPrefix("GET") }, [])
+    }
+
+    func testATeamChoiceWithAWrongNameChangesNothing() async throws {
+        rooms([room(), room(Self.otherID, name: "Other")])
+        let output = try await run(["leave", "--team", Self.otherID, "--confirm", "Example Team"])
+        XCTAssertEqual(output, TeamOutput(lines: [
+            "The name after --confirm is not the name of the team Other. Nothing changed.",
+            "To leave, run: coconut team leave --team \(Self.otherID) --confirm Other"], status: 1))
+        XCTAssertEqual(service.sent.filter { !$0.hasPrefix("GET") }, [])
+    }
+
     // The bridge
 
     func testTheBridgeTransportNamesAMissingInstallOrAServiceThatDidNotStart() async throws {
