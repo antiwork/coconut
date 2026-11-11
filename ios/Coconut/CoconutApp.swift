@@ -79,7 +79,7 @@ struct CoconutHome: View {
             Tab(value: HomeTab.bots) {
                 root(tab: .bots, path: $botsPath)
             } label: {
-                Label { Text("Bots") } icon: {
+                Label { Text("Chats") } icon: {
                     Image(systemName: "bubble.left.and.bubble.right").environment(\.symbolVariants, .none)
                 }
             }.accessibilityIdentifier("home-bots")
@@ -186,6 +186,12 @@ struct CoconutHome: View {
                 }
                 .navigationDestination(for: DocumentRoute.self) { route in
                     DocumentView(documentId: route.id)
+                }
+                .navigationDestination(for: TeamChatRoute.self) { route in
+                    TeamChatView(roomId: route.roomId)
+                }
+                .navigationDestination(for: TeamScreenRoute.self) { route in
+                    TeamRoomView(roomId: route.roomId, pushed: true)
                 }
                 .background(BoardStyle.paper)
         }

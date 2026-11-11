@@ -8,7 +8,7 @@ final class SettingsAccessTests: XCTestCase {
         app.launchArguments = ["--demo"]
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Inbox"].waitForExistence(timeout: 15))
-        for tab in ["Inbox", "Bots"] {
+        for tab in ["Inbox", "Chats"] {
             app.tabBars.buttons[tab].tap()
             let settings = app.buttons["app-settings"]
             XCTAssertTrue(settings.waitForExistence(timeout: 5), "Settings is missing in \(tab).")

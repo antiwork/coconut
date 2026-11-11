@@ -5,6 +5,8 @@ enum MacSelection: Hashable {
     case inbox
     case library
     case bot(String)
+    /// The chat of a team, by room ID.
+    case team(String)
 }
 
 /// The tabs of the details next to a chat.
@@ -124,11 +126,20 @@ struct MacMainWindow: View {
             // The pill over the chat names the bot, so the window shows no title of its own. Without this, the title of
             // the bot settings in the details repeats the bot name.
             .toolbar(removing: .title)
+        case .team(let roomId):
+            // A team has no details column, so the chat takes the whole detail column and has no control for one.
+            NavigationStack(path: $chatPath) {
+                TeamChatView(roomId: roomId)
+                    .id(roomId)
+            }
+            .ignoresSafeArea(.container, edges: .top)
+            .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
+            .toolbar(removing: .title)
         }
     }
 }
 
-/// The sidebar: the Inbox, the pinned bots, and every other bot with its last message.
+/// The sidebar: the Inbox, the pinned bots, and the chats: every other bot and each team, with the last message.
 struct MacSidebar: View {
     @Environment(AppStore.self) private var store
     @Binding var selection: MacSelection?
@@ -139,15 +150,20 @@ struct MacSidebar: View {
     nonisolated static func sections(bots: [Bot], messages: [Message]) -> (pinned: [Bot], others: [Bot]) {
         // One pass over the messages. A comparison of the sort read every message and parsed its date, about 3 ms for
         // each body with 1,500 messages.
-        let latest = lastMessageDates(messages)
+        sections(bots: bots, latest: ChatList.lastMessageDates(messages))
+    }
+
+    nonisolated static func sections(bots: [Bot], latest: [String: Date]) -> (pinned: [Bot], others: [Bot]) {
         func lastActivity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         let active = bots.filter { !$0.archived }.sorted { lastActivity($0) > lastActivity($1) }
         return (active.filter(\.pinned), active.filter { !$0.pinned })
     }
 
     var body: some View {
-        // The body reads both sections, so it sorts the bots one time and not for each section.
-        let (pinned, others) = Self.sections(bots: store.bots, messages: store.messages)
+        // The body reads both sections, so it reads the messages and sorts the bots one time.
+        let latest = ChatList.lastMessageDates(store.messages)
+        let (pinned, others) = Self.sections(bots: store.bots, latest: latest)
+        let chats = ChatList.items(bots: others, latest: latest, rooms: store.team?.rooms ?? [])
         return List(selection: $selection) {
             MacSidebarLabel(title: "Inbox", symbol: "tray")
                 .badge(store.inboxBadgeCount)
@@ -162,8 +178,18 @@ struct MacSidebar: View {
                     ForEach(pinned) { bot in row(bot) }
                 }
             }
-            Section("Bots") {
-                ForEach(others) { bot in row(bot) }
+            Section("Chats") {
+                ForEach(chats) { item in
+                    switch item {
+                    case .bot(let bot): row(bot)
+                    case .team(let room):
+                        // A team has no pin and no delete here. The Team screen has its leave action.
+                        TeamContactRow(room: room, avatarSize: 32)
+                            .padding(.vertical, 2)
+                            .tag(MacSelection.team(room.room))
+                            .accessibilityIdentifier("sidebar-team-\(room.room)")
+                    }
+                }
             }
         }
         .listStyle(.sidebar)
@@ -171,6 +197,10 @@ struct MacSidebar: View {
         // A deleted bot leaves the list. Its chat closes, and the Inbox shows instead.
         .onChange(of: store.bots.map(\.id)) { _, ids in
             if case .bot(let id) = selection, !ids.contains(id) { selection = .inbox }
+        }
+        // A team that this Mac removed leaves the list too.
+        .onChange(of: store.team?.rooms.map(\.room)) { _, ids in
+            if case .team(let id) = selection, let ids, !ids.contains(id) { selection = .inbox }
         }
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
     }
@@ -185,16 +215,6 @@ struct MacSidebar: View {
                 Button("Delete Bot…", role: .destructive) { deleting = bot }
             }
             .accessibilityIdentifier("sidebar-bot-\(bot.id)")
-    }
-
-    /// The date of the newest message of each bot.
-    nonisolated static func lastMessageDates(_ messages: [Message]) -> [String: Date] {
-        var latest: [String: Date] = [:]
-        for message in messages {
-            guard let date = message.createdAt.apiDate else { continue }
-            if latest[message.botId].map({ date > $0 }) ?? true { latest[message.botId] = date }
-        }
-        return latest
     }
 }
 

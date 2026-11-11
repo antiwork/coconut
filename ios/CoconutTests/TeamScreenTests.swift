@@ -210,7 +210,8 @@ final class TeamScreenTests: XCTestCase {
             server.addMember("Grace")
             store.setForeground(true)
             try await waitUntil { server.changesSent == 1 }
-            try await waitUntil(timeout: .seconds(5)) { server.listRequests == 2 }
+            // The list of the connect, the first load, and the load after the change.
+            try await waitUntil(timeout: .seconds(5)) { server.listRequests == 3 }
             server.releaseLists()
             _ = await first.value
             try await waitUntil(timeout: .seconds(5)) { store.team?.rooms.first?.memberList.count == 2 }
@@ -269,19 +270,17 @@ final class TeamScreenTests: XCTestCase {
         let address = try await server.start()
         defer { server.stop() }
         try await withPairedStore(address: address) { store in
-            // A screen that never loaded does not load because of an update. It loads when it opens.
+            // The Chats list shows the teams, so the app loaded them when it connected.
+            XCTAssertEqual(store.team?.rooms.first?.memberList.map(\.name), ["Ada"])
+            XCTAssertEqual(server.listRequests, 1)
             server.addMember("Grace")
             store.setForeground(true)
-            try await waitUntil { server.changesSent == 1 }
-            try await Task.sleep(for: .milliseconds(300))
-            XCTAssertNil(store.team)
-            XCTAssertEqual(server.listRequests, 0)
-            await store.loadTeam()
+            try await waitUntil { store.team?.rooms.first?.memberList.count == 2 }
             XCTAssertEqual(store.team?.rooms.first?.memberList.map(\.name), ["Ada", "Grace"])
             server.addMember("Edsger")
             try await waitUntil { store.team?.rooms.first?.memberList.count == 3 }
             XCTAssertEqual(store.team?.rooms.first?.memberList.map(\.name), ["Ada", "Grace", "Edsger"])
-            XCTAssertEqual(server.listRequests, 2)
+            XCTAssertEqual(server.listRequests, 3)
         }
         #endif
     }
@@ -440,6 +439,463 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
+    // MARK: The chat
+
+    /// The person sends a message while a request of the newest page runs. The Mac made that page before the message,
+    /// so the page must not take the message out again.
+    @MainActor
+    func testAnOlderPageDoesNotTakeOutASentMessage() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Hello from Grace", announce: false)
+            await store.loadTeamChat("r1")
+            XCTAssertEqual(store.teamChats["r1"]?.messages.map(\.text), ["Hello from Grace"])
+            server.holdPages()
+            let refresh = Task { await store.loadTeamChat("r1") }
+            try await waitUntil { server.heldPages == 1 }
+            store.sendTeamMessage("r1", text: "Hi Grace", replyingTo: nil)
+            XCTAssertEqual(store.teamChats["r1"]?.pending.map(\.text), ["Hi Grace"], "The message shows at once.")
+            try await waitUntil { store.teamChats["r1"]?.pending.isEmpty == true }
+            XCTAssertEqual(store.teamChats["r1"]?.messages.map(\.text), ["Hello from Grace", "Hi Grace"])
+            server.releasePages()
+            _ = await refresh.value
+            XCTAssertEqual(store.teamChats["r1"]?.messages.map(\.text), ["Hello from Grace", "Hi Grace"],
+                           "The older page must not take the message out.")
+            XCTAssertEqual(server.sentKeys.count, 1)
+            XCTAssertNotNil(UUID(uuidString: server.sentKeys[0]), "A send carries its key.")
+        }
+        #endif
+    }
+
+    /// A send that fails keeps its text, and the retry sends the same key.
+    @MainActor
+    func testAFailedSendKeepsTheMessageAndTheRetrySendsTheSameKey() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            await store.loadTeamChat("r1")
+            server.failSends(true)
+            store.sendTeamMessage("r1", text: "Hi Grace", replyingTo: nil)
+            try await waitUntil { store.teamChats["r1"]?.pending.first?.failed == true }
+            XCTAssertEqual(store.error, "The relay of the team does not answer. Try again later.")
+            let id = try XCTUnwrap(store.teamChats["r1"]?.pending.first?.id)
+            server.failSends(false)
+            store.retryTeamMessage("r1", id: id)
+            try await waitUntil { store.teamChats["r1"]?.pending.isEmpty == true }
+            XCTAssertEqual(store.teamChats["r1"]?.messages.map(\.text), ["Hi Grace"])
+            XCTAssertEqual(server.sentKeys.count, 2)
+            XCTAssertEqual(Set(server.sentKeys), [id], "Each try of one message has the same key.")
+        }
+        #endif
+    }
+
+    /// `team_messages_changed` names the chat, and the open chat reads its newest page again.
+    @MainActor
+    func testTheChatLoadsAgainWhenTheUpdatesNameIt() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try TeamServer(state: APIJSON.encoder().encode(state), cursor: state.cursor)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            await store.loadTeamChat("r1")
+            XCTAssertEqual(store.teamChats["r1"]?.messages.count, 0)
+            server.addMessage("Hello from Grace")
+            store.setForeground(true)
+            try await waitUntil { store.teamChats["r1"]?.messages.count == 1 }
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.memberName, "Grace")
+            // The row of the team shows the new message too.
+            try await waitUntil { store.team?.rooms.first?.lastMessage?.text == "Hello from Grace" }
+        }
+        #endif
+    }
+
+    /// A page of the earlier pairing goes nowhere, and the chats go with the pairing.
+    @MainActor
+    func testAnUnpairDropsTheChatAndALatePage() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Hello from Grace", announce: false)
+            server.holdPages()
+            let late = Task { await store.loadTeamChat("r1") }
+            try await waitUntil { server.heldPages == 1 }
+            store.disconnect()
+            server.releasePages()
+            let fresh = await late.value
+            XCTAssertFalse(fresh)
+            XCTAssertTrue(store.teamChats.isEmpty, "A page of the earlier pairing must not come back.")
+        }
+        #endif
+    }
+
+    // MARK: Review of the chat: older pages, unsent messages, removed rooms
+
+    /// A store with 60 messages of Grace, its chat on screen, and both pages loaded: 11 to 60, then 1 to 10.
+    @MainActor
+    private func loadBothPages(_ store: AppStore, _ server: TeamServer) async throws {
+        for number in 1...60 { server.addMessage("Message \(number)", announce: false) }
+        store.openTeamChat("r1")
+        await store.loadTeamChat("r1")
+        XCTAssertEqual(store.teamChats["r1"]?.messages.count, 50)
+        let earlier = await store.loadEarlierTeamMessages("r1")
+        XCTAssertTrue(earlier)
+        XCTAssertEqual(store.teamChats["r1"]?.messages.count, 60)
+        XCTAssertEqual(store.teamChats["r1"]?.hasOlderPages, true)
+    }
+
+    /// Grace edits and removes messages of the older page that the person loaded. The chat on screen shows both.
+    @MainActor
+    func testAnEditAndARemovalOnAnOlderLoadedPageShowAfterAChange() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try TeamServer(state: APIJSON.encoder().encode(state), cursor: state.cursor)
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            try await loadBothPages(store, server)
+            server.change(5, to: "Message 5, edited")
+            server.change(3, to: nil)
+            store.setForeground(true)
+            try await waitUntil(timeout: .seconds(10)) {
+                store.teamChats["r1"]?.messages.contains { $0.text == "Message 5, edited" } == true
+            }
+            let texts = store.teamChats["r1"]?.messages.map(\.text) ?? []
+            XCTAssertFalse(texts.contains("Message 3"), "A removal on the older page shows.")
+            XCTAssertEqual(texts.count, 59)
+            XCTAssertEqual(store.teamChats["r1"]?.before, nil, "The chat still has its oldest message.")
+        }
+        #endif
+    }
+
+    /// The person leaves the chat. Grace then edits a message of the older page. The chat that opens again has only
+    /// its newest page, and the older page comes fresh.
+    @MainActor
+    func testAChatThatOpensAgainHasNoStaleRow() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            try await loadBothPages(store, server)
+            store.closeTeamChat("r1")
+            XCTAssertEqual(store.teamChats["r1"]?.messages.count, 50)
+            XCTAssertEqual(store.teamChats["r1"]?.before, 11)
+            server.change(5, to: "Message 5, edited", announce: false)
+            store.openTeamChat("r1")
+            await store.loadTeamChat("r1")
+            XCTAssertFalse(store.teamChats["r1"]?.messages.contains { $0.first < 11 } == true, "No stale row.")
+            await store.loadEarlierTeamMessages("r1")
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first { $0.first == 5 }?.text, "Message 5, edited")
+        }
+        #endif
+    }
+
+    /// Two passes read the older page again. The first answers last, with the text from before the edit.
+    @MainActor
+    func testAnOlderRereadCannotWinOverANewerOne() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            try await loadBothPages(store, server)
+            server.holdRereads()
+            let older = Task { await store.loadTeamChat("r1") }
+            try await waitUntil { server.heldRereads == 1 }
+            server.change(5, to: "Message 5, edited twice", announce: false)
+            let newer = Task { await store.loadTeamChat("r1") }
+            try await waitUntil { server.heldRereads == 2 }
+            // The older reread has the text from before the edit, and it answers first. Only the newer pass merges.
+            server.releaseRereads()
+            _ = await newer.value
+            _ = await older.value
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first { $0.first == 5 }?.text, "Message 5, edited twice")
+        }
+        #endif
+    }
+
+    /// A send that fails offline is saved for the pairing. A new store of the same pairing shows it with the same key;
+    /// a success, an unpair and another pairing leave nothing.
+    @MainActor
+    func testAnUnsentMessageStaysForThePairingOnly() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.failSends(true)
+            XCTAssertTrue(store.sendTeamMessage("r1", text: "Kept over a restart", replyingTo: nil))
+            try await waitUntil { store.teamChats["r1"]?.pending.first?.failed == true }
+            let key = try XCTUnwrap(store.teamChats["r1"]?.pending.first?.idempotencyKey)
+            let restarted = AppStore(demo: false)
+            XCTAssertEqual(restarted.teamChats["r1"]?.pending.map(\.text), ["Kept over a restart"])
+            XCTAssertEqual(restarted.teamChats["r1"]?.pending.first?.idempotencyKey, key)
+            XCTAssertEqual(restarted.teamChats["r1"]?.pending.first?.failed, true, "Retry and Delete show.")
+
+            // Another pairing does not show the message of this one.
+            let folder = URL.applicationSupportDirectory.appendingPathComponent(TestIsolation.name("Coconut"))
+            let saved = try Data(contentsOf: folder.appendingPathComponent("outgoing.json"))
+            var other: OutgoingCache = try JSONDecoder().decode(OutgoingCache.self, from: saved)
+            other = OutgoingCache(deviceId: "another-device", messages: other.messages, answers: other.answers,
+                                  teamMessages: other.teamMessages)
+            try ProtectedCache.write(other, name: "outgoing.json")
+            XCTAssertNil(AppStore(demo: false).teamChats["r1"], "A store of another pairing shows nothing.")
+            try ProtectedCache.write(try JSONDecoder().decode(OutgoingCache.self, from: saved), name: "outgoing.json")
+
+            // A success removes it from the saved set.
+            server.failSends(false)
+            store.retryTeamMessage("r1", id: key)
+            try await waitUntil { store.teamChats["r1"]?.pending.isEmpty == true }
+            XCTAssertEqual(server.sentKeys, [key, key])
+            XCTAssertNil(AppStore(demo: false).teamChats["r1"]?.pending.first)
+
+            // An unpair removes it too.
+            server.failSends(true)
+            store.sendTeamMessage("r1", text: "Gone with the pairing", replyingTo: nil)
+            try await waitUntil { store.teamChats["r1"]?.pending.first?.failed == true }
+            store.disconnect()
+            XCTAssertNil(AppStore(demo: false).teamChats["r1"])
+        }
+        #endif
+    }
+
+    /// The person removes the team while a page of its chat is on its way. The late page changes nothing.
+    @MainActor
+    func testALatePageAfterARemovalChangesNothing() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Hello from Grace", announce: false)
+            await store.loadTeamChat("r1")
+            let room = try XCTUnwrap(store.team?.rooms.first)
+            server.holdPages()
+            let late = Task { await store.loadTeamChat("r1") }
+            try await waitUntil { server.heldPages == 1 }
+            let left = await store.leaveTeam(room)
+            XCTAssertTrue(left)
+            XCTAssertNil(store.teamChats["r1"])
+            server.releasePages()
+            let fresh = await late.value
+            XCTAssertFalse(fresh)
+            XCTAssertNil(store.teamChats["r1"], "The history of a removed team must not come back.")
+            XCTAssertFalse(store.sendTeamMessage("r1", text: "Too late", replyingTo: nil))
+            XCTAssertNil(store.teamChats["r1"])
+        }
+        #endif
+    }
+
+    // MARK: Late answers
+
+    /// Sends one own message and returns it as the Mac answered it.
+    @MainActor
+    private func ownMessage(_ store: AppStore, _ text: String) async throws -> TeamMessage {
+        await store.loadTeamChat("r1")
+        store.sendTeamMessage("r1", text: text, replyingTo: nil)
+        try await waitUntil { store.teamChats["r1"]?.messages.contains { $0.text == text } == true }
+        return try XCTUnwrap(store.teamChats["r1"]?.messages.first { $0.text == text })
+    }
+
+    /// The person edits a message, then deletes it while the answer of the edit is late. The message stays deleted.
+    @MainActor
+    func testALateEditAnswerDoesNotBringBackADeletedMessage() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            let message = try await ownMessage(store, "Hello")
+            server.holdEdits(true)
+            let edit = Task { await store.editTeamMessage("r1", message, text: "Hello again") }
+            try await waitUntil { server.heldEdits == 1 }
+            server.holdEdits(false)
+            let deleted = await store.deleteTeamMessage("r1", message)
+            XCTAssertTrue(deleted)
+            XCTAssertFalse(store.teamChats["r1"]?.messages.contains { $0.id == message.id } == true)
+            server.releaseEdits()
+            _ = await edit.value
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertFalse(store.teamChats["r1"]?.messages.contains { $0.id == message.id } == true,
+                           "A late edit answer must not bring back the deleted message.")
+        }
+        #endif
+    }
+
+    /// Two edits of one message. The answer of the first comes last. The newer text stays.
+    @MainActor
+    func testALateEditAnswerDoesNotReplaceANewerText() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            let message = try await ownMessage(store, "Hello")
+            server.holdEdits(true)
+            let first = Task { await store.editTeamMessage("r1", message, text: "First text") }
+            try await waitUntil { server.heldEdits == 1 }
+            server.holdEdits(false)
+            let second = await store.editTeamMessage("r1", message, text: "Second text")
+            XCTAssertTrue(second)
+            server.releaseEdits()
+            _ = await first.value
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first { $0.id == message.id }?.text, "Second text")
+            XCTAssertNil(store.teamChats["r1"]?.editing[message.id])
+        }
+        #endif
+    }
+
+    /// More messages come than one page holds while the read of the loaded older range waits. The newest page starts
+    /// the range again, and the late read adds no old rows under it.
+    @MainActor
+    func testAResetOfTheLoadedRangeEndsTheReadOfTheOlderPages() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            try await loadBothPages(store, server)
+            server.holdRereads()
+            let waiting = Task { await store.loadTeamChat("r1") }
+            try await waitUntil { server.heldRereads == 1 }
+            for number in 61...130 { server.addMessage("Message \(number)", announce: false) }
+            await store.loadTeamChat("r1")
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.first, 81, "The newest page started the range again.")
+            server.releaseRereads()
+            _ = await waiting.value
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(store.teamChats["r1"]?.messages.first?.first, 81, "No old row came under the new page.")
+            XCTAssertEqual(store.teamChats["r1"]?.messages.count, 50)
+            XCTAssertEqual(store.teamChats["r1"]?.before, 81)
+        }
+        #endif
+    }
+
+    /// An older page that the person asked for arrives after the chat closed. The closed chat keeps its newest page.
+    @MainActor
+    func testAnOlderPageAfterTheChatClosedChangesNothing() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            for number in 1...60 { server.addMessage("Message \(number)", announce: false) }
+            store.openTeamChat("r1")
+            await store.loadTeamChat("r1")
+            server.holdPages()
+            let earlier = Task { await store.loadEarlierTeamMessages("r1") }
+            try await waitUntil { server.heldPages == 1 }
+            store.closeTeamChat("r1")
+            server.releasePages()
+            let merged = await earlier.value
+            XCTAssertFalse(merged)
+            XCTAssertEqual(store.teamChats["r1"]?.messages.count, 50)
+        }
+        #endif
+    }
+
+    /// The answer of a read position comes after a newer list. The count of the list stays.
+    @MainActor
+    func testALateReadAnswerDoesNotReplaceTheCountOfANewerList() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.addMessage("Hello from Grace", announce: false)
+            await store.loadTeamChat("r1")
+            server.holdReads(true)
+            let read = Task { await store.markTeamRead("r1", first: 1) }
+            try await waitUntil { server.heldReads == 1 }
+            server.setUnread(7)
+            await store.loadTeam()
+            XCTAssertEqual(store.team?.rooms.first?.unread, 7)
+            server.releaseReads()
+            await read.value
+            XCTAssertEqual(store.team?.rooms.first?.unread, 7, "The newer list has the newer count.")
+            XCTAssertEqual(store.teamReadMark("r1"), 1, "The Mac confirmed the position.")
+        }
+        #endif
+    }
+
+    /// An unsent message comes back after a restart, but its room left the list meanwhile. The list drops it.
+    @MainActor
+    func testARestoredUnsentMessageOfARemovedRoomGoes() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.failSends(true)
+            store.sendTeamMessage("r1", text: "Not sent", replyingTo: nil)
+            try await waitUntil { store.teamChats["r1"]?.pending.first?.failed == true }
+            server.removeRoom()
+            let restarted = AppStore(demo: false)
+            XCTAssertEqual(restarted.teamChats["r1"]?.pending.count, 1)
+            await restarted.reconnect()
+            try await waitUntil { restarted.team != nil }
+            XCTAssertNil(restarted.teamChats["r1"], "A room that left the list takes its unsent message with it.")
+            XCTAssertFalse(restarted.sendTeamMessage("r1", text: "Too late", replyingTo: nil))
+            XCTAssertNil(AppStore(demo: false).teamChats["r1"], "The saved set lost it too.")
+        }
+        #endif
+    }
+
     #if DEBUG && targetEnvironment(simulator)
     /// Pairs a new store with the test Mac. The pairing and the files of the test host come back after the body.
     @MainActor
@@ -460,6 +916,8 @@ final class TeamScreenTests: XCTestCase {
         }
         await store.pairOverLoopback(address: address, code: "fixture")
         XCTAssertEqual(store.connection, .connected, store.error ?? "No error")
+        // The store loads the teams when it connects. The test starts after that load.
+        try await waitUntil(timeout: .seconds(5)) { store.team != nil || store.teamLoadError != nil }
         try await body(store)
     }
     #endif
@@ -479,6 +937,14 @@ private final class TeamServer: @unchecked Sendable {
     private var heldRemoval: [@Sendable (Double) -> Void] = []
     var heldRemovals: Int { lock.withLock { heldRemoval.count } }
     private var left = false
+    /// The unread count of the room in the list.
+    private var unread = 0
+    private var holdingEdits = false
+    private var heldEdit: [@Sendable () -> Void] = []
+    var heldEdits: Int { lock.withLock { heldEdit.count } }
+    private var holdingReads = false
+    private var heldRead: [@Sendable () -> Void] = []
+    var heldReads: Int { lock.withLock { heldRead.count } }
     private var holding = false
     private var held: [@Sendable () -> Void] = []
     private var cursor: Int
@@ -488,6 +954,23 @@ private final class TeamServer: @unchecked Sendable {
     private var changes = 0
     private var lists = 0
     var heldLists: Int { lock.withLock { held.count } }
+    /// One message of the chat. `first` grows with each message.
+    private struct ChatMessage { let first: Int; var text: String; let own: Bool; var edited = false }
+    /// The messages of the chat, oldest first.
+    private var messages: [ChatMessage] = []
+    private var nextFirst = 1
+    private var messagesPending = false
+    private var holdingPages = false
+    private var heldPage: [@Sendable () -> Void] = []
+    /// Holds only the requests that read loaded older pages again (`limit=100`).
+    private var holdingRereads = false
+    private var heldReread: [@Sendable () -> Void] = []
+    var heldRereads: Int { lock.withLock { heldReread.count } }
+    private var failingSends = false
+    private var keys: [String] = []
+    var heldPages: Int { lock.withLock { heldPage.count } }
+    /// The `Idempotency-Key` of each send, in order.
+    var sentKeys: [String] { lock.withLock { keys } }
     /// The updates answers that said `team_changed`, or a reset.
     var changesSent: Int { lock.withLock { changes } }
     var listRequests: Int { lock.withLock { lists } }
@@ -518,6 +1001,103 @@ private final class TeamServer: @unchecked Sendable {
         for (index, answer) in answers.reversed().enumerated() { answer(0.05 + 0.25 * Double(index)) }
     }
     func failLists(_ fail: Bool) { lock.withLock { failing = fail } }
+
+    /// Adds a message of Grace, as her Mac does. With `announce`, the next updates answer names the chat.
+    func addMessage(_ text: String, announce: Bool = true) {
+        lock.withLock {
+            messages.append(ChatMessage(first: nextFirst, text: text, own: false))
+            nextFirst += 1
+            if announce { messagesPending = true }
+        }
+    }
+
+    /// Grace edits the message with this `first`, or removes it with nil, as her Mac does.
+    func change(_ first: Int, to text: String?, announce: Bool = true) {
+        lock.withLock {
+            if let text, let index = messages.firstIndex(where: { $0.first == first }) {
+                messages[index].text = text
+                messages[index].edited = true
+            } else if text == nil {
+                messages.removeAll { $0.first == first }
+            }
+            if announce { messagesPending = true }
+        }
+    }
+
+    func holdRereads() { lock.withLock { holdingRereads = true } }
+
+    /// Keeps the answers of the edits, or of the read positions. The Mac makes each change at once.
+    func holdEdits(_ hold: Bool) { lock.withLock { holdingEdits = hold } }
+    func holdReads(_ hold: Bool) { lock.withLock { holdingReads = hold } }
+
+    func releaseEdits() {
+        let answers = lock.withLock { defer { heldEdit = [] }; return heldEdit }
+        answers.forEach { $0() }
+    }
+
+    func releaseReads() {
+        let answers = lock.withLock { defer { heldRead = [] }; return heldRead }
+        answers.forEach { $0() }
+    }
+
+    /// The unread count that the next list has.
+    func setUnread(_ count: Int) { lock.withLock { unread = count } }
+
+    /// This Mac is no longer in the room, as after a leave on another device of the person.
+    func removeRoom() { lock.withLock { left = true } }
+
+    /// Sends the held rereads. Their pages are from the time of their request.
+    func releaseRereads() {
+        let answers = lock.withLock {
+            holdingRereads = false
+            defer { heldReread = [] }
+            return heldReread
+        }
+        answers.forEach { $0() }
+    }
+
+    func holdPages() { lock.withLock { holdingPages = true } }
+    func failSends(_ fail: Bool) { lock.withLock { failingSends = fail } }
+
+    func releasePages() {
+        let answers = lock.withLock {
+            holdingPages = false
+            defer { heldPage = [] }
+            return heldPage
+        }
+        answers.forEach { $0() }
+    }
+
+    /// A message as the Mac shows it.
+    private func json(_ message: ChatMessage) -> String {
+        let member = message.own ? #""member": "m0", "member_name": "Ada", "this_mac": true"#
+            : #""member": "m1", "member_name": "Grace", "this_mac": false"#
+        let edited = message.edited ? #""2026-11-10T13:00:00Z""# : "null"
+        return #"{"id": "e\#(message.first)", "first": \#(message.first), \#(member), "bot": null, "bot_name": null, "#
+            + #""text": "\#(message.text)", "reply_to": null, "reply": null, "mentions": [], "#
+            + #""created_at": "2026-11-10T12:00:00Z", "edited_at": \#(edited)}"#
+    }
+
+    /// One page, newest first, as the Mac answers it: the messages under `before`, at most `limit`, and the `before` of
+    /// the next page. The caller holds the lock.
+    private func page(_ query: String) -> String {
+        func number(_ name: String) -> Int? {
+            URLComponents(string: "x?" + query)?.queryItems?.first { $0.name == name }?.value.flatMap(Int.init)
+        }
+        let limit = number("limit") ?? 50
+        let older = messages.filter { message in number("before").map { message.first < $0 } ?? true }
+        let shown = Array(older.suffix(limit).reversed())
+        let next = older.count > limit ? shown.last.map { String($0.first) } ?? "null" : "null"
+        return #"{"room": "r1", "messages": [\#(shown.map(json).joined(separator: ", "))], "before": \#(next)}"#
+    }
+
+    /// The newest message for the list of the rooms. The caller holds the lock.
+    private func lastMessage() -> String {
+        guard let last = messages.last else { return "null" }
+        let writer = last.own ? #""member_name": "Ada", "this_mac": true"# : #""member_name": "Grace", "this_mac": false"#
+        return #"{"first": \#(last.first), \#(writer), "bot": null, "bot_name": null, "text": "\#(last.text)", "#
+            + #""created_at": "2026-11-10T12:00:00Z"}"#
+    }
     func holdLists() { lock.withLock { holding = true } }
 
     func releaseLists() {
@@ -541,14 +1121,32 @@ private final class TeamServer: @unchecked Sendable {
         }
         return #"{"room": "r1", "name": "Example Team", "state": "active", "is_admin": true, "can_invite": true, "#
             + #""members": [\#(people.joined(separator: ", "))], "bots": [\#(shared.joined(separator: ", "))], "#
-            + #""sync": {"error": null}}"#
+            + #""sync": {"error": null}, "unread": \#(unread), "last_message": \#(lastMessage())}"#
+    }
+
+    /// Reads one request with its whole body. A client can send the body in a later packet than the head.
+    private func receive(_ connection: NWConnection, _ buffer: Data, then handle: @escaping @Sendable (Data) -> Void) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, done, _ in
+            var buffer = buffer
+            if let data { buffer.append(data) }
+            let text = String(decoding: buffer, as: UTF8.self)
+            if let split = text.range(of: "\r\n\r\n") {
+                let length = text[..<split.lowerBound].components(separatedBy: "\r\n")
+                    .first { $0.lowercased().hasPrefix("content-length:") }
+                    .flatMap { Int($0.split(separator: ":").last?.trimmingCharacters(in: .whitespaces) ?? "") } ?? 0
+                if text[split.upperBound...].utf8.count >= length { handle(buffer); return }
+            }
+            if done || data == nil { handle(buffer); return }
+            receive(connection, buffer, then: handle)
+        }
     }
 
     func start() async throws -> String {
         listener.newConnectionHandler = { [self] connection in
             connection.start(queue: queue)
-            connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, _, _ in
-                guard let data, let first = String(data: data, encoding: .utf8)?.components(separatedBy: "\r\n").first
+            receive(connection, Data()) { [self] data in
+                guard let request = String(data: data, encoding: .utf8),
+                      let first = request.components(separatedBy: "\r\n").first
                 else { connection.cancel(); return }
                 let words = first.split(separator: " ").map(String.init)
                 guard words.count >= 2 else { connection.cancel(); return }
@@ -572,11 +1170,56 @@ private final class TeamServer: @unchecked Sendable {
                 case _ where route.hasPrefix("DELETE /v1/team/rooms/r1/bots/"):
                     let id = String(route.split(separator: "/").last ?? "")
                     body = lock.withLock { bots.removeAll { $0 == id }; return #"{"room": \#(room())}"# }
+                case "GET /v1/team/rooms/r1/messages":
+                    let query = words[1].components(separatedBy: "?").dropFirst().first ?? ""
+                    body = lock.withLock { page(query) }
+                case "POST /v1/team/rooms/r1/messages":
+                    let key = request.components(separatedBy: "\r\n")
+                        .first { $0.lowercased().hasPrefix("idempotency-key:") }?
+                        .split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? ""
+                    let text = request.components(separatedBy: "\r\n\r\n").last
+                        .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?["text"] as? String ?? ""
+                    body = lock.withLock {
+                        keys.append(key)
+                        if failingSends {
+                            status = "503 Service Unavailable"
+                            return #"{"error": "The relay of the team does not answer. Try again later."}"#
+                        }
+                        messages.append(ChatMessage(first: nextFirst, text: text, own: true))
+                        nextFirst += 1
+                        return #"{"room": "r1", "message": \#(json(messages[messages.count - 1]))}"#
+                    }
+                case _ where route.hasPrefix("PATCH /v1/team/rooms/r1/messages/"):
+                    let first = Int(route.split(separator: "/").last?.dropFirst() ?? "") ?? 0
+                    let text = request.components(separatedBy: "\r\n\r\n").last
+                        .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?["text"] as? String ?? ""
+                    body = lock.withLock {
+                        guard let index = messages.firstIndex(where: { $0.first == first }) else {
+                            status = "404 Not Found"
+                            return #"{"error": "This message is no longer in the chat."}"#
+                        }
+                        messages[index].text = text
+                        messages[index].edited = true
+                        return #"{"room": "r1", "message": \#(json(messages[index]))}"#
+                    }
+                case _ where route.hasPrefix("DELETE /v1/team/rooms/r1/messages/"):
+                    let id = String(route.split(separator: "/").last ?? "")
+                    body = lock.withLock {
+                        messages.removeAll { "e\($0.first)" == id }
+                        return #"{"room": "r1", "id": "\#(id)", "deleted": true}"#
+                    }
+                case "POST /v1/team/rooms/r1/read":
+                    body = lock.withLock { #"{"room": "r1", "read": 1, "unread": 0}"# }
                 case "DELETE /v1/team/rooms/r1":
                     body = lock.withLock { left = true; return #"{"room": "r1", "left": true}"# }
                 case "GET /v1/updates":
                     let after = Int(words[1].components(separatedBy: "after=").dropFirst().first?.prefix { $0.isNumber } ?? "") ?? 0
                     body = lock.withLock {
+                        if messagesPending, after == cursor {
+                            messagesPending = false; cursor += 1
+                            return #"{"after": \#(after), "cursor": \#(cursor), "server_time": "2026-11-09T00:00:00Z", "#
+                                + #""team_messages_changed": ["r1"]}"#
+                        }
                         guard changePending, after == cursor else {
                             return #"{"after": \#(after), "cursor": \#(after), "server_time": "2026-11-09T00:00:00Z"}"#
                         }
@@ -611,7 +1254,26 @@ private final class TeamServer: @unchecked Sendable {
                     if holding { held.append(send) }
                     return holding
                 }
-                if !hold { send() }
+                let holdPage = route == "GET /v1/team/rooms/r1/messages" && lock.withLock {
+                    if holdingRereads && words[1].contains("limit=100") {
+                        heldReread.append(send)
+                        return true
+                    }
+                    if holdingPages { heldPage.append(send) }
+                    return holdingPages
+                }
+                let holdWrite = lock.withLock {
+                    if route.hasPrefix("PATCH /v1/team/rooms/r1/messages/") && holdingEdits {
+                        heldEdit.append(send)
+                        return true
+                    }
+                    if route == "POST /v1/team/rooms/r1/read" && holdingReads {
+                        heldRead.append(send)
+                        return true
+                    }
+                    return false
+                }
+                if !hold && !holdPage && !holdWrite { send() }
             }
         }
         return try await withCheckedThrowingContinuation { continuation in

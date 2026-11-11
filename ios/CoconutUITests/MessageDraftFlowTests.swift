@@ -45,7 +45,7 @@ final class MessageDraftFlowTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Share the meeting notes?"].waitForExistence(timeout: 10))
         app.scrollViews["inbox-card-scroll"].buttons["draft-discard"].tap()
         XCTAssertTrue(app.staticTexts["All caught up."].waitForExistence(timeout: 10))
-        app.tabBars.buttons["Bots"].tap()
+        app.tabBars.buttons["Chats"].tap()
         app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "bot-conversation-")).firstMatch.tap()
         XCTAssertTrue(app.staticTexts["Approved for sending"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["Sent"].exists)

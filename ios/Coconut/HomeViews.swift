@@ -5,41 +5,56 @@ struct HomeLaunchView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ScaledMetric(relativeTo: .subheadline) private var pinWidth = 108
 
-    private var activeBots: [Bot] {
-        store.bots.filter { !$0.archived }.sorted { lastActivity($0) > lastActivity($1) }
-    }
-    private var pinned: [Bot] {
-        activeBots.filter(\.pinned).sorted {
+    @State private var deleting: Bot?
+
+    var body: some View {
+        // One pass over the messages gives the newest activity of each bot. The list sorts by it one time.
+        let latest = ChatList.lastMessageDates(store.messages)
+        let activeBots = store.bots.filter { !$0.archived }.sorted {
+            (latest[$0.id] ?? $0.createdAt.apiDate ?? .distantPast) > (latest[$1.id] ?? $1.createdAt.apiDate ?? .distantPast)
+        }
+        let pinned = activeBots.filter(\.pinned).sorted {
             let first = $0.createdAt.apiDate ?? .distantPast
             let second = $1.createdAt.apiDate ?? .distantPast
             return first == second ? $0.id < $1.id : first < second
         }
-    }
-    private var conversations: [Bot] { activeBots.filter { !$0.pinned } }
-    @State private var deleting: Bot?
-
-    var body: some View {
-        ScrollView {
+        let conversations = ChatList.items(bots: activeBots.filter { !$0.pinned }, latest: latest,
+                                           rooms: store.team?.rooms ?? [])
+        return ScrollView {
             LazyVStack(spacing: 0) {
                 if !pinned.isEmpty {
                     ViewThatFits(in: .horizontal) {
-                        pinnedTiles
-                        ScrollView(.horizontal, showsIndicators: false) { pinnedTiles }
+                        pinnedTiles(pinned)
+                        ScrollView(.horizontal, showsIndicators: false) { pinnedTiles(pinned) }
                     }
                     .frame(maxWidth: .infinity)
                     .padding(.top, 24).padding(.bottom, 24)
                 }
-                ForEach(conversations) { bot in
-                    NavigationLink(value: ConversationRoute(botId: bot.id)) {
-                        BotContactRow(bot: bot)
-                            .padding(.vertical, 12)
-                            .background(BoardStyle.paper)
-                            .contentShape(Rectangle())
-                            .contextMenu { botActions(bot) }
+                ForEach(conversations) { item in
+                    switch item {
+                    case .bot(let bot):
+                        NavigationLink(value: ConversationRoute(botId: bot.id)) {
+                            BotContactRow(bot: bot)
+                                .padding(.vertical, 12)
+                                .background(BoardStyle.paper)
+                                .contentShape(Rectangle())
+                                .contextMenu { botActions(bot) }
+                        }
+                            .buttonStyle(HomePressStyle())
+                            .accessibilityIdentifier("bot-conversation-\(bot.id)")
+                            .padding(.horizontal, 24)
+                    case .team(let room):
+                        // A team has no pin and no delete here. The Team screen has its leave action.
+                        NavigationLink(value: TeamChatRoute(roomId: room.room)) {
+                            TeamContactRow(room: room)
+                                .padding(.vertical, 12)
+                                .background(BoardStyle.paper)
+                                .contentShape(Rectangle())
+                        }
+                            .buttonStyle(HomePressStyle())
+                            .accessibilityIdentifier("team-chat-\(room.room)")
+                            .padding(.horizontal, 24)
                     }
-                        .buttonStyle(HomePressStyle())
-                        .accessibilityIdentifier("bot-conversation-\(bot.id)")
-                        .padding(.horizontal, 24)
                 }
             }
             .padding(.top, pinned.isEmpty ? 16 : 0)
@@ -50,7 +65,7 @@ struct HomeLaunchView: View {
         .modifier(DeleteBotDialog(bot: $deleting))
     }
 
-    private var pinnedTiles: some View {
+    private func pinnedTiles(_ pinned: [Bot]) -> some View {
         HStack(spacing: 20) {
             ForEach(pinned) { bot in
                 NavigationLink(value: ConversationRoute(botId: bot.id)) {
@@ -82,10 +97,6 @@ struct HomeLaunchView: View {
         Button("Delete bot", systemImage: "trash", role: .destructive) { deleting = bot }
     }
 
-    private func lastActivity(_ bot: Bot) -> Date {
-        store.messages.filter { $0.botId == bot.id && $0.reactionEvent == nil }.compactMap { $0.createdAt.apiDate }.max()
-            ?? bot.createdAt.apiDate ?? .distantPast
-    }
 }
 
 struct HomePressStyle: ButtonStyle {
@@ -212,7 +223,7 @@ struct BotContactRow: View {
     }
 }
 
-private struct UnreadMarker: View {
+struct UnreadMarker: View {
     let count: Int
     var body: some View {
         Text("\(count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)

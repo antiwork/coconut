@@ -20,6 +20,8 @@ struct StateUpdates: Decodable, Sendable {
     var documentsChanged: Bool?
     /// A team, a member or a bot of a team changed. The list of the Team screen is not part of the state.
     var teamChanged: Bool?
+    /// The teams whose chat changed: a message, an edit, a removal, or the read position.
+    var teamMessagesChanged: [String]?
     var confirmedRequestIds: [String]?
 
     func applying(to snapshot: StateSnapshot) -> StateSnapshot? {
