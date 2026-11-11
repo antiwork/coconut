@@ -339,8 +339,9 @@ class TeamOnlyService(TeamTurns, Documents, Team):
             return {'recorded': False, 'reason': 'A message of the team chat is complete. It takes no edit.'}
         with self.lock:
             room_row = self.team_store.room(room)
-        if room_row is None or room_row['state'] != ACTIVE:
-            return {'recorded': False, 'reason': 'This Mac is not in this team.'}
+            answers = room_row is not None and bot_id in dict(self.team_store.answering(room))
+        if not answers or room_row['state'] != ACTIVE:
+            return {'recorded': False, 'reason': 'The bot does not answer in this team chat.'}
         for number, piece in enumerate(parts(text)):
             self._team_say(room, bot_id, message_id, number, piece)
         return {'recorded': True}

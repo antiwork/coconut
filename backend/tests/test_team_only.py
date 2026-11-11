@@ -482,11 +482,16 @@ class ProcessTests(unittest.TestCase):
         create = {'code': '0123456789', 'device_name': 'iPhone'}
         refusal = {'error': team_only.REFUSAL, 'code': 'team_only'}
         for method, path, body, token in (('POST', '/v1/pair', create, None), ('GET', '/v1/state', None, self.token),
-                                          ('POST', '/v1/gateway/poll', {'home': str(self.home)}, self.token),
                                           ('POST', '/v1/gateway/tools', {}, self.token),
+                                          ('POST', '/v1/gateway/cron', {}, self.token),
+                                          ('POST', '/v1/gateway/files', {}, self.token),
                                           ('GET', '/v1/documents', None, None)):
             with self.subTest(path=path):
                 self.assertEqual(self.request(method, path, body, token), (503, refusal))
+        # The adapter of the team mode polls with the token of the bridge file. No bot has its chat, so no turn comes.
+        self.assertEqual(self.request('POST', '/v1/gateway/poll', {'home': str(self.home), 'wait': 0}, self.token),
+                         (200, {'turns': [], 'stop': []}))
+        self.assertEqual(self.request('POST', '/v1/gateway/poll', {'home': str(self.home), 'wait': 0})[0], 401)
         # No tunnel listener, and no child process without a room.
         with self.assertRaises(ConnectionRefusedError):
             self.request('GET', '/health', port=self.tunnel_port)

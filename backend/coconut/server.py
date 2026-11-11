@@ -32,6 +32,9 @@ PEER_KEY = re.compile(r'[0-9a-f]{64}')
 # Only the main listener serves these. The tunnel listener carries the phone's requests.
 GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/tools', '/v1/gateway/cron',
                   '/v1/gateway/wake', '/v1/gateway/messages', '/v1/gateway/files', '/v1/gateway/document')
+# The routes of the adapter that a team-only service serves: the turns of the team chat (team_turns.py) and the sends
+# of Hermes outside a turn. No tool, no cron and no file of a phone.
+TEAM_GATEWAY_ROUTES = ('/v1/gateway/poll', '/v1/gateway/events', '/v1/gateway/messages')
 # The routes of the team rooms (team.py). A paired device calls them on each listener. A tool on this Mac calls them
 # on the main listener with the token of the bridge file.
 TEAM_ROUTES = '/v1/team/'
@@ -223,14 +226,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _team_only(self, service, method, url):
         """The routes of a team-only service (team_only.py): the team routes and the page route, for a tool of this
-        Mac with the token of the bridge file. Each other route says that this Mac runs Coconut for a team only."""
+        Mac, and the routes of the adapter of the team mode (TEAM_GATEWAY_ROUTES), each with the token of the bridge
+        file. Each other route says that this Mac runs Coconut for a team only."""
         page = method == 'POST' and url.path == '/v1/gateway/document'
-        if not page and not url.path.startswith(TEAM_ROUTES):
+        gateway = method == 'POST' and url.path in TEAM_GATEWAY_ROUTES
+        if not page and not gateway and not url.path.startswith(TEAM_ROUTES):
             service.refuse()
         if not service.gateway_bridge.authorized(self.headers.get('Authorization', '')):
             raise ServiceError(401, 'Use the token in <data>/gateway/bridge.json.')
         if page:
             self._json(200, service.gateway_document(self._body()))
+        elif gateway:
+            self._gateway(service.gateway_bridge, url.path)
         else:
             self._team(service, method, url)
 

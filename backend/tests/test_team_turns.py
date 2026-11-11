@@ -304,6 +304,36 @@ class TurnTests(TeamTurnMacs, unittest.TestCase):
         self.assertEqual(tables & {'tasks', 'messages', 'decisions'}, set())
 
 
+class OutsideTests(TeamTurnMacs, unittest.TestCase):
+    """A send of Hermes in a team chat outside a turn of Coconut (POST /v1/gateway/messages)."""
+
+    def message(self, **fields):
+        data = {'home': str(self.home), 'chat_id': team_turns.chat_id(self.room, self.bot['id']), 'kind': 'send',
+                'message_id': 'outside:1', 'text': 'The background job finished.', **fields}
+        return self.only.gateway_message(data)
+
+    def test_a_send_outside_a_turn_is_a_message_of_the_bot_once(self):
+        self.assertEqual(self.message(), {'recorded': True})
+        self.assertEqual(self.message(), {'recorded': True})
+        self.sync()
+        self.assertEqual([row for row in self.chat() if row[0] == 'Reporter'],
+                         [('Reporter', 'The background job finished.', None)])
+        # A message of the chat is complete: an edit and a delete change nothing.
+        self.assertFalse(self.message(kind='edit', text='Changed.')['recorded'])
+        self.assertFalse(self.message(kind='delete')['recorded'])
+
+    def test_a_send_for_another_home_or_chat_is_refused_and_a_bot_without_its_chat_writes_nothing(self):
+        other = self.home.parent / 'other'
+        self.assertEqual(self.refusal(lambda: self.message(home=str(other)))[0], 404)
+        for chat in ('', self.bot['id'], 'nobody:team:' + self.room):
+            with self.subTest(chat=chat):
+                self.assertEqual(self.refusal(lambda: self.message(chat_id=chat))[0], 400 if ':team:' not in chat else 404)
+        self.connect(chat=False)
+        self.assertFalse(self.message()['recorded'])
+        self.sync()
+        self.assertEqual([row for row in self.chat() if row[0] == 'Reporter'], [])
+
+
 class FailureTests(TeamTurnMacs, unittest.TestCase):
     def trigger(self):
         sent = self.send('@Reporter status?', mentions=[self.mention])
