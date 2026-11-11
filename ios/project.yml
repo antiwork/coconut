@@ -1,8 +1,9 @@
 name: Coconut
 packages:
+  # A copy of MarkdownUI 2.4.1 with a patch: a row that a Mac list measures off screen gets the same block gaps as on
+  # screen. See Packages/MarkdownUI/PATCHES.md.
   MarkdownUI:
-    url: https://github.com/gonzalezreal/swift-markdown-ui
-    exactVersion: 2.4.1
+    path: Packages/MarkdownUI
   # The updater of Coconut.app. The owner made the EdDSA key pair of the feed with this version. Update both together.
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
