@@ -5,7 +5,7 @@ import ServiceManagement
 ///
 /// The agents start the service and the relay. The app opens too, so the menu bar icon shows and Sparkle, which runs
 /// in the app, checks for updates after a restart of the Mac.
-public enum LoginItem: Hashable, CaseIterable {
+public enum LoginItem: Hashable, CaseIterable, Sendable {
     case app
     case agent(Agent)
 
@@ -26,6 +26,23 @@ public enum LoginItem: Hashable, CaseIterable {
         case .agent(let agent): return SMAppService.agent(plistName: agent.plistName)
         }
     }
+}
+
+/// The numbers of reads that can overlap. Only the result of the newest read applies, so an older read that finishes
+/// last cannot put back an older value.
+public struct LatestRead: Sendable {
+    private var started = 0
+
+    public init() {}
+
+    /// Start a read and return its number.
+    public mutating func start() -> Int {
+        started += 1
+        return started
+    }
+
+    /// True when no read started after this one.
+    public func isLatest(_ read: Int) -> Bool { read == started }
 }
 
 /// The part of `SMAppService` that Coconut uses. Tests give a stand-in.

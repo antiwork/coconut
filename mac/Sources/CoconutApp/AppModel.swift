@@ -24,6 +24,7 @@ final class AppModel: ObservableObject {
     let install = Install.standard(environment: [:])
     private var timer: Timer?
     private var couldRegister = false
+    private var loginItemReads = LatestRead()
 
     init() {
         UserDefaults.standard.register(defaults: [Self.startAtLoginKey: true])
@@ -65,7 +66,10 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func refresh() async {
+    /// Read the status again, and return the login item status of this read. A caller that decides something uses the
+    /// returned value: the published one can still be older when a newer read of the timer runs.
+    @discardableResult
+    func refresh() async -> [LoginItem: SMAppService.Status] {
         let healthy = await StatusReader.checkHealth()
         // The timer runs every five seconds. Each assignment redraws the menu, so only a change is assigned.
         let status = StatusReader(install: install).read(healthy: healthy)
@@ -76,8 +80,14 @@ final class AppModel: ObservableObject {
         let canRegister = legacyAgents.isEmpty && status.service != .notInstalled
         if canRegister && !couldRegister { registerIfNeeded() }
         couldRegister = canRegister
-        let loginItems = LoginItems().statuses()
+        // Each status is a request to launchd. On the main thread the three of them held the app for about 95 ms every
+        // five seconds, also while the person clicked in a chat.
+        let read = loginItemReads.start()
+        let loginItems = await Task.detached(priority: .utility) { LoginItems().statuses() }.value
+        // A timer refresh can overlap a change of "Start at Login". Its older read must not replace the newer status.
+        guard loginItemReads.isLatest(read) else { return loginItems }
         if loginItems != self.loginItems { self.loginItems = loginItems }
+        return loginItems
     }
 
     /// Register the login items (the app and its two agents) when the person wants them, Coconut is installed and no
@@ -115,9 +125,9 @@ final class AppModel: ObservableObject {
         guard activity == nil else { return }
         UserDefaults.standard.set(true, forKey: Self.startAtLoginKey)
         registerIfNeeded(beforeInstall: true)
-        await refresh()
+        let loginItems = await refresh()
         guard loginItems[.agent(.service)] == .enabled else {
-            updateError = needsApproval
+            updateError = loginItems.values.contains(.requiresApproval)
                 ? "Allow Coconut in Login Items, then choose Set Up Coconut again."
                 : loginError ?? "Coconut could not add its login items."
             return
