@@ -31,10 +31,10 @@ public enum TeamCommand: Equatable, Sendable {
     public static let linkArgument = "The invite link is a secret, so coconut team join reads it from standard input. "
         + "Pipe the link to the command, and do not put it in the command."
 
-    /// How long the tool waits for each answer of the service. The list only reads, so it has the short timeout of a
-    /// read. Each other command can call the relay with retries, so it waits as long as scripts/team.py.
+    /// How long the tool waits for each answer of the service. The list only reads (BridgeTransport.listTimeout). Each
+    /// other command can call the relay with retries, so it waits as long as scripts/team.py.
     public var timeout: TimeInterval {
-        if case .show = self { return BridgeTransport.readTimeout }
+        if case .show = self { return BridgeTransport.listTimeout }
         return 180
     }
 
@@ -160,9 +160,14 @@ public struct BridgeTransport: TeamTransport {
     /// menu of the app asks with a short timeout, so a service that hangs does not hold its refresh.
     public let timeout: TimeInterval
 
-    /// The timeout of a read that a person or a timer waits for: `coconut status`, `coconut team`, and the refresh
-    /// of the app. The service answers a read from its store, so a service that takes longer does not answer.
+    /// The timeout of the team read of `coconut status` on a team-only Mac and of the refresh of the app. The status
+    /// must show its other lines soon, and the refresh runs every five seconds.
     public static let readTimeout: TimeInterval = 2
+
+    /// The timeout of `coconut team` (the list). The list also runs on a full install, whose service holds its lock
+    /// for some seconds at a time on a busy Mac (a median of about 4 seconds for one step was measured). A shorter
+    /// timeout would say that a healthy service does not answer.
+    public static let listTimeout: TimeInterval = 15
 
     public init(install: Install, timeout: TimeInterval) {
         self.install = install

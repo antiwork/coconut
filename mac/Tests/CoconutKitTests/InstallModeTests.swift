@@ -348,8 +348,8 @@ final class InstallModeTests: XCTestCase {
         XCTAssertEqual(StatusText.teamLines(version: "1.0 (1)", preferences: UpdatePreferences(store: MemoryPreferences()),
                                             status: status, team: team).last,
                        "Teams: unknown while the service does not answer")
-        // The list of `coconut team` only reads, so it has the same short timeout. A join or a leave waits longer.
-        XCTAssertEqual(TeamCommand.show(json: false).timeout, BridgeTransport.readTimeout)
+        // The list of `coconut team` also runs on a busy full install, so it waits longer. A join or a leave waits longest.
+        XCTAssertEqual(TeamCommand.show(json: false).timeout, 15)
         XCTAssertEqual(TeamCommand.join(name: nil).timeout, 180)
         XCTAssertEqual(TeamCommand.leave(team: nil, confirm: nil).timeout, 180)
     }
