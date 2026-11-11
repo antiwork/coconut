@@ -6,16 +6,13 @@ changes state, so the bots continue when the person installs or updates Hermes. 
 """
 from __future__ import annotations
 
-import fcntl
 import json
-import os
-from pathlib import Path
-import sqlite3
 import threading
 
 from .hermes_runtime import public
 from .hermes_setup import HermesSetup
 from .service import ServiceError, device_for_token, migrate_device_peers, now, pair_device
+from .service_base import open_store, release_data_folder, take_data_folder
 from .service_restart import ServiceRestart
 
 # The same tables as in Service. A later start with Hermes reads them unchanged.
@@ -31,28 +28,18 @@ CREATE TABLE IF NOT EXISTS pair_attempts (created REAL NOT NULL);
 class UnavailableService(HermesSetup):
     """The service object of refuse mode. server.Handler calls the same methods as on Service."""
 
+    # server.Handler answers only the setup status of this service (refuse).
+    setup_only = True
+
     # Nothing runs, so an update can stop this process at once. See host.drain_for_update.
     drains = False
     restart_enabled = False
 
     def __init__(self, data_dir, hermes: dict):
-        self.root = Path(data_dir).expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.root, 0o700)
-        self.process_lock = open(self.root / 'service.lock', 'a')
-        try:
-            fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            self.process_lock.close()
-            raise ServiceError(409, 'Another Coconut service already owns this data directory.')
+        self.root, self.process_lock = take_data_folder(data_dir)
         self.hermes_status = public(hermes)
         self.lock = threading.Lock()
-        self.db = sqlite3.connect(self.root / 'coconut.sqlite3', check_same_thread=False, isolation_level=None, timeout=10)
-        os.chmod(self.root / 'coconut.sqlite3', 0o600)
-        # As in Service: this takes effect only in a new store.
-        self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')
-        self.db.execute('PRAGMA journal_mode=WAL')
-        self.db.execute('PRAGMA synchronous=FULL')
+        self.db = open_store(self.root, timeout=10)
         self.db.executescript(SCHEMA)
         migrate_device_peers(self.db)
 
@@ -90,5 +77,4 @@ class UnavailableService(HermesSetup):
 
     def close(self):
         self.db.close()
-        fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
-        self.process_lock.close()
+        release_data_folder(self.process_lock)

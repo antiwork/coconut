@@ -103,16 +103,16 @@ def team_library(db, current: str) -> tuple[list[dict], list[dict]]:
     return [team_document(row) for row in pages], [team_bot(row) for row in bots]
 
 
-def team_page(db, document_id: str, *, content: bool = False) -> dict:
+def team_page(db, document_id: str, current: str, *, content: bool = False) -> dict:
     """One team page that the Library shows, or the reason for the phone. A page past its end answers as an ended
-    local document does."""
+    local document does. `current` is the time of the store."""
     from .documents import expired
-    from .service import ServiceError, now
+    from .service_base import ServiceError
     store = TeamStore(db)
     row = store.page(*team_ids(document_id))
     if row is None:
         raise ServiceError(404, 'Document was not found.')
-    if expired(row, now()):
+    if expired(row, current):
         raise ServiceError(404, 'This document ended.')
     page = team_document(row)
     if content:
@@ -130,7 +130,7 @@ class TeamPages:
 
     def team_share(self, room_id: str, data: dict) -> dict:
         """Share a bot of this Mac with a room. The next pass writes its `bot` entry and its team pages."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         from .team_sync import INACTIVE, TEAM_EVENT
         room = self._team_room(room_id)
         if room['state'] != ACTIVE:
@@ -251,12 +251,11 @@ class TeamPages:
         version of a page. A save of a document always gives a new version. The caller holds the service lock.
         """
         from .documents import expired
-        from .service import now
         room_id = room['room']
         live = self._team_live_bots(room_id)
         shares = {bot_id: entry for bot_id, (entry, _) in live.items()}
         bots = {bot_id: bot for bot_id, (_, bot) in live.items()}
-        current = now()
+        current = self._now()
         documents = [document for document in (json.loads(row[0]) for row in self.db.execute(
             "SELECT data FROM documents WHERE json_extract(data, '$.audience')='team'"))
             if document['bot_id'] in bots and not expired(document, current)]

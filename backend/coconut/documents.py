@@ -277,7 +277,7 @@ def expired(document: dict, current: str) -> bool:
 def page_to_save(arguments: dict) -> tuple[str, str, str, str, str | None]:
     """The key, title, format, content and summary of a page, or the reason to refuse it. The tools of a bot turn
     and the tooling of the Mac save a page through this, so both follow the page rules."""
-    from .service import ServiceError, require_text
+    from .service_base import ServiceError, require_text
     key, document_format, content = (arguments.get(name) for name in ('key', 'format', 'content'))
     if not isinstance(key, str) or not KEY.fullmatch(key):
         raise ServiceError(400, 'key must be 1 to 64 lowercase letters, digits and hyphens, for example '
@@ -302,7 +302,7 @@ def page_to_save(arguments: dict) -> tuple[str, str, str, str, str | None]:
 def page_end(arguments: dict, current: datetime):
     """The end date of a page as UTC text: the new one, None to remove it, or ... to keep the one it has, which is
     what an omitted expires_at means."""
-    from .service import ServiceError
+    from .service_base import ServiceError
     if 'expires_at' not in arguments:
         return ...
     ends = arguments.get('expires_at')
@@ -317,9 +317,18 @@ def page_end(arguments: dict, current: datetime):
 class Documents:
     """The documents of the bots: the tools of a bot turn, the tooling of the Mac and the routes of the phone."""
 
+    # True when a person on this Mac reads the Library. A Mac that runs Coconut for a team only has no reader, so a
+    # team page of a bot that no team has yet waits on this Mac until the bot is shared (team_only.py).
+    library_reader = True
+
+    def _now(self) -> str:
+        """The time of the store. Service gives the clock of service.py, which the tests of the full service set."""
+        from .service_base import now
+        return now()
+
     def save_document(self, task_id: str, arguments: dict) -> dict:
         """coconut_save_document of a bot turn: create the document of the key, or replace its content."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         key, title, document_format, content, summary = page_to_save(arguments)
         ends = page_end(arguments, datetime.now(timezone.utc))
         with self.transaction():
@@ -341,7 +350,7 @@ class Documents:
         changes nothing writes nothing, because the tooling runs on a timer and the page should keep its version
         until its content really changes.
         """
-        from .service import ServiceError, now
+        from .service_base import ServiceError
         key, title, document_format, content, summary = page_to_save(arguments)
         ends = page_end(arguments, datetime.now(timezone.utc))
         with self.transaction():
@@ -350,7 +359,7 @@ class Documents:
                 raise ServiceError(409, 'The bot is archived or deleted.')
             document = self._document_of_key(bot_id, key)
             audience = self._page_audience(bot_id, arguments, document, (key, title, document_format, content, summary))
-            if (document is not None and not expired(document, now())
+            if (document is not None and not expired(document, self._now())
                     and self._page_is_like(document, title, document_format, content, summary, ends, audience)):
                 return {'status': 'unchanged', 'key': key, 'version': document['version'],
                         'expires_at': document.get('expires_at')}
@@ -364,14 +373,14 @@ class Documents:
         "team" needs a team: the person shares the bot with a team first. A team page must fit in one entry of the
         log, so the save refuses a page that does not fit, and the bot can make it smaller.
         """
-        from .service import ServiceError
+        from .service_base import ServiceError
         from .team_pages import WIDEST, WIDEST_BOT, page_entry, payload_problem
         audience = arguments.get('audience')
         if audience is None:
             audience = (document or {}).get('audience', 'private')
         elif audience not in AUDIENCES:
             raise ServiceError(400, 'audience must be private or team.')
-        elif audience == 'team' and not self.team_store.shared(bot_id):
+        elif audience == 'team' and self.library_reader and not self.team_store.shared(bot_id):
             raise ServiceError(409, 'This bot is shared with no team, so Coconut did not save the page for a team. '
                                     'Save it with audience "private", or ask the person to share the bot with a team.')
         if audience == 'team':
@@ -406,12 +415,12 @@ class Documents:
 
     def _read_pages(self, bot_id: str, arguments: dict) -> dict:
         """One document of the bot with its content, or the list of them. The caller holds the read transaction."""
-        from .service import ServiceError, now
+        from .service_base import ServiceError
         key = arguments.get('key')
         if not key:
             return {'documents': [_summary(document) for document in self._bot_documents(bot_id)]}
         document = self._document_of_key(bot_id, key) if isinstance(key, str) else None
-        if document is None or expired(document, now()):
+        if document is None or expired(document, self._now()):
             raise ServiceError(404, 'This bot has no document with this key.')
         return dict(_summary(document), content=self._document_content(document))
 
@@ -423,7 +432,7 @@ class Documents:
     def delete_page(self, bot_id: str, arguments: dict) -> dict:
         """coconut_delete_document outside a Coconut chat turn. No turn asked for the delete, so the event names no
         task, as a delete from the phone."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         with self.transaction():
             bot = self._get('bots', bot_id)
             if bot['archived'] or bot.get('_deleted'):
@@ -432,7 +441,7 @@ class Documents:
 
     def _delete_key(self, bot_id: str, key, task_id: str | None) -> dict:
         """Delete the document of a key of the bot. The caller holds the transaction."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         document = self._document_of_key(bot_id, key) if isinstance(key, str) else None
         if document is None:
             raise ServiceError(404, 'This bot has no document with this key.')
@@ -446,9 +455,8 @@ class Documents:
         The list also has the team pages of the other Macs of each team (team_pages.py). `team_bots` names their
         bots. A phone that does not know these bots hides their pages.
         """
-        from .service import now
         from .team_pages import team_library
-        current = now()
+        current = self._now()
         with self._read_view() as view, view._read_transaction():
             bots = {bot['id'] for bot in view._all('bots') if not bot.get('_deleted')}
             rows = view._all('documents')
@@ -464,14 +472,14 @@ class Documents:
         from .team_pages import team_ids, team_page
         with self._read_view() as view, view._read_transaction():
             if team_ids(document_id):
-                return team_page(view.db, document_id, content=True)
+                return team_page(view.db, document_id, view._now(), content=True)
             document = view._shown_document(document_id)
             return dict(document, content=view._document_content(document))
 
     def delete_document(self, document_id: str) -> dict:
         """DELETE /v1/documents/<id> from the phone. A document that is already gone counts as deleted. Only the Mac
         that shares a team page can delete it."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         from .team_pages import team_ids
         with self.transaction():
             ids = team_ids(document_id)
@@ -491,7 +499,7 @@ class Documents:
         and no update time, a bot does not read it, and a save of the page keeps it. A pin adds no event: the phone
         reads the pin with the Library list.
         """
-        from .service import ServiceError
+        from .service_base import ServiceError
         from .team_pages import team_ids, team_page
         pinned = data.get('pinned')
         if not isinstance(pinned, bool):
@@ -502,7 +510,7 @@ class Documents:
                 # The pin of a team page is of this Mac only. The other Macs of the team do not see it. A page that
                 # the Library does not show raises here, and the transaction takes the pin back.
                 self.team_store.pin(*ids, pinned)
-                return team_page(self.db, document_id)
+                return team_page(self.db, document_id, self._now())
             document = self._shown_document(document_id)
             if (document.get('pinned') is True) != pinned:
                 document['pinned'] = pinned
@@ -525,8 +533,8 @@ class Documents:
         """Create the page of the key, or add a version to it, with its version record and its event. task_id is the
         turn that asked for the page, or None for a page that the tooling of the Mac keeps. The caller holds the
         transaction and returns the document and whether the save created it."""
-        from .service import now, uid
-        current = now()
+        from .service_base import uid
+        current = self._now()
         document = self._document_of_key(bot['id'], key)
         created = document is None
         if created:
@@ -567,11 +575,11 @@ class Documents:
 
     def _shown_document(self, document_id: str) -> dict:
         """A document that the Library shows, or the reason for the phone. The caller holds the transaction."""
-        from .service import ServiceError, now
+        from .service_base import ServiceError
         document = self._get('documents', document_id)
         if self._get('bots', document['bot_id']).get('_deleted'):
             raise ServiceError(404, 'Document was not found.')
-        if expired(document, now()):
+        if expired(document, self._now()):
             raise ServiceError(404, 'This document ended.')
         return document
 
@@ -581,8 +589,7 @@ class Documents:
         return json.loads(row[0]) if row else None
 
     def _bot_documents(self, bot_id: str) -> list[dict]:
-        from .service import now
-        current = now()
+        current = self._now()
         rows = self.db.execute("SELECT data FROM documents WHERE json_extract(data,'$.bot_id')=?", (bot_id,))
         documents = [json.loads(row[0]) for row in rows]
         return sorted((document for document in documents if not expired(document, current)),

@@ -186,7 +186,7 @@ def page_fields(fields: dict) -> dict | None:
     documents.page_to_save, and the text must be valid Unicode text before a rule or SQLite reads it.
     """
     from .documents import page_to_save
-    from .service import ServiceError
+    from .service_base import ServiceError
     bot, ends, summary = fields.get('bot'), fields.get('expires_at'), fields.get('summary')
     if not isinstance(bot, str) or not HEX32.fullmatch(bot):
         return None
@@ -592,6 +592,10 @@ class TeamStore:
 
     def shared(self, bot: str) -> bool:
         return self.db.execute('SELECT 1 FROM team_shares WHERE bot=? LIMIT 1', (bot,)).fetchone() is not None
+
+    def rooms_of(self, bot: str) -> list[str]:
+        """The rooms that this Mac shares the bot with."""
+        return [row[0] for row in self.db.execute('SELECT room FROM team_shares WHERE bot=? ORDER BY room', (bot,))]
 
     def share(self, room: str, bot: str, entry: str) -> bool:
         """Share a bot with the room. A bot that the room has keeps its entry ID. True when the bot is new there."""

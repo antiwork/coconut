@@ -1,0 +1,467 @@
+"""The team-only service (coconut/team_only.py): a Mac that keeps its team rooms and the pages of its declared bots, and
+touches nothing of Hermes.
+
+Most tests run the service in this process with the FakeRelay and the FakeHelper of team_fakes.py. The first Mac of
+TeamMacs is a full Mac (Ada), and `only` is the team-only Mac. ProcessTests starts the service as the login item does,
+in a fresh process. scripts/test_team_log.py runs it with the real helper and the relay code.
+"""
+import http.client
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest import mock
+from uuid import uuid4
+
+from coconut import team_only
+from coconut.service_base import ServiceError
+from coconut.team_only import FULL_INSTALL, TEAM_PAGE, TeamOnlyService
+from team_fakes import FakeHelper, TeamMacs
+
+PAGE = dict(key='weekly-report', title='Weekly report', format='markdown', summary='3 open tasks',
+            content='3 tasks are open.')
+BACKEND = Path(__file__).resolve().parents[1]
+# The modules of this package that a team-only service may load. Each other module belongs to the full runtime.
+TEAM_ONLY_MODULES = {'coconut', 'coconut.server', 'coconut.service_base', 'coconut.team_only', 'coconut.documents',
+                     'coconut.gateway_bridge', 'coconut.silent_responses', 'coconut.service_restart', 'coconut.team',
+                     'coconut.team_helper', 'coconut.team_keys', 'coconut.team_messages', 'coconut.team_pages',
+                     'coconut.team_relay', 'coconut.team_socket', 'coconut.team_store', 'coconut.team_sync',
+                     'coconut.push_relay'}
+
+
+def make_hermes_home(home: Path) -> None:
+    """A made-up Hermes home with the files that a production agent has: config, keys, profiles, plugins, cron and a
+    state database."""
+    files = {'config.yaml': 'model:\n  default: example-model\n', '.env': 'EXAMPLE_API_KEY=not-a-real-key\n',
+             'SOUL.md': 'An example agent.\n', 'profiles/reporter/config.yaml': 'model:\n  default: example-model\n',
+             'profiles/reporter/.env': 'EXAMPLE_API_KEY=not-a-real-key\n',
+             'plugins/example/plugin.yaml': 'name: example\n', 'plugins/example/__init__.py': '',
+             'cron/jobs.json': '{"jobs": []}\n', 'skills/example/SKILL.md': '# Example\n'}
+    for name, text in files.items():
+        (home / name).parent.mkdir(parents=True, exist_ok=True)
+        (home / name).write_text(text)
+    with sqlite3.connect(home / 'state.db') as database:
+        database.execute('CREATE TABLE sessions (id TEXT PRIMARY KEY)')
+    database.close()
+
+
+def snapshot(home: Path) -> dict:
+    """Each path under the home with its kind, size, mode, inode, times of change and bytes. The read of the bytes
+    changes only the access time, which the snapshot leaves out."""
+    found = {}
+    for folder, folders, files in os.walk(home):
+        for name in folders + files:
+            path = Path(folder) / name
+            stat = path.lstat()
+            found[str(path.relative_to(home))] = (stat.st_mode, stat.st_ino, stat.st_size, stat.st_mtime_ns,
+                                                 stat.st_ctime_ns, path.read_bytes() if path.is_file() else None)
+    stat = home.lstat()
+    found['.'] = (stat.st_mode, stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns)
+    return found
+
+
+class TeamOnlyMacs(TeamMacs):
+    def setUp(self):
+        super().setUp()
+        self.home = Path(self.temp.name) / 'hermes'
+        make_hermes_home(self.home)
+        self.only = self.team_only_mac('only')
+
+    def team_only_mac(self, name: str) -> TeamOnlyService:
+        service = TeamOnlyService(Path(self.temp.name) / name)
+        self.addCleanup(lambda: service.stopping.is_set() or service.close())
+        service.team_relay, service.team_helper = self.relay, FakeHelper()
+        return service
+
+    def call(self, method: str, path: str, data: dict | None = None, service=None) -> dict:
+        return (service or self.only).team_request(method, path, data or {})
+
+    def declare(self, name: str = 'Reporter', home=None, **fields) -> dict:
+        return self.call('POST', '/v1/team/bots', dict(fields, name=name, home=str(home or self.home)))['bot']
+
+    def team(self) -> str:
+        """Ada makes a room, and the team-only Mac joins it. Return the room ID."""
+        room = self.create()
+        self.join(self.only, self.invite(room)['link'], 'Reporter Mac')
+        return room['room']
+
+    def share(self, room: str, bot: dict) -> dict:
+        return self.call('POST', f'/v1/team/rooms/{room}/bots', {'bot_id': bot['id']})['room']
+
+    def save(self, **fields) -> dict:
+        return self.only.gateway_document({**PAGE, 'home': str(self.home), 'audience': 'team', **fields})
+
+    def sync(self):
+        """A pass on the team-only Mac, which writes, then one on Ada's Mac, which reads."""
+        self.only.team_sync_pass()
+        self.first.team_sync_pass()
+
+    def library(self) -> dict:
+        """Ada's Library: the team pages and the team bots."""
+        answer = self.first.documents()
+        return {'pages': [(page['title'], page['version']) for page in answer['documents'] if 'team' in page],
+                'bots': [bot['name'] for bot in answer['team_bots']]}
+
+    def stored(self) -> int:
+        return self.only.db.execute('SELECT COUNT(*) FROM documents').fetchone()[0]
+
+
+class TeamOnlyFlowTests(TeamOnlyMacs, unittest.TestCase):
+    def test_a_full_flow_leaves_the_hermes_home_as_it_was(self):
+        before = snapshot(self.home)
+        room = self.team()
+        bot = self.declare()
+        self.assertEqual(self.share(room, bot)['bots'][0]['name'], 'Reporter')
+        self.assertEqual(self.save()['status'], 'saved')
+        self.sync()
+        self.assertEqual(self.library(), {'pages': [('Weekly report', 1)], 'bots': ['Reporter']})
+        # Ada's Library lists the page under the team bot.
+        listed = self.first.documents()
+        (page,) = (row for row in listed['documents'] if 'team' in row)
+        self.assertEqual(page['bot_id'], listed['team_bots'][0]['id'])
+        self.assertEqual(self.first.document(page['id'])['content'], '3 tasks are open.')
+        self.only.close()
+        self.assertEqual(snapshot(self.home), before)
+
+    def test_a_page_of_a_bot_without_a_team_waits_and_goes_out_when_the_bot_is_shared(self):
+        room = self.team()
+        bot = self.declare()
+        self.assertEqual(self.save()['status'], 'saved')
+        self.sync()
+        self.assertEqual(self.library(), {'pages': [], 'bots': []})
+        self.share(room, bot)
+        self.sync()
+        self.assertEqual(self.library(), {'pages': [('Weekly report', 1)], 'bots': ['Reporter']})
+
+    def test_a_save_that_changes_nothing_writes_nothing(self):
+        self.declare()
+        self.assertEqual(self.save()['version'], 1)
+        self.assertEqual(self.save(), {'status': 'unchanged', 'key': 'weekly-report', 'version': 1, 'expires_at': None})
+        self.assertEqual(self.save(content='4 tasks are open.')['version'], 2)
+        # The page limits and checks are those of a full Mac.
+        self.assertEqual(self.refusal(lambda: self.save(key='Not A Key'))[0], 400)
+        self.assertEqual(self.refusal(lambda: self.save(format='html', content='<p style="color:red">x</p>'))[0], 400)
+
+    def test_a_page_must_name_the_team_audience(self):
+        self.declare()
+        for fields in ({}, {'audience': 'private'}, {'audience': None}, {'audience': 'Team'}):
+            with self.subTest(fields=fields):
+                page = dict(PAGE, home=str(self.home), **fields)
+                self.assertEqual(self.refusal(self.only.gateway_document, page), (400, TEAM_PAGE))
+        self.assertEqual(self.stored(), 0)
+        # A home that is not the home of a declared bot, and a home that is not a full path.
+        status, text = self.refusal(lambda: self.save(home=str(self.home / 'profiles' / 'reporter')))
+        self.assertEqual(status, 404)
+        self.assertIn('coconut team new-bot', text)
+        for home in ('hermes', '~/.hermes', 'a\0b', '/a\ud800'):
+            with self.subTest(home=home):
+                self.assertEqual(self.refusal(lambda: self.save(home=home))[0], 400)
+        self.assertEqual(self.stored(), 0)
+
+    def test_the_tool_reads_the_mode_and_the_bots(self):
+        self.team()
+        bot = self.declare()
+        self.sync()
+        answer = self.call('GET', '/v1/team/rooms')
+        self.assertEqual((answer['mode'], answer['mac_bots']), ('team', [{'id': bot['id'], 'name': 'Reporter'}]))
+        # A full Mac has no mode, so the tool tells the two apart.
+        self.assertNotIn('mode', self.call('GET', '/v1/team/rooms', service=self.first))
+        status = self.call('GET', '/v1/team/status')
+        self.assertEqual((status['mode'], status['helper'], status['bots']), ('team', True, 1))
+        self.assertTrue(status['version'] is None or len(status['version']) in (40, 64), status['version'])
+        (room,) = status['rooms']
+        self.assertEqual((room['name'], room['state'], room['members'], room['bots']), ('Example Team', 'active', 2, 0))
+
+    def test_the_status_names_the_commit_of_a_checkout(self):
+        folder = Path(self.temp.name) / 'checkout'
+        (folder / '.git/refs/heads').mkdir(parents=True)
+        commit = 'a' * 40
+        (folder / '.git/HEAD').write_text('ref: refs/heads/main\n')
+        (folder / '.git/packed-refs').write_text(f'# pack-refs\n{commit} refs/heads/main\n')
+        self.assertEqual(team_only.code_version(folder), commit)
+        (folder / '.git/refs/heads/main').write_text('b' * 40 + '\n')
+        self.assertEqual(team_only.code_version(folder), 'b' * 40)
+        (folder / '.git/HEAD').write_text('c' * 40 + '\n')
+        self.assertEqual(team_only.code_version(folder), 'c' * 40)
+        # A worktree names its git folder in a file, and its refs are in the shared folder.
+        worktree = Path(self.temp.name) / 'worktree'
+        worktree.mkdir()
+        (folder / '.git/worktrees/one').mkdir(parents=True)
+        (worktree / '.git').write_text(f'gitdir: {folder}/.git/worktrees/one\n')
+        (folder / '.git/worktrees/one/HEAD').write_text('ref: refs/heads/main\n')
+        (folder / '.git/worktrees/one/commondir').write_text('../..\n')
+        self.assertEqual(team_only.code_version(worktree), 'b' * 40)
+        self.assertIsNone(team_only.code_version(Path(self.temp.name) / 'nothing'))
+
+
+class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
+    def test_a_bot_record_has_the_fields_of_a_bot_entry(self):
+        bot = self.declare('Reporter 📊', avatar='📊', color='blue')
+        self.assertEqual({name: bot[name] for name in ('name', 'avatar', 'color', 'home', 'teams')},
+                         {'name': 'Reporter 📊', 'avatar': '📊', 'color': 'blue', 'home': os.path.realpath(self.home),
+                          'teams': []})
+        self.assertEqual(self.call('GET', '/v1/team/bots')['bots'], [bot])
+
+    def test_a_bot_record_refuses_hostile_input(self):
+        cases = [({'name': 'R' * 81}, 'Use at most 80 characters for the name of the bot.'),
+                 ({'name': 'Re\ud800porter'}, 'Use only valid text for the name of the bot.'),
+                 ({'name': 'Two\nlines'}, 'Put the name of the bot on one line.'),
+                 ({'name': '‮Reporter'}, 'Remove the hidden characters from the name of the bot.'),
+                 ({'name': ' Reporter'}, 'Remove the space at the start or end of the name of the bot.'),
+                 ({'name': ''}, 'Give the name of the bot.'), ({'name': 7}, 'Give the name of the bot.'), ({}, 'Give the name of the bot.'),
+                 ({'name': 'Reporter', 'avatar': 'a' * 81}, 'Use text of at most 80 characters for the avatar.'),
+                 ({'name': 'Reporter', 'color': 'c' * 21}, 'Use text of at most 20 characters for the color.'),
+                 ({'name': 'Reporter', 'color': '\udfff'}, 'Use text of at most 20 characters for the color.'),
+                 ({'name': 'Reporter', 'home': 42}, team_only.HOME),
+                 ({'name': 'Reporter', 'home': None}, team_only.HOME),
+                 ({'name': 'Reporter', 'home': ['/tmp']}, team_only.HOME),
+                 ({'name': 'Reporter', 'home': ''}, team_only.HOME),
+                 ({'name': 'Reporter', 'home': 'relative/hermes'}, team_only.HOME),
+                 ({'name': 'Reporter', 'home': '/tmp/a\0b'}, team_only.HOME),
+                 ({'name': 'Reporter', 'home': '/tmp/\ud800'}, team_only.HOME),
+                 ({'name': 'Reporter', 'home': '/' + 'h' * 4096}, team_only.HOME)]
+        for data, text in cases:
+            with self.subTest(data=data):
+                self.assertEqual(self.refusal(self.call, 'POST', '/v1/team/bots', data), (400, text))
+        self.assertEqual(self.call('GET', '/v1/team/bots')['bots'], [])
+
+    def test_two_bots_cannot_stand_for_one_home_or_have_one_name(self):
+        self.declare()
+        # The same home through a link is the same home.
+        link = Path(self.temp.name) / 'link'
+        link.symlink_to(self.home)
+        status, text = self.refusal(lambda: self.declare('Helper', home=link))
+        self.assertEqual((status, text), (409, 'The bot Reporter already stands for this Hermes home. A Hermes home '
+                                               'has one bot.'))
+        other = Path(self.temp.name) / 'other'
+        self.assertEqual(self.refusal(lambda: self.declare('reporter', home=other)),
+                         (409, 'This Mac already has a bot with the name Reporter. Choose another name.'))
+        self.assertEqual(self.declare('Helper', home=other)['home'], os.path.realpath(other))
+
+    def test_the_default_home_is_the_home_of_the_process(self):
+        with mock.patch.dict(os.environ, {'HERMES_HOME': str(self.home)}):
+            bot = self.call('POST', '/v1/team/bots', {'name': 'Reporter'})['bot']
+        self.assertEqual(bot['home'], os.path.realpath(self.home))
+        user = Path(self.temp.name) / 'user'
+        with mock.patch.dict(os.environ, {'HOME': str(user), 'HERMES_HOME': ''}):
+            bot = self.call('POST', '/v1/team/bots', {'name': 'Helper'})['bot']
+        self.assertEqual(bot['home'], os.path.realpath(user / '.hermes'))
+
+    def test_a_change_keeps_the_home_and_reaches_the_team(self):
+        room = self.team()
+        bot = self.declare()
+        self.share(room, bot)
+        self.sync()
+        changed = self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'name': 'Night Reporter', 'color': 'green'})['bot']
+        self.assertEqual((changed['name'], changed['avatar'], changed['color'], changed['teams']),
+                         ('Night Reporter', '', 'green', [room]))
+        self.sync()
+        self.assertEqual(self.library()['bots'], ['Night Reporter'])
+        self.assertEqual(self.refusal(self.call, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'home': '/tmp'})[0], 400)
+        self.assertEqual(self.refusal(self.call, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'name': 'x' * 81})[0], 400)
+        self.assertEqual(self.refusal(self.call, 'PATCH', '/v1/team/bots/missing', {'name': 'Other'}),
+                         (404, 'This Mac has no bot with this ID.'))
+        self.declare('Helper', home=Path(self.temp.name) / 'other')
+        self.assertEqual(self.refusal(self.call, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'name': 'HELPER'})[0], 409)
+        (stored,) = [row for row in self.call('GET', '/v1/team/bots')['bots'] if row['id'] == bot['id']]
+        self.assertEqual(stored['name'], 'Night Reporter')
+
+    def test_a_removed_bot_leaves_each_team_with_its_pages(self):
+        room = self.team()
+        bot = self.declare()
+        self.share(room, bot)
+        self.save()
+        self.sync()
+        self.assertEqual(self.library(), {'pages': [('Weekly report', 1)], 'bots': ['Reporter']})
+        self.assertEqual(self.call('DELETE', f'/v1/team/bots/{bot["id"]}'), {'bot': bot['id'], 'removed': True})
+        self.assertEqual(self.call('GET', '/v1/team/bots')['bots'], [])
+        self.assertEqual(self.call('GET', '/v1/team/rooms')['rooms'][0]['bots'], [])
+        self.assertEqual(self.stored(), 0)
+        self.sync()
+        self.assertEqual(self.library(), {'pages': [], 'bots': []})
+        self.assertEqual(self.refusal(self.call, 'DELETE', f'/v1/team/bots/{bot["id"]}')[0], 404)
+        # The home is free again.
+        self.assertEqual(self.declare()['home'], os.path.realpath(self.home))
+
+
+class FolderTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.data = Path(self.temp.name) / 'data'
+
+    def test_a_full_install_is_refused(self):
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service
+        service = Service(self.data, FixtureProvider(self.data), start_workers=False)
+        # The folder of a running service has its lock.
+        with self.assertRaises(ServiceError) as held:
+            TeamOnlyService(self.data)
+        self.assertEqual(held.exception.status, 409)
+        service.mutate('POST', '/v1/bots', {'name': 'Ada'}, str(uuid4()), 'phone')
+        service.close()
+        with self.assertRaises(ServiceError) as refused:
+            TeamOnlyService(self.data)
+        self.assertEqual((refused.exception.status, str(refused.exception)), (409, FULL_INSTALL))
+        # The refusal releases the lock, so the full service starts again.
+        Service(self.data, FixtureProvider(self.data), start_workers=False).close()
+
+    def test_a_folder_with_a_paired_phone_is_refused(self):
+        TeamOnlyService(self.data).close()
+        with sqlite3.connect(self.data / 'coconut.sqlite3') as database:
+            database.execute('CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT '
+                             'NULL, created_at TEXT NOT NULL, peer_key TEXT)')
+            database.execute("INSERT INTO devices VALUES ('phone', 'iPhone', 'hash', 'now', NULL)")
+        database.close()
+        with self.assertRaises(ServiceError) as refused:
+            TeamOnlyService(self.data)
+        self.assertEqual(str(refused.exception), FULL_INSTALL)
+
+    def test_a_team_only_folder_starts_again(self):
+        service = TeamOnlyService(self.data)
+        service.team_request('POST', '/v1/team/bots', {'name': 'Reporter', 'home': '/tmp/example-hermes'})
+        service.close()
+        service = TeamOnlyService(self.data)
+        self.addCleanup(service.close)
+        self.assertEqual([bot['name'] for bot in service.team_request('GET', '/v1/team/bots', {})['bots']],
+                         ['Reporter'])
+        # No event is kept: nothing reads one on this Mac.
+        self.assertNotIn('events', {row[0] for row in service.db.execute("SELECT name FROM sqlite_master")})
+
+
+# Start the service as `python3 -m coconut` does, and write the names of the loaded modules when it exits.
+RUNNER = ('import atexit, json, os, runpy, sys; '
+          'atexit.register(lambda: open(os.environ["MODULES_FILE"], "w").write(json.dumps(sorted(sys.modules)))); '
+          'sys.argv[0] = "coconut"; runpy.run_module("coconut", run_name="__main__", alter_sys=True)')
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        return probe.getsockname()[1]
+
+
+class ProcessTests(unittest.TestCase):
+    """The team-only service in a fresh process, as a login item starts it with COCONUT_MODE=team."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        folder = Path(self.temp.name)
+        self.data, self.home, self.modules = folder / 'data', folder / 'hermes', folder / 'modules.json'
+        make_hermes_home(self.home)
+        self.port, self.tunnel_port = free_port(), free_port()
+        environment = {name: value for name, value in os.environ.items() if name not in ('COCONUT_TEAM_HELPER',)}
+        environment.update(COCONUT_MODE='team', HERMES_HOME=str(self.home), MODULES_FILE=str(self.modules),
+                           PYTHONPATH=str(BACKEND))
+        self.log = folder / 'service.log'
+        self.before = snapshot(self.home)
+        with self.log.open('w') as output:
+            self.process = subprocess.Popen(
+                [sys.executable, '-c', RUNNER, '--data-dir', str(self.data), '--port', str(self.port),
+                 '--tunnel-port', str(self.tunnel_port), '--provider', 'hermes'],
+                cwd=folder, env=environment, stdout=output, stderr=subprocess.STDOUT)
+        self.addCleanup(self.stop)
+        deadline = time.monotonic() + 30
+        while not self.answers('/health'):
+            if self.process.poll() is not None or time.monotonic() > deadline:
+                self.fail(f'The team-only service did not start:\n{self.log.read_text()}')
+            time.sleep(.1)
+        self.token = json.loads((self.data / 'gateway/bridge.json').read_text())['token']
+
+    def answers(self, path: str) -> bool:
+        try:
+            return self.request('GET', path)[0] == 200
+        except OSError:
+            return False
+
+    def stop(self):
+        if self.process.poll() is None:
+            self.process.terminate()
+            self.process.wait(30)
+
+    def request(self, method: str, path: str, body: dict | None = None, token: str | None = None,
+                port: int | None = None) -> tuple[int, dict]:
+        connection = http.client.HTTPConnection('127.0.0.1', port or self.port, timeout=10)
+        try:
+            headers = {'Content-Type': 'application/json'}
+            if token:
+                headers['Authorization'] = f'Bearer {token}'
+            connection.request(method, path, json.dumps(body) if body is not None else None, headers)
+            response = connection.getresponse()
+            return response.status, json.loads(response.read())
+        finally:
+            connection.close()
+
+    def children(self) -> list[str]:
+        rows = subprocess.run(['ps', '-A', '-o', 'ppid=,command='], capture_output=True, text=True, check=True).stdout
+        return [command for ppid, command in (row.strip().split(None, 1) for row in rows.splitlines() if row.strip())
+                if ppid == str(self.process.pid)]
+
+    def test_the_service_touches_nothing_of_hermes(self):
+        # A bot with the home of the process, and a page for the team.
+        status, answer = self.request('POST', '/v1/team/bots', {'name': 'Reporter'}, self.token)
+        self.assertEqual((status, answer['bot']['home']), (200, os.path.realpath(self.home)), answer)
+        page = dict(PAGE, home=str(self.home), audience='team')
+        self.assertEqual(self.request('POST', '/v1/gateway/document', page, self.token)[1]['status'], 'saved')
+        self.assertEqual(self.request('POST', '/v1/gateway/document', dict(page, audience='private'), self.token),
+                         (400, {'error': TEAM_PAGE}))
+        status, answer = self.request('GET', '/v1/team/status', token=self.token)
+        self.assertEqual((status, answer['mode'], answer['bots'], answer['rooms']), (200, 'team', 1, []), answer)
+
+        # The team routes need the token of the bridge file.
+        self.assertEqual(self.request('GET', '/v1/team/rooms')[0], 401)
+        self.assertEqual(self.request('GET', '/v1/team/rooms', token='wrong')[0], 401)
+        # A pair request and each route of the full service answer the refusal of this mode.
+        create = {'code': '0123456789', 'device_name': 'iPhone'}
+        refusal = {'error': team_only.REFUSAL, 'code': 'team_only'}
+        for method, path, body, token in (('POST', '/v1/pair', create, None), ('GET', '/v1/state', None, self.token),
+                                          ('POST', '/v1/gateway/poll', {'home': str(self.home)}, self.token),
+                                          ('POST', '/v1/gateway/tools', {}, self.token),
+                                          ('GET', '/v1/documents', None, None)):
+            with self.subTest(path=path):
+                self.assertEqual(self.request(method, path, body, token), (503, refusal))
+        # No tunnel listener, and no child process without a room.
+        with self.assertRaises(ConnectionRefusedError):
+            self.request('GET', '/health', port=self.tunnel_port)
+        self.assertEqual(self.children(), [])
+        self.assertEqual(json.loads((self.data / 'process.json').read_text())['mode'], 'team')
+
+        self.stop()
+        loaded = {name for name in json.loads(self.modules.read_text())}
+        self.assertEqual({name for name in loaded if name.split('.')[0].startswith('hermes')}, set())
+        self.assertLessEqual({name for name in loaded if name.split('.')[0] == 'coconut'}, TEAM_ONLY_MODULES)
+        self.assertEqual(snapshot(self.home), self.before)
+        self.assertIn('for a team only', self.log.read_text())
+        self.assertNotIn(self.token, self.log.read_text())
+        self.assertNotIn('3 tasks are open.', self.log.read_text())
+
+
+class ArgumentTests(unittest.TestCase):
+    def run_service(self, *arguments, mode='') -> subprocess.CompletedProcess:
+        environment = dict(os.environ, COCONUT_MODE=mode, PYTHONPATH=str(BACKEND))
+        with tempfile.TemporaryDirectory() as folder:
+            return subprocess.run([sys.executable, '-m', 'coconut', '--data-dir', folder, *arguments], env=environment,
+                                  capture_output=True, text=True, timeout=30)
+
+    def test_a_team_only_service_pairs_no_phone(self):
+        result = self.run_service('--team-only', '--pair')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('A team-only service pairs no phone.', result.stderr)
+        self.assertIn('A team-only service pairs no phone.', self.run_service('--pair', mode='team').stderr)
+
+    def test_an_unknown_mode_stops_the_start(self):
+        result = self.run_service(mode='other')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('COCONUT_MODE must be team, or empty for the full service.', result.stderr)
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -33,7 +33,7 @@ GONE_MESSAGE = 'This message is no longer in the chat.'
 
 def message_text(value) -> str:
     """The text of a message that this Mac writes, with one text for a person for each problem."""
-    from .service import ServiceError
+    from .service_base import ServiceError
     if not isinstance(value, str) or not value.strip():
         raise ServiceError(400, 'Write a message.')
     if len(value) > MAX_TEXT:
@@ -45,7 +45,7 @@ def message_text(value) -> str:
 
 def query_number(data: dict, name: str, default: int | None, low: int, high: int, text: str) -> int | None:
     """A whole number of the query of a GET, or the default when the query does not have it."""
-    from .service import ServiceError
+    from .service_base import ServiceError
     value = data.get(name)
     if value is None:
         return default
@@ -77,7 +77,7 @@ class TeamMessages:
         ID of a message with a key comes from the room, the device and the key, so the repeat finds the first write
         after the read of _team_writable and writes no second message. `repeat` names the device and the key.
         """
-        from .service import ServiceError
+        from .service_base import ServiceError
         from .team import team_errors
         text = message_text(data.get('text'))
         reply_to, mentions = data.get('reply_to'), data.get('mentions')
@@ -142,7 +142,7 @@ class TeamMessages:
     def team_mark_read(self, room_id: str, data: dict) -> dict:
         """Move the read position of this Mac to `first`, the `first` of the newest message that the person read.
         The position only moves forward, and never past the newest message. A move tells the other devices."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         first = data.get('first')
         if not number(first):
             raise ServiceError(400, 'Give the first of the newest message that the person read.')
@@ -162,7 +162,7 @@ class TeamMessages:
         """The room for a write of the chat, read again after the caller took the lock of the room: a leave can have
         removed it in between. The Mac first reads back an earlier write without an answer (TeamSync._team_settle),
         so the store has the newest `rev` of each own entry."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         from .team_sync import INACTIVE
         self._team_settle(room_id)
         with self.lock:
@@ -176,7 +176,7 @@ class TeamMessages:
     def _team_own_message(self, room_id: str, entry: str, deleted: bool = False) -> tuple[dict, dict]:
         """The room and the entry of a message that this Mac's person wrote. With `deleted`, also a `delete` entry of
         this Mac. The caller holds the lock of the room."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         if not entry_id(entry):
             raise ServiceError(404, GONE_MESSAGE)
         room = self._team_writable(room_id)
@@ -192,7 +192,7 @@ class TeamMessages:
     def _team_mention_entries(self, room: dict, mentions: list) -> list[str]:
         """The entry IDs of the mentions that the app gives: the member ID of a member in the list, or the ID of a bot
         that GET /v1/team/rooms shows. The caller holds the service lock."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         members = {member['member']: member['entry'] for member in self.team_store.members(room['room'])}
         bots = {entry for (entry,) in self.db.execute('SELECT entry FROM team_bots WHERE room=?', (room['room'],))}
         entries = []
@@ -207,7 +207,7 @@ class TeamMessages:
         return list(dict.fromkeys(entries))
 
     def _team_message_answer(self, room_id: str, entry: str) -> dict:
-        from .service import ServiceError
+        from .service_base import ServiceError
         with self.lock:
             room = self.team_store.room(room_id)
             row = self.team_store.message(room_id, entry) if room else None

@@ -32,6 +32,8 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 sys.path.insert(0, str(ROOT / 'backend'))
+# TeamOnlyTests takes the made-up Hermes home of backend/tests/test_team_only.py.
+sys.path.insert(0, str(ROOT / 'backend/tests'))
 
 import team  # noqa: E402
 from coconut.team_helper import TeamFormatError, TeamHelper  # noqa: E402
@@ -65,6 +67,25 @@ def start_failure(message: str, process: subprocess.Popen, log: Path) -> Asserti
             status = 'none, the process still runs 10 seconds after SIGABRT'
     text = log.read_text(errors='replace') if log.exists() else '(no log file)'
     return AssertionError(f'{message} Exit status: {status}. The end of {log.name}:\n{text[-6000:]}')
+
+
+def coconut_team(tool: Path, folder: Path, mac: 'Mac', *arguments: str, link_input: str = '') -> subprocess.CompletedProcess:
+    """Run `coconut team` on a Mac. The tool finds the data of a Mac in <install>/.runtime/host, so each Mac gets an
+    install folder in `folder`."""
+    install = folder / f'install-{mac.data.name}'
+    if not (install / '.runtime/host').exists():
+        (install / '.runtime').mkdir(parents=True)
+        (install / '.runtime/host').symlink_to(mac.data)
+    return subprocess.run([str(tool), 'team', *arguments], input=link_input, capture_output=True, text=True,
+                          env={'PATH': os.environ['PATH'], 'HOME': str(folder), 'COCONUT_INSTALL_DIR': str(install)},
+                          timeout=240)
+
+
+def children(process: subprocess.Popen) -> list[str]:
+    """The command of each child process of a service."""
+    rows = subprocess.run(['ps', '-A', '-o', 'ppid=,command='], capture_output=True, text=True, check=True).stdout
+    return [command for ppid, command in (row.strip().split(None, 1) for row in rows.splitlines() if row.strip())
+            if ppid == str(process.pid)]
 
 
 class Mac:
@@ -467,14 +488,7 @@ class TeamLogTests(unittest.TestCase):
         outputs = []
 
         def run(mac: Mac, *arguments: str, link_input: str = '') -> tuple[int, list[str]]:
-            # The tool finds the data of a Mac in <install>/.runtime/host, so each Mac gets an install folder.
-            install = Path(self.temp.name) / f'install-{mac.data.name}'
-            if not (install / '.runtime/host').exists():
-                (install / '.runtime').mkdir(parents=True)
-                (install / '.runtime/host').symlink_to(mac.data)
-            result = subprocess.run([str(tool), 'team', *arguments], input=link_input, capture_output=True, text=True,
-                                    env={'PATH': os.environ['PATH'], 'HOME': self.temp.name,
-                                         'COCONUT_INSTALL_DIR': str(install)}, timeout=240)
+            result = coconut_team(tool, Path(self.temp.name), mac, *arguments, link_input=link_input)
             outputs.append(result.stdout + result.stderr)
             return result.returncode, (result.stdout or result.stderr).splitlines()
 
@@ -713,6 +727,135 @@ class TeamSocketTests(unittest.TestCase):
         self.assertEqual(first.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
         for mac in self.macs:
             self.assertNotIn(token, mac.log.read_text())
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The team-only test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamOnlyTests(unittest.TestCase):
+    """A Mac that runs Coconut for a team only (backend/coconut/team_only.py) joins Ada's team with the coconut tool,
+    declares the bot Reporter, and saves its pages for the team. Each service reads a room on its timer only once an
+    hour, so only the socket brings an entry within seconds."""
+
+    LIMIT_SECONDS = 5
+
+    @classmethod
+    def setUpClass(cls):
+        from test_team_only import make_hermes_home
+        cls.temp = tempfile.TemporaryDirectory()
+        folder = Path(cls.temp.name)
+        cls.processes = []
+        cls.helper_path = folder / 'team-helper'
+        compile_helper(cls.helper_path)
+        relay = subprocess.Popen(['node', 'test/room-server.mjs', '0'], cwd=ROOT / 'relay', stdout=subprocess.PIPE, text=True)
+        cls.processes.append(relay)
+        cls.url = relay.stdout.readline().strip()
+        relay.stdout.close()
+        assert cls.url.startswith('http://127.0.0.1:'), cls.url
+        # A made-up Hermes home of the agent on the team-only Mac. The test checks that it stays as it is.
+        cls.home = folder / 'hermes'
+        make_hermes_home(cls.home)
+        cls.ada, cls.reporter = Mac(folder / 'ada'), Mac(folder / 'reporter')
+        for mac, mode in ((cls.ada, ('--provider', 'fixture')), (cls.reporter, ('--team-only',))):
+            environment = dict(os.environ, COCONUT_TEAM_HELPER=str(cls.helper_path), HERMES_HOME=str(cls.home))
+            with mac.log.open('w') as output:
+                mac.process = subprocess.Popen(
+                    [sys.executable, '-X', 'faulthandler', '-c', LONG_TIMER, '--data-dir', str(mac.data), '--port',
+                     str(mac.port), *mode], cwd=ROOT / 'backend', env=environment, stdout=output,
+                    stderr=subprocess.STDOUT)
+                cls.processes.append(mac.process)
+        try:
+            for mac in (cls.ada, cls.reporter):
+                TeamLogTests.wait_for_health(mac)
+        except AssertionError:
+            cls.tearDownClass()
+            raise
+
+    @classmethod
+    def tearDownClass(cls):
+        for process in cls.processes:
+            process.terminate()
+        for process in cls.processes:
+            try:
+                process.wait(30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        cls.temp.cleanup()
+
+    def wait_until(self, check, seconds: float) -> float:
+        return TeamSocketTests.wait_until(self, check, seconds)
+
+    def library(self) -> dict:
+        """Ada's Library without a pass: the team pages with their content, and the team bots."""
+        status, answer = self.ada.phone('GET', '/v1/documents')
+        self.assertEqual(status, 200, answer)
+        pages = [(page['title'], self.ada.phone('GET', f'/v1/documents/{page["id"]}')[1]['content'], page['bot_id'])
+                 for page in answer['documents'] if 'team' in page]
+        return {'pages': pages, 'bots': [(bot['id'], bot['name']) for bot in answer['team_bots']]}
+
+    def test_a_team_only_mac_shares_the_pages_of_its_bot(self):
+        from test_team_only import snapshot
+        before = snapshot(self.home)
+        status, answer = self.ada.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                                  'relay': self.url})
+        self.assertEqual(status, 200, answer)
+        room_id = answer['room']['room']
+        link = self.ada.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
+        tool = TeamLogTests.coconut_tool()
+        outputs = []
+
+        def run(*arguments: str, link_input: str = '') -> tuple[int, list[str]]:
+            result = coconut_team(tool, Path(self.temp.name), self.reporter, *arguments, link_input=link_input)
+            outputs.append(result.stdout + result.stderr)
+            return result.returncode, (result.stdout or result.stderr).splitlines()
+
+        # The team-only Mac joins with the tool. The tool does not guess a bot that this Mac did not declare.
+        code, lines = run('join', '--name', 'Reporter Mac', link_input=link + '\n')
+        self.assertEqual((code, lines[0]), (0, 'This Mac joined the team Example Team.'), lines)
+        code, lines = run('add-bot', 'Reporter')
+        self.assertEqual((code, len(lines)), (1, 1), lines)
+        self.assertIn('coconut team new-bot Reporter', lines[0])
+        code, lines = run('new-bot', 'Reporter', '--home', str(self.home))
+        self.assertEqual((code, lines[0]), (0, f'This Mac declared the bot Reporter for the Hermes home '
+                                               f'{os.path.realpath(self.home)}.'), lines)
+        self.assertEqual(run('add-bot', 'Reporter'), (0, ['The bot Reporter is in the team Example Team now.']))
+
+        # The tooling of the agent saves a page for the team. Ada's Library lists it under the team bot.
+        page = {'home': str(self.home), 'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
+                'content': '3 tasks are open.', 'audience': 'team'}
+        status, answer = self.reporter.call('POST', '/v1/gateway/document', page)
+        self.assertEqual((status, answer['status']), (200, 'saved'), answer)
+        self.wait_until(lambda: self.library()['pages'], 20)
+        listed = self.library()
+        ((bot_id, bot_name),) = listed['bots']
+        self.assertEqual((listed['pages'], bot_name), ([('Weekly report', '3 tasks are open.', bot_id)], 'Reporter'))
+
+        # A second save reaches Ada through the socket, without a call of POST /v1/team/sync.
+        self.assertEqual(self.reporter.call('POST', '/v1/gateway/document', page)[1]['status'], 'unchanged')
+        self.reporter.call('POST', '/v1/gateway/document', dict(page, content='4 tasks are open.'))
+        delay = self.wait_until(lambda: self.library()['pages'] == [('Weekly report', '4 tasks are open.', bot_id)],
+                                self.LIMIT_SECONDS + 5)
+        print(f'\nThe socket brought the new page in {delay:.2f} seconds.')
+        self.assertLess(delay, self.LIMIT_SECONDS)
+
+        # The only child process of the team-only service is the helper.
+        commands = children(self.reporter.process)
+        self.assertTrue(commands, 'The socket of the room needs the helper.')
+        for command in commands:
+            self.assertTrue(command.startswith(str(self.helper_path)), command)
+
+        # The removal of the bot takes its page out of Ada's Library.
+        (bot,) = self.reporter.call('GET', '/v1/team/bots')[1]['bots']
+        self.assertEqual(self.reporter.call('DELETE', f'/v1/team/bots/{bot["id"]}')[0], 200)
+        self.wait_until(lambda: self.library() == {'pages': [], 'bots': []}, self.LIMIT_SECONDS + 5)
+
+        self.assertEqual(run('leave', '--confirm', 'Example Team'), (0, ['This Mac left the team Example Team.']))
+        self.assertEqual(self.ada.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
+        self.assertEqual(snapshot(self.home), before)
+        for text in outputs + [mac.log.read_text() for mac in (self.ada, self.reporter)]:
+            self.assertNotIn(link, text)
+        for mac in (self.ada, self.reporter):
+            self.assertNotIn('tasks are open', mac.log.read_text())
 
 
 def run_of(start: int, count: int) -> bytes:
