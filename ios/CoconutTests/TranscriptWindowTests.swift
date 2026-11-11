@@ -5,7 +5,7 @@ final class TranscriptWindowTests: XCTestCase {
     private func ids(_ count: Int, from first: Int = 0) -> [String] { (first..<(first + count)).map { "m\($0)" } }
 
     func testALargeChatOpensWithTheNewestRowsInOneStep() {
-        var window = TranscriptWindow()
+        var window = TranscriptWindow(isUsed: true)
         let rows = ids(1_270)
         XCTAssertEqual(window.range(of: rows), (1_270 - TranscriptWindow.openRows)..<1_270)
         // Keeping the window changes no row.
@@ -14,7 +14,7 @@ final class TranscriptWindowTests: XCTestCase {
     }
 
     func testAChatWithFewRowsBuildsAllOfThem() {
-        var window = TranscriptWindow()
+        var window = TranscriptWindow(isUsed: true)
         XCTAssertEqual(window.range(of: ids(5)), 0..<5)
         XCTAssertEqual(window.range(of: ids(TranscriptWindow.openRows)), 0..<TranscriptWindow.openRows)
         XCTAssertEqual(window.range(of: []), 0..<0)
@@ -23,14 +23,14 @@ final class TranscriptWindowTests: XCTestCase {
     }
 
     func testAPressAddsOneBatchAboveTheWindow() {
-        var window = TranscriptWindow()
+        var window = TranscriptWindow(isUsed: true)
         let rows = ids(1_270)
         window.keep(rows)
         let before = window.range(of: rows).lowerBound
         XCTAssertTrue(window.growTop(in: rows))
         XCTAssertEqual(window.range(of: rows), (before - TranscriptWindow.pressRows)..<1_270)
         // The last press stops at the first row, and then a press adds nothing.
-        var short = TranscriptWindow()
+        var short = TranscriptWindow(isUsed: true)
         let few = ids(TranscriptWindow.openRows + 10)
         short.keep(few)
         XCTAssertTrue(short.growTop(in: few))
@@ -39,7 +39,7 @@ final class TranscriptWindowTests: XCTestCase {
     }
 
     func testAPageFromTheMacStaysAboveTheWindowUntilAPress() {
-        var window = TranscriptWindow()
+        var window = TranscriptWindow(isUsed: true)
         var rows = ids(10)
         window.keep(rows)
         rows = ids(100, from: 1_000) + rows
@@ -49,7 +49,7 @@ final class TranscriptWindowTests: XCTestCase {
     }
 
     func testANewRowAtTheBottomKeepsTheFirstRow() {
-        var window = TranscriptWindow()
+        var window = TranscriptWindow(isUsed: true)
         var rows = ids(300)
         window.keep(rows)
         let first = window.range(of: rows).lowerBound
@@ -58,7 +58,7 @@ final class TranscriptWindowTests: XCTestCase {
     }
 
     func testAnOpenAtAnOlderMessageBuildsFromAFewRowsAboveIt() {
-        var window = TranscriptWindow()
+        var window = TranscriptWindow(isUsed: true)
         let rows = ids(1_270)
         XCTAssertEqual(window.range(of: rows, focusId: "m100"), (100 - TranscriptWindow.contextRows)..<1_270)
         XCTAssertEqual(window.range(of: rows, focusId: "m2"), 0..<1_270)
@@ -71,7 +71,7 @@ final class TranscriptWindowTests: XCTestCase {
     }
 
     func testAJumpToAQuotedMessageWidensTheWindowToIt() {
-        var window = TranscriptWindow()
+        var window = TranscriptWindow(isUsed: true)
         let rows = ids(1_270)
         window.keep(rows)
         XCTAssertTrue(window.include("m500", in: rows))
@@ -80,8 +80,42 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertFalse(window.include("gone", in: rows))
     }
 
-    func testARemovedFirstRowCountsTheWindowFromTheEnd() {
+    func testAPressGrowsTheWindowOnlyWhileTheAppHasOlderRows() {
+        var window = TranscriptWindow(isUsed: true)
+        let rows = ids(120)
+        window.keep(rows)
+        XCTAssertEqual(window.press(rows), .growWindow)
+        window.growTop(in: rows)
+        XCTAssertEqual(window.press(rows), .loadPage)
+    }
+
+    /// An iPhone list builds every row, so a press always asks the Mac for a page, also with more rows than a Mac window.
+    func testOnTheIPhoneAPressAlwaysLoadsAPageFromTheMac() {
+        var window = TranscriptWindow(isUsed: false)
+        let rows = ids(120)
+        window.keep(rows)
+        XCTAssertEqual(window.range(of: rows), 0..<120)
+        XCTAssertEqual(window.press(rows), .loadPage)
+        XCTAssertFalse(window.growTop(in: rows))
+        XCTAssertFalse(window.include("m0", in: rows))
+        XCTAssertEqual(window.range(of: rows, focusId: "m100"), 0..<120)
+    }
+
+    /// The window of the platform where the tests run: the iPhone builds every row, the Mac builds a window.
+    func testThePlatformDecidesWhetherTheWindowIsUsed() {
         var window = TranscriptWindow()
+        let rows = ids(120)
+        window.keep(rows)
+        #if os(macOS)
+        XCTAssertEqual(window.press(rows), .growWindow)
+        #else
+        XCTAssertEqual(window.range(of: rows), 0..<120)
+        XCTAssertEqual(window.press(rows), .loadPage)
+        #endif
+    }
+
+    func testARemovedFirstRowCountsTheWindowFromTheEnd() {
+        var window = TranscriptWindow(isUsed: true)
         var rows = ids(300)
         window.keep(rows)
         window.growTop(in: rows)

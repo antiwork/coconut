@@ -236,7 +236,7 @@ final class BackgroundTask {
 extension TranscriptWindow {
     /// A Mac list measures the height of each of its rows when it opens, so a Mac chat holds only a window of rows.
     /// An iPhone list measures only the rows on screen and builds the whole chat.
-    static var isUsed: Bool {
+    static var platformUsesWindow: Bool {
         #if os(macOS)
         true
         #else

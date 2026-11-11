@@ -94,11 +94,12 @@ struct ConversationView: View {
     /// when the window holds every row, it loads a page from the Mac first. Then the chat shows the row that was first.
     private func loadEarlier(anchor: String?, proxy: ScrollViewProxy) async {
         let ids = current.entries.map(\.id)
-        if window.range(of: ids, focusId: windowFocus).lowerBound == 0 {
+        switch window.press(ids, focusId: windowFocus) {
+        case .loadPage:
             // The page from the Mac arrives above the window. Then the window takes a batch of it.
             window.keep(ids, focusId: windowFocus)
             await store.loadOlderMessages(botId)
-        } else {
+        case .growWindow:
             growingAbove = true
             // A frame with the progress, then the new list.
             try? await Task.sleep(for: .milliseconds(16))
@@ -132,13 +133,11 @@ struct ConversationView: View {
 
     var body: some View {
         let (messages, entries) = current
-        let ids = TranscriptWindow.isUsed ? entries.map(\.id) : []
-        let focusRow = TranscriptWindow.isUsed ? windowFocus : nil
-        let shown = TranscriptWindow.isUsed ? window.range(of: ids, focusId: focusRow) : entries.indices
+        let shown = window.range(of: entries.map(\.id), focusId: windowFocus)
         // The rows that come before the first row of the chat show only when the list holds that first row.
         let startsAtFirstRow = shown.lowerBound == 0
         // A new first row of the window makes a new list, so the list measures every row (see TranscriptWindow).
-        let listId = TranscriptWindow.isUsed && !shown.isEmpty ? entries[shown.lowerBound].id : nil
+        let listId = window.isUsed && !shown.isEmpty ? entries[shown.lowerBound].id : nil
         Group {
             if let bot {
                 ScrollViewReader { proxy in
