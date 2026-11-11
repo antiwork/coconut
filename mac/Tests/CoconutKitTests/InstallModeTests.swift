@@ -212,12 +212,15 @@ final class InstallModeTests: XCTestCase {
         ])
         // A bot with its chat whose Hermes gateway does not poll, and a service before the team chat.
         let waiting = ["bots": [["id": "b1", "name": "Night Reporter", "home": "/h", "chat": true, "adapter": false],
-                                ["id": "b2", "name": "Planner", "home": "/p"]]]
+                                ["id": "b2", "name": "Planner", "home": "/p"],
+                                ["id": "b3", "name": "Writer", "home": "/w", "chat": false, "plugin": true]]]
         let older = try await TeamServiceStatus.fetch(transport: service(bots: waiting))
         XCTAssertEqual(older.chats.map(\.line), [
             "Team chat of Night Reporter: on, but Hermes does not take the messages. Restart the Hermes gateway of "
                 + "Night Reporter.",
-            "Team chat of Planner: off. To turn it on, run: coconut team connect-chat Planner"])
+            "Team chat of Planner: off. To turn it on, run: coconut team connect-chat Planner",
+            "Team chat of Writer: not finished. To turn it on, run: coconut team connect-chat Writer --confirm. To turn "
+                + "it off, run: coconut team disconnect-chat Writer"])
         XCTAssertEqual(lines(.failure(.noAnswer), service: .stopped).suffix(2),
                        ["Service: stopped (/Users/example/Coconut)", "Teams: unknown, because the service does not answer."])
         // No word of the code reaches the reader.

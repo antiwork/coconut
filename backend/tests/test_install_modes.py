@@ -357,16 +357,18 @@ class RemoveAndSetUpTests(unittest.TestCase):
                 db.execute('CREATE TABLE bots (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
                 db.executemany('INSERT INTO bots VALUES (?, ?)', [
                     ('a', json.dumps({'name': 'Reporter', 'chat': True})), ('b', json.dumps({'name': 'Planner'})),
-                    ('c', json.dumps({'name': 'Helper', 'chat': False}))])
+                    ('c', json.dumps({'name': 'Helper', 'chat': False})),
+                    ('d', json.dumps({'name': 'Writer', 'chat': False, 'plugin': True}))])
             db.close()
-            self.assertEqual(host.connected_chats(data), ['Reporter'])
+            # A clean-up that did not finish keeps the guard.
+            self.assertEqual(host.connected_chats(data), ['Reporter', 'Writer'])
         with patch.object(host, 'install_mode', return_value='team'), \
                 patch.object(host, 'connected_chats', return_value=['Reporter']), \
                 patch.object(host, 'login_item_loaded', return_value=False), patch.object(desktop, 'run') as run, \
                 self.assertRaises(SystemExit) as stopped:
             desktop.uninstall(confirmed=True)
-        self.assertEqual(str(stopped.exception), 'The team chat of Reporter is connected to Hermes. For each bot, run '
-                                                 'coconut team disconnect-chat <bot>, then remove Coconut.')
+        self.assertEqual(str(stopped.exception), 'The Hermes home of Reporter has the team chat of Coconut. For each '
+                                                 'bot, run coconut team disconnect-chat <bot>, then remove Coconut.')
         run.assert_not_called()
 
     def test_the_uninstaller_waits_until_the_login_item_is_off(self):

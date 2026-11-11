@@ -309,7 +309,7 @@ def team_folder_refusal(data: Path | None = None) -> str | None:
 
 
 def connected_chats(data: Path | None = None) -> list[str]:
-    """The names of the bots of a team-only Mac whose team chat is connected to their Hermes home. Only
+    """The names of the bots of a team-only Mac whose Hermes home has, or may have, the team chat. Only
     `coconut team disconnect-chat` takes that change away, so a removal of Coconut waits for it. The store opens
     read-only."""
     import sqlite3
@@ -319,7 +319,7 @@ def connected_chats(data: Path | None = None) -> list[str]:
     with contextlib.closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=10)) as db:
         try:
             rows = db.execute("SELECT json_extract(data, '$.name') FROM bots WHERE json_extract(data, '$.chat')=1 "
-                              "ORDER BY rowid").fetchall()
+                              "OR json_extract(data, '$.plugin')=1 ORDER BY rowid").fetchall()
         except sqlite3.OperationalError:
             return []
     return [row[0] for row in rows]

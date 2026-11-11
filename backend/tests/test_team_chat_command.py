@@ -88,6 +88,62 @@ class ConfigTests(unittest.TestCase):
                     with_team(config, CONFIG, BRIDGE, present)
 
 
+class HalfStateTests(TeamOnlyMacs, unittest.TestCase):
+    """A step of connect-chat or disconnect-chat that fails leaves a record that blocks the removal, and a second run
+    finishes the job. The edit of the Hermes home is a stand-in here."""
+
+    def setUp(self):
+        super().setUp()
+        self.bot = self.declare()
+        self.server = APIServer(('127.0.0.1', 0), self.only)
+        threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .1}, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.only.gateway_bridge.publish(f'http://127.0.0.1:{self.server.server_address[1]}')
+        self.edits = []
+
+    def edit(self, fail=False):
+        def run(action, home, bridge):
+            self.edits.append(action)
+            if fail:
+                raise team_chat.Stop('Coconut found no Hermes that it can use, so it changed nothing.')
+            return []
+        return mock.patch.object(team_chat, 'edit', side_effect=run)
+
+    def flags(self):
+        bot = self.call('GET', '/v1/team/bots')['bots'][0]
+        return bot['chat'], bot['plugin']
+
+    def command(self, *arguments) -> int:
+        with mock.patch.object(sys, 'stdout', Writer([])), mock.patch.object(sys, 'stderr', Writer([])):
+            return team_chat.main([*arguments, '--data-dir', str(self.only.root)])
+
+    def test_a_failed_connect_blocks_the_removal_and_a_second_run_finishes_it(self):
+        with self.edit(fail=True):
+            self.assertEqual(self.command('connect', 'Reporter', '--confirm'), 1)
+        # The home may have a part of the change, so the bot cannot go, and it does not answer.
+        self.assertEqual(self.flags(), (False, True))
+        self.assertEqual(self.refusal(self.call, 'DELETE', f'/v1/team/bots/{self.bot["id"]}')[0], 409)
+        with self.edit():
+            self.assertEqual(self.command('connect', 'Reporter', '--confirm'), 0)
+        self.assertEqual(self.flags(), (True, True))
+
+    def test_a_failed_disconnect_blocks_the_removal_and_a_second_run_finishes_it(self):
+        with self.edit():
+            self.command('connect', 'Reporter', '--confirm')
+        with self.edit(fail=True):
+            self.assertEqual(self.command('disconnect', 'Reporter'), 1)
+        # The bot answers no more, but its home may still have the plugin.
+        self.assertEqual(self.flags(), (False, True))
+        self.assertEqual(self.refusal(self.call, 'DELETE', f'/v1/team/bots/{self.bot["id"]}')[0], 409)
+        with self.edit():
+            self.assertEqual(self.command('disconnect', 'Reporter'), 0)
+            self.assertEqual(self.command('disconnect', 'Reporter'), 0)
+        self.assertEqual(self.flags(), (False, False))
+        self.assertEqual(self.edits, ['connect', 'disconnect', 'disconnect', 'disconnect'])
+        self.assertEqual(self.call('DELETE', f'/v1/team/bots/{self.bot["id"]}')['removed'], True)
+
+
 class Output:
     """The standard output and error of one run of scripts/team_chat.py."""
 

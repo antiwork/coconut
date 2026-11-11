@@ -16,7 +16,8 @@ It imports no Hermes module and none of the full runtime (service.py and what it
 under a Hermes home, starts no gateway, loads no plugin, copies no key, runs no scheduler, worker or kanban adapter,
 opens no tunnel listener, pairs no phone and sends no push notification. Its only child process is the team helper.
 Only the operator's command `coconut team connect-chat` adds the plugin to the Hermes home of a bot
-(scripts/team_chat.py), in a process of its own, and sets `chat` on the record of the bot.
+(scripts/team_chat.py), in a process of its own. It sets `plugin` on the record of the bot before the first change
+of the home, and `chat` after the last one.
 
 A bot of this Mac is a record that the person declares (`POST /v1/team/bots`): a name, an avatar and a color with the
 rules of a `member` entry, and the Hermes home that the bot stands for. The service stores the path of the home and
@@ -29,7 +30,8 @@ Routes, each with the token of the bridge file:
 - `GET /v1/team/status`: the mode, the version of the code, whether the helper is there, the count of the bots and of
   the bots that answer in the team chat, and the rooms in short form.
 - `GET /v1/team/bots`, `POST /v1/team/bots` with `{name, avatar, color, home}`,
-  `PATCH /v1/team/bots/<bot>` with `{name, avatar, color, chat}`, `DELETE /v1/team/bots/<bot>`. Each bot in `GET`
+  `PATCH /v1/team/bots/<bot>` with `{name, avatar, color, chat, plugin}`, `DELETE /v1/team/bots/<bot>`. `plugin` is
+  true while the Hermes home of the bot has, or may have, the changes of `coconut team connect-chat`. Each bot in `GET`
   also has `adapter`: whether the adapter of its Hermes gateway polls now.
 
 `chat` says that the bot answers in the team chat. A declared bot starts with false. The step that connects the bot
@@ -64,8 +66,8 @@ TEAM_PAGE = ('This Mac runs Coconut for a team only, so no person reads a page h
              '"team".')
 UNKNOWN_HOME = ('This Hermes home is not the home of a bot of this Mac. Declare the bot first: coconut team new-bot '
                 '<name> --home <path>.')
-CHAT_CONNECTED = ('The team chat of the bot {name} is connected to its Hermes. Run coconut team disconnect-chat {name} '
-                  'first, then remove the bot.')
+CHAT_CONNECTED = ('The Hermes home of the bot {name} has the team chat of Coconut. Run coconut team disconnect-chat '
+                  '{name} first, then remove the bot.')
 NO_BOT = {'name': None, 'avatar': '', 'color': ''}
 COMMIT = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
 PROJECT = Path(__file__).resolve().parents[2]
@@ -243,7 +245,8 @@ class TeamOnlyService(TeamTurns, Documents, Team):
     def _bot_view(self, bot: dict) -> dict:
         """A bot record with the rooms that it is shared with. The caller holds the service lock."""
         return {'id': bot['id'], 'name': bot['name'], 'avatar': bot['avatar'], 'color': bot['color'],
-                'home': bot['home'], 'chat': bot.get('chat') is True, 'teams': self.team_store.rooms_of(bot['id']),
+                'home': bot['home'], 'chat': bot.get('chat') is True, 'plugin': bot.get('plugin') is True,
+                'teams': self.team_store.rooms_of(bot['id']),
                 'adapter': self.gateway_bridge.connected(bot['home'])}
 
     def team_declare_bot(self, data: dict) -> dict:
@@ -265,13 +268,15 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         if 'home' in data:
             raise ServiceError(400, 'A bot keeps its Hermes home. Remove the bot, then declare it again with the new '
                                     'home.')
-        if 'chat' in data and not isinstance(data['chat'], bool):
-            raise ServiceError(400, 'Give chat as true or false.')
+        for flag in ('chat', 'plugin'):
+            if flag in data and not isinstance(data[flag], bool):
+                raise ServiceError(400, f'Give {flag} as true or false.')
         with self.transaction():
             bot = self._declared_bot(bot_id)
             bot.update(member_profile(data, bot, field='name', noun='the name of the bot'))
-            if 'chat' in data:
-                bot['chat'] = data['chat']
+            for flag in ('chat', 'plugin'):
+                if flag in data:
+                    bot[flag] = data[flag]
             self._check_bot(bot['name'], bot['home'], bot['id'])
             self._put('bots', bot)
             answer = {'bot': self._bot_view(bot)}
@@ -286,7 +291,7 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         with self.transaction():
             bot = self._declared_bot(bot_id)
             # The plugin in the Hermes home would stay. Only the command that added it takes it away.
-            if bot.get('chat') is True:
+            if bot.get('chat') is True or bot.get('plugin') is True:
                 raise ServiceError(409, CHAT_CONNECTED.format(name=bot['name']))
             for room in self.team_store.rooms_of(bot_id):
                 self.team_store.unshare(room, bot_id)

@@ -43,11 +43,19 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
         public var connected: Bool
         /// True while the adapter of the Hermes gateway of the bot polls the service.
         public var hermes: Bool
+        /// True while the Hermes home of the bot has, or may have, the changes of connect-chat. Without `connected`,
+        /// a connect-chat or a disconnect-chat did not finish.
+        public var plugin: Bool = false
 
         /// One line for a person, which says what to run when the chat does not work.
         public var line: String {
+            let name = TeamTool.shellWord(bot)
             guard connected else {
-                return "Team chat of \(bot): off. To turn it on, run: coconut team connect-chat \(TeamTool.shellWord(bot))"
+                guard plugin else {
+                    return "Team chat of \(bot): off. To turn it on, run: coconut team connect-chat \(name)"
+                }
+                return "Team chat of \(bot): not finished. To turn it on, run: coconut team connect-chat \(name) "
+                    + "--confirm. To turn it off, run: coconut team disconnect-chat \(name)"
             }
             return hermes ? "Team chat of \(bot): on. Hermes takes the messages."
                 : "Team chat of \(bot): on, but Hermes does not take the messages. Restart the Hermes gateway of \(bot)."
@@ -59,6 +67,7 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
             var name: String
             var chat: Bool?
             var adapter: Bool?
+            var plugin: Bool?
         }
         var bots: [Bot]
     }
@@ -69,7 +78,8 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
         var status = try JSONDecoder.team.decode(TeamServiceStatus.self, from: try await tool.call("GET", "/v1/team/status"))
         let bots = try JSONDecoder.team.decode(Bots.self, from: try await tool.call("GET", "/v1/team/bots")).bots
         status.botNames = bots.map(\.name)
-        status.chats = bots.map { Chat(bot: $0.name, connected: $0.chat ?? false, hermes: $0.adapter ?? false) }
+        status.chats = bots.map { Chat(bot: $0.name, connected: $0.chat ?? false, hermes: $0.adapter ?? false,
+                                       plugin: $0.plugin ?? false) }
         return status
     }
 

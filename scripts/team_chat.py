@@ -6,9 +6,11 @@
 
 Coconut changes nothing in Hermes by itself. Only these commands of the operator change the Hermes home of a bot.
 `connect` without `--confirm` changes nothing: it prints each change that it would make and the command that makes
-them. With `--confirm` it makes them (backend/coconut/team_chat_config.py, under the Python of Hermes, in a process of
-its own), then sets `chat` on the record of the bot in the service. `disconnect` first sets `chat` to false, so no new
-turn starts, then takes the changes away. Neither command starts, stops or restarts a Hermes gateway: the operator
+them. With `--confirm` it sets `plugin` on the record of the bot in the service, makes the changes
+(backend/coconut/team_chat_config.py, under the Python of Hermes, in a process of its own), then sets `chat`.
+`disconnect` first sets `chat` to false, so no new turn starts, then takes the changes away, then clears `plugin`.
+While `plugin` is set, the bot and Coconut cannot be removed. Both commands are safe to repeat, so a second run
+finishes a run that stopped in the middle. Neither command starts, stops or restarts a Hermes gateway: the operator
 restarts the gateway of the profile.
 
 A Mac with a person refuses both: its bots answer only that person.
@@ -113,6 +115,8 @@ def connect(data: Path, argument: str, confirm: bool) -> list[str]:
                      f'{home}:', *numbered(changes)]
         return lines + [who, 'Coconut does not restart the Hermes gateway. You restart it after the change.',
                         f'To make the change, run: {command}']
+    # The record knows of the change before the home has it, so a removal waits also when a step fails below.
+    call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'plugin': True})
     changes = edit('connect', home, bridge)
     call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': True})
     lines = ([f'Coconut made these changes in the Hermes home {home}:', *numbered(changes)] if changes else
@@ -128,6 +132,8 @@ def disconnect(data: Path, argument: str) -> list[str]:
     # No new turn starts while the plugin goes away.
     call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': False})
     changes = edit('disconnect', home, (data / 'gateway/bridge.json').resolve())
+    # Only a clean-up that worked lets the bot and Coconut go.
+    call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'plugin': False})
     lines = ([f'Coconut took these changes away from the Hermes home {home}:', *numbered(changes)] if changes else
              [f'The Hermes home {home} has no team chat of Coconut. Nothing changed there.'])
     return lines + [f'{name} no longer answers in the team chat.',

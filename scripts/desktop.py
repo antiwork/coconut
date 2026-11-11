@@ -110,8 +110,8 @@ def uninstall(confirmed: bool = False) -> None:
     chats = host.connected_chats() if team_only else []
     if chats:
         # The plugin in the Hermes home would point to a folder that goes to the Trash.
-        raise SystemExit(f"The team chat of {', '.join(chats)} is connected to Hermes. For each bot, run coconut team "
-                         "disconnect-chat <bot>, then remove Coconut.")
+        raise SystemExit(f"The Hermes home of {', '.join(chats)} has the team chat of Coconut. For each bot, run "
+                         "coconut team disconnect-chat <bot>, then remove Coconut.")
     if team_only and host.login_item_loaded():
         # The login item would start the service again on an empty data folder.
         raise SystemExit("Coconut.app runs this service. Turn off Start at Login in the Coconut menu, then run this "
