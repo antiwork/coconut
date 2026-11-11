@@ -295,21 +295,13 @@ Updates work as on a full Mac: Sparkle installs each new Coconut.app, and the ap
 
 ### Remove
 
-No click is necessary. A removal cannot be undone: it deletes the teams of this Mac, their keys and the member key of this Mac. To come back, the Mac needs a new invite. A bot follows the rule of a leave: it shows the person what the command removes, and runs it only after a clear yes.
+No click is necessary. `coconut remove` removes Coconut from a Mac that runs it for a team only. A removal cannot be undone: it deletes the teams of this Mac, their keys and the key of this Mac in each team, so the Mac needs a new invite to come back. Tell the person what the command removes, and run it only after a clear yes. The command stops Coconut.app, starts it again with `--remove`, and waits for the result. A good result is the line "Coconut is removed: the login items, the data and the key of this Mac in each team." Then `coconut status` shows `Service: not installed`. On a full install, the command changes nothing and prints one line that says so.
 
 1. Leave each team: `coconut team leave --confirm "Example Team"`.
-2. Quit the app, so that it gets the next argument: `osascript -e 'tell application id "com.gumroad.coconut.mac" to quit'`.
-3. Remove Coconut:
+2. Run `coconut remove`. The tool stops the process `Coconut` of this Coconut.app with a signal, not with an Apple event, because an Apple event can ask for the Automation permission in a dialog that nobody sees. No login item starts the app again in between: the login item of the app opens it only at login. The tool then starts the app with `--remove`. The app removes its login items, which needs no approval, removes the data of Coconut with `Uninstall Coconut.command`, moves `~/Coconut` to the Trash, removes its preference `InstallMode`, and quits. Nothing in Hermes changes, because a team-only install added nothing there.
+3. Delete `/Applications/Coconut.app`.
 
-   ```sh
-   open -g /Applications/Coconut.app --args --remove
-   ```
-
-   The app removes its login items. That needs no approval. Then `coconut remove` removes the data of Coconut with `Uninstall Coconut.command` and moves `~/Coconut` to the Trash. The app removes its preference `InstallMode` and quits. Nothing in Hermes changes, because a team-only install added nothing there.
-4. Check that `coconut status` shows `Service: not installed`. A failure shows as `Last update error:`.
-5. Delete `/Applications/Coconut.app`.
-
-On a full install, `--remove` and `coconut remove` change nothing. Each one gives one line that says to use `Uninstall Coconut.command`: `coconut remove` prints it, and `coconut status` shows the line of `--remove` as the last update error.
+A failure prints its line, and `coconut status` shows it as `Last update error:`.
 
 ## Releases from CI
 

@@ -96,6 +96,38 @@ public enum RemoveRequest {
         + "Uninstall Coconut.command."
 
     public static func asked(arguments: [String]) -> Bool { arguments.contains(argument) }
+
+    /// `coconut remove --from-app`: the step that the app runs after it removed its login items. A person or a bot runs
+    /// `coconut remove`, which does the whole removal.
+    public static let fromApp = "--from-app"
+    /// The process of the app that `coconut remove` stops: Contents/MacOS/Coconut of the bundle around the tool.
+    public static let appProcess = "Coconut"
+    /// The app reads `--remove` only when it starts, and `open` gives no new arguments to an app that runs. So
+    /// `coconut remove` first stops the app that runs, then starts it with this command.
+    public static func openArguments(app: URL) -> [String] { ["-g", app.path, "--args", argument] }
+    /// The longest wait for the app: the stop of the service can take two minutes (host.STOP_GRACE_SECONDS).
+    public static let wait: TimeInterval = 600
+
+    public static let removed = "Coconut is removed: the login items, the data and the key of this Mac in each team. "
+        + "Its folder is in the Trash. To remove the app, delete Coconut.app."
+    public static let timedOut = "Coconut.app did not finish the removal within ten minutes. Run coconut status to see "
+        + "the last update error."
+
+    public enum Outcome: Equatable {
+        case waiting
+        case removed
+        case failed(String)
+    }
+
+    /// The state of a removal that started at `start`. The app removes the preference InstallMode and the install
+    /// folder only after the whole removal. Each failure is the last update error of the app.
+    public static func outcome(installed: Bool, modePreference: String?, lastResult: UpdateResult?,
+                               start: Date) -> Outcome {
+        if let result = lastResult, result.outcome == .failed, result.time >= start {
+            return .failed(result.message ?? "The removal failed.")
+        }
+        return !installed && modePreference == nil ? .removed : .waiting
+    }
 }
 
 /// The commands of the `coconut` tool that are for a phone or for Hermes. On a team-only Mac each one prints one line

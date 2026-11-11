@@ -291,6 +291,19 @@ class RemoveAndSetUpTests(unittest.TestCase):
             desktop.main()
         self.assertEqual(commands, [['scripts/cleanup.py'], ['scripts/cleanup.py', '--yes']])
 
+    def test_the_docs_and_the_skill_give_the_same_removal_in_one_command(self):
+        repository = TESTS.parents[1]
+        skill = (repository / 'skills/coconut/SKILL.md').read_text()
+        docs = (repository / 'docs/install-and-update.md').read_text()
+        rule = next(line for line in skill.splitlines() if 'coconut remove' in line).removeprefix('6. ')
+        self.assertIn(rule, docs)
+        for text in ('clear yes', 'new invite', 'key of this Mac'):
+            self.assertIn(text, rule)
+        section = docs[docs.index('### Remove'):docs.index('## Releases from CI')]
+        # The app reads --remove only at its start, so no step opens it with the argument by hand.
+        self.assertNotIn('--args --remove', section + skill)
+        self.assertNotIn('osascript', section + skill)
+
     def test_the_uninstaller_waits_until_the_login_item_is_off(self):
         with patch.object(host, 'install_mode', return_value='team'), \
                 patch.object(host, 'login_item_loaded', return_value=True), patch.object(desktop, 'run') as run, \

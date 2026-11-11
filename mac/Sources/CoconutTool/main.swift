@@ -1,6 +1,7 @@
 // The `coconut` tool in Coconut.app/Contents/Helpers. The login items run `service` and `sidecar`. A person or a
 // Hermes agent runs `pair`, `status` and `team`. On a team-only Mac (InstallMode), each command for a phone or for Hermes
 // prints one line and exits with 1 (TeamOnlyRefusal).
+import AppKit
 import CoconutKit
 import Foundation
 
@@ -42,8 +43,9 @@ let usage = """
       migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       service   Run the Coconut service. The login item uses this command.
       sidecar   Run the relay sidecar. The login item uses this command.
-      remove    On a Mac that runs Coconut for a team only: remove the data of Coconut and move the install folder
-                to the Trash. Coconut.app --remove runs it after it removes the login items.
+      remove    On a Mac that runs Coconut for a team only: remove Coconut. The tool stops Coconut.app, starts it
+                with --remove, and waits for the result. The app removes the login items, the data and the key of
+                this Mac in each team, and moves the install folder to the Trash. This cannot be undone.
 
     Coconut.app --set-up sets up Coconut without a click, as Set Up Coconut in the menu does. The install script
     opens the app with it. Coconut.app --set-up --team-only sets up a Mac with no person for a team only: Coconut keeps
@@ -179,6 +181,63 @@ func readStatus() -> Status {
     }
     semaphore.wait()
     return StatusReader(install: install).read(healthy: healthy)
+}
+
+/// The processes of the app around this tool. Launch Services lists them without a permission.
+func appProcesses(_ app: URL) -> [NSRunningApplication] {
+    NSRunningApplication.runningApplications(withBundleIdentifier: Install.preferencesDomain)
+        .filter { $0.bundleURL?.standardizedFileURL.path == app.standardizedFileURL.path && !$0.isTerminated }
+}
+
+/// `coconut remove` on a team-only Mac: stop the app that runs, start it with `--remove`, and wait for its result.
+///
+/// The app reads `--remove` only when it starts. The stop is SIGTERM to the process of this bundle, not an Apple event,
+/// because an Apple event can ask for the Automation permission in a dialog that nobody sees. No login item starts the
+/// app again: the login item of the app opens it only at login, and it has no KeepAlive.
+func removeWithApp() -> Int32 {
+    let app = helpers.deletingLastPathComponent().deletingLastPathComponent()
+    for running in appProcesses(app) {
+        kill(running.processIdentifier, SIGTERM)
+    }
+    let stopDeadline = Date().addingTimeInterval(10)
+    while !appProcesses(app).isEmpty && Date() < stopDeadline {
+        usleep(200_000)
+    }
+    for running in appProcesses(app) {
+        kill(running.processIdentifier, SIGKILL)
+    }
+    let start = Date()
+    let open = Process()
+    open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    open.arguments = RemoveRequest.openArguments(app: app)
+    do {
+        try open.run()
+    } catch {
+        print("Coconut could not open \(app.path): \(error.localizedDescription)")
+        return 1
+    }
+    open.waitUntilExit()
+    print("Removing Coconut. Coconut.app stops the service, removes its data, and quits.")
+    fflush(stdout)
+    let preferences = AppPreferences()
+    let deadline = start.addingTimeInterval(RemoveRequest.wait)
+    while Date() < deadline {
+        sleep(1)
+        let outcome = RemoveRequest.outcome(installed: install.isInstalled(),
+                                            modePreference: preferences.value(forKey: InstallMode.preferenceKey) as? String,
+                                            lastResult: UpdatePreferences(store: preferences).lastResult, start: start)
+        switch outcome {
+        case .waiting: continue
+        case .removed:
+            print(RemoveRequest.removed)
+            return 0
+        case .failed(let line):
+            print(line)
+            return 1
+        }
+    }
+    print(RemoveRequest.timedOut)
+    return 1
 }
 
 /// The teams of a team-only service (`GET /v1/team/status`).
@@ -401,6 +460,10 @@ case "settings":
     DistributedNotificationCenter.default().postNotificationName(.init(UpdatePreferences.settingsChanged), object: nil,
                                                                  userInfo: nil, deliverImmediately: true)
     print("Automatic updates: \(preferences.automaticUpdates ? "on" : "off")")
+case "remove" where !CommandLine.arguments.contains(RemoveRequest.fromApp):
+    guard mode == .team else { fail(RemoveRequest.toolFullInstall) }
+    guard install.isInstalled() else { fail("Coconut is not installed in \(install.root.path).") }
+    exit(removeWithApp())
 case "remove":
     guard mode == .team else { fail(RemoveRequest.toolFullInstall) }
     guard install.isInstalled() else { fail("Coconut is not installed in \(install.root.path).") }

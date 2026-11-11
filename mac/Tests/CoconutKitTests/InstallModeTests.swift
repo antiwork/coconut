@@ -354,6 +354,34 @@ final class InstallModeTests: XCTestCase {
         XCTAssertEqual(TeamCommand.leave(team: nil, confirm: nil).timeout, 180)
     }
 
+    func testCoconutRemoveStartsTheAppWithRemoveAndReadsItsResult() throws {
+        XCTAssertEqual(RemoveRequest.openArguments(app: URL(fileURLWithPath: "/Applications/Coconut.app")),
+                       ["-g", "/Applications/Coconut.app", "--args", "--remove"])
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        // While the app works, the install and the preference stay.
+        XCTAssertEqual(RemoveRequest.outcome(installed: true, modePreference: "team", lastResult: nil, start: start), .waiting)
+        // The folder goes to the Trash before the app removes the preference: the removal is not complete yet.
+        XCTAssertEqual(RemoveRequest.outcome(installed: false, modePreference: "team", lastResult: nil, start: start),
+                       .waiting)
+        XCTAssertEqual(RemoveRequest.outcome(installed: false, modePreference: nil, lastResult: nil, start: start), .removed)
+        // A failure of this removal is the last update error. An older failure is not.
+        let failure = UpdateResult(time: start.addingTimeInterval(3), outcome: .failed, message: "Coconut could not remove "
+                                   + "its login item Coconut.app: Operation not permitted")
+        XCTAssertEqual(RemoveRequest.outcome(installed: true, modePreference: "team", lastResult: failure, start: start),
+                       .failed(failure.message!))
+        let older = UpdateResult(time: start.addingTimeInterval(-3), outcome: .failed, message: "Earlier.")
+        XCTAssertEqual(RemoveRequest.outcome(installed: true, modePreference: "team", lastResult: older, start: start),
+                       .waiting)
+        // The docs and the skill quote the line of a good result.
+        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().deletingLastPathComponent()
+        let good = String(RemoveRequest.removed.prefix { $0 != "." })
+        for file in ["docs/install-and-update.md", "skills/coconut/SKILL.md"] {
+            let text = try String(contentsOf: root.appendingPathComponent(file), encoding: .utf8)
+            XCTAssertTrue(text.contains(good), file)
+        }
+    }
+
     func testAPersonReadsWhetherATeamIsConnected() {
         let room = TeamServiceStatus.Room(room: "r1", name: "Example Team", state: "active", members: 3, bots: 2,
                                           syncedAt: nil, error: nil, socket: true)

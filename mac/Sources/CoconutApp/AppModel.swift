@@ -247,7 +247,7 @@ final class AppModel: ObservableObject {
         if let failure = await Task.detached(priority: .utility, operation: { LoginItems().unregister() }).value {
             return failed(failure)
         }
-        let result = await runTool(["remove"])
+        let result = await runTool(["remove", RemoveRequest.fromApp])
         guard result.0 == 0 else { return failed(Self.lastLine(result.1) ?? "coconut remove failed.") }
         UserDefaults.standard.removeObject(forKey: InstallMode.preferenceKey)
         NSApp.terminate(nil)
