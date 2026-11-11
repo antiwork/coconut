@@ -24,6 +24,14 @@ enum BoardStyle {
     static let attention = accent
     static let destructive = Color(platformColor: .systemRed)
 
+    /// The fills of a face with letters, for a team or a person, with the ink of the letters. They are fills and inks
+    /// of the fruit faces of the bots, so they read the same in light and in dark mode.
+    static let faceColors: [(fill: String, ink: String)] = [
+        ("7E99D3", "1F334E"), ("70A779", "FCEDCE"), ("AA79C2", "FCF0DD"),
+        ("F2A088", "263329"), ("EAA052", "263329"), ("D76C91", "FFEBD6"), ("B6C493", "263329"),
+        ("EBC96C", "263329"),
+    ]
+
     /// The one fade for status text. Reduce Motion turns it off.
     static func fade(reduceMotion: Bool) -> Animation? { reduceMotion ? nil : .easeOut(duration: 0.2) }
 

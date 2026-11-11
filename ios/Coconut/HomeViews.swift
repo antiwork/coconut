@@ -13,15 +13,29 @@ struct HomeLaunchView: View {
         let activeBots = store.bots.filter { !$0.archived }.sorted {
             (latest[$0.id] ?? $0.createdAt.apiDate ?? .distantPast) > (latest[$1.id] ?? $1.createdAt.apiDate ?? .distantPast)
         }
-        let pinned = activeBots.filter(\.pinned).sorted {
+        let pinnedBots = activeBots.filter(\.pinned).sorted {
             let first = $0.createdAt.apiDate ?? .distantPast
             let second = $1.createdAt.apiDate ?? .distantPast
             return first == second ? $0.id < $1.id : first < second
         }
-        let conversations = ChatList.items(bots: activeBots.filter { !$0.pinned }, latest: latest,
-                                           rooms: store.team?.rooms ?? [])
+        let rooms = store.team?.rooms ?? []
+        let filter = ChatFilter.effective(store.chatFilter, rooms: rooms)
+        let conversations = filter.items(ChatList.items(bots: activeBots.filter { !$0.pinned }, latest: latest,
+                                                        rooms: rooms))
+        let pinned = filter.showsPinned ? pinnedBots : []
         return ScrollView {
             LazyVStack(spacing: 0) {
+                // The chips show only for a Mac in a team. A person with bots only sees the list as before.
+                if ChatFilter.showsChips(rooms: rooms) {
+                    chips(filter)
+                }
+                if conversations.isEmpty && pinned.isEmpty && filter == .bots {
+                    // The quiet line of the Team screen for a Mac without bots.
+                    Text("This Mac has no bots yet.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding(.vertical, 45)
+                        .accessibilityIdentifier("chats-empty")
+                }
                 if !pinned.isEmpty {
                     ViewThatFits(in: .horizontal) {
                         pinnedTiles(pinned)
@@ -57,12 +71,27 @@ struct HomeLaunchView: View {
                     }
                 }
             }
-            .padding(.top, pinned.isEmpty ? 16 : 0)
+            .padding(.top, pinned.isEmpty || ChatFilter.showsChips(rooms: rooms) ? 16 : 0)
             .padding(.bottom, 20)
         }
         .background(BoardStyle.paper)
         .refreshable { await store.reconnect() }
         .modifier(DeleteBotDialog(bot: $deleting))
+    }
+
+    /// The row of filter chips, as the chips of WhatsApp. When large text does not fit one row, the chips stand one
+    /// under the other, so no chip is cut.
+    private func chips(_ selected: ChatFilter) -> some View {
+        let chips = ForEach(ChatFilter.allCases) { filter in
+            ChipButton(title: filter.title, selected: filter == selected) { store.chatFilter = filter }
+                .accessibilityIdentifier("chats-filter-\(filter.rawValue)")
+        }
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { chips }
+            VStack(alignment: .leading, spacing: 0) { chips }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
     }
 
     private func pinnedTiles(_ pinned: [Bot]) -> some View {
@@ -97,6 +126,35 @@ struct HomeLaunchView: View {
         Button("Delete bot", systemImage: "trash", role: .destructive) { deleting = bot }
     }
 
+}
+
+/// A text chip that one of a few choices selects: the filters of the Chats list, and the tabs of the bot details on
+/// a Mac. The selected chip sits on a soft capsule of the text color, so it reads in light and in dark mode.
+struct ChipButton: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.body.weight(selected ? .medium : .regular))
+                .foregroundStyle(selected ? .primary : .secondary)
+                .lineLimit(1)
+                .padding(.horizontal, 14).padding(.vertical, 5)
+                .frame(minHeight: 30)
+                .background(selected ? Color.primary.opacity(0.1) : .clear, in: Capsule())
+                #if os(iOS)
+                // A finger needs 44 points. The capsule stays small.
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                #else
+                .contentShape(Capsule())
+                #endif
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
 }
 
 struct HomePressStyle: ButtonStyle {

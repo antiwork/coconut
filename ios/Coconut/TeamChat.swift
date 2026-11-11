@@ -354,3 +354,87 @@ enum ChatList {
         return items
     }
 }
+
+/// The filter of the Chats list on an iPhone. "People" has the teams, and later the direct messages.
+enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
+    case all, people, bots
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: "All"
+        case .people: "People"
+        case .bots: "Bots"
+        }
+    }
+
+    /// The chips show only while the paired Mac is in a team. Without them the list is "All".
+    static func showsChips(rooms: [TeamRoom]) -> Bool { !rooms.isEmpty }
+
+    /// The filter that the list uses: the choice of the person while the chips show, else "All". The store also keeps
+    /// this value after each list of the teams, so a Mac that left its last team starts at "All" when chips return.
+    static func effective(_ chosen: ChatFilter, rooms: [TeamRoom]) -> ChatFilter {
+        showsChips(rooms: rooms) ? chosen : .all
+    }
+
+    /// The pinned tiles are bots, so "People" has none.
+    var showsPinned: Bool { self != .people }
+
+    /// The rows of the list for this filter, in the order of the list.
+    func items(_ items: [ChatListItem]) -> [ChatListItem] {
+        switch self {
+        case .all: items
+        case .people: items.filter { if case .team = $0 { true } else { false } }
+        case .bots: items.filter { if case .bot = $0 { true } else { false } }
+        }
+    }
+}
+
+/// The sections of the Mac sidebar: the pinned bots, the people (the teams), and the other bots. Each one newest
+/// activity first.
+struct ChatSections: Equatable {
+    var pinned: [Bot]
+    var people: [TeamRoom]
+    var bots: [Bot]
+
+    /// One pass over the messages. A section without rows does not show.
+    static func make(bots: [Bot], messages: [Message], rooms: [TeamRoom]) -> ChatSections {
+        let latest = ChatList.lastMessageDates(messages)
+        func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
+        let active = bots.filter { !$0.archived }.sorted { activity($0) > activity($1) }
+        let people = rooms.sorted { ($0.lastActivity, $1.room) > ($1.lastActivity, $0.room) }
+        return ChatSections(pinned: active.filter(\.pinned), people: people, bots: active.filter { !$0.pinned })
+    }
+}
+
+/// The face of a team, or of a person without a face of its own: letters on a fill of `BoardStyle.faceColors`.
+enum LetterFace {
+    /// The first letters of the first two words, or the first letters of a name of one word, in uppercase. Nil for a
+    /// name without a letter: the face then shows its symbol.
+    static func letters(_ name: String, count: Int = 2) -> String? {
+        let words = name.split { !$0.isLetter && !$0.isNumber }.filter { $0.contains(where: \.isLetter) }
+        guard let first = words.first else { return nil }
+        if count > 1, words.count > 1, let a = first.first(where: \.isLetter), let b = words[1].first(where: \.isLetter) {
+            return String([a, b]).uppercased()
+        }
+        return String(first.filter(\.isLetter).prefix(count)).uppercased()
+    }
+
+    /// The fill for an ID: the same ID always gets the same fill, also after a new name.
+    static func colorIndex(_ id: String) -> Int {
+        Int(characterSeed(id) % UInt64(BoardStyle.faceColors.count))
+    }
+}
+
+extension TeamRoom {
+    /// Who is in the chat: "3 people", or "3 people, 1 bot" when the team has bots. Nil while the list has no member.
+    var whoLine: String? {
+        let people = memberList.count
+        guard people > 0 else { return nil }
+        let line = people == 1 ? "1 person" : "\(people) people"
+        let bots = botList.count
+        guard bots > 0 else { return line }
+        return line + (bots == 1 ? ", 1 bot" : ", \(bots) bots")
+    }
+}

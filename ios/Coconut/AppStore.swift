@@ -68,6 +68,9 @@ final class AppStore {
     /// The number of the latest write that the app started, by room. The answer of an earlier write is older.
     @ObservationIgnored private var teamWrites: [String: Int] = [:]
     @ObservationIgnored private var teamWriteCount = 0
+    /// The filter chip of the Chats list. It stays while the app runs. A new pairing, an unpair and a Mac without a
+    /// team set it to "All" (`ChatFilter.effective`).
+    var chatFilter: ChatFilter = .all
     /// The chats of the teams that the person opened, by room ID. The updates keep them fresh.
     var teamChats: [String: TeamChat] = [:]
     /// The number of the latest request of the newest page, by room. Only its answer goes into the chat.
@@ -483,6 +486,7 @@ final class AppStore {
     // The new pairing starts without the outgoing items and the cursor of the earlier one.
     private func adopt(_ configuration: PairingConfiguration) async {
         resetDelivery()
+        chatFilter = .all
         outgoingMessages = []; outgoingAnswers = []; answeringDecisionIds = []; sendingAnswerIds = []; restoredDecisionId = nil
         ProtectedCache.remove("outgoing.json")
         pairing = configuration
@@ -618,6 +622,7 @@ final class AppStore {
         team = nil; teamLoadError = nil; latestTeamLoad = nil; teamWrites = [:]
         teamChats = [:]; teamChatRequests = [:]; teamChatChanges = [:]; teamReadPosted = [:]; teamReadPosting = [:]
         teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]
+        chatFilter = .all
         approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
@@ -1578,6 +1583,7 @@ final class AppStore {
         assign(\.team, response)
         assign(\.teamLoadError, nil)
         teamListVersion += 1
+        assign(\.chatFilter, ChatFilter.effective(chatFilter, rooms: response.rooms))
         // A room that left the list takes its chat with it, also unsent messages that a restart brought back.
         let rooms = Set(response.rooms.map(\.room))
         dropTeamChats(teamChats.keys.filter { !rooms.contains($0) })

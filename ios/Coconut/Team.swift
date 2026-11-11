@@ -62,6 +62,9 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
 struct TeamMember: Decodable, Identifiable, Equatable, Sendable {
     var member: String
     var name: String
+    /// The face that the member chose: a symbol of a bot face and its color. Empty when the member chose none.
+    var avatar: String? = nil
+    var color: String? = nil
     var admin: Bool? = nil
     var thisMac: Bool? = nil
 
