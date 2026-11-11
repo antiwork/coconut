@@ -34,6 +34,15 @@ Each Hermes leg installs Hermes with the official installer, as a person does, i
 
 A failure of the nightly `main` leg is a warning in the run summary, not a failed check run. A change of Hermes `main` is not a fault of the Coconut commit.
 
+On a pull request, the `changes` job first reads the changed files. `scripts/ci_changes.py` has the rule, and `scripts/test_ci_changes.py` tests it. When each changed file is an app file that no test of these jobs reads, `contracts` and the Hermes legs do not run. Then `contracts` reports a skipped job, and `native-kanban` passes. In all other cases, all checks run:
+
+- A pull request that changes `backend/`, `hermes_plugin/`, `scripts/`, `skills/`, `docs/`, or a file outside the known app folders.
+- A pull request that changes a file in an app folder that a test reads, such as `ios/Tunnel/`.
+- A push to `main` and a manual run. The nightly run does not use the rule either.
+- A failure of the `changes` job.
+
+When a new test reads a file outside the service folders, add that file to `NEEDED` in `scripts/ci_changes.py`.
+
 When the latest release is not in `tested`, its leg prints a warning. Add that release to `tested` when its leg passes.
 
 ## Run the native tests locally

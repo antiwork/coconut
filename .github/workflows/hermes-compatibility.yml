@@ -20,8 +20,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A pull request that changes only app files cannot change the result of contracts or of the Hermes legs, so it does
+  # not wait for them. scripts/ci_changes.py has the rule. The rule fails safe: the checks run unless this job gives
+  # exactly "skip". A push to main, the nightly run, and a manual run skip this job, so they run every check.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      service: ${{ steps.decide.outputs.service }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 2 # The merge commit of the pull request and its two parents.
+      - name: Decide whether the changed files can change the service checks
+        id: decide
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # The checkout is the merge commit of the pull request into its base. Its first parent is the base, and its
+          # second parent is the head of the pull request. Any other checkout stops this step, and the checks run.
+          test "$(git rev-parse HEAD^2)" = "$HEAD_SHA"
+          git diff --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed-files"
+          cat "$RUNNER_TEMP/changed-files"
+          service="$(python3 scripts/ci_changes.py < "$RUNNER_TEMP/changed-files")"
+          echo "The service checks: $service" >> "$GITHUB_STEP_SUMMARY"
+          echo "service=$service" >> "$GITHUB_OUTPUT"
+
   contracts:
-    if: github.event_name != 'schedule'
+    needs: changes
+    # !cancelled() lets this job run when changes is skipped (no pull request) or fails. Only "skip" skips it.
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.service != 'skip' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -46,6 +77,8 @@ jobs:
           done
       - name: Check the TestFlight release steps
         run: python -m unittest discover -s scripts -p test_testflight.py
+      - name: Check the rule that skips the service checks
+        run: python -m unittest discover -s scripts -p test_ci_changes.py
 
   hermes-versions:
     runs-on: ubuntu-latest
@@ -75,7 +108,9 @@ jobs:
 
   native-kanban-hermes:
     name: native-kanban (${{ matrix.leg.name }})
-    needs: hermes-versions
+    needs: [hermes-versions, changes]
+    # !cancelled() lets the legs run when changes is skipped or fails. They still need the list of Hermes versions.
+    if: ${{ !cancelled() && needs.hermes-versions.result == 'success' && needs.changes.outputs.service != 'skip' }}
     runs-on: ubuntu-latest
     # Recent runs took 17 to 24 minutes, and the installation adds a few minutes. The step limits below end first.
     # Then a timeout of the Hermes main leg is a failed step that continue-on-error covers, not a timed-out job.
@@ -229,11 +264,18 @@ jobs:
   # required Hermes legs that one name. A newer push cancels the run; then this job is skipped, not failed.
   native-kanban:
     if: ${{ !cancelled() && github.event_name != 'schedule' }}
-    needs: native-kanban-hermes
+    needs: [changes, native-kanban-hermes]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every required Hermes leg to pass
         env:
           RESULT: ${{ needs.native-kanban-hermes.result }}
-        run: test "$RESULT" = success
+          SERVICE: ${{ needs.changes.outputs.service }}
+        run: |
+          # The rule of scripts/ci_changes.py skipped the legs: the pull request cannot change their result.
+          if [ "$SERVICE" = skip ] && [ "$RESULT" = skipped ]; then
+            echo 'The pull request changes only app files. The Hermes legs did not run.'
+            exit 0
+          fi
+          test "$RESULT" = success
