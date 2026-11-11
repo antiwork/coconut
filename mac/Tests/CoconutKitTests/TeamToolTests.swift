@@ -5,14 +5,22 @@ import XCTest
 /// The answers of a service for `coconut team`, by method and path, and the requests that the tool sent.
 final class FakeService: TeamTransport, @unchecked Sendable {
     private let lock = NSLock()
-    private var answers: [String: TeamResponse] = [:]
+    private var answers: [String: [TeamResponse]] = [:]
     private var failure: TeamFailure?
     private(set) var requests: [(method: String, path: String, body: [String: Any]?)] = []
 
+    /// The answer to each later request of this method and path.
     func answer(_ method: String, _ path: String, status: Int = 200, _ object: Any) {
-        lock.withLock {
-            answers["\(method) \(path)"] = TeamResponse(status: status, body: try! JSONSerialization.data(withJSONObject: object))
-        }
+        lock.withLock { answers["\(method) \(path)"] = [response(status, object)] }
+    }
+
+    /// An answer after the current one: the request after the next one of this method and path gets it.
+    func then(_ method: String, _ path: String, status: Int = 200, _ object: Any) {
+        lock.withLock { answers["\(method) \(path)", default: []].append(response(status, object)) }
+    }
+
+    private func response(_ status: Int, _ object: Any) -> TeamResponse {
+        TeamResponse(status: status, body: try! JSONSerialization.data(withJSONObject: object))
     }
 
     func fail(_ failure: TeamFailure) {
@@ -27,7 +35,12 @@ final class FakeService: TeamTransport, @unchecked Sendable {
         try lock.withLock {
             requests.append((method, path, body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }))
             if let failure { throw failure }
-            return answers["\(method) \(path)"]
+            let key = "\(method) \(path)"
+            if let queued = answers[key], queued.count > 1 {
+                answers[key] = Array(queued.dropFirst())
+                return queued[0]
+            }
+            return answers[key]?.first
                 ?? TeamResponse(status: 404, body: Data(#"{"error":"This route was not found."}"#.utf8))
         }
     }
@@ -37,6 +50,11 @@ final class TeamToolTests: XCTestCase {
     static let link = "coconut://team/aeqccirdeqssmjzifevcwlbnfyxtamjsgm2dknrxha4tuoz4hu7d6aabaib"
     static let roomID = String(repeating: "a", count: 64)
     static let otherID = String(repeating: "b", count: 64)
+    // Real bot IDs are UUIDs, with hyphens.
+    static let reporterID = "6f1c2a9e-4b7d-4e3a-9c51-2d8f0b6a7e14"
+    static let helperID = "1eba523f-c20c-4f16-8e89-59f77f936d4e"
+    static let lowerID = "a3d94c1b-77e2-4f05-b8a6-0c5e9f2d1b38"
+    static let missingID = "0d6b8e2f-5a14-4c93-a7f1-9e3c2b5d8a60"
 
     var service: FakeService!
 
@@ -53,12 +71,22 @@ final class TeamToolTests: XCTestCase {
     }
 
     func rooms(_ rooms: [[String: Any]], helper: Bool = true,
-               bots: [[String: String]]? = [["id": "b1", "name": "Reporter"], ["id": "b2", "name": "Helper"]]) {
+               bots: [[String: String]]? = [["id": TeamToolTests.reporterID, "name": "Reporter"], ["id": TeamToolTests.helperID, "name": "Helper"]],
+               then: Bool = false) {
         var answer: [String: Any] = ["rooms": rooms, "helper": helper]
         if let bots {
             answer["mac_bots"] = bots
         }
-        service.answer("GET", "/v1/team/rooms", answer)
+        if then {
+            service.then("GET", "/v1/team/rooms", answer)
+        } else {
+            service.answer("GET", "/v1/team/rooms", answer)
+        }
+    }
+
+    /// A bot of this Mac in the team, as the rooms show it.
+    func shared(_ id: String = TeamToolTests.reporterID, name: String = "Reporter") -> [String: Any] {
+        ["id": "t-\(id)", "name": name, "member": "m2", "member_name": "Grace", "this_mac": true, "bot_id": id]
     }
 
     func run(_ arguments: [String], link: String? = nil) async throws -> TeamOutput {
@@ -86,7 +114,7 @@ final class TeamToolTests: XCTestCase {
         XCTAssertEqual(try TeamCommand.parse(["add-bot", "Reporter"]), .addBot("Reporter", team: nil))
         XCTAssertEqual(try TeamCommand.parse(["add-bot", "Reporter", "--team", "Example Team"]),
                        .addBot("Reporter", team: "Example Team"))
-        XCTAssertEqual(try TeamCommand.parse(["remove-bot", "--team", "x", "b1"]), .removeBot("b1", team: "x"))
+        XCTAssertEqual(try TeamCommand.parse(["remove-bot", "--team", "x", Self.reporterID]), .removeBot(Self.reporterID, team: "x"))
         XCTAssertEqual(try TeamCommand.parse(["leave"]), .leave(team: nil, confirm: nil))
         XCTAssertEqual(try TeamCommand.parse(["leave", "--confirm", "Example Team"]),
                        .leave(team: nil, confirm: "Example Team"))
@@ -110,13 +138,13 @@ final class TeamToolTests: XCTestCase {
     func testTheTeamsOfThisMacOneFactOnEachLine() async throws {
         rooms([room(bots: [["id": "t-1", "name": "Reporter", "member": "m1", "member_name": "Ada", "this_mac": false],
                            ["id": "t-2", "name": "Helper", "member": "m2", "member_name": "Grace", "this_mac": true,
-                            "bot_id": "b2"]],
+                            "bot_id": Self.helperID]],
                     error: "Coconut could not reach its server. Try again later."),
                room(Self.otherID, name: "Other Team")])
         let output = try await run([])
         XCTAssertEqual(output, TeamOutput(lines: [
             "Team: Example Team", "ID: \(Self.roomID)", "State: active", "This Mac is the admin: no",
-            "Member: Ada (admin)", "Member: Grace (this Mac)", "Bot: Reporter (Mac of Ada)", "Bot: Helper (this Mac, ID b2)",
+            "Member: Ada (admin)", "Member: Grace (this Mac)", "Bot: Reporter (Mac of Ada)", "Bot: Helper (this Mac, ID \(Self.helperID))",
             "Sync error: Coconut could not reach its server. Try again later.", "",
             "Team: Other Team", "ID: \(Self.otherID)", "State: active", "This Mac is the admin: no",
             "Member: Ada (admin)", "Member: Grace (this Mac)", "Bots: none",
@@ -185,12 +213,14 @@ final class TeamToolTests: XCTestCase {
 
     func testAJoinSendsTheLinkFromStandardInputAndPrintsTheTeam() async throws {
         rooms([])
+        rooms([room()], then: true)
         service.answer("POST", "/v1/team/join", ["room": room()])
         let output = try await run(["join", "--name", "Build Mac"], link: "  \(Self.link)\n")
         XCTAssertEqual(output.status, 0)
         XCTAssertEqual(output.lines.prefix(3), ["This Mac joined the team Example Team.", "Team: Example Team",
                                                 "ID: \(Self.roomID)"])
-        XCTAssertEqual(service.sent, ["GET /v1/team/rooms", "POST /v1/team/join", "POST /v1/team/sync"])
+        XCTAssertEqual(service.sent, ["GET /v1/team/rooms", "POST /v1/team/join", "POST /v1/team/sync",
+                                      "GET /v1/team/rooms"])
         let body = service.requests[1].body
         XCTAssertEqual(body?["link"] as? String, Self.link)
         XCTAssertEqual(body?["member_name"] as? String, "Build Mac")
@@ -208,9 +238,27 @@ final class TeamToolTests: XCTestCase {
 
     func testAJoinWithoutANameKeepsTheDefaultOfTheService() async throws {
         rooms([])
+        rooms([room()], then: true)
         service.answer("POST", "/v1/team/join", ["room": room()])
-        _ = try await run(["join"], link: Self.link)
+        let output = try await run(["join"], link: Self.link)
+        XCTAssertEqual(output.status, 0)
         XCTAssertEqual(service.requests[1].body?.keys.sorted(), ["link"])
+    }
+
+    func testAJoinThatTheRoomsDoNotShowIsAnError() async throws {
+        rooms([])
+        service.answer("POST", "/v1/team/join", ["room": room()])
+        var output = try await run(["join"], link: Self.link)
+        XCTAssertEqual(output, TeamOutput(lines: [
+            "The service answered, but this Mac is not in the team Example Team. Run coconut team, then try again."],
+                                          status: 1))
+        var joining = room()
+        joining["state"] = "joining"
+        rooms([joining])
+        output = try await run(["join"], link: Self.link)
+        XCTAssertEqual(output, TeamOutput(lines: [
+            "The join of the team Example Team did not finish. Pipe the same link to coconut team join again."], status: 1))
+        XCTAssertFalse(output.lines.joined().contains(Self.link))
     }
 
     func testAJoinThatIsDoneAlreadySaysSoAndSucceeds() async throws {
@@ -236,22 +284,55 @@ final class TeamToolTests: XCTestCase {
 
     func testABotIsFoundByItsIDOrItsNameInAnyCase() async throws {
         rooms([room()])
+        rooms([room(bots: [shared()])], then: true)
         service.answer("POST", "/v1/team/rooms/\(Self.roomID)/bots", ["room": room()])
         var output = try await run(["add-bot", "reporter"])
         XCTAssertEqual(output, TeamOutput(lines: ["The bot Reporter is in the team Example Team now."]))
-        XCTAssertEqual(service.requests.last?.body?["bot_id"] as? String, "b1")
-        output = try await run(["add-bot", "b2"])
+        XCTAssertEqual(service.requests[1].body?["bot_id"] as? String, Self.reporterID)
+        XCTAssertEqual(service.sent, ["GET /v1/team/rooms", "POST /v1/team/rooms/\(Self.roomID)/bots", "GET /v1/team/rooms"])
+        rooms([room()])
+        rooms([room(bots: [shared(Self.helperID, name: "Helper")])], then: true)
+        output = try await run(["add-bot", Self.helperID])
         XCTAssertEqual(output.lines, ["The bot Helper is in the team Example Team now."])
-        XCTAssertEqual(service.requests.last?.body?["bot_id"] as? String, "b2")
+        XCTAssertEqual(service.requests[4].body?["bot_id"] as? String, Self.helperID)
+    }
+
+    func testAnAnswerOf200WithoutTheChangeIsAnError() async throws {
+        // The service answers 200, and the rooms read again do not show the change.
+        rooms([room()])
+        service.answer("POST", "/v1/team/rooms/\(Self.roomID)/bots", ["room": room()])
+        var output = try await run(["add-bot", "Reporter"])
+        XCTAssertEqual(output, TeamOutput(lines: [
+            "The service answered, but the bot Reporter is not in the team Example Team. Run coconut team, then try again."],
+                                          status: 1))
+        rooms([room(bots: [shared()])])
+        service.answer("DELETE", "/v1/team/rooms/\(Self.roomID)/bots/\(Self.reporterID)", ["room": room()])
+        output = try await run(["remove-bot", "Reporter"])
+        XCTAssertEqual(output, TeamOutput(lines: [
+            "The service answered, but the bot Reporter is still in the team Example Team. Run coconut team, then try again."],
+                                          status: 1))
+        rooms([room()])
+        service.answer("DELETE", "/v1/team/rooms/\(Self.roomID)", ["room": Self.roomID, "left": true])
+        output = try await run(["leave", "--confirm", "Example Team"])
+        XCTAssertEqual(output, TeamOutput(lines: [
+            "The service answered, but this Mac is still in the team Example Team. Run coconut team, then try again."],
+                                          status: 1))
+    }
+
+    func testAPathPartKeepsOnlyTheUnreservedCharacters() {
+        let tool = TeamTool(transport: service)
+        XCTAssertEqual(tool.path(Self.helperID), Self.helperID)
+        XCTAssertEqual(tool.path("a b/c?d%e-f._~"), "a%20b%2Fc%3Fd%25e-f._~")
+        XCTAssertEqual(tool.path("Café"), "Caf%C3%A9")
     }
 
     func testABotThatMatchesNoBotOrTwoBotsListsTheBots() async throws {
-        rooms([room()], bots: [["id": "b1", "name": "Reporter"], ["id": "b3", "name": "reporter"],
-                               ["id": "b2", "name": "Helper"]])
+        rooms([room()], bots: [["id": Self.reporterID, "name": "Reporter"], ["id": Self.lowerID, "name": "reporter"],
+                               ["id": Self.helperID, "name": "Helper"]])
         var output = try await run(["add-bot", "Writer"])
         XCTAssertEqual(output, TeamOutput(lines: [
             "No bot of this Mac has the name or ID \"Writer\". The bots of this Mac:",
-            "Bot: Reporter (ID b1)", "Bot: reporter (ID b3)", "Bot: Helper (ID b2)"], status: 1))
+            "Bot: Reporter (ID \(Self.reporterID))", "Bot: reporter (ID \(Self.lowerID))", "Bot: Helper (ID \(Self.helperID))"], status: 1))
         output = try await run(["add-bot", "REPORTER"])
         XCTAssertEqual(output.lines.first, "More than one bot of this Mac has the name \"REPORTER\". Give the ID of the bot. "
                        + "The bots of this Mac:")
@@ -265,9 +346,9 @@ final class TeamToolTests: XCTestCase {
     func testAServiceWithoutTheListOfBotsTakesTheArgumentAsTheID() async throws {
         rooms([room()], bots: nil)
         service.answer("POST", "/v1/team/rooms/\(Self.roomID)/bots", status: 404, ["error": "This bot is no longer on this Mac."])
-        let output = try await run(["add-bot", "b9"])
+        let output = try await run(["add-bot", Self.missingID])
         XCTAssertEqual(output, TeamOutput(lines: ["This bot is no longer on this Mac."], status: 1))
-        XCTAssertEqual(service.requests.last?.body?["bot_id"] as? String, "b9")
+        XCTAssertEqual(service.requests.last?.body?["bot_id"] as? String, Self.missingID)
     }
 
     func testMoreThanOneTeamNeedsTheTeamArgument() async throws {
@@ -276,6 +357,7 @@ final class TeamToolTests: XCTestCase {
         XCTAssertEqual(output, TeamOutput(lines: [
             "This Mac is in 2 teams. Choose one with --team <name or ID>.",
             "Team: Example Team (ID \(Self.roomID))", "Team: Other Team (ID \(Self.otherID))"], status: 1))
+        rooms([room(), room(Self.otherID, name: "Other Team", bots: [shared()])], then: true)
         service.answer("POST", "/v1/team/rooms/\(Self.otherID)/bots", ["room": room(Self.otherID, name: "Other Team")])
         output = try await run(["add-bot", "Reporter", "--team", "other team"])
         XCTAssertEqual(output.lines, ["The bot Reporter is in the team Other Team now."])
@@ -293,17 +375,16 @@ final class TeamToolTests: XCTestCase {
     }
 
     func testAddAndRemoveABotThatIsInTheTeamOrNot() async throws {
-        let shared = ["id": "t-2", "name": "Helper", "member": "m2", "member_name": "Grace", "this_mac": true,
-                      "bot_id": "b2"] as [String: Any]
-        rooms([room(bots: [shared])])
+        rooms([room(bots: [shared(Self.helperID, name: "Helper")])])
         var output = try await run(["add-bot", "Helper"])
         XCTAssertEqual(output, TeamOutput(lines: ["The bot Helper is already in the team Example Team."]))
-        service.answer("DELETE", "/v1/team/rooms/\(Self.roomID)/bots/b2", ["room": room()])
+        rooms([room()], then: true)
+        service.answer("DELETE", "/v1/team/rooms/\(Self.roomID)/bots/\(Self.helperID)", ["room": room()])
         output = try await run(["remove-bot", "helper"])
         XCTAssertEqual(output, TeamOutput(lines: ["The bot Helper is no longer in the team Example Team."]))
         output = try await run(["remove-bot", "Reporter"])
         XCTAssertEqual(output, TeamOutput(lines: ["The bot Reporter is not in the team Example Team."]))
-        XCTAssertEqual(service.sent.filter { !$0.hasPrefix("GET") }, ["DELETE /v1/team/rooms/\(Self.roomID)/bots/b2"])
+        XCTAssertEqual(service.sent.filter { !$0.hasPrefix("GET") }, ["DELETE /v1/team/rooms/\(Self.roomID)/bots/\(Self.helperID)"])
     }
 
     // Leave
@@ -324,9 +405,10 @@ final class TeamToolTests: XCTestCase {
             "To leave, run: coconut team leave --confirm 'Ada'\\''s Team'"], status: 1))
         XCTAssertEqual(service.sent.filter { !$0.hasPrefix("GET") }, [])
         service.answer("DELETE", "/v1/team/rooms/\(Self.roomID)", ["room": Self.roomID, "left": true])
+        rooms([], then: true)
         output = try await run(["leave", "--confirm", "Ada's Team"])
         XCTAssertEqual(output, TeamOutput(lines: ["This Mac left the team Ada's Team."]))
-        XCTAssertEqual(service.sent.last, "DELETE /v1/team/rooms/\(Self.roomID)")
+        XCTAssertEqual(service.sent.suffix(2), ["DELETE /v1/team/rooms/\(Self.roomID)", "GET /v1/team/rooms"])
     }
 
     func testALeaveOfOneOfTwoTeamsNamesTheTeamInTheCommand() async throws {

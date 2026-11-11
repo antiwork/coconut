@@ -502,6 +502,15 @@ class TeamLogTests(unittest.TestCase):
         code, lines = run(second, '--json')
         self.assertEqual(json.loads('\n'.join(lines))['rooms'][0]['room'], room_id)
 
+        # The second Mac removes the bot by its ID, a UUID with hyphens. The first Mac no longer shows it.
+        self.assertRegex(bot['id'], r'^[0-9a-f]{8}-[0-9a-f]{4}-')
+        self.assertEqual(run(second, 'remove-bot', bot['id']),
+                         (0, ['The bot Night Bot is no longer in the team Example Team.']))
+        second.rooms()
+        first.rooms()
+        self.assertEqual(run(first)[1][-1], 'Bots: none')
+        self.assertEqual(run(second)[1][-1], 'Bots: none')
+
         # A leave needs the name of the team.
         self.assertEqual(run(second, 'leave')[0], 1)
         self.assertEqual(run(second, 'leave', '--confirm', 'Example Team'), (0, ['This Mac left the team Example Team.']))

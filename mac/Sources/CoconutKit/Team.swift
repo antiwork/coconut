@@ -309,11 +309,22 @@ public struct TeamTool: Sendable {
         } catch let failure as TeamFailure where failure.lines == [Self.alreadyJoined] {
             return TeamOutput(lines: [Self.alreadyJoined])
         }
-        var room = try JSONDecoder.team.decode(Answer.self, from: data).room
+        let joined = try JSONDecoder.team.decode(Answer.self, from: data).room
         // The answer of the join has only this Mac. A pass reads the other members, and it waits at most 60 seconds.
-        if let synced = try? decode(try await call("POST", "/v1/team/sync", [:])),
-           let read = synced.rooms.first(where: { $0.room == room.room }) {
-            room = read
+        // The tool then checks the rooms, and does not trust the answer of the join alone.
+        let after: TeamRooms
+        if let synced = try? decode(try await call("POST", "/v1/team/sync", [:])) {
+            after = synced
+        } else {
+            after = try decode(try await call("GET", "/v1/team/rooms"))
+        }
+        guard let room = after.rooms.first(where: { $0.room == joined.room }) else {
+            throw TeamFailure("The service answered, but this Mac is not in the team \(joined.name). Run coconut team, "
+                              + "then try again.")
+        }
+        guard room.state == "active" else {
+            throw TeamFailure("The join of the team \(room.name) did not finish. Pipe the same link to coconut team join "
+                              + "again.")
         }
         return TeamOutput(lines: ["This Mac joined the team \(room.name)."] + room.lines)
     }
@@ -325,9 +336,12 @@ public struct TeamTool: Sendable {
         if room.bots.contains(where: { $0.thisMac && $0.botId == bot.id }) {
             return TeamOutput(lines: ["The bot \(bot.name) is already in the team \(room.name)."])
         }
-        let data = try await call("POST", "/v1/team/rooms/\(room.room)/bots", ["bot_id": bot.id])
-        let changed = try JSONDecoder.team.decode(Answer.self, from: data).room
-        return TeamOutput(lines: ["The bot \(bot.name) is in the team \(changed.name) now."])
+        _ = try await call("POST", "/v1/team/rooms/\(path(room.room))/bots", ["bot_id": bot.id])
+        guard try await shares(bot, in: room) else {
+            throw TeamFailure("The service answered, but the bot \(bot.name) is not in the team \(room.name). Run "
+                              + "coconut team, then try again.")
+        }
+        return TeamOutput(lines: ["The bot \(bot.name) is in the team \(room.name) now."])
     }
 
     func removeBot(_ argument: String, team: String?) async throws -> TeamOutput {
@@ -344,8 +358,11 @@ public struct TeamTool: Sendable {
         guard room.bots.contains(where: { $0.thisMac && $0.botId == bot.id }) else {
             return TeamOutput(lines: ["The bot \(bot.name) is not in the team \(room.name)."])
         }
-        let id = bot.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? bot.id
-        _ = try await call("DELETE", "/v1/team/rooms/\(room.room)/bots/\(id)")
+        _ = try await call("DELETE", "/v1/team/rooms/\(path(room.room))/bots/\(path(bot.id))")
+        guard try await !shares(bot, in: room) else {
+            throw TeamFailure("The service answered, but the bot \(bot.name) is still in the team \(room.name). Run "
+                              + "coconut team, then try again.")
+        }
         return TeamOutput(lines: ["The bot \(bot.name) is no longer in the team \(room.name)."])
     }
 
@@ -368,7 +385,11 @@ public struct TeamTool: Sendable {
             throw TeamFailure(lines: ["The name after --confirm is not the name of the team \(room.name). Nothing changed.",
                                       "To leave, run: \(command)"])
         }
-        _ = try await call("DELETE", "/v1/team/rooms/\(room.room)")
+        _ = try await call("DELETE", "/v1/team/rooms/\(path(room.room))")
+        if try decode(try await call("GET", "/v1/team/rooms")).rooms.contains(where: { $0.room == room.room }) {
+            throw TeamFailure("The service answered, but this Mac is still in the team \(room.name). Run coconut team, "
+                              + "then try again.")
+        }
         return TeamOutput(lines: ["This Mac left the team \(room.name)."])
     }
 
@@ -418,6 +439,20 @@ public struct TeamTool: Sendable {
                                       + "bot. The bots of this Mac:"] + list)
         }
     }
+
+    /// True when the rooms, read again, show the bot of this Mac in the room. A 200 alone does not prove a change.
+    func shares(_ bot: TeamRooms.MacBot, in room: TeamRoom) async throws -> Bool {
+        let rooms = try decode(try await call("GET", "/v1/team/rooms")).rooms
+        return rooms.first(where: { $0.room == room.room })?.bots.contains(where: { $0.thisMac && $0.botId == bot.id }) ?? false
+    }
+
+    /// One part of a path: each character outside the unreserved set of RFC 3986 is percent-encoded, as
+    /// `urllib.parse.quote(part, safe="")` does in scripts/team.py. A bot ID is a UUID with hyphens, which stay.
+    func path(_ part: String) -> String {
+        part.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? part
+    }
+
+    static let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
 
     /// Send one request. Return the body of a 200 answer, else throw the text of the service.
     func call(_ method: String, _ path: String, _ body: [String: Any]? = nil) async throws -> Data {
