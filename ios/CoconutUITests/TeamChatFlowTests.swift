@@ -2,12 +2,16 @@ import XCTest
 
 /// The main flow of the Team chat against real Coconut services: open the team from Chats, send, reply, edit, delete,
 /// and load earlier messages. The test world of the services has the teams that the variables name: Example Team with
-/// two people and a bot, Busy Team with 60 messages of Grace, Old Project that Ada's Mac is no longer in, and Design
-/// Crew without a message. With COCONUT_TEAM_SHOTS, the test saves a screenshot of each state in that folder.
+/// two people and a Mac without a person, whose bots Planner and Scribe answer each member; Busy Team with 60
+/// messages of Grace; Old Project that Ada's Mac is no longer in; and Design Crew without a message. With
+/// COCONUT_TEAM_SHOTS, the test saves a screenshot of each state in that folder.
 ///
 /// A send that fails needs the Mac to refuse it. The test writes the file `delete-reply-target` into the folder of
 /// COCONUT_TEAM_FLAGS, and a script of the test world removes the answered message on Grace's Mac. The reply then gets
 /// "The message that you answer is no longer in the chat."
+///
+/// A message that names a bot checks the `mentions` that Ada's Mac saved: the test writes the file `check-mentions`
+/// with the text, and a script of the test world writes the names of the mentioned bots into `mentions.json`.
 final class TeamChatFlowTests: XCTestCase {
     private var app: XCUIApplication!
     private var shots: URL?
@@ -90,6 +94,9 @@ final class TeamChatFlowTests: XCTestCase {
         if let crew = env["COCONUT_TEAM_CREW"] {
             app.buttons["team-chat-\(crew)"].tap()
             XCTAssertTrue(element("team-chat-empty").waitForExistence(timeout: 10))
+            // The bot of the Mac without a person can answer, so the empty chat tells of @.
+            XCTAssertTrue(element("team-chat-empty").label.contains("Type @ to ask a bot."),
+                          element("team-chat-empty").label)
             shot("05a-iphone-empty-chat")
             back()
         }
@@ -167,9 +174,46 @@ final class TeamChatFlowTests: XCTestCase {
         if app.buttons["Dismiss error"].exists { app.buttons["Dismiss error"].firstMatch.tap() }
         back()
 
-        // The title opens the Team screen.
         exampleRow.tap()
         XCTAssertTrue(text("Planned the week").waitForExistence(timeout: 15))
+
+        // @ opens the list of the team bots that answer each member, as in a bot chat. Letters filter it, and a
+        // pick names the bot. A bot of a person is not in the list.
+        let mentionRows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'mention-bot-t-'"))
+        let field = element("message-input")
+        field.tap()
+        field.typeText("@")
+        XCTAssertTrue(element("bot-mention-picker").waitForExistence(timeout: 5))
+        XCTAssertEqual(mentionRows.count, 2, "Planner and Scribe of the Mac without a person")
+        XCTAssertFalse(app.buttons["Reporter"].exists, "A bot of this person is not in the list.")
+        XCTAssertTrue(app.buttons["Planner"].exists, "VoiceOver reads a row as the name of the bot.")
+        shot("01-iphone-team-mention-picker")
+        field.typeText("Pl")
+        XCTAssertTrue(app.buttons["Scribe"].waitForNonExistence(timeout: 5))
+        XCTAssertEqual(mentionRows.count, 1)
+        shot("02-iphone-team-mention-picker-filtered")
+        app.buttons["Planner"].tap()
+        XCTAssertTrue(element("bot-mention-picker").waitForNonExistence(timeout: 5))
+        field.typeText("what is the plan for Friday?")
+        XCTAssertEqual(field.value as? String, "@Planner what is the plan for Friday?")
+        shot("03-iphone-team-mention-in-composer")
+        app.buttons["send-message"].tap()
+        XCTAssertTrue(text("@Planner what is the plan for Friday?").waitForExistence(timeout: 15))
+        shot("04-iphone-team-mention-sent")
+        if let flags = env["COCONUT_TEAM_FLAGS"] {
+            let answer = URL(fileURLWithPath: flags + "/mentions.json")
+            try? FileManager.default.removeItem(at: answer)
+            FileManager.default.createFile(atPath: flags + "/check-mentions",
+                                           contents: Data("@Planner what is the plan for Friday?".utf8))
+            var names: [String]?
+            for _ in 0..<60 where names == nil {
+                names = (try? Data(contentsOf: answer)).flatMap { try? JSONDecoder().decode([String].self, from: $0) }
+                if names == nil { sleep(1) }
+            }
+            XCTAssertEqual(names, ["Planner"], "The Mac got the mention of Planner.")
+        }
+
+        // The title opens the Team screen.
         app.buttons["team-chat-title"].tap()
         XCTAssertTrue(app.buttons["team-leave"].waitForExistence(timeout: 10))
     }
@@ -213,12 +257,22 @@ final class TeamChatFlowTests: XCTestCase {
             XCTAssertTrue(app.buttons["chats-filter-\(chip)"].isHittable, "Each chip shows: \(chip)")
         }
         shot("look-\(look)-list")
-        guard look != "large", let example = env["COCONUT_TEAM_EXAMPLE"] else { return }
+        let mention = env["COCONUT_TEAM_MENTION"] != nil
+        guard look != "large" || mention, let example = env["COCONUT_TEAM_EXAMPLE"] else { return }
         let row = app.buttons["team-chat-\(example)"]
         XCTAssertTrue(row.waitForExistence(timeout: 15))
         row.tap()
         XCTAssertTrue(text("Planned the week").waitForExistence(timeout: 15))
-        shot("look-\(look)-chat")
+        guard mention else {
+            shot("look-\(look)-chat")
+            return
+        }
+        // COCONUT_TEAM_MENTION: the list of the team bots in this look.
+        let field = element("message-input")
+        field.tap()
+        field.typeText("@")
+        XCTAssertTrue(element("bot-mention-picker").waitForExistence(timeout: 5))
+        shot("05-iphone-team-mention-picker-\(look)")
     }
 
     /// The gap between the title of a chat and its first day pill, with the chat scrolled to its top: in the team chat

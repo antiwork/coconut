@@ -381,7 +381,8 @@ class Documents:
             # Only the person shares a page (team_pages.py). The bot learns that in the error, and saves again.
             if audience is not None:
                 raise ServiceError(400, BOT_SHARE)
-            team = document is not None and bool(self.team_store.rooms_of_page(document['id']))
+            # The limit holds while an active room has the page (TeamStore.shared_pages).
+            team = document is not None and bool(self.team_store.page_teams(document['id']))
         else:
             if audience is None:
                 audience = (document or {}).get('audience', 'private')
@@ -436,7 +437,7 @@ class Documents:
         summary = _summary(document)
         if self.library_reader:
             # A read view has its own connection, so the store of that connection reads the shares.
-            summary['audience'] = 'team' if TeamStore(self.db).rooms_of_page(document['id']) else 'private'
+            summary['audience'] = 'team' if TeamStore(self.db).page_teams(document['id']) else 'private'
         return summary
 
     def delete_bot_document(self, task_id: str, arguments: dict) -> dict:

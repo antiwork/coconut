@@ -80,10 +80,14 @@ def room_error(error: Exception) -> str:
     return DEFECT
 
 
-def member_payload(profile: dict) -> dict:
-    """The fields of the `member` entry of this Mac, from the profile of its room."""
-    return {'kind': 'member', 'name': profile['name'], 'avatar': profile['avatar'], 'color': profile['color'],
-            'agreement': profile['agreement']}
+def member_payload(profile: dict, bot_only: bool = False) -> dict:
+    """The fields of the `member` entry of this Mac, from the profile of its room. `bot_only` marks a Mac without a
+    person (team_only.py), so the other Macs do not count it as a person. A full Mac writes no `bot_only`."""
+    fields = {'kind': 'member', 'name': profile['name'], 'avatar': profile['avatar'], 'color': profile['color'],
+              'agreement': profile['agreement']}
+    if bot_only:
+        fields['bot_only'] = True
+    return fields
 
 
 def retry_delay(failures: int) -> int:
@@ -379,15 +383,23 @@ class TeamSync:
             if count:
                 log.warning('coconut.team_log room %s: this Mac ' + text + '.', room_id[:8], count)
 
+    @property
+    def _team_bot_only(self) -> bool:
+        """True on a team-only Mac: no person is at it, so its `member` entry has `bot_only`."""
+        return getattr(self, 'team_only', False) is True
+
     def _team_announce(self, room_id: str, force: bool = False) -> None:
-        """Write the `member` entry of this Mac when the store shows no member for it.
+        """Write the `member` entry of this Mac when the store shows no member for it, or a member with another
+        mark `bot_only` than this Mac writes.
 
         A Mac writes this entry after it makes or joins a room. This check also writes it after a stop between the
-        join and the write, and after a leave that the relay did not answer.
+        join and the write, after a leave that the relay did not answer, and one time after an update gives a
+        team-only Mac the mark. The row of the store keeps the mark, so a pass after the write writes nothing.
         """
         with self.lock:
             room = self.team_store.room(room_id)
-            shown = room is not None and self.team_store.member(room_id, room['member']) is not None
+            own = self.team_store.member(room_id, room['member']) if room is not None else None
+            shown = own is not None and bool(own['bot_only']) == self._team_bot_only
         if room is None or room['state'] != ACTIVE or shown:
             return
         last = self._team_announced.get(room_id)
@@ -395,7 +407,7 @@ class TeamSync:
             return
         self._team_announced[room_id] = time.monotonic()
         profile = json.loads(room['profile'])
-        self._team_write(room, profile['entry'], True, member_payload(profile))
+        self._team_write(room, profile['entry'], True, member_payload(profile, self._team_bot_only))
 
     def _team_write(self, room: dict, entry_id: str, kept: bool, fields: dict, tries: int = 1) -> None:
         """Seal an entry of this Mac, write it to the relay, and put it into the store.

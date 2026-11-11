@@ -200,7 +200,7 @@ struct TeamRoomView: View {
                 ForEach(room.memberList) { member in memberRow(member, in: room) }
             }
             // The section shows only while the team has a bot that a teammate can ask.
-            let bots = room.askableBots
+            let bots = TeamMentions.bots(of: room)
             if !bots.isEmpty {
                 Section("Bots") {
                     ForEach(bots) { botRow($0) }

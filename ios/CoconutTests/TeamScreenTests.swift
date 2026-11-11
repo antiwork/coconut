@@ -32,9 +32,23 @@ final class TeamScreenTests: XCTestCase {
         XCTAssertEqual(room.botList.map(\.memberName), ["Ada", "Grace"])
         // The two bots are the authors of shared pages, so a teammate cannot ask them, and the Team screen shows
         // no Bots section.
-        XCTAssertEqual(room.askableBots, [])
+        XCTAssertEqual(TeamMentions.bots(of: room), [])
         XCTAssertNil(room.sync?.error)
         XCTAssertTrue(room.showsInvite)
+    }
+
+    /// The Bots section of the Team screen lists the bots of TeamMentions.bots: it shows for a team with an open bot,
+    /// and hides for a team with only the author entries of the bots of people.
+    func testTheBotsSectionShowsOnlyTheBotsThatATeammateCanAsk() {
+        let author = TeamRoomBot(id: "t-r-1", name: "Reporter", memberName: "Ada", thisMac: true, botId: "bot-1")
+        let open = TeamRoomBot(id: "t-r-2", name: "Planner", memberName: "Team Mac", open: true)
+        let people = [TeamMember(member: "m0", name: "Ada"), TeamMember(member: "m1", name: "Grace")]
+        let authors = TeamRoom(room: "r", name: "Example Team", state: "active", members: people, bots: [author])
+        XCTAssertEqual(TeamMentions.bots(of: authors), [], "No section: a bot of a person is never listed.")
+        XCTAssertEqual(authors.whoLine, "2 people")
+        let withOpen = TeamRoom(room: "r", name: "Example Team", state: "active", members: people, bots: [author, open])
+        XCTAssertEqual(TeamMentions.bots(of: withOpen).map(\.name), ["Planner"])
+        XCTAssertEqual(withOpen.whoLine, "2 people, 1 bot")
     }
 
     /// An older service, or a room that is not active, leaves fields out. The app shows what it has.
@@ -715,6 +729,39 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
+    /// A send that names a team bot carries its `mentions`, also in the retry after a restart. A send without a
+    /// mention has no `mentions` in its body.
+    @MainActor
+    func testTheMentionsOfAnUnsentMessageStayOverARestart() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            server.failSends(true)
+            XCTAssertTrue(store.sendTeamMessage("r1", text: "@Reporter the weekly report", replyingTo: nil,
+                                                mentions: ["t-r1-bot-reporter"]))
+            try await waitUntil { store.teamChats["r1"]?.pending.first?.failed == true }
+            let key = try XCTUnwrap(store.teamChats["r1"]?.pending.first?.idempotencyKey)
+
+            let restarted = AppStore(demo: false)
+            XCTAssertEqual(restarted.teamChats["r1"]?.pending.first?.mentions, ["t-r1-bot-reporter"])
+
+            server.failSends(false)
+            store.retryTeamMessage("r1", id: key)
+            try await waitUntil { store.teamChats["r1"]?.pending.isEmpty == true }
+            XCTAssertEqual(server.sentMentions, [["t-r1-bot-reporter"], ["t-r1-bot-reporter"]])
+
+            XCTAssertTrue(store.sendTeamMessage("r1", text: "No bot here", replyingTo: nil))
+            try await waitUntil { server.sentMentions.count == 3 }
+            XCTAssertNil(server.sentMentions[2] as [String]?, "A message without a mention sends no mentions.")
+        }
+        #endif
+    }
+
     /// The person removes the team while a page of its chat is on its way. The late page changes nothing.
     @MainActor
     func testALatePageAfterARemovalChangesNothing() async throws {
@@ -993,9 +1040,12 @@ private final class TeamServer: @unchecked Sendable {
     var heldRereads: Int { lock.withLock { heldReread.count } }
     private var failingSends = false
     private var keys: [String] = []
+    private var mentionLists: [[String]?] = []
     var heldPages: Int { lock.withLock { heldPage.count } }
     /// The `Idempotency-Key` of each send, in order.
     var sentKeys: [String] { lock.withLock { keys } }
+    /// The `mentions` of each send, in order. Nil when the body had no `mentions`.
+    var sentMentions: [[String]?] { lock.withLock { mentionLists } }
     /// The updates answers that said `team_changed`, or a reset.
     var changesSent: Int { lock.withLock { changes } }
     var listRequests: Int { lock.withLock { lists } }
@@ -1220,10 +1270,12 @@ private final class TeamServer: @unchecked Sendable {
                     let key = request.components(separatedBy: "\r\n")
                         .first { $0.lowercased().hasPrefix("idempotency-key:") }?
                         .split(separator: ":", maxSplits: 1).last?.trimmingCharacters(in: .whitespaces) ?? ""
-                    let text = request.components(separatedBy: "\r\n\r\n").last
-                        .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }?["text"] as? String ?? ""
+                    let sent = request.components(separatedBy: "\r\n\r\n").last
+                        .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+                    let text = sent?["text"] as? String ?? ""
                     body = lock.withLock {
                         keys.append(key)
+                        mentionLists.append(sent?["mentions"] as? [String])
                         if failingSends {
                             status = "503 Service Unavailable"
                             return #"{"error": "The relay of the team does not answer. Try again later."}"#

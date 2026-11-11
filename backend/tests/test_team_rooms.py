@@ -26,7 +26,7 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
         self.assertEqual((room['name'], room['relay'], room['state'], room['is_admin'], room['admin'], room['epoch']),
                          ('Example Team', RELAY, 'active', True, room['member'], 0))
         self.assertEqual(room['members'], [dict(member=room['member'], name='Ada', avatar='coconut', color='green',
-                                                admin=True, this_mac=True)])
+                                                admin=True, this_mac=True, bot_only=False)])
         # The public agreement key is a key, so no answer has it. The store has it from the `member` entry.
         (stored,) = self.first.team_store.members(room['room'])
         state = self.relay.rooms[room['room']]
@@ -370,12 +370,12 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
         admin, member = self.rooms(self.first)[0], self.rooms(self.second)[0]
         entries = {bot['id']: share for service, bot in ((self.first, reporter), (self.second, helper))
                    for bot_id, share in service.team_store.shares(room['room']).items() if bot_id == bot['id']}
-        ada = dict(member=room['member'], name='Ada', avatar='coconut', color='green', admin=True)
-        grace = dict(member=joined['member'], name='Grace', avatar='', color='', admin=False)
+        ada = dict(member=room['member'], name='Ada', avatar='coconut', color='green', admin=True, bot_only=False)
+        grace = dict(member=joined['member'], name='Grace', avatar='', color='', admin=False, bot_only=False)
         bots = [dict(id=f't-{room["room"]}-{entries[reporter["id"]]}', name='Reporter', avatar=reporter['avatar'],
-                     color=reporter['color'], member=room['member'], member_name='Ada'),
+                     color=reporter['color'], member=room['member'], member_name='Ada', open=False),
                 dict(id=f't-{room["room"]}-{entries[helper["id"]]}', name='Helper', avatar=helper['avatar'],
-                     color=helper['color'], member=joined['member'], member_name='Grace')]
+                     color=helper['color'], member=joined['member'], member_name='Grace', open=False)]
         for view, this_mac, own in ((admin, room['member'], reporter), (member, joined['member'], helper)):
             with self.subTest(this_mac=view is admin and 'admin' or 'member'):
                 self.assertEqual((view['room'], view['name'], view['state'], view['is_admin'], view['can_invite']),
@@ -385,7 +385,7 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
                 self.assertEqual(view['members'], [dict(ada, this_mac=this_mac == room['member']),
                                                    dict(grace, this_mac=this_mac == joined['member'])])
                 # The bots follow the order of the members. A bot of this Mac also has its local ID. The archived
-                # bot is not in the list.
+                # bot is not in the list. A bot of a full Mac is not open: it answers only its own person.
                 expected = [dict(bot, this_mac=bot['member'] == this_mac) for bot in bots]
                 for bot in expected:
                     if bot['this_mac']:
