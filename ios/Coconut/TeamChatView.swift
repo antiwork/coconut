@@ -163,8 +163,9 @@ struct TeamChatView: View {
             guard room.hasChat, store.connection == .connected || store.isDemo else { return }
             await store.loadTeamChat(roomId)
         }
-        .onAppear { isVisible = true }
-        .onDisappear { isVisible = false; composerFocused = false }
+        .onAppear { isVisible = true; store.openTeamChat(roomId) }
+        // A chat that closes keeps its newest page only, so it opens again without stale older pages.
+        .onDisappear { isVisible = false; composerFocused = false; store.closeTeamChat(roomId) }
         .onReceive(DaySeparator.changes) { _ in dayReference = Date() }
         .confirmationDialog("Delete this message for everyone?", isPresented: Binding(
             get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible,
@@ -302,7 +303,8 @@ struct TeamChatView: View {
                 }
             }
         } else {
-            store.sendTeamMessage(roomId, text: text, replyingTo: replyTo)
+            // The store saves the message first. When the save fails, the composer keeps the text.
+            guard store.sendTeamMessage(roomId, text: text, replyingTo: replyTo) else { return }
             draft = ""
             replyTo = nil
         }

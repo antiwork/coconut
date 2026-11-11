@@ -18,7 +18,7 @@ struct TeamLastMessage: Decodable, Equatable, Sendable {
 }
 
 /// The answered message that a message quotes: the start of its text.
-struct TeamMessageQuote: Decodable, Equatable, Sendable {
+struct TeamMessageQuote: Codable, Equatable, Sendable {
     var id: String? = nil
     var member: String? = nil
     var memberName: String? = nil
@@ -87,7 +87,7 @@ struct TeamDeleteAnswer: Decodable, Sendable {
 
 /// A message of this person that is on its way to the Mac, or that did not send. The ID is the `Idempotency-Key` of
 /// each try, so the Mac writes the message one time, also when an earlier try reached it without an answer.
-struct TeamPendingMessage: Identifiable, Equatable, Sendable {
+struct TeamPendingMessage: Codable, Identifiable, Equatable, Sendable {
     let id: String
     let text: String
     let replyTo: String?
@@ -102,6 +102,13 @@ struct TeamPendingMessage: Identifiable, Equatable, Sendable {
         var next = self
         next.failed = false
         return next
+    }
+
+    /// A message that was on its way when the app ended did not send for sure. The person decides to try again.
+    var afterRestart: TeamPendingMessage {
+        var restored = self
+        restored.failed = true
+        return restored
     }
 }
 
@@ -126,13 +133,25 @@ struct TeamChat: Equatable, Sendable {
     /// The `first` of the newest message that the Mac has.
     var newestFirst: Int? { messages.last?.first }
 
+    /// The lower end of the range of the newest page: the `before` of its answer. Nil when the newest page reaches the
+    /// start of the chat. The older pages are the messages under it.
+    var newestFloor: Int?
+
+    /// The chat has older pages that the person loaded, under the newest page.
+    var hasOlderPages: Bool { loaded && before != newestFloor }
+
     /// Puts a page into the chat. A page covers a range of `first`: from its oldest message, or from the start when
     /// `before` of the page is nil, up to `requested` (the `before` of the request), or up to the end for the newest
     /// page. In that range the page is the truth: a new message appears, an edit replaces its message, and a message
     /// that the page does not have goes. A message outside the range stays.
-    mutating func merge(_ page: TeamMessagePage, requested: Int?) {
-        let lower = page.before
-        if requested == nil {
+    ///
+    /// `floor` is for a page that reads a loaded range again: the page covers nothing under it, and the chat keeps its
+    /// `before`.
+    mutating func merge(_ page: TeamMessagePage, requested: Int?, floor: Int? = nil) {
+        var lower = page.before
+        if let floor {
+            lower = max(lower ?? floor, floor)
+        } else if requested == nil {
             if loaded, let lower, messages.last.map({ $0.first < lower }) ?? true {
                 // More messages came than one page holds, so the chat would have a gap. The page starts it again.
                 messages = []
@@ -141,11 +160,14 @@ struct TeamChat: Equatable, Sendable {
                 before = lower
             }
             // Else the chat keeps its older pages, and their `before`.
+            newestFloor = lower
         } else {
             before = lower
         }
         var seen = Set<String>()
-        let incoming = page.messages.filter { seen.insert($0.id).inserted }
+        let incoming = page.messages.filter { message in
+            (floor.map { message.first >= $0 } ?? true) && seen.insert(message.id).inserted
+        }
         messages.removeAll { message in
             seen.contains(message.id)
                 || ((lower.map { message.first >= $0 } ?? true) && (requested.map { message.first < $0 } ?? true))
@@ -163,6 +185,13 @@ struct TeamChat: Equatable, Sendable {
 
     mutating func remove(_ id: String) {
         messages.removeAll { $0.id == id }
+    }
+
+    /// Drops the older pages and keeps the newest page, so a chat that opens again reads no stale history.
+    mutating func keepNewestPage() {
+        guard hasOlderPages, let floor = newestFloor else { return }
+        messages.removeAll { $0.first < floor }
+        before = floor
     }
 }
 

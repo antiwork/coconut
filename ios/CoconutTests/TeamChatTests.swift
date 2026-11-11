@@ -134,6 +134,39 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(empty.before, 90)
     }
 
+    /// A page that reads a loaded older range again: an edit replaces, a removal goes, and nothing under the oldest
+    /// loaded message comes in. The chat keeps its `before`.
+    func testAReadOfALoadedRangeReplacesAndRemovesOnlyInThatRange() {
+        var chat = TeamChat()
+        chat.merge(page([message("e", 50), message("f", 60)], before: 50), requested: nil)
+        chat.merge(page([message("b", 20), message("c", 30), message("d", 40)], before: 20), requested: 50)
+        XCTAssertEqual(chat.newestFloor, 50)
+        XCTAssertTrue(chat.hasOlderPages)
+        XCTAssertEqual(chat.before, 20)
+        // The Mac has an older message "a" under the loaded range, an edit of "c", and no more "d".
+        chat.merge(page([message("a", 10), message("b", 20), message("c", 30, text: "Edited")], before: nil),
+                   requested: 50, floor: 20)
+        XCTAssertEqual(chat.messages.map(\.id), ["b", "c", "e", "f"])
+        XCTAssertEqual(chat.messages[1].text, "Edited")
+        XCTAssertEqual(chat.before, 20, "The reread loads nothing new.")
+    }
+
+    func testAClosedChatKeepsItsNewestPageOnly() {
+        var chat = TeamChat()
+        chat.merge(page([message("e", 50), message("f", 60)], before: 50), requested: nil)
+        chat.merge(page([message("b", 20), message("c", 30)], before: nil), requested: 50)
+        XCTAssertNil(chat.before)
+        chat.keepNewestPage()
+        XCTAssertEqual(chat.messages.map(\.id), ["e", "f"])
+        XCTAssertEqual(chat.before, 50)
+        XCTAssertFalse(chat.hasOlderPages)
+        // A chat whose newest page has the whole history keeps it.
+        var small = TeamChat()
+        small.merge(page([message("a", 1)], before: nil), requested: nil)
+        small.keepNewestPage()
+        XCTAssertEqual(small.messages.map(\.id), ["a"])
+    }
+
     func testAnEmptyNewestPageEmptiesTheChat() {
         var chat = TeamChat()
         chat.merge(page([message("a", 1)], before: nil), requested: nil)
