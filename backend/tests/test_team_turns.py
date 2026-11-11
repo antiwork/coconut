@@ -27,14 +27,16 @@ class FakeGateway(threading.Thread):
         self.bridge, self.home, self.script = bridge, str(home), script
         self.turns, self.answers = [], []
         self.done = threading.Event()
-        bridge.poll({'home': self.home, 'wait': 0})
+        # The first poll connects the adapter, and it can bring a turn that waits.
+        self.waiting = bridge.poll({'home': self.home, 'wait': 0})['turns']
 
     def run(self):
         while not self.done.is_set():
             answer = self.bridge.poll({'home': self.home, 'wait': 0.2,
                                        'active': [turn['id'] for turn in self.turns]})
             self.answers += answer.get('answers', [])
-            for turn in answer['turns']:
+            waiting, self.waiting = self.waiting, []
+            for turn in waiting + answer['turns']:
                 self.turns.append(turn)
                 for event in self.script(turn):
                     if event['kind'] == 'question':
@@ -367,6 +369,27 @@ class FailureTests(TeamTurnMacs, unittest.TestCase):
             self.run_turns()
         self.assertEqual(self.replies(), [(UNAVAILABLE, named['id'])])
         self.assertEqual(self.triggers(), [])
+
+    def test_a_gateway_that_restarts_takes_the_turn_and_one_that_is_gone_gets_the_notice_at_the_time(self):
+        # The gateway polled a moment ago and stopped: the bridge still counts it as there.
+        self.only.gateway_bridge.poll({'home': str(self.home), 'wait': 0})
+        named = self.trigger()
+        started = time.monotonic()
+        with mock.patch('coconut.gateway_bridge.TAKE_SECONDS', 0.3), mock.patch.object(team_turns, 'ADAPTER_SECONDS', 30):
+            # The restarted gateway polls after a few seconds, later than the bridge waits for a take.
+            threading.Timer(1.5, lambda: self.serve(reply('Back again.'))).start()
+            self.run_turns()
+        self.assertEqual(self.replies(), [('Back again.', named['id'])])
+        self.assertLess(time.monotonic() - started, 10)
+        self.gateway.stop()
+        # A gateway that does not come back: the notice comes at the time of the turn, not at the first missed take.
+        self.only.gateway_bridge.poll({'home': str(self.home), 'wait': 0})
+        second = self.trigger()
+        started = time.monotonic()
+        with mock.patch('coconut.gateway_bridge.TAKE_SECONDS', 0.3), mock.patch.object(team_turns, 'ADAPTER_SECONDS', 2):
+            self.run_turns()
+        self.assertGreaterEqual(time.monotonic() - started, 2)
+        self.assertEqual(self.replies()[-1], (UNAVAILABLE, second['id']))
 
     def test_a_parked_profile_gives_the_notice_at_once(self):
         named = self.trigger()

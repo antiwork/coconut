@@ -563,7 +563,7 @@ What the chat shows when a turn fails:
 
 | Case | The chat shows |
 | --- | --- |
-| No adapter of the gateway of the bot in 5 minutes, or the profile is parked | One message of the bot: "Hermes on this Mac does not answer now, so I cannot answer. Write again later." |
+| No adapter of the gateway of the bot takes the turn within 2 minutes of its start, or the profile is parked. The bridge counts a gateway as there for 60 seconds after its last poll, so a gateway that just stopped looks there; the turn still waits until the 2 minutes end, and a gateway that restarts in that time takes it | One message of the bot: "Hermes on this Mac does not answer now, so I cannot answer. Write again later." |
 | The gateway stops answering in a turn, the turn fails, it runs over 30 minutes, it ends without a word, Coconut has a fault in the turn, or the trigger waited in the queue over one hour | The complete messages, then one message: "I could not finish my answer. Write again if you still need it." |
 | The service stops in a turn | The same message at the next start. The trigger does not run again. |
 | The chat of the bot goes off, the bot leaves the team, this Mac leaves, the member leaves, or the message is removed | Nothing. The turn stops or does not start. |

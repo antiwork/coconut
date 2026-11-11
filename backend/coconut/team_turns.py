@@ -33,8 +33,12 @@ from .team_sync import ROOM_ERRORS
 
 log = logging.getLogger(__name__)
 
-# A turn waits this long for the adapter of the bot's Hermes gateway.
-ADAPTER_SECONDS = 300
+# A turn waits this long, from its start, until the adapter of the bot's Hermes gateway takes it. The bridge counts an
+# adapter as there for 60 seconds after its last poll, and a turn that no adapter takes in 30 seconds goes back
+# (gateway_bridge.ADAPTER_SECONDS, TAKE_SECONDS). So a stopped gateway looks there for up to a minute. Each of these
+# waits ends only at this time: a restart of the gateway takes seconds and gets the turn, and a gateway that is gone
+# gets the notice after two minutes, not at once and not after five.
+ADAPTER_SECONDS = 120
 # A turn stops after this long. A person can ask again.
 TURN_SECONDS = 1800
 # The turn gets at most this many messages since the bot's last message.
@@ -229,34 +233,40 @@ class TeamTurns:
         room, bot, home = turn['room'], turn['bot'], turn['home']
         reply = Reply(self, turn)
         deadline = time.monotonic() + ADAPTER_SECONDS
-        while not self.gateway_bridge.connected(home):
-            if not self._team_still_asked(room, bot, turn['entry']):
-                # The bot no longer answers there, or the request is gone: the turn ends without a word.
+        while True:
+            while not self.gateway_bridge.connected(home):
+                if not self._team_still_asked(room, bot, turn['entry']):
+                    # The bot no longer answers there, or the request is gone: the turn ends without a word.
+                    return True
+                # A parked profile has no gateway, so a wait does not help.
+                if (Path(home) / 'gateway.parked').exists() or time.monotonic() >= deadline:
+                    reply.say(UNAVAILABLE)
+                    return True
+                if self.stopping.wait(1):
+                    return False
+            try:
+                with self._turns_gate:
+                    if not self._team_still_asked(room, bot, turn['entry']):
+                        return True
+                    turn_id = self.gateway_bridge.submit_turn(
+                        f'team:{room}:{bot}', home, chat_id(room, bot), turn['text'], chat_name=turn['team_name'],
+                        team=turn['team'], deadline=time.monotonic() + TURN_SECONDS)
+                self.gateway_bridge.follow(turn_id, reply.emit)
                 return True
-            # A parked profile has no gateway, so a wait does not help.
-            if (Path(home) / 'gateway.parked').exists() or time.monotonic() >= deadline:
+            except GatewayUnavailable:
+                # No adapter took the turn, so nothing of it ran. A gateway that restarts can take it again.
+                if time.monotonic() < deadline and not self.stopping.is_set():
+                    continue
                 reply.say(UNAVAILABLE)
                 return True
-            if self.stopping.wait(1):
-                return False
-        try:
-            with self._turns_gate:
-                if not self._team_still_asked(room, bot, turn['entry']):
-                    return True
-                turn_id = self.gateway_bridge.submit_turn(
-                    f'team:{room}:{bot}', home, chat_id(room, bot), turn['text'], chat_name=turn['team_name'],
-                    team=turn['team'], deadline=time.monotonic() + TURN_SECONDS)
-            self.gateway_bridge.follow(turn_id, reply.emit)
-        except GatewayUnavailable:
-            reply.say(UNAVAILABLE)
-        except (GatewayBusy, RuntimeError, TimeoutError) as error:
-            if self.stopping.is_set():
-                return False
-            log.warning('coconut.team_turns room %s: the turn of the bot %s did not finish (%s).', room[:8], bot,
-                        type(error).__name__)
-            reply.flush()
-            reply.say(UNFINISHED)
-        return True
+            except (GatewayBusy, RuntimeError, TimeoutError) as error:
+                if self.stopping.is_set():
+                    return False
+                log.warning('coconut.team_turns room %s: the turn of the bot %s did not finish (%s).', room[:8], bot,
+                            type(error).__name__)
+                reply.flush()
+                reply.say(UNFINISHED)
+                return True
 
     def _team_notice(self, turn: dict, part: str) -> None:
         """Post UNFINISHED as an answer to the trigger. A second fault here leaves a log line, so the thread goes
