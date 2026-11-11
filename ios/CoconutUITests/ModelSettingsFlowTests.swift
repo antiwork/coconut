@@ -43,9 +43,10 @@ final class ModelSettingsFlowTests: XCTestCase {
 
         select("Preview Focused", in: "model-picker", app: app)
         assertRow("model-picker", contains: "Preview Focused", in: app)
-        assertRow("model-effort-picker", contains: "Model default", in: app)
-        assertRow("model-effort-picker", contains: "High", in: app)
         save(in: app)
+        // The choice saves at once. The Mac then reports the effort that the new model uses by default, not the old
+        // Medium.
+        assertRow("model-effort-picker", contains: "High", in: app)
 
         app.navigationBars.buttons.element(boundBy: 0).tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
