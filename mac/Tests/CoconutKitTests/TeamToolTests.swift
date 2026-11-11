@@ -72,10 +72,13 @@ final class TeamToolTests: XCTestCase {
 
     func rooms(_ rooms: [[String: Any]], helper: Bool = true,
                bots: [[String: String]]? = [["id": TeamToolTests.reporterID, "name": "Reporter"], ["id": TeamToolTests.helperID, "name": "Helper"]],
-               then: Bool = false) {
+               then: Bool = false, mode: String? = nil) {
         var answer: [String: Any] = ["rooms": rooms, "helper": helper]
         if let bots {
             answer["mac_bots"] = bots
+        }
+        if let mode {
+            answer["mode"] = mode
         }
         if then {
             service.then("GET", "/v1/team/rooms", answer)
@@ -115,12 +118,16 @@ final class TeamToolTests: XCTestCase {
         XCTAssertEqual(try TeamCommand.parse(["add-bot", "Reporter", "--team", "Example Team"]),
                        .addBot("Reporter", team: "Example Team"))
         XCTAssertEqual(try TeamCommand.parse(["remove-bot", "--team", "x", Self.reporterID]), .removeBot(Self.reporterID, team: "x"))
+        XCTAssertEqual(try TeamCommand.parse(["new-bot", "Reporter"]), .newBot("Reporter", home: nil))
+        XCTAssertEqual(try TeamCommand.parse(["new-bot", "Reporter", "--home", "/opt/hermes"]),
+                       .newBot("Reporter", home: "/opt/hermes"))
         XCTAssertEqual(try TeamCommand.parse(["leave"]), .leave(team: nil, confirm: nil))
         XCTAssertEqual(try TeamCommand.parse(["leave", "--confirm", "Example Team"]),
                        .leave(team: nil, confirm: "Example Team"))
         for wrong in [["add-bot"], ["add-bot", "a", "b"], ["leave", "now"], ["join", "--team", "x"], ["join", "--json"],
                       ["add-bot", "a", "--confirm", "x"], ["--name", "x"], ["create"], ["invite"], ["leave", "--confirm"],
-                      ["add-bot", "a", "--team", "x", "--team", "y"], ["leave", "--force"]] {
+                      ["add-bot", "a", "--team", "x", "--team", "y"], ["leave", "--force"], ["new-bot"],
+                      ["new-bot", "a", "b"], ["new-bot", "a", "--team", "x"], ["add-bot", "a", "--home", "/x"]] {
             XCTAssertEqual(usage(wrong), .usage, "\(wrong)")
         }
         XCTAssertEqual(usage(["leave", "--confirm"])?.status, 64)
@@ -340,6 +347,45 @@ final class TeamToolTests: XCTestCase {
         rooms([room()], bots: [])
         output = try await run(["add-bot", "Writer"])
         XCTAssertEqual(output.lines.last, "This Mac has no bots that a team can take.")
+        XCTAssertEqual(service.sent.filter { $0.hasPrefix("POST") }, [])
+    }
+
+    // A Mac that runs Coconut for a team only
+
+    func testATeamOnlyMacDeclaresABotForAHermesHome() async throws {
+        rooms([room()], bots: [], mode: "team")
+        service.answer("POST", "/v1/team/bots", ["bot": ["id": Self.reporterID, "name": "Reporter", "avatar": "",
+                                                         "color": "", "home": "/opt/hermes", "teams": []]])
+        var output = try await run(["new-bot", "Reporter", "--home", "/opt/hermes/../hermes"])
+        XCTAssertEqual(output, TeamOutput(lines: ["This Mac declared the bot Reporter for the Hermes home /opt/hermes.",
+                                                  "To add it to a team, run: coconut team add-bot Reporter"]))
+        XCTAssertEqual(service.requests.last?.body?["name"] as? String, "Reporter")
+        XCTAssertEqual(service.requests.last?.body?["home"] as? String, "/opt/hermes")
+        // Without --home, the service takes its own Hermes home. A relative path becomes a full path.
+        output = try await run(["new-bot", "Reporter"])
+        XCTAssertNil(service.requests.last?.body?["home"])
+        output = try await run(["new-bot", "Reporter", "--home", "hermes"])
+        XCTAssertEqual(service.requests.last?.body?["home"] as? String,
+                       URL(fileURLWithPath: "hermes").standardizedFileURL.path)
+        // The service refuses a second bot for one home, and the tool prints its text.
+        service.answer("POST", "/v1/team/bots", status: 409, ["error": "The bot Reporter already stands for this Hermes home."])
+        output = try await run(["new-bot", "Helper"])
+        XCTAssertEqual(output, TeamOutput(lines: ["The bot Reporter already stands for this Hermes home."], status: 1))
+    }
+
+    func testAFullMacDeclaresNoBot() async throws {
+        rooms([room()])
+        let output = try await run(["new-bot", "Reporter"])
+        XCTAssertEqual(output, TeamOutput(lines: TeamFailure.fullMac.lines, status: 1))
+        XCTAssertEqual(service.sent, ["GET /v1/team/rooms"])
+    }
+
+    func testATeamOnlyMacSaysHowToDeclareAMissingBot() async throws {
+        rooms([room()], bots: [["id": Self.helperID, "name": "Helper"]], mode: "team")
+        let output = try await run(["add-bot", "Night Reporter"])
+        XCTAssertEqual(output, TeamOutput(lines: [
+            "This Mac has no bot with the name or ID \"Night Reporter\". Declare it first: coconut team new-bot "
+            + "'Night Reporter' --home <the Hermes home of the bot>"], status: 1))
         XCTAssertEqual(service.sent.filter { $0.hasPrefix("POST") }, [])
     }
 
