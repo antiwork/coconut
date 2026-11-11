@@ -443,6 +443,27 @@ public struct TeamTool: Sendable {
         return TeamOutput(lines: ["This Mac left the team \(room.name)."])
     }
 
+    /// A team in these states has no member entry of this Mac to take back: the relay does not know this Mac or the
+    /// team any more (backend/coconut/team_store.py). Only its local copy stays, which a removal deletes.
+    public static let leftStates: Set<String> = ["removed", "gone"]
+
+    /// The step of `coconut remove --confirm` before the removal: leave each team that this Mac is a member of, with
+    /// the call of `coconut team leave`. A leave writes the `delete` entries and tells the relay, so the other Macs
+    /// no longer show this Mac, its bots and their pages. Return the names of the teams that this Mac left. The first
+    /// failure stops the step and throws the text of the service.
+    public func leaveAll() async throws -> [String] {
+        let rooms = try decode(try await call("GET", "/v1/team/rooms")).rooms
+        let leaving = rooms.filter { !Self.leftStates.contains($0.state) }
+        for room in leaving {
+            _ = try await call("DELETE", "/v1/team/rooms/\(path(room.room))")
+        }
+        if !leaving.isEmpty, let still = try decode(try await call("GET", "/v1/team/rooms")).rooms
+            .first(where: { room in leaving.contains { $0.room == room.room } }) {
+            throw TeamFailure("The service answered, but this Mac is still in the team \(still.name).")
+        }
+        return leaving.map(\.name)
+    }
+
     // Steps
 
     struct Answer: Decodable {

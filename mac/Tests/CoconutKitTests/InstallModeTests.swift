@@ -385,9 +385,10 @@ final class InstallModeTests: XCTestCase {
     func testCoconutRemoveWithoutConfirmSaysWhatItRemovesAndHowToRunIt() {
         XCTAssertEqual(RemoveRequest.preview(teams: ["Example Team", "Second Team"]), [
             "A removal cannot be undone. No person can confirm it here, so the command needs --confirm.",
-            "Coconut.app removes its login items, the data of Coconut, and the key of this Mac in each team.",
+            "First, this Mac leaves each team. The other Macs then no longer show this Mac, its bots and their pages.",
             "This Mac leaves the team Example Team.",
             "This Mac leaves the team Second Team.",
+            "Then Coconut.app removes its login items, the data of Coconut, and the key of this Mac in each team.",
             "To come back, this Mac needs a new invite link.",
             "To remove Coconut, run: coconut remove --confirm",
         ])

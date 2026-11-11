@@ -116,21 +116,57 @@ public enum RemoveRequest {
     public static let confirm = "--confirm"
     public static let command = "coconut remove --confirm"
 
+    public static let noLeave = "--no-leave"
+    public static let noLeaveCommand = "coconut remove --confirm --no-leave"
+
     /// What `coconut remove` prints without `--confirm`, as `coconut team leave` does without it: no person can
-    /// confirm here, so the command needs the flag. `teams` are the names of the teams of this Mac, or nil when the
-    /// service does not answer.
+    /// confirm here, so the command needs the flag. `teams` are the names of the teams that this Mac leaves (each team
+    /// that is not `removed` or `gone`), or nil when the service does not answer.
     public static func preview(teams: [String]?) -> [String] {
         var lines = [
             "A removal cannot be undone. No person can confirm it here, so the command needs --confirm.",
-            "Coconut.app removes its login items, the data of Coconut, and the key of this Mac in each team.",
+            "First, this Mac leaves each team. The other Macs then no longer show this Mac, its bots and their pages.",
         ]
         switch teams {
         case nil: lines.append("The service does not answer, so the teams of this Mac are not known.")
         case let teams? where teams.isEmpty: lines.append("This Mac is in no team.")
         case let teams?: lines += teams.map { "This Mac leaves the team \($0)." }
         }
-        lines += ["To come back, this Mac needs a new invite link.", "To remove Coconut, run: \(command)"]
+        lines += ["Then Coconut.app removes its login items, the data of Coconut, and the key of this Mac in each team.",
+                  "To come back, this Mac needs a new invite link.", "To remove Coconut, run: \(command)"]
         return lines
+    }
+
+    /// The lines after a leave that failed. Nothing is removed yet. The one way out skips the leave, at a cost.
+    public static func leaveFailed(_ failure: TeamFailure) -> [String] {
+        failure.lines + [
+            "Coconut removed nothing, because this Mac could not leave each team.",
+            "To remove Coconut without the leave, run: \(noLeaveCommand)",
+            "Without the leave, the other Macs keep this Mac, its bots and their pages in their lists until an admin "
+                + "can remove a member.",
+        ]
+    }
+
+    /// The line of the result that names the teams that this Mac left. Nil: the removal skipped the leave.
+    public static func leftLine(_ teams: [String]?) -> String {
+        guard let teams else { return "This Mac did not leave its teams (--no-leave)." }
+        return teams.isEmpty ? "This Mac was in no team." : "This Mac left the teams: \(teams.joined(separator: ", "))."
+    }
+
+    /// `coconut remove --confirm [--no-leave]`: the leave of each team first, then the removal by the app. A failed
+    /// leave stops before the removal. `remove` gets the line of leftLine and returns the exit status.
+    public static func confirmed(noLeave: Bool, leave: () async throws -> [String], remove: (String) -> Int32,
+                                 output: (String) -> Void) async -> Int32 {
+        var left: [String]?
+        if !noLeave {
+            do {
+                left = try await leave()
+            } catch {
+                leaveFailed(error as? TeamFailure ?? .noAnswer).forEach(output)
+                return 1
+            }
+        }
+        return remove(leftLine(left))
     }
 
     public enum Outcome: Equatable {

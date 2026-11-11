@@ -43,12 +43,14 @@ let usage = """
       migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       service   Run the Coconut service. The login item uses this command.
       sidecar   Run the relay sidecar. The login item uses this command.
-      remove [--confirm]
+      remove [--confirm [--no-leave]]
                 On a Mac that runs Coconut for a team only: remove Coconut. This cannot be undone. Without --confirm,
-                print what the removal does and change nothing. With --confirm, stop Coconut.app, start it with
+                print what the removal does and change nothing. With --confirm, first leave each team, so the other
+                Macs no longer show this Mac, its bots and their pages. Then stop Coconut.app, start it with
                 --remove, and wait for the result. The app removes its login items, the data of Coconut, and the key
                 of this Mac in each team, and moves the install folder to the Trash. To come back, this Mac needs a
-                new invite link.
+                new invite link. A leave that fails removes nothing. --no-leave skips the leave: the other Macs then
+                keep this Mac, its bots and their pages in their lists until an admin can remove a member.
 
     Coconut.app --set-up sets up Coconut without a click, as Set Up Coconut in the menu does. The install script
     opens the app with it. Coconut.app --set-up --team-only sets up a Mac with no person for a team only: Coconut keeps
@@ -197,7 +199,7 @@ func appProcesses(_ app: URL) -> [NSRunningApplication] {
 /// The app reads `--remove` only when it starts. The stop is SIGTERM to the process of this bundle, not an Apple event,
 /// because an Apple event can ask for the Automation permission in a dialog that nobody sees. No login item starts the
 /// app again: the login item of the app opens it only at login, and it has no KeepAlive.
-func removeWithApp() -> Int32 {
+func removeWithApp(left: String) -> Int32 {
     let app = helpers.deletingLastPathComponent().deletingLastPathComponent()
     for running in appProcesses(app) {
         kill(running.processIdentifier, SIGTERM)
@@ -232,6 +234,7 @@ func removeWithApp() -> Int32 {
         switch outcome {
         case .waiting: continue
         case .removed:
+            print(left)
             print(RemoveRequest.removed)
             return 0
         case .failed(let line):
@@ -468,10 +471,23 @@ case "remove" where !CommandLine.arguments.contains(RemoveRequest.fromApp):
     guard install.isInstalled() else { fail("Coconut is not installed in \(install.root.path).") }
     guard CommandLine.arguments.contains(RemoveRequest.confirm) else {
         // Nothing changes without the flag. The bot shows these lines to the person and asks for a clear yes.
-        let teams = try? readTeamStatus().get().rooms.map(\.name)
+        let teams = try? readTeamStatus().get().rooms.filter { !TeamTool.leftStates.contains($0.state) }.map(\.name)
         fail(RemoveRequest.preview(teams: teams).joined(separator: "\n"))
     }
-    exit(removeWithApp())
+    let semaphore = DispatchSemaphore(value: 0)
+    var status: Int32 = 1
+    // A leave calls the relay with retries, so it has the timeout of coconut team leave.
+    let leaver = TeamTool(transport: BridgeTransport(
+        install: install, timeout: TeamCommand.leave(team: nil, confirm: nil).timeout))
+    // Detached: this top-level code runs on the main thread, which waits below.
+    Task.detached {
+        status = await RemoveRequest.confirmed(noLeave: CommandLine.arguments.contains(RemoveRequest.noLeave),
+                                               leave: { try await leaver.leaveAll() },
+                                               remove: { removeWithApp(left: $0) }, output: { print($0) })
+        semaphore.signal()
+    }
+    semaphore.wait()
+    exit(status)
 case "remove":
     guard mode == .team else { fail(RemoveRequest.toolFullInstall) }
     guard install.isInstalled() else { fail("Coconut is not installed in \(install.root.path).") }
