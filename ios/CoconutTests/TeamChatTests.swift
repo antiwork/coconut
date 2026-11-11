@@ -167,6 +167,26 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(small.messages.map(\.id), ["a"])
     }
 
+    /// A removed message stays removed for a late answer. A page of the Mac that has it again shows it.
+    func testARemovedMessageComesBackOnlyWithAPage() {
+        var chat = TeamChat()
+        chat.merge(page([message("a", 1), message("b", 2)], before: nil), requested: nil)
+        chat.remove("b")
+        chat.put(message("b", 2, text: "Late edit"))
+        XCTAssertEqual(chat.messages.map(\.id), ["a"])
+        chat.merge(page([message("a", 1), message("b", 2)], before: nil), requested: nil)
+        XCTAssertEqual(chat.messages.map(\.id), ["a", "b"])
+        XCTAssertTrue(chat.removed.isEmpty)
+    }
+
+    /// A newest page after a gap starts the range again and says so, so a read of the old range stops.
+    func testAResetSaysSo() {
+        var chat = TeamChat()
+        XCTAssertFalse(chat.merge(page([message("a", 1)], before: nil), requested: nil))
+        XCTAssertTrue(chat.merge(page([message("y", 90)], before: 90), requested: nil))
+        XCTAssertFalse(chat.merge(page([message("y", 90), message("z", 91)], before: 90), requested: nil))
+    }
+
     func testAnEmptyNewestPageEmptiesTheChat() {
         var chat = TeamChat()
         chat.merge(page([message("a", 1)], before: nil), requested: nil)

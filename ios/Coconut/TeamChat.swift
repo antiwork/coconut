@@ -147,7 +147,11 @@ struct TeamChat: Equatable, Sendable {
     ///
     /// `floor` is for a page that reads a loaded range again: the page covers nothing under it, and the chat keeps its
     /// `before`.
-    mutating func merge(_ page: TeamMessagePage, requested: Int?, floor: Int? = nil) {
+    ///
+    /// Returns true when the page started the loaded range again. Each read of the old range is then out of date.
+    @discardableResult
+    mutating func merge(_ page: TeamMessagePage, requested: Int?, floor: Int? = nil) -> Bool {
+        var reset = false
         var lower = page.before
         if let floor {
             lower = max(lower ?? floor, floor)
@@ -156,6 +160,7 @@ struct TeamChat: Equatable, Sendable {
                 // More messages came than one page holds, so the chat would have a gap. The page starts it again.
                 messages = []
                 before = lower
+                reset = true
             } else if !loaded || lower == nil {
                 before = lower
             }
@@ -173,11 +178,18 @@ struct TeamChat: Equatable, Sendable {
                 || ((lower.map { message.first >= $0 } ?? true) && (requested.map { message.first < $0 } ?? true))
         }
         messages = (messages + incoming).sorted { ($0.first, $0.id) < ($1.first, $1.id) }
+        // A page of the Mac says which messages exist. It is newer than a removal that it has again.
+        removed.subtract(seen)
         loaded = true
+        return reset
     }
+
+    /// The messages that this person removed. A late answer cannot put one back. Only a page of the Mac can.
+    var removed: Set<String> = []
 
     /// Puts one message that the Mac answered into the chat: a new message, or the new form of an edited one.
     mutating func put(_ message: TeamMessage) {
+        guard !removed.contains(message.id) else { return }
         messages.removeAll { $0.id == message.id }
         let index = messages.firstIndex { ($0.first, $0.id) > (message.first, message.id) } ?? messages.endIndex
         messages.insert(message, at: index)
@@ -185,6 +197,7 @@ struct TeamChat: Equatable, Sendable {
 
     mutating func remove(_ id: String) {
         messages.removeAll { $0.id == id }
+        removed.insert(id)
     }
 
     /// Drops the older pages and keeps the newest page, so a chat that opens again reads no stale history.
