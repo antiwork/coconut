@@ -145,6 +145,9 @@ struct ConversationView: View {
                     // real height on every frame. A list sizes its rows without that loop and stays as fast.
                     List {
                         Group {
+                            #if os(macOS)
+                            ChatTitleSpace(titleHeight: Self.titleHeight)
+                            #endif
                             conversationHeader(bot: bot, messages: messages)
                             // Older rows that the window does not hold yet come with this control too: a press adds
                             // a batch of them. When the window holds every row, a press loads a page from the Mac.
@@ -204,9 +207,6 @@ struct ConversationView: View {
                     }
                     .listStyle(.plain)
                     .id(listId)
-                    #if os(macOS)
-                    .contentMargins(.top, Self.titleHeight, for: .scrollContent)
-                    #endif
                     .buttonStyle(.borderless)
                     .scrollContentBackground(.hidden)
                     .environment(\.defaultMinListRowHeight, 1)

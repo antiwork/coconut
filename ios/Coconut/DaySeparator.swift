@@ -110,6 +110,22 @@ struct PinnedDayPill: View {
     }
 }
 
+/// The first row of a chat list on the Mac: the space under the title that floats over the top of the chat. A Mac list
+/// ignores a top content margin (its scroll view keeps a top inset of 0), so a row keeps the space. The row insets of
+/// the chat (5 points above and 5 below) add the last 10 points. The row has no ID, so it does not change the list ID
+/// of the window or a scroll to a row. On the iPhone it is empty.
+struct ChatTitleSpace: View {
+    /// The height of the title with its gaps.
+    let titleHeight: CGFloat
+
+    var body: some View {
+        #if os(macOS)
+        Color.clear.frame(height: max(0, titleHeight - 10))
+            .accessibilityHidden(true)
+        #endif
+    }
+}
+
 extension View {
     /// A row of the chat tells the pinned day where it is, and leaves it when the list removes the row.
     func pinnedDayRow(_ pinned: PinnedDay, id: String, date: Date?, startsDay: Bool) -> some View {

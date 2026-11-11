@@ -66,11 +66,7 @@ struct TeamChatView: View {
             List {
                 Group {
                     #if os(macOS)
-                    // The title floats over the top of the chat. A Mac list ignores a top content margin (its scroll
-                    // view keeps a top inset of 0), so the first row of the list keeps the space under the title.
-                    // The row insets add the last 10 points.
-                    Color.clear.frame(height: Self.titleHeight - 10)
-                        .accessibilityHidden(true)
+                    ChatTitleSpace(titleHeight: Self.titleHeight)
                     #endif
                     header(room, chat: chat, empty: allRows.isEmpty)
                     if shown.lowerBound > 0 || chat.before != nil {
