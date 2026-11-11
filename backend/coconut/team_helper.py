@@ -6,7 +6,8 @@ docs/team-log.md is the contract.
 
 Each call starts the helper once, sends one JSON object to its standard input and reads one JSON object from its
 standard output. A key, a token or a secret passes only through these pipes. No error of this module carries a value
-of a call, so a caller can log each error.
+of a call, so a caller can log each error. The watch mode of the helper, which holds the socket of each room, does not
+end: team_socket.py runs it.
 """
 from __future__ import annotations
 

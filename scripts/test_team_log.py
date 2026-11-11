@@ -3,6 +3,7 @@
 
 Each service has its own data folder, as three Macs. The first makes a room and an invite, and the second joins with
 the link. The test then writes to the relay as a member would, to show what the other Mac does with each entry.
+TeamSocketTests runs two more services with a timer of one hour, so only the socket can bring an entry in seconds.
 It needs macOS, the Xcode Command Line Tools, and `npm ci` in relay/.
 
     python3 scripts/test_team_log.py
@@ -481,6 +482,161 @@ class TeamLogTests(unittest.TestCase):
         """The seq, first and rev of an entry in the store of a Mac, or None."""
         with self.database(mac) as database:
             return database.execute('SELECT seq, first, rev FROM team_entries WHERE room=? AND id=?', (room, entry)).fetchone()
+
+
+# The service of a test Mac whose timer reads each room only once an hour. So only the socket can bring an entry
+# within seconds. The arguments of the service follow the code.
+LONG_TIMER = ('import runpy, sys; import coconut.team_sync as sync; sync.POLL_SECONDS = 3600; '
+              'sys.argv[0] = "coconut"; runpy.run_module("coconut", run_name="__main__", alter_sys=True)')
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The socket test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamSocketTests(unittest.TestCase):
+    """The watch mode of the real helper on the socket route of the relay code: an entry of one Mac reaches the
+    other Mac within seconds, also after the relay stops and starts again."""
+
+    # The most time that an entry can take from the relay to the store of the other Mac.
+    LIMIT_SECONDS = 2
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        folder = Path(cls.temp.name)
+        cls.processes = []
+        cls.helper_path = folder / 'team-helper'
+        compile_helper(cls.helper_path)
+        # The relay keeps its rooms in a folder, so it can stop and start again on the same port with the same rooms.
+        cls.relay_port, cls.relay_store = free_port(), folder / 'relay'
+        cls.relay_process = None
+        cls.start_relay()
+        cls.macs = [Mac(folder / name) for name in ('first', 'second')]
+        environment = dict(os.environ, COCONUT_TEAM_HELPER=str(cls.helper_path))
+        for mac in cls.macs:
+            with mac.log.open('w') as output:
+                mac.process = subprocess.Popen(
+                    [sys.executable, '-X', 'faulthandler', '-c', LONG_TIMER, '--data-dir', str(mac.data), '--port',
+                     str(mac.port), '--provider', 'fixture'], cwd=ROOT / 'backend', env=environment, stdout=output,
+                    stderr=subprocess.STDOUT)
+                cls.processes.append(mac.process)
+        try:
+            for mac in cls.macs:
+                TeamLogTests.wait_for_health(mac)
+        except AssertionError:
+            cls.tearDownClass()
+            raise
+
+    @classmethod
+    def start_relay(cls):
+        cls.relay_process = subprocess.Popen(['node', 'test/room-server.mjs', str(cls.relay_port), str(cls.relay_store)],
+                                             cwd=ROOT / 'relay', stdout=subprocess.PIPE, text=True)
+        cls.url = cls.relay_process.stdout.readline().strip()
+        cls.relay_process.stdout.close()
+        assert cls.url == f'http://127.0.0.1:{cls.relay_port}', cls.url
+
+    @classmethod
+    def stop_relay(cls):
+        cls.relay_process.terminate()
+        try:
+            cls.relay_process.wait(30)
+        except subprocess.TimeoutExpired:
+            cls.relay_process.kill()
+            cls.relay_process.wait()
+
+    @classmethod
+    def tearDownClass(cls):
+        for process in cls.processes:
+            process.terminate()
+        for process in cls.processes:
+            try:
+                process.wait(30)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        if cls.relay_process is not None:
+            cls.stop_relay()
+        # Each service stops its helper when it closes, and a helper ends when its input closes. No helper of this
+        # test may stay.
+        deadline = time.monotonic() + 10
+        while True:
+            found = subprocess.run(['pgrep', '-f', str(cls.helper_path)], capture_output=True, text=True).stdout.split()
+            if not found or time.monotonic() > deadline:
+                break
+            time.sleep(.1)
+        for pid in found:
+            os.kill(int(pid), signal.SIGKILL)
+        cls.temp.cleanup()
+        assert not found, f'A team helper still runs: {found}'
+
+    def view(self, mac: Mac, room_id: str) -> dict:
+        """The room as the Team screen gets it, without a pass."""
+        status, answer = mac.call('GET', '/v1/team/rooms')
+        self.assertEqual(status, 200, answer)
+        (room,) = (row for row in answer['rooms'] if row['room'] == room_id)
+        return room
+
+    def wait_until(self, check, seconds: float) -> float:
+        """Wait until `check` is true. Return the seconds that it took."""
+        start = time.monotonic()
+        while time.monotonic() - start < seconds:
+            if check():
+                return time.monotonic() - start
+            time.sleep(.05)
+        self.fail(f'The check stayed false for {seconds} seconds.')
+
+    def arrival(self, writer: Mac, reader: Mac, room_id: str, name: str) -> float:
+        """Change the name of the writer in the team, and return the seconds until the reader shows it."""
+        status, answer = writer.call('PATCH', f'/v1/team/rooms/{room_id}', {'member_name': name})
+        self.assertEqual(status, 200, answer)
+        return self.wait_until(lambda: name in [member['name'] for member in self.view(reader, room_id)['members']],
+                               self.LIMIT_SECONDS + 3)
+
+    def test_an_entry_reaches_the_other_mac_through_the_socket(self):
+        first, second = self.macs
+        status, answer = first.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                               'relay': self.url})
+        self.assertEqual(status, 200, answer)
+        room_id = answer['room']['room']
+        link = first.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
+        self.assertEqual(second.call('POST', '/v1/team/join', {'link': link, 'member_name': 'Grace'})[0], 200)
+        for mac in self.macs:
+            self.wait_until(lambda: self.view(mac, room_id)['sync']['socket'], 20)
+        # The socket of the first Mac brings the `member` entry of the second Mac.
+        self.wait_until(lambda: len(self.view(first, room_id)['members']) == 2, self.LIMIT_SECONDS + 3)
+
+        # Without a call of POST /v1/team/sync, and with a timer of one hour, each write reaches the other Mac.
+        delays = [self.arrival(first, second, room_id, 'Ada L.'), self.arrival(second, first, room_id, 'Grace H.')]
+        print(f'\nThe socket brought each entry in {", ".join(f"{delay:.2f}" for delay in delays)} seconds.')
+        for delay in delays:
+            self.assertLess(delay, self.LIMIT_SECONDS)
+
+        # The relay stops and starts again with the same rooms. Each helper connects again, and a write arrives.
+        self.stop_relay()
+        self.wait_until(lambda: not self.view(second, room_id)['sync']['socket'], 10)
+        self.start_relay()
+        for mac in self.macs:
+            self.wait_until(lambda: self.view(mac, room_id)['sync']['socket'], 30)
+        delay = self.arrival(first, second, room_id, 'Ada')
+        print(f'After the restart of the relay, the socket brought the entry in {delay:.2f} seconds.')
+        self.assertLess(delay, self.LIMIT_SECONDS)
+
+        # Ada sends a message in the Team chat. Grace's Mac has it without a sync call, and the phone learns of it.
+        cursor = second.phone('GET', '/v1/updates')[1]['cursor']
+        messages = f'/v1/team/rooms/{room_id}/messages'
+        status, answer = first.phone('POST', messages, {'text': 'Hello Grace'})
+        self.assertEqual(status, 200, answer)
+        delay = self.wait_until(lambda: [row['text'] for row in second.phone('GET', messages)[1]['messages']]
+                                == ['Hello Grace'], self.LIMIT_SECONDS + 3)
+        print(f'The socket brought the message in {delay:.2f} seconds.')
+        self.assertLess(delay, self.LIMIT_SECONDS)
+        self.assertIn(room_id, second.phone('GET', f'/v1/updates?after={cursor}')[1]['team_messages_changed'])
+
+        # The second Mac leaves, so the socket of its room goes. The admin then leaves the room without other members.
+        token = second.keys(room_id)['token']
+        self.assertEqual(second.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
+        self.assertEqual(first.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
+        for mac in self.macs:
+            self.assertNotIn(token, mac.log.read_text())
 
 
 def run_of(start: int, count: int) -> bytes:

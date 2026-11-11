@@ -197,8 +197,9 @@ enum TeamLog {
     /// An HTTPS origin without a path or account details, as for a pairing link, and with a host name: not an
     /// address in numbers and not a name without a dot, such as `localhost`. So a changed link cannot send a Mac
     /// over plain HTTP or to an address that the link gives in numbers. The check does not know where a host name
-    /// points. A debug build also accepts the loopback test relay.
-    private static func validRelay(_ value: String) -> Bool {
+    /// points. A debug build also accepts the loopback test relay. The watch mode of the Mac helper uses the same rule
+    /// before it sends a member token to a relay.
+    static func validRelay(_ value: String) -> Bool {
         guard value.utf8.count <= 255, value.utf8.allSatisfy({ (33...126).contains($0) }),
               let parts = URLComponents(string: value), parts.user == nil, parts.password == nil, parts.query == nil,
               parts.fragment == nil, parts.path.isEmpty, let host = parts.host, !host.isEmpty,
