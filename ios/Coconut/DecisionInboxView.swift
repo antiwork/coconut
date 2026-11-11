@@ -136,7 +136,7 @@ struct DecisionInboxView: View {
                 .opacity(current == nil ? 0 : 1)
                 .disabled(current == nil || restoringDecision != nil || confirmingChoice != nil)
                 .accessibilityHidden(current == nil)
-                .accessibilityLabel("\(queue.remainingCount) decisions left. Show all")
+                .accessibilityLabel("\(queue.remainingCount) \(queue.remainingCount == 1 ? "decision" : "decisions") left. Show all")
         }
         if #available(iOS 26.0, macOS 26.0, *) {
             ToolbarItem(placement: .trailingBar) { undoButton }
