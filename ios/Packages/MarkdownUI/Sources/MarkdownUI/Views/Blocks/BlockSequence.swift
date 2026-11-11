@@ -25,6 +25,10 @@ where
   // Coconut patch: until the preference arrives, the margins come from the container values of the blocks. A list
   // measures a row off screen without the preference, and then each gap took the default padding (see PATCHES.md).
   var body: some View {
+    // One block has no gap, so it needs no margins. Its own container margin passes up without a stack.
+    if self.data.count == 1, let element = self.data.first {
+      self.content(element.index, element.value)
+    } else {
     Group(subviews: ForEach(self.data, id: \.self) { element in
       self.content(element.index, element.value)
         .onPreferenceChange(BlockMarginsPreference.self) { value in
@@ -46,6 +50,7 @@ where
       }
       // As the preference does, a sequence passes the largest margins of its blocks to the block that holds it.
       .containerValue(\.markdownBlockMargin, subviews.markdownBlockMargin)
+    }
     }
   }
 

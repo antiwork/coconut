@@ -90,15 +90,15 @@ extension View {
   ///             MarkdownUI uses the preferred maximum value of the child blocks or
   ///             the system's default padding amount if no preference has been set.
   public func markdownMargin(top: CGFloat?, bottom: CGFloat?) -> some View {
-    // Coconut patch: BlockSequence reads the margin in the same layout pass. As the preference does, the margin keeps
-    // the largest value of each edge, also of the blocks in this view (see PATCHES.md).
+    // Coconut patch: BlockSequence reads the margin in the same layout pass. A block that holds blocks merges their
+    // margins into this one after its style, as the preference does (see PATCHES.md).
     self.transformPreference(BlockMarginsPreference.self) { value in
       let newValue = BlockMargin(top: top, bottom: bottom)
 
       value.top = [value.top, newValue.top].compactMap { $0 }.max()
       value.bottom = [value.bottom, newValue.bottom].compactMap { $0 }.max()
     }
-    .markdownBlockMargin(merging: BlockMargin(top: top, bottom: bottom))
+    .containerValue(\.markdownBlockMargin, BlockMargin(top: top, bottom: bottom))
   }
 
   // Coconut patch: merges `margin` into the container margin of each subview, by the rule of the preference. A
