@@ -25,14 +25,23 @@ Before 0.21.6, Hermes used calendar versions, such as 2026.9.24. Coconut treats 
 `.github/workflows/hermes-compatibility.yml` has these jobs:
 
 - `contracts` runs every backend test file, each in its own process, on Python 3.11 without Hermes. The native tests skip there.
-- `native-kanban (Hermes <minimum>)` checks the `minimum` release.
-- `native-kanban (latest Hermes release)` checks the latest stable Hermes release.
-- `native-kanban` passes only when both of the legs above pass.
-- `native-kanban (Hermes main)` runs each night against the tip of Hermes `main`.
+- `native-kanban (Hermes <minimum>, part 1)`, `part 2`, and `part 3` check the `minimum` release.
+- `native-kanban (latest Hermes release, part 1)`, `part 2`, and `part 3` check the latest stable Hermes release.
+- `native-kanban` passes only when all six parts above pass.
+- `native-kanban (Hermes main, part 1)`, `part 2`, and `part 3` run each night against the tip of Hermes `main`.
 
-Each Hermes leg installs Hermes with the official installer, as a person does, into a temporary `HERMES_HOME`. Then Coconut finds that Hermes with `hermes_runtime.find()` and runs the contract check. Then the leg runs the native tests under the Python of that Hermes.
+Each part installs Hermes with the official installer, as a person does, into a temporary `HERMES_HOME`. Then Coconut finds that Hermes with `hermes_runtime.find()` and runs the contract check. Then the part runs its share of the native test files under the Python of that Hermes. The three parts of a leg run at the same time. Each part has about one third of the test time. When you add a native test file, put it in the part with the least time.
 
 A failure of the nightly `main` leg is a warning in the run summary, not a failed check run. A change of Hermes `main` is not a fault of the Coconut commit.
+
+On a pull request, the `changes` job first reads the changed files. `scripts/ci_changes.py` has the rule, and `scripts/test_ci_changes.py` tests it. When each changed file is an app file that no test of these jobs reads, `contracts` and the Hermes legs do not run. Then `contracts` reports a skipped job, and `native-kanban` passes. In all other cases, all checks run:
+
+- A pull request that changes `backend/`, `hermes_plugin/`, `scripts/`, `skills/`, `docs/`, or a file outside the known app folders.
+- A pull request that changes a file in an app folder that a test reads, such as `ios/Tunnel/`.
+- A push to `main` and a manual run. The nightly run does not use the rule either.
+- A failure of the `changes` job.
+
+When a new test reads a file outside the service folders, add that file to `NEEDED` in `scripts/ci_changes.py`.
 
 When the latest release is not in `tested`, its leg prints a warning. Add that release to `tested` when its leg passes.
 

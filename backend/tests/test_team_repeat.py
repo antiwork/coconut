@@ -126,7 +126,7 @@ class TeamRepeatTests(TeamMacs, unittest.TestCase):
 
     def test_a_request_without_a_key_runs_as_before(self):
         for _ in range(2):
-            self.first.team_request('POST', '/v1/team/rooms', self.body())
+            self.send(self.first, 'POST', '/v1/team/rooms', self.body(), '')
         self.assertEqual(len(self.relay.rooms), 2)
         room = self.create()
         link = self.invite(room)['link']

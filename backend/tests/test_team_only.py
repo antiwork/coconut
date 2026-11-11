@@ -22,8 +22,9 @@ from uuid import uuid4
 
 from coconut import team_only
 from coconut.service_base import FULL_MODE, TEAM_MODE, WRONG_FOLDER, ServiceError
+from coconut.team import PERSON_ONLY
 from coconut.team_only import TEAM_PAGE, TeamOnlyService
-from team_fakes import FakeHelper, TeamMacs
+from team_fakes import RELAY, FakeHelper, TeamMacs
 
 PAGE = dict(key='weekly-report', title='Weekly report', format='markdown', summary='3 open tasks',
             content='3 tasks are open.')
@@ -201,6 +202,24 @@ class TeamOnlyFlowTests(TeamOnlyMacs, unittest.TestCase):
         self.assertTrue(status['version'] is None or len(status['version']) in (40, 64), status['version'])
         (room,) = status['rooms']
         self.assertEqual((room['name'], room['state'], room['members'], room['bots']), ('Example Team', 'active', 2, 0))
+
+    def test_the_token_keeps_each_team_route_that_a_persons_mac_refuses(self):
+        # No person is at this Mac, so its tools call each team route with the token of the bridge file.
+        room = self.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Reporter Mac',
+                                                    'relay': RELAY})['room']['room']
+        link = self.call('POST', f'/v1/team/rooms/{room}/invites', {})['link']
+        self.join(self.second, link)
+        changed = self.call('PATCH', f'/v1/team/rooms/{room}', {'member_name': 'Reporter Mac 2'})['room']
+        self.assertEqual([member['name'] for member in changed['members'] if member['this_mac']], ['Reporter Mac 2'])
+        messages = f'/v1/team/rooms/{room}/messages'
+        sent = self.call('POST', messages, {'text': 'Hello'})['message']
+        self.assertEqual(self.call('PATCH', f'{messages}/{sent["id"]}', {'text': 'Hi'})['message']['text'], 'Hi')
+        self.assertEqual([message['text'] for message in self.call('GET', messages)['messages']], ['Hi'])
+        self.assertEqual(self.call('POST', f'/v1/team/rooms/{room}/read', {'first': sent['first']})['unread'], 0)
+        self.assertEqual(self.call('DELETE', f'{messages}/{sent["id"]}')['deleted'], True)
+        # The same token on a person's Mac gets the refusal.
+        self.assertEqual(self.refusal(self.call, 'POST', '/v1/team/rooms', {'name': 'Example Team'}, self.first),
+                         (403, PERSON_ONLY))
 
     def test_the_status_names_the_commit_of_a_checkout(self):
         folder = Path(self.temp.name) / 'checkout'

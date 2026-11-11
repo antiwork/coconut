@@ -61,7 +61,7 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
             self.assertNotIn(secret, stored)
 
     def test_the_member_name_has_a_neutral_default(self):
-        room = self.first.team_request('POST', '/v1/team/rooms', {'name': 'Example Team', 'relay': RELAY})['room']
+        room = self.phone(self.first)('POST', '/v1/team/rooms', {'name': 'Example Team', 'relay': RELAY})['room']
         self.assertEqual([member['name'] for member in room['members']], ['Member'])
 
     def test_a_room_needs_a_name_and_a_relay_that_fit_the_rules_of_a_link(self):
@@ -356,7 +356,7 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
         return self.share_page(service, room['room'], bot)
 
     def rename(self, service, room: dict, **fields) -> dict:
-        return service.team_request('PATCH', f'/v1/team/rooms/{room["room"]}', fields)['room']
+        return self.phone(service)('PATCH', f'/v1/team/rooms/{room["room"]}', fields)['room']
 
     def test_the_answer_has_what_the_team_screen_shows_for_an_admin_and_a_member(self):
         room = self.create(avatar='coconut', color='green')
@@ -562,7 +562,7 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
         for method, path in (('GET', '/v1/team/unknown'), ('PUT', '/v1/team/rooms'), ('GET', '/v1/team/join'),
                              ('POST', '/v1/team/rooms/' + 'a' * 64), ('GET', '/v1/team/rooms/' + 'a' * 64 + '/invites')):
             with self.subTest(path=path):
-                self.assertEqual(self.refusal(self.first.team_request, method, path, {}), (404, 'This route was not found.'))
+                self.assertEqual(self.refusal(self.phone(self.first), method, path, {}), (404, 'This route was not found.'))
 
 
 if __name__ == '__main__':

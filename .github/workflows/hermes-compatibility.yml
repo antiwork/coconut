@@ -20,8 +20,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A pull request that changes only app files cannot change the result of contracts or of the Hermes legs, so it does
+  # not wait for them. scripts/ci_changes.py has the rule. The rule fails safe: the checks run unless this job gives
+  # exactly "skip". A push to main, the nightly run, and a manual run skip this job, so they run every check.
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      service: ${{ steps.decide.outputs.service }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 2 # The merge commit of the pull request and its two parents.
+      - name: Decide whether the changed files can change the service checks
+        id: decide
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # The checkout is the merge commit of the pull request into its base. Its first parent is the base, and its
+          # second parent is the head of the pull request. Any other checkout stops this step, and the checks run.
+          test "$(git rev-parse HEAD^2)" = "$HEAD_SHA"
+          git diff --no-renames --name-only HEAD^1 HEAD > "$RUNNER_TEMP/changed-files"
+          cat "$RUNNER_TEMP/changed-files"
+          service="$(python3 scripts/ci_changes.py < "$RUNNER_TEMP/changed-files")"
+          echo "The service checks: $service" >> "$GITHUB_STEP_SUMMARY"
+          echo "service=$service" >> "$GITHUB_OUTPUT"
+
   contracts:
-    if: github.event_name != 'schedule'
+    needs: changes
+    # !cancelled() lets this job run when changes is skipped (no pull request) or fails. Only "skip" skips it.
+    if: ${{ !cancelled() && github.event_name != 'schedule' && needs.changes.outputs.service != 'skip' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -46,6 +77,8 @@ jobs:
           done
       - name: Check the TestFlight release steps
         run: python -m unittest discover -s scripts -p test_testflight.py
+      - name: Check the rule that skips the service checks
+        run: python -m unittest discover -s scripts -p test_ci_changes.py
 
   hermes-versions:
     runs-on: ubuntu-latest
@@ -74,16 +107,22 @@ jobs:
           PYTHON
 
   native-kanban-hermes:
-    name: native-kanban (${{ matrix.leg.name }})
-    needs: hermes-versions
+    name: native-kanban (${{ matrix.leg.name }}, part ${{ matrix.part }})
+    needs: [hermes-versions, changes]
+    # !cancelled() lets the legs run when changes is skipped or fails. They still need the list of Hermes versions.
+    if: ${{ !cancelled() && needs.hermes-versions.result == 'success' && needs.changes.outputs.service != 'skip' }}
     runs-on: ubuntu-latest
-    # Recent runs took 17 to 24 minutes, and the installation adds a few minutes. The step limits below end first.
-    # Then a timeout of the Hermes main leg is a failed step that continue-on-error covers, not a timed-out job.
+    # Each leg runs its native test files in three parts at the same time, so a pull request waits for one part, not
+    # for all files. Each part installs Hermes (about 2 minutes) and runs one of the three test steps below. The parts
+    # are balanced by the time of each file in recent runs. Put a new native test file in the part with the least time.
+    # The step limits below end first. Then a timeout of the Hermes main leg is a failed step that continue-on-error
+    # covers, not a timed-out job.
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         leg: ${{ fromJSON(needs.hermes-versions.outputs.legs) }}
+        part: [1, 2, 3]
     env:
       HERMES_DISABLE_TELEMETRY: '1'
     steps:
@@ -125,9 +164,89 @@ jobs:
           PYTHON
           # The last step compares this with the state after the tests.
           git -C "$HERMES_HOME/hermes-agent" status --porcelain --untracked-files=no > "$RUNNER_TEMP/hermes-source-status"
-      - name: Check native claims, recovery, and worktrees
-        id: native
-        if: steps.install.outcome == 'success'
+      - name: Check native claims, recovery, and worktrees (part 1)
+        id: native_1
+        # The tests of this part took about 6.6 minutes on the slower leg of recent runs.
+        if: steps.install.outcome == 'success' && matrix.part == 1
+        continue-on-error: ${{ !matrix.leg.required }}
+        timeout-minutes: 32
+        env:
+          PYTHONPATH: backend
+          COCONUT_REQUIRE_NATIVE: '1' # A missing Hermes install fails the native tests instead of skipping them.
+          # Each test gives Hermes its own HERMES_HOME. Without this setting, Hermes from the official installer installs
+          # a dependency set for each new home.
+          HERMES_DISABLE_LAZY_INSTALLS: '1'
+        run: |
+          mkdir -p .runtime # The logs of the checks below.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_api_fallback.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_receipt_context.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_claim_continuation.py 2> .runtime/native-claim-continuation.log || { cat .runtime/native-claim-continuation.log; exit 1; }
+          cat .runtime/native-claim-continuation.log
+          grep -qx 'OK' .runtime/native-claim-continuation.log # The requester-root callback dispatch checks must run, not skip.
+          grep -Eq '^Ran 38 tests in ' .runtime/native-claim-continuation.log # Includes the approved proposal root checks and its waits for the helper's reply.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_continuation_snapshot_eviction.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_requester_callback_continuation.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_tool_store.py 2> .runtime/native-tool-store.log || { cat .runtime/native-tool-store.log; exit 1; }
+          cat .runtime/native-tool-store.log
+          grep -qx 'OK' .runtime/native-tool-store.log # The installer's source must not choose a bot's tool store, so the check must not skip.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_pr_links.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_targeted_bot_continuation.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_session_maintenance.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_runtime_environment.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_failed_request_continuation.py 2> .runtime/archived-failed-request-continuation.log || { cat .runtime/archived-failed-request-continuation.log; exit 1; }
+          cat .runtime/archived-failed-request-continuation.log
+          grep -qx 'OK' .runtime/archived-failed-request-continuation.log # The native dispatch checks must run, not skip.
+          grep -Eq '^Ran 23 tests in ' .runtime/archived-failed-request-continuation.log # Includes the successor that a provider stop ended.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_scheduled_assignment_continuation.py 2> .runtime/archived-scheduled-assignment-continuation.log || { cat .runtime/archived-scheduled-assignment-continuation.log; exit 1; }
+          cat .runtime/archived-scheduled-assignment-continuation.log
+          grep -qx 'OK' .runtime/archived-scheduled-assignment-continuation.log # The native dispatch checks must run, not skip.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_closed_source_continuation.py 2> .runtime/closed-source-continuation.log || { cat .runtime/closed-source-continuation.log; exit 1; }
+          cat .runtime/closed-source-continuation.log
+          grep -qx 'OK' .runtime/closed-source-continuation.log # The real assignment pass, archive note, and successor dispatch must run, not skip.
+          grep -Eq '^Ran 24 tests in ' .runtime/closed-source-continuation.log # Includes the three checks against the real adapter, one of them for the parked card of a completed request.
+          # The tests do not change the Hermes source folder.
+          git -C "$COCONUT_HERMES_ROOT" status --porcelain --untracked-files=no | diff "$RUNNER_TEMP/hermes-source-status" -
+      - name: Check native claims, recovery, and worktrees (part 2)
+        id: native_2
+        # The tests of this part took about 6.6 minutes on the slower leg of recent runs.
+        if: steps.install.outcome == 'success' && matrix.part == 2
+        continue-on-error: ${{ !matrix.leg.required }}
+        timeout-minutes: 32
+        env:
+          PYTHONPATH: backend
+          COCONUT_REQUIRE_NATIVE: '1' # A missing Hermes install fails the native tests instead of skipping them.
+          # Each test gives Hermes its own HERMES_HOME. Without this setting, Hermes from the official installer installs
+          # a dependency set for each new home.
+          HERMES_DISABLE_LAZY_INSTALLS: '1'
+        run: |
+          mkdir -p .runtime # The logs of the checks below.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_pairing_redaction.py 2> .runtime/pairing-redaction.log || { cat .runtime/pairing-redaction.log; exit 1; }
+          cat .runtime/pairing-redaction.log
+          grep -qx 'OK' .runtime/pairing-redaction.log # The pairing link must pass the redaction of this Hermes, not skip.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_gateway_idle_exit.py 2> .runtime/native-gateway-idle-exit.log || { cat .runtime/native-gateway-idle-exit.log; exit 1; }
+          cat .runtime/native-gateway-idle-exit.log
+          grep -qx 'OK' .runtime/native-gateway-idle-exit.log # Real client-started gateways must run, so the check must not skip.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py 2> .runtime/native-kanban.log || { cat .runtime/native-kanban.log; exit 1; }
+          cat .runtime/native-kanban.log
+          grep -qx 'OK' .runtime/native-kanban.log # The real board wait and completion checks must run, not skip.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_source_ownership.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_work_workspace.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_model_catalog_native.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_provider_failure_retry.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_settle_native_orphans.py 2> .runtime/settle-native-orphans.log || { cat .runtime/settle-native-orphans.log; exit 1; }
+          cat .runtime/settle-native-orphans.log
+          grep -qx 'OK' .runtime/settle-native-orphans.log # The real archive and callback re-kind checks must run, not skip.
+          grep -Eq '^Ran 33 tests in ' .runtime/settle-native-orphans.log # Includes the released block checks through the real dispatcher.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_failed_routine_continuation.py
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_scheduled_original_continuation.py 2> .runtime/archived-scheduled-original-continuation.log || { cat .runtime/archived-scheduled-original-continuation.log; exit 1; }
+          cat .runtime/archived-scheduled-original-continuation.log
+          grep -qx 'OK' .runtime/archived-scheduled-original-continuation.log # The checks must run, not skip.
+          # The tests do not change the Hermes source folder.
+          git -C "$COCONUT_HERMES_ROOT" status --porcelain --untracked-files=no | diff "$RUNNER_TEMP/hermes-source-status" -
+      - name: Check native claims, recovery, and worktrees (part 3)
+        id: native_3
+        # The tests of this part took about 6.7 minutes on the slower leg of recent runs.
+        if: steps.install.outcome == 'success' && matrix.part == 3
         continue-on-error: ${{ !matrix.leg.required }}
         timeout-minutes: 32
         env:
@@ -140,24 +259,9 @@ jobs:
           mkdir -p .runtime # The logs of the checks below.
           "$COCONUT_HERMES_PYTHON" -c 'import jsonschema' # Required: this CI regression suite must not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_draft_refresh_schema.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_pairing_redaction.py 2> .runtime/pairing-redaction.log || { cat .runtime/pairing-redaction.log; exit 1; }
-          cat .runtime/pairing-redaction.log
-          grep -qx 'OK' .runtime/pairing-redaction.log # The pairing link must pass the redaction of this Hermes, not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_gateway_chat.py 2> .runtime/native-gateway-chat.log || { cat .runtime/native-gateway-chat.log; exit 1; }
           cat .runtime/native-gateway-chat.log
           grep -qx 'OK' .runtime/native-gateway-chat.log # A real gateway must carry the chat turn, so the check must not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_gateway_idle_exit.py 2> .runtime/native-gateway-idle-exit.log || { cat .runtime/native-gateway-idle-exit.log; exit 1; }
-          cat .runtime/native-gateway-idle-exit.log
-          grep -qx 'OK' .runtime/native-gateway-idle-exit.log # Real client-started gateways must run, so the check must not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_api_fallback.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_receipt_context.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_kanban.py 2> .runtime/native-kanban.log || { cat .runtime/native-kanban.log; exit 1; }
-          cat .runtime/native-kanban.log
-          grep -qx 'OK' .runtime/native-kanban.log # The real board wait and completion checks must run, not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_claim_continuation.py 2> .runtime/native-claim-continuation.log || { cat .runtime/native-claim-continuation.log; exit 1; }
-          cat .runtime/native-claim-continuation.log
-          grep -qx 'OK' .runtime/native-claim-continuation.log # The requester-root callback dispatch checks must run, not skip.
-          grep -Eq '^Ran 38 tests in ' .runtime/native-claim-continuation.log # Includes the approved proposal root checks and its waits for the helper's reply.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_continuation.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_independent_technical_work.py 2> .runtime/independent-technical-work.log || { cat .runtime/independent-technical-work.log; exit 1; }
           cat .runtime/independent-technical-work.log
@@ -173,54 +277,24 @@ jobs:
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_delegated_block_pause.py 2> .runtime/native-delegated-block-pause.log || { cat .runtime/native-delegated-block-pause.log; exit 1; }
           cat .runtime/native-delegated-block-pause.log
           grep -qx 'OK' .runtime/native-delegated-block-pause.log # The native board and registry pause checks must run, not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_continuation_snapshot_eviction.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_requester_callback_continuation.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_foreground_dispatch.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_source_ownership.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_tool_store.py 2> .runtime/native-tool-store.log || { cat .runtime/native-tool-store.log; exit 1; }
-          cat .runtime/native-tool-store.log
-          grep -qx 'OK' .runtime/native-tool-store.log # The installer's source must not choose a bot's tool store, so the check must not skip.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_work_display.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_pr_links.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_work_workspace.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_workspace_handoff.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_workspace_recovery.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_targeted_bot_continuation.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_session_maintenance.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_model_catalog_native.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_config_yaml_style.py
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_model_follow_native.py 2> .runtime/model-follow-native.log || { cat .runtime/model-follow-native.log; exit 1; }
           cat .runtime/model-follow-native.log
           grep -qx 'OK' .runtime/model-follow-native.log # The write with the config writer of Hermes must run, not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_runtime_environment.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_provider_failure_retry.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_settle_native_orphans.py 2> .runtime/settle-native-orphans.log || { cat .runtime/settle-native-orphans.log; exit 1; }
-          cat .runtime/settle-native-orphans.log
-          grep -qx 'OK' .runtime/settle-native-orphans.log # The real archive and callback re-kind checks must run, not skip.
-          grep -Eq '^Ran 33 tests in ' .runtime/settle-native-orphans.log # Includes the released block checks through the real dispatcher.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_failed_routine_continuation.py
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_failed_request_continuation.py 2> .runtime/archived-failed-request-continuation.log || { cat .runtime/archived-failed-request-continuation.log; exit 1; }
-          cat .runtime/archived-failed-request-continuation.log
-          grep -qx 'OK' .runtime/archived-failed-request-continuation.log # The native dispatch checks must run, not skip.
-          grep -Eq '^Ran 23 tests in ' .runtime/archived-failed-request-continuation.log # Includes the successor that a provider stop ended.
           "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_scheduled_routine_continuation.py 2> .runtime/archived-scheduled-routine-continuation.log || { cat .runtime/archived-scheduled-routine-continuation.log; exit 1; }
           cat .runtime/archived-scheduled-routine-continuation.log
           grep -qx 'OK' .runtime/archived-scheduled-routine-continuation.log # The native dispatch checks must run, not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_scheduled_assignment_continuation.py 2> .runtime/archived-scheduled-assignment-continuation.log || { cat .runtime/archived-scheduled-assignment-continuation.log; exit 1; }
-          cat .runtime/archived-scheduled-assignment-continuation.log
-          grep -qx 'OK' .runtime/archived-scheduled-assignment-continuation.log # The native dispatch checks must run, not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_archived_scheduled_original_continuation.py 2> .runtime/archived-scheduled-original-continuation.log || { cat .runtime/archived-scheduled-original-continuation.log; exit 1; }
-          cat .runtime/archived-scheduled-original-continuation.log
-          grep -qx 'OK' .runtime/archived-scheduled-original-continuation.log # The checks must run, not skip.
-          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_closed_source_continuation.py 2> .runtime/closed-source-continuation.log || { cat .runtime/closed-source-continuation.log; exit 1; }
-          cat .runtime/closed-source-continuation.log
-          grep -qx 'OK' .runtime/closed-source-continuation.log # The real assignment pass, archive note, and successor dispatch must run, not skip.
-          grep -Eq '^Ran 24 tests in ' .runtime/closed-source-continuation.log # Includes the three checks against the real adapter, one of them for the parked card of a completed request.
           # The tests do not change the Hermes source folder.
           git -C "$COCONUT_HERMES_ROOT" status --porcelain --untracked-files=no | diff "$RUNNER_TEMP/hermes-source-status" -
       - name: Report a failure of Hermes main
         # Only the Hermes main leg continues after a failure. Its check run passes, and this step reports the failure.
-        if: steps.install.outcome == 'failure' || steps.native.outcome == 'failure'
+        if: >-
+          steps.install.outcome == 'failure' || steps.native_1.outcome == 'failure' ||
+          steps.native_2.outcome == 'failure' || steps.native_3.outcome == 'failure'
         run: |
           echo "::warning::The installation or the native checks failed on Hermes main. A future Hermes release can break Coconut."
           echo 'The installation or the native checks failed on Hermes main. A future Hermes release can break Coconut.' >> "$GITHUB_STEP_SUMMARY"
@@ -229,11 +303,18 @@ jobs:
   # required Hermes legs that one name. A newer push cancels the run; then this job is skipped, not failed.
   native-kanban:
     if: ${{ !cancelled() && github.event_name != 'schedule' }}
-    needs: native-kanban-hermes
+    needs: [changes, native-kanban-hermes]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every required Hermes leg to pass
         env:
           RESULT: ${{ needs.native-kanban-hermes.result }}
-        run: test "$RESULT" = success
+          SERVICE: ${{ needs.changes.outputs.service }}
+        run: |
+          # The rule of scripts/ci_changes.py skipped the legs: the pull request cannot change their result.
+          if [ "$SERVICE" = skip ] && [ "$RESULT" = skipped ]; then
+            echo 'The pull request changes only app files. The Hermes legs did not run.'
+            exit 0
+          fi
+          test "$RESULT" = success

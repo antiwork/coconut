@@ -260,7 +260,7 @@ class FakeRelay:
         return {'entries': entries[:self.page], 'last': max((row['seq'] for row in state['entries'].values()), default=0)}
 
 
-# A paired device of the person. Only a device shares a page or stops (team.py, PAGE_ROUTE).
+# A paired device of the person. On a person's Mac only a device calls the team routes outside team.tool_route.
 DEVICE = 'test-device'
 
 
@@ -284,13 +284,18 @@ class TeamMacs:
 
     def create(self, service=None, **fields) -> dict:
         body = {'name': 'Example Team', 'member_name': 'Ada', 'relay': RELAY, **fields}
-        return (service or self.first).team_request('POST', '/v1/team/rooms', body)['room']
+        return (service or self.first).team_request('POST', '/v1/team/rooms', body, '', DEVICE)['room']
 
     def invite(self, room: dict, service=None, **fields) -> dict:
-        return (service or self.first).team_request('POST', f'/v1/team/rooms/{room["room"]}/invites', fields)
+        return (service or self.first).team_request('POST', f'/v1/team/rooms/{room["room"]}/invites', fields, '', DEVICE)
 
     def join(self, service, link: str, name: str = 'Grace') -> dict:
         return service.team_request('POST', '/v1/team/join', {'link': link, 'member_name': name})['room']
+
+    def phone(self, service):
+        """Call the team routes of a Mac as the app of the person does: as the paired device DEVICE, unless the call
+        names another device."""
+        return lambda method, path, data, key='', device=DEVICE: service.team_request(method, path, data, key, device)
 
     def leave(self, service, room: dict) -> dict:
         return service.team_request('DELETE', f'/v1/team/rooms/{room["room"]}', {})

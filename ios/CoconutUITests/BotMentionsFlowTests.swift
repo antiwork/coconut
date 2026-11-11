@@ -71,10 +71,12 @@ final class BotMentionsFlowTests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = ["--demo"]
         app.launch()
-        let inbox = app.buttons["home-inbox"]
+        let inbox = app.tabBars.buttons["Inbox"]
         XCTAssertTrue(inbox.waitForExistence(timeout: 10))
         inbox.tap()
-        app.staticTexts["inbox-subject-00000000-0000-4000-8000-000000000021"].tap()
+        let openChat = app.buttons["inbox-context-00000000-0000-4000-8000-000000000031"]
+        XCTAssertTrue(openChat.waitForExistence(timeout: 5))
+        openChat.tap()
         let input = app.descendants(matching: .any).matching(identifier: "message-input").firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5))
         let option = app.buttons["decision-option-00000000-0000-4000-8000-000000000061"]
