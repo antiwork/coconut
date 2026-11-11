@@ -117,12 +117,18 @@ class TeamMessages:
         return self._team_message_answer(room_id, entry)
 
     def team_unsend(self, room_id: str, entry: str) -> dict:
-        """Remove a message of this Mac's person: a `delete` entry replaces it on each Mac."""
+        """Remove a message of this Mac's person: a `delete` entry replaces it on each Mac.
+
+        A delete can reach the relay without an answer, and team_request keeps no answer of a request that failed. So
+        a repeat finds a `delete` entry of this Mac after the read of _team_writable, and gets the same answer without
+        a write.
+        """
         from .team import team_errors
         self._team_room(room_id)
         with team_errors(), self._team_room_lock(room_id):
-            room, _ = self._team_own_message(room_id, entry)
-            self._team_write(room, entry, False, {'kind': 'delete'}, tries=2)
+            room, existing = self._team_own_message(room_id, entry, deleted=True)
+            if existing['kind'] != 'delete':
+                self._team_write(room, entry, False, {'kind': 'delete'}, tries=2)
         return {'room': room_id, 'id': entry, 'deleted': True}
 
     def team_mark_read(self, room_id: str, data: dict) -> dict:
@@ -159,15 +165,16 @@ class TeamMessages:
             raise ServiceError(409, INACTIVE[room['state']])
         return room
 
-    def _team_own_message(self, room_id: str, entry: str) -> tuple[dict, dict]:
-        """The room and the entry of a message that this Mac's person wrote. The caller holds the lock of the room."""
+    def _team_own_message(self, room_id: str, entry: str, deleted: bool = False) -> tuple[dict, dict]:
+        """The room and the entry of a message that this Mac's person wrote. With `deleted`, also a `delete` entry of
+        this Mac. The caller holds the lock of the room."""
         from .service import ServiceError
         if not entry_id(entry):
             raise ServiceError(404, GONE_MESSAGE)
         room = self._team_writable(room_id)
         with self.lock:
             existing = self.team_store.entry(room_id, entry)
-        if existing is None or existing['kind'] != 'message':
+        if existing is None or existing['kind'] not in (('message', 'delete') if deleted else ('message',)):
             raise ServiceError(404, GONE_MESSAGE)
         # A message of a bot of this Mac belongs to the bot, not to the person.
         if existing['member'] != room['member'] or json.loads(existing['payload']).get('bot') is not None:
@@ -202,18 +209,30 @@ class TeamMessages:
 
     def _team_message_views(self, room: dict, rows: list[dict]) -> list[dict]:
         """The messages as the chat of the app gets them. A mention is the member ID of a member, or the ID of a team
-        bot as in GET /v1/team/rooms. A mention that the store cannot name stays out. The caller holds the service
-        lock."""
+        bot as in GET /v1/team/rooms. A mention that the store cannot name stays out.
+
+        `reply` quotes the message that `reply_to` names, because that message is often not in the page of the app.
+        It is null when the chat does not show that message: removed, not valid, or never seen. One query reads the
+        answered messages of the whole page. The caller holds the service lock.
+        """
         mentions = [json.loads(row['mentions']) for row in rows]
         names = self.team_store.names(room['room'], [entry for entries in mentions for entry in entries])
+        answered = self.team_store.messages_of(room['room'], [row['reply_to'] for row in rows if row['reply_to']])
 
         def phone_id(entry):
             kind, member = names[entry]
             return member if kind == 'member' else team_id(room['room'], entry)
+
+        def quote(entry):
+            row = answered.get(entry)
+            return row and {'id': row['entry'], 'member': row['member'], 'member_name': row['member_name'],
+                            'bot': team_id(room['room'], row['bot']) if row['bot'] else None,
+                            'bot_name': row['bot_name'], 'text': row['text'][:PREVIEW]}
         return [{'id': row['entry'], 'first': row['first'], 'member': row['member'], 'member_name': row['member_name'],
                  'this_mac': row['member'] == room['member'],
-                 'bot': team_id(room['room'], row['bot']) if row['bot'] else None, 'text': row['text'],
-                 'reply_to': row['reply_to'], 'mentions': [phone_id(entry) for entry in entries if entry in names],
+                 'bot': team_id(room['room'], row['bot']) if row['bot'] else None, 'bot_name': row['bot_name'],
+                 'text': row['text'], 'reply_to': row['reply_to'], 'reply': quote(row['reply_to']),
+                 'mentions': [phone_id(entry) for entry in entries if entry in names],
                  'created_at': row['created_at'], 'edited_at': row['updated_at'] if row['edited'] else None}
                 for row, entries in zip(rows, mentions)]
 
@@ -224,6 +243,7 @@ class TeamMessages:
         last = None
         if newest:
             row = newest[0]
-            last = {'first': row['first'], 'member_name': row['member_name'], 'text': row['text'][:PREVIEW],
+            last = {'first': row['first'], 'member_name': row['member_name'], 'bot_name': row['bot_name'],
+                    'text': row['text'][:PREVIEW],
                     'created_at': row['created_at']}
         return {'unread': self.team_store.unread(room['room'], room['member']), 'last_message': last}

@@ -83,8 +83,8 @@ LIBRARY_PAGE = ('room', 'entry', 'bot', 'team', *PAGE_FIELDS)
 LIBRARY_BOT = ('room', 'entry', 'name', 'avatar', 'color', 'team', 'member', 'member_name')
 TEAM_BOT = ('entry', 'member', 'name', 'avatar', 'color')
 # What the chat of the phone gets for a message. TeamStore.messages reads these rows.
-MESSAGE_FIELDS = ('entry', 'first', 'member', 'member_name', 'bot', 'text', 'reply_to', 'mentions', 'created_at',
-                  'updated_at', 'edited')
+MESSAGE_FIELDS = ('entry', 'first', 'member', 'member_name', 'bot', 'bot_name', 'text', 'reply_to', 'mentions',
+                  'created_at', 'updated_at', 'edited')
 # A message shows only when its `bot` is null or names a `bot` entry of the same member that the store showed once.
 # The bot entry can come after the message, because the relay keeps only its newest write, so the check runs at read
 # time. team_names keeps the bot after a `delete`, so the history of a bot that the team no longer has stays.
@@ -630,11 +630,18 @@ class TeamStore:
         rows = self._messages('m.entry=?', (room, entry))
         return rows[0] if rows else None
 
+    def messages_of(self, room: str, entries) -> dict[str, dict]:
+        """The shown messages of these entry IDs, by entry ID, in one query. An ID that the chat does not show is not
+        in the result."""
+        rows = self._messages('m.entry IN (SELECT value FROM json_each(?))', (room, json.dumps(sorted(set(entries)))))
+        return {row['entry']: row for row in rows}
+
     def _messages(self, where: str, values: tuple) -> list[dict]:
-        # The name of a member is the last one that the store showed, also after the member left (team_names).
-        return self._rows(MESSAGE_FIELDS, f'''SELECT m.entry, m.first, m.member, n.name, m.bot, m.text, m.reply_to,
-            m.mentions, m.created_at, m.updated_at, m.edited FROM team_messages m
+        # The name of a member or a bot is the last one that the store showed, also after a `delete` (team_names).
+        return self._rows(MESSAGE_FIELDS, f'''SELECT m.entry, m.first, m.member, n.name, m.bot, k.name, m.text,
+            m.reply_to, m.mentions, m.created_at, m.updated_at, m.edited FROM team_messages m
             LEFT JOIN team_names n ON n.room=m.room AND n.member=m.member AND n.kind='member'
+            LEFT JOIN team_names k ON k.room=m.room AND k.entry=m.bot AND k.kind='bot'
             WHERE m.room=? AND {SHOWN_MESSAGE} AND {where}''', values)
 
     def names(self, room: str, entries) -> dict[str, tuple[str, str]]:
@@ -659,10 +666,11 @@ class TeamStore:
         return position
 
     def unread(self, room: str, member: str) -> int:
-        """How many shown messages of the other members are after the read position, up to MAX_UNREAD. A message of
-        this Mac counts as read. The LIMIT keeps the count to at most MAX_UNREAD rows of the index."""
+        """How many shown messages are after the read position, up to MAX_UNREAD. Only a message of this Mac's
+        person counts as read: the person did not write the reply of a bot of this Mac. The LIMIT keeps the count to
+        at most MAX_UNREAD rows of the index."""
         return self.db.execute(f'''SELECT COUNT(*) FROM (SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>?
-            AND m.member!=? AND {SHOWN_MESSAGE} LIMIT {MAX_UNREAD})''',
+            AND (m.member!=? OR m.bot IS NOT NULL) AND {SHOWN_MESSAGE} LIMIT {MAX_UNREAD})''',
                                (room, self.read_position(room), member)).fetchone()[0]
 
     # The Library of the phone

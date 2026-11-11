@@ -51,7 +51,7 @@ The relay keeps these fields for each entry:
 
 A write with an entry ID that already exists replaces that entry. Only the member that wrote the entry can replace it. The relay keeps only the newest write of each entry ID.
 
-This one rule gives message edits, a reply that grows while a bot writes, and page versions. A Mac sorts a chat by `first`, so a replaced message keeps its place.
+This one rule gives message edits and page versions. A Mac sorts a chat by `first`, so a replaced message keeps its place.
 
 ### Body
 
@@ -337,7 +337,7 @@ A room in an answer has what the Team screen shows, so the app needs no other re
 | `members` | In the order of their first `member` entry: `member` (the member ID), `name`, `avatar`, `color`, `admin` and `this_mac`. |
 | `bots` | Each bot of the team, while the room is `active` and the member of the bot is in `members`: `id`, `name`, `avatar`, `color`, `member` (the ID of the Mac that runs the bot), `member_name` and `this_mac`. A bot of this Mac also has `bot_id`, its ID on this Mac, and its profile comes from that bot. An archived or deleted bot of this Mac is not in the list. The bots follow the order of the members, then their names. |
 | `sync` | `synced_at`, and `error`: one sentence for a person, or null. Also `seq`, `entries`, `waiting` and `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)). |
-| `unread`, `last_message` | The unread count of the Team chat, from 0 to 99, and the newest message that the chat shows: `first`, `member_name`, `text` (its first 200 characters) and `created_at`, or null. See [Team chat](#team-chat). |
+| `unread`, `last_message` | The unread count of the Team chat, from 0 to 99, and the newest message that the chat shows: `first`, `member_name`, `bot_name`, `text` (its first 200 characters) and `created_at`, or null. See [Team chat](#team-chat). |
 | `relay`, `member`, `admin`, `epoch` | For the tools. |
 
 The `id` of a bot is `t-<room ID>-<entry ID>`, as in `team_bots` of `GET /v1/documents`.
@@ -425,7 +425,7 @@ The payload of a `message` entry:
 | `bot` | The entry ID of a `bot` entry of the same member when a bot of that Mac wrote the message, or absent for a message of the person. |
 
 - An edit is a new write of the same entry ID with the next `rev`. A removal is a `delete` entry over it. Only the member of a message can do either (rule 3).
-- A Mac of today writes no `bot`. A later step writes it, and grows a reply of a bot with more writes of the same entry.
+- A Mac of today writes no `bot`. A later step writes it, with one entry for each complete message of a bot. So `edited_at` means an edit for the message of a bot too.
 
 Rules for a Mac that reads a `message` entry:
 
@@ -441,7 +441,7 @@ What a Mac keeps after the relay drops an old entry: the row of each message in 
 
 The read position:
 
-- `team_reads` keeps, for each room, the `first` of the newest message that the person read. The unread count is the number of shown messages of the other members after that position, up to 99. A message of this Mac counts as read.
+- `team_reads` keeps, for each room, the `first` of the newest message that the person read. The unread count is the number of shown messages of the other members after that position, up to 99. Only a message of this Mac's person counts as read. A message with a `bot` of this Mac counts as unread, because the person did not write it.
 - The position starts at the `first` of the own `member` entry of this Mac. So the history from before a join does not count as unread.
 - The position only moves forward, and never past the newest message of the room.
 
@@ -452,7 +452,7 @@ The routes have the authorization of the other team routes, and a write with an 
 | `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>` | One page, newest first: `{room, messages, before}`. `limit` is 1 to 100, and 50 without it. `before` of the answer is the `first` to ask for the next page, or null when no older message exists. Also a room that is not `active` has its history. |
 | `POST /v1/team/rooms/<room>/messages`, body `{text, reply_to?, mentions?}` | Writes a message of the person and answers `{room, message}`. `reply_to` is the `id` of a message that the chat shows. `mentions` is a list of member IDs of `members` and `id` values of `bots` of `GET /v1/team/rooms`. The Mac writes the entry IDs of the contract. With an `Idempotency-Key`, the entry ID of the message comes from the room, the device and the key. So a repeat after a write without an answer finds that write and sends no second message. |
 | `PATCH /v1/team/rooms/<room>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, and answers `{room, message}`. The other fields stay. The same text writes nothing. A message of another member or of a bot answers 403. |
-| `DELETE /v1/team/rooms/<room>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, id, deleted: true}`. |
+| `DELETE /v1/team/rooms/<room>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, id, deleted: true}`. When the entry is already a `delete` entry of this Mac, for example after a delete without an answer, the Mac gives the same answer and writes nothing. An ID that the store does not have answers 404, and an entry of another member 403. |
 | `POST /v1/team/rooms/<room>/read`, body `{first}` | Moves the read position, and answers `{room, read, unread}`. |
 
 A message in an answer:
@@ -461,8 +461,9 @@ A message in an answer:
 | --- | --- |
 | `id`, `first` | The entry ID and the `first` of the entry. |
 | `member`, `member_name`, `this_mac` | The member ID of the writer, its name (see rule 7), and true for a message of this Mac. |
-| `bot` | The `t-<room ID>-<entry ID>` ID of the team bot that wrote the message, or null. |
+| `bot`, `bot_name` | The `t-<room ID>-<entry ID>` ID of the team bot that wrote the message, and the last name that `team_names` has for it, also for a bot that the team no longer has. Both are null for a message of a person. |
 | `text`, `reply_to` | The text, and the `id` of the message that this one answers, or null. |
+| `reply` | The message that `reply_to` names, so the app can quote it without a second request: `id`, `member`, `member_name`, `bot`, `bot_name`, and the first 200 code points of its `text`. Null when `reply_to` is null, or when the chat does not show that message: removed, not valid, or never seen by this Mac. One query reads the answered messages of a whole page. |
 | `mentions` | For each mention: the member ID of a member, or the `t-` ID of a team bot. A mention that the store cannot name stays out. |
 | `created_at`, `edited_at` | The times of rule 6. `edited_at` is null for a message without an edit. |
 

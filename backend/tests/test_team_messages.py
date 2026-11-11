@@ -72,7 +72,7 @@ class TeamMessageStoreTests(unittest.TestCase):
         self.assertEqual(self.write(2, self.message('Hello **team**', reply_to=reply, mentions=[mention, mention])),
                          (STORED, None))
         (row,) = self.store.messages(ROOM)
-        self.assertEqual(row, dict(entry=entry_id(2), first=2, member=ADMIN, member_name='Ada', bot=None,
+        self.assertEqual(row, dict(entry=entry_id(2), first=2, member=ADMIN, member_name='Ada', bot=None, bot_name=None,
                                    text='Hello **team**', reply_to=reply, mentions=json.dumps([mention]),
                                    created_at=team_store.relay_time(START + 2),
                                    updated_at=team_store.relay_time(START + 2),
@@ -126,10 +126,14 @@ class TeamMessageStoreTests(unittest.TestCase):
         self.write(4, self.message('Before its bot', bot=entry_id(5)))
         self.write(5, self.bot(), ADMIN)
         self.assertEqual(self.texts(), ['Before its bot'])
-        self.assertEqual(self.store.messages(ROOM)[0]['bot'], entry_id(5))
-        # A delete over the bot entry keeps the history of the bot.
-        self.write(5, {'kind': 'delete', 'rev': 2}, ADMIN)
+        self.assertEqual([(row['bot'], row['bot_name']) for row in self.store.messages(ROOM)],
+                         [(entry_id(5), 'Reporter')])
+        self.write(5, dict(self.bot('Reporter 2'), rev=2), ADMIN)
+        self.assertEqual(self.store.messages(ROOM)[0]['bot_name'], 'Reporter 2')
+        # A delete over the bot entry keeps the history of the bot and its last name.
+        self.write(5, {'kind': 'delete', 'rev': 3}, ADMIN)
         self.assertEqual(self.texts(), ['Before its bot'])
+        self.assertEqual(self.store.messages(ROOM)[0]['bot_name'], 'Reporter 2')
         # A bot entry that does not fit was never shown, so its messages do not show.
         self.write(6, dict(self.bot(), name=''), ADMIN)
         self.write(7, self.message('Of a bot that does not fit', bot=entry_id(6)))
@@ -181,15 +185,17 @@ class TeamMessageStoreTests(unittest.TestCase):
         self.write(3, self.message('One'))
         self.write(4, self.message('Mine'), MEMBER)
         self.write(5, self.message('Two'), OTHER)
-        # A message of this Mac counts as read.
-        self.assertEqual(self.store.unread(ROOM, MEMBER), 2)
+        # Only a message of this Mac's person counts as read. The person did not write the reply of an own bot.
+        self.write(6, self.bot(), MEMBER)
+        self.write(7, self.message('Of my bot', bot=entry_id(6)), MEMBER)
+        self.assertEqual(self.store.unread(ROOM, MEMBER), 3)
         self.assertEqual(self.store.mark_read(ROOM, 3), 3)
-        self.assertEqual(self.store.unread(ROOM, MEMBER), 1)
+        self.assertEqual(self.store.unread(ROOM, MEMBER), 2)
         # The position never moves back, and never past the newest message.
         self.assertIsNone(self.store.mark_read(ROOM, 2))
-        self.assertEqual(self.store.mark_read(ROOM, MAX_NUMBER), 5)
-        self.assertEqual((self.store.read_position(ROOM), self.store.unread(ROOM, MEMBER)), (5, 0))
-        for number in range(6, 206):
+        self.assertEqual(self.store.mark_read(ROOM, MAX_NUMBER), 7)
+        self.assertEqual((self.store.read_position(ROOM), self.store.unread(ROOM, MEMBER)), (7, 0))
+        for number in range(8, 208):
             self.write(number, self.message(f'Message {number}'))
         self.assertEqual(self.store.unread(ROOM, MEMBER), team_store.MAX_UNREAD)
 
@@ -254,9 +260,10 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
 
     def test_two_macs_share_one_chat(self):
         sent = self.send(self.first, 'Hello Grace')
-        self.assertEqual({name: sent[name] for name in ('text', 'this_mac', 'member_name', 'bot', 'reply_to',
-                                                        'mentions', 'edited_at')},
-                         dict(text='Hello Grace', this_mac=True, member_name='Ada', bot=None, reply_to=None,
+        self.assertEqual({name: sent[name] for name in ('text', 'this_mac', 'member_name', 'bot', 'bot_name',
+                                                        'reply_to', 'mentions', 'edited_at')},
+                         dict(text='Hello Grace', this_mac=True, member_name='Ada', bot=None, bot_name=None,
+                              reply_to=None,
                               mentions=[], edited_at=None))
         (received,) = self.page(self.second)['messages']
         self.assertEqual((received['id'], received['first'], received['this_mac'], received['member_name']),
@@ -297,7 +304,8 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         view = self.view(self.second)
         self.assertEqual(view['unread'], 1)
         created = self.page(self.second, sync=False)['messages'][0]['created_at']
-        self.assertEqual(view['last_message'], {'first': sent['first'], 'member_name': 'Ada', 'text': 'x' * 200,
+        self.assertEqual(view['last_message'], {'first': sent['first'], 'member_name': 'Ada', 'bot_name': None,
+                                                'text': 'x' * 200,
                                                 'created_at': created})
         self.send(self.second, 'Mine')
         self.assertEqual(self.view(self.second)['unread'], 1)
@@ -419,6 +427,72 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         (row,) = self.page(self.first, sync=False)['messages']
         self.assertEqual(row['created_at'], team_store.relay_time(stored['at']))
         self.assertEqual(self.page(self.second)['messages'][0]['created_at'], row['created_at'])
+
+    def raw(self, service, entry: str, fields: dict) -> None:
+        """Write an entry to the relay as the member of `service`, as a later version of Coconut could write it."""
+        keys = team_keys.read(service.root, self.room)
+        payload = json.dumps(dict(fields, at='2026-11-10T12:00:00Z')).encode()
+        body = service.team_helper.seal(self.room, entry, 0, keys['keys']['0'], keys['member_key'], payload)
+        self.relay.write('', self.room, keys['token'], entry, fields['kind'] == 'bot', body)
+
+    def test_a_message_carries_the_message_that_it_answers(self):
+        first = self.send(self.first, 'x' * 300)
+        for number in range(3):
+            self.send(self.first, f'Message {number}')
+        self.second.team_sync_pass()
+        answer = self.send(self.second, 'Yes', reply_to=first['id'])
+        # The answered message is not in the page, and the quote has the start of its text.
+        (view,) = self.page(self.first, limit=1)['messages']
+        self.assertEqual(view['reply'], {'id': first['id'], 'member': first['member'], 'member_name': 'Ada',
+                                         'bot': None, 'bot_name': None, 'text': 'x' * 200})
+        self.assertIsNone(self.page(self.first, limit=2)['messages'][1]['reply'])
+        # A message of a bot, and an ID that the room never had.
+        bot, by_bot, to_bot, to_nothing = (f'{number:032x}' for number in range(1, 5))
+        self.raw(self.second, bot, {'kind': 'bot', 'rev': 1, 'name': 'Reporter', 'avatar': '', 'color': ''})
+        self.raw(self.second, by_bot, {'kind': 'message', 'rev': 1, 'text': 'Done.', 'bot': bot})
+        self.raw(self.second, to_bot, {'kind': 'message', 'rev': 1, 'text': 'Thanks', 'reply_to': by_bot})
+        self.raw(self.second, to_nothing, {'kind': 'message', 'rev': 1, 'text': 'Hm', 'reply_to': 'c' * 32})
+        views = {message['id']: message for message in self.page(self.first)['messages']}
+        self.assertEqual(views[to_bot]['reply'], {'id': by_bot, 'member': answer['member'], 'member_name': 'Grace',
+                                                  'bot': f't-{self.room}-{bot}', 'bot_name': 'Reporter',
+                                                  'text': 'Done.'})
+        self.assertEqual((views[to_nothing]['reply_to'], views[to_nothing]['reply']), ('c' * 32, None))
+        # A removed message gives no quote. `reply_to` stays.
+        self.first.team_request('DELETE', self.path(f'messages/{first["id"]}'), {})
+        views = {message['id']: message for message in self.page(self.second)['messages']}
+        self.assertEqual((views[answer['id']]['reply_to'], views[answer['id']]['reply']), (first['id'], None))
+
+    def test_a_repeat_of_a_removal_after_a_lost_answer_writes_nothing(self):
+        sent = self.send(self.first, 'Hello')
+        write = self.relay.write
+
+        def lose_the_answer(*arguments, **options):
+            self.relay.write = write
+            write(*arguments, **options)
+            raise TeamRelayError(0, 'The relay did not answer.')
+        self.relay.write = lose_the_answer
+        path = self.path(f'messages/{sent["id"]}')
+        self.assertEqual(self.refusal(self.first.team_request, 'DELETE', path, {}, str(uuid4()), 'phone')[0], 503)
+        writes = len([request for request in self.relay.requests if request[0] == 'write'])
+        # The repeat has no saved answer, because the first request failed. It reads the delete back, and writes nothing.
+        self.assertEqual(self.first.team_request('DELETE', path, {}, str(uuid4()), 'phone'),
+                         {'room': self.room, 'id': sent['id'], 'deleted': True})
+        self.assertEqual(len([request for request in self.relay.requests if request[0] == 'write']), writes)
+        stored = self.first.team_store.entry(self.room, sent['id'])
+        self.assertEqual((stored['kind'], stored['rev'], stored['seq']),
+                         ('delete', 2, self.relay.rooms[self.room]['entries'][sent['id']]['seq']))
+        self.assertEqual(self.texts(self.first, sync=False), [])
+        self.assertEqual(self.texts(self.second), [])
+        # An ID that the store does not have is 404, and an entry of another member is 403.
+        other = self.send(self.second, 'Mine')
+        self.first.team_sync_pass()
+        self.assertEqual(self.refusal(self.first.team_request, 'DELETE', self.path(f'messages/{"f" * 32}'), {})[0], 404)
+        self.assertEqual(self.refusal(self.first.team_request, 'DELETE', self.path(f'messages/{other["id"]}'), {})[0],
+                         403)
+        self.second.team_request('DELETE', self.path(f'messages/{other["id"]}'), {})
+        self.first.team_sync_pass()
+        self.assertEqual(self.refusal(self.first.team_request, 'DELETE', self.path(f'messages/{other["id"]}'), {})[0],
+                         403)
 
     def test_a_repeat_with_the_same_key_sends_one_message(self):
         key = str(uuid4())
