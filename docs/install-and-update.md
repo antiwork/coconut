@@ -115,6 +115,8 @@ A Mac with no person at it can join a team from a message, as `coconut pair <cod
 | `coconut team new-bot <name> [--home <path>]` | On a team-only Mac: declares a bot for the Hermes home that it stands for. See [A Mac without a person](#a-mac-without-a-person). |
 | `coconut team add-bot <bot> [--team <name or ID>]` | Adds a bot of this Mac to the team. `<bot>` is the ID or the name of the bot. Case does not matter. |
 | `coconut team remove-bot <bot> [--team <name or ID>]` | Removes a bot of this Mac from the team. |
+| `coconut team connect-chat <bot> [--confirm]` | On a team-only Mac: lets the bot answer in the team chat. Without `--confirm`, it prints each change in the Hermes home of the bot and changes nothing. See [Let the bot answer in the team chat](#let-the-bot-answer-in-the-team-chat). |
+| `coconut team disconnect-chat <bot>` | Takes away what `connect-chat` added. |
 | `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team, and deletes its copy and its keys on this Mac. The name after `--confirm` chooses the team; `--team <ID>` is necessary only when two teams of this Mac have the same name. Without `--confirm`, it prints what a leave does and the exact command for each team. |
 
 - The invite link is a secret. The tool reads it only from standard input, and no output of the tool has it. In a terminal, the tool asks for the link and does not show it.
@@ -226,7 +228,7 @@ If the iPhone already has a pairing, Coconut asks before a link replaces it.
 
 ## A Mac without a person
 
-Use this when a Mac runs a Hermes agent and nobody sits at it, and you want its agent to publish pages for your team. The Mac gets the normal Coconut.app in team-only mode, with the same updates as any other Mac. Coconut never touches the Hermes of this Mac and pairs no phone.
+Use this when a Mac runs a Hermes agent and nobody sits at it, and you want its agent to publish pages for your team or to answer in the team chat. The Mac gets the normal Coconut.app in team-only mode, with the same updates as any other Mac. Coconut pairs no phone, and it changes the Hermes of this Mac only when you run `coconut team connect-chat --confirm`.
 
 You work in a terminal on that Mac, for example over SSH. In the steps, `coconut` is `/Applications/Coconut.app/Contents/Helpers/coconut`.
 
@@ -274,10 +276,32 @@ Run `coconut status`. Expect:
 Mode: team only
 Service: running (/Users/<you>/Coconut)
 Bots: Reporter
+Team chat of Reporter: off. To turn it on, run: coconut team connect-chat Reporter
 Team: Example Team (active): 3 members, 2 bots, connected
 ```
 
 A line that needs an action says what to run, for example `Teams: none. To join one, pipe an invite link to: coconut team join`.
+
+### Let the bot answer in the team chat
+
+Each member of the teams of the bot can then name the bot in the team chat, and the bot answers in the chat. It is one command for each bot, and you run it. Coconut never does this by itself, and it never starts, stops or restarts your Hermes gateway.
+
+1. Run `coconut team connect-chat Reporter`. It changes nothing yet. It prints each change in the Hermes home of the bot:
+   - a link `plugins/coconut` to the Coconut plugin,
+   - `coconut` in `plugins.enabled` of `config.yaml`,
+   - in `gateway.platforms.coconut` of `config.yaml`: `enabled: true`, `extra.mode: team` and `extra.bridge` (the address file of the Coconut service).
+2. Read the changes. Then run `coconut team connect-chat Reporter --confirm`. Expect `The team chat of Reporter is connected.`
+3. Restart the Hermes gateway of that Hermes home yourself, for example with `hermes gateway restart`. The gateway loads the plugin at its start.
+4. Run `coconut status`. Expect `Team chat of Reporter: on. Hermes takes the messages.` If the line says that Hermes does not take the messages, the gateway did not load the plugin: restart it, then look at its log.
+
+The bot uses the tools that the Hermes config gives to the channel `coconut`. Each member of its teams can make it use them. To limit them, set `platform_toolsets.coconut` in `config.yaml` of the Hermes home, for example `platform_toolsets: {coconut: [web]}`, then restart the gateway. The bot cannot get an approval for a command in the team chat: Coconut denies each approval.
+
+To take it back:
+
+1. Run `coconut team disconnect-chat Reporter`. It removes exactly what `connect-chat` added. A list `plugins.enabled` that only Coconut had stays as an empty list.
+2. Restart the Hermes gateway of that Hermes home yourself.
+
+A bot whose team chat is connected cannot be removed, and Coconut cannot be removed from the Mac: first run `coconut team disconnect-chat` for each bot. `coconut team remove-bot` takes a bot out of one team only: its chat stays connected, and it answers in its other teams.
 
 ### Update
 
@@ -285,11 +309,12 @@ Coconut.app updates itself, as on every Mac. The Mac stays in team-only mode. To
 
 ### Remove
 
-1. Leave each team: `coconut team leave --confirm "Example Team"`. Do this for each team. `coconut team` lists them. Expect `This Mac left the team Example Team.` A Mac that does not leave first stays in the member lists of the other Macs, with its bots and their pages.
-2. Stop the app: `pkill -x Coconut`. This sends a signal to the process `Coconut`. An Apple event to quit the app can ask for a permission in a dialog that nobody sees. No login item starts the app again before the next step.
-3. Start it to remove Coconut: `open -g /Applications/Coconut.app --args --remove`. The app removes its login items, its settings and the data of Coconut, moves `~/Coconut` to the Trash, and quits. Nothing in Hermes changes.
-4. Run `coconut status`. Expect `Service: not installed (/Users/<you>/Coconut)`. A failure shows as `Last update error:`.
-5. Delete `/Applications/Coconut.app`.
+1. For each bot whose team chat is connected, run `coconut team disconnect-chat <bot>`, then restart its Hermes gateway. `coconut status` lists them. Without this step, the removal stops with a line that names the bots.
+2. Leave each team: `coconut team leave --confirm "Example Team"`. Do this for each team. `coconut team` lists them. Expect `This Mac left the team Example Team.` A Mac that does not leave first stays in the member lists of the other Macs, with its bots and their pages.
+3. Stop the app: `pkill -x Coconut`. This sends a signal to the process `Coconut`. An Apple event to quit the app can ask for a permission in a dialog that nobody sees. No login item starts the app again before the next step.
+4. Start it to remove Coconut: `open -g /Applications/Coconut.app --args --remove`. The app removes its login items, its settings and the data of Coconut, moves `~/Coconut` to the Trash, and quits. Nothing else in Hermes changes.
+5. Run `coconut status`. Expect `Service: not installed (/Users/<you>/Coconut)`. A failure shows as `Last update error:`.
+6. Delete `/Applications/Coconut.app`.
 
 ### For developers
 
