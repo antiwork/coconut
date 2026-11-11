@@ -6,7 +6,7 @@ chat. The service then acts for the Coconut task of that turn (backend/coconut/g
 
 Hermes enables a plugin toolset on each platform by default and lists plugin tools behind its tool search. A check_fn
 that reads the session context hid the tools also in Coconut chats (the native check of a real gateway showed it), so
-the tools show on each platform. Each tool refuses to act outside a Coconut chat turn.
+the tools show on each platform. Each tool refuses to act outside a Coconut chat turn, except the document tools.
 
 Cards. coconut_ask, coconut_suggest and coconut_resolve_reply have the schemas of the worker's tools
 (backend/coconut/card_tools.py, loaded by its path). A card of coconut_ask ends the turn, as in the worker: the service
@@ -31,7 +31,12 @@ Work. coconut_track_work tracks the work of a work session in Coconut Work (back
 the bot's chat records an outcome on the board instead, and a native outcome reports on its card.
 
 Documents. coconut_save_document, coconut_read_document and coconut_delete_document keep the pages of the bot in the
-Library of the phone (backend/coconut/documents.py).
+Library of the phone (backend/coconut/documents.py). They also work in a conversation that is not a Coconut chat turn,
+for example a chat of another messaging app, because a person who uses the bot there can ask for a page too. There the
+tool names the Hermes home of the profile that runs the conversation (hermes_constants.get_hermes_home), and the
+service acts for the bot of that profile, as for the tooling of the Mac (gateway_chat.gateway_document). A multiplexing
+gateway scopes the home to the profile of each turn, so a bot never reaches the documents of another bot. A save there
+shows no card, because no Coconut chat asked for it (_outside_page).
 
 Card checks. coconut_refresh_decision records the result of an automatic check of a pending card. Only a check turn
 (mode `refresh`) can call it, and a check turn can call no other Coconut tool (hooks.guard_tool). The model calls of
@@ -107,28 +112,72 @@ def _service_tool(name):
     def handler(arguments, **_):
         adapter, turn = _turn()
         if turn is None:
+            if name in PAGE_TOOLS:
+                return _outside_page(name, dict(arguments or {}))
             return _result({'error': f'{name} works only during a Coconut chat turn.'})
-        import urllib.error
         from .adapter import PAUSED, REQUEST_SECONDS, WAITED
-        try:
-            result = adapter._bridge.request('/v1/gateway/tools', {
-                'turn_id': turn, 'tool': name, 'arguments': dict(arguments or {})}, REQUEST_SECONDS * 6)
-            if result.get('paused'):
-                # The card ends the turn. The hook blocks each further tool call (hooks.guard_tool).
-                PAUSED.add(turn)
-            if result.get('ended'):
-                # A recorded wait ends the turn. The hook blocks each further tool call (hooks.guard_tool).
-                WAITED.add(turn)
-            return _result(result)
-        except urllib.error.HTTPError as error:
-            # The service refused the request, for example an unknown bot. Its reason helps the model.
-            try:
-                return _result({'error': json.loads(error.read() or b'{}').get('error', str(error))})
-            except ValueError:
-                return _result({'error': str(error)})
-        except Exception as error:
-            return _result({'error': f'The Coconut service did not answer ({type(error).__name__}).'})
+        result = _request(adapter._bridge, '/v1/gateway/tools', {
+            'turn_id': turn, 'tool': name, 'arguments': dict(arguments or {})}, REQUEST_SECONDS * 6)
+        if result.get('paused'):
+            # The card ends the turn. The hook blocks each further tool call (hooks.guard_tool).
+            PAUSED.add(turn)
+        if result.get('ended'):
+            # A recorded wait ends the turn. The hook blocks each further tool call (hooks.guard_tool).
+            WAITED.add(turn)
+        return _result(result)
     return handler
+
+
+def _request(bridge, route, payload, timeout) -> dict:
+    """The answer of the service, or {'error': reason} for the model."""
+    import urllib.error
+    try:
+        return bridge.request(route, payload, timeout)
+    except urllib.error.HTTPError as error:
+        # The service refused the request, for example an unknown bot. Its reason helps the model.
+        try:
+            return {'error': json.loads(error.read() or b'{}').get('error', str(error))}
+        except ValueError:
+            return {'error': str(error)}
+    except Exception as error:
+        return {'error': f'The Coconut service did not answer ({type(error).__name__}).'}
+
+
+# The document tools that also work outside a Coconut chat turn (_outside_page).
+PAGE_TOOLS = ('save_document', 'read_document', 'delete_document')
+# The answer of a service that knows only turns to a tool call without a turn (gateway_chat._gateway_tool).
+OLDER_SERVICE = 'This Coconut turn no longer runs.'
+OLDER_SERVICE_ERROR = ('The Coconut service on this Mac reads and deletes pages only in a Coconut chat. It is older '
+                       'than its gateway plugin. Restart the Coconut service on this Mac, or use the tool in a Coconut '
+                       'chat.')
+# One bridge for each bridge file. A conversation outside a Coconut chat can run where no coconut adapter runs.
+_BRIDGES = {}
+
+
+def _outside_page(name, arguments):
+    """A document tool in a conversation that is not a Coconut chat turn, for the bot of the running profile.
+
+    The Hermes home of the profile names the bot, never an argument of the model. A save goes to the route of the
+    tooling of the Mac (POST /v1/gateway/document), which an older service also has. A read and a delete go to
+    the tools route with the home in place of a turn."""
+    import os
+    from hermes_constants import get_hermes_home
+    from .adapter import REQUEST_SECONDS, Bridge
+    from .cron import _bridge_path
+    home = os.path.realpath(get_hermes_home())
+    path = str(_bridge_path())
+    bridge = _BRIDGES.setdefault(path, Bridge(path))
+    if name == 'save_document':
+        # The home goes last, so an argument cannot name another profile.
+        result = _request(bridge, '/v1/gateway/document', dict(arguments, home=home), REQUEST_SECONDS * 6)
+        if not result.get('error'):
+            result['note'] = backend('documents').OUTSIDE_SAVE_NOTE
+        return _result(result)
+    result = _request(bridge, '/v1/gateway/tools', {'home': home, 'tool': name, 'arguments': arguments},
+                      REQUEST_SECONDS * 6)
+    if result.get('error') == OLDER_SERVICE:
+        result = {'error': OLDER_SERVICE_ERROR}
+    return _result(result)
 
 
 def worktrees():

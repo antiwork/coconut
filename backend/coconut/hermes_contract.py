@@ -192,6 +192,18 @@ def verify_gateway_contract():
     require_keywords(ContextCompressor._effective_threshold_percent, ['context_length', 'threshold_percent'])
     if not callable(load_config_readonly):
         raise ValueError('Hermes changed how a plugin reads its config. Review the coconut hooks.')
+    # A document tool outside a Coconut chat turn names its bot by the Hermes home of the running profile
+    # (hermes_plugin/coconut/tools._outside_page). A multiplexing gateway scopes the home of each turn with a context
+    # override, so the home must follow that override, or a bot could act for the profile of the process.
+    from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    probe = '/coconut-contract-probe/profiles/probe'
+    token = set_hermes_home_override(probe)
+    try:
+        scoped = str(get_hermes_home())
+    finally:
+        reset_hermes_home_override(token)
+    if scoped != probe or str(get_hermes_home()) == probe:
+        raise ValueError('Hermes changed how a turn scopes the home of its profile. Review the coconut document tools.')
     # A native outcome turn gets the board tools of a worker under Coconut names, with the schemas of Hermes's tools
     # (hermes_plugin/coconut/tools.claim_schemas), and the workspace of its claim (hooks.guard_tool).
     from tools import kanban_tools_schemas
