@@ -30,9 +30,11 @@ struct ListItemView: View {
     )
   }
 
+  // Coconut patch: the label passes the margins of its blocks to the list (see PATCHES.md).
   private var label: some View {
+    Group(subviews: BlockSequence(self.item.children)) { children in
     Label {
-      BlockSequence(self.item.children)
+      ForEach(children) { $0 }
     } icon: {
       self.markerStyle
         .makeBody(configuration: .init(listLevel: self.listLevel, itemNumber: self.number))
@@ -43,6 +45,8 @@ struct ListItemView: View {
     #if os(visionOS)
       .labelStyle(BulletItemStyle())
     #endif
+    .containerValue(\.markdownBlockMargin, children.first?.containerValues.markdownBlockMargin ?? .unspecified)
+    }
   }
 }
 

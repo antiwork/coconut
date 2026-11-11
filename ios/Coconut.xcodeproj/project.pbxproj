@@ -373,6 +373,7 @@
 		10DFD4C7D86BB227502C3FFF /* ModelSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSettingsView.swift; sourceTree = "<group>"; };
 		1166F32D2FDC4583B87FAC32 /* ChatActivityFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatActivityFlowTests.swift; sourceTree = "<group>"; };
 		124BFA46377F786FAC3CB2EE /* TunnelFrames.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelFrames.swift; sourceTree = "<group>"; };
+		13008F56D0CE5C5153046E24 /* MarkdownUI */ = {isa = PBXFileReference; lastKnownFileType = folder; name = MarkdownUI; path = Packages/MarkdownUI; sourceTree = SOURCE_ROOT; };
 		13E2BAC2B32852FEC7770DD3 /* ModelSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelSettingsTests.swift; sourceTree = "<group>"; };
 		14989796E26DE12C64A8913B /* BotCharacterFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotCharacterFlowTests.swift; sourceTree = "<group>"; };
 		150449BCD1EA051889FBAC65 /* TeamViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeamViews.swift; sourceTree = "<group>"; };
@@ -831,8 +832,9 @@
 			isa = PBXGroup;
 			children = (
 				955B157C81EDF73C44CEDEA9 /* mac */,
+				13008F56D0CE5C5153046E24 /* MarkdownUI */,
 			);
-			name = Packages;
+			path = Packages;
 			sourceTree = "<group>";
 		};
 		EABCBBA50E8DB4BD802A64A7 /* Tunnel */ = {
@@ -1045,9 +1047,9 @@
 			mainGroup = 79D61644561DEB1BD945F02F;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				6375FCEB3923150FCF54FACB /* XCRemoteSwiftPackageReference "swift-markdown-ui" */,
 				F49B06973D1552E016201124 /* XCRemoteSwiftPackageReference "Sparkle" */,
 				58AAC981BEE62730C5D8CFDD /* XCLocalSwiftPackageReference "../mac" */,
+				44EFE371F91D8C06EC7FA8EE /* XCLocalSwiftPackageReference "Packages/MarkdownUI" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D2BBE0315B3DB7706F3A979E /* Products */;
@@ -1906,6 +1908,10 @@
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
+		44EFE371F91D8C06EC7FA8EE /* XCLocalSwiftPackageReference "Packages/MarkdownUI" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/MarkdownUI;
+		};
 		58AAC981BEE62730C5D8CFDD /* XCLocalSwiftPackageReference "../mac" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = ../mac;
@@ -1913,14 +1919,6 @@
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		6375FCEB3923150FCF54FACB /* XCRemoteSwiftPackageReference "swift-markdown-ui" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/gonzalezreal/swift-markdown-ui";
-			requirement = {
-				kind = exactVersion;
-				version = 2.4.1;
-			};
-		};
 		F49B06973D1552E016201124 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/sparkle-project/Sparkle";
@@ -1934,7 +1932,6 @@
 /* Begin XCSwiftPackageProductDependency section */
 		13B0302373EFF9F475F748F6 /* MarkdownUI */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 6375FCEB3923150FCF54FACB /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
 			productName = MarkdownUI;
 		};
 		476BBFA2AA250D24EBB60A7B /* Sparkle */ = {
@@ -1944,7 +1941,6 @@
 		};
 		BC59E1DD5B09E3520ADF36FE /* MarkdownUI */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = 6375FCEB3923150FCF54FACB /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
 			productName = MarkdownUI;
 		};
 		DB89D1BDA5C4B44DB4AC8F5E /* CoconutKit */ = {

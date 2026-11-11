@@ -96,7 +96,15 @@ extension View {
       value.top = [value.top, newValue.top].compactMap { $0 }.max()
       value.bottom = [value.bottom, newValue.bottom].compactMap { $0 }.max()
     }
+    // Coconut patch: BlockSequence reads the margin in the same layout pass (see PATCHES.md).
+    .containerValue(\.markdownBlockMargin, BlockMargin(top: top, bottom: bottom))
   }
+}
+
+// Coconut patch: the margin of a block and its position, for BlockSequence (see PATCHES.md).
+extension ContainerValues {
+  @Entry var markdownBlockMargin: BlockMargin = .unspecified
+  @Entry var markdownBlockIndex: Int? = nil
 }
 
 struct BlockMarginsPreference: PreferenceKey {

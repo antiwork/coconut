@@ -5,11 +5,11 @@ import PackageDescription
 let package = Package(
   name: "swift-markdown-ui",
   platforms: [
-    .macOS(.v12),
-    .iOS(.v15),
-    .tvOS(.v15),
-    .macCatalyst(.v15),
-    .watchOS(.v8),
+    .macOS("15.0"),
+    .iOS("18.0"),
+    .tvOS("18.0"),
+    .macCatalyst("18.0"),
+    .watchOS("11.0"),
   ],
   products: [
     .library(
@@ -19,7 +19,6 @@ let package = Package(
   ],
   dependencies: [
     .package(url: "https://github.com/gonzalezreal/NetworkImage", from: "6.0.0"),
-    .package(url: "https://github.com/pointfreeco/swift-snapshot-testing", from: "1.10.0"),
     .package(url: "https://github.com/swiftlang/swift-cmark", from: "0.4.0"),
   ],
   targets: [
@@ -30,14 +29,6 @@ let package = Package(
         .product(name: "cmark-gfm-extensions", package: "swift-cmark"),
         .product(name: "NetworkImage", package: "NetworkImage"),
       ]
-    ),
-    .testTarget(
-      name: "MarkdownUITests",
-      dependencies: [
-        "MarkdownUI",
-        .product(name: "SnapshotTesting", package: "swift-snapshot-testing"),
-      ],
-      exclude: ["__Snapshots__"]
     ),
   ]
 )
