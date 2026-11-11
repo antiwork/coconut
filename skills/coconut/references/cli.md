@@ -16,7 +16,7 @@ The tool is in the app bundle: `/Applications/Coconut.app/Contents/Helpers/cocon
 | `coconut team join [--name <text>]` | Joins a team with the invite link on standard input. Never put the link in the command. |
 | `coconut team add-bot <bot> [--team <name or ID>]` | Adds a bot of this Mac to the team, by its name or its ID. |
 | `coconut team remove-bot <bot> [--team <name or ID>]` | Removes a bot of this Mac from the team. |
-| `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team. Without `--confirm`, it prints what a leave does and the exact command. |
+| `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team. The name after `--confirm` chooses the team; `--team <ID>` is necessary only when two teams have the same name. Without `--confirm`, it prints what a leave does and the exact command for each team. |
 | `coconut version` | Prints the version of Coconut.app. |
 
 The app and its login items use these commands. Do not run them yourself:

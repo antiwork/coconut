@@ -1,5 +1,6 @@
 // The `coconut` tool in Coconut.app/Contents/Helpers. The login items run `service` and `sidecar`. A person or a
-// Hermes agent runs `pair`, `status` and `team`.
+// Hermes agent runs `pair`, `status` and `team`. On a team-only Mac (InstallMode), each command for a phone or for Hermes
+// prints one line and exits with 1 (TeamOnlyRefusal).
 import CoconutKit
 import Foundation
 
@@ -7,13 +8,14 @@ let usage = """
     Usage: coconut <command>
 
       status    Print the version, the update settings, the last update check and error, and the state of the
-                service, the relay and Hermes. --json prints the service state as JSON.
+                service, the relay and Hermes. On a Mac that runs Coconut for a team only: the mode, the service and
+                each team. --json prints the service state as JSON.
       update    Check for a newer Coconut.app now, and install it. Prints the result and returns when the install
                 starts: the service updates after its running bot work finishes, also the turn that ran this
                 command. Run coconut status later to see the end. --wait waits for the end (not inside a bot turn).
       settings automatic-updates on|off
-                Turn automatic updates on or off. When on, Coconut.app checks every six hours and installs.
-      pair      Print a one-time iPhone setup link.
+                Turn automatic updates on or off. When on, Coconut.app checks every hour and installs.
+      pair      Print a one-time iPhone setup link. Not on a Mac that runs Coconut for a team only.
       pair <code>
                 Pair the iPhone that shows this code. Hermes runs this from the iPhone's message.
       team      Print the teams of this Mac: the name, the state, the admin, the members, the bots and the sync
@@ -30,18 +32,22 @@ let usage = """
       team remove-bot <bot> [--team <name or ID>]
                 Remove a bot of this Mac from the team.
       team leave --confirm <name of the team> [--team <name or ID>]
-                Leave the team, and delete its copy and its keys on this Mac. Without --confirm, print what a
-                leave does.
+                Leave the team, and delete its copy and its keys on this Mac. The name after --confirm chooses the
+                team. --team <ID> is necessary only when two teams of this Mac have the same name. Without
+                --confirm, print what a leave does and the command for each team.
       version   Print the version of Coconut.app.
       install-source
                 Install the Coconut source that this app carries. --if-needed skips an install that is current.
-                The app runs this after each update. --set-up also adds the coconut skill to Hermes.
+                The app runs this after each update. --set-up also adds the coconut skill to Hermes (full install
+                only).
       migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       service   Run the Coconut service. The login item uses this command.
       sidecar   Run the relay sidecar. The login item uses this command.
 
     Coconut.app --set-up sets up Coconut without a click, as Set Up Coconut in the menu does. The install script
-    opens the app with it.
+    opens the app with it. Coconut.app --set-up --team-only sets up a Mac with no person for a team only: Coconut keeps
+    its teams and the pages of its bots, and touches nothing of Hermes. Coconut.app --remove removes a team-only
+    install. See docs/install-and-update.md, "A Mac without a person".
     """
 
 func fail(_ message: String, code: Int32 = 1) -> Never {
@@ -53,6 +59,18 @@ func fail(_ message: String, code: Int32 = 1) -> Never {
 let helpers = URL(fileURLWithPath: Bundle.main.executablePath ?? CommandLine.arguments[0]).resolvingSymlinksInPath()
     .deletingLastPathComponent()
 let install = Install.standard()
+var mode = InstallMode.standard()
+
+/// Before a step that can reach Hermes (the service, an install), the store of the install decides too. When its data
+/// folder has the mark of a team-only service, the command runs in team-only mode, also if the preference is lost. The
+/// tool writes the preference again, except for a command that COCONUT_INSTALL_DIR points at another folder.
+func takeModeFromFolder() {
+    guard mode == .full, TeamFolderMark.isTeamOnly(install: install) else { return }
+    mode = .team
+    if (ProcessInfo.processInfo.environment["COCONUT_INSTALL_DIR"] ?? "").isEmpty {
+        AppPreferences().set(InstallMode.team.preferenceValue, forKey: InstallMode.preferenceKey)
+    }
+}
 
 /// Wait, then exit. launchd starts a login item again after each exit, also after a clean one: the service exits
 /// with 0 when a bot asks for a restart. The wait keeps a login item that cannot start from a restart every few seconds.
@@ -167,11 +185,24 @@ func readStatus() -> Status {
     var healthy = false
     // Detached: this top-level code runs on the main thread, which waits below.
     Task.detached {
-        healthy = await StatusReader.checkHealth()
+        healthy = await StatusReader.checkHealth(url: mode.healthURL)
         semaphore.signal()
     }
     semaphore.wait()
     return StatusReader(install: install).read(healthy: healthy)
+}
+
+/// The teams of a team-only service (`GET /v1/team/status`).
+func readTeamStatus() -> Result<TeamServiceStatus, TeamFailure> {
+    let semaphore = DispatchSemaphore(value: 0)
+    var result = Result<TeamServiceStatus, TeamFailure>.failure(.noAnswer)
+    // Detached: this top-level code runs on the main thread, which waits below.
+    Task.detached {
+        result = await TeamServiceStatus.read(install: install)
+        semaphore.signal()
+    }
+    semaphore.wait()
+    return result
 }
 
 /// Send a new setup to the rendezvous box of the iPhone's code, then wait until that iPhone pairs. The lines are plain
@@ -242,7 +273,7 @@ func team(_ arguments: [String]) -> Never {
     } catch {
         fail(TeamCommand.usage, code: 64)
     }
-    let tool = TeamTool(transport: BridgeTransport(install: install), readLink: readInviteLink)
+    let tool = TeamTool(transport: BridgeTransport(install: install, timeout: command.timeout), readLink: readInviteLink)
     let semaphore = DispatchSemaphore(value: 0)
     var output = TeamOutput(lines: [])
     // Detached: this top-level code runs on the main thread, which waits below.
@@ -256,7 +287,19 @@ func team(_ arguments: [String]) -> Never {
     exit(0)
 }
 
+/// The environment of a command that starts Python. A team-only Mac takes no saved Hermes setting.
+func commandEnvironment(loginPath: String?) -> [String: String] {
+    LoginEnvironment.make(base: ProcessInfo.processInfo.environment, loginPath: loginPath,
+                          saved: mode == .team ? [:] : LoginEnvironment.savedSettings())
+}
+
+/// What the tool says when it finds no Python. A team-only Mac takes no Python of Hermes.
+var noPython: String { PythonLocator.missingLine(mode: mode) }
+
 let command = CommandLine.arguments.dropFirst().first ?? ""
+if let line = TeamOnlyRefusal.line(Array(CommandLine.arguments.dropFirst()), mode: mode) {
+    fail(line)
+}
 switch command {
 case "service":
     // An update replaces the source now. launchd started this tool again after the update stopped the service.
@@ -264,20 +307,18 @@ case "service":
         sleep(2)
     }
     guard install.isInstalled() else { waitAndExit("Coconut is not installed in \(install.root.path).") }
-    let environment = LoginEnvironment.make(base: ProcessInfo.processInfo.environment,
-                                            loginPath: LoginEnvironment.loginPath())
-    guard let python = PythonLocator(environment: environment).locate() else {
-        waitAndExit("Coconut found no Python 3.11 or later. Install Hermes, or Python 3.11 or later from Homebrew.")
-    }
+    takeModeFromFolder()
+    let environment = commandEnvironment(loginPath: LoginEnvironment.loginPath())
+    guard let python = PythonLocator(environment: environment, mode: mode).locate() else { waitAndExit(noPython) }
     run(.service(install: install, python: python, environment: environment,
-                 teamHelper: helpers.appendingPathComponent("team-helper")))
+                 teamHelper: helpers.appendingPathComponent("team-helper"), mode: mode))
 case "sidecar":
     guard install.hasRelayRoute() else { waitAndExit("This Mac has no relay route yet. Pair an iPhone first.") }
     run(.sidecar(install: install, binary: helpers.appendingPathComponent("tunnel-sidecar"),
                  environment: ProcessInfo.processInfo.environment))
 case "pair":
     guard install.isInstalled() else { fail("Coconut is not installed in \(install.root.path).") }
-    let environment = LoginEnvironment.make(base: ProcessInfo.processInfo.environment, loginPath: nil)
+    let environment = commandEnvironment(loginPath: nil)
     guard let python = PythonLocator(environment: environment).locate() else {
         fail("Coconut found no Python 3.11 or later.")
     }
@@ -300,15 +341,14 @@ case "install-source":
         print("Coconut is up to date.")
         exit(0)
     }
-    let environment = LoginEnvironment.make(base: ProcessInfo.processInfo.environment,
-                                            loginPath: LoginEnvironment.loginPath())
-    guard let python = PythonLocator(environment: environment).locate() else {
-        fail("Coconut found no Python 3.11 or later. Install Hermes, or Python 3.11 or later from Homebrew.")
-    }
+    takeModeFromFolder()
+    if let line = TeamOnlyRefusal.line(Array(CommandLine.arguments.dropFirst()), mode: mode) { fail(line) }
+    let environment = commandEnvironment(loginPath: LoginEnvironment.loginPath())
+    guard let python = PythonLocator(environment: environment, mode: mode).locate() else { fail(noPython) }
     let launch = Launch.update(install: install, source: source, directory: directory, python: python,
                                sidecar: helpers.appendingPathComponent("tunnel-sidecar"),
                                teamHelper: helpers.appendingPathComponent("team-helper"), environment: environment,
-                               setUp: CommandLine.arguments.contains("--set-up"))
+                               setUp: CommandLine.arguments.contains("--set-up"), mode: mode)
     let process = Process()
     process.executableURL = launch.executable
     process.arguments = Array(launch.arguments.dropFirst())
@@ -329,6 +369,16 @@ case "migrate":
         fail("Coconut found no Python 3.11 or later.")
     }
     run(.migrate(install: install, python: python, environment: environment))
+case "status" where mode == .team:
+    let status = readStatus()
+    // A stopped service has no listener to ask.
+    let team = status.service == .stopped || status.service == .notInstalled ? .failure(.noAnswer) : readTeamStatus()
+    if CommandLine.arguments.contains("--json") {
+        print(try TeamOnlyReport(status: status, team: team).json())
+    } else {
+        StatusText.teamLines(version: appVersion(), preferences: UpdatePreferences(), status: status, team: team)
+            .forEach { print($0) }
+    }
 case "status":
     if CommandLine.arguments.contains("--json") {
         let encoder = JSONEncoder()

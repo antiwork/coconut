@@ -787,11 +787,19 @@ class TeamOnlyTests(unittest.TestCase):
 
     def library(self) -> dict:
         """Ada's Library without a pass: the team pages with their content, and the team bots."""
-        status, answer = self.ada.phone('GET', '/v1/documents')
-        self.assertEqual(status, 200, answer)
-        pages = [(page['title'], self.ada.phone('GET', f'/v1/documents/{page["id"]}')[1]['content'], page['bot_id'])
-                 for page in answer['documents'] if 'team' in page]
-        return {'pages': pages, 'bots': [(bot['id'], bot['name']) for bot in answer['team_bots']]}
+        while True:
+            status, answer = self.ada.phone('GET', '/v1/documents')
+            self.assertEqual(status, 200, answer)
+            pages = []
+            for page in (page for page in answer['documents'] if 'team' in page):
+                # A sync can take a page out between the list and the read. Then the list is read again.
+                status, document = self.ada.phone('GET', f'/v1/documents/{page["id"]}')
+                if status == 404:
+                    break
+                self.assertEqual(status, 200, document)
+                pages.append((page['title'], document['content'], page['bot_id']))
+            else:
+                return {'pages': pages, 'bots': [(bot['id'], bot['name']) for bot in answer['team_bots']]}
 
     def test_a_team_only_mac_shares_the_pages_of_its_bot(self):
         from test_team_only import snapshot
@@ -856,6 +864,40 @@ class TeamOnlyTests(unittest.TestCase):
             self.assertNotIn(link, text)
         for mac in (self.ada, self.reporter):
             self.assertNotIn('tasks are open', mac.log.read_text())
+
+    def test_a_leave_takes_the_mac_its_bot_and_its_page_out_of_the_team(self):
+        """The first step of a removal (docs/install-and-update.md, "Remove"): `coconut team leave` on the team-only
+        Mac, with a bot and its page still in the team. The full Mac then shows none of them."""
+        status, answer = self.ada.call('POST', '/v1/team/rooms', {'name': 'Leave Team', 'member_name': 'Ada',
+                                                                  'relay': self.url})
+        self.assertEqual(status, 200, answer)
+        room_id = answer['room']['room']
+        link = self.ada.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
+        tool = TeamLogTests.coconut_tool()
+
+        def run(*arguments: str, link_input: str = '') -> tuple[int, list[str]]:
+            result = coconut_team(tool, Path(self.temp.name), self.reporter, *arguments, link_input=link_input)
+            return result.returncode, (result.stdout or result.stderr).splitlines()
+
+        home = Path(self.temp.name) / 'writer-home'
+        self.assertEqual(run('join', '--name', 'Writer Mac', link_input=link + '\n')[0], 0)
+        self.assertEqual(run('new-bot', 'Writer', '--home', str(home))[0], 0)
+        self.assertEqual(run('add-bot', 'Writer')[0], 0)
+        page = {'home': str(home), 'key': 'notes', 'title': 'Notes', 'format': 'markdown', 'content': 'A note.',
+                'audience': 'team'}
+        self.assertEqual(self.reporter.call('POST', '/v1/gateway/document', page)[0], 200)
+
+        def members() -> list[str]:
+            rooms = self.ada.call('GET', '/v1/team/rooms')[1]['rooms']
+            return [member['name'] for room in rooms if room['room'] == room_id for member in room['members']]
+        self.wait_until(lambda: self.library()['pages'] and 'Writer Mac' in members(), 20)
+
+        self.assertEqual(run('leave', '--confirm', 'Leave Team'), (0, ['This Mac left the team Leave Team.']))
+        self.wait_until(lambda: self.library() == {'pages': [], 'bots': []} and members() == ['Ada'],
+                        self.LIMIT_SECONDS + 5)
+        (bot,) = self.reporter.call('GET', '/v1/team/bots')[1]['bots']
+        self.assertEqual(self.reporter.call('DELETE', f'/v1/team/bots/{bot["id"]}')[0], 200)
+        self.assertEqual(self.ada.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
 
 
 def run_of(start: int, count: int) -> bytes:

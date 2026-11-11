@@ -18,6 +18,8 @@ final class AppModel: ObservableObject {
     /// The install, update or move that runs now, with the text that the menu shows for it.
     @Published private(set) var activity: String?
     @Published private(set) var updateError: String?
+    /// The mode of the install (InstallMode). Only `--set-up` changes it, before the first view shows.
+    @Published private(set) var mode: InstallMode
 
     // The login items start without the environment of the app, so the app ignores COCONUT_INSTALL_DIR too. Both
     // read the same preference.
@@ -25,9 +27,33 @@ final class AppModel: ObservableObject {
     private var timer: Timer?
     private var couldRegister = false
     private var loginItemReads = LatestRead()
+    /// Why `--set-up` did not run: the Mac has an install of the other mode.
+    private var setUpRefusal: String?
 
     init() {
         UserDefaults.standard.register(defaults: [Self.startAtLoginKey: true])
+        // The mode comes from the preference, which a locked screen does not hide (pull request 432). A set-up of a
+        // new mode writes it here, so the window shows the page of that mode from its first frame.
+        var mode = InstallMode.standard(environment: [:])
+        // A lost preference must not make a team-only Mac a full install. The store decides too, once per launch: the
+        // read opens it read-only and never waits for a lock (TeamFolderMark), so it cannot hold the main thread.
+        if mode == .full && TeamFolderMark.isTeamOnly(install: install) {
+            UserDefaults.standard.set(InstallMode.team.preferenceValue, forKey: InstallMode.preferenceKey)
+            mode = .team
+        }
+        if let requested = SetUpRequest.mode(arguments: CommandLine.arguments) {
+            setUpRefusal = SetUpRequest.check(requested: requested, recorded: mode, installed: install.isInstalled())
+            if setUpRefusal == nil && requested != mode {
+                UserDefaults.standard.set(requested.preferenceValue, forKey: InstallMode.preferenceKey)
+                mode = requested
+            }
+        }
+        self.mode = mode
+        // The model starts before any scene shows, so a team-only Mac never shows a Dock icon. A full install keeps the
+        // policy of Info.plist.
+        if !mode.showsDockIcon {
+            NSApplication.shared.setActivationPolicy(.accessory)
+        }
         status = StatusReader(install: install).read(healthy: false)
         // SwiftUI gives the label of a menu bar extra no dependable task, so the model starts itself.
         start()
@@ -42,15 +68,30 @@ final class AppModel: ObservableObject {
 
     var startAtLogin: Bool { UserDefaults.standard.bool(forKey: Self.startAtLoginKey) }
 
-    var needsApproval: Bool { loginItems.values.contains(.requiresApproval) }
-
     func start() {
         guard timer == nil else { return }
+        if RemoveRequest.asked(arguments: CommandLine.arguments) {
+            if mode == .team {
+                // No registration and no update: the app removes what it installed, then quits.
+                Task { await remove() }
+                return
+            }
+            // A full install changes nothing and starts as always. `coconut status` shows the line.
+            updateError = RemoveRequest.fullInstall
+            UpdatePreferences().record(UpdateResult(time: Date(), outcome: .failed, message: RemoveRequest.fullInstall))
+        }
         registerIfNeeded()
         Task {
             await refresh()
+            if let refusal = setUpRefusal {
+                // A command opened the app, so `coconut status` shows this line as the last update error.
+                updateError = refusal
+                UpdatePreferences().record(UpdateResult(time: Date(), outcome: .failed, message: refusal))
+                return
+            }
             // The install script (updates/install.sh) opens the app with --set-up, so the person needs no click.
-            if CommandLine.arguments.contains("--set-up") && legacyAgents.isEmpty && status.service != .running {
+            if CommandLine.arguments.contains(SetUpRequest.argument) && legacyAgents.isEmpty
+                && status.service != .running {
                 await setUp()
             } else if legacyAgents.isEmpty && install.isInstalled() && !install.isCheckout() {
                 // After Sparkle installs a new app, the new app updates the source that it carries.
@@ -70,7 +111,7 @@ final class AppModel: ObservableObject {
     /// returned value: the published one can still be older when a newer read of the timer runs.
     @discardableResult
     func refresh() async -> [LoginItem: SMAppService.Status] {
-        let healthy = await StatusReader.checkHealth()
+        let healthy = await StatusReader.checkHealth(url: mode.healthURL)
         // The timer runs every five seconds. Each assignment redraws the menu, so only a change is assigned.
         let status = StatusReader(install: install).read(healthy: healthy)
         if status != self.status { self.status = status }
@@ -90,14 +131,17 @@ final class AppModel: ObservableObject {
         return loginItems
     }
 
-    /// Register the login items (the app and its two agents) when the person wants them, Coconut is installed and no
-    /// old LaunchAgent runs it. Each launch registers them again when one is missing.
+    /// Register the login items of the mode (the app and its agents) when the person wants them, Coconut is installed
+    /// and no old LaunchAgent runs it. Each launch registers them again when one is missing.
     /// A first install registers them before the source exists: the tool of the agents waits, and the install starts it.
     func registerIfNeeded(beforeInstall: Bool = false) {
         legacyAgents = LegacyAgents.present()
         guard startAtLogin, legacyAgents.isEmpty, beforeInstall || install.isInstalled() else { return }
-        loginError = LoginItems().register()
+        loginError = LoginItems().register(for: mode)
     }
+
+    /// True while a login item of the mode waits for the approval of the person.
+    var needsApproval: Bool { mode.loginItems.contains { loginItems[$0] == .requiresApproval } }
 
     func setStartAtLogin(_ value: Bool) {
         UserDefaults.standard.set(value, forKey: Self.startAtLoginKey)
@@ -142,12 +186,12 @@ final class AppModel: ObservableObject {
         guard activity == nil else { return false }
         activity = install.isInstalled() ? "Updating Coconut. Running work finishes first." : "Installing Coconut…"
         updateError = nil
-        // Only a setup that the person asked for changes the Hermes config (scripts/hermes_skills.py).
-        let result = await runTool(ifNeeded ? ["install-source", "--if-needed"] : ["install-source"] + (setUp ? ["--set-up"] : []))
+        // Only a full setup that the person asked for changes the Hermes config (scripts/hermes_skills.py).
+        let result = await runTool(SetUpRequest.installSourceArguments(ifNeeded: ifNeeded, setUp: setUp, mode: mode))
         activity = nil
         let preferences = UpdatePreferences()
         if result.0 != 0 {
-            updateError = DeployResult(output: result.1)?.error ?? Self.lastLine(result.1) ?? "The update failed."
+            updateError = DeployResult.failureLine(output: result.1)
             // `coconut update --wait` and `coconut status` report this step after an app update.
             preferences.record(UpdateResult(time: Date(), outcome: .failed,
                                             message: "The service update failed: \(updateError ?? "")"))
@@ -185,7 +229,69 @@ final class AppModel: ObservableObject {
         await refresh()
     }
 
-    static func lastLine(_ text: String) -> String? {
+    /// `Coconut.app --remove` on a team-only Mac with no person: remove the login items of the app, which needs no
+    /// approval, run the uninstaller of the install folder of this app, move that folder to the Trash, remove the
+    /// preference, and quit. The install is the one of the preference (Install.standard ignores COCONUT_INSTALL_DIR),
+    /// so the app never removes another folder. A failure goes to the last update error, which coconut status prints.
+    func remove() async {
+        func failed(_ line: String) {
+            activity = nil
+            updateError = line
+            UpdatePreferences().record(UpdateResult(time: Date(), outcome: .failed, message: line))
+        }
+        guard mode == .team else { return failed(RemoveRequest.fullInstall) }
+        activity = "Removing Coconut…"
+        UserDefaults.standard.set(false, forKey: Self.startAtLoginKey)
+        let install = install
+        // Each change of a login item is a request to launchd, and the uninstaller waits for the stop of the service, so
+        // both run off the main thread (pull request 441).
+        let failure = await Task.detached(priority: .utility) { () -> String? in
+            if let failure = LoginItems().unregister() { return failure }
+            return Self.uninstall(install)
+        }.value
+        if let failure { return failed(failure) }
+        // A later set-up starts clean: coconut status shows no old update error.
+        RemoveRequest.preferenceKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
+        NSApp.terminate(nil)
+    }
+
+    /// Run `desktop.py uninstall --yes` of the install, which stops the service and removes the data and edits nothing
+    /// in Hermes, then move the install folder to the Trash. Return the line of a failure, or nil.
+    nonisolated static func uninstall(_ install: Install) -> String? {
+        guard install.isInstalled(), !install.isCheckout() else {
+            return "Coconut.app --remove removes only a folder that it installed: \(install.root.path)."
+        }
+        let environment = LoginEnvironment.make(base: ProcessInfo.processInfo.environment, loginPath: nil, saved: [:])
+        guard let python = PythonLocator(environment: environment, mode: .team).locate() else {
+            return PythonLocator.missingLine(mode: .team)
+        }
+        let process = Process()
+        process.executableURL = python
+        process.arguments = [install.root.appendingPathComponent("scripts/desktop.py").path, "uninstall", "--yes"]
+        process.currentDirectoryURL = install.root
+        process.environment = environment
+        process.standardInput = FileHandle.nullDevice
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = output
+        do {
+            try process.run()
+        } catch {
+            return "Coconut could not start Python: \(error.localizedDescription)"
+        }
+        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return lastLine(text) ?? "The uninstaller failed." }
+        do {
+            try FileManager.default.trashItem(at: install.root, resultingItemURL: nil)
+        } catch {
+            return "Coconut removed its data, but it could not move \(install.root.path) to the Trash: "
+                + error.localizedDescription
+        }
+        return nil
+    }
+
+    nonisolated static func lastLine(_ text: String) -> String? {
         text.split(whereSeparator: \.isNewline).last.map(String.init)
     }
 
@@ -211,6 +317,8 @@ final class AppModel: ObservableObject {
         // The tool must use the folder that the menu shows, also when the app inherited another COCONUT_INSTALL_DIR.
         var environment = ProcessInfo.processInfo.environment
         environment["COCONUT_INSTALL_DIR"] = install.root.path
+        // With COCONUT_INSTALL_DIR, the tool takes the mode from COCONUT_MODE (InstallMode.standard).
+        mode.apply(to: &environment)
         return await Task.detached { () -> (Int32, String) in
             let process = Process()
             process.executableURL = tool

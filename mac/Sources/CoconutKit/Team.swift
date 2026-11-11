@@ -31,6 +31,13 @@ public enum TeamCommand: Equatable, Sendable {
     public static let linkArgument = "The invite link is a secret, so coconut team join reads it from standard input. "
         + "Pipe the link to the command, and do not put it in the command."
 
+    /// How long the tool waits for each answer of the service. The list only reads (BridgeTransport.listTimeout). Each
+    /// other command can call the relay with retries, so it waits as long as scripts/team.py.
+    public var timeout: TimeInterval {
+        if case .show = self { return BridgeTransport.listTimeout }
+        return 180
+    }
+
     /// Read the arguments after `team`.
     public static func parse(_ arguments: [String]) throws -> TeamCommand {
         var positional: [String] = []
@@ -149,9 +156,22 @@ public protocol TeamTransport: Sendable {
 /// The main listener of the service, with the address and the token that the service writes at each start.
 public struct BridgeTransport: TeamTransport {
     public let install: Install
+    /// A join and a leave call the relay, with retries, so they can take a while. scripts/team.py waits as long. The
+    /// menu of the app asks with a short timeout, so a service that hangs does not hold its refresh.
+    public let timeout: TimeInterval
 
-    public init(install: Install) {
+    /// The timeout of the team read of `coconut status` on a team-only Mac and of the refresh of the app. The status
+    /// must show its other lines soon, and the refresh runs every five seconds.
+    public static let readTimeout: TimeInterval = 2
+
+    /// The timeout of `coconut team` (the list). The list also runs on a full install, whose service holds its lock
+    /// for some seconds at a time on a busy Mac (a median of about 4 seconds for one step was measured). A shorter
+    /// timeout would say that a healthy service does not answer.
+    public static let listTimeout: TimeInterval = 15
+
+    public init(install: Install, timeout: TimeInterval) {
         self.install = install
+        self.timeout = timeout
     }
 
     public func send(method: String, path: String, body: Data?) async throws -> TeamResponse {
@@ -163,8 +183,7 @@ public struct BridgeTransport: TeamTransport {
             guard install.isInstalled() else { throw TeamFailure("Coconut is not installed in \(install.root.path).") }
             throw TeamFailure.notStarted
         }
-        // A join and a leave call the relay, with retries, so they can take a while. scripts/team.py waits as long.
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 180)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let body {
@@ -397,20 +416,49 @@ public struct TeamTool: Sendable {
         return TeamOutput(lines: ["The bot \(bot.name) is no longer in the team \(room.name)."])
     }
 
+    /// What a leave does, for each form of `coconut team leave` without `--confirm`.
+    static let leaveEffects = [
+        "This Mac deletes its copy of the team and its keys.",
+        "The team no longer sees the bots of this Mac and their pages.",
+        "To join again, this Mac needs a new invite link.",
+    ]
+    static let leaveNeedsName = "A leave cannot be undone. No person can confirm it here, so the command needs the name "
+        + "of the team."
+
+    /// The command that leaves this team without a question. The name alone chooses the team when no other team of this
+    /// Mac has the same name. Otherwise the command needs the ID too.
+    func leaveCommand(_ room: TeamRoom, in rooms: [TeamRoom]) -> String {
+        "coconut team leave" + (rooms.filter { $0.name == room.name }.count > 1 ? " --team \(quoted(room.room))" : "")
+            + " --confirm \(quoted(room.name))"
+    }
+
     func leave(team: String?, confirm: String?) async throws -> TeamOutput {
         let answer = try decode(try await call("GET", "/v1/team/rooms"))
-        let room = try choose(team, in: answer.rooms)
-        let command = "coconut team leave" + (answer.rooms.count > 1 ? " --team \(quoted(room.room))" : "")
-            + " --confirm \(quoted(room.name))"
+        let room: TeamRoom
+        let command: String
+        if team == nil && answer.rooms.count > 1 {
+            // The name after --confirm chooses the team and confirms the leave in one, when exactly one team has it.
+            let list = answer.rooms.map { "Team: \($0.name) (ID \($0.room))" }
+            guard let confirm else {
+                throw TeamFailure(lines: [Self.leaveNeedsName] + Self.leaveEffects
+                                  + answer.rooms.map { "To leave \($0.name), run: \(leaveCommand($0, in: answer.rooms))" })
+            }
+            let named = answer.rooms.filter { $0.name == confirm }
+            guard named.count == 1 else {
+                throw TeamFailure(lines: [(named.isEmpty ? "No team of this Mac has the name \(quoted(confirm))."
+                                           : "More than one team of this Mac has the name \(quoted(confirm)).")
+                                          + " Nothing changed. Add --team <ID> with the ID of the team:"] + list)
+            }
+            room = named[0]
+            command = leaveCommand(room, in: answer.rooms)
+        } else {
+            room = try choose(team, in: answer.rooms)
+            command = "coconut team leave" + (answer.rooms.count > 1 ? " --team \(quoted(room.room))" : "")
+                + " --confirm \(quoted(room.name))"
+        }
         guard let confirm else {
-            throw TeamFailure(lines: [
-                "A leave cannot be undone. No person can confirm it here, so the command needs the name of the team.",
-                "This Mac leaves the team \(room.name).",
-                "This Mac deletes its copy of the team and its keys.",
-                "The team no longer sees the bots of this Mac and their pages.",
-                "To join again, this Mac needs a new invite link.",
-                "To leave, run: \(command)",
-            ])
+            throw TeamFailure(lines: [Self.leaveNeedsName, "This Mac leaves the team \(room.name)."] + Self.leaveEffects
+                              + ["To leave, run: \(command)"])
         }
         guard confirm == room.name else {
             throw TeamFailure(lines: ["The name after --confirm is not the name of the team \(room.name). Nothing changed.",

@@ -112,9 +112,10 @@ A Mac with no person at it can join a team from a message, as `coconut pair <cod
 |---|---|
 | `coconut team` | Prints the teams of this Mac: the name, the ID, the state, the admin, the members, the bots, and the sync error. `--json` prints the answer of the service. |
 | `coconut team join [--name <text>]` | Joins a team with the invite link on standard input. `--name` is the name of this Mac in the member list. Without it, the service uses "Member". |
+| `coconut team new-bot <name> [--home <path>]` | On a team-only Mac: declares a bot for the Hermes home that it stands for. See [A Mac without a person](#a-mac-without-a-person). |
 | `coconut team add-bot <bot> [--team <name or ID>]` | Adds a bot of this Mac to the team. `<bot>` is the ID or the name of the bot. Case does not matter. |
 | `coconut team remove-bot <bot> [--team <name or ID>]` | Removes a bot of this Mac from the team. |
-| `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team, and deletes its copy and its keys on this Mac. Without `--confirm`, it prints what a leave does and the exact command. |
+| `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team, and deletes its copy and its keys on this Mac. The name after `--confirm` chooses the team; `--team <ID>` is necessary only when two teams of this Mac have the same name. Without `--confirm`, it prints what a leave does and the exact command for each team. |
 
 - The invite link is a secret. The tool reads it only from standard input, and no output of the tool has it. In a terminal, the tool asks for the link and does not show it.
 - When this Mac is in more than one team, a command for one team needs `--team`.
@@ -222,6 +223,77 @@ The menu bar icon shows the state of the service, the relay and Hermes. **Pair i
 A Hermes agent can print a link without the Command Line Tools: `/Applications/Coconut.app/Contents/Helpers/coconut pair`.
 
 If the iPhone already has a pairing, Coconut asks before a link replaces it.
+
+## A Mac without a person
+
+Use this when a Mac runs a Hermes agent and nobody sits at it, and you want its agent to publish pages for your team. The Mac gets the normal Coconut.app in team-only mode, with the same updates as any other Mac. Coconut never touches the Hermes of this Mac and pairs no phone.
+
+You work in a terminal on that Mac, for example over SSH. In the steps, `coconut` is `/Applications/Coconut.app/Contents/Helpers/coconut`.
+
+### Before you start
+
+- Install the Python of Homebrew: `brew install python`. Coconut does not use the Python of Hermes.
+- Ask an admin of the team for an invite link. The admin makes it on the Team screen of the app.
+
+### Install
+
+1. Download Coconut.app from `https://coconut-updates.gumroad.workers.dev/mac/download`, unzip it, and move it to `/Applications`.
+2. Run `open -g /Applications/Coconut.app --args --set-up --team-only`.
+3. Wait one or two minutes. Then run `coconut status`. Expect `Mode: team only` and `Service: running (/Users/<you>/Coconut)`.
+
+If macOS asks to allow Coconut in Login Items, allow it in System Settings → General → Login Items. If Coconut already runs on this Mac, the set-up does nothing: `open` gives no arguments to an app that runs. To see why, stop the app first with `pkill -x Coconut`, then run step 2 again. If the Mac has a full Coconut install, the set-up then changes nothing, and `coconut status` shows the reason as `Last update error:`.
+
+### Join a team and add a bot
+
+1. Run `coconut team join --name "Reporter Mac"`, then paste the invite link when the command asks for it. A bot pipes the link to the command instead. Expect `This Mac joined the team Example Team.`
+2. Run `coconut team new-bot Reporter --home ~/.hermes`. Give the Hermes home of your agent.
+3. Run `coconut team add-bot Reporter --team "Example Team"`.
+
+### Publish a page
+
+Your agent sends the page to the service on this Mac. The page must name the team as its audience (`"audience": "team"`):
+
+```python
+import json, pathlib, urllib.request
+bridge = json.loads(pathlib.Path('~/Coconut/.runtime/host/gateway/bridge.json').expanduser().read_text())
+page = {'home': str(pathlib.Path('~/.hermes').expanduser()), 'audience': 'team', 'key': 'weekly-report',
+        'title': 'Weekly report', 'format': 'markdown', 'content': '3 tasks are open.'}
+request = urllib.request.Request(bridge['url'] + '/v1/gateway/document', data=json.dumps(page).encode(),
+                                 headers={'Authorization': 'Bearer ' + bridge['token'],
+                                          'Content-Type': 'application/json'})
+print(urllib.request.urlopen(request).read().decode())
+```
+
+The other Macs of the team show the page in their Library within a minute.
+
+### Check that it works
+
+Run `coconut status`. Expect:
+
+```
+Mode: team only
+Service: running (/Users/<you>/Coconut)
+Bots: Reporter
+Team: Example Team (active): 3 members, 2 bots, connected
+```
+
+A line that needs an action says what to run, for example `Teams: none. To join one, pipe an invite link to: coconut team join`.
+
+### Update
+
+Coconut.app updates itself, as on every Mac. The Mac stays in team-only mode. To update now, run `coconut update`.
+
+### Remove
+
+1. Leave each team: `coconut team leave --confirm "Example Team"`. Do this for each team. `coconut team` lists them. Expect `This Mac left the team Example Team.` A Mac that does not leave first stays in the member lists of the other Macs, with its bots and their pages.
+2. Stop the app: `pkill -x Coconut`. This sends a signal to the process `Coconut`. An Apple event to quit the app can ask for a permission in a dialog that nobody sees. No login item starts the app again before the next step.
+3. Start it to remove Coconut: `open -g /Applications/Coconut.app --args --remove`. The app removes its login items, its settings and the data of Coconut, moves `~/Coconut` to the Trash, and quits. Nothing in Hermes changes.
+4. Run `coconut status`. Expect `Service: not installed (/Users/<you>/Coconut)`. A failure shows as `Last update error:`.
+5. Delete `/Applications/Coconut.app`.
+
+### For developers
+
+The app reads `--set-up`, `--team-only` and `--remove` only when it starts, so a command for an app that runs does nothing. The app keeps the mode in its preference `InstallMode` (`team`) and registers two login items: the app and the service. In this mode the app has no Dock icon and opens no window. The service runs with `COCONUT_MODE=team` (see [team-only mode](team-log.md#team-only-mode)). An update of this mode runs no Hermes check, no skill or plugin step, no notification build and no relay sidecar step, and checks health on the main listener. The data folder decides too: when its store has the mark of a team-only service, the app and the tool take team-only mode, and `deploy.py`, `scripts/hermes_skills.py` and `scripts/setup_coconut.py` stop before they touch Hermes (`service_base.team_folder`). `coconut pair`, `coconut migrate` and `coconut install-source --set-up` refuse on this Mac with one line.
 
 ## Releases from CI
 

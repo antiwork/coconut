@@ -1,3 +1,4 @@
+import CoconutKit
 import SwiftUI
 
 /// What the main window shows in its detail column.
@@ -15,7 +16,8 @@ enum InspectorTab: Hashable {
 }
 
 /// The main window of the Mac client: the bots in a sidebar, the chat or the Inbox in the middle, and the details of the
-/// bot in a column on the right. It shows the pairing page until this Mac has a pairing.
+/// bot in a column on the right. It shows the pairing page until this Mac has a pairing. A Mac that runs Coconut for a
+/// team only shows its own page instead, and never the pairing page.
 struct MacMainWindow: View {
     @Environment(AppStore.self) private var store
     @ObservedObject var model: AppModel
@@ -30,6 +32,14 @@ struct MacMainWindow: View {
     @State private var libraryPath = NavigationPath()
 
     var body: some View {
+        if model.mode == .team {
+            TeamOnlyNote()
+        } else {
+            clientWindow
+        }
+    }
+
+    private var clientWindow: some View {
         Group {
             if store.hasPairing || store.isDemo {
                 NavigationSplitView {
@@ -277,5 +287,15 @@ private struct MacSidebarLabel: View {
             Image(systemName: symbol).foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+    }
+}
+
+/// What a window shows on a Mac that runs Coconut for a team only (InstallMode.team), when the system opens one, for
+/// example by state restoration. Nobody sits at this Mac: its reader works in a terminal.
+struct TeamOnlyNote: View {
+    var body: some View {
+        Text("This Mac runs Coconut for a team only. Run coconut status in Terminal.")
+            .padding(24)
+            .frame(minWidth: 480, minHeight: 120)
     }
 }

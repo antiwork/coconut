@@ -293,6 +293,28 @@ def owned_agent(data_dir: Path | None = None) -> tuple[Path, bool]:
 
 # Coconut.app runs the service as this login item (mac/LaunchAgents). Its tool names the label in COCONUT_LOGIN_ITEM.
 LOGIN_ITEM_LABEL = "com.gumroad.coconut.service"
+# Coconut.app keeps the mode of its install in its preferences, next to InstallDirectory (mac/Sources/CoconutKit,
+# InstallMode). "team": the Mac runs Coconut for a team only, and Coconut adds nothing to its Hermes.
+APP_DOMAIN = "com.gumroad.coconut.mac"
+TEAM_MODE = "team"
+
+
+def team_folder_refusal(data: Path | None = None) -> str | None:
+    """The refusal of a Hermes step when the data folder belongs to a team-only service, else None.
+
+    service_base.team_folder decides, so a lost preference of Coconut.app never lets a step reach Hermes."""
+    base = backend_module("service_base")
+    return base.HERMES_REFUSAL if base.team_folder(data if data is not None else DEFAULT_DATA) else None
+
+
+def install_mode() -> str:
+    """The mode of the install of Coconut.app on this Mac: "team", or "full" without the preference."""
+    try:
+        result = subprocess.run(["defaults", "read", APP_DOMAIN, "InstallMode"], capture_output=True, text=True)
+    except OSError:
+        # No `defaults`, for example on the Linux CI runner: no Coconut.app either.
+        return "full"
+    return TEAM_MODE if result.returncode == 0 and result.stdout.strip() == TEAM_MODE else "full"
 
 
 def launchd_pid(label: str) -> int | None:

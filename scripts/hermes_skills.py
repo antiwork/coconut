@@ -33,6 +33,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("action", choices=["add", "remove"])
     args = parser.parse_args()
+    # A team-only install never adds anything to Hermes, so it has nothing to add or remove there.
+    refusal = host.team_folder_refusal()
+    if refusal:
+        print(refusal)
+        return 1
     runtime_module = host.hermes_runtime()
     environment = host.service_environment()
     try:

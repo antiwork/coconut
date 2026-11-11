@@ -14,22 +14,27 @@ public struct PythonLocator {
     public let environment: [String: String]
     public let home: URL
     public let fileManager: FileManager
+    /// A team-only install searches no Hermes, also not for its Python: only the Python of Homebrew.
+    public let mode: InstallMode
 
     public init(environment: [String: String] = ProcessInfo.processInfo.environment,
-                home: URL = FileManager.default.homeDirectoryForCurrentUser, fileManager: FileManager = .default) {
+                home: URL = FileManager.default.homeDirectoryForCurrentUser, fileManager: FileManager = .default,
+                mode: InstallMode = .full) {
         self.environment = environment
         self.home = home
         self.fileManager = fileManager
+        self.mode = mode
     }
 
     /// The Pythons to try, in order, without duplicates. Nothing here runs a Python.
     public func candidates() -> [URL] {
+        let homebrew = [URL(fileURLWithPath: "/opt/homebrew/bin/python3"), URL(fileURLWithPath: "/usr/local/bin/python3")]
+        guard mode == .full else { return homebrew }
         var found: [URL] = []
         if let explicit = environment["COCONUT_HERMES_PYTHON"], !explicit.isEmpty {
             found.append(URL(fileURLWithPath: (explicit as NSString).expandingTildeInPath))
         }
-        found.append(URL(fileURLWithPath: "/opt/homebrew/bin/python3"))
-        found.append(URL(fileURLWithPath: "/usr/local/bin/python3"))
+        found += homebrew
         let source = home.appendingPathComponent(".hermes/hermes-agent", isDirectory: true)
         for name in ["venv", ".venv"] {
             found.append(source.appendingPathComponent("\(name)/bin/python"))
@@ -64,6 +69,15 @@ public struct PythonLocator {
             }
         }
         return nil
+    }
+
+    /// The line when no candidate fits. A team-only Mac takes only the Python of Homebrew, so its line names the two
+    /// folders and the command that installs one. 3.11 is the oldest Python that the tests of Coconut run on.
+    public static func missingLine(mode: InstallMode) -> String {
+        mode == .team
+            ? "Coconut found no Python 3.11 or later in /opt/homebrew/bin or /usr/local/bin. Install it with Homebrew: "
+                + "brew install python"
+            : "Coconut found no Python 3.11 or later. Install Hermes, or Python 3.11 or later from Homebrew."
     }
 
     /// The first candidate that exists and that `accepts` approves. The default check runs the Python once.
