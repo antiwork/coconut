@@ -466,8 +466,8 @@ final class TeamChatTests: XCTestCase {
         }
         XCTAssertEqual(room(people: 1, bots: 0).whoLine, "1 person")
         XCTAssertEqual(room(people: 3, bots: 0).whoLine, "3 people")
-        XCTAssertEqual(room(people: 3, bots: 1).whoLine, "3 people, 1 bot")
-        XCTAssertEqual(room(people: 3, bots: 2).whoLine, "3 people, 2 bots")
+        // The author entries of the bots of people are not in the chat. No bot can be asked yet.
+        XCTAssertEqual(room(people: 3, bots: 2).whoLine, "3 people")
         XCTAssertNil(room(people: 0, bots: 0).whoLine, "A team that is joining has no members yet.")
     }
 }

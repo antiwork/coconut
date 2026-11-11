@@ -59,9 +59,11 @@ final class LibraryDocumentTests: XCTestCase {
     private static let teamList = #"""
     {"documents": [
       {"id": "local-1", "bot_id": "ada", "key": "notes", "title": "Notes", "format": "markdown", "version": 3,
-       "created_at": "2026-11-01T12:00:00Z", "updated_at": "2026-11-05T12:00:00Z", "audience": "team"},
+       "created_at": "2026-11-01T12:00:00Z", "updated_at": "2026-11-05T12:00:00Z", "audience": "team",
+       "teams": [{"room": "crew", "name": "Design Crew"}, {"room": "room", "name": "Example Team"}]},
       {"id": "local-2", "bot_id": "ada", "key": "draft", "title": "Draft", "format": "markdown", "version": 1,
-       "created_at": "2026-11-01T12:00:00Z", "updated_at": "2026-11-02T12:00:00Z", "audience": "private"},
+       "created_at": "2026-11-01T12:00:00Z", "updated_at": "2026-11-02T12:00:00Z", "audience": "private",
+       "teams": []},
       {"id": "t-room-p1", "bot_id": "t-room-b1", "key": "weekly-report", "title": "Weekly report",
        "format": "markdown", "summary": "Signups up 9%", "version": 4, "created_at": "2026-11-01T12:00:00Z",
        "updated_at": "2026-11-07T12:00:00Z", "expires_at": null, "pinned": false,
@@ -96,6 +98,47 @@ final class LibraryDocumentTests: XCTestCase {
         XCTAssertEqual(byId["local-1"]?.isSharedWithTeam, true)
         XCTAssertEqual(byId["local-2"]?.isSharedWithTeam, false)
         XCTAssertEqual(byId["t-room-p2"]?.isSharedWithTeam, false)
+        XCTAssertEqual(byId["local-1"]?.teams?.map(\.name), ["Design Crew", "Example Team"])
+        // The quiet line of a shared page names its teams. A private page and a team page have none.
+        XCTAssertEqual(byId["local-1"]?.sharedLine, "Shared with Design Crew, Example Team")
+        XCTAssertNil(byId["local-2"]?.sharedLine)
+        XCTAssertNil(byId["t-room-p1"]?.sharedLine)
+    }
+
+    private static func room(_ id: String, _ name: String, state: String = "active") -> TeamRoom {
+        TeamRoom(room: id, name: name, state: state)
+    }
+
+    /// The share actions of a page: one for each active team of this Mac, in the order of the names, and none for a
+    /// page that cannot be shared.
+    func testThePageShareItemsOfEachPage() throws {
+        let list = try APIJSON.decoder().decode(DocumentList.self, from: Data(Self.teamList.utf8))
+        let byId = Dictionary(uniqueKeysWithValues: list.documents.map { ($0.id, $0) })
+        let local = try XCTUnwrap(byId["local-2"])
+        let example = Self.room("room", "Example Team")
+        let rows = { (document: BotDocument, rooms: [TeamRoom]) in
+            PageShareItem.items(for: document, rooms: rooms).map { "\($0.title) [\($0.symbol)]" }
+        }
+        // A Mac in no team: no item, so nothing new shows.
+        XCTAssertEqual(rows(local, []), [])
+        XCTAssertEqual(rows(local, [example]), ["Share with Example Team [person.2]"])
+        // A Mac in two teams: one item for each team. A team that is not active has none.
+        let crew = Self.room("crew", "Design Crew")
+        XCTAssertEqual(rows(local, [example, crew, Self.room("old", "Old Project", state: "removed"),
+                                    Self.room("new", "New Team", state: "joining")]),
+                       ["Share with Design Crew [person.2]", "Share with Example Team [person.2]"])
+        let shared = try XCTUnwrap(byId["local-1"])
+        XCTAssertEqual(rows(shared, [example, crew]), ["Stop sharing with Design Crew [person.2.slash]",
+                                                       "Stop sharing with Example Team [person.2.slash]"])
+        // A team of the page that the list of teams does not have yet keeps its stop item.
+        XCTAssertEqual(rows(shared, [example]), ["Stop sharing with Design Crew [person.2.slash]",
+                                                 "Stop sharing with Example Team [person.2.slash]"])
+        // A team page of another Mac has no item, and a page of an older Mac, which sends no teams, has none.
+        XCTAssertEqual(rows(try XCTUnwrap(byId["t-room-p1"]), [example]), [])
+        var older = local
+        older.teams = nil
+        XCTAssertEqual(rows(older, [example]), [])
+        XCTAssertEqual(PageShareItem.items(for: local, rooms: [example]).map(\.id), ["room"])
     }
 
     /// A Mac from before teams sends no `team_bots`, no `team` and no `audience`.
@@ -361,6 +404,10 @@ final class LibraryDocumentTests: XCTestCase {
     func testAMarkdownPageTravelsAsJSONThatTheTextCannotEnd() throws {
         let markdown = "Lead.\n\n```html\n</script><script>alert(1)</script>\n```"
         let html = DocumentPage.html(title: "T", meta: "M", content: markdown, markdown: true)
+        // A shared page has one more quiet line under the meta line. Its text is escaped as the title is.
+        XCTAssertFalse(html.contains("meta shared"))
+        XCTAssertTrue(DocumentPage.html(title: "T", meta: "M", shared: "Shared with <A & B>", content: "x")
+            .contains(#"<p class="meta shared">Shared with &lt;A &amp; B&gt;</p>"#))
         let start = try XCTUnwrap(html.range(of: "<script type=\"application/json\" id=\"coconut-markdown\">"))
         let end = try XCTUnwrap(html.range(of: "</script>", range: start.upperBound..<html.endIndex))
         let json = String(html[start.upperBound..<end.lowerBound]).replacingOccurrences(of: "<\\/", with: "</")

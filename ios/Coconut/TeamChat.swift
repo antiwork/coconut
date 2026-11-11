@@ -440,12 +440,13 @@ enum LetterFace {
 }
 
 extension TeamRoom {
-    /// Who is in the chat: "3 people", or "3 people, 1 bot" when the team has bots. Nil while the list has no member.
+    /// Who is in the chat: "3 people", or "3 people, 1 bot" when the team has a bot that a teammate can ask. Nil while
+    /// the list has no member.
     var whoLine: String? {
         let people = memberList.count
         guard people > 0 else { return nil }
         let line = people == 1 ? "1 person" : "\(people) people"
-        let bots = botList.count
+        let bots = askableBots.count
         guard bots > 0 else { return line }
         return line + (bots == 1 ? ", 1 bot" : ", \(bots) bots")
     }

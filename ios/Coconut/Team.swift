@@ -55,8 +55,9 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     var showsInvite: Bool { status == .active && canInvite == true }
     var memberList: [TeamMember] { members ?? [] }
     var botList: [TeamRoomBot] { bots ?? [] }
-    /// The IDs of the bots of this Mac that are in the team.
-    var botsOfThisMac: Set<String> { Set(botList.compactMap { $0.thisMac == true ? $0.botId : nil }) }
+    /// The bots of the team that a teammate can ask, for the Team screen and the Chats list. The other bots in
+    /// `bots` are only the authors of the pages that people share.
+    var askableBots: [TeamRoomBot] { botList.filter(\.canBeAsked) }
 }
 
 struct TeamMember: Decodable, Identifiable, Equatable, Sendable {
@@ -80,6 +81,11 @@ struct TeamRoomBot: Decodable, Identifiable, Equatable, Sendable {
     var memberName: String? = nil
     var thisMac: Bool? = nil
     var botId: String? = nil
+
+    /// A teammate can ask this bot. A bot of a person is never such a bot: it is only the author of the pages that
+    /// the person shares. No bot is such a bot yet. A later change adds a mark for the bots of a Mac that runs Coconut
+    /// for a team only, and this rule then reads that mark.
+    var canBeAsked: Bool { false }
 }
 
 struct TeamSync: Decodable, Equatable, Sendable {

@@ -14,6 +14,8 @@ import WebKit
 struct DocumentPage {
     let document: BotDocument
     let meta: String
+    /// The quiet line under the meta line of a page that the person shares with a team, or nil.
+    var shared: String? = nil
     let content: String
     /// A web link that the person tapped. The view asks before it opens the link.
     let openLink: (URL) -> Void
@@ -53,7 +55,7 @@ struct DocumentPage {
     private func update(_ view: WKWebView, _ coordinator: Coordinator) {
         coordinator.openLink = openLink
         // A new version, another header or another appearance draws the page again, so the colors of a script follow.
-        let state = [document.id, String(document.version), meta, colorScheme == .dark ? "dark" : "light"]
+        let state = [document.id, String(document.version), meta, shared ?? "", colorScheme == .dark ? "dark" : "light"]
         guard coordinator.loaded != state else { return }
         coordinator.loaded = state
         // The libraries and the tokens run before the page, and the blocks after it. A user script of the app is
@@ -62,7 +64,7 @@ struct DocumentPage {
         scripts.removeAllUserScripts()
         for script in Self.scripts(diagrams: content.lowercased().contains("mermaid")) { scripts.addUserScript(script) }
         let markdown = !document.isPage
-        view.loadHTMLString(Self.html(title: document.title, meta: meta,
+        view.loadHTMLString(Self.html(title: document.title, meta: meta, shared: shared,
                                       content: markdown ? BotDocument.body(content) : content, markdown: markdown),
                             baseURL: nil)
     }
@@ -86,7 +88,7 @@ struct DocumentPage {
         }
     }
 
-    static func html(title: String, meta: String, content: String, markdown: Bool = false) -> String {
+    static func html(title: String, meta: String, shared: String? = nil, content: String, markdown: Bool = false) -> String {
         // A Markdown page travels as JSON text in a data block. "</" cannot end the block early.
         let body = markdown ? "<script type=\"application/json\" id=\"coconut-markdown\">"
             + ((try? String(data: JSONEncoder().encode(content), encoding: .utf8)) ?? "\"\"")
@@ -100,7 +102,7 @@ struct DocumentPage {
         frame-src 'none'; form-action 'none'; base-uri 'none'">
         <style>\(stylesheet)</style>
         </head><body>
-        <header><h1>\(escaped(title))</h1><p class="meta">\(escaped(meta))</p></header>
+        <header><h1>\(escaped(title))</h1><p class="meta">\(escaped(meta))</p>\(shared.map { "<p class=\"meta shared\">\(escaped($0))</p>" } ?? "")</header>
         <main>\(body)</main>
         </body></html>
         """
@@ -177,6 +179,7 @@ struct DocumentPage {
     .lead { font-size: 20px; line-height: 1.4; letter-spacing: -0.01em; }
     .meta, .note, small, figcaption { color: var(--text-2); font-size: var(--size-2); }
     .meta { margin: 0; }
+    .meta.shared { margin-top: 2px; }
     figcaption { margin-top: 6px; }
     .metric { font-size: var(--size-5); font-weight: 600; margin: 0 0 12px; }
     .delta { font-size: var(--size-2); font-weight: 400; color: var(--c1); }

@@ -113,8 +113,8 @@ A Mac with no person at it can join a team from a message, as `coconut pair <cod
 | `coconut team` | Prints the teams of this Mac: the name, the ID, the state, the admin, the members, the bots, and the sync error. `--json` prints the answer of the service. |
 | `coconut team join [--name <text>]` | Joins a team with the invite link on standard input. `--name` is the name of this Mac in the member list. Without it, the service uses "Member". |
 | `coconut team new-bot <name> [--home <path>]` | On a team-only Mac: declares a bot for the Hermes home that it stands for. See [A Mac without a person](#a-mac-without-a-person). |
-| `coconut team add-bot <bot> [--team <name or ID>]` | Adds a bot of this Mac to the team. `<bot>` is the ID or the name of the bot. Case does not matter. |
-| `coconut team remove-bot <bot> [--team <name or ID>]` | Removes a bot of this Mac from the team. |
+| `coconut team add-bot <bot> [--team <name or ID>]` | On a Mac for a team only: adds a bot of this Mac to the team. `<bot>` is the ID or the name of the bot. Case does not matter. On a person's Mac it prints how to share a page in the Library. |
+| `coconut team remove-bot <bot> [--team <name or ID>]` | On a Mac for a team only: removes a bot of this Mac from the team. On a person's Mac it prints how to share a page. |
 | `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team, and deletes its copy and its keys on this Mac. The name after `--confirm` chooses the team; `--team <ID>` is necessary only when two teams of this Mac have the same name. Without `--confirm`, it prints what a leave does and the exact command for each team. |
 
 - The invite link is a secret. The tool reads it only from standard input, and no output of the tool has it. In a terminal, the tool asks for the link and does not show it.
