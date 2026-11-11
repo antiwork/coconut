@@ -83,9 +83,10 @@ class ConfigTests(unittest.TestCase):
                        {'gateway': {'platforms': {'coconut': 'on'}}},
                        {'gateway': {'platforms': {'coconut': {'extra': 'team'}}}},
                        {'plugins': ['coconut']}, {'plugins': {'enabled': 'coconut'}}, {'gateway': []}):
-            for present in (True, False):
-                with self.subTest(config=config, present=present), self.assertRaises(Refused):
-                    with_team(config, CONFIG, BRIDGE, present)
+            with self.subTest(config=config), self.assertRaises(Refused):
+                with_team(config, CONFIG, BRIDGE, True)
+            # A disconnect finds nothing of Coconut there, so it changes nothing and refuses nothing.
+            self.assertEqual(with_team(config, CONFIG, BRIDGE, False), (None, []))
 
 
 class HalfStateTests(TeamOnlyMacs, unittest.TestCase):
@@ -119,7 +120,12 @@ class HalfStateTests(TeamOnlyMacs, unittest.TestCase):
             return team_chat.main([*arguments, '--data-dir', str(self.only.root)])
 
     def test_a_failed_connect_blocks_the_removal_and_a_second_run_finishes_it(self):
-        with self.edit(fail=True):
+        # The plan works, and the write fails.
+        def run(action, home, bridge):
+            if action == 'connect':
+                raise team_chat.Stop('Coconut could not read or write the config.')
+            return []
+        with mock.patch.object(team_chat, 'edit', side_effect=run):
             self.assertEqual(self.command('connect', 'Reporter', '--confirm'), 1)
         # The home may have a part of the change, so the bot cannot go, and it does not answer.
         self.assertEqual(self.flags(), (False, True))
@@ -128,9 +134,25 @@ class HalfStateTests(TeamOnlyMacs, unittest.TestCase):
             self.assertEqual(self.command('connect', 'Reporter', '--confirm'), 0)
         self.assertEqual(self.flags(), (True, True))
 
+    def test_a_guard_on_a_home_without_anything_of_coconut_goes_with_disconnect_chat(self):
+        for case in ('empty', 'foreign', 'deleted'):
+            with self.subTest(case=case):
+                self.call('PATCH', f'/v1/team/bots/{self.bot["id"]}', {'plugin': True})
+                if case == 'foreign':
+                    (self.home / 'plugins/coconut').mkdir(parents=True)
+                elif case == 'deleted':
+                    shutil.rmtree(self.home)
+                # No Hermes is needed: the home cannot have a change of Coconut.
+                with self.edit(fail=True):
+                    self.assertEqual(self.command('disconnect', 'Reporter'), 0)
+                self.assertEqual((self.flags(), self.edits), ((False, False), []))
+        self.assertTrue(self.call('DELETE', f'/v1/team/bots/{self.bot["id"]}')['removed'])
+
     def test_a_failed_disconnect_blocks_the_removal_and_a_second_run_finishes_it(self):
         with self.edit():
             self.command('connect', 'Reporter', '--confirm')
+        # The stand-in edit wrote nothing, so the home gets an entry of Coconut by hand.
+        (self.home / 'config.yaml').write_text('plugins:\n  enabled: [coconut]\n')
         with self.edit(fail=True):
             self.assertEqual(self.command('disconnect', 'Reporter'), 1)
         # The bot answers no more, but its home may still have the plugin.
@@ -140,7 +162,7 @@ class HalfStateTests(TeamOnlyMacs, unittest.TestCase):
             self.assertEqual(self.command('disconnect', 'Reporter'), 0)
             self.assertEqual(self.command('disconnect', 'Reporter'), 0)
         self.assertEqual(self.flags(), (False, False))
-        self.assertEqual(self.edits, ['connect', 'disconnect', 'disconnect', 'disconnect'])
+        self.assertEqual(self.edits, ['plan', 'connect', 'disconnect', 'disconnect', 'disconnect'])
         self.assertEqual(self.call('DELETE', f'/v1/team/bots/{self.bot["id"]}')['removed'], True)
 
 
@@ -267,6 +289,29 @@ class CommandTests(TeamOnlyMacs, unittest.TestCase):
         block = self.plugin_config()['gateway']['platforms']['coconut']
         self.assertEqual(block, {'home_channel': 'ops', 'extra': {'note': 'kept'}})
         self.assertEqual((self.home / 'config.yaml').read_bytes(), self.first_disconnect)
+
+    def test_a_home_that_is_not_coconuts_to_change_leaves_both_flags_and_the_bot_can_go(self):
+        config = (self.home / 'config.yaml').read_text()
+        for case in ('foreign plugin', 'full coconut', 'no config'):
+            with self.subTest(case=case):
+                if case == 'foreign plugin':
+                    (self.home / 'plugins/coconut').mkdir()
+                elif case == 'full coconut':
+                    (self.home / 'config.yaml').write_text(config + 'gateway:\n  platforms:\n    coconut:\n'
+                                                           '      enabled: true\n')
+                else:
+                    (self.home / 'config.yaml').unlink()
+                before = snapshot(self.home)
+                result = self.run_command('connect', 'Reporter', '--confirm')
+                self.assertEqual(result.status, 1, result.out)
+                self.assertIn('Coconut changed nothing' if case != 'full coconut' else 'Coconut did not change it',
+                              result.err)
+                self.assertEqual(snapshot(self.home), before)
+                self.assertEqual((self.record()['chat'], self.record()['plugin']), (False, False))
+                if case == 'foreign plugin':
+                    shutil.rmtree(self.home / 'plugins/coconut')
+                (self.home / 'config.yaml').write_text(config)
+        self.assertTrue(self.call('DELETE', f'/v1/team/bots/{self.bot["id"]}')['removed'])
 
     def test_a_mac_with_a_person_and_a_home_that_is_not_coconuts_are_refused(self):
         with mock.patch.object(team_chat.host, 'backend_module') as module:

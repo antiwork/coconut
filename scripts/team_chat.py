@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from shlex import quote as quoted
 import subprocess
@@ -95,6 +96,20 @@ def edit(action: str, home: str, bridge: Path) -> list[str]:
     return answer['changes']
 
 
+def may_have_coconut(home: str) -> bool:
+    """False when the home cannot have a change of connect-chat: no link of this Coconut, and a config.yaml that is
+    missing or does not have the word coconut, which each entry of Coconut has. Without the home, nothing is there."""
+    path = Path(home)
+    link = path / 'plugins/coconut'
+    plugin = host.ROOT / 'hermes_plugin/coconut'
+    if link.is_symlink() and os.path.normpath(os.path.join(link.parent, os.readlink(link))) == os.path.normpath(plugin):
+        return True
+    try:
+        return 'coconut' in (path / 'config.yaml').read_text(errors='replace')
+    except OSError:
+        return False
+
+
 def numbered(lines: list[str]) -> list[str]:
     return [f'{number}. {line}' for number, line in enumerate(lines, start=1)]
 
@@ -115,7 +130,11 @@ def connect(data: Path, argument: str, confirm: bool) -> list[str]:
                      f'{home}:', *numbered(changes)]
         return lines + [who, 'Coconut does not restart the Hermes gateway. You restart it after the change.',
                         f'To make the change, run: {command}']
-    # The record knows of the change before the home has it, so a removal waits also when a step fails below.
+    # The plan raises each refusal before the record changes, so a home that is not Coconut's to change leaves
+    # `plugin` as it was. Then the record knows of the change before the home has it, so a removal waits also when a
+    # write fails below. A home that changes between the plan and the write can still refuse here: `plugin` then
+    # stays, and disconnect-chat clears it, because it finds nothing of Coconut there.
+    edit('plan', home, bridge)
     call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'plugin': True})
     changes = edit('connect', home, bridge)
     call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': True})
@@ -131,11 +150,12 @@ def disconnect(data: Path, argument: str) -> list[str]:
     name, home = bot['name'], bot['home']
     # No new turn starts while the plugin goes away.
     call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': False})
-    changes = edit('disconnect', home, (data / 'gateway/bridge.json').resolve())
+    # A home that cannot have anything of Coconut needs no Hermes: the way out also works when Hermes is gone.
+    changes = edit('disconnect', home, (data / 'gateway/bridge.json').resolve()) if may_have_coconut(home) else []
     # Only a clean-up that worked lets the bot and Coconut go.
     call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'plugin': False})
     lines = ([f'Coconut took these changes away from the Hermes home {home}:', *numbered(changes)] if changes else
-             [f'The Hermes home {home} has no team chat of Coconut. Nothing changed there.'])
+             [f'The Hermes home {home} has nothing of the team chat of Coconut. Nothing changed there.'])
     return lines + [f'{name} no longer answers in the team chat.',
                     f'Next step: restart the Hermes gateway of {home} yourself, so that it unloads the plugin. Coconut '
                     'does not restart it.']

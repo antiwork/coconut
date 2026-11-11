@@ -40,7 +40,20 @@ class Refused(Exception):
 
 
 def with_team(config: dict, config_file: Path, bridge: str, present: bool) -> tuple[dict | None, list[str]]:
-    """The config with the team chat (present) or without it, and a line for each change. None when nothing changes."""
+    """The config with the team chat (present) or without it, and a line for each change. None when nothing changes.
+
+    A connect refuses a form that is not Coconut's to change. A disconnect never refuses one: such a form has nothing
+    of Coconut, so it leaves it as it is, and the guard of the bot can go (scripts/team_chat.py).
+    """
+    try:
+        return _with_team(config, config_file, bridge, present)
+    except Refused:
+        if present:
+            raise
+        return None, []
+
+
+def _with_team(config: dict, config_file: Path, bridge: str, present: bool) -> tuple[dict | None, list[str]]:
     def value(mapping, key, empty):
         found = mapping.get(key)
         return empty if found is None else found
@@ -121,16 +134,18 @@ def run(action: str, home: Path, bridge: str, folder: Path = PLUGIN) -> list[str
     present = action in ('plan', 'connect')
     write = action in ('connect', 'disconnect')
     config_file = home / 'config.yaml'
-    if not config_file.is_file():
+    linked = link_state(home, folder)
+    if present and not config_file.is_file():
         raise Refused(f'{home} has no config.yaml, so it is not the home of a Hermes profile. Coconut changed nothing.')
+    if present and linked == 'taken':
+        raise Refused(f'{home / "plugins" / NAME} is another plugin, not Coconut. Coconut changed nothing.')
     # Hermes checks some writes against the active home.
     os.environ['HERMES_HOME'] = str(home)
-    linked = link_state(home, folder)
-    if linked == 'taken':
-        raise Refused(f'{home / "plugins" / NAME} is another plugin, not Coconut. Coconut changed nothing.')
     if write:
         from native_settings import raw_config, save_config
-    changed, changes = with_team(raw_config(home) if write else read_only(home), config_file, bridge, present)
+    changed, changes = None, []
+    if config_file.is_file():
+        changed, changes = with_team(raw_config(home) if write else read_only(home), config_file, bridge, present)
     link = home / 'plugins' / NAME
     if present and linked == 'missing':
         changes.insert(0, f'Link {link} to {folder}.')
