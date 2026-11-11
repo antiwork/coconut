@@ -154,6 +154,19 @@ class TriggerTests(TeamTurnMacs, unittest.TestCase):
         self.sync()
         self.assertEqual(self.triggers(), [])
 
+    def test_ada_sees_the_bot_as_open_only_while_its_chat_is_connected(self):
+        def seen():
+            (bot,) = self.call('GET', '/v1/team/rooms', service=self.first)['rooms'][0]['bots']
+            return bot['open']
+        # TeamMentions.bots(of:) of the app offers a bot after @ only while `open` is true.
+        self.assertIs(seen(), True)
+        self.connect(chat=False)
+        self.sync()
+        self.assertIs(seen(), False)
+        self.connect(chat=True)
+        self.sync()
+        self.assertIs(seen(), True)
+
     def test_a_bot_without_its_chat_or_without_the_team_starts_nothing(self):
         self.connect(chat=False)
         self.send('@Reporter one', mentions=[self.mention])
@@ -445,6 +458,49 @@ class FailureTests(TeamTurnMacs, unittest.TestCase):
         status, text = self.refusal(self.call, 'DELETE', f'/v1/team/bots/{self.bot["id"]}')
         self.assertEqual(status, 409)
         self.assertIn('coconut team disconnect-chat Reporter', text)
+
+    def test_a_fault_in_a_turn_posts_the_notice_and_a_second_fault_stops_nothing(self):
+        named = self.trigger()
+        with mock.patch.object(self.only, '_team_turn', side_effect=ValueError('boom')), \
+                self.assertLogs('coconut.team_turns', logging.ERROR):
+            self.run_turns()
+        self.assertEqual(self.replies(), [(UNFINISHED, named['id'])])
+        self.assertEqual(self.triggers(), [])
+        # A fault of the notice too: the thread goes on with the next trigger.
+        self.trigger()
+        third = self.trigger()
+        self.serve(reply('Here it is.'))
+        calls = []
+
+        def first_fails(turn):
+            calls.append(turn)
+            if len(calls) == 1:
+                raise ValueError('boom')
+            return team_turns.TeamTurns._team_turn(self.only, turn)
+        say = self.only._team_say
+
+        def notice_fails(room, bot, trigger, part, text, reply_to=None):
+            if part == 'fault':
+                raise RuntimeError('relay down')
+            return say(room, bot, trigger, part, text, reply_to)
+        with mock.patch.object(self.only, '_team_turn', side_effect=first_fails), \
+                mock.patch.object(self.only, '_team_say', side_effect=notice_fails), \
+                self.assertLogs('coconut.team_turns', logging.ERROR):
+            self.run_turns()
+        self.assertEqual(self.replies()[-1], ('Here it is.', third['id']))
+        self.assertEqual(self.triggers(), [])
+
+    def test_a_trigger_that_waited_too_long_and_an_empty_reply_get_the_notice(self):
+        named = self.trigger()
+        self.only.team_store.clock = lambda: time.time() + team_store.TRIGGER_SECONDS + 1
+        gateway = self.serve(reply('never'))
+        self.run_turns()
+        self.assertEqual((self.replies(), gateway.turns), ([(UNFINISHED, named['id'])], []))
+        self.only.team_store.clock = time.time
+        second = self.trigger()
+        gateway.script = lambda turn: [{'kind': 'done', 'outcome': 'success'}]
+        self.run_turns()
+        self.assertEqual(self.replies()[-1], (UNFINISHED, second['id']))
 
     def test_a_mac_that_leaves_in_a_turn_stops_it_and_writes_nothing(self):
         self.trigger()

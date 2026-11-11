@@ -160,10 +160,15 @@ class TeamTurns:
                 return
             if turn is False:
                 continue
+            if turn.get('late'):
+                # The bot still answers there, so the person gets a notice and not silence.
+                self._team_notice(turn, 'late')
+                continue
             try:
                 ended = self._team_turn(turn)
             except Exception:
                 log.exception('coconut.team_turns room %s: the turn of the bot %s failed.', room[:8], bot)
+                self._team_notice(turn, 'fault')
                 ended = True
             if not ended:
                 # The service stops in the turn. The row keeps `started`, so the next start posts UNFINISHED.
@@ -188,12 +193,17 @@ class TeamTurns:
             share = dict(self.team_store.answering(room)).get(bot)
             record = self._team_bot(bot)
             fresh = entry is not None and self.team_store.clock() * 1000 - entry['at'] < TRIGGER_SECONDS * 1000
-            if (room_row is None or room_row['state'] != ACTIVE or message is None or not fresh or share is None
+            if (room_row is None or room_row['state'] != ACTIVE or message is None or share is None
                     or record is None or self.team_store.member(room, message['member']) is None):
+                # The message is gone, or the bot no longer answers there: nothing to answer, nobody to answer for.
                 self.team_store.drop_trigger(row['number'])
                 log.info('coconut.team_turns room %s: the entry %s no longer starts a turn of the bot %s.', room[:8],
                          row['entry'], bot)
                 return False
+            if not fresh:
+                # The trigger waited in the queue past TRIGGER_SECONDS.
+                self.team_store.drop_trigger(row['number'])
+                return {'late': True, 'room': room, 'bot': bot, 'entry': row['entry']}
             self.team_store.start_trigger(row['number'])
             context = self.team_store.context(room, share, message['first'], CONTEXT_MESSAGES)
             answered = self.team_store.message(room, message['reply_to']) if message['reply_to'] else None
@@ -231,6 +241,15 @@ class TeamTurns:
             reply.flush()
             reply.say(UNFINISHED)
         return True
+
+    def _team_notice(self, turn: dict, part: str) -> None:
+        """Post UNFINISHED as an answer to the trigger. A second fault here leaves a log line, so the thread goes
+        on with the next trigger."""
+        try:
+            self._team_say(turn['room'], turn['bot'], turn['entry'], part, UNFINISHED, reply_to=turn['entry'])
+        except Exception:
+            log.exception('coconut.team_turns room %s: the notice of the bot %s failed.', turn['room'][:8],
+                          turn['bot'])
 
     def _team_say(self, room: str, bot: str, trigger: str, part, text: str, reply_to: str | None = None) -> None:
         """Write one message of the bot into the chat. Nothing when the bot no longer answers there, for example after
@@ -321,6 +340,9 @@ class Reply:
             self.say(payload['text'])
         elif kind == 'completed':
             self.flush()
+            if self.count == 0:
+                # Hermes ended the turn without a word. The person asked, so the chat says so.
+                self.say(UNFINISHED)
         elif kind == 'failed':
             self.flush()
             self.say(UNFINISHED)
