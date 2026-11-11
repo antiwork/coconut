@@ -246,7 +246,7 @@ struct TeamChatView: View {
             VStack(spacing: 10) {
                 TeamFace(room: room, size: 68)
                 Text(room.name).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
-                Text("Messages here go to each person in \(room.name).")
+                Text(TeamChatEmptyLine.text(for: room))
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity).padding(.vertical, 45)

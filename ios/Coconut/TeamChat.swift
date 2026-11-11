@@ -445,8 +445,9 @@ enum LetterFace {
 extension TeamRoom {
     /// Who is in the chat: "3 people", or "3 people, 1 bot" when the team has bots. Nil while the list has no member.
     var whoLine: String? {
-        let people = memberList.count
-        guard people > 0 else { return nil }
+        guard !memberList.isEmpty else { return nil }
+        // A Mac without a person is a member, but no person.
+        let people = memberList.filter { !$0.isBotOnly }.count
         let line = people == 1 ? "1 person" : "\(people) people"
         let bots = botList.count
         guard bots > 0 else { return line }
@@ -466,5 +467,15 @@ enum TeamMentions {
     /// The `mentions` of a send: the `id` of each team bot that the text still names, one time each, in text order.
     static func ids(in text: String, selected: [SelectedBotMention], room: TeamRoom) -> [String] {
         BotMentions.recipients(in: text, selected: selected, bots: bots(of: room)).map(\.id)
+    }
+}
+
+/// The line under the name in an empty team chat.
+enum TeamChatEmptyLine {
+    /// One sentence, and a second one when the team has a bot that the person can ask (TeamMentions.bots). The
+    /// empty chat is the only place that tells of `@`.
+    static func text(for room: TeamRoom) -> String {
+        let line = "Messages here go to each person in \(room.name)."
+        return TeamMentions.bots(of: room).isEmpty ? line : line + " Type @ to ask a bot."
     }
 }

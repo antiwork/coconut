@@ -94,6 +94,9 @@ final class TeamChatFlowTests: XCTestCase {
         if let crew = env["COCONUT_TEAM_CREW"] {
             app.buttons["team-chat-\(crew)"].tap()
             XCTAssertTrue(element("team-chat-empty").waitForExistence(timeout: 10))
+            // The bot of the Mac without a person can answer, so the empty chat tells of @.
+            XCTAssertTrue(element("team-chat-empty").label.contains("Type @ to ask a bot."),
+                          element("team-chat-empty").label)
             shot("05a-iphone-empty-chat")
             back()
         }

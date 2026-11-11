@@ -67,8 +67,12 @@ struct TeamMember: Decodable, Identifiable, Equatable, Sendable {
     var color: String? = nil
     var admin: Bool? = nil
     var thisMac: Bool? = nil
+    /// True for a Mac that runs Coconut for a team only: no person is at it. An older service sends none, and none is
+    /// false.
+    var botOnly: Bool? = nil
 
     var id: String { member }
+    var isBotOnly: Bool { botOnly == true }
 }
 
 /// A bot that is in a team. `botId` is the ID of a bot of this Mac. A bot of another Mac has none.

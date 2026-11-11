@@ -471,6 +471,29 @@ final class TeamChatTests: XCTestCase {
         XCTAssertNil(room(people: 0, bots: 0).whoLine, "A team that is joining has no members yet.")
     }
 
+    func testAMacWithoutAPersonIsNoPersonInTheLine() throws {
+        let json = #"{"room": "r", "name": "Example Team", "state": "active", "members": ["#
+            + #"{"member": "m0", "name": "Ada", "bot_only": false}, {"member": "m1", "name": "Grace"}, "#
+            + #"{"member": "m2", "name": "Team Mac", "bot_only": true}], "bots": ["#
+            + #"{"id": "t-r-1", "name": "Planner", "open": true}, {"id": "t-r-2", "name": "Scribe", "open": true}]}"#
+        let room = try APIJSON.decoder().decode(TeamRoom.self, from: Data(json.utf8))
+        XCTAssertEqual(room.memberList.map(\.isBotOnly), [false, false, true], "A missing mark is false.")
+        XCTAssertEqual(room.whoLine, "2 people, 2 bots")
+    }
+
+    func testTheEmptyChatTellsOfTheAtOnlyWhenABotCanAnswer() {
+        let open = TeamRoomBot(id: "t-r-1", name: "Planner", open: true)
+        let own = TeamRoomBot(id: "t-r-2", name: "Writer", thisMac: true, botId: "bot-writer")
+        func room(_ bots: [TeamRoomBot]) -> TeamRoom {
+            TeamRoom(room: "r", name: "Example Team", state: "active", bots: bots)
+        }
+        XCTAssertEqual(TeamChatEmptyLine.text(for: room([open, own])),
+                       "Messages here go to each person in Example Team. Type @ to ask a bot.")
+        XCTAssertEqual(TeamChatEmptyLine.text(for: room([own])), "Messages here go to each person in Example Team.",
+                       "A bot of a person answers no teammate, so the line tells of no @.")
+        XCTAssertEqual(TeamChatEmptyLine.text(for: room([])), "Messages here go to each person in Example Team.")
+    }
+
     // MARK: Names of team bots with @
 
     /// Planner and Reporter answer each member (bots of a Mac without a person). Writer is a bot of this person, and
