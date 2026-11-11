@@ -451,8 +451,8 @@ A task that a guard holds for more than an hour shows: Coconut logs a warning on
 A Mac can run a production Hermes agent with no person at it and no Coconut. To let that agent publish pages to a
 team, such a Mac runs the service with `--team-only` or `COCONUT_MODE=team` (`backend/coconut/team_only.py`). The
 service then keeps only the team rooms and the pages of the bots that the Mac declares. It imports nothing of Hermes and
-nothing of the full service, changes no Hermes file, starts no gateway and pairs no phone. A full install's data folder
-stops its start. See [team-only mode](team-log.md#team-only-mode).
+nothing of the full service, changes no Hermes file, starts no gateway and pairs no phone. A full service and a
+team-only service never start on the data folder of the other. See [team-only mode](team-log.md#team-only-mode).
 
 ## Transport and future providers
 

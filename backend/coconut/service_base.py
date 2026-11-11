@@ -6,6 +6,7 @@ service.py and the modules of the full runtime.
 """
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timezone
 import fcntl
 import json
@@ -59,6 +60,51 @@ def take_data_folder(data_dir: str | Path) -> tuple[Path, IO]:
         process_lock.close()
         raise ServiceError(409, 'Another Coconut service already owns this data directory.')
     return root, process_lock
+
+
+# A team-only service (team_only.py) writes this mark in its store at its first start. Only the mark tells the mode of a
+# folder: a folder that a team-only service opened is its folder, also before it has a bot or a room.
+TEAM_MODE = 'team'
+FULL_MODE = 'full'
+MODE_MARK = '''CREATE TABLE IF NOT EXISTS service_mode (mode TEXT PRIMARY KEY);
+INSERT OR IGNORE INTO service_mode (mode) VALUES ('team');'''
+# The tables that only a full install fills.
+FULL_INSTALL_TABLES = ('devices', 'tasks', 'messages', 'profiles', 'bots')
+WRONG_FOLDER = {
+    TEAM_MODE: 'This data folder belongs to a full Coconut install, so the team-only service does not start here. Use '
+               'another data folder.',
+    FULL_MODE: 'This data folder belongs to a team-only Coconut service, so the full service does not start here. Use '
+               'another data folder.',
+}
+
+
+def folder_mode(db) -> str | None:
+    """The mode of the service that owns a store: TEAM_MODE with the mark, FULL_MODE with the data of a full install
+    (a phone, a task, a message, a Hermes profile or a bot), or None for a store that no service used."""
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'service_mode' in tables and db.execute('SELECT 1 FROM service_mode WHERE mode=?', (TEAM_MODE,)).fetchone():
+        return TEAM_MODE
+    if any(db.execute(f'SELECT 1 FROM {table} LIMIT 1').fetchone() for table in FULL_INSTALL_TABLES if table in tables):
+        return FULL_MODE
+    return None
+
+
+def check_data_folder(root: Path, process_lock: IO, mode: str) -> None:
+    """Stop the start of a service of `mode` on the folder of the other mode, before the service writes anything.
+    The full service and the refuse mode would read the bot records of a team-only Mac that they do not understand,
+    and a team-only service never takes over a full install. The caller holds the service lock. A refusal releases it."""
+    path = root / 'coconut.sqlite3'
+    if not path.exists():
+        return
+    try:
+        with contextlib.closing(sqlite3.connect(path, timeout=10)) as db:
+            found = folder_mode(db)
+    except BaseException:
+        release_data_folder(process_lock)
+        raise
+    if found is not None and found != mode:
+        release_data_folder(process_lock)
+        raise ServiceError(409, WRONG_FOLDER[mode], code='data_folder_mode')
 
 
 def release_data_folder(process_lock: IO) -> None:

@@ -37,18 +37,14 @@ import threading
 
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
 from .gateway_bridge import GatewayBridge
-from .service_base import (ServiceError, encoded, now, open_store, release_data_folder, require_text,
-                           take_data_folder, uid)
+from .service_base import (MODE_MARK, TEAM_MODE, ServiceError, check_data_folder, encoded, now, open_store,
+                           release_data_folder, require_text, take_data_folder, uid)
 from .service_restart import ServiceRestart
 from .team import SCHEMA as TEAM_SCHEMA, Team, member_profile
 from .team_store import unicode_text
 
-MODE = 'team'
+MODE = TEAM_MODE
 REFUSAL = 'This Mac runs Coconut for a team only, so it does not serve this request.'
-# The tables that only a full install fills. A team-only service never takes such a data folder.
-FULL_INSTALL_TABLES = ('devices', 'tasks', 'messages', 'profiles')
-FULL_INSTALL = ('This data folder belongs to a full Coconut install, so the team-only service does not start here. Use '
-                'another data folder.')
 MAX_HOME = 4096
 HOME = 'Give the Hermes home of the bot as a full path that starts with /.'
 TEAM_PAGE = ('This Mac runs Coconut for a team only, so no person reads a page here. Save the page with audience '
@@ -58,16 +54,6 @@ UNKNOWN_HOME = ('This Hermes home is not the home of a bot of this Mac. Declare 
 NO_BOT = {'name': None, 'avatar': '', 'color': ''}
 COMMIT = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
 PROJECT = Path(__file__).resolve().parents[2]
-
-
-def full_install(db) -> bool:
-    """True when the store has the data of a full install: a phone, a task, a message, a Hermes profile, or a bot that
-    this mode did not declare."""
-    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    if any(db.execute(f'SELECT 1 FROM {table} LIMIT 1').fetchone() for table in FULL_INSTALL_TABLES if table in tables):
-        return True
-    return 'bots' in tables and db.execute(
-        "SELECT 1 FROM bots WHERE json_extract(data, '$.home') IS NULL LIMIT 1").fetchone() is not None
 
 
 def checked_home(value) -> str:
@@ -122,18 +108,21 @@ class TeamOnlyService(Documents, Team):
 
     def __init__(self, data_dir):
         self.root, self.process_lock = take_data_folder(data_dir)
-        self.db = None
+        check_data_folder(self.root, self.process_lock, TEAM_MODE)
         try:
             self.db = open_store(self.root, timeout=10)
-            if full_install(self.db):
-                raise ServiceError(409, FULL_INSTALL)
+        except BaseException:
+            release_data_folder(self.process_lock)
+            raise
+        try:
+            # The mark makes this folder the folder of a team-only service (service_base.check_data_folder).
+            self.db.executescript(MODE_MARK)
             # The same tables as in Service, so the team modules and Documents read them as on a full Mac.
             self.db.execute('CREATE TABLE IF NOT EXISTS bots (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
             self.db.executescript(DOCUMENTS_SCHEMA)
             self.db.executescript(TEAM_SCHEMA)
         except BaseException:
-            if self.db is not None:
-                self.db.close()
+            self.db.close()
             release_data_folder(self.process_lock)
             raise
         # The code that runs: a `git pull` while it runs changes the checkout, not this process.

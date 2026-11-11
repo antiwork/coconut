@@ -27,8 +27,8 @@ from .native_conversation import reaction_only_turn
 from .profiles import HermesProfiles, ProfileError, profile_id
 from .state_sync import READ_INDEXES, StateSync, index_exchange_audience
 # service_base holds what the team-only service shares with this one. The names stay importable from here.
-from .service_base import (ServiceError, encoded, now, open_store, release_data_folder, require_text,
-                           take_data_folder, uid)
+from .service_base import (FULL_MODE, ServiceError, check_data_folder, encoded, now, open_store, release_data_folder,
+                           require_text, take_data_folder, uid)
 
 
 class YieldForDecision(RuntimeError):
@@ -198,6 +198,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                  hermes_home: str | Path | None = None):
         """hermes_home is the person's Hermes home. Each of its profiles is a bot (bot_profiles)."""
         self.root, self.process_lock = take_data_folder(data_dir)
+        check_data_folder(self.root, self.process_lock, FULL_MODE)
         self.files = self.root / 'artifacts'
         self.files.mkdir(exist_ok=True, mode=0o700)
         self.provider = provider

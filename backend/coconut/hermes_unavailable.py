@@ -12,7 +12,7 @@ import threading
 from .hermes_runtime import public
 from .hermes_setup import HermesSetup
 from .service import ServiceError, device_for_token, migrate_device_peers, now, pair_device
-from .service_base import open_store, release_data_folder, take_data_folder
+from .service_base import FULL_MODE, check_data_folder, open_store, release_data_folder, take_data_folder
 from .service_restart import ServiceRestart
 
 # The same tables as in Service. A later start with Hermes reads them unchanged.
@@ -37,6 +37,8 @@ class UnavailableService(HermesSetup):
 
     def __init__(self, data_dir, hermes: dict):
         self.root, self.process_lock = take_data_folder(data_dir)
+        # The tables of this mode are those of Service, so it takes only a folder that Service can take.
+        check_data_folder(self.root, self.process_lock, FULL_MODE)
         self.hermes_status = public(hermes)
         self.lock = threading.Lock()
         self.db = open_store(self.root, timeout=10)

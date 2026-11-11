@@ -21,8 +21,8 @@ from unittest import mock
 from uuid import uuid4
 
 from coconut import team_only
-from coconut.service_base import ServiceError
-from coconut.team_only import FULL_INSTALL, TEAM_PAGE, TeamOnlyService
+from coconut.service_base import FULL_MODE, TEAM_MODE, WRONG_FOLDER, ServiceError
+from coconut.team_only import TEAM_PAGE, TeamOnlyService
 from team_fakes import FakeHelper, TeamMacs
 
 PAGE = dict(key='weekly-report', title='Weekly report', format='markdown', summary='3 open tasks',
@@ -309,12 +309,12 @@ class FolderTests(unittest.TestCase):
         service.close()
         with self.assertRaises(ServiceError) as refused:
             TeamOnlyService(self.data)
-        self.assertEqual((refused.exception.status, str(refused.exception)), (409, FULL_INSTALL))
+        self.assertEqual((refused.exception.status, str(refused.exception)), (409, WRONG_FOLDER[TEAM_MODE]))
         # The refusal releases the lock, so the full service starts again.
         Service(self.data, FixtureProvider(self.data), start_workers=False).close()
 
     def test_a_folder_with_a_paired_phone_is_refused(self):
-        TeamOnlyService(self.data).close()
+        self.data.mkdir()
         with sqlite3.connect(self.data / 'coconut.sqlite3') as database:
             database.execute('CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, token_hash TEXT UNIQUE NOT '
                              'NULL, created_at TEXT NOT NULL, peer_key TEXT)')
@@ -322,7 +322,43 @@ class FolderTests(unittest.TestCase):
         database.close()
         with self.assertRaises(ServiceError) as refused:
             TeamOnlyService(self.data)
-        self.assertEqual(str(refused.exception), FULL_INSTALL)
+        self.assertEqual(str(refused.exception), WRONG_FOLDER[TEAM_MODE])
+
+    def full_service(self):
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service
+        return Service(self.data, FixtureProvider(self.data), start_workers=False)
+
+    def refused(self, start) -> ServiceError:
+        with self.assertRaises(ServiceError) as refused:
+            start()
+        self.assertEqual((refused.exception.status, str(refused.exception)), (409, WRONG_FOLDER[FULL_MODE]))
+        return refused.exception
+
+    def test_the_full_service_and_the_refuse_mode_refuse_a_team_only_folder(self):
+        from coconut.hermes_unavailable import UnavailableService
+        service = TeamOnlyService(self.data)
+        service.team_request('POST', '/v1/team/bots', {'name': 'Reporter', 'home': '/tmp/example-hermes'})
+        service.close()
+        before = (self.data / 'coconut.sqlite3').read_bytes()
+        self.refused(self.full_service)
+        self.refused(lambda: UnavailableService(self.data, {'status': 'missing', 'version': None, 'reason': 'None.'}))
+        # A refusal writes nothing and releases the lock, so the team-only service starts again.
+        self.assertEqual((self.data / 'coconut.sqlite3').read_bytes(), before)
+        self.assertFalse((self.data / 'artifacts').exists())
+        TeamOnlyService(self.data).close()
+
+    def test_a_team_only_folder_without_a_bot_or_a_room_is_still_a_team_only_folder(self):
+        # The service wrote its mark at its first start, and it keeps its bridge token and its team folder there. One
+        # rule for each folder keeps the two refusals simple: the person uses another data folder.
+        TeamOnlyService(self.data).close()
+        self.refused(self.full_service)
+
+    def test_a_new_folder_takes_either_mode(self):
+        TeamOnlyService(self.data).close()
+        other = Path(self.temp.name) / 'other'
+        self.data = other
+        self.full_service().close()
 
     def test_a_team_only_folder_starts_again(self):
         service = TeamOnlyService(self.data)
