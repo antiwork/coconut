@@ -1,5 +1,6 @@
 """Documents of the bots: the page rules, the end dates, the tools of a gateway turn and the routes of the phone."""
 from datetime import datetime, timedelta, timezone
+import json
 import tempfile
 import threading
 import time
@@ -219,23 +220,25 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual(sorted(d['title'] for d in self.service.documents()['documents']),
                          ['Desk signups', 'Signups'])
 
-    def test_the_audience_of_a_save_of_a_bot(self):
-        # "team" needs a team. test_team_pages.py covers what the team then sees.
-        with self.assertRaisesRegex(ServiceError, 'shared with no team'):
-            self.save(audience='team')
+    def test_a_bot_cannot_share_a_page_and_a_save_keeps_the_shares(self):
+        # Only the person shares a page (test_team_pages.py). Each audience gets the same error, so the bot saves
+        # again without it, and the tool has no such argument.
+        self.assertNotIn('audience', documents.SAVE_SCHEMA['parameters']['properties'])
+        for audience in ('team', 'private', 'everyone', ''):
+            with self.subTest(audience=audience), self.assertRaises(ServiceError) as refused:
+                self.save(audience=audience)
+            self.assertEqual((refused.exception.status, str(refused.exception)), (400, documents.BOT_SHARE))
+        self.assertEqual(self.service.documents()['documents'], [])
         self.save()
         self.assertEqual(self.tool('read_document', {})['documents'][0]['audience'], 'private')
+        listed = self.service.documents()['documents'][0]
+        self.assertEqual((listed['audience'], listed['teams']), ('private', []))
+        # A share of the person makes the page a team page. A save of the bot keeps it so.
         with self.service.transaction():
-            self.service.team_store.share('a' * 64, self.bot['id'], 'b' * 32)
-        self.save(audience='team')
-        # A save without the field keeps the audience.
-        self.assertEqual(self.save(content='# Signups\n\n430 today.')['version'], 3)
+            self.service.db.execute('INSERT INTO team_page_shares (room, document) VALUES (?, ?)', ('a' * 64, listed['id']))
+        self.assertEqual(self.save(content='# Signups\n\n430 today.')['version'], 2)
         self.assertEqual(self.tool('read_document', {'key': 'signups-daily'})['audience'], 'team')
-        self.assertEqual(self.service.documents()['documents'][0]['audience'], 'team')
-        self.save(audience='private')
-        self.assertNotIn('audience', self.service.documents()['documents'][0])
-        with self.assertRaisesRegex(ServiceError, 'audience must be private or team'):
-            self.save(audience='everyone')
+        self.assertNotIn('audience', json.loads(self.service.db.execute('SELECT data FROM documents').fetchone()[0]))
 
     def test_a_temporary_document_leaves_the_library_after_its_end(self):
         ends = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
@@ -752,19 +755,19 @@ class OutsideTurnPageTests(unittest.TestCase):
         self.assertEqual(self.save(self.bot, content='4 tasks are open.')['version'], 2)
         self.assertEqual((self.service._all('tasks'), self.service._all('messages')), ([], []))
 
-    def test_a_page_for_the_team_outside_a_turn_needs_a_shared_bot(self):
-        with self.assertRaisesRegex(ServiceError, 'shared with no team') as refused:
+    def test_a_bot_outside_a_turn_cannot_share_a_page(self):
+        with self.assertRaises(ServiceError) as refused:
             self.save(self.bot, audience='team')
-        self.assertEqual(refused.exception.status, 409)
+        self.assertEqual((refused.exception.status, str(refused.exception)), (400, documents.BOT_SHARE))
+        self.save(self.bot)
+        document = self.service._document_of_key(self.bot['id'], 'weekly-report')
         with self.service.transaction():
-            self.service.team_store.share('room-1', self.bot['id'], 'entry-1')
+            self.service.db.execute('INSERT INTO team_page_shares (room, document) VALUES (?, ?)', ('a' * 64, document['id']))
+        # A new version of a shared page wakes the sync, which sends it to the team.
         with patch.object(self.service, 'team_wake') as wake:
-            self.assertEqual(self.save(self.bot, audience='team')['status'], 'saved')
+            self.assertEqual(self.save(self.bot, content='4 tasks are open.')['status'], 'saved')
         wake.assert_called()
         self.assertEqual(self.tool(self.bot, 'read_document', {'key': 'weekly-report'})['audience'], 'team')
-        # The other bot is shared with no team.
-        with self.assertRaisesRegex(ServiceError, 'shared with no team'):
-            self.save(self.other, audience='team')
 
     def test_a_home_that_is_not_the_profile_of_a_bot_gets_a_clear_refusal(self):
         for name, arguments in (('read_document', {}), ('delete_document', {'key': 'weekly-report'})):

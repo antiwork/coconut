@@ -1,11 +1,20 @@
 """The bots and the pages that a Mac shares with its teams (docs/team-log.md, "Bots and pages").
 
-The person shares a bot of this Mac with a room (`POST /v1/team/rooms/<room>/bots`). The Mac then keeps one kept
-`bot` entry for the bot in the log of the room, and one kept `page` entry for each document of the bot with the
-audience "team". A save changes only the document and calls team_wake, because a save holds a transaction and no call
-to the relay or the helper holds the lock of the service. The sync pass then makes the log equal to what this Mac
-wants to share (TeamPages._team_publish). It derives both sides each time, from the bots, the documents and the own
-entries of the store, so it keeps no second copy of that state.
+A Mac has two ways to share, one for each kind of Mac:
+
+- A person's Mac (Service): the bots are the person's. The person shares a page with a team by one act on the page
+  (`PUT /v1/team/rooms/<room>/pages/<document>`), and stops with `DELETE` on the same path. The bot of the page then
+  needs an author entry in the room: its share row comes with the first shared page of the bot there and goes with the
+  last one (TeamStore.share_page and stop_page). A bot cannot share: a save that names an audience gets an error
+  (Documents._page_audience).
+- A Mac that runs Coconut for a team only (team_only.py): its bots are the team's. A tool shares a bot with a room
+  (`POST /v1/team/rooms/<room>/bots`), and each page of the bot with the audience "team" goes to each room of the bot.
+
+The Mac keeps one kept `bot` entry for each bot in the log of the room, and one kept `page` entry for each shared
+document. A save or a share changes only the store and calls team_wake, because it holds a transaction and no call to
+the relay or the helper holds the lock of the service. The sync pass then makes the log equal to what this Mac wants
+to share (TeamPages._team_publish). It derives both sides each time, from the bots, the documents, the shares and the
+own entries of the store, so it keeps no second copy of that state.
 
 The Library of the phone also shows the team pages of the other Macs (team_library and team_page). TeamStore keeps
 the rows that it reads.
@@ -31,8 +40,14 @@ WIDEST_AT = '0000-00-00T00:00:00.000000Z'
 # The ID that the phone gets for a team page or a team bot: "t-", the room ID, "-", the entry ID. It is unique for
 # each entry of each room and safe in a URL path. The ID of a local document is a UUID, which never starts with "t".
 TEAM_ID = re.compile(r't-([a-f0-9]{64})-([a-f0-9]{32})')
-# The longest bot ID that a share takes, so a long value does not reach SQLite. A bot ID of this Mac is a UUID.
+# The longest bot ID or document ID that a share takes, so a long value does not reach SQLite. Each is a UUID.
 MAX_BOT_ID = 200
+# The answer of the routes of a bot share on a person's Mac. An app of today still shows "Add one of your bots", and
+# `coconut team add-bot` prints the same text.
+PERSONAL_BOTS = ('The bots of this Mac stay yours, so a team does not get them. To share a page with the team, open it '
+                 'in the Library of the Coconut app.')
+NO_PAGE_SHARE = ('This Mac runs Coconut for a team only, so each page of a bot goes to the teams of the bot. Save the '
+                 'page with audience "team".')
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +94,12 @@ def payload_problem(fields: dict) -> str | None:
         return (f'The page is too large for the team: it needs {size} bytes, and the limit is {MAX_PAYLOAD}. '
                 'Keep less data in the page.')
     return None
+
+
+def page_audience(teams: list[dict]) -> dict:
+    """The fields of a document of this Mac about its teams: `teams` (each active room of the page, as `room` and
+    `name`), and `audience` for an app of today, which reads only that field."""
+    return {'audience': 'team' if teams else 'private', 'teams': teams}
 
 
 def team_document(row: dict) -> dict:
@@ -129,9 +150,12 @@ class TeamPages:
         self._team_refusals: dict[str, dict[str, dict]] = {}
 
     def team_share(self, room_id: str, data: dict) -> dict:
-        """Share a bot of this Mac with a room. The next pass writes its `bot` entry and its team pages."""
+        """Share a bot of a Mac that runs Coconut for a team only with a room. The next pass writes its `bot` entry and
+        its team pages. On a person's Mac, the person shares a page and never a bot (team_share_page)."""
         from .service_base import ServiceError
         from .team_sync import INACTIVE, TEAM_EVENT
+        if self.library_reader:
+            raise ServiceError(409, PERSONAL_BOTS)
         room = self._team_room(room_id)
         if room['state'] != ACTIVE:
             raise ServiceError(409, INACTIVE[room['state']])
@@ -152,14 +176,125 @@ class TeamPages:
         return self._team_answer(room_id)
 
     def team_unshare(self, room_id: str, bot_id: str) -> dict:
-        """Stop sharing a bot with a room. The next pass replaces its entries with `delete` entries."""
+        """Stop sharing a bot of a Mac that runs Coconut for a team only with a room. The next pass replaces its entries
+        with `delete` entries. On a person's Mac the author entry of a bot goes with its last shared page."""
+        from .service_base import ServiceError
         from .team_sync import TEAM_EVENT
+        if self.library_reader:
+            raise ServiceError(409, PERSONAL_BOTS)
         self._team_room(room_id)
         with self.transaction():
             if self.team_store.unshare(room_id, bot_id):
                 self._event(TEAM_EVENT, {'team': room_id})
         self.team_wake()
         return self._team_answer(room_id)
+
+    def team_share_page(self, room_id: str, document_id: str) -> dict:
+        """PUT /v1/team/rooms/<room>/pages/<document>: the person shares a page of a bot of this Mac with a room. The
+        page goes to the room with its bot as the author, and so does each later version. A second share changes
+        nothing. The next pass writes the entries."""
+        from .documents import expired
+        from .service_base import ServiceError
+        from .team_sync import INACTIVE
+        if not self.library_reader:
+            raise ServiceError(409, NO_PAGE_SHARE)
+        self._team_room(room_id)
+        with self.transaction():
+            # The room and the page are checked in the transaction of the share, so neither can go in between.
+            room = self.team_store.room(room_id)
+            if room is None:
+                raise ServiceError(404, 'This Mac is not in this team.')
+            if room['state'] != ACTIVE:
+                raise ServiceError(409, INACTIVE[room['state']])
+            document = self._team_document(document_id)
+            bot = self._team_bot(document['bot_id'])
+            if bot is None or bot.get('_deleted') or expired(document, self._now()):
+                raise ServiceError(404, 'Document was not found.')
+            if bot.get('archived'):
+                raise ServiceError(409, 'The bot of this page is archived. Restore the bot, then share the page.')
+            content = self.db.execute('SELECT content FROM document_versions WHERE document_id=? AND version=?',
+                                      (document['id'], document['version'])).fetchone()
+            problem = payload_problem(page_entry(dict(WIDEST, key=document['key'], title=document['title'],
+                                                      format=document['format'], summary=document.get('summary')),
+                                                 content[0] if content else '', WIDEST_BOT))
+            if problem:
+                raise ServiceError(413, f'Coconut did not share the page. {problem}')
+            self._team_page_events(room_id, document, *self.team_store.share_page(
+                room_id, document['id'], bot['id'], token_hex(16)))
+            answer = self._team_shared_document(document)
+        self.team_wake()
+        return {'document': answer}
+
+    def team_stop_page(self, room_id: str, document_id: str) -> dict:
+        """DELETE /v1/team/rooms/<room>/pages/<document>: the person stops sharing a page with a room. The next pass
+        removes the page from the room, and the author entry of its bot when the bot has no other shared page there.
+        A stop of a page that the room does not have changes nothing and answers as a stop that worked."""
+        from .service_base import ServiceError
+        if not self.library_reader:
+            raise ServiceError(409, NO_PAGE_SHARE)
+        self._team_room(room_id)
+        with self.transaction():
+            document = self._team_document(document_id)
+            self._team_page_events(room_id, document, *self.team_store.stop_page(room_id, document['id'],
+                                                                                document['bot_id']))
+            answer = self._team_shared_document(document)
+        self.team_wake()
+        return {'document': answer}
+
+    def _team_document(self, document_id) -> dict:
+        """A document of this Mac for a share or a stop. A team page of another Mac is not one. The caller holds the
+        transaction."""
+        from .service_base import ServiceError
+        row = None
+        if unicode_text(document_id) and 0 < len(document_id) <= MAX_BOT_ID:
+            row = self.db.execute('SELECT data FROM documents WHERE id=?', (document_id,)).fetchone()
+        if row is None:
+            raise ServiceError(404, 'Document was not found.')
+        return json.loads(row[0])
+
+    def _team_page_events(self, room_id: str, document: dict, page: bool, bot: bool) -> None:
+        """The events of a share or a stop: the Library shows the teams of a page, and the Team screen shows the bots
+        of a team. A share or a stop that changes nothing adds no event. The caller holds the transaction."""
+        from .team_sync import TEAM_EVENT
+        if page:
+            self._event('document.updated', {'id': document['id'], 'team': room_id})
+        if bot:
+            self._event(TEAM_EVENT, {'team': room_id})
+
+    def _team_shared_document(self, document: dict) -> dict:
+        """A document as GET /v1/documents lists it, with its teams. The caller holds the service lock, or it is a read
+        view with its own connection, so the store of the connection reads the shares."""
+        return dict(document, **page_audience(TeamStore(self.db).shared_pages().get(document['id'], [])))
+
+    def _team_forget_page(self, document: dict) -> None:
+        """Remove the shares of a document that goes. The author entry of its bot goes with its last shared page. The
+        caller holds the transaction."""
+        rooms = self.team_store.rooms_of_page(document['id'])
+        for room in rooms:
+            self._team_page_events(room, document, *self.team_store.stop_page(room, document['id'],
+                                                                             document['bot_id']))
+        if rooms:
+            self.team_wake()
+
+    def _team_migrate_page_shares(self) -> None:
+        """The one step from the bots that a person shared to the pages that a person shares, on a person's Mac.
+
+        Before, a bot that the person added to a team sent each page with the audience "team" to that team. Each such
+        page stays shared with each of these teams, with the same entry IDs, so the log needs no new write. Then the
+        audience leaves the document, because only a share makes a page a team page now. A bot without a shared page
+        loses its share row, and the next pass replaces its `bot` entry with a `delete` entry. After its first run the
+        step finds nothing to do. The caller holds the transaction.
+        """
+        for (data,) in self.db.execute("SELECT data FROM documents WHERE json_extract(data, '$.audience') IS NOT NULL"
+                                       ).fetchall():
+            document = json.loads(data)
+            if document.pop('audience') == 'team':
+                for room in self.team_store.rooms_of(document['bot_id']):
+                    self.db.execute('INSERT OR IGNORE INTO team_page_shares (room, document) VALUES (?, ?)',
+                                    (room, document['id']))
+            self._put('documents', document)
+        for room, bot in self.db.execute('SELECT room, bot FROM team_shares').fetchall():
+            self.team_store.drop_idle_bot(room, bot)
 
     def _team_bot(self, bot_id: str) -> dict | None:
         row = self.db.execute('SELECT data FROM bots WHERE id=?', (bot_id,)).fetchone()
@@ -256,9 +391,17 @@ class TeamPages:
         shares = {bot_id: entry for bot_id, (entry, _) in live.items()}
         bots = {bot_id: bot for bot_id, (_, bot) in live.items()}
         current = self._now()
-        documents = [document for document in (json.loads(row[0]) for row in self.db.execute(
-            "SELECT data FROM documents WHERE json_extract(data, '$.audience')='team'"))
-            if document['bot_id'] in bots and not expired(document, current)]
+        if self.library_reader:
+            rows = self.db.execute('''SELECT d.data FROM documents d JOIN team_page_shares s ON s.document=d.id
+                WHERE s.room=?''', (room_id,))
+        else:
+            rows = self.db.execute("SELECT data FROM documents WHERE json_extract(data, '$.audience')='team'")
+        documents = [document for document in (json.loads(row[0]) for row in rows)
+                     if document['bot_id'] in bots and not expired(document, current)]
+        if self.library_reader:
+            # On a person's Mac a bot is the author of its shared pages, so its entry stays only while one shows.
+            authors = {document['bot_id'] for document in documents}
+            bots = {bot_id: bot for bot_id, bot in bots.items() if bot_id in authors}
         entries = self.team_store.page_entries(room_id)
         added = {document['id']: token_hex(16) for document in documents if document['id'] not in entries}
         written = self.team_store.written(room_id, room['member'])

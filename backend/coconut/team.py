@@ -17,8 +17,11 @@ error texts are for a person, because the app shows them.
 - `POST /v1/team/join` with `{link, member_name, avatar, color}`: join a room.
 - `DELETE /v1/team/rooms/<room>`: leave the room, and delete its copy and its keys on this Mac.
 - `POST /v1/team/sync`: read each room from the relay now, and return the rooms.
-- `POST /v1/team/rooms/<room>/bots` with `{bot_id}`: share a bot of this Mac with the room (team_pages.py).
-- `DELETE /v1/team/rooms/<room>/bots/<bot_id>`: stop sharing the bot with the room.
+- `PUT /v1/team/rooms/<room>/pages/<document>`: the person shares a page of this Mac with the room (team_pages.py).
+- `DELETE /v1/team/rooms/<room>/pages/<document>`: the person stops sharing the page with the room.
+- `POST /v1/team/rooms/<room>/bots` with `{bot_id}`: share a bot with the room, only on a Mac that runs Coconut for a
+  team only. A person's Mac answers 409, because its bots stay the person's.
+- `DELETE /v1/team/rooms/<room>/bots/<bot_id>`: stop sharing the bot with the room, with the same rule.
 - The routes of the Team chat under `/v1/team/rooms/<room>/messages` and `/v1/team/rooms/<room>/read`
   (team_messages.py).
 
@@ -265,6 +268,10 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
             return self.team_profile(parts[1], data)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'invites' and method == 'POST':
             return self.team_invite(parts[1], data)
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'pages' and method == 'PUT':
+            return self.team_share_page(parts[1], parts[3])
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'pages' and method == 'DELETE':
+            return self.team_stop_page(parts[1], parts[3])
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'bots' and method == 'POST':
             return self.team_share(parts[1], data)
         if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'bots' and method == 'DELETE':
@@ -615,8 +622,9 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
     def _team_forget(self, room_id: str) -> None:
         """Delete what this Mac has of a room: the rows of the store first, then the key file."""
         with self.transaction():
-            # The bots and the pages of the room go from the Library, so the phone reads the list again.
-            if self.team_store.shows(room_id):
+            # The bots and the pages of the room go from the Library, and the shared pages of this Mac lose the room,
+            # so the phone reads the list again.
+            if self.team_store.shows(room_id) or self.team_store.page_shares(room_id):
                 self._event('document.updated', {'team': room_id})
             self._event(TEAM_EVENT, {'team': room_id})
             self.team_store.remove_room(room_id)

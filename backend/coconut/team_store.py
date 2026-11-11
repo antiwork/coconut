@@ -8,7 +8,11 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_members`: the members that the app shows. It is a view of `team_entries`: the newest valid `member` entry
   of each member.
 - `team_pending`: bodies that this Mac cannot open yet. It keeps the bytes and tries again later.
-- `team_shares`: the bots that this Mac shares with the room, each with the entry ID of its `bot` entry.
+- `team_shares`: the bots of this Mac that author a page in the room, each with the entry ID of its `bot` entry. On a
+  person's Mac a row comes with the first shared page of the bot and goes with the last one. On a Mac that runs
+  Coconut for a team only, a tool adds and removes the row.
+- `team_page_shares`: the documents that the person of this Mac shares with the room. A Mac that runs Coconut for a
+  team only has no rows here: the audience of a page names the team.
 - `team_page_entries`: the entry ID of each document of this Mac that the room has or had as a `page` entry.
 - `team_bots` and `team_pages`: views of `team_entries` for the Library: the valid `bot` entries and the `page`
   entries of the other members. The Library list reads them and parses no payload. A page row also keeps the pin of
@@ -50,6 +54,9 @@ CREATE TABLE IF NOT EXISTS team_pending (room TEXT NOT NULL, id TEXT NOT NULL, s
     reason TEXT NOT NULL, PRIMARY KEY (room, id));
 CREATE TABLE IF NOT EXISTS team_shares (room TEXT NOT NULL, bot TEXT NOT NULL, entry TEXT NOT NULL,
     PRIMARY KEY (room, bot));
+CREATE TABLE IF NOT EXISTS team_page_shares (room TEXT NOT NULL, document TEXT NOT NULL,
+    PRIMARY KEY (room, document));
+CREATE INDEX IF NOT EXISTS team_page_shares_document ON team_page_shares (document);
 CREATE TABLE IF NOT EXISTS team_page_entries (room TEXT NOT NULL, document TEXT NOT NULL, entry TEXT NOT NULL,
     PRIMARY KEY (room, document));
 CREATE TABLE IF NOT EXISTS team_bots (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL,
@@ -71,8 +78,8 @@ INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
 INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
     SELECT room, entry, member, 'bot', name FROM team_bots;
 '''
-TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_shares', 'team_page_entries',
-          'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads')
+TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_shares', 'team_page_shares',
+          'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads')
 ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
 MEMBER_FIELDS = ('member', 'name', 'avatar', 'color', 'agreement', 'entry')
@@ -587,7 +594,7 @@ class TeamStore:
     # What this Mac shares
 
     def shares(self, room: str) -> dict[str, str]:
-        """The bots that this Mac shares with the room, each with the entry ID of its `bot` entry."""
+        """The bots of this Mac that author a page in the room, each with the entry ID of its `bot` entry."""
         return dict(self.db.execute('SELECT bot, entry FROM team_shares WHERE room=? ORDER BY bot', (room,)).fetchall())
 
     def shared(self, bot: str) -> bool:
@@ -605,6 +612,43 @@ class TeamStore:
     def unshare(self, room: str, bot: str) -> bool:
         """Stop sharing a bot with the room. True when the room had the bot."""
         return self.db.execute('DELETE FROM team_shares WHERE room=? AND bot=?', (room, bot)).rowcount > 0
+
+    def page_shares(self, room: str) -> set[str]:
+        """The documents that the person of this Mac shares with the room."""
+        return {row[0] for row in self.db.execute('SELECT document FROM team_page_shares WHERE room=?', (room,))}
+
+    def shared_pages(self) -> dict[str, list[dict]]:
+        """The active rooms of each shared document, each as `room` and `name`, in the order of the names."""
+        teams = {}
+        for document, room, name in self.db.execute('''SELECT s.document, s.room, r.name FROM team_page_shares s
+                JOIN team_rooms r ON r.room=s.room WHERE r.state=? ORDER BY r.name, s.room''', (ACTIVE,)):
+            teams.setdefault(document, []).append({'room': room, 'name': name})
+        return teams
+
+    def rooms_of_page(self, document: str) -> list[str]:
+        """Each room that the person of this Mac shares the document with, in any state."""
+        return [row[0] for row in self.db.execute('SELECT room FROM team_page_shares WHERE document=? ORDER BY room',
+                                                  (document,))]
+
+    def share_page(self, room: str, document: str, bot: str, entry: str) -> tuple[bool, bool]:
+        """Share a document of `bot` with the room. The bot gets a share row with the entry ID `entry` when it has none
+        there. Return whether the page is new in the room, and whether the bot is new there."""
+        page = self.db.execute('INSERT OR IGNORE INTO team_page_shares (room, document) VALUES (?, ?)',
+                               (room, document)).rowcount > 0
+        return page, self.share(room, bot, entry)
+
+    def stop_page(self, room: str, document: str, bot: str) -> tuple[bool, bool]:
+        """Stop sharing a document of `bot` with the room. The share row of the bot goes with its last shared page
+        there. Return whether the room had the page, and whether the bot left the room."""
+        page = self.db.execute('DELETE FROM team_page_shares WHERE room=? AND document=?', (room, document)).rowcount > 0
+        return page, page and self.drop_idle_bot(room, bot)
+
+    def drop_idle_bot(self, room: str, bot: str) -> bool:
+        """Remove the share row of a bot that has no shared page in the room. True when a row went."""
+        return self.db.execute('''DELETE FROM team_shares WHERE room=? AND bot=? AND NOT EXISTS (
+            SELECT 1 FROM team_page_shares s JOIN documents d ON d.id=s.document
+            WHERE s.room=team_shares.room AND json_extract(d.data, '$.bot_id')=team_shares.bot)''',
+                               (room, bot)).rowcount > 0
 
     def page_entries(self, room: str) -> dict[str, str]:
         """The entry ID of each document of this Mac that the room has or had as a `page` entry."""

@@ -15,6 +15,7 @@ from uuid import uuid4
 
 from coconut import team_keys
 from coconut.server import APIServer, TunnelServer
+from coconut.team_pages import PERSONAL_BOTS
 from coconut.team_relay import TeamRelayError
 from team_fakes import RELAY, TeamMacs
 
@@ -80,6 +81,9 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
 
     def test_each_caller_reaches_each_team_route(self):
         bot = self.first.mutate('POST', '/v1/bots', {'name': 'Reporter'}, str(uuid4()), 'phone')
+        self.first.publish_page(bot['id'], {'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
+                                            'content': '3 tasks are open.'})
+        document = self.first._document_of_key(bot['id'], 'weekly-report')['id']
         self.first._start_team()
         for name, one in self.callers(self.mac_one).items():
             two = self.callers(self.mac_two)[name]
@@ -95,15 +99,19 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
                 status, answer = self.call('PATCH', f'/v1/team/rooms/{room}', {'member_name': 'Ada L.'}, **one)
                 self.assertEqual((status, [member['name'] for member in answer['room']['members'] if member['this_mac']]),
                                  (200, ['Ada L.']))
+                status, answer = self.call('PUT', f'/v1/team/rooms/{room}/pages/{document}', {}, **one)
+                self.assertEqual((status, answer['document']['teams']), (200, [{'room': room, 'name': 'Example Team'}]))
+                # A person's Mac does not share a bot. An app of today gets the reason.
                 status, answer = self.call('POST', f'/v1/team/rooms/{room}/bots', {'bot_id': bot['id']}, **one)
-                self.assertEqual((status, [row['bot_id'] for row in answer['room']['bots']]), (200, [bot['id']]))
+                self.assertEqual((status, answer['error']), (409, PERSONAL_BOTS))
                 status, answer = self.call('POST', '/v1/team/sync', {}, **one)
                 self.assertEqual((status, answer['complete']), (200, True))
                 status, answer = self.call('GET', '/v1/team/rooms', None, **one)
                 (view,) = (row for row in answer['rooms'] if row['room'] == room)
                 self.assertEqual((status, [member['name'] for member in view['members']]), (200, ['Ada L.', 'Grace']))
-                status, answer = self.call('DELETE', f'/v1/team/rooms/{room}/bots/{bot["id"]}', None, **one)
-                self.assertEqual((status, answer['room']['bots']), (200, []))
+                status, answer = self.call('DELETE', f'/v1/team/rooms/{room}/pages/{document}', None, **one)
+                self.assertEqual((status, answer['document']['teams'], answer['document']['audience']),
+                                 (200, [], 'private'))
                 self.assertEqual(self.call('DELETE', f'/v1/team/rooms/{room}', None, **two), (200, {'room': room, 'left': True}))
                 self.assertEqual(self.call('DELETE', f'/v1/team/rooms/{room}', None, **one), (200, {'room': room, 'left': True}))
                 # An error of a room operation comes back as the JSON of the service.

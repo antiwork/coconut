@@ -336,6 +336,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 self._migrate_bot_exchanges()
                 self._migrate_activity_notices()
                 self._migrate_decision_link_notices()
+                self._team_migrate_page_shares()
                 from .library_replies import remove_unasked_reports
                 remove_unasked_reports(self)
                 self._migrate_silent_responses()

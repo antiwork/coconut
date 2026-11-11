@@ -49,7 +49,7 @@ class TeamRepeatTests(TeamMacs, unittest.TestCase):
         super().setUp()
         self.calls = {}
         for service in (self.first, self.second):
-            for name in ('team_create', 'team_join', 'team_leave', 'team_share', 'team_profile', 'team_invite'):
+            for name in ('team_create', 'team_join', 'team_leave', 'team_share_page', 'team_profile', 'team_invite'):
                 self.count(service, name)
 
     def count(self, service, name):
@@ -183,19 +183,22 @@ class TeamRepeatTests(TeamMacs, unittest.TestCase):
         self.assertEqual(answers, [{'room': room['room'], 'left': True}] * 2)
         self.assertEqual(self.ran(self.second, 'team_leave'), 1)
 
-    def test_a_repeated_bot_share_gives_the_same_answer(self):
+    def test_a_repeated_page_share_gives_the_same_answer(self):
         room = self.create()
         bot = self.first.mutate('POST', '/v1/bots', {'name': 'Reporter'}, str(uuid4()), 'phone')
-        path, body = f'/v1/team/rooms/{room["room"]}/bots', {'bot_id': bot['id']}
+        self.first.publish_page(bot['id'], {'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
+                                            'content': '3 tasks are open.'})
+        document = self.first._document_of_key(bot['id'], 'weekly-report')['id']
+        path, body = f'/v1/team/rooms/{room["room"]}/pages/{document}', {}
         key = str(uuid4())
-        answers = [self.send(self.first, 'POST', path, body, key) for _ in range(2)]
+        answers = [self.send(self.first, 'PUT', path, body, key) for _ in range(2)]
         self.assertEqual(answers[0], answers[1])
-        self.assertEqual(self.ran(self.first, 'team_share'), 1)
+        self.assertEqual(self.ran(self.first, 'team_share_page'), 1)
         hold = Hold(self, self.first, 'team_wake')
-        answers = self.twice_at_once(self.first, 'POST', path, body, hold)
+        answers = self.twice_at_once(self.first, 'PUT', path, body, hold)
         self.assertEqual(answers[0], answers[1])
-        self.assertEqual([row['bot_id'] for row in answers[0]['room']['bots']], [bot['id']])
-        self.assertEqual(self.ran(self.first, 'team_share'), 2)
+        self.assertEqual(answers[0]['document']['teams'], [{'room': room['room'], 'name': 'Example Team'}])
+        self.assertEqual(self.ran(self.first, 'team_share_page'), 2)
 
     def test_a_repeated_name_change_writes_one_member_entry(self):
         room = self.create()
