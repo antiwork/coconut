@@ -327,6 +327,9 @@ TRACK_WORK_OUTCOME = ('A native outcome reports its progress on its card with co
 # The board tools that a gateway turn runs on Coconut's board (kanban_runtime.BOARD_TOOLS).
 BOARD_TOOLS = ('kanban_create', 'kanban_comment', 'kanban_list', 'kanban_show', 'kanban_link', 'kanban_unblock',
                *RUN_TOOLS)
+# The Coconut tools that act without a turn, for the bot of a Hermes home (gateway_page_tool). A save outside a turn
+# goes to POST /v1/gateway/document, which an older service also has.
+OUTSIDE_PAGE_TOOLS = ('read_document', 'delete_document')
 
 
 def chat_bot(chat_id: str) -> str:
@@ -852,9 +855,14 @@ class GatewayChat:
         return True
 
     def gateway_tool(self, data: dict) -> dict:
-        """POST /v1/gateway/tools: a tool of the `coconut` toolset, for the task of a running gateway turn."""
+        """POST /v1/gateway/tools: a tool of the `coconut` toolset, for the task of a running gateway turn.
+
+        A request with `home` and without `turn_id` comes from a conversation that is not a Coconut chat turn
+        (gateway_page_tool)."""
         from .card_tools import PAUSED
         from .service import ServiceError, YieldForDecision
+        if data.get('turn_id') is None and 'home' in data:
+            return self.gateway_page_tool(data)
         try:
             return self._gateway_tool(data)
         except YieldForDecision as pause:
@@ -1144,6 +1152,26 @@ class GatewayChat:
         if profile is None:
             raise ServiceError(404, 'This Hermes home is not the profile of a bot.')
         return self.publish_page(profile['bot_id'], data)
+
+    def gateway_page_tool(self, data: dict) -> dict:
+        """POST /v1/gateway/tools without a turn: coconut_read_document or coconut_delete_document in a conversation of
+        a bot that is not a Coconut chat turn, for example a chat of another messaging app.
+
+        The plugin names the Hermes home of the profile that runs the conversation, as for POST /v1/gateway/document,
+        which keeps the page of a save. The home names the bot, so a bot reads and deletes only its own documents. The
+        other Coconut tools act for the task of a turn, so they refuse here."""
+        from .service import ServiceError, require_text
+        tool = data.get('tool')
+        if tool not in OUTSIDE_PAGE_TOOLS:
+            raise ServiceError(409, 'This Coconut tool works only during a Coconut chat turn.')
+        home = os.path.realpath(require_text(data, 'home', 4096))
+        profile = self._gateway_profile(home)
+        if profile is None:
+            raise ServiceError(404, 'This Hermes home is not the profile of a bot.')
+        arguments = data.get('arguments') if isinstance(data.get('arguments'), dict) else {}
+        if tool == 'read_document':
+            return self.read_page(profile['bot_id'], arguments)
+        return self.delete_page(profile['bot_id'], arguments)
 
     def gateway_file(self, data: dict) -> dict:
         """POST /v1/gateway/files: a photo that a bot of the adapter's profile saved on the Mac.

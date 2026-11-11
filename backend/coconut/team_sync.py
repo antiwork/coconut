@@ -26,7 +26,7 @@ from . import team_keys
 from .team_helper import TeamFormatError, TeamHelperError, TeamHelperMissing
 from .team_keys import TeamKeysError
 from .team_relay import TeamRelayError
-from .team_store import ACTIVE, DROPPED, GONE, JOINING, PENDING, REFUSED, REMOVED, SKIPPED, read_entry
+from .team_store import ACTIVE, DROPPED, GONE, JOINING, MESSAGES_EVENT, PENDING, REFUSED, REMOVED, SKIPPED, read_entry
 
 POLL_SECONDS = 30
 MAX_WAIT_SECONDS = 900
@@ -351,8 +351,9 @@ class TeamSync:
 
         The phone learns of a local document from its `document.*` event in GET /v1/updates, so a change of the team
         pages or bots of the Library uses the same type. A change of the members or of the bots of the team adds
-        TEAM_EVENT for the Team screen. A phone of today knows both types, so an event does not make it read the
-        whole state again. The caller holds the transaction.
+        TEAM_EVENT for the Team screen, and a change of the chat adds MESSAGES_EVENT. Each type is in the `known` set
+        of GET /v1/updates, so an event does not make a phone of today read the whole state again. The caller holds
+        the transaction.
         """
         if room_id in self.team_store.touched:
             self.team_store.touched.discard(room_id)
@@ -360,6 +361,9 @@ class TeamSync:
         if room_id in self.team_store.changed:
             self.team_store.changed.discard(room_id)
             self._event(TEAM_EVENT, {'team': room_id})
+        if room_id in self.team_store.chatted:
+            self.team_store.chatted.discard(room_id)
+            self._event(MESSAGES_EVENT, {'team': room_id})
 
     def _team_report(self, room_id: str, results: list) -> None:
         """Write a log line for each entry that the Mac dropped or refused, and one for those that it skipped or

@@ -35,6 +35,10 @@ KEPT_VERSIONS = 10
 LONGEST_LIFE = timedelta(days=366)
 # "team": the Mac also shares the document with each team that the bot is shared with (team_pages.py).
 AUDIENCES = ('private', 'team')
+# What a save outside a Coconut chat turn tells the bot. No chat shows a card for the page, so the bot must say where
+# the person finds it (hermes_plugin/coconut/tools.py adds it to the result).
+OUTSIDE_SAVE_NOTE = ('Coconut keeps this page in the Library of the Coconut app. No chat shows a card for it. Tell the '
+                     'person that the page is in the Library.')
 
 # The page rules of HTML read only the code of a page, which an HTML parser finds: the CSS of its <style> elements
 # and style attributes, its scripts and event attributes, its tags, and the color attributes of its tags. The text of
@@ -152,7 +156,9 @@ SAVE_SCHEMA = {'name': 'coconut_save_document', 'description': (
     'each page: in HTML use only these tokens for color: var(--c1) to var(--c6), var(--text), var(--text-2), '
     'var(--bg), var(--surface), var(--line), or coconut.palette (an array of the six colors) in a script. A page has '
     'd3 and Plot (Observable Plot) and has no network access. Coconut refuses a page that sets a font, writes a '
-    'color as a value or loads something, and names the reason.'),
+    'color as a value or loads something, and names the reason. The tool also works outside a Coconut chat, for '
+    'example in another messaging app: there no chat shows a card, so tell the person that the page is in the '
+    'Library of Coconut.'),
     'parameters': {'type': 'object', 'properties': {
         'key': {'type': 'string', 'description': (
             'A stable name for this document, in lowercase letters, digits and hyphens, for example signups-daily. '
@@ -389,27 +395,48 @@ class Documents:
 
     def read_document(self, task_id: str, arguments: dict) -> dict:
         """coconut_read_document of a bot turn: one document of the bot with its content, or the list of them."""
+        with self._read_view() as view, view._read_transaction():
+            return view._read_pages(view._get('tasks', task_id)['bot_id'], arguments)
+
+    def read_page(self, bot_id: str, arguments: dict) -> dict:
+        """coconut_read_document outside a Coconut chat turn, for the bot of the profile that runs the conversation."""
+        with self._read_view() as view, view._read_transaction():
+            view._get('bots', bot_id)
+            return view._read_pages(bot_id, arguments)
+
+    def _read_pages(self, bot_id: str, arguments: dict) -> dict:
+        """One document of the bot with its content, or the list of them. The caller holds the read transaction."""
         from .service import ServiceError, now
         key = arguments.get('key')
-        with self._read_view() as view, view._read_transaction():
-            bot_id = view._get('tasks', task_id)['bot_id']
-            if not key:
-                return {'documents': [_summary(document) for document in view._bot_documents(bot_id)]}
-            document = view._document_of_key(bot_id, key) if isinstance(key, str) else None
-            if document is None or expired(document, now()):
-                raise ServiceError(404, 'This bot has no document with this key.')
-            return dict(_summary(document), content=view._document_content(document))
+        if not key:
+            return {'documents': [_summary(document) for document in self._bot_documents(bot_id)]}
+        document = self._document_of_key(bot_id, key) if isinstance(key, str) else None
+        if document is None or expired(document, now()):
+            raise ServiceError(404, 'This bot has no document with this key.')
+        return dict(_summary(document), content=self._document_content(document))
 
     def delete_bot_document(self, task_id: str, arguments: dict) -> dict:
         """coconut_delete_document of a bot turn."""
-        from .service import ServiceError
-        key = arguments.get('key')
         with self.transaction():
-            bot_id = self._running_task(task_id)['bot_id']
-            document = self._document_of_key(bot_id, key) if isinstance(key, str) else None
-            if document is None:
-                raise ServiceError(404, 'This bot has no document with this key.')
-            self._remove_document(document, task_id)
+            return self._delete_key(self._running_task(task_id)['bot_id'], arguments.get('key'), task_id)
+
+    def delete_page(self, bot_id: str, arguments: dict) -> dict:
+        """coconut_delete_document outside a Coconut chat turn. No turn asked for the delete, so the event names no
+        task, as a delete from the phone."""
+        from .service import ServiceError
+        with self.transaction():
+            bot = self._get('bots', bot_id)
+            if bot['archived'] or bot.get('_deleted'):
+                raise ServiceError(409, 'The bot is archived or deleted.')
+            return self._delete_key(bot_id, arguments.get('key'), None)
+
+    def _delete_key(self, bot_id: str, key, task_id: str | None) -> dict:
+        """Delete the document of a key of the bot. The caller holds the transaction."""
+        from .service import ServiceError
+        document = self._document_of_key(bot_id, key) if isinstance(key, str) else None
+        if document is None:
+            raise ServiceError(404, 'This bot has no document with this key.')
+        self._remove_document(document, task_id)
         return {'status': 'deleted', 'key': key}
 
     def documents(self) -> dict:

@@ -112,6 +112,30 @@ class GatewayPageRouteTests(unittest.TestCase):
         self.assertIn('not the profile of a bot', answer['error'])
         self.assertEqual(self.service.documents()['documents'], [])
 
+    def test_a_document_tool_without_a_turn_reads_and_deletes_the_pages_of_the_bot_of_a_hermes_home(self):
+        # The plugin sends coconut_read_document and coconut_delete_document of a conversation that is not a Coconut
+        # chat turn to the tools route, with the Hermes home of the running profile in place of a turn.
+        self.post('/v1/gateway/document', dict(PAGE, home=self.home), self.token)
+        read = dict(home=self.home, tool='read_document', arguments={'key': 'weekly-report'})
+        status, answer = self.post('/v1/gateway/tools', read, self.token)
+        self.assertEqual((status, answer['key'], answer['content']), (200, 'weekly-report', PAGE['content']))
+        # Without the token of the bridge, and on the tunnel listener, the route reads nothing.
+        self.assertEqual(self.post('/v1/gateway/tools', read)[0], 401)
+        tunnel = self.serve(TunnelServer(0, self.service))
+        status, answer = self.post('/v1/gateway/tools', read, self.token, server=tunnel, headers=PHONE)
+        self.assertEqual((status, answer['error']), (401, 'Pair this phone with the Mac to continue.'))
+        status, answer = self.post('/v1/gateway/tools', dict(read, tool='delete_document'), self.token, server=tunnel,
+                                   headers=PHONE)
+        self.assertEqual(status, 401)
+        self.assertEqual(len(self.service.documents()['documents']), 1)
+        status, answer = self.post('/v1/gateway/tools', dict(read, tool='delete_document'), self.token)
+        self.assertEqual((status, answer), (200, {'status': 'deleted', 'key': 'weekly-report'}))
+        self.assertEqual(self.service.documents()['documents'], [])
+        # The other tools need a turn.
+        status, answer = self.post('/v1/gateway/tools', dict(read, tool='ask', arguments={}), self.token)
+        self.assertEqual(status, 409)
+        self.assertIn('only during a Coconut chat turn', answer['error'])
+
     def test_an_archived_bot_and_a_deleted_bot_keep_no_page(self):
         def write(method, data=None):
             self.service.mutate(method, f'/v1/bots/{self.bot["id"]}', data or {}, str(uuid4()), 'phone')
