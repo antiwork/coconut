@@ -348,5 +348,6 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         if not answers or room_row['state'] != ACTIVE:
             return {'recorded': False, 'reason': 'The bot does not answer in this team chat.'}
         for number, piece in enumerate(parts(text)):
-            self._team_say(room, bot_id, message_id, number, piece)
+            # A send outside a turn answers no message, so no request must still stand: only the bot must answer.
+            self._team_say(room, bot_id, message_id, number, piece, request=False)
         return {'recorded': True}

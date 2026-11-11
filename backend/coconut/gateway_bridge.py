@@ -285,12 +285,18 @@ class GatewayBridge:
             self.turns[turn.id] = turn
         return turn.id
 
-    def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut',
+    def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, **options) -> None:
+        """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends. See
+        submit_turn for the options."""
+        self.follow(self.submit_turn(task_id, home, chat_id, text, **options), emit)
+
+    def submit_turn(self, task_id: str, home, chat_id: str, text: str, *, chat_name: str = 'Coconut',
                  session_root: str | None = None, silent: bool = False, commentary: bool = True,
                  context_id: str | None = None, mode: str | None = None, own: str | None = None,
                  folder: str | None = None, command: str | None = None, records: list | None = None,
-                 team: dict | None = None, deadline: float | None = None) -> None:
-        """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends.
+                 team: dict | None = None, deadline: float | None = None) -> str:
+        """Register a turn for the adapter of `home`, and return its ID for follow(). From then on, cancel() of its
+        task stops it, also before an adapter takes it.
 
         With `silent`, the turn may end in silence. Without `commentary`, it shows no commentary (TurnEvents). With
         `context_id`, the turn answers a follow-up on a pending card: the plugin blocks the card tools in it. With `own`, the turn's own text, Hermes saves only `own`
@@ -332,7 +338,7 @@ class GatewayBridge:
                 del self.turns[old.id]
             self.turns[turn.id] = turn
             self.lock.notify_all()
-        self.follow(turn.id, emit)
+        return turn.id
 
     def follow(self, turn_id: str, emit) -> None:
         """Translate the events of a registered turn with `emit` until the turn ends."""

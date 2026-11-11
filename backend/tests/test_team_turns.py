@@ -438,6 +438,96 @@ class FailureTests(TeamTurnMacs, unittest.TestCase):
         self.assertIn('did not reach the relay', '\n'.join(logs.output))
         self.assertEqual(self.triggers(), [])
 
+    def runner(self):
+        thread = threading.Thread(target=self.only._turns_run, args=(self.room, self.bot['id']), daemon=True)
+        with self.only._turns_lock:
+            self.only._turns_running[(self.room, self.bot['id'])] = thread
+        thread.start()
+        return thread
+
+    def wait_for_turn(self):
+        deadline = time.monotonic() + 5
+        while not self.gateway.turns and time.monotonic() < deadline:
+            time.sleep(.05)
+        self.assertTrue(self.gateway.turns)
+
+    def test_a_disconnect_while_the_turn_waits_for_the_gateway_starts_no_turn(self):
+        self.trigger()
+        runner = self.runner()
+        time.sleep(1.5)
+        self.connect(chat=False)
+        runner.join(5)
+        self.assertFalse(runner.is_alive(), 'The wait ends when the bot no longer answers.')
+        # A gateway that connects later gets no turn.
+        gateway = self.serve(reply('too late'))
+        time.sleep(.5)
+        self.assertEqual((gateway.turns, self.replies(), self.triggers()), ([], [], []))
+
+    def test_a_disconnect_between_the_last_check_and_the_registration_still_stops_the_turn(self):
+        self.trigger()
+        gateway = self.serve(reply('never'))
+        checked, stopped = threading.Event(), threading.Event()
+        submit = self.only.gateway_bridge.submit_turn
+
+        def slow_submit(*arguments, **options):
+            # The check passed. The operator disconnects now, before the bridge has the turn.
+            checked.set()
+            stopped.wait(1)
+            return submit(*arguments, **options)
+        with mock.patch.object(self.only.gateway_bridge, 'submit_turn', side_effect=slow_submit):
+            runner = self.runner()
+            checked.wait(5)
+            disconnect = threading.Thread(target=lambda: (self.connect(chat=False), stopped.set()), daemon=True)
+            disconnect.start()
+            runner.join(10)
+            disconnect.join(5)
+        self.assertTrue(stopped.is_set())
+        self.sync()
+        self.assertEqual(self.replies(), [])
+        # The stop came while the turn was pending or active: no adapter runs it now.
+        self.assertEqual([t for t in self.only.gateway_bridge.turns.values() if t.state in ('pending', 'active')], [])
+        self.assertLessEqual(len(gateway.turns), 1)
+
+    def test_a_removed_request_or_a_sender_who_left_stops_the_turn_and_gets_nothing(self):
+        for case in ('removed', 'left'):
+            with self.subTest(case=case):
+                sender = self.first
+                if case == 'left':
+                    sender = self.second
+                    self.join(self.second, self.invite({'room': self.room})['link'], 'Grace')
+                    self.second.team_sync_pass()
+                    self.only.team_sync_pass()
+                named = self.send('@Reporter please', service=sender, mentions=[self.mention])
+                self.sync()
+                released = threading.Event()
+                self.serve(lambda turn: (released.wait(5), reply('Late answer.')(turn))[1])
+                runner = self.runner()
+                self.wait_for_turn()
+                if case == 'removed':
+                    self.call('DELETE', f'/v1/team/rooms/{self.room}/messages/{named["id"]}', service=self.first)
+                else:
+                    self.leave(self.second, {'room': self.room})
+                self.sync()
+                self.only._turns_check()
+                turn_id = self.gateway.turns[0]['id']
+                self.assertEqual(self.only.gateway_bridge.turns[turn_id].state, 'stopping')
+                released.set()
+                runner.join(5)
+                self.sync()
+                self.assertEqual(self.replies(), [])
+                self.gateway.stop()
+
+    def test_the_restart_notice_of_a_removed_request_is_not_posted(self):
+        named = self.trigger()
+        with self.only.transaction():
+            row = self.only.team_store.next_trigger(self.room, self.bot['id'])
+            self.only.team_store.start_trigger(row['number'])
+        self.call('DELETE', f'/v1/team/rooms/{self.room}/messages/{named["id"]}', service=self.first)
+        self.sync()
+        self.only._turns_recover()
+        self.sync()
+        self.assertEqual((self.replies(), self.triggers()), ([], []))
+
     def test_a_bot_whose_chat_goes_off_or_that_leaves_writes_nothing_more(self):
         self.trigger()
         released = threading.Event()

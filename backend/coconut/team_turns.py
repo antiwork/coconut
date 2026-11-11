@@ -95,6 +95,11 @@ class TeamTurns:
         # The thread that runs the turns of each room and bot, by (room, bot).
         self._turns_running: dict[tuple[str, str], threading.Thread] = {}
         self._turns_lock = threading.Lock()
+        # The trigger of the turn that runs for each (room, bot). The loop stops a turn whose request is gone.
+        self._turns_current: dict[tuple[str, str], str] = {}
+        # Held from the last check of a turn to its registration in the bridge, and by each stop. So a stop either
+        # sees the registered turn and cancels it, or comes first and the check refuses the turn.
+        self._turns_gate = threading.Lock()
         # True while an update asks this service to drain (see _team_poll_drain).
         self._draining = False
 
@@ -124,6 +129,7 @@ class TeamTurns:
         while not self.stopping.is_set():
             try:
                 self._team_poll_drain()
+                self._turns_check()
                 if not self._draining:
                     self._turns_start()
             except Exception:
@@ -164,12 +170,15 @@ class TeamTurns:
                 # The bot still answers there, so the person gets a notice and not silence.
                 self._team_notice(turn, 'late')
                 continue
+            self._turns_current[(room, bot)] = turn['entry']
             try:
                 ended = self._team_turn(turn)
             except Exception:
                 log.exception('coconut.team_turns room %s: the turn of the bot %s failed.', room[:8], bot)
                 self._team_notice(turn, 'fault')
                 ended = True
+            finally:
+                self._turns_current.pop((room, bot), None)
             if not ended:
                 # The service stops in the turn. The row keeps `started`, so the next start posts UNFINISHED.
                 return
@@ -221,6 +230,9 @@ class TeamTurns:
         reply = Reply(self, turn)
         deadline = time.monotonic() + ADAPTER_SECONDS
         while not self.gateway_bridge.connected(home):
+            if not self._team_still_asked(room, bot, turn['entry']):
+                # The bot no longer answers there, or the request is gone: the turn ends without a word.
+                return True
             # A parked profile has no gateway, so a wait does not help.
             if (Path(home) / 'gateway.parked').exists() or time.monotonic() >= deadline:
                 reply.say(UNAVAILABLE)
@@ -228,9 +240,13 @@ class TeamTurns:
             if self.stopping.wait(1):
                 return False
         try:
-            self.gateway_bridge.run_turn(f'team:{room}:{bot}', home, chat_id(room, bot), turn['text'], reply.emit,
-                                         chat_name=turn['team_name'], team=turn['team'],
-                                         deadline=time.monotonic() + TURN_SECONDS)
+            with self._turns_gate:
+                if not self._team_still_asked(room, bot, turn['entry']):
+                    return True
+                turn_id = self.gateway_bridge.submit_turn(
+                    f'team:{room}:{bot}', home, chat_id(room, bot), turn['text'], chat_name=turn['team_name'],
+                    team=turn['team'], deadline=time.monotonic() + TURN_SECONDS)
+            self.gateway_bridge.follow(turn_id, reply.emit)
         except GatewayUnavailable:
             reply.say(UNAVAILABLE)
         except (GatewayBusy, RuntimeError, TimeoutError) as error:
@@ -251,9 +267,37 @@ class TeamTurns:
             log.exception('coconut.team_turns room %s: the notice of the bot %s failed.', turn['room'][:8],
                           turn['bot'])
 
-    def _team_say(self, room: str, bot: str, trigger: str, part, text: str, reply_to: str | None = None) -> None:
+    def _team_share(self, room: str, bot: str, trigger: str | None) -> str | None:
+        """The entry ID of the `bot` entry of a bot that still answers in the room, or None. With `trigger`, the
+        request must still stand too: the message shows, and its member is in the member list. The caller holds the
+        service lock."""
+        room_row = self.team_store.room(room)
+        share = dict(self.team_store.answering(room)).get(bot)
+        if room_row is None or room_row['state'] != ACTIVE or share is None:
+            return None
+        if trigger is not None:
+            message = self.team_store.message(room, trigger)
+            if message is None or self.team_store.member(room, message['member']) is None:
+                return None
+        return share
+
+    def _team_still_asked(self, room: str, bot: str, trigger: str) -> bool:
+        with self.lock:
+            return self._team_share(room, bot, trigger) is not None
+
+    def _turns_check(self) -> None:
+        """Stop each running turn whose request is gone: a `delete` over the trigger, a sender that left or was
+        removed, a bot that no longer answers there, or a room that this Mac left."""
+        for (room, bot), trigger in list(self._turns_current.items()):
+            if not self._team_still_asked(room, bot, trigger):
+                self._team_stop_turns(room=room, bot=bot)
+
+    def _team_say(self, room: str, bot: str, trigger: str, part, text: str, reply_to: str | None = None,
+                  request: bool = True) -> None:
         """Write one message of the bot into the chat. Nothing when the bot no longer answers there, for example after
-        a removal or a leave. A failure of the relay leaves a log line, and the chat shows nothing.
+        a removal or a leave, and nothing when the request is gone: `trigger` names the message that the bot answers,
+        and it must still show with its member in the list (`request`). A failure of the relay leaves a log line, and
+        the chat shows nothing.
 
         The lock of the room holds from the check to the write, so a leave cannot come between them."""
         entry = reply_entry(room, trigger, bot, part)
@@ -262,9 +306,9 @@ class TeamTurns:
                 self._team_settle(room)
                 with self.lock:
                     room_row = self.team_store.room(room)
-                    share = dict(self.team_store.answering(room)).get(bot)
+                    share = self._team_share(room, bot, trigger if request else None)
                     written = self.team_store.entry(room, entry) is not None
-                if room_row is None or room_row['state'] != ACTIVE or share is None or written:
+                if share is None or written:
                     return
                 fields = {'kind': 'message', 'text': text, 'bot': share}
                 if reply_to:
@@ -297,16 +341,23 @@ class TeamTurns:
             drained.write_text('1')
 
     def _team_stop_turns(self, room: str | None = None, bot: str | None = None) -> None:
-        """Stop the running turns of a room or of a bot. The reply that Hermes still sends goes nowhere."""
+        """Stop the running turns of a room or of a bot. The reply that Hermes still sends goes nowhere. The caller
+        changed the state first, so a turn that is not registered yet fails its check (see `_turns_gate`)."""
         with self._turns_lock:
             keys = [key for key in self._turns_running if (room is None or key[0] == room)
                     and (bot is None or key[1] == bot)]
-        for key_room, key_bot in keys:
-            self.gateway_bridge.cancel(f'team:{key_room}:{key_bot}')
+        with self._turns_gate:
+            for key_room, key_bot in keys:
+                self.gateway_bridge.cancel(f'team:{key_room}:{key_bot}')
 
     def _team_forget(self, room_id: str) -> None:
-        self._team_stop_turns(room=room_id)
         super()._team_forget(room_id)
+        self._team_stop_turns(room=room_id)
+
+    def team_unshare(self, room_id: str, bot_id: str) -> dict:
+        answer = super().team_unshare(room_id, bot_id)
+        self._team_stop_turns(room=room_id, bot=bot_id)
+        return answer
 
 
 class Reply:

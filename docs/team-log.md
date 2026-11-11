@@ -534,6 +534,7 @@ Rules of a reply:
 3. The entry ID comes from the room, the trigger, the bot and the number of the message in the turn. So a write that runs again adds no message.
 4. An approval of a command is denied, with a reason that the bot can repeat: nobody can approve in the team chat. A clarify question goes into the chat as a message of the bot, with its choices as a list, and Hermes gets the answer to end the turn. The reply of a person starts the next turn.
 5. A send of Hermes outside a turn in the chat of the bot, for example after a background process, is a message of the bot without `reply_to`.
+6. The bot writes a message of a turn, and a notice, only while the bot answers in the room and the request stands: the trigger still shows, and its member is in the member list. A `delete` over the trigger, a member that leaves or is removed, a bot whose chat goes off or that leaves the team, and a leave of this Mac stop the running turn, also while it waits for the gateway. The last check comes directly before the bridge registers the turn, and a stop waits for that registration, so no stop gets lost. A send outside a turn answers no message, so for it only the bot must still answer.
 
 What the chat shows when a turn fails:
 
