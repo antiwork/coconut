@@ -227,22 +227,25 @@ class TeamLogTests(unittest.TestCase):
     def test_two_macs_share_one_log(self):
         first, second, third = self.macs
 
-        # The first Mac makes a room. It is the admin, and the log shows it.
-        status, answer = first.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada', 'relay': self.url})
+        # The token of the bridge file cannot make a room on a person's Mac (backend/coconut/team.py, tool_route).
+        self.assertEqual(first.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'relay': self.url}),
+                         (403, {'error': 'Only the person can do this in the team. Use the Coconut app.'}))
+        # The person makes a room in the app. The first Mac is its admin, and the log shows it.
+        status, answer = first.phone('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada', 'relay': self.url})
         self.assertEqual(status, 200, answer)
         room = answer['room']
         room_id = room['room']
         self.assertEqual((room['state'], room['is_admin'], room['name'], self.names(room)), ('active', True, 'Example Team', ['Ada']))
         self.assertEqual((first.data / 'team').stat().st_mode & 0o777, 0o700)
         self.assertEqual((first.data / f'team/{room_id}.json').stat().st_mode & 0o777, 0o600)
-        # No answer of a tool route has a key or a token of the room.
+        # No answer of a team route has a key or a token of the room.
         secrets_of_first = first.keys(room_id)
         for secret in (secrets_of_first['token'], secrets_of_first['member_key'], secrets_of_first['keys']['0']):
             self.assertNotIn(secret, json.dumps(answer))
 
         # A Mac that is not in the room cannot make an invite, and the admin can.
-        self.assertEqual(second.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[0], 404)
-        status, invite = first.call('POST', f'/v1/team/rooms/{room_id}/invites', {'uses': 1})
+        self.assertEqual(second.phone('POST', f'/v1/team/rooms/{room_id}/invites', {})[0], 404)
+        status, invite = first.phone('POST', f'/v1/team/rooms/{room_id}/invites', {'uses': 1})
         self.assertEqual(status, 200, invite)
         self.assertTrue(invite['link'].startswith('coconut://team/'), invite)
 
@@ -330,11 +333,11 @@ class TeamLogTests(unittest.TestCase):
     def test_a_person_shares_a_page_with_the_team_and_stops(self):
         first, second, _ = self.macs
         # The second Mac makes the room, so the first Mac can leave it at the end.
-        status, answer = second.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Grace',
-                                                                'relay': self.url})
+        status, answer = second.phone('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Grace',
+                                                                 'relay': self.url})
         self.assertEqual(status, 200, answer)
         room_id = answer['room']['room']
-        link = second.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
+        link = second.phone('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
         self.assertEqual(first.call('POST', '/v1/team/join', {'link': link, 'member_name': 'Ada'})[0], 200)
 
         # The tooling of the first Mac saves a page of its bot. A bot cannot share it.
@@ -404,7 +407,7 @@ class TeamLogTests(unittest.TestCase):
         first, second, _ = self.macs
         # The Team screen of a paired phone calls the routes with the token of its device.
         status, answer = first.phone('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
-                                                                'relay': self.url})
+                                                                 'relay': self.url})
         self.assertEqual(status, 200, answer)
         room_id = answer['room']['room']
         self.assertEqual((answer['room']['is_admin'], answer['room']['can_invite']), (True, True))
@@ -451,7 +454,7 @@ class TeamLogTests(unittest.TestCase):
     def test_two_macs_share_the_team_chat(self):
         first, second, _ = self.macs
         status, answer = first.phone('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
-                                                                'relay': self.url})
+                                                                 'relay': self.url})
         self.assertEqual(status, 200, answer)
         room_id = answer['room']['room']
         link = first.phone('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
@@ -508,11 +511,11 @@ class TeamLogTests(unittest.TestCase):
 
     def test_a_mac_without_a_person_joins_with_the_coconut_tool(self):
         first, second, _ = self.macs
-        status, answer = first.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
-                                                               'relay': self.url})
+        status, answer = first.phone('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                                'relay': self.url})
         self.assertEqual(status, 200, answer)
         room_id = answer['room']['room']
-        link = first.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
+        link = first.phone('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
         status, bot = second.phone('POST', '/v1/bots', {'name': 'Night Bot'})
         self.assertEqual(status, 200, bot)
         tool = self.coconut_tool()
@@ -701,18 +704,18 @@ class TeamSocketTests(unittest.TestCase):
 
     def arrival(self, writer: Mac, reader: Mac, room_id: str, name: str) -> float:
         """Change the name of the writer in the team, and return the seconds until the reader shows it."""
-        status, answer = writer.call('PATCH', f'/v1/team/rooms/{room_id}', {'member_name': name})
+        status, answer = writer.phone('PATCH', f'/v1/team/rooms/{room_id}', {'member_name': name})
         self.assertEqual(status, 200, answer)
         return self.wait_until(lambda: name in [member['name'] for member in self.view(reader, room_id)['members']],
                                self.LIMIT_SECONDS + 3)
 
     def test_an_entry_reaches_the_other_mac_through_the_socket(self):
         first, second = self.macs
-        status, answer = first.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
-                                                               'relay': self.url})
+        status, answer = first.phone('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                                'relay': self.url})
         self.assertEqual(status, 200, answer)
         room_id = answer['room']['room']
-        link = first.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
+        link = first.phone('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
         self.assertEqual(second.call('POST', '/v1/team/join', {'link': link, 'member_name': 'Grace'})[0], 200)
         for mac in self.macs:
             self.wait_until(lambda: self.view(mac, room_id)['sync']['socket'], 20)
@@ -852,11 +855,11 @@ class TeamOnlyTests(unittest.TestCase):
     def test_a_team_only_mac_shares_the_pages_of_its_bot(self):
         from test_team_only import snapshot
         before = snapshot(self.home)
-        status, answer = self.ada.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
-                                                                  'relay': self.url})
+        status, answer = self.ada.phone('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                                   'relay': self.url})
         self.assertEqual(status, 200, answer)
         room_id = answer['room']['room']
-        link = self.ada.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
+        link = self.ada.phone('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
         tool = TeamLogTests.coconut_tool()
         outputs = []
 
@@ -935,11 +938,11 @@ class TeamOnlyTests(unittest.TestCase):
     def test_a_leave_takes_the_mac_its_bot_and_its_page_out_of_the_team(self):
         """The first step of a removal (docs/install-and-update.md, "Remove"): `coconut team leave` on the team-only
         Mac, with a bot and its page still in the team. The full Mac then shows none of them."""
-        status, answer = self.ada.call('POST', '/v1/team/rooms', {'name': 'Leave Team', 'member_name': 'Ada',
-                                                                  'relay': self.url})
+        status, answer = self.ada.phone('POST', '/v1/team/rooms', {'name': 'Leave Team', 'member_name': 'Ada',
+                                                                   'relay': self.url})
         self.assertEqual(status, 200, answer)
         room_id = answer['room']['room']
-        link = self.ada.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
+        link = self.ada.phone('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
         tool = TeamLogTests.coconut_tool()
 
         def run(*arguments: str, link_input: str = '') -> tuple[int, list[str]]:

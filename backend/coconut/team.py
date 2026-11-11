@@ -7,8 +7,9 @@ the cryptography.
 
 The routes are for the Team screen of the app and for the tools on this Mac (server.py). A paired device calls them
 on the tunnel listener or on the main listener, with the authorization of its other routes. A tool calls them on the
-main listener with the token of <data>/gateway/bridge.json, as scripts/team.py does. One handler serves both. The
-error texts are for a person, because the app shows them.
+main listener with the token of <data>/gateway/bridge.json, as scripts/team.py does. One handler serves both. On a
+person's Mac the token reaches only the routes of tool_route, and each other route answers 403. The error texts are
+for a person, because the app shows them.
 
 - `GET /v1/team/rooms`: the rooms with their members, their bots and their sync state, and the bots of this Mac.
 - `POST /v1/team/rooms` with `{name, member_name, avatar, color, relay}`: make a room. This Mac is its admin.
@@ -76,8 +77,8 @@ SYNC_WAIT_SECONDS = 60
 # runs again. The limit keeps the memory small when a device sends many keys.
 REPLY_SECONDS = 600
 REPLY_LIMIT = 256
-# The answer to a share or a stop of a page from a caller that is not a paired device.
-PERSON_ONLY = 'Only the person can share a page with a team, in the Coconut app.'
+# The answer on a person's Mac to a team route that only a paired device can call (tool_route).
+PERSON_ONLY = 'Only the person can do this in the team. Use the Coconut app.'
 # The clock of the saved answers. A test replaces it, so it needs no wait of 10 minutes.
 clock = time.monotonic
 
@@ -132,6 +133,18 @@ def member_profile(data: dict, current: dict | None = None, *, field: str = 'mem
             raise ServiceError(400, f'Use text of at most {MEMBER_LIMITS[field]} characters for the {field}.')
         profile[field] = value
     return profile
+
+
+def tool_route(method: str, parts: list[str]) -> bool:
+    """True for a team route that a caller without a paired device can call on a person's Mac: what the `coconut`
+    tool needs there. `parts` are the parts of the route after `/v1/team`, as _team_route reads them.
+
+    Only the person acts for a person's Mac in a team, through the app. The token of the bridge file is for the gateway
+    adapter and the tools of this Mac, and a bot can read that file. So the token gets the list of the teams, a join, a
+    leave and a sync, and no other route. A route that a later change adds stays closed until it is in this list. The
+    rule closes the plain path only: a process of the same macOS account can still read other files of this Mac."""
+    return (method, parts) in (('GET', ['rooms']), ('POST', ['join']), ('POST', ['sync'])) or (
+        method == 'DELETE' and len(parts) == 2 and parts[0] == 'rooms')
 
 
 def whole(data: dict, field: str, default: int, limits: tuple[int, int], text: str) -> int:
@@ -258,6 +271,10 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         the paired device of the request, or empty for a tool of this Mac."""
         from .service_base import ServiceError
         parts = path.strip('/').split('/')[2:]
+        # The check uses the parts that choose the route, so no form of the path passes around it. A Mac for a team
+        # only has no person, so there the token keeps each route.
+        if not device and self.library_reader and not tool_route(method, parts):
+            raise ServiceError(403, PERSON_ONLY)
         if parts == ['rooms'] and method == 'GET':
             return self.team_rooms()
         if parts == ['rooms'] and method == 'POST':
@@ -273,12 +290,6 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'invites' and method == 'POST':
             return self.team_invite(parts[1], data)
         if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'pages' and method in ('PUT', 'DELETE'):
-            # The check runs on the parts of the route itself, so no form of the path passes around it. Only the
-            # person shares a page. A paired device is the app of the person. The token of the bridge file is the token
-            # of the tools of this Mac, and a bot can read that file, so it cannot share or stop. This closes the plain
-            # path only: a process of the same macOS account can still read other files of this Mac.
-            if not device and self.library_reader:
-                raise ServiceError(403, PERSON_ONLY)
             if method == 'PUT':
                 return self.team_share_page(parts[1], parts[3])
             return self.team_stop_page(parts[1], parts[3])

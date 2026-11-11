@@ -269,12 +269,12 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         return f'/v1/team/rooms/{self.room}/{tail}'
 
     def send(self, service, text: str, **fields) -> dict:
-        return service.team_request('POST', self.path(), dict(fields, text=text))['message']
+        return self.phone(service)('POST', self.path(), dict(fields, text=text))['message']
 
     def page(self, service, sync: bool = True, **query) -> dict:
         if sync:
             service.team_sync_pass()
-        return service.team_request('GET', self.path(), {name: str(value) for name, value in query.items()})
+        return self.phone(service)('GET', self.path(), {name: str(value) for name, value in query.items()})
 
     def texts(self, service, sync: bool = True) -> list[str]:
         return [message['text'] for message in self.page(service, sync)['messages']]
@@ -308,12 +308,12 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         payload = json.loads(self.first.team_store.entry(self.room, answer['id'])['payload'])
         self.assertEqual(payload['mentions'], [self.first.team_store.members(self.room)[0]['entry'], team_bot[-32:]])
         # Ada edits, then deletes. Both Macs end with the same chat.
-        edited = self.first.team_request('PATCH', self.path(f'messages/{sent["id"]}'),
+        edited = self.phone(self.first)('PATCH', self.path(f'messages/{sent["id"]}'),
                                          {'text': 'Hello, Grace'})['message']
         self.assertEqual((edited['text'], edited['first']), ('Hello, Grace', sent['first']))
         self.assertIsNotNone(edited['edited_at'])
         self.assertEqual(self.texts(self.second), ['Hello Ada', 'Hello, Grace'])
-        self.assertEqual(self.first.team_request('DELETE', self.path(f'messages/{sent["id"]}'), {}),
+        self.assertEqual(self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {}),
                          {'room': self.room, 'id': sent['id'], 'deleted': True})
         chats = [[{name: value for name, value in message.items() if name != 'this_mac'}
                   for message in self.page(service)['messages']] for service in (self.first, self.second)]
@@ -338,15 +338,15 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         self.assertEqual({name: self.view(self.second)['last_message'][name] for name in ('member_name', 'this_mac')},
                          {'member_name': 'Grace', 'this_mac': True})
         self.assertEqual(self.view(self.second)['unread'], 1)
-        answer = self.second.team_request('POST', self.path('read'), {'first': sent['first']})
+        answer = self.phone(self.second)('POST', self.path('read'), {'first': sent['first']})
         self.assertEqual(answer, {'room': self.room, 'read': sent['first'], 'unread': 0})
         self.assertEqual(self.view(self.second)['unread'], 0)
         self.assertEqual(self.view(self.first)['unread'], 1)
         # A position from before does not move it back.
-        self.assertEqual(self.second.team_request('POST', self.path('read'), {'first': 1})['read'], sent['first'])
+        self.assertEqual(self.phone(self.second)('POST', self.path('read'), {'first': 1})['read'], sent['first'])
         for value in (-1, 'x', 1.5, True, None, MAX_NUMBER + 1):
             with self.subTest(first=value):
-                refusal = self.refusal(self.second.team_request, 'POST', self.path('read'), {'first': value})
+                refusal = self.refusal(self.phone(self.second), 'POST', self.path('read'), {'first': value})
                 self.assertEqual(refusal[0], 400)
 
     def test_pages_go_back_in_order(self):
@@ -360,7 +360,7 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         for query in ({'limit': '0'}, {'limit': '101'}, {'limit': 'x'}, {'before': '-1'}, {'before': '1e3'},
                       {'before': '٣'}, {'before': str(MAX_NUMBER + 1)}):
             with self.subTest(query=query):
-                self.assertEqual(self.refusal(self.second.team_request, 'GET', self.path(), query)[0], 400)
+                self.assertEqual(self.refusal(self.phone(self.second), 'GET', self.path(), query)[0], 400)
         self.assertEqual(len(self.page(self.second, limit=100)['messages']), 7)
 
     def test_a_write_that_breaks_a_rule_is_refused_with_a_text_for_a_person(self):
@@ -369,7 +369,7 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         mention, gone, own = ((400, 'Mention only people and bots of this team.'),
                               (404, 'This message is no longer in the chat.'), (403, 'You can change only your own messages.'))
         member_entry = self.first.team_store.members(self.room)[0]['entry']
-        first, second = self.first.team_request, self.second.team_request
+        first, second = self.phone(self.first), self.phone(self.second)
         cases = [
             (lambda: self.send(self.first, ''), (400, 'Write a message.')),
             (lambda: self.send(self.first, ' \n'), (400, 'Write a message.')),
@@ -437,13 +437,13 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
             service.team_sync_pass()
             self.assertEqual(service._cursor(), cursor[service])
         # The read position from another device of the person, an edit and a removal.
-        self.second.team_request('POST', self.path('read'), {'first': sent['first']})
+        self.phone(self.second)('POST', self.path('read'), {'first': sent['first']})
         self.assertEqual(changed(self.second, cursor[self.second]), [self.room])
         cursor[self.second] = self.second._cursor()
-        self.second.team_request('POST', self.path('read'), {'first': sent['first']})
+        self.phone(self.second)('POST', self.path('read'), {'first': sent['first']})
         self.assertEqual(self.second._cursor(), cursor[self.second])
         for method, body in (('PATCH', {'text': 'Hello again'}), ('DELETE', {})):
-            self.first.team_request(method, self.path(f'messages/{sent["id"]}'), body)
+            self.phone(self.first)(method, self.path(f'messages/{sent["id"]}'), body)
             self.second.team_sync_pass()
             self.assertEqual(changed(self.second, cursor[self.second]), [self.room], method)
             cursor[self.second] = self.second._cursor()
@@ -454,7 +454,7 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         stored['at'] += 5000
         relay_at = stored['at']
         # The edit replaces the send on the relay before a pass reads the send back.
-        self.first.team_request('PATCH', self.path(f'messages/{sent["id"]}'), {'text': 'Hello again'})
+        self.phone(self.first)('PATCH', self.path(f'messages/{sent["id"]}'), {'text': 'Hello again'})
         self.first.team_sync_pass()
         (row,) = self.page(self.first, sync=False)['messages']
         self.assertEqual((row['text'], row['created_at']), ('Hello again', team_store.relay_time(relay_at)))
@@ -503,7 +503,7 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
                                                   'text': 'Done.'})
         self.assertEqual((views[to_nothing]['reply_to'], views[to_nothing]['reply']), ('c' * 32, None))
         # A removed message gives no quote. `reply_to` stays.
-        self.first.team_request('DELETE', self.path(f'messages/{first["id"]}'), {})
+        self.phone(self.first)('DELETE', self.path(f'messages/{first["id"]}'), {})
         views = {message['id']: message for message in self.page(self.second)['messages']}
         self.assertEqual((views[answer['id']]['reply_to'], views[answer['id']]['reply']), (first['id'], None))
 
@@ -517,10 +517,10 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
             raise TeamRelayError(0, 'The relay did not answer.')
         self.relay.write = lose_the_answer
         path = self.path(f'messages/{sent["id"]}')
-        self.assertEqual(self.refusal(self.first.team_request, 'DELETE', path, {}, str(uuid4()), 'phone')[0], 503)
+        self.assertEqual(self.refusal(self.phone(self.first), 'DELETE', path, {}, str(uuid4()), 'phone')[0], 503)
         writes = len([request for request in self.relay.requests if request[0] == 'write'])
         # The repeat has no saved answer, because the first request failed. It reads the delete back, and writes nothing.
-        self.assertEqual(self.first.team_request('DELETE', path, {}, str(uuid4()), 'phone'),
+        self.assertEqual(self.phone(self.first)('DELETE', path, {}, str(uuid4()), 'phone'),
                          {'room': self.room, 'id': sent['id'], 'deleted': True})
         self.assertEqual(len([request for request in self.relay.requests if request[0] == 'write']), writes)
         stored = self.first.team_store.entry(self.room, sent['id'])
@@ -531,17 +531,17 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         # An ID that the store does not have is 404, and an entry of another member is 403.
         other = self.send(self.second, 'Mine')
         self.first.team_sync_pass()
-        self.assertEqual(self.refusal(self.first.team_request, 'DELETE', self.path(f'messages/{"f" * 32}'), {})[0], 404)
-        self.assertEqual(self.refusal(self.first.team_request, 'DELETE', self.path(f'messages/{other["id"]}'), {})[0],
+        self.assertEqual(self.refusal(self.phone(self.first), 'DELETE', self.path(f'messages/{"f" * 32}'), {})[0], 404)
+        self.assertEqual(self.refusal(self.phone(self.first), 'DELETE', self.path(f'messages/{other["id"]}'), {})[0],
                          403)
-        self.second.team_request('DELETE', self.path(f'messages/{other["id"]}'), {})
+        self.phone(self.second)('DELETE', self.path(f'messages/{other["id"]}'), {})
         self.first.team_sync_pass()
-        self.assertEqual(self.refusal(self.first.team_request, 'DELETE', self.path(f'messages/{other["id"]}'), {})[0],
+        self.assertEqual(self.refusal(self.phone(self.first), 'DELETE', self.path(f'messages/{other["id"]}'), {})[0],
                          403)
 
     def test_a_repeat_with_the_same_key_sends_one_message(self):
         key = str(uuid4())
-        answers = [self.first.team_request('POST', self.path(), {'text': 'Once'}, key, 'phone') for _ in range(2)]
+        answers = [self.phone(self.first)('POST', self.path(), {'text': 'Once'}, key, 'phone') for _ in range(2)]
         self.assertEqual(answers[0], answers[1])
         self.assertEqual(self.texts(self.second), ['Once'])
         # The relay takes the write, and its answer gets lost. The repeat finds the write and sends no second message.
@@ -552,17 +552,17 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
             write(*arguments, **options)
             raise TeamRelayError(0, 'The relay did not answer.')
         self.relay.write = lose_the_answer
-        lost = self.refusal(self.first.team_request, 'POST', self.path(), {'text': 'Twice'}, key, 'phone')
+        lost = self.refusal(self.phone(self.first), 'POST', self.path(), {'text': 'Twice'}, key, 'phone')
         self.assertEqual(lost[0], 503)
-        repeat = self.first.team_request('POST', self.path(), {'text': 'Twice'}, key, 'phone')['message']
+        repeat = self.phone(self.first)('POST', self.path(), {'text': 'Twice'}, key, 'phone')['message']
         self.assertEqual((repeat['text'], repeat['edited_at']), ('Twice', None))
         self.assertEqual(self.texts(self.second), ['Twice', 'Once'])
         # The same key of another device is another request.
-        self.first.team_request('POST', self.path(), {'text': 'Twice'}, key, 'tablet')
+        self.phone(self.first)('POST', self.path(), {'text': 'Twice'}, key, 'tablet')
         self.assertEqual(self.texts(self.second), ['Twice', 'Twice', 'Once'])
         # A repeat of a removal gets the same answer.
         key = str(uuid4())
-        deleted = [self.first.team_request('DELETE', self.path(f'messages/{answers[0]["message"]["id"]}'), {}, key,
+        deleted = [self.phone(self.first)('DELETE', self.path(f'messages/{answers[0]["message"]["id"]}'), {}, key,
                                            'phone') for _ in range(2)]
         self.assertEqual(deleted[0], deleted[1])
         self.assertEqual(self.texts(self.second), ['Twice', 'Twice'])
@@ -588,7 +588,7 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         secret = 'The private words 7f3a'
         sent = self.send(self.first, secret)
         self.second.team_sync_pass()
-        self.first.team_request('PATCH', self.path(f'messages/{sent["id"]}'), {'text': secret + ' again'})
+        self.phone(self.first)('PATCH', self.path(f'messages/{sent["id"]}'), {'text': secret + ' again'})
         # A message of another member that breaks a rule, and a write that the relay does not answer.
         keys = team_keys.read(self.second.root, self.room)
         body = self.second.team_helper.seal(self.room, 'e' * 32, 0, keys['keys']['0'], keys['member_key'],
@@ -601,7 +601,7 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         self.first.team_wake(retry=True)
         self.first.team_sync_pass()
         self.relay.down = False
-        self.first.team_request('DELETE', self.path(f'messages/{sent["id"]}'), {})
+        self.phone(self.first)('DELETE', self.path(f'messages/{sent["id"]}'), {})
         self.second.team_sync_pass()
         output = '\n'.join(logging.Formatter().format(record) for record in records)
         self.assertIn('coconut.team_log', output)
