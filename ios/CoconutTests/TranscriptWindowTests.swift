@@ -31,20 +31,58 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertFalse(window.include("gone", in: rows))
     }
 
-    func testGrowAtTheTopAddsABatchUntilTheFirstRow() {
+    func testAChatThatOpensAtAnOlderMessageDoesNotGrowByItself() {
         var window = TranscriptWindow()
         window.settle()
-        let rows = ids(130)
-        XCTAssertTrue(window.growTop(in: rows))
-        XCTAssertEqual(window.range(of: rows), (130 - TranscriptWindow.settledRows - TranscriptWindow.batchRows)..<130)
-        // Each further grow adds one batch, and the last one stops at the first row.
-        var grows = 1
-        while window.growTop(in: rows) { grows += 1 }
-        let above = 130 - TranscriptWindow.settledRows
-        XCTAssertEqual(grows, (above + TranscriptWindow.batchRows - 1) / TranscriptWindow.batchRows)
-        XCTAssertEqual(window.range(of: rows), 0..<130)
-        XCTAssertFalse(window.hasRowsAbove(rows))
-        XCTAssertFalse(window.growTop(in: rows))
+        let rows = ids(1_270)
+        // The chat shows the message, so the reader is not at the bottom.
+        XCTAssertFalse(window.growsAtRest(ids: rows, focusId: "m700", atBottom: false, idle: true))
+        XCTAssertEqual(window.range(of: rows, focusId: "m700").lowerBound, 700 - TranscriptWindow.contextRows)
+    }
+
+    func testNoGrowthWhileTheReaderIsAwayFromTheBottom() {
+        var window = TranscriptWindow()
+        window.settle()
+        let rows = ids(1_270)
+        XCTAssertFalse(window.growsAtRest(ids: rows, atBottom: false, idle: true))
+        XCTAssertFalse(window.growsAtRest(ids: rows, atBottom: false, idle: false))
+        // At the bottom, but the reader scrolls or types.
+        XCTAssertFalse(window.growsAtRest(ids: rows, atBottom: true, idle: false))
+    }
+
+    func testGrowthAtRestAtTheBottomStopsAtTheLimit() {
+        var window = TranscriptWindow()
+        window.settle()
+        let rows = ids(1_270)
+        var batches = 0
+        while window.growsAtRest(ids: rows, atBottom: true, idle: true) {
+            XCTAssertTrue(window.growTop(in: rows, rows: TranscriptWindow.restBatchRows))
+            batches += 1
+        }
+        XCTAssertGreaterThanOrEqual(window.range(of: rows).count, TranscriptWindow.restRows)
+        XCTAssertLessThan(window.range(of: rows).count, TranscriptWindow.restRows + TranscriptWindow.restBatchRows)
+        XCTAssertEqual(batches, (TranscriptWindow.restRows - TranscriptWindow.settledRows + TranscriptWindow.restBatchRows - 1)
+                                / TranscriptWindow.restBatchRows)
+        // A chat with fewer rows than the limit stops at its first row.
+        var short = TranscriptWindow()
+        short.settle()
+        let few = ids(60)
+        while short.growsAtRest(ids: few, atBottom: true, idle: true) { short.growTop(in: few, rows: TranscriptWindow.restBatchRows) }
+        XCTAssertEqual(short.range(of: few), 0..<60)
+    }
+
+    func testAPressAddsOneBatch() {
+        var window = TranscriptWindow()
+        window.settle()
+        let rows = ids(1_270)
+        let before = window.range(of: rows).lowerBound
+        XCTAssertTrue(window.growTop(in: rows, rows: TranscriptWindow.pressRows))
+        XCTAssertEqual(window.range(of: rows).lowerBound, before - TranscriptWindow.pressRows)
+        // At the first row a press adds nothing: the control loads a page from the Mac instead.
+        var all = TranscriptWindow()
+        let few = ids(10)
+        XCTAssertEqual(all.range(of: few), 0..<10)
+        XCTAssertFalse(all.growTop(in: few, rows: TranscriptWindow.pressRows))
     }
 
     func testAChatShorterThanAScreenBuildsAllRows() {
@@ -52,7 +90,7 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertEqual(window.range(of: ids(5)), 0..<5)
         XCTAssertEqual(window.range(of: []), 0..<0)
         XCTAssertFalse(window.hasRowsAbove(ids(5)))
-        XCTAssertFalse(window.growTop(in: ids(5)))
+        XCTAssertFalse(window.growsAtRest(ids: ids(5), atBottom: true, idle: true))
         window.settle()
         XCTAssertEqual(window.range(of: ids(30)), 0..<30)
     }
@@ -61,12 +99,12 @@ final class TranscriptWindowTests: XCTestCase {
         var window = TranscriptWindow()
         window.settle()
         var rows = ids(300)
-        window.growTop(in: rows)
+        window.growTop(in: rows, rows: TranscriptWindow.pressRows)
         let first = window.range(of: rows).lowerBound
         rows.append("new")
         // The window holds the same oldest row and the new row at the bottom.
         XCTAssertEqual(window.range(of: rows), first..<301)
-        // A page of older history from the Mac also leaves the rows of the window where they are.
+        // A page of older history from the Mac also leaves the rows of the window as they are.
         rows = ids(50, from: 1_000) + rows
         XCTAssertEqual(rows[window.range(of: rows).lowerBound], "m\(first)")
     }
@@ -79,65 +117,15 @@ final class TranscriptWindowTests: XCTestCase {
         rows = ids(50, from: 1_000) + rows
         // The page from the Mac stays above the window until the window grows.
         XCTAssertEqual(window.range(of: rows), 50..<60)
-        XCTAssertTrue(window.growTop(in: rows))
-        XCTAssertEqual(window.range(of: rows), (50 - TranscriptWindow.batchRows)..<60)
-    }
-
-    // The hold. Rows of a list, from the top: the header, the transcript, the status row, the bottom spacer.
-    private let list: [(id: String, height: CGFloat)] = [("header", 10), ("m1", 120), ("m2", 80), ("m3", 200),
-                                                          ("m4", 60), ("m5", 90), ("status", 40), ("spacer", 20)]
-    /// m3 and m4 are on screen.
-    private let onScreen = ["m3", "m4"]
-
-    private func tops(_ rows: [(id: String, height: CGFloat)]) -> [String: CGFloat] {
-        var top: CGFloat = 0
-        var tops: [String: CGFloat] = [:]
-        for row in rows { tops[row.id] = top; top += row.height }
-        return tops
-    }
-
-    private func correction(after: [(id: String, height: CGFloat)]) -> CGFloat? {
-        let before = tops(list)
-        return TranscriptHoldRule.correction(anchors: onScreen.map { ($0, before[$0]!) }, topsAfter: tops(after))
-    }
-
-    private func older(_ heights: [CGFloat]) -> [(id: String, height: CGFloat)] {
-        heights.enumerated().map { ("old\($0.offset)", $0.element) }
-    }
-
-    func testAGrowthAboveWithTheStatusRowRemovedBelowCorrectsForTheGrowth() {
-        let after = [list[0]] + older([300, 45, 130, 70, 55]) + list[1...5] + [list[7]]
-        XCTAssertEqual(correction(after: Array(after)), 600)
-    }
-
-    func testAGrowthAboveWithAReplyBelowCorrectsForTheGrowth() {
-        let after = [list[0]] + older([300, 45]) + list[1...5] + [(id: "reply", height: CGFloat(150))] + list[6...7]
-        XCTAssertEqual(correction(after: Array(after)), 345)
-    }
-
-    func testARowDeletedAboveTheAnchorMovesBackByItsHeight() {
-        XCTAssertEqual(correction(after: list.filter { $0.id != "m2" }), -80)
-    }
-
-    func testARowDeletedBelowTheAnchorChangesNothing() {
-        XCTAssertEqual(correction(after: list.filter { $0.id != "m5" }), 0)
-    }
-
-    func testADeletedAnchorUsesTheNextRowThatWasOnScreen() {
-        // m3 is gone; m4 was at 410 and is at 210 now.
-        XCTAssertEqual(correction(after: list.filter { $0.id != "m3" }), -200)
-        XCTAssertNil(correction(after: list.filter { !onScreen.contains($0.id) }))
-    }
-
-    func testNoChangeGivesNoCorrection() {
-        XCTAssertEqual(correction(after: list), 0)
+        XCTAssertTrue(window.growTop(in: rows, rows: TranscriptWindow.pressRows))
+        XCTAssertEqual(window.range(of: rows), 0..<60)
     }
 
     func testARemovedFirstRowCountsTheWindowFromTheEnd() {
         var window = TranscriptWindow()
         window.settle()
         var rows = ids(300)
-        window.growTop(in: rows)
+        window.growTop(in: rows, rows: TranscriptWindow.pressRows)
         let first = rows[window.range(of: rows).lowerBound]
         rows.removeAll { $0 == first }
         XCTAssertEqual(window.range(of: rows), (299 - TranscriptWindow.settledRows)..<299)

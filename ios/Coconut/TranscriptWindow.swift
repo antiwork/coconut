@@ -20,42 +20,37 @@ struct ContentSizeChange: Equatable {
 /// and a change must not draw the chat again.
 @MainActor
 final class TranscriptReader {
-    /// The reader is within `TranscriptWindow.nearScreens` screens of the oldest row that the list holds.
-    var nearTop = false
     /// The last scroll or keystroke of the reader.
     var lastAction = Date.distantPast
 
     /// The reader did nothing for half a second.
     var idle: Bool { Date().timeIntervalSince(lastAction) > 0.5 }
-
-    static func nearTop(_ geometry: ScrollGeometry) -> Bool {
-        geometry.contentOffset.y + geometry.contentInsets.top < geometry.containerSize.height * TranscriptWindow.nearScreens
-    }
 }
 
 /// The rows of a chat that its list builds: the newest rows, from one row down to the end.
 ///
 /// A Mac list measures the height of every row that it holds when it opens. A chat of 1,270 rows took about 2 seconds
 /// to show. The chat builds only the rows that fill its view first, then a window of `settledRows` right after the first
-/// frame. Then it adds small batches of older rows: while the reader is near the top of the window, and while the
-/// reader does nothing, up to `idleRows`. The rows stay in memory; only the list holds fewer of them.
+/// frame. Then it adds small batches of older rows while the reader rests at the bottom of the chat, up to `restRows`:
+/// there the chat follows its newest row, so rows above cannot move what the reader sees. While the reader is away from
+/// the bottom, the window does not grow by itself; the control above the window adds `pressRows` on each press. The
+/// rows stay in memory; only the list holds fewer of them.
 ///
 /// The window keeps the ID of its oldest row, not a count. New rows at the bottom, and a page of older history from the
-/// Mac, then leave the rows on screen where they are.
+/// Mac, then leave the rows of the window as they are.
 struct TranscriptWindow: Equatable {
     /// Rows that fill a chat view when it opens. A row is at least about 45 points high, so 18 rows fill a view of
     /// 800 points.
     static let openRows = 18
     /// The rows that the chat builds after its first frame.
     static let settledRows = 40
-    /// The rows of one batch. The Mac measures a new batch at once. A batch costs about 40 ms and 4 ms more for each
-    /// row, so 5 rows keep the pause near 50 ms; the longest pause of a scroll through the whole chat was 160 ms.
-    static let batchRows = 5
-    /// The window grows while the reader is within this many screens of its oldest row, so a scroll seldom reaches it.
-    static let nearScreens: CGFloat = 3
-    /// The rows that the window grows to while the reader does nothing. An update of an open chat cost the same with 40
-    /// and with 400 rows, but a switch to another chat removes each row: about 0.2 ms a row.
-    static let idleRows = 200
+    /// The rows of one batch of the growth at rest. A small batch keeps each pause short.
+    static let restBatchRows = 10
+    /// The rows that the window grows to at rest. An update of an open chat cost the same with 40 and with 400 rows,
+    /// but leaving the chat removes each row: about 0.2 ms a row, so 40 ms for this window.
+    static let restRows = 200
+    /// The rows that one press of the control above the window adds.
+    static let pressRows = 50
     /// The rows above a message that the chat opens at, so the reader sees what came before it.
     static let contextRows = 5
 
@@ -90,13 +85,20 @@ struct TranscriptWindow: Equatable {
         return true
     }
 
-    /// Adds a batch of older rows above the window. False when the window starts at the oldest row already.
+    /// Adds `rows` older rows above the window. False when the window starts at the oldest row already.
     @discardableResult
-    mutating func growTop(in ids: [String], focusId: String? = nil) -> Bool {
+    mutating func growTop(in ids: [String], focusId: String? = nil, rows: Int) -> Bool {
         let start = range(of: ids, focusId: focusId).lowerBound
         guard start > 0 else { return false }
-        firstId = ids[max(0, start - Self.batchRows)]
+        firstId = ids[max(0, start - rows)]
         return true
+    }
+
+    /// Whether the window grows by itself now: only while the reader rests at the bottom of the chat, and only up to
+    /// `restRows`.
+    func growsAtRest(ids: [String], focusId: String? = nil, atBottom: Bool, idle: Bool) -> Bool {
+        let window = range(of: ids, focusId: focusId)
+        return atBottom && idle && window.lowerBound > 0 && window.count < Self.restRows
     }
 
     /// Keeps the oldest row of the window as it is now, so rows that arrive above it, such as a page of history from the
