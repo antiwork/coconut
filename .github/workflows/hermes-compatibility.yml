@@ -166,7 +166,8 @@ jobs:
           git -C "$HERMES_HOME/hermes-agent" status --porcelain --untracked-files=no > "$RUNNER_TEMP/hermes-source-status"
       - name: Check native claims, recovery, and worktrees (part 1)
         id: native_1
-        # The tests of this part took about 6.6 minutes on the slower leg of recent runs.
+        # The tests of this part took about 6.6 minutes on the slower leg of recent runs, before test_native_team_chat.py
+        # added about 1.5 minutes (90 seconds on a developer Mac).
         if: steps.install.outcome == 'success' && matrix.part == 1
         continue-on-error: ${{ !matrix.leg.required }}
         timeout-minutes: 32
@@ -204,6 +205,9 @@ jobs:
           cat .runtime/closed-source-continuation.log
           grep -qx 'OK' .runtime/closed-source-continuation.log # The real assignment pass, archive note, and successor dispatch must run, not skip.
           grep -Eq '^Ran 24 tests in ' .runtime/closed-source-continuation.log # Includes the three checks against the real adapter, one of them for the parked card of a completed request.
+          "$COCONUT_HERMES_PYTHON" -m unittest discover -s backend/tests -p test_native_team_chat.py 2> .runtime/native-team-chat.log || { cat .runtime/native-team-chat.log; exit 1; }
+          cat .runtime/native-team-chat.log
+          grep -qx 'OK' .runtime/native-team-chat.log # A real gateway must carry the turns of the team chat, so the check must not skip.
           # The tests do not change the Hermes source folder.
           git -C "$COCONUT_HERMES_ROOT" status --porcelain --untracked-files=no | diff "$RUNNER_TEMP/hermes-source-status" -
       - name: Check native claims, recovery, and worktrees (part 2)
