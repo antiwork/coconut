@@ -73,7 +73,7 @@ A team is a set of Macs that share their bots and the pages of these bots. A per
    printf '%s\n' '<the invite link>' | coconut team join --name '<name of this Mac>'
    ```
 
-   `printf` is a command of the shell, so no process gets the link as an argument. Without `--name`, the member list shows "Member".
+   The link is then not an argument of `coconut`: the tool reads it from standard input. Without `--name`, the member list shows "Member".
 2. Never repeat the link in a reply, a log, a file, or a memory. It lets any Mac into the team.
 3. To add a bot of this Mac, run `coconut team add-bot <bot>`. `<bot>` is the name or the ID of the bot. When this Mac is in more than one team, add `--team <name or ID>`.
 4. Run `coconut team` to read the state: the members, the bots, and the sync error. Another Mac shows a new bot after its next sync, within a minute.
