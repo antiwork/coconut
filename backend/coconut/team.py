@@ -162,6 +162,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
 
     def _init_team(self):
         self.team_store = TeamStore(self.db)
+        self.team_store.migrate()
         self.team_relay = TeamRelay()
         self.team_helper = TeamHelper(self.root)
         # One room operation runs at a time. It calls the relay and the helper, so it does not hold the service lock.
@@ -300,7 +301,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         refused = [{name: value for name, value in refusal.items() if name != 'form'}
                    for refusal in self._team_refusals.get(room['room'], {}).values()]
         members = [dict(member=member['member'], name=member['name'], avatar=member['avatar'], color=member['color'],
-                        admin=member['member'] == room['admin'], this_mac=member['member'] == room['member'])
+                        admin=member['member'] == room['admin'], this_mac=member['member'] == room['member'],
+                        bot_only=bool(member['bot_only']))
                    for member in self.team_store.members(room['room'])]
         is_admin = room['member'] == room['admin']
         return {'room': room['room'], 'name': room['name'], 'relay': room['relay'], 'state': room['state'],
@@ -544,7 +546,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
             current = json.loads(room['profile'])
             profile = dict(current, **member_profile(data, current))
             # The accepted write of this Mac saves the profile in the same transaction.
-            self._team_write(room, profile['entry'], True, member_payload(profile), tries=2)
+            self._team_write(room, profile['entry'], True, member_payload(profile, self._team_bot_only), tries=2)
         return self._team_answer(room_id)
 
     def team_sync_now(self) -> dict:
