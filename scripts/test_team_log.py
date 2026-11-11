@@ -620,6 +620,17 @@ class TeamSocketTests(unittest.TestCase):
         print(f'After the restart of the relay, the socket brought the entry in {delay:.2f} seconds.')
         self.assertLess(delay, self.LIMIT_SECONDS)
 
+        # Ada sends a message in the Team chat. Grace's Mac has it without a sync call, and the phone learns of it.
+        cursor = second.phone('GET', '/v1/updates')[1]['cursor']
+        messages = f'/v1/team/rooms/{room_id}/messages'
+        status, answer = first.phone('POST', messages, {'text': 'Hello Grace'})
+        self.assertEqual(status, 200, answer)
+        delay = self.wait_until(lambda: [row['text'] for row in second.phone('GET', messages)[1]['messages']]
+                                == ['Hello Grace'], self.LIMIT_SECONDS + 3)
+        print(f'The socket brought the message in {delay:.2f} seconds.')
+        self.assertLess(delay, self.LIMIT_SECONDS)
+        self.assertIn(room_id, second.phone('GET', f'/v1/updates?after={cursor}')[1]['team_messages_changed'])
+
         # The second Mac leaves, so the socket of its room goes. The admin then leaves the room without other members.
         token = second.keys(room_id)['token']
         self.assertEqual(second.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
