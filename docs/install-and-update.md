@@ -104,6 +104,26 @@ The same step installs the `coconut` platform of the Hermes gateway in each of t
 Each update and each start set these entries again, as for the skills folder. Coconut owns the keys that it sets in `gateway.platforms.coconut`. The other keys of that block stay.
 The uninstaller removes the link and both settings.
 
+### Team commands of the coconut tool
+
+A Mac with no person at it can join a team from a message, as `coconut pair <code>` pairs an iPhone. Hermes runs these commands of `Coconut.app/Contents/Helpers/coconut`:
+
+| Command | What it does |
+|---|---|
+| `coconut team` | Prints the teams of this Mac: the name, the ID, the state, the admin, the members, the bots, and the sync error. `--json` prints the answer of the service. |
+| `coconut team join [--name <text>]` | Joins a team with the invite link on standard input. `--name` is the name of this Mac in the member list. Without it, the service uses "Member". |
+| `coconut team add-bot <bot> [--team <name or ID>]` | Adds a bot of this Mac to the team. `<bot>` is the ID or the name of the bot. Case does not matter. |
+| `coconut team remove-bot <bot> [--team <name or ID>]` | Removes a bot of this Mac from the team. |
+| `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team, and deletes its copy and its keys on this Mac. Without `--confirm`, it prints what a leave does and the exact command. |
+
+- The invite link is a secret. The tool reads it only from standard input, and no output of the tool has it. In a terminal, the tool asks for the link and does not show it.
+- When this Mac is in more than one team, a command for one team needs `--team`.
+- A join that is done already prints "This Mac is already in this team." and exits with 0.
+- Each error prints the text of the service and exits with a status that is not 0. A service that does not answer, a service without the team routes, and a Coconut without its team helper each print one line that says what to do.
+- `COCONUT_INSTALL_DIR` points the tool at another install folder, for example the folder of a test service.
+
+The tool calls the team routes of the service with the token of `<data>/gateway/bridge.json`. See [the team log](team-log.md#mac). A person makes a team and an invite on the Team screen of the app.
+
 ## GitHub access for a bot
 
 Bots use the GitHub CLI login of the Mac account, as your normal Mac Terminal does.

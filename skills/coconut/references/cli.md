@@ -12,6 +12,11 @@ The tool is in the app bundle: `/Applications/Coconut.app/Contents/Helpers/cocon
 | `coconut settings automatic-updates on` or `off` | Turns automatic updates on or off. |
 | `coconut pair` | Prints a one-time iPhone setup link. |
 | `coconut pair <code>` | Pairs the iPhone that shows this code. See `references/pairing.md`. |
+| `coconut team` | Prints the teams of this Mac: the name, the ID, the state, the admin, the members, the bots, and the sync error. `--json` prints the answer of the service. |
+| `coconut team join [--name <text>]` | Joins a team with the invite link on standard input. Never put the link in the command. |
+| `coconut team add-bot <bot> [--team <name or ID>]` | Adds a bot of this Mac to the team, by its name or its ID. |
+| `coconut team remove-bot <bot> [--team <name or ID>]` | Removes a bot of this Mac from the team. |
+| `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team. Without `--confirm`, it prints what a leave does and the exact command. |
 | `coconut version` | Prints the version of Coconut.app. |
 
 The app and its login items use these commands. Do not run them yourself:

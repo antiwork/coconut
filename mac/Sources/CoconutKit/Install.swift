@@ -8,7 +8,7 @@ import Foundation
 ///     defaults write com.gumroad.coconut.mac InstallDirectory /path/to/folder
 ///
 /// `COCONUT_INSTALL_DIR` overrides it for one command in Terminal. launchd gives the login items no such variable.
-public struct Install: Equatable {
+public struct Install: Equatable, Sendable {
     public static let preferencesDomain = "com.gumroad.coconut.mac"
     public static let preferenceKey = "InstallDirectory"
 
@@ -26,14 +26,17 @@ public struct Install: Equatable {
         return FileManager.default.homeDirectoryForCurrentUser
     }
 
+    /// The command reads the preference only when `COCONUT_INSTALL_DIR` names no folder. So a command for a scratch
+    /// folder does not read the preferences of the app.
     public static func standard(environment: [String: String] = ProcessInfo.processInfo.environment,
-                                preference: String? = CFPreferencesCopyAppValue(preferenceKey as CFString,
-                                                                                  preferencesDomain as CFString) as? String,
+                                preference: @autoclosure () -> String? = CFPreferencesCopyAppValue(
+                                    preferenceKey as CFString, preferencesDomain as CFString) as? String,
                                 home: URL = Install.homeFolder()) -> Install {
-        for value in [environment["COCONUT_INSTALL_DIR"], preference] {
-            if let value, !value.isEmpty {
-                return Install(root: URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true))
-            }
+        if let value = environment["COCONUT_INSTALL_DIR"], !value.isEmpty {
+            return Install(root: URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true))
+        }
+        if let value = preference(), !value.isEmpty {
+            return Install(root: URL(fileURLWithPath: (value as NSString).expandingTildeInPath, isDirectory: true))
         }
         return Install(root: home.appendingPathComponent("Coconut", isDirectory: true))
     }

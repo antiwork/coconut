@@ -453,6 +453,73 @@ class TeamLogTests(unittest.TestCase):
             for text in ('Hello **Grace**', 'Hello, Grace', 'Hello Ada'):
                 self.assertNotIn(text, self.log(mac))
 
+    def test_a_mac_without_a_person_joins_with_the_coconut_tool(self):
+        first, second, _ = self.macs
+        status, answer = first.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                               'relay': self.url})
+        self.assertEqual(status, 200, answer)
+        room_id = answer['room']['room']
+        link = first.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
+        status, bot = second.phone('POST', '/v1/bots', {'name': 'Night Bot'})
+        self.assertEqual(status, 200, bot)
+        tool = self.coconut_tool()
+        outputs = []
+
+        def run(mac: Mac, *arguments: str, link_input: str = '') -> tuple[int, list[str]]:
+            # The tool finds the data of a Mac in <install>/.runtime/host, so each Mac gets an install folder.
+            install = Path(self.temp.name) / f'install-{mac.data.name}'
+            if not (install / '.runtime/host').exists():
+                (install / '.runtime').mkdir(parents=True)
+                (install / '.runtime/host').symlink_to(mac.data)
+            result = subprocess.run([str(tool), 'team', *arguments], input=link_input, capture_output=True, text=True,
+                                    env={'PATH': os.environ['PATH'], 'HOME': self.temp.name,
+                                         'COCONUT_INSTALL_DIR': str(install)}, timeout=240)
+            outputs.append(result.stdout + result.stderr)
+            return result.returncode, (result.stdout or result.stderr).splitlines()
+
+        # The second Mac joins with the link on standard input, then joins again.
+        code, lines = run(second, 'join', '--name', 'Grace', link_input=link + '\n')
+        self.assertEqual((code, lines[:3]), (0, ['This Mac joined the team Example Team.', 'Team: Example Team',
+                                                 f'ID: {room_id}']), lines)
+        self.assertEqual(run(second, 'join', link_input=link), (0, ['This Mac is already in this team.']))
+        # The link is never an argument, and the tool does not repeat it.
+        self.assertEqual(run(second, 'join', link)[0], 64)
+
+        # The second Mac adds its bot by its name, in another case.
+        self.assertEqual(run(second, 'add-bot', 'night bot'), (0, ['The bot Night Bot is in the team Example Team now.']))
+        self.assertEqual(run(second, 'add-bot', 'Day Bot')[0], 1)
+        # A pass of the second Mac writes the bot entry, and a pass of the first Mac reads it.
+        second.rooms()
+        first.rooms()
+        code, lines = run(first)
+        self.assertEqual(code, 0, lines)
+        self.assertEqual(lines, ['Team: Example Team', f'ID: {room_id}', 'State: active', 'This Mac is the admin: yes',
+                                 'Member: Ada (admin, this Mac)', 'Member: Grace', 'Bot: Night Bot (Mac of Grace)'])
+        code, lines = run(second)
+        self.assertEqual(lines, ['Team: Example Team', f'ID: {room_id}', 'State: active', 'This Mac is the admin: no',
+                                 'Member: Ada (admin)', 'Member: Grace (this Mac)',
+                                 f'Bot: Night Bot (this Mac, ID {bot["id"]})'])
+        code, lines = run(second, '--json')
+        self.assertEqual(json.loads('\n'.join(lines))['rooms'][0]['room'], room_id)
+
+        # A leave needs the name of the team.
+        self.assertEqual(run(second, 'leave')[0], 1)
+        self.assertEqual(run(second, 'leave', '--confirm', 'Example Team'), (0, ['This Mac left the team Example Team.']))
+        self.assertEqual(run(second), (0, ['This Mac is in no team.']))
+        self.assertEqual(first.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
+        # No output of the tool and no log of a service has the link.
+        for text in outputs + [self.log(mac) for mac in self.macs]:
+            self.assertNotIn(link, text)
+        self.assertNotIn(link.removeprefix('coconut://team/'), ''.join(outputs))
+
+    @staticmethod
+    def coconut_tool() -> Path:
+        """The `coconut` tool of the Swift package. The Mac app job of CI ran `swift test` before, so this build is quick."""
+        command = ['swift', 'build', '--package-path', str(ROOT / 'mac'), '--product', 'CoconutTool']
+        subprocess.run(command, check=True, capture_output=True)
+        folder = subprocess.run([*command, '--show-bin-path'], check=True, capture_output=True, text=True).stdout.strip()
+        return Path(folder) / 'CoconutTool'
+
     def team_view(self, mac: Mac, room_id: str) -> dict:
         """A pass of the Mac, started by the phone, then its room as the Team screen gets it."""
         status, answer = mac.phone('POST', '/v1/team/sync', {})

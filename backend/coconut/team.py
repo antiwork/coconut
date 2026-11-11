@@ -9,7 +9,7 @@ on the tunnel listener or on the main listener, with the authorization of its ot
 main listener with the token of <data>/gateway/bridge.json, as scripts/team.py does. One handler serves both. The
 error texts are for a person, because the app shows them.
 
-- `GET /v1/team/rooms`: the rooms with their members, their bots and their sync state.
+- `GET /v1/team/rooms`: the rooms with their members, their bots and their sync state, and the bots of this Mac.
 - `POST /v1/team/rooms` with `{name, member_name, avatar, color, relay}`: make a room. This Mac is its admin.
 - `PATCH /v1/team/rooms/<room>` with `{member_name, avatar, color}`: change what the team sees for this Mac.
 - `POST /v1/team/rooms/<room>/invites` with `{ttl, uses}`: make an invite link. Only the admin can do this.
@@ -275,9 +275,14 @@ class Team(TeamSync, TeamPages, TeamMessages):
     # Reads
 
     def team_rooms(self) -> dict:
+        """The rooms, `helper`, and `mac_bots`: the bots of this Mac that a room can take, so a tool can find a bot by
+        its name (`coconut team add-bot`). An archived or deleted bot is not in that list."""
         with self.lock:
             rooms = [self._team_view(room) for room in self.team_store.rooms()]
-        return {'rooms': rooms, 'helper': self.team_helper.available}
+            bots = sorted(({'id': bot['id'], 'name': bot['name']} for bot in self._all('bots')
+                           if not bot.get('archived') and not bot.get('_deleted')),
+                          key=lambda bot: (bot['name'].casefold(), bot['id']))
+        return {'rooms': rooms, 'helper': self.team_helper.available, 'mac_bots': bots}
 
     def _team_view(self, room: dict) -> dict:
         """What the Team screen and a tool read about a room, with no key. The caller holds the service lock."""
