@@ -72,7 +72,7 @@ final class TeamToolTests: XCTestCase {
 
     func rooms(_ rooms: [[String: Any]], helper: Bool = true,
                bots: [[String: String]]? = [["id": TeamToolTests.reporterID, "name": "Reporter"], ["id": TeamToolTests.helperID, "name": "Helper"]],
-               then: Bool = false, mode: String? = nil) {
+               then: Bool = false, mode: String? = "team") {
         var answer: [String: Any] = ["rooms": rooms, "helper": helper]
         if let bots {
             answer["mac_bots"] = bots
@@ -357,20 +357,21 @@ final class TeamToolTests: XCTestCase {
     }
 
     func testABotThatMatchesNoBotOrTwoBotsListsTheBots() async throws {
+        // add-bot on a Mac for a team only says how to declare a missing bot. remove-bot lists the bots.
         rooms([room()], bots: [["id": Self.reporterID, "name": "Reporter"], ["id": Self.lowerID, "name": "reporter"],
                                ["id": Self.helperID, "name": "Helper"]])
-        var output = try await run(["add-bot", "Writer"])
+        var output = try await run(["remove-bot", "Writer"])
         XCTAssertEqual(output, TeamOutput(lines: [
             "No bot of this Mac has the name or ID \"Writer\". The bots of this Mac:",
             "Bot: Reporter (ID \(Self.reporterID))", "Bot: reporter (ID \(Self.lowerID))", "Bot: Helper (ID \(Self.helperID))"], status: 1))
-        output = try await run(["add-bot", "REPORTER"])
+        output = try await run(["remove-bot", "REPORTER"])
         XCTAssertEqual(output.lines.first, "More than one bot of this Mac has the name \"REPORTER\". Give the ID of the bot. "
                        + "The bots of this Mac:")
         XCTAssertEqual(output.status, 1)
         rooms([room()], bots: [])
-        output = try await run(["add-bot", "Writer"])
+        output = try await run(["remove-bot", "Writer"])
         XCTAssertEqual(output.lines.last, "This Mac has no bots that a team can take.")
-        XCTAssertEqual(service.sent.filter { $0.hasPrefix("POST") }, [])
+        XCTAssertEqual(service.sent.filter { !$0.hasPrefix("GET") }, [])
     }
 
     // A Mac that runs Coconut for a team only
@@ -397,10 +398,21 @@ final class TeamToolTests: XCTestCase {
     }
 
     func testAFullMacDeclaresNoBot() async throws {
-        rooms([room()])
+        rooms([room()], mode: nil)
         let output = try await run(["new-bot", "Reporter"])
         XCTAssertEqual(output, TeamOutput(lines: TeamFailure.fullMac.lines, status: 1))
         XCTAssertEqual(service.sent, ["GET /v1/team/rooms"])
+    }
+
+    func testAPersonsMacAddsAndRemovesNoBotAndSaysHowToShareAPage() async throws {
+        rooms([room(bots: [shared()])], mode: nil)
+        for arguments in [["add-bot", "Reporter"], ["remove-bot", "Reporter"]] {
+            let output = try await run(arguments)
+            XCTAssertEqual(output, TeamOutput(lines: [
+                "The bots of this Mac stay yours, so a team does not get them. To share a page with the team, open it "
+                + "in the Library of the Coconut app."], status: 1))
+        }
+        XCTAssertEqual(service.sent, ["GET /v1/team/rooms", "GET /v1/team/rooms"])
     }
 
     func testATeamOnlyMacSaysHowToDeclareAMissingBot() async throws {
@@ -465,7 +477,7 @@ final class TeamToolTests: XCTestCase {
             "A leave cannot be undone. No person can confirm it here, so the command needs the name of the team.",
             "This Mac leaves the team Ada's Team.",
             "This Mac deletes its copy of the team and its keys.",
-            "The team no longer sees the bots of this Mac and their pages.",
+            "The team no longer sees the pages of this Mac.",
             "To join again, this Mac needs a new invite link.",
             "To leave, run: coconut team leave --confirm 'Ada'\\''s Team'"], status: 1))
         output = try await run(["leave", "--confirm", "ada's team"])
@@ -506,7 +518,7 @@ final class TeamToolTests: XCTestCase {
         XCTAssertEqual(output, TeamOutput(lines: [
             "A leave cannot be undone. No person can confirm it here, so the command needs the name of the team.",
             "This Mac deletes its copy of the team and its keys.",
-            "The team no longer sees the bots of this Mac and their pages.",
+            "The team no longer sees the pages of this Mac.",
             "To join again, this Mac needs a new invite link.",
             "To leave Example Team, run: coconut team leave --confirm 'Example Team'",
             "To leave Other, run: coconut team leave --confirm Other"], status: 1))

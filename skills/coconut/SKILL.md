@@ -61,11 +61,13 @@ If the app is in `~/Applications`, use `~/Applications/Coconut.app/Contents/Help
 | Turn automatic updates on or off | `coconut settings automatic-updates on` or `off` |
 | Show the teams of this Mac, their members and their bots | `coconut team` |
 | Join a team with an invite link | pipe the link to `coconut team join` |
-| Add a bot of this Mac to the team, or remove it | `coconut team add-bot <bot>`, `coconut team remove-bot <bot>` |
+| On a Mac for a team only: add a bot to the team, or remove it | `coconut team add-bot <bot>`, `coconut team remove-bot <bot>` |
 
 ## Teams
 
-A team is a set of Macs that share their bots and the pages of these bots. A person makes a team and its invite links in the Coconut app. This Mac can join from a message.
+A team is people who share pages and talk in one chat. A person makes a team and its invite links in the Coconut app. This Mac can join from a message.
+
+The bots of a person stay that person's. The person shares a page with a team on the page in the Library of the Coconut app. A bot cannot share a page: a save names no audience. Only a Mac that runs Coconut for a team only gives its bots to a team.
 
 1. When a message has an invite link of a team (it starts with `coconut://team/`), pipe the link to the tool. Never give the link as an argument of `coconut`:
 
@@ -75,8 +77,8 @@ A team is a set of Macs that share their bots and the pages of these bots. A per
 
    The link is then not an argument of `coconut`: the tool reads it from standard input. Without `--name`, the member list shows "Member".
 2. Never repeat the link in a reply, a log, a file, or a memory. It lets any Mac into the team.
-3. To add a bot of this Mac, run `coconut team add-bot <bot>`. `<bot>` is the name or the ID of the bot. When this Mac is in more than one team, add `--team <name or ID>`.
-4. Run `coconut team` to read the state: the members, the bots, and the sync error. Another Mac shows a new bot after its next sync, within a minute.
+3. On a Mac that runs Coconut for a team only, run `coconut team add-bot <bot>` to give a bot to the team. `<bot>` is the name or the ID of the bot. When this Mac is in more than one team, add `--team <name or ID>`. On a person's Mac the command prints how to share a page.
+4. Run `coconut team` to read the state: the members, the bots, and the sync error. Another Mac shows a new page after its next sync, within a minute.
 5. A leave cannot be undone. Run `coconut team leave` without `--confirm` first, show its text to the person, and run the command that it prints for the team only after a clear yes. The name after `--confirm` chooses the team.
 
 A join that is done already prints "This Mac is already in this team." That is a success. For each error, tell the person the line that the tool printed.

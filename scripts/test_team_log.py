@@ -133,6 +133,24 @@ class Mac:
         """The key file of a room. The test uses it to write to the relay as this Mac."""
         return json.loads((self.data / f'team/{room}.json').read_text())
 
+    def bot_page(self, name: str) -> tuple[dict, dict]:
+        """A bot of this Mac, and the request of its tooling that saves the page "Weekly report" for it."""
+        from contextlib import closing
+        import sqlite3
+        status, bot = self.phone('POST', '/v1/bots', {'name': name})
+        assert status == 200, bot
+        with closing(sqlite3.connect(f'file:{self.data / "coconut.sqlite3"}?mode=ro', uri=True)) as database:
+            home = database.execute('SELECT home FROM profiles WHERE bot_id=?', (bot['id'],)).fetchone()[0]
+        return bot, {'home': home, 'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
+                     'content': '3 tasks are open.'}
+
+    def document(self, bot: dict, key: str = 'weekly-report') -> dict:
+        """The local document of a bot and a key, as the Library of the phone lists it."""
+        status, answer = self.phone('GET', '/v1/documents')
+        assert status == 200, answer
+        (document,) = (row for row in answer['documents'] if row['bot_id'] == bot['id'] and row['key'] == key)
+        return document
+
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
                      and (ROOT / 'relay/node_modules/miniflare').is_dir(),
@@ -309,7 +327,7 @@ class TeamLogTests(unittest.TestCase):
                            secrets_of_second['member_key'], secrets_of_second['token'], invite['link']):
                 self.assertNotIn(secret, self.log(mac))
 
-    def test_a_mac_shares_a_bot_and_its_page_with_the_team(self):
+    def test_a_person_shares_a_page_with_the_team_and_stops(self):
         first, second, _ = self.macs
         # The second Mac makes the room, so the first Mac can leave it at the end.
         status, answer = second.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Grace',
@@ -319,18 +337,25 @@ class TeamLogTests(unittest.TestCase):
         link = second.call('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
         self.assertEqual(first.call('POST', '/v1/team/join', {'link': link, 'member_name': 'Ada'})[0], 200)
 
-        # The first Mac runs a bot, shares it, and its tooling saves a page for the team.
-        status, bot = first.phone('POST', '/v1/bots', {'name': 'Reporter'})
-        self.assertEqual(status, 200, bot)
-        status, answer = first.call('POST', f'/v1/team/rooms/{room_id}/bots', {'bot_id': bot['id']})
-        self.assertEqual((status, [(row['name'], row['open']) for row in answer['room']['bots']]),
-                         (200, [('Reporter', False)]), answer)
-        with self.database(first) as database:
-            home = database.execute('SELECT home FROM profiles WHERE bot_id=?', (bot['id'],)).fetchone()[0]
-        page = {'home': home, 'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
-                'content': '3 tasks are open.', 'audience': 'team'}
+        # The tooling of the first Mac saves a page of its bot. A bot cannot share it.
+        bot, page = first.bot_page('Reporter')
+        self.assertEqual(first.call('POST', '/v1/gateway/document', dict(page, audience='team')),
+                         (400, {'error': 'Only the person can share a page with a team. Save the page without '
+                                         'audience.'}))
         status, answer = first.call('POST', '/v1/gateway/document', page)
         self.assertEqual((status, answer['version']), (200, 1), answer)
+        self.assertEqual(self.team_library(first, second), {'documents': [], 'team_bots': []})
+        # An app of today that adds a bot gets the reason.
+        status, answer = first.phone('POST', f'/v1/team/rooms/{room_id}/bots', {'bot_id': bot['id']})
+        self.assertEqual(status, 409, answer)
+        self.assertIn('open it in the Library', answer['error'])
+
+        # Ada shares the page with one act from the phone.
+        document = first.document(bot)
+        status, answer = first.phone('PUT', f'/v1/team/rooms/{room_id}/pages/{document["id"]}', {})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual((answer['document']['audience'], answer['document']['teams']),
+                         ('team', [{'room': room_id, 'name': 'Example Team'}]))
 
         # The second Mac lists the page with the fields of a local document, opens it and pins it.
         listed = self.team_library(first, second)
@@ -358,19 +383,22 @@ class TeamLogTests(unittest.TestCase):
         self.assertEqual((shared['version'], shared['pinned']), (2, True))
         self.assertEqual(second.phone('GET', f'/v1/documents/{shared["id"]}')[1]['content'], '4 tasks are open.')
 
-        # A private page goes from the second Mac. The bot stays.
-        self.assertEqual(first.call('POST', '/v1/gateway/document', dict(page, audience='private'))[0], 200)
-        listed = self.team_library(first, second)
-        self.assertEqual((listed['documents'], [row['name'] for row in listed['team_bots']]), ([], ['Reporter']))
+        # A stop takes the page and its bot from the second Mac.
+        status, answer = first.phone('DELETE', f'/v1/team/rooms/{room_id}/pages/{document["id"]}', {})
+        self.assertEqual((status, answer['document']['teams']), (200, []), answer)
+        self.assertEqual(self.team_library(first, second), {'documents': [], 'team_bots': []})
 
-        # The first Mac leaves the room, and its bot and its pages go from the second Mac.
-        self.assertEqual(first.call('POST', '/v1/gateway/document', page)[0], 200)
+        # The first Mac shares again, then leaves the room, and its pages go from the second Mac.
+        self.assertEqual(first.phone('PUT', f'/v1/team/rooms/{room_id}/pages/{document["id"]}', {})[0], 200)
         self.assertEqual(len(self.team_library(first, second)['documents']), 1)
         self.assertEqual(first.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
+        self.assertEqual(first.document(bot)['teams'], [])
         self.assertEqual(self.team_library(first, second), {'documents': [], 'team_bots': []})
         self.assertEqual(second.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
         for mac in (first, second):
             self.assertNotIn('coconut.team_pages', self.log(mac))
+            # The content of a page is private, so no log line has it.
+            self.assertNotIn('tasks are open', self.log(mac))
 
     def test_the_app_makes_a_team_and_a_second_mac_joins_it(self):
         first, second, _ = self.macs
@@ -387,12 +415,14 @@ class TeamLogTests(unittest.TestCase):
         self.assertEqual((status, answer['room']['can_invite']), (200, False), answer)
         self.assertTrue(second.phone('GET', f'/v1/updates?after={cursor}')[1]['team_changed'])
 
-        # The first Mac adds a bot, and each Mac lists both members and the bot.
-        status, bot = first.phone('POST', '/v1/bots', {'name': 'Reporter'})
-        self.assertEqual(status, 200, bot)
-        status, answer = first.phone('POST', f'/v1/team/rooms/{room_id}/bots', {'bot_id': bot['id']})
-        self.assertEqual((status, [(row['name'], row['this_mac'], row['bot_id']) for row in answer['room']['bots']]),
-                         (200, [('Reporter', True, bot['id'])]), answer)
+        # The first Mac shares a page of a bot, and each Mac lists both members and the author entry of the bot.
+        bot, page = first.bot_page('Reporter')
+        self.assertEqual(first.call('POST', '/v1/gateway/document', page)[0], 200)
+        document = first.document(bot)
+        status, answer = first.phone('PUT', f'/v1/team/rooms/{room_id}/pages/{document["id"]}', {})
+        self.assertEqual(status, 200, answer)
+        self.assertEqual([(row['name'], row['this_mac'], row['bot_id']) for row in self.team_view(first, room_id)['bots']],
+                         [('Reporter', True, bot['id'])])
         # The pass of the first Mac writes the bot entry, and the pass of the second Mac reads it.
         views = {mac: self.team_view(mac, room_id) for mac in (first, second)}
         for mac, view in views.items():
@@ -501,31 +531,19 @@ class TeamLogTests(unittest.TestCase):
         # The link is never an argument, and the tool does not repeat it.
         self.assertEqual(run(second, 'join', link)[0], 64)
 
-        # The second Mac adds its bot by its name, in another case.
-        self.assertEqual(run(second, 'add-bot', 'night bot'), (0, ['The bot Night Bot is in the team Example Team now.']))
-        self.assertEqual(run(second, 'add-bot', 'Day Bot')[0], 1)
-        # A pass of the second Mac writes the bot entry, and a pass of the first Mac reads it.
+        # The bots of a person's Mac stay the person's, so the tool says how to share a page.
+        personal = ['The bots of this Mac stay yours, so a team does not get them. To share a page with the team, '
+                    'open it in the Library of the Coconut app.']
+        self.assertEqual(run(second, 'add-bot', 'night bot'), (1, personal))
+        self.assertEqual(run(second, 'remove-bot', bot['id']), (1, personal))
         second.rooms()
         first.rooms()
         code, lines = run(first)
         self.assertEqual(code, 0, lines)
         self.assertEqual(lines, ['Team: Example Team', f'ID: {room_id}', 'State: active', 'This Mac is the admin: yes',
-                                 'Member: Ada (admin, this Mac)', 'Member: Grace', 'Bot: Night Bot (Mac of Grace)'])
-        code, lines = run(second)
-        self.assertEqual(lines, ['Team: Example Team', f'ID: {room_id}', 'State: active', 'This Mac is the admin: no',
-                                 'Member: Ada (admin)', 'Member: Grace (this Mac)',
-                                 f'Bot: Night Bot (this Mac, ID {bot["id"]})'])
+                                 'Member: Ada (admin, this Mac)', 'Member: Grace', 'Bots: none'])
         code, lines = run(second, '--json')
         self.assertEqual(json.loads('\n'.join(lines))['rooms'][0]['room'], room_id)
-
-        # The second Mac removes the bot by its ID, a UUID with hyphens. The first Mac no longer shows it.
-        self.assertRegex(bot['id'], r'^[0-9a-f]{8}-[0-9a-f]{4}-')
-        self.assertEqual(run(second, 'remove-bot', bot['id']),
-                         (0, ['The bot Night Bot is no longer in the team Example Team.']))
-        second.rooms()
-        first.rooms()
-        self.assertEqual(run(first)[1][-1], 'Bots: none')
-        self.assertEqual(run(second)[1][-1], 'Bots: none')
 
         # A leave needs the name of the team.
         self.assertEqual(run(second, 'leave')[0], 1)
@@ -675,6 +693,12 @@ class TeamSocketTests(unittest.TestCase):
             time.sleep(.05)
         self.fail(f'The check stayed false for {seconds} seconds.')
 
+    def team_pages(self, mac: Mac) -> list[dict]:
+        """The team pages in the Library of a Mac, without a pass."""
+        status, answer = mac.phone('GET', '/v1/documents')
+        self.assertEqual(status, 200, answer)
+        return [row for row in answer['documents'] if 'team' in row]
+
     def arrival(self, writer: Mac, reader: Mac, room_id: str, name: str) -> float:
         """Change the name of the writer in the team, and return the seconds until the reader shows it."""
         status, answer = writer.call('PATCH', f'/v1/team/rooms/{room_id}', {'member_name': name})
@@ -721,6 +745,29 @@ class TeamSocketTests(unittest.TestCase):
         print(f'The socket brought the message in {delay:.2f} seconds.')
         self.assertLess(delay, self.LIMIT_SECONDS)
         self.assertIn(room_id, second.phone('GET', f'/v1/updates?after={cursor}')[1]['team_messages_changed'])
+
+        # Ada shares "Weekly report" with the team. Grace's Mac has it through the socket, then each new version, and
+        # it no longer has the page after Ada stops.
+        bot, page = first.bot_page('Reporter')
+        self.assertEqual(first.call('POST', '/v1/gateway/document', page)[0], 200)
+        document = first.document(bot)
+        status, answer = first.phone('PUT', f'/v1/team/rooms/{room_id}/pages/{document["id"]}', {})
+        self.assertEqual(status, 200, answer)
+        delay = self.wait_until(lambda: [(row['title'], row['version']) for row in self.team_pages(second)]
+                                == [('Weekly report', 1)], self.LIMIT_SECONDS + 3)
+        print(f'The socket brought the shared page in {delay:.2f} seconds.')
+        self.assertEqual(self.team_pages(second)[0]['team']['name'], 'Example Team')
+        self.assertEqual(first.call('POST', '/v1/gateway/document', dict(page, content='4 tasks are open.'))[0], 200)
+        delay = self.wait_until(lambda: [row['version'] for row in self.team_pages(second)] == [2],
+                                self.LIMIT_SECONDS + 3)
+        print(f'The socket brought the new version in {delay:.2f} seconds.')
+        (shared,) = self.team_pages(second)
+        self.assertEqual(second.phone('GET', f'/v1/documents/{shared["id"]}')[1]['content'], '4 tasks are open.')
+        status, answer = first.phone('DELETE', f'/v1/team/rooms/{room_id}/pages/{document["id"]}', {})
+        self.assertEqual(status, 200, answer)
+        delay = self.wait_until(lambda: self.team_pages(second) == [], self.LIMIT_SECONDS + 3)
+        print(f'The socket took the page away in {delay:.2f} seconds.')
+        self.assertEqual(second.phone('GET', f'/v1/documents/{shared["id"]}')[0], 404)
 
         # The second Mac leaves, so the socket of its room goes. The admin then leaves the room without other members.
         token = second.keys(room_id)['token']

@@ -227,6 +227,7 @@
 		B242F0A01EE8D3D6573C9BCF /* NotificationContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CA9695EAB2F655862469B6C /* NotificationContent.swift */; };
 		B33064E65D8D7D417BD495CA /* TeamLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D22BA52C7936F4BC91B34B7B /* TeamLogTests.swift */; };
 		B5F701DDF22768222EE85DF2 /* TunnelConnectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86850839461959E3BB9D068A /* TunnelConnectionTests.swift */; };
+		B68604418F483EEA7F9C9F7D /* PageShareFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8ACBD91AF2D46DB49E2982DB /* PageShareFlowTests.swift */; };
 		B6EBC9B621DCB6CC6B50AA4B /* BotMentions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8BC9EE960764592EBC7C381 /* BotMentions.swift */; };
 		B8373074FCF47B944AEE6171 /* FruitAvatar.swift in Sources */ = {isa = PBXBuildFile; fileRef = A321C094F7942AA554149505 /* FruitAvatar.swift */; };
 		B8412C94199949B9ACE8F165 /* Routes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA07287D8E8B821C1C945D80 /* Routes.swift */; };
@@ -462,6 +463,7 @@
 		86850839461959E3BB9D068A /* TunnelConnectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelConnectionTests.swift; sourceTree = "<group>"; };
 		86E50B95FC8F9D964C273561 /* ConversationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationView.swift; sourceTree = "<group>"; };
 		89E9F80C1D8CD858F6D8D921 /* Team.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Team.swift; sourceTree = "<group>"; };
+		8ACBD91AF2D46DB49E2982DB /* PageShareFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageShareFlowTests.swift; sourceTree = "<group>"; };
 		8C9BD0948D4BFCF51D6F5A47 /* GoogleSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoogleSettingsView.swift; sourceTree = "<group>"; };
 		8ED43A5BCDAE960B89DFA65F /* NativeDecisionFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeDecisionFlowTests.swift; sourceTree = "<group>"; };
 		903AD4E2708B4A32290D084C /* LinkPreviews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkPreviews.swift; sourceTree = "<group>"; };
@@ -810,6 +812,7 @@
 				4272DD6AAF77EA5CE0FFF07F /* NotificationCategoryFlowTests.swift */,
 				F2D8BD1F0E75656ABA3C23B6 /* NotificationFlowTests.swift */,
 				1672CEE8BC93CE62BDF964D2 /* NotificationOpenPerformanceTests.swift */,
+				8ACBD91AF2D46DB49E2982DB /* PageShareFlowTests.swift */,
 				9496F889212FE574F7A27C5F /* ParallelWorkSettingsTests.swift */,
 				47270532BCA4420B6DD214D3 /* QuietConversationTests.swift */,
 				CC4FFE607ED2AB2368E679FC /* SendFromHistoryTests.swift */,
@@ -1403,6 +1406,7 @@
 				560614048702C0CD4B47A9AB /* NotificationCategoryFlowTests.swift in Sources */,
 				CF2134EE2AC9BDD89514BF51 /* NotificationFlowTests.swift in Sources */,
 				2DC99A002F70D12D87D69422 /* NotificationOpenPerformanceTests.swift in Sources */,
+				B68604418F483EEA7F9C9F7D /* PageShareFlowTests.swift in Sources */,
 				EC7C4F9CEDD9890D9C194664 /* ParallelWorkSettingsTests.swift in Sources */,
 				2CED05440D1E58CBBA5B06DC /* QuietConversationTests.swift in Sources */,
 				A7E12C189671C57F76A8FF84 /* SendFromHistoryTests.swift in Sources */,

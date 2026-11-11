@@ -260,6 +260,10 @@ class FakeRelay:
         return {'entries': entries[:self.page], 'last': max((row['seq'] for row in state['entries'].values()), default=0)}
 
 
+# A paired device of the person. Only a device shares a page or stops (team.py, PAGE_ROUTE).
+DEVICE = 'test-device'
+
+
 class TeamMacs:
     """The Macs of a team test, for a TestCase. Each Mac is a Service with its own data folder, and the Macs share
     one FakeRelay."""
@@ -298,6 +302,19 @@ class TeamMacs:
 
     def names(self, service, **options) -> list[str]:
         return [member['name'] for member in self.rooms(service, **options)[0]['members']]
+
+    def share_page(self, service, room: str, bot: dict, key: str = 'weekly-report', **fields) -> dict:
+        """Save a page of a bot of a person's Mac and share it with the room, as the person does in the Library. The
+        bot is then the author of a page in the room. Return the document of the answer."""
+        service.publish_page(bot['id'], dict(key=key, title='Weekly report', format='markdown',
+                                             content='3 tasks are open.', **fields))
+        document = service._document_of_key(bot['id'], key)
+        return service.team_request('PUT', f'/v1/team/rooms/{room}/pages/{document["id"]}', {}, '', DEVICE)['document']
+
+    def stop_page(self, service, room: str, bot: dict, key: str = 'weekly-report') -> dict:
+        """Stop sharing the page of the key with the room. Return the document of the answer."""
+        document = service._document_of_key(bot['id'], key)
+        return service.team_request('DELETE', f'/v1/team/rooms/{room}/pages/{document["id"]}', {}, '', DEVICE)['document']
 
     def refusal(self, call, *arguments) -> tuple[int, str]:
         with self.assertRaises(ServiceError) as raised:

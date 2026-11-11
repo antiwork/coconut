@@ -30,9 +30,25 @@ final class TeamScreenTests: XCTestCase {
         XCTAssertEqual(room.memberList.map { $0.thisMac == true }, [true, false])
         XCTAssertEqual(room.memberList.map { $0.admin == true }, [true, false])
         XCTAssertEqual(room.botList.map(\.memberName), ["Ada", "Grace"])
-        XCTAssertEqual(room.botsOfThisMac, ["bot-reporter"])
+        // The two bots are the authors of shared pages, so a teammate cannot ask them, and the Team screen shows
+        // no Bots section.
+        XCTAssertEqual(TeamMentions.bots(of: room), [])
         XCTAssertNil(room.sync?.error)
         XCTAssertTrue(room.showsInvite)
+    }
+
+    /// The Bots section of the Team screen lists the bots of TeamMentions.bots: it shows for a team with an open bot,
+    /// and hides for a team with only the author entries of the bots of people.
+    func testTheBotsSectionShowsOnlyTheBotsThatATeammateCanAsk() {
+        let author = TeamRoomBot(id: "t-r-1", name: "Reporter", memberName: "Ada", thisMac: true, botId: "bot-1")
+        let open = TeamRoomBot(id: "t-r-2", name: "Planner", memberName: "Team Mac", open: true)
+        let people = [TeamMember(member: "m0", name: "Ada"), TeamMember(member: "m1", name: "Grace")]
+        let authors = TeamRoom(room: "r", name: "Example Team", state: "active", members: people, bots: [author])
+        XCTAssertEqual(TeamMentions.bots(of: authors), [], "No section: a bot of a person is never listed.")
+        XCTAssertEqual(authors.whoLine, "2 people")
+        let withOpen = TeamRoom(room: "r", name: "Example Team", state: "active", members: people, bots: [author, open])
+        XCTAssertEqual(TeamMentions.bots(of: withOpen).map(\.name), ["Planner"])
+        XCTAssertEqual(withOpen.whoLine, "2 people, 1 bot")
     }
 
     /// An older service, or a room that is not active, leaves fields out. The app shows what it has.
@@ -221,32 +237,65 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
-    /// The person removes two bots one after the other, and the answer of the first removal comes last. It has the
-    /// second bot, which the Mac removed after it.
+    /// The person shares a page and stops at once, and the answer of the share comes last. It has the page shared,
+    /// as the Mac had it then. The later act wins.
     @MainActor
-    func testTwoRemovalsWhoseAnswersArriveInTheOtherOrderEndWithBothBotsGone() async throws {
+    func testAShareAndAStopWhoseAnswersArriveInTheOtherOrderEndWithThePageStopped() async throws {
         #if !(DEBUG && targetEnvironment(simulator))
         throw XCTSkip("This HTTP fixture requires a debug simulator build.")
         #else
         let state = try PreviewStateFixture.load()
-        let server = try TeamServer(state: APIJSON.encoder().encode(state), bots: ["b1", "b2"])
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
         let address = try await server.start()
         defer { server.stop() }
         try await withPairedStore(address: address) { store in
-            await store.loadTeam()
-            let room = try XCTUnwrap(store.team?.rooms.first)
-            XCTAssertEqual(room.botsOfThisMac, ["b1", "b2"])
-            server.holdRemovals()
-            let first = Task { await store.setTeamBot("b1", in: room, shared: false) }
-            try await waitUntil { server.heldRemovals == 1 }
-            let second = Task { await store.setTeamBot("b2", in: room, shared: false) }
-            try await waitUntil { server.heldRemovals == 2 }
-            server.releaseRemovalsLastFirst()
-            let results = [await first.value, await second.value]
+            await store.loadDocuments()
+            let page = try XCTUnwrap(store.documents?.first { $0.id == "d1" })
+            XCTAssertEqual(page.teams, [])
+            XCTAssertEqual(PageShareItem.items(for: page, rooms: store.team?.rooms ?? []).map(\.title),
+                           ["Share with Example Team"])
+            server.holdShares()
+            let share = Task { await store.sharePage(page, with: "r1", shared: true) }
+            try await waitUntil { server.heldShares == 1 }
+            let stop = Task { await store.sharePage(page, with: "r1", shared: false) }
+            try await waitUntil { server.heldShares == 2 }
+            server.releaseSharesLastFirst()
+            let results = [await share.value, await stop.value]
             XCTAssertEqual(results, [true, true])
-            XCTAssertEqual(store.team?.rooms.first?.botsOfThisMac, [], "The older answer must not bring a bot back.")
+            let listed = { store.documents?.first { $0.id == "d1" } }
+            XCTAssertEqual(listed()?.teams, [], "The older answer must not share the page again.")
+            XCTAssertEqual(listed()?.isSharedWithTeam, false)
             try await Task.sleep(for: .milliseconds(300))
-            XCTAssertEqual(store.team?.rooms.first?.botsOfThisMac, [])
+            XCTAssertEqual(listed()?.teams, [])
+            // A share shows at once, with its line and its stop item.
+            let shared = await store.sharePage(try XCTUnwrap(listed()), with: "r1", shared: true)
+            XCTAssertTrue(shared)
+            XCTAssertEqual(listed()?.sharedLine, "Shared with Example Team")
+            XCTAssertEqual(PageShareItem.items(for: try XCTUnwrap(listed()), rooms: store.team?.rooms ?? [])
+                .map(\.title), ["Stop sharing with Example Team"])
+        }
+        #endif
+    }
+
+    /// A Mac of today that the app asks to share a page answers with an error. The app shows it and keeps the page as
+    /// it was.
+    @MainActor
+    func testAShareThatTheMacRefusesShowsItsTextAndChangesNothing() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            await store.loadDocuments()
+            let page = try XCTUnwrap(store.documents?.first { $0.id == "d1" })
+            server.refuseShares()
+            let shared = await store.sharePage(page, with: "r1", shared: true)
+            XCTAssertFalse(shared)
+            XCTAssertEqual(store.error, "This team no longer exists.")
+            XCTAssertEqual(store.documents?.first { $0.id == "d1" }?.teams, [])
         }
         #endif
     }
@@ -337,7 +386,7 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
-    /// The person adds a bot while a list request runs. The Mac made that list before the change.
+    /// The person leaves while a list request runs. The Mac made that list before the change.
     @MainActor
     func testAnOlderListDoesNotUndoAChangeThatTheMacConfirmed() async throws {
         #if !(DEBUG && targetEnvironment(simulator))
@@ -350,21 +399,9 @@ final class TeamScreenTests: XCTestCase {
         try await withPairedStore(address: address) { store in
             await store.loadTeam()
             let room = try XCTUnwrap(store.team?.rooms.first)
-            XCTAssertTrue(room.botList.isEmpty)
-            server.holdLists()
-            let refresh = Task { await store.loadTeam() }
-            try await waitUntil { server.heldLists == 1 }
-            let added = await store.setTeamBot("bot-reporter", in: room, shared: true)
-            XCTAssertTrue(added)
-            XCTAssertEqual(store.team?.rooms.first?.botsOfThisMac, ["bot-reporter"])
-            server.releaseLists()
-            _ = await refresh.value
-            XCTAssertEqual(store.team?.rooms.first?.botsOfThisMac, ["bot-reporter"],
-                           "The older list must not take the bot out again.")
             // Leave: the older list must not bring the team back.
             server.holdLists()
             let second = Task { await store.loadTeam() }
-            // The reload after the confirmed bot can wait there too.
             try await waitUntil { server.heldLists >= 1 }
             let left = await store.leaveTeam(room)
             XCTAssertTrue(left)
@@ -957,7 +994,7 @@ final class TeamScreenTests: XCTestCase {
 }
 
 /// A Mac in one team. It can add a member and say so in its next updates, hold the answers of its list requests,
-/// add a bot, and leave. With `older`, it has no team routes, as a service before the Team screen.
+/// share the page "d1" of its bot with the team and stop, and leave. With `older`, it has no team routes, as a service before the Team screen.
 private final class TeamServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "coconut.team-test")
     private let lock = NSLock()
@@ -965,10 +1002,12 @@ private final class TeamServer: @unchecked Sendable {
     private let state: Data
     private let older: Bool
     private var members = ["Ada"]
-    private var bots: [String]
-    private var holdingRemovals = false
-    private var heldRemoval: [@Sendable (Double) -> Void] = []
-    var heldRemovals: Int { lock.withLock { heldRemoval.count } }
+    /// The teams that the page "d1" is shared with.
+    private var pageTeams: [String] = []
+    private var refusingShares = false
+    private var holdingShares = false
+    private var heldShare: [@Sendable (Double) -> Void] = []
+    var heldShares: Int { lock.withLock { heldShare.count } }
     private var left = false
     /// The unread count of the room in the list.
     private var unread = 0
@@ -1011,8 +1050,8 @@ private final class TeamServer: @unchecked Sendable {
     var changesSent: Int { lock.withLock { changes } }
     var listRequests: Int { lock.withLock { lists } }
 
-    init(state: Data, cursor: Int = 0, older: Bool = false, bots: [String] = []) throws {
-        self.state = state; self.cursor = cursor; self.older = older; self.bots = bots
+    init(state: Data, cursor: Int = 0, older: Bool = false) throws {
+        self.state = state; self.cursor = cursor; self.older = older
         listener = try NWListener(using: .tcp, on: .any)
     }
 
@@ -1024,15 +1063,19 @@ private final class TeamServer: @unchecked Sendable {
 
     func stopHolding() { lock.withLock { holding = false } }
 
-    /// Keeps the answer of each bot removal. The Mac removes the bot at once, so an answer has the room as it is then.
-    func holdRemovals() { lock.withLock { holdingRemovals = true } }
+    /// Keeps the answer of each share and stop. The Mac changes the page at once, so an answer has the page as it is
+    /// then.
+    func holdShares() { lock.withLock { holdingShares = true } }
 
-    /// Sends the held removal answers, the last one first.
-    func releaseRemovalsLastFirst() {
+    /// Answers each share and stop with the error of a room that is gone.
+    func refuseShares() { lock.withLock { refusingShares = true } }
+
+    /// Sends the held share answers, the last one first.
+    func releaseSharesLastFirst() {
         let answers = lock.withLock {
-            holdingRemovals = false
-            defer { heldRemoval = [] }
-            return heldRemoval
+            holdingShares = false
+            defer { heldShare = [] }
+            return heldShare
         }
         for (index, answer) in answers.reversed().enumerated() { answer(0.05 + 0.25 * Double(index)) }
     }
@@ -1151,13 +1194,21 @@ private final class TeamServer: @unchecked Sendable {
             #"{"member": "m\#(index)", "name": "\#(name)", "avatar": "", "color": "", "admin": \#(index == 0), "#
                 + #""this_mac": \#(index == 0)}"#
         }
-        let shared = bots.map {
-            #"{"id": "t-r1-\#($0)", "name": "Reporter", "avatar": "fruit.kiwi", "color": "A68456", "member": "m0", "#
-                + #""member_name": "Ada", "this_mac": true, "bot_id": "\#($0)"}"#
-        }
+        // The author entry of the bot of a shared page.
+        let authors = pageTeams.isEmpty ? "" : #"{"id": "t-r1-e1", "name": "Reporter", "avatar": "fruit.kiwi", "#
+            + #""color": "A68456", "member": "m0", "member_name": "Ada", "this_mac": true, "bot_id": "bot-reporter"}"#
         return #"{"room": "r1", "name": "Example Team", "state": "active", "is_admin": true, "can_invite": true, "#
-            + #""members": [\#(people.joined(separator: ", "))], "bots": [\#(shared.joined(separator: ", "))], "#
+            + #""members": [\#(people.joined(separator: ", "))], "bots": [\#(authors)], "#
             + #""sync": {"error": null}, "unread": \#(unread), "last_message": \#(lastMessage())}"#
+    }
+
+    /// The page "d1" of the bot of this Mac, as the Library lists it, with its teams. The caller holds the lock.
+    private func page() -> String {
+        let teams = pageTeams.map { #"{"room": "\#($0)", "name": "Example Team"}"# }
+        return #"{"id": "d1", "bot_id": "bot-reporter", "key": "weekly-report", "title": "Weekly report", "#
+            + #""format": "markdown", "version": 1, "created_at": "2026-11-10T12:00:00Z", "#
+            + #""updated_at": "2026-11-10T12:00:00Z", "audience": "\#(pageTeams.isEmpty ? "private" : "team")", "#
+            + #""teams": [\#(teams.joined(separator: ", "))]}"#
     }
 
     /// Reads one request with its whole body. A client can send the body in a later packet than the head.
@@ -1201,11 +1252,17 @@ private final class TeamServer: @unchecked Sendable {
                         if failing { status = "500 Internal Server Error" }
                         return #"{"rooms": [\#(left ? "" : room())], "helper": true}"#
                     }
-                case "POST /v1/team/rooms/r1/bots":
-                    body = lock.withLock { bots.append("bot-reporter"); return #"{"room": \#(room())}"# }
-                case _ where route.hasPrefix("DELETE /v1/team/rooms/r1/bots/"):
-                    let id = String(route.split(separator: "/").last ?? "")
-                    body = lock.withLock { bots.removeAll { $0 == id }; return #"{"room": \#(room())}"# }
+                case "GET /v1/documents":
+                    body = lock.withLock { #"{"documents": [\#(page())], "team_bots": []}"# }
+                case "PUT /v1/team/rooms/r1/pages/d1", "DELETE /v1/team/rooms/r1/pages/d1":
+                    body = lock.withLock {
+                        if refusingShares {
+                            status = "409 Conflict"
+                            return #"{"error": "This team no longer exists."}"#
+                        }
+                        pageTeams = words[0] == "PUT" ? ["r1"] : []
+                        return #"{"document": \#(page())}"#
+                    }
                 case "GET /v1/team/rooms/r1/messages":
                     let query = words[1].components(separatedBy: "?").dropFirst().first ?? ""
                     body = lock.withLock { page(query) }
@@ -1279,13 +1336,13 @@ private final class TeamServer: @unchecked Sendable {
                         connection.send(content: answer, completion: .contentProcessed { _ in connection.cancel() })
                     }
                 }
-                if route.hasPrefix("DELETE /v1/team/rooms/r1/bots/"), lock.withLock({ holdingRemovals }) {
+                if route.hasSuffix("/v1/team/rooms/r1/pages/d1"), lock.withLock({ holdingShares }) {
                     let delayed: @Sendable (Double) -> Void = { [queue] delay in
                         queue.asyncAfter(deadline: .now() + delay) {
                             connection.send(content: answer, completion: .contentProcessed { _ in connection.cancel() })
                         }
                     }
-                    lock.withLock { heldRemoval.append(delayed) }
+                    lock.withLock { heldShare.append(delayed) }
                     return
                 }
                 let hold = route == "GET /v1/team/rooms" && lock.withLock {

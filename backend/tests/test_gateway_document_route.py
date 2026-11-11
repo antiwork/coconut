@@ -13,6 +13,7 @@ import threading
 import unittest
 from uuid import uuid4
 
+from coconut.documents import BOT_SHARE
 from coconut.server import APIServer, TunnelServer
 from coconut.service import Service
 from test_gateway_chat import Provider
@@ -72,17 +73,17 @@ class GatewayPageRouteTests(unittest.TestCase):
         status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home), self.token)
         self.assertEqual((status, answer['status'], answer['version']), (200, 'unchanged', 1))
 
-    def test_the_route_takes_the_audience_of_the_page(self):
-        # A team page needs a bot that the person shares with a team. A team-only Mac takes it without one
+    def test_the_route_of_a_persons_mac_takes_no_audience(self):
+        # Only the person shares a page with a team (test_team_pages.py). A team-only Mac takes the audience
         # (test_team_only.py).
-        status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home, audience='team'), self.token)
-        self.assertEqual(status, 409)
-        self.assertIn('shared with no team', answer['error'])
-        self.assertEqual(self.post('/v1/gateway/document', dict(PAGE, home=self.home, audience='other'), self.token),
-                         (400, {'error': 'audience must be private or team.'}))
-        status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home, audience='private'), self.token)
+        for audience in ('team', 'private', 'other'):
+            with self.subTest(audience=audience):
+                self.assertEqual(self.post('/v1/gateway/document', dict(PAGE, home=self.home, audience=audience),
+                                           self.token), (400, {'error': BOT_SHARE}))
+        self.assertEqual(self.service.documents()['documents'], [])
+        status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home), self.token)
         self.assertEqual((status, answer['status']), (200, 'saved'))
-        self.assertEqual(self.service.documents()['documents'][0].get('audience', 'private'), 'private')
+        self.assertEqual(self.service.documents()['documents'][0]['audience'], 'private')
 
     def test_the_route_needs_the_token_of_the_bridge(self):
         status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home))

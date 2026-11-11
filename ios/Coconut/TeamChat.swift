@@ -443,13 +443,14 @@ enum LetterFace {
 }
 
 extension TeamRoom {
-    /// Who is in the chat: "3 people", or "3 people, 1 bot" when the team has bots. Nil while the list has no member.
+    /// Who is in the chat: "3 people", or "3 people, 1 bot" when the team has a bot that a teammate can ask. Nil while
+    /// the list has no member.
     var whoLine: String? {
         guard !memberList.isEmpty else { return nil }
         // A Mac without a person is a member, but no person.
         let people = memberList.filter { !$0.isBotOnly }.count
         let line = people == 1 ? "1 person" : "\(people) people"
-        let bots = botList.count
+        let bots = TeamMentions.bots(of: self).count
         guard bots > 0 else { return line }
         return line + (bots == 1 ? ", 1 bot" : ", \(bots) bots")
     }
@@ -467,8 +468,10 @@ enum TeamMentions {
         mentions.count <= limit
     }
 
-    /// The bots that the list offers: the bots of the team that answer each member (`open`). A bot of a person, also
-    /// of this person, answers no teammate, so the list does not offer it. This is the one place of that rule.
+    /// The bots that a teammate can ask: the bots of the team that answer each member (`open`). A bot of a person,
+    /// also of this person, answers no teammate: it is only the author of the pages that the person shares. This is
+    /// the one place of that rule. The `@` list, the Bots section of the Team screen and the line of who is in the
+    /// chat read it.
     static func bots(of room: TeamRoom) -> [TeamRoomBot] {
         var seen = Set<String>()
         return room.botList.filter { $0.isOpen && seen.insert($0.id).inserted }

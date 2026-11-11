@@ -14,8 +14,8 @@ The tool is in the app bundle: `/Applications/Coconut.app/Contents/Helpers/cocon
 | `coconut pair <code>` | Pairs the iPhone that shows this code. See `references/pairing.md`. |
 | `coconut team` | Prints the teams of this Mac: the name, the ID, the state, the admin, the members, the bots, and the sync error. `--json` prints the answer of the service. |
 | `coconut team join [--name <text>]` | Joins a team with the invite link on standard input. Never put the link in the command. |
-| `coconut team add-bot <bot> [--team <name or ID>]` | Adds a bot of this Mac to the team, by its name or its ID. |
-| `coconut team remove-bot <bot> [--team <name or ID>]` | Removes a bot of this Mac from the team. |
+| `coconut team add-bot <bot> [--team <name or ID>]` | On a Mac for a team only: adds a bot of this Mac to the team, by its name or its ID. On a person's Mac it prints how to share a page in the Library. |
+| `coconut team remove-bot <bot> [--team <name or ID>]` | On a Mac for a team only: removes a bot of this Mac from the team. On a person's Mac it prints how to share a page. |
 | `coconut team leave --confirm <name of the team> [--team <name or ID>]` | Leaves the team. The name after `--confirm` chooses the team; `--team <ID>` is necessary only when two teams have the same name. Without `--confirm`, it prints what a leave does and the exact command for each team. |
 | `coconut version` | Prints the version of Coconut.app. |
 
