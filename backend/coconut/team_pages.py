@@ -47,11 +47,14 @@ def team_ids(value) -> tuple[str, str] | None:
     return match.groups() if match else None
 
 
-def bot_entry(bot: dict) -> dict:
+def bot_entry(bot: dict, open: bool = False) -> dict:
     """The fields of the `bot` entry of a bot of this Mac.
 
     A bot can have a longer name, avatar or color than a `member` entry takes, so the entry gets the start of each.
     A lone surrogate becomes U+FFFD, because UTF-8 cannot encode it and the other Macs refuse it.
+
+    `open` marks a bot that answers each member of the team: only a team-only Mac writes it (team_only.py). A bot of
+    a person answers only that person, so the entry of a full Mac has no `open`.
     """
     fields = {'kind': 'bot'}
     for name, limit in MEMBER_LIMITS.items():
@@ -59,6 +62,8 @@ def bot_entry(bot: dict) -> dict:
         value = value if isinstance(value, str) else ''
         fields[name] = ''.join('�' if '\ud800' <= character <= '\udfff' else character
                                for character in value[:limit])
+    if open:
+        fields['open'] = True
     return fields
 
 
@@ -161,6 +166,11 @@ class TeamPages:
         self.team_wake()
         return self._team_answer(room_id)
 
+    @property
+    def _team_opens_bots(self) -> bool:
+        """True on a team-only Mac: its bots answer each member of the team, so their entries have `open`."""
+        return getattr(self, 'team_only', False) is True
+
     def _team_bot(self, bot_id: str) -> dict | None:
         row = self.db.execute('SELECT data FROM bots WHERE id=?', (bot_id,)).fetchone()
         return json.loads(row[0]) if row else None
@@ -186,14 +196,14 @@ class TeamPages:
             return []
         names = {member['member']: member['name'] for member in members}
         bots = [dict(id=team_id(room['room'], row['entry']), name=row['name'], avatar=row['avatar'], color=row['color'],
-                     member=row['member'], member_name=names[row['member']], this_mac=False)
+                     member=row['member'], member_name=names[row['member']], this_mac=False, open=bool(row['open']))
                 for row in self.team_store.bots(room['room']) if row['member'] in names]
         if room['member'] in names:
             for bot_id, (entry, bot) in self._team_live_bots(room['room']).items():
                 fields = bot_entry(bot)
                 bots.append(dict(id=team_id(room['room'], entry), name=fields['name'], avatar=fields['avatar'],
                                  color=fields['color'], member=room['member'], member_name=names[room['member']],
-                                 this_mac=True, bot_id=bot_id))
+                                 this_mac=True, bot_id=bot_id, open=self._team_opens_bots))
         # The bots follow the order of the members, then their names.
         order = {member: index for index, member in enumerate(names)}
         return sorted(bots, key=lambda bot: (order[bot['member']], bot['name'], bot['id']))
@@ -268,9 +278,9 @@ class TeamPages:
         entries.update(added)
         wanted = {}
         for bot_id, bot in bots.items():
-            fields = bot_entry(bot)
-            wanted[shares[bot_id]] = (('bot', fields['name'], fields['avatar'], fields['color']), {'bot_id': bot_id},
-                                      fields)
+            fields = bot_entry(bot, open=self._team_opens_bots)
+            wanted[shares[bot_id]] = (('bot', fields['name'], fields['avatar'], fields['color'],
+                                       self._team_opens_bots), {'bot_id': bot_id}, fields)
         for document in documents:
             wanted[entries[document['id']]] = (('page', shares[document['bot_id']], document['version']),
                                                {'document': document['id'], 'key': document['key']}, document)

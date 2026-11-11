@@ -80,7 +80,7 @@ Each payload has these fields:
 | --- | --- | --- | --- |
 | `member` | `true` | Each member, one entry | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20), `agreement` (the public agreement key) |
 | `delete` | `false` | The member of the replaced entry | None. It replaces an entry that its author deletes. |
-| `bot` | `true` | The Mac that runs the bot, one entry for each bot | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20) |
+| `bot` | `true` | The Mac that runs the bot, one entry for each bot | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20), `open` (`true` for a bot that answers each member, or absent) |
 | `page` | `true` | The Mac that runs the bot of the page, one entry for each document | `bot` (the entry ID of the `bot` entry), `key`, `title`, `format`, `summary` (or null), `content`, `version` (the version of the document on its Mac), `expires_at` (or null) |
 | `message` | `false` | Any member | `text` (1 to 16,000 characters), `reply_to` (an entry ID, or absent), `mentions` (at most 16 entry IDs, or absent), `bot` (the entry ID of a `bot` entry of the same member, or absent). See [Team chat](#team-chat). |
 | `remove` | `true` | The admin | The removal of a member. See [Member removal](#member-removal-and-key-change). |
@@ -431,6 +431,7 @@ To write:
 Rules for a Mac that reads `bot` and `page` entries:
 
 1. A `bot` entry is valid with the name, avatar and color rules of a `member` entry. An entry that does not fit stays in the store and shows nothing.
+   - `open: true` marks a bot that answers each member of the team. Only a Mac that runs Coconut for a team only writes it, because a bot of a person answers only that person. A missing `open` and each other value are false, and the bot still shows. The Mac keeps the mark in `team_bots`, and `GET /v1/team/rooms` gives `open` for each bot. A reader trusts the mark only for the list of the bots that a member can name with `@` in the chat. The mark is part of the form of an own `bot` entry, so a team-only Mac writes its entries again with the mark after an update from an older version.
 2. A `page` entry is valid only when its `bot` is an entry ID, its `expires_at` is null or a UTC time as `YYYY-MM-DDTHH:MM:SSZ`, each text field is valid Unicode text, and the page passes the rules of a local save (`page_to_save`: key, title, format, content size, summary, and for HTML no finding of `page_problems`). The Mac does not trust the check of the writer. HTML that the parser of the Mac cannot read breaks the page rules. A page that does not fit stays in the store and shows nothing.
    - When a check of a `member`, `bot` or `page` entry fails with an error, the entry also stays in the store and shows nothing, and the log of the service has the reason. Another error in the part of the read without the database drops only that entry. So one entry never stops the sync of a room.
 3. A page shows only while its `bot` names a valid `bot` entry of the same member, and while that member is in the member list. So a page of a bot of another member shows nothing, a `delete` over the `bot` entry hides its pages, and a member that leaves takes its bots and pages from each Library.

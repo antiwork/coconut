@@ -372,9 +372,9 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
         ada = dict(member=room['member'], name='Ada', avatar='coconut', color='green', admin=True)
         grace = dict(member=joined['member'], name='Grace', avatar='', color='', admin=False)
         bots = [dict(id=f't-{room["room"]}-{entries[reporter["id"]]}', name='Reporter', avatar=reporter['avatar'],
-                     color=reporter['color'], member=room['member'], member_name='Ada'),
+                     color=reporter['color'], member=room['member'], member_name='Ada', open=False),
                 dict(id=f't-{room["room"]}-{entries[helper["id"]]}', name='Helper', avatar=helper['avatar'],
-                     color=helper['color'], member=joined['member'], member_name='Grace')]
+                     color=helper['color'], member=joined['member'], member_name='Grace', open=False)]
         for view, this_mac, own in ((admin, room['member'], reporter), (member, joined['member'], helper)):
             with self.subTest(this_mac=view is admin and 'admin' or 'member'):
                 self.assertEqual((view['room'], view['name'], view['state'], view['is_admin'], view['can_invite']),
@@ -384,7 +384,7 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
                 self.assertEqual(view['members'], [dict(ada, this_mac=this_mac == room['member']),
                                                    dict(grace, this_mac=this_mac == joined['member'])])
                 # The bots follow the order of the members. A bot of this Mac also has its local ID. The archived
-                # bot is not in the list.
+                # bot is not in the list. A bot of a full Mac is not open: it answers only its own person.
                 expected = [dict(bot, this_mac=bot['member'] == this_mac) for bot in bots]
                 for bot in expected:
                     if bot['this_mac']:

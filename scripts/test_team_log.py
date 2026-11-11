@@ -323,7 +323,8 @@ class TeamLogTests(unittest.TestCase):
         status, bot = first.phone('POST', '/v1/bots', {'name': 'Reporter'})
         self.assertEqual(status, 200, bot)
         status, answer = first.call('POST', f'/v1/team/rooms/{room_id}/bots', {'bot_id': bot['id']})
-        self.assertEqual((status, [row['name'] for row in answer['room']['bots']]), (200, ['Reporter']), answer)
+        self.assertEqual((status, [(row['name'], row['open']) for row in answer['room']['bots']]),
+                         (200, [('Reporter', False)]), answer)
         with self.database(first) as database:
             home = database.execute('SELECT home FROM profiles WHERE bot_id=?', (bot['id'],)).fetchone()[0]
         page = {'home': home, 'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
@@ -837,6 +838,12 @@ class TeamOnlyTests(unittest.TestCase):
         listed = self.library()
         ((bot_id, bot_name),) = listed['bots']
         self.assertEqual((listed['pages'], bot_name), ([('Weekly report', '3 tasks are open.', bot_id)], 'Reporter'))
+        # The bot of a Mac without a person answers each member, so Ada's Mac sees it as open.
+        status, answer = self.ada.call('GET', '/v1/team/rooms')
+        self.assertEqual(status, 200, answer)
+        (room,) = [row for row in answer['rooms'] if row['room'] == room_id]
+        self.assertEqual([(bot['name'], bot['this_mac'], bot['open']) for bot in room['bots']],
+                         [('Reporter', False, True)])
 
         # A second save reaches Ada through the socket, without a call of POST /v1/team/sync.
         self.assertEqual(self.reporter.call('POST', '/v1/gateway/document', page)[1]['status'], 'unchanged')

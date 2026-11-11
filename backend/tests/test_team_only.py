@@ -277,6 +277,24 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
             bot = self.call('POST', '/v1/team/bots', {'name': 'Helper'})['bot']
         self.assertEqual(bot['home'], os.path.realpath(user / '.hermes'))
 
+    def test_a_bot_of_a_team_only_mac_is_open_for_each_member(self):
+        room = self.team()
+        bot = self.declare()
+        (own,) = self.share(room, bot)['bots']
+        self.assertIs(own['open'], True, 'The team-only Mac shows its bot as open at once.')
+        self.sync()
+        (entry,) = [row for row in self.only.team_store.written(room, self.only.team_store.room(room)['member'])
+                    .values()]
+        self.assertEqual(entry, ('bot', 'Reporter', '', '', 1), 'The entry in the log has the mark.')
+        (seen,) = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]['bots']
+        self.assertEqual((seen['name'], seen['this_mac'], seen['open']), ('Reporter', False, True))
+        # A change of the bot keeps the mark, and a pass with nothing new writes nothing.
+        self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'name': 'Night Reporter'})
+        self.sync()
+        (seen,) = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]['bots']
+        self.assertEqual((seen['name'], seen['open']), ('Night Reporter', True))
+        self.assertEqual(self.only._team_steps(self.only.team_store.room(room))[0], [])
+
     def test_a_change_keeps_the_home_and_reaches_the_team(self):
         room = self.team()
         bot = self.declare()

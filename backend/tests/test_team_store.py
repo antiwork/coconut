@@ -292,5 +292,48 @@ class TeamStoreTests(unittest.TestCase):
         self.assertEqual(self.store.entry(ROOM, entry_id(1))['kind'], 'delete')
 
 
+    # The mark `open` of a bot entry
+
+    def bot(self, name: str, rev: int = 1, **fields) -> dict:
+        return {'kind': 'bot', 'rev': rev, 'at': '2026-11-10T12:00:00Z', 'name': name, 'avatar': 'fruit.kiwi',
+                'color': 'A68456', **fields}
+
+    def opens(self) -> dict[str, int]:
+        return {row['name']: row['open'] for row in self.store.bots(ROOM)}
+
+    def test_a_bot_entry_with_open_true_is_open_and_one_without_it_is_not(self):
+        self.write(1, self.bot('Planner', open=True), ADMIN)
+        self.write(2, self.bot('Helper'), ADMIN)
+        self.assertEqual(self.opens(), {'Planner': 1, 'Helper': 0})
+        # A later write without the mark takes it away.
+        self.write(1, self.bot('Planner', rev=2), ADMIN)
+        self.assertEqual(self.opens(), {'Planner': 0, 'Helper': 0})
+
+    def test_an_open_value_that_is_not_true_shows_the_bot_without_the_mark(self):
+        for number, value in enumerate(('true', 1, 'yes', None, {'open': True}, [True]), start=1):
+            with self.subTest(value=value):
+                self.assertEqual(self.write(number, self.bot(f'Bot {number}', open=value), ADMIN), (STORED, None))
+                self.assertEqual(self.opens()[f'Bot {number}'], 0, 'Only the JSON value true is the mark.')
+
+    def test_the_own_bot_entry_keeps_its_mark_for_the_form_of_the_publish_step(self):
+        self.write(1, self.bot('Reporter', open=True))
+        self.write(2, self.bot('Writer'))
+        self.assertEqual(self.store.written(ROOM, MEMBER),
+                         {entry_id(1): ('bot', 'Reporter', 'fruit.kiwi', 'A68456', 1),
+                          entry_id(2): ('bot', 'Writer', 'fruit.kiwi', 'A68456', 0)})
+
+    def test_a_store_of_an_older_version_gets_the_column_and_reads_each_bot_as_not_open(self):
+        db = sqlite3.connect(':memory:', isolation_level=None)
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE team_bots (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL, '
+                   'name TEXT NOT NULL, avatar TEXT NOT NULL, color TEXT NOT NULL, PRIMARY KEY (room, entry))')
+        db.execute("INSERT INTO team_bots VALUES (?, ?, ?, 'Planner', '', '')", (ROOM, entry_id(1), ADMIN))
+        db.executescript(team_store.SCHEMA)
+        store = TeamStore(db)
+        store.migrate()
+        store.migrate()
+        self.assertEqual(db.execute('SELECT name, open FROM team_bots').fetchall(), [('Planner', 0)])
+
+
 if __name__ == '__main__':
     unittest.main()

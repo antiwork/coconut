@@ -162,6 +162,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
 
     def _init_team(self):
         self.team_store = TeamStore(self.db)
+        self.team_store.migrate()
         self.team_relay = TeamRelay()
         self.team_helper = TeamHelper(self.root)
         # One room operation runs at a time. It calls the relay and the helper, so it does not hold the service lock.
