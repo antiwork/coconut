@@ -36,7 +36,7 @@ where
         subviews.compactMap { subview in
           subview.containerValues.markdownBlockIndex.map { ($0, subview.containerValues.markdownBlockMargin) }
         },
-        uniquingKeysWith: { first, _ in first }
+        uniquingKeysWith: { $0.merged(with: $1) }
       )
       VStack(alignment: self.textAlignment.alignment.horizontal, spacing: 0) {
         ForEach(subviews) { subview in
@@ -45,8 +45,7 @@ where
         }
       }
       // As the preference does, a sequence passes the largest margins of its blocks to the block that holds it.
-      .containerValue(\.markdownBlockMargin, BlockMargin(
-        top: margins.values.compactMap(\.top).max(), bottom: margins.values.compactMap(\.bottom).max()))
+      .containerValue(\.markdownBlockMargin, subviews.markdownBlockMargin)
     }
   }
 

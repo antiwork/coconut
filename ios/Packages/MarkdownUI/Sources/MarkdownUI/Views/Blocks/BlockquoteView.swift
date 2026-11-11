@@ -10,11 +10,15 @@ struct BlockquoteView: View {
   }
 
   var body: some View {
+    // Coconut patch: the block passes the margins of the blocks in it, also through the style (see PATCHES.md).
+    Group(subviews: BlockSequence(self.children)) { children in
     self.blockquote.makeBody(
       configuration: .init(
-        label: .init(BlockSequence(self.children)),
+        label: .init(ForEach(children) { $0 }),
         content: .init(block: .blockquote(children: self.children))
       )
     )
+    .markdownBlockMargin(merging: children.markdownBlockMargin)
+    }
   }
 }

@@ -11,24 +11,24 @@ struct TaskListItemView: View {
   }
 
   var body: some View {
+    // Coconut patch: the block passes the margins of the blocks in it, also through the style (see PATCHES.md).
+    Group(subviews: BlockSequence(self.item.children)) { children in
     self.listItem.makeBody(
       configuration: .init(
-        label: .init(self.label),
+        label: .init(self.label(children)),
         content: .init(blocks: item.children)
       )
     )
+    .markdownBlockMargin(merging: children.markdownBlockMargin)
+    }
   }
 
-  // Coconut patch: the label passes the margins of its blocks to the list (see PATCHES.md).
-  private var label: some View {
-    Group(subviews: BlockSequence(self.item.children)) { children in
+  private func label(_ children: SubviewsCollection) -> some View {
     Label {
       ForEach(children) { $0 }
     } icon: {
       self.taskListMarker.makeBody(configuration: .init(isCompleted: self.item.isCompleted))
         .textStyleFont()
-    }
-    .containerValue(\.markdownBlockMargin, children.first?.containerValues.markdownBlockMargin ?? .unspecified)
     }
   }
 }

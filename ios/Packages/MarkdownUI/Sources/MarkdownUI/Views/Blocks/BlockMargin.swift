@@ -90,14 +90,33 @@ extension View {
   ///             MarkdownUI uses the preferred maximum value of the child blocks or
   ///             the system's default padding amount if no preference has been set.
   public func markdownMargin(top: CGFloat?, bottom: CGFloat?) -> some View {
+    // Coconut patch: BlockSequence reads the margin in the same layout pass. As the preference does, the margin keeps
+    // the largest value of each edge, also of the blocks in this view (see PATCHES.md).
     self.transformPreference(BlockMarginsPreference.self) { value in
       let newValue = BlockMargin(top: top, bottom: bottom)
 
       value.top = [value.top, newValue.top].compactMap { $0 }.max()
       value.bottom = [value.bottom, newValue.bottom].compactMap { $0 }.max()
     }
-    // Coconut patch: BlockSequence reads the margin in the same layout pass (see PATCHES.md).
-    .containerValue(\.markdownBlockMargin, BlockMargin(top: top, bottom: bottom))
+    .markdownBlockMargin(merging: BlockMargin(top: top, bottom: bottom))
+  }
+
+  // Coconut patch: merges `margin` into the container margin of each subview, by the rule of the preference. A
+  // container value on a subview does not replace a value that the subview has already, so a stack holds the subview.
+  func markdownBlockMargin(merging margin: BlockMargin) -> some View {
+    Group(subviews: self) { subviews in
+      ForEach(subviews) { subview in
+        VStack(spacing: 0) { subview }
+          .containerValue(\.markdownBlockMargin, subview.containerValues.markdownBlockMargin.merged(with: margin))
+      }
+    }
+  }
+}
+
+// Coconut patch: the margins of the blocks in a view, as the preference reduces them.
+extension SubviewsCollection {
+  var markdownBlockMargin: BlockMargin {
+    self.reduce(.unspecified) { $0.merged(with: $1.containerValues.markdownBlockMargin) }
   }
 }
 
@@ -105,6 +124,16 @@ extension View {
 extension ContainerValues {
   @Entry var markdownBlockMargin: BlockMargin = .unspecified
   @Entry var markdownBlockIndex: Int? = nil
+}
+
+// Coconut patch: the rule of BlockMarginsPreference.reduce. Per edge the largest value; an unspecified edge does not count.
+extension BlockMargin {
+  func merged(with other: BlockMargin) -> BlockMargin {
+    BlockMargin(
+      top: [self.top, other.top].compactMap { $0 }.max(),
+      bottom: [self.bottom, other.bottom].compactMap { $0 }.max()
+    )
+  }
 }
 
 struct BlockMarginsPreference: PreferenceKey {

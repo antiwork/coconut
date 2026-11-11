@@ -18,9 +18,11 @@ struct NumberedListView: View {
   }
 
   var body: some View {
+    // Coconut patch: the block passes the margins of the blocks in it, also through the style (see PATCHES.md).
+    Group(subviews: self.label) { children in
     self.list.makeBody(
       configuration: .init(
-        label: .init(self.label),
+        label: .init(ForEach(children) { $0 }),
         content: .init(
           block: .numberedList(
             isTight: self.isTight,
@@ -30,6 +32,8 @@ struct NumberedListView: View {
         )
       )
     )
+    .markdownBlockMargin(merging: children.markdownBlockMargin)
+    }
   }
 
   private var label: some View {
