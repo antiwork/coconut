@@ -4,9 +4,10 @@ One thread reads the new entries of each active room after the `seq` that the st
 bodies, and TeamStore.accept applies the rules of the contract. The thread also writes the `member` entry of this
 Mac when the log has none.
 
-The thread reads on a timer for now. `team_wake` starts a pass at once: a room operation calls it, and the socket of
-the contract can call it later, because that socket only says that the log has new entries. A room whose relay does
-not answer waits longer after each failure, up to 15 minutes.
+`team_wake` starts a pass at once: a room operation calls it, and so does the socket of a room (team_socket.py),
+which only says that the log has new entries. The timer reads a room with an open socket only every few minutes, and
+a room without one every POLL_SECONDS. A room whose relay does not answer waits longer after each failure, up to 15
+minutes.
 
 No call to the relay or to the helper holds the service lock. The lock of a room keeps two threads from reading or
 writing the same room at one time, and it is held for one request, not for a whole pass.
@@ -127,10 +128,12 @@ class TeamSync:
         if self._team_thread:
             self._team_thread.join(timeout=20)
 
-    def team_wake(self, retry: bool = False) -> None:
-        """Start a pass now. With `retry`, also the rooms that wait after a failure try again."""
+    def team_wake(self, retry: bool = False, room: str | None = None) -> None:
+        """Start a pass now. With `retry`, also the rooms that wait after a failure try again. With `room`, the pass
+        must read only that room beyond the rooms that are due: its socket told of new entries."""
         if retry:
             self._team_failures.clear()
+        self._team_note_wake(room)
         self._team_wake.set()
 
     def _team_room_lock(self, room: str) -> threading.Lock:
@@ -156,14 +159,17 @@ class TeamSync:
             self._team_wake.clear()
 
     def team_sync_pass(self) -> None:
-        """Read the new entries of each active room once. A room that failed waits for its next try."""
+        """Read the new entries of each active room once. A room that failed waits for its next try, and a room
+        with an open socket waits for its socket or for its long interval (TeamSocket._team_due)."""
+        every, woken = self._team_take_wakes()
         with self.lock:
             rooms = [room['room'] for room in self.team_store.rooms() if room['state'] == ACTIVE]
+        self._team_socket_watch(rooms)
         for room in rooms:
             if self.stopping.is_set():
                 return
             failures, due = self._team_failures.get(room, (0, 0))
-            if time.monotonic() < due:
+            if time.monotonic() < due or not self._team_due(room, every, woken):
                 continue
             try:
                 self.team_sync_room(room)
@@ -186,6 +192,7 @@ class TeamSync:
             else:
                 self._team_failures.pop(room, None)
                 self._team_status[room] = {'synced_at': utc_now(), 'error': None}
+                self._team_socket_read(room)
             self._team_tell_sync(room)
 
     def _team_tell_sync(self, room_id: str) -> None:

@@ -4,8 +4,8 @@ The relay sees only sealed bytes, IDs, times and sizes. A member token or a tick
 never into a path, and no error of this module carries one. The client follows no redirect, so a token never goes
 to another host.
 
-The socket of the contract is not here. It only tells a Mac that the log has new entries, and the sync reads on a
-timer for now (team_sync.py).
+The socket of the contract is not here: the Python standard library has no WebSocket client, so the watch mode of the
+helper holds it (team_socket.py).
 """
 from __future__ import annotations
 

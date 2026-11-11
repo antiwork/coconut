@@ -1,8 +1,9 @@
 """Team rooms on this Mac: make a room, invite, join, leave and list (docs/team-log.md, "Mac").
 
 A team is a set of Macs that share one sealed log on the relay. This module holds the steps of the contract for one
-Mac. team_sync.py copies the log, team_store.py keeps it, team_keys.py keeps the secrets of each room, team_relay.py
-talks to the relay, and team_helper.py does the cryptography.
+Mac. team_sync.py copies the log, team_socket.py learns of new entries through the socket of each room, team_store.py
+keeps the log, team_keys.py keeps the secrets of each room, team_relay.py talks to the relay, and team_helper.py does
+the cryptography.
 
 The routes are for the Team screen of the app and for the tools on this Mac (server.py). A paired device calls them
 on the tunnel listener or on the main listener, with the authorization of its other routes. A tool calls them on the
@@ -46,6 +47,7 @@ from .team_helper import TeamFormatError, TeamHelper, TeamHelperError
 from .team_keys import ROOM_ID, TeamKeysError
 from .team_pages import TeamPages
 from .team_relay import TeamRelay, TeamRelayError, relay_origin
+from .team_socket import TeamSocket
 from .team_store import ACTIVE, JOINING, MEMBER_LIMITS, SCHEMA, TeamStore, unicode_text
 from .team_sync import INACTIVE, ROOM_ERRORS, TEAM_EVENT, TeamSync, member_payload, room_error, utc_now
 
@@ -148,7 +150,7 @@ def team_errors():
         raise ServiceError(status, room_error(error)) from None
 
 
-class Team(TeamSync, TeamPages):
+class Team(TeamSync, TeamSocket, TeamPages):
     """The team rooms of this Mac: the routes of the tools, and the thread that copies each log."""
 
     def _init_team(self):
@@ -163,12 +165,15 @@ class Team(TeamSync, TeamPages):
         self._team_replies = {}
         self._team_replies_lock = threading.Lock()
         self._init_team_sync()
+        self._init_team_socket()
         self._init_team_pages()
 
     def _start_team(self):
         self._start_team_sync()
+        self._start_team_socket()
 
     def _close_team(self):
+        self._close_team_socket()
         self._close_team_sync()
 
     def team_request(self, method: str, path: str, data: dict, key: str = '', device: str = '') -> dict:
@@ -280,7 +285,8 @@ class Team(TeamSync, TeamPages):
                 'can_invite': is_admin and room['state'] == ACTIVE, 'epoch': room['epoch'],
                 'created_at': room['created_at'], 'members': members, 'bots': self._team_bots(room, members),
                 'sync': {'seq': room['seq'], 'entries': entries, 'waiting': waiting,
-                         'synced_at': status.get('synced_at'), 'error': status.get('error'), 'refused': refused}}
+                         'synced_at': status.get('synced_at'), 'error': status.get('error'), 'refused': refused,
+                         'socket': self.team_socket_open(room['room'])}}
 
     def _team_room(self, room_id) -> dict:
         from .service import ServiceError
@@ -596,3 +602,4 @@ class Team(TeamSync, TeamPages):
             state.pop(room_id, None)
         self._team_retried.discard(room_id)
         self._team_unsure.discard(room_id)
+        self._team_socket_forget(room_id)

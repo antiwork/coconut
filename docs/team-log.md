@@ -4,9 +4,8 @@ A team is a set of Macs that share one log. The log lives on the Cloudflare rela
 
 The log carries everything that a team shares: the people and bots of the team, the messages of the Team chat, and the shared pages. A phone talks only to its own Mac, as before.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac (see [Mac](#mac)). It shares bots and their pages, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). These parts are not built yet:
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares bots and their pages, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). These parts are not built yet:
 
-- The socket on the Mac. The Mac reads each room every 30 seconds.
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
 - A record of the open invites on the Mac.
 - The member removal and the key change.
@@ -255,7 +254,7 @@ The relay accepts a member ID only with a proof of its key, so one member cannot
 
 ## Mac
 
-The Mac backend does the steps of this contract for the Team screen of the app and for the tools on the Mac. The modules are in `backend/coconut`: `team.py` (the room operations and the routes), `team_sync.py` (the copy of each log), `team_store.py` (the tables and the reading rules), `team_keys.py` (the secrets), `team_relay.py` (the relay routes) and `team_helper.py` (the helper).
+The Mac backend does the steps of this contract for the Team screen of the app and for the tools on the Mac. The modules are in `backend/coconut`: `team.py` (the room operations and the routes), `team_sync.py` (the copy of each log), `team_socket.py` (the socket of each room), `team_store.py` (the tables and the reading rules), `team_keys.py` (the secrets), `team_relay.py` (the relay routes) and `team_helper.py` (the helper).
 
 ### Helper
 
@@ -264,6 +263,7 @@ The Mac backend does the steps of this contract for the Team screen of the app a
 - Coconut.app carries the helper in `Contents/Helpers/team-helper`, as a binary for both architectures. `coconut service` and `coconut update` name it in `COCONUT_TEAM_HELPER`.
 - A source install compiles it into `<data>/team/team-helper` with `python3 scripts/team.py build`. `deploy.py` runs that command in each update, and the receipt `helper.sha256` stops a second build of the same sources. With `COCONUT_TEAM_HELPER` set, the command compiles nothing.
 - The service uses `COCONUT_TEAM_HELPER` when it names an executable file. Else it uses `<data>/team/team-helper` when that file is private: no symbolic link, and no permission for the group or others.
+- The helper also has a watch mode that does not end. It holds the socket of each room. See [Socket on the Mac](#socket-on-the-mac).
 
 ### Keys and tables
 
@@ -288,7 +288,7 @@ A room is `joining` (the relay did not answer the join yet), `active`, `removed`
 
 One thread, `coconut-team-sync`, reads each `active` room after its `seq`, one answer at a time. Each answer goes into the store in one transaction. Before that transaction, and without the lock of the service, the Mac reads each payload and checks the fields of each `member`, `bot` and `page` entry. So a page that is slow to check slows only the thread, not the requests of the phone. The transaction then applies the rules that need the store. The thread reads again while `last` is higher.
 
-- The thread reads every 30 seconds. A room operation and `POST /v1/team/sync` start a pass at once. A later socket only needs to call `TeamSync.team_wake`.
+- The thread reads a room without an open socket every 30 seconds, and a room with an open socket every 5 minutes. A room operation, a save of a team page and `POST /v1/team/sync` start a pass of each room at once. A new `seq` on the socket of a room starts a pass of that room. See [Socket on the Mac](#socket-on-the-mac).
 - After a failure, a room waits 60, 120, 240 and 480 seconds, then 900 seconds for each later try.
 - After each start of the service, the thread tries the waiting bodies again, because an update of Coconut starts the service again.
 - When the log shows no `member` entry of this Mac, the thread writes it, at most every 5 minutes. This repairs a stop between a join and its first write.
@@ -302,6 +302,39 @@ One thread, `coconut-team-sync`, reads each `active` room after its `seq`, one a
 - No call to the relay or to the helper holds the lock of the service.
 
 A log line names a room by the start of its ID, and an entry by its ID and its `seq`. The relay sees these values too. No log line and no error text has an invite link, a token, a key, a ticket, a welcome or a proof. `backend/tests/test_team_routes.py` checks this.
+
+### Socket on the Mac
+
+The Python standard library has no WebSocket client, so the helper holds the sockets in its watch mode. `team_socket.py` starts one process of the helper while the Mac has an active room, and stops it when the Mac has none or the service closes.
+
+The backend writes one line of JSON to the standard input of the helper for each change of the set of rooms: a join, a leave, and a room that becomes `removed` or `gone`. A new line replaces the set.
+
+```json
+{"operation": "watch", "rooms": [{"room": "<room ID>", "relay": "<relay>", "token": "<member token>"}]}
+```
+
+The helper writes one line of JSON to its standard output for each event. No line has a token or an address.
+
+| Line | Meaning |
+| --- | --- |
+| `{"event": "ready", "version": 1}` | The first line, after the first line of rooms. |
+| `{"event": "open", "room": r}` | The socket of the room is open. |
+| `{"event": "seq", "room": r, "seq": n}` | The relay sent `{"seq": n}`. |
+| `{"event": "closed", "room": r, "code": c, "status": s, "retry": t}` | The socket closed or did not open. `code` is the close code and `status` the HTTP status of a refused upgrade, each only when there is one. |
+| `{"event": "error", "error": "malformed"}` | A line of rooms that the helper refused. It keeps the earlier set. |
+
+- The helper sends the member token only in the `Authorization` header, to the relay of the room, and follows no redirect. It takes a relay only by the rule of a link: an HTTPS relay, and the loopback relay in a debug build. An HTTPS relay gets `wss`.
+- The helper sends `ping` every 30 seconds on each open socket. A socket without an answer by the next ping is dead.
+- After a close, the helper connects again after 1 second. The wait doubles after each close, up to 60 seconds. A socket that stayed open for 30 seconds resets the wait.
+- After 401, 404, 1000 or 1008 the helper does not connect again until the next line, because the token is no longer a member's or the room is gone. Its line has `retry` false, and the backend starts a pass of the room. The read then finds the room `removed` or `gone`, and the next line leaves it out.
+- The helper ends when its standard input closes. So it also ends when the service stops without a clean close.
+- A `seq` that the store has starts no pass, for example the number that the relay sends when a socket opens. A higher one starts a pass of that room.
+- When the process ends, the backend starts it again after 2 seconds. The wait doubles after each end, up to 5 minutes. A process that ran for 60 seconds resets the wait.
+- No call holds the lock of the service. The thread of the watch takes it only to list the rooms, and it reads the key files without it.
+
+The timer stays as the safety net. While the socket of a room is open, the timer reads the room every 5 minutes. A quiet room then costs the relay one small read in 5 minutes, and the read finds an entry that a dead socket missed before its next ping. Without an open socket, the timer reads the room every 30 seconds, as before: with no helper, an older helper, or a relay that refuses the socket.
+
+An older helper has no watch mode. It reads to the end of its standard input before it answers, so it writes no `ready` line while the input is open. After 10 seconds without `ready`, the backend closes the input, and the older helper answers `{"error": "malformed"}`. The backend writes one log line, keeps the identity of the file (path, inode, size and time of change), and does not start that file again until it changes, for example after `scripts/team.py build` or an update of Coconut. No pass gets an error.
 
 ### Routes
 
@@ -332,7 +365,7 @@ A room in an answer has what the Team screen shows, so the app needs no other re
 | `is_admin`, `can_invite` | True when this Mac is the admin. `can_invite` is true only for the admin of an `active` room. |
 | `members` | In the order of their first `member` entry: `member` (the member ID), `name`, `avatar`, `color`, `admin` and `this_mac`. |
 | `bots` | Each bot of the team, while the room is `active` and the member of the bot is in `members`: `id`, `name`, `avatar`, `color`, `member` (the ID of the Mac that runs the bot), `member_name` and `this_mac`. A bot of this Mac also has `bot_id`, its ID on this Mac, and its profile comes from that bot. An archived or deleted bot of this Mac is not in the list. The bots follow the order of the members, then their names. |
-| `sync` | `synced_at`, and `error`: one sentence for a person, or null. Also `seq`, `entries`, `waiting` and `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)). |
+| `sync` | `synced_at`, and `error`: one sentence for a person, or null. Also `seq`, `entries`, `waiting`, `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)), and `socket`: true while the socket of the room is open. The app does not show `socket`. |
 | `relay`, `member`, `admin`, `epoch` | For the tools. |
 
 The `id` of a bot is `t-<room ID>-<entry ID>`, as in `team_bots` of `GET /v1/documents`.
