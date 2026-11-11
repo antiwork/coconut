@@ -642,16 +642,28 @@ class TeamStore:
         """The documents that the person of this Mac shares with the room."""
         return {row[0] for row in self.db.execute('SELECT document FROM team_page_shares WHERE room=?', (room,))}
 
-    def shared_pages(self) -> dict[str, list[dict]]:
-        """The active rooms of each shared document, each as `room` and `name`, in the order of the names."""
+    def shared_pages(self, document: str | None = None) -> dict[str, list[dict]]:
+        """The teams of each shared document, or of one document: its active rooms, each as `room` and `name`, in the
+        order of the names.
+
+        This is the one rule of "the page is shared now": the teams and the audience that the app shows, the audience
+        that a bot reads, and the size limit of a save. A share with a room that is `removed` or `gone` does not count,
+        because that room can never get the page again. Its row stays until the person leaves the room on this Mac.
+        """
         teams = {}
-        for document, room, name in self.db.execute('''SELECT s.document, s.room, r.name FROM team_page_shares s
-                JOIN team_rooms r ON r.room=s.room WHERE r.state=? ORDER BY r.name, s.room''', (ACTIVE,)):
-            teams.setdefault(document, []).append({'room': room, 'name': name})
+        for row, room, name in self.db.execute('''SELECT s.document, s.room, r.name FROM team_page_shares s
+                JOIN team_rooms r ON r.room=s.room WHERE r.state=? AND (? IS NULL OR s.document=?)
+                ORDER BY r.name, s.room''', (ACTIVE, document, document)):
+            teams.setdefault(row, []).append({'room': room, 'name': name})
         return teams
 
+    def page_teams(self, document: str) -> list[dict]:
+        """The teams of one document now (shared_pages)."""
+        return self.shared_pages(document).get(document, [])
+
     def rooms_of_page(self, document: str) -> list[str]:
-        """Each room that the person of this Mac shares the document with, in any state."""
+        """Each room that the person of this Mac shares the document with, in any state: for the steps that remove
+        the shares of a document or wake the sync. Whether the page is shared now is shared_pages."""
         return [row[0] for row in self.db.execute('SELECT room FROM team_page_shares WHERE document=? ORDER BY room',
                                                   (document,))]
 

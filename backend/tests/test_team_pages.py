@@ -302,6 +302,33 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
             self.publish(content='\x01' * MAX_CONTENT)
         self.assertEqual(raised.exception.status, 413)
 
+    def test_a_page_of_an_inactive_room_only_is_private_again_and_has_no_team_limit(self):
+        # Design Crew is a second room of this Mac. Weekly report goes to both, Daily note only to Example Team.
+        other = self.create(name='Design Crew', member_name='Ada')
+        self.publish()
+        self.publish(key='daily-note', title='Daily note')
+        self.share()
+        self.share(room=other['room'])
+        self.share('daily-note')
+        # The relay removes this Mac from Example Team.
+        del self.relay.rooms[self.room_id]['members'][self.room['member']]
+        with self.assertLogs('coconut.team_sync', 'WARNING'):
+            self.first.team_sync_pass()
+        self.assertEqual(self.first.team_store.room(self.room_id)['state'], 'removed')
+        # Daily note has no active room now: the app and the bot see a private page, and a save has no team limit.
+        self.assertEqual((self.own('daily-note')['teams'], self.own('daily-note')['audience']), ([], 'private'))
+        self.assertEqual(self.first.read_page(self.bot['id'], {'key': 'daily-note'})['audience'], 'private')
+        large = '\x01' * MAX_CONTENT
+        self.assertEqual(self.publish(key='daily-note', title='Daily note', content=large)['status'], 'saved')
+        # Weekly report keeps Design Crew, so the limit still holds.
+        self.assertEqual(self.own()['teams'], [{'room': other['room'], 'name': 'Design Crew'}])
+        self.assertEqual(self.first.read_page(self.bot['id'], {'key': 'weekly-report'})['audience'], 'team')
+        with self.assertRaises(ServiceError) as raised:
+            self.publish(content=large)
+        self.assertEqual(raised.exception.status, 413)
+        # The rows stay until the person leaves the room on this Mac: the room can never get the page again.
+        self.assertIn(self.room_id, self.first.team_store.rooms_of_page(self.document_id('daily-note')))
+
     def test_a_share_refuses_what_it_cannot_share(self):
         self.publish()
         document = self.document_id()

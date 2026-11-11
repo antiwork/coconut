@@ -270,7 +270,7 @@ class TeamPages:
     def _team_shared_document(self, document: dict) -> dict:
         """A document as GET /v1/documents lists it, with its teams. The caller holds the service lock, or it is a read
         view with its own connection, so the store of the connection reads the shares."""
-        return dict(document, **page_audience(TeamStore(self.db).shared_pages().get(document['id'], [])))
+        return dict(document, **page_audience(TeamStore(self.db).page_teams(document['id'])))
 
     def _team_forget_page(self, document: dict) -> None:
         """Remove the shares of a document that goes. The author entry of its bot goes with its last shared page. The

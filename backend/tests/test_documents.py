@@ -31,6 +31,14 @@ REPORT = ('## Profit report, October\n\nNet profit rose 12% to $41,200 before in
 KEY = document_of(REPORT, 'Task')['key']
 
 
+def share_with_active_room(service, document: str) -> None:
+    """The person shares the document with an active room, as the share route leaves the store. The caller holds the
+    transaction."""
+    service.team_store.add_room(room='a' * 64, relay='https://relay.example', name='Example Team', member='m',
+                                admin='m', state='active', epoch=0, profile='{}', created_at='2026-11-11T00:00:00Z')
+    service.db.execute('INSERT INTO team_page_shares (room, document) VALUES (?, ?)', ('a' * 64, document))
+
+
 class PageRuleTests(unittest.TestCase):
     def test_a_page_with_tokens_and_the_given_libraries_passes(self):
         self.assertEqual(page_problems(TREEMAP), [])
@@ -235,7 +243,7 @@ class DocumentServiceTests(unittest.TestCase):
         self.assertEqual((listed['audience'], listed['teams']), ('private', []))
         # A share of the person makes the page a team page. A save of the bot keeps it so.
         with self.service.transaction():
-            self.service.db.execute('INSERT INTO team_page_shares (room, document) VALUES (?, ?)', ('a' * 64, listed['id']))
+            share_with_active_room(self.service, listed['id'])
         self.assertEqual(self.save(content='# Signups\n\n430 today.')['version'], 2)
         self.assertEqual(self.tool('read_document', {'key': 'signups-daily'})['audience'], 'team')
         self.assertNotIn('audience', json.loads(self.service.db.execute('SELECT data FROM documents').fetchone()[0]))
@@ -762,7 +770,7 @@ class OutsideTurnPageTests(unittest.TestCase):
         self.save(self.bot)
         document = self.service._document_of_key(self.bot['id'], 'weekly-report')
         with self.service.transaction():
-            self.service.db.execute('INSERT INTO team_page_shares (room, document) VALUES (?, ?)', ('a' * 64, document['id']))
+            share_with_active_room(self.service, document['id'])
         # A new version of a shared page wakes the sync, which sends it to the team.
         with patch.object(self.service, 'team_wake') as wake:
             self.assertEqual(self.save(self.bot, content='4 tasks are open.')['status'], 'saved')
