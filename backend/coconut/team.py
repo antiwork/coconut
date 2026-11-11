@@ -76,8 +76,7 @@ SYNC_WAIT_SECONDS = 60
 # runs again. The limit keeps the memory small when a device sends many keys.
 REPLY_SECONDS = 600
 REPLY_LIMIT = 256
-# The route of a share and a stop of a page, and the answer to a caller that is not a paired device.
-PAGE_ROUTE = re.compile(r'/v1/team/rooms/[^/]+/pages/[^/]+/?')
+# The answer to a share or a stop of a page from a caller that is not a paired device.
 PERSON_ONLY = 'Only the person can share a page with a team, in the Coconut app.'
 # The clock of the saved answers. A test replaces it, so it needs no wait of 10 minutes.
 clock = time.monotonic
@@ -200,13 +199,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         of a tool on this Mac, runs as before. `POST /v1/team/sync` and the reads need no key.
         """
         from .service_base import ServiceError
-        if not device and self.library_reader and method in ('PUT', 'DELETE') and PAGE_ROUTE.fullmatch(path):
-            # Only the person shares a page. A paired device is the app of the person. The token of the bridge file
-            # is the token of the tools of this Mac, and a bot can read that file, so it cannot share or stop. This
-            # closes the plain path only: a process of the same macOS account can still read other files of this Mac.
-            raise ServiceError(403, PERSON_ONLY)
         if not key or method == 'GET' or path.rstrip('/') == '/v1/team/sync':
-            return self._team_route(method, path, data)
+            return self._team_route(method, path, data, device=device)
         try:
             UUID(key)
         except (ValueError, TypeError, AttributeError):
@@ -229,7 +223,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
             # The first request runs. When it fails, it removes its slot, and this request runs itself.
             reply['done'].wait()
         try:
-            answer = self._team_route(method, path, data, f'{device}:{key}')
+            answer = self._team_route(method, path, data, f'{device}:{key}', device)
         except BaseException:
             with self._team_replies_lock:
                 self._team_replies.pop(slot, None)
@@ -258,8 +252,9 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
             if at < old or number < over:
                 del self._team_replies[slot]
 
-    def _team_route(self, method: str, path: str, data: dict, repeat: str = '') -> dict:
-        """Serve one route. `repeat` names the device and the `Idempotency-Key` of a write, or is empty."""
+    def _team_route(self, method: str, path: str, data: dict, repeat: str = '', device: str = '') -> dict:
+        """Serve one route. `repeat` names the device and the `Idempotency-Key` of a write, or is empty. `device` is
+        the paired device of the request, or empty for a tool of this Mac."""
         from .service_base import ServiceError
         parts = path.strip('/').split('/')[2:]
         if parts == ['rooms'] and method == 'GET':
@@ -276,9 +271,15 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
             return self.team_profile(parts[1], data)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'invites' and method == 'POST':
             return self.team_invite(parts[1], data)
-        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'pages' and method == 'PUT':
-            return self.team_share_page(parts[1], parts[3])
-        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'pages' and method == 'DELETE':
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'pages' and method in ('PUT', 'DELETE'):
+            # The check runs on the parts of the route itself, so no form of the path passes around it. Only the
+            # person shares a page. A paired device is the app of the person. The token of the bridge file is the token
+            # of the tools of this Mac, and a bot can read that file, so it cannot share or stop. This closes the plain
+            # path only: a process of the same macOS account can still read other files of this Mac.
+            if not device and self.library_reader:
+                raise ServiceError(403, PERSON_ONLY)
+            if method == 'PUT':
+                return self.team_share_page(parts[1], parts[3])
             return self.team_stop_page(parts[1], parts[3])
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'bots' and method == 'POST':
             return self.team_share(parts[1], data)

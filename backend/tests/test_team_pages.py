@@ -429,11 +429,14 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
         # Idempotency-Key. The refusal changes nothing.
         self.publish()
         path = f'/v1/team/rooms/{self.room_id}/pages/{self.document_id()}'
+        # The route drops each slash at the end of the path, so the check must too.
         for method in ('PUT', 'DELETE'):
             for key in ('', str(uuid4())):
-                with self.subTest(method=method, key=key):
-                    self.assertEqual(self.refusal(self.first.team_request, method, path, {}, key), (403, PERSON_ONLY))
-                    self.assertEqual(self.own()['teams'], [])
+                for end in ('', '/', '//', '///'):
+                    with self.subTest(method=method, key=key, end=end):
+                        self.assertEqual(self.refusal(self.first.team_request, method, path + end, {}, key),
+                                         (403, PERSON_ONLY))
+                        self.assertEqual(self.own()['teams'], [])
         self.share()
         cursor = self.first._cursor()
         self.assertEqual(self.refusal(self.first.team_request, 'DELETE', path, {}), (403, PERSON_ONLY))
