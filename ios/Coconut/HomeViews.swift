@@ -13,15 +13,29 @@ struct HomeLaunchView: View {
         let activeBots = store.bots.filter { !$0.archived }.sorted {
             (latest[$0.id] ?? $0.createdAt.apiDate ?? .distantPast) > (latest[$1.id] ?? $1.createdAt.apiDate ?? .distantPast)
         }
-        let pinned = activeBots.filter(\.pinned).sorted {
+        let pinnedBots = activeBots.filter(\.pinned).sorted {
             let first = $0.createdAt.apiDate ?? .distantPast
             let second = $1.createdAt.apiDate ?? .distantPast
             return first == second ? $0.id < $1.id : first < second
         }
-        let conversations = ChatList.items(bots: activeBots.filter { !$0.pinned }, latest: latest,
-                                           rooms: store.team?.rooms ?? [])
+        let rooms = store.team?.rooms ?? []
+        let filter = ChatFilter.effective(store.chatFilter, rooms: rooms)
+        let conversations = filter.items(ChatList.items(bots: activeBots.filter { !$0.pinned }, latest: latest,
+                                                        rooms: rooms))
+        let pinned = filter.showsPinned ? pinnedBots : []
         return ScrollView {
             LazyVStack(spacing: 0) {
+                // The chips show only for a Mac in a team. A person with bots only sees the list as before.
+                if ChatFilter.showsChips(rooms: rooms) {
+                    chips(filter)
+                }
+                if conversations.isEmpty && pinned.isEmpty && filter == .bots {
+                    // The quiet line of the Team screen for a Mac without bots.
+                    Text("This Mac has no bots yet.")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity).padding(.vertical, 45)
+                        .accessibilityIdentifier("chats-empty")
+                }
                 if !pinned.isEmpty {
                     ViewThatFits(in: .horizontal) {
                         pinnedTiles(pinned)
@@ -57,12 +71,27 @@ struct HomeLaunchView: View {
                     }
                 }
             }
-            .padding(.top, pinned.isEmpty ? 16 : 0)
+            .padding(.top, pinned.isEmpty || ChatFilter.showsChips(rooms: rooms) ? 16 : 0)
             .padding(.bottom, 20)
         }
         .background(BoardStyle.paper)
         .refreshable { await store.reconnect() }
         .modifier(DeleteBotDialog(bot: $deleting))
+    }
+
+    /// The row of filter chips, as the chips of WhatsApp. When large text does not fit one row, the chips stand one
+    /// under the other, so no chip is cut.
+    private func chips(_ selected: ChatFilter) -> some View {
+        let chips = ForEach(ChatFilter.allCases) { filter in
+            ChipButton(title: filter.title, selected: filter == selected) { store.chatFilter = filter }
+                .accessibilityIdentifier("chats-filter-\(filter.rawValue)")
+        }
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) { chips }
+            VStack(alignment: .leading, spacing: 0) { chips }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 20)
     }
 
     private func pinnedTiles(_ pinned: [Bot]) -> some View {
@@ -71,12 +100,18 @@ struct HomeLaunchView: View {
                 NavigationLink(value: ConversationRoute(botId: bot.id)) {
                     VStack(spacing: 9) {
                         LiveBotAvatar(bot: bot, size: 76)
-                        HStack(spacing: 5) {
-                            Text(bot.name).font(.subheadline).foregroundStyle(.secondary)
-                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                                .fixedSize(horizontal: false, vertical: true)
-                            if bot.unreadCount > 0 { UnreadMarker(count: bot.unreadCount) }
-                        }
+                            // The badge sits on the top right corner of the face, not next to the name.
+                            .overlay(alignment: .topTrailing) {
+                                // The face keeps its size, so the badge on it stops growing at the largest
+                                // standard text size and never covers the face.
+                                if bot.unreadCount > 0 {
+                                    UnreadBadge(count: bot.unreadCount).offset(x: 4, y: -2)
+                                        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+                                }
+                            }
+                        Text(bot.name).font(.subheadline).foregroundStyle(.secondary)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .frame(width: pinWidth).frame(minHeight: 110)
                     .background(BoardStyle.paper)
@@ -97,6 +132,35 @@ struct HomeLaunchView: View {
         Button("Delete bot", systemImage: "trash", role: .destructive) { deleting = bot }
     }
 
+}
+
+/// A text chip that one of a few choices selects: the filters of the Chats list, and the tabs of the bot details on
+/// a Mac. The selected chip sits on a soft capsule of the text color, so it reads in light and in dark mode.
+struct ChipButton: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.body.weight(selected ? .medium : .regular))
+                .foregroundStyle(selected ? .primary : .secondary)
+                .lineLimit(1)
+                .padding(.horizontal, 14).padding(.vertical, 5)
+                .frame(minHeight: 30)
+                .background(selected ? Color.primary.opacity(0.1) : .clear, in: Capsule())
+                #if os(iOS)
+                // A finger needs 44 points. The capsule stays small.
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                #else
+                .contentShape(Capsule())
+                #endif
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
 }
 
 struct HomePressStyle: ButtonStyle {
@@ -140,7 +204,7 @@ enum BotRowSubtitle: Equatable {
         case .health(let health): parts.append(health.label)
         case .preview: parts += [bot.status.replacingOccurrences(of: "_", with: " "), preview]
         }
-        if bot.unreadCount > 0 { parts.append("\(bot.unreadCount) unread") }
+        if bot.unreadCount > 0 { parts.append(UnreadBadge.spoken(bot.unreadCount)) }
         return parts.joined(separator: ", ")
     }
 }
@@ -155,7 +219,9 @@ struct BotContactRow: View {
     private var latestMessage: Message? {
         latestConversationMessage(in: store.messages.filter { $0.botId == bot.id })
     }
-    private var preview: String {
+    /// The line under the name: never empty.
+    private var preview: String { ChatRowText.line(newestText) }
+    private var newestText: String {
         guard let message = latestMessage else {
             return TranscriptPresentation.previewText(
                 TranscriptPresentation.previewFallback(bot.lastMessage, messages: store.messages.filter { $0.botId == bot.id }))
@@ -171,21 +237,10 @@ struct BotContactRow: View {
 
     var body: some View {
         let subtitle = BotRowSubtitle(needsYou: store.botNeedsYou(bot), phase: phase, health: bot.health)
-        HStack(spacing: 14) {
+        ChatRowLayout(name: bot.name, unread: bot.unreadCount, date: lastMessageDate) {
             LiveBotAvatar(bot: bot, size: avatarSize)
-            VStack(alignment: .leading, spacing: 5) {
-                if dynamicTypeSize.isAccessibilitySize {
-                    name
-                    if let lastMessageDate { CompactAgeLabel(date: lastMessageDate).font(.caption).foregroundStyle(.secondary) }
-                } else {
-                    HStack(alignment: .firstTextBaseline) {
-                        name
-                        Spacer(minLength: 8)
-                        if let lastMessageDate {
-                            CompactAgeLabel(date: lastMessageDate).font(.caption).foregroundStyle(.secondary).fixedSize()
-                        }
-                    }
-                }
+        } subtitle: {
+            Group {
                 // A pending card or a working phase takes the place of the last message, like a typing notice.
                 switch subtitle {
                 case .needsYou:
@@ -210,25 +265,99 @@ struct BotContactRow: View {
             }
             .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: subtitle)
         }
-        .frame(minHeight: 52)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(subtitle.accessibilityLabel(bot: bot, preview: subtitle == .preview ? preview : ""))
     }
+}
 
-    private var name: some View {
-        HStack(spacing: 5) {
-            Text(bot.name).font(.body.weight(bot.unreadCount > 0 ? .semibold : .medium))
-            if bot.unreadCount > 0 { UnreadMarker(count: bot.unreadCount) }
-        }
+enum ChatRowText {
+    /// The line under the name. A chat without a message says so, for a bot as for a team, so no row has an empty line.
+    static func line(_ preview: String) -> String {
+        preview.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? TeamChatPreview.empty : preview
     }
 }
 
-struct UnreadMarker: View {
-    let count: Int
+/// The layout of one row of the Chats list and of the Mac sidebar, for a bot and a team, as the chat list of WhatsApp:
+/// the face, the name alone, one line under it, and on the right the age of the newest message with the unread badge
+/// under it. No line is empty, so a row of one line has its text centered on the face.
+struct ChatRowLayout<Face: View, Subtitle: View>: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    let name: String
+    let unread: Int
+    let date: Date?
+    @ViewBuilder let face: () -> Face
+    @ViewBuilder let subtitle: () -> Subtitle
+
     var body: some View {
-        Text("\(count)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-            .accessibilityElement().accessibilityLabel("\(count) unread messages")
+        HStack(spacing: 14) {
+            face()
+            if dynamicTypeSize.isAccessibilitySize {
+                // The badge grows with the text and stands on its own line, so it covers no name.
+                VStack(alignment: .leading, spacing: 5) {
+                    nameText
+                    if date != nil || unread > 0 {
+                        HStack(spacing: 8) {
+                            if let date { CompactAgeLabel(date: date).font(.caption).foregroundStyle(.secondary) }
+                            if unread > 0 { UnreadBadge(count: unread) }
+                        }
+                    }
+                    subtitle()
+                }
+            } else {
+                HStack(alignment: .top, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        nameText
+                        subtitle()
+                    }
+                    Spacer(minLength: 0)
+                    if date != nil || unread > 0 {
+                        VStack(alignment: .trailing, spacing: 6) {
+                            if let date { CompactAgeLabel(date: date).font(.caption).foregroundStyle(.secondary) }
+                            if unread > 0 { UnreadBadge(count: unread) }
+                        }
+                        .fixedSize()
+                    }
+                }
+            }
+        }
+        .frame(minHeight: 52)
     }
+
+    private var nameText: some View {
+        Text(name).font(.body.weight(unread > 0 ? .semibold : .medium)).lineLimit(1)
+    }
+}
+
+/// The unread count of a chat: a filled round badge in the ink of the app with digits in the paper color, as the
+/// round send button of the composer. One digit gives a circle, more digits a capsule, and over 99 shows "99+".
+struct UnreadBadge: View {
+    let count: Int
+    @ScaledMetric(relativeTo: .caption2) private var size = 20
+
+    var body: some View {
+        Text(Self.text(count))
+            .font(.caption2.weight(.semibold).monospacedDigit())
+            .foregroundStyle(BoardStyle.controlLabel)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 6)
+            .frame(minWidth: size, minHeight: size)
+            // The ink as a plain color: a Mac sidebar draws `Color.primary` with the vibrancy of its material, which
+            // would make the fill of the badge pale.
+            .background(Self.fill, in: Capsule())
+            .accessibilityElement()
+            .accessibilityLabel(Self.spoken(count))
+            .accessibilityIdentifier("unread-badge")
+    }
+
+    /// The ink of the app (the fill of the send button) without vibrancy: black in light mode, white in dark mode.
+    private static let fill = Color.adaptive { dark, _ in dark ? .white : .black }
+
+    /// The digits of the badge. Over 99 shows "99+".
+    nonisolated static func text(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
+
+    /// What VoiceOver says for the count of a row, a tile and the badge.
+    nonisolated static func spoken(_ count: Int) -> String { count == 1 ? "1 unread message" : "\(count) unread messages" }
 }
 
 struct BotActivityDot: View {

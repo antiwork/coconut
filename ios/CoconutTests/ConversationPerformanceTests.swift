@@ -26,8 +26,8 @@ final class ConversationPerformanceTests: XCTestCase {
         print("COCONUT_PREVIEW_DURATION=\(elapsed)")
     }
 
-    #if os(macOS)
-    /// The sidebar sorts its bots in one pass over the messages. The order must stay the order of a scan for each bot.
+    /// The sidebar of the Mac sorts its bots in one pass over the messages. The order must stay the order of a scan for
+    /// each bot. The sections are shared code, so the iPhone tests run it too.
     func testTheMacSidebarKeepsTheOrderOfAScanForEachBot() {
         // The test makes its own bots and messages, so a change of the demo data cannot change it.
         func bot(_ id: String, created: String, pinned: Bool = false, archived: Bool = false) -> Bot {
@@ -61,11 +61,11 @@ final class ConversationPerformanceTests: XCTestCase {
                 ?? bot.createdAt.apiDate ?? .distantPast
         }
         let active = bots.filter { !$0.archived }.sorted { scan($0) > scan($1) }
-        let sections = MacSidebar.sections(bots: bots, messages: messages)
+        let sections = ChatSections.make(bots: bots, messages: messages, rooms: [])
         XCTAssertEqual(sections.pinned.map(\.id), ["news", "desk", "old"])
-        XCTAssertEqual(sections.others.map(\.id), ["forge", "scout", "quiet"])
+        XCTAssertEqual(sections.bots.map(\.id), ["forge", "scout", "quiet"])
         XCTAssertEqual(sections.pinned.map(\.id), active.filter(\.pinned).map(\.id))
-        XCTAssertEqual(sections.others.map(\.id), active.filter { !$0.pinned }.map(\.id))
+        XCTAssertEqual(sections.bots.map(\.id), active.filter { !$0.pinned }.map(\.id))
+        XCTAssertTrue(sections.people.isEmpty, "A Mac without a team has no People section.")
     }
-    #endif
 }

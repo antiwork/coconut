@@ -147,23 +147,10 @@ struct MacSidebar: View {
 
     /// The bots that are not archived, newest activity first, split into the pinned bots and the other bots.
     /// It reads only its arguments, so it needs no main actor, and a test can call it from any context.
-    nonisolated static func sections(bots: [Bot], messages: [Message]) -> (pinned: [Bot], others: [Bot]) {
-        // One pass over the messages. A comparison of the sort read every message and parsed its date, about 3 ms for
-        // each body with 1,500 messages.
-        sections(bots: bots, latest: ChatList.lastMessageDates(messages))
-    }
-
-    nonisolated static func sections(bots: [Bot], latest: [String: Date]) -> (pinned: [Bot], others: [Bot]) {
-        func lastActivity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
-        let active = bots.filter { !$0.archived }.sorted { lastActivity($0) > lastActivity($1) }
-        return (active.filter(\.pinned), active.filter { !$0.pinned })
-    }
-
     var body: some View {
-        // The body reads both sections, so it reads the messages and sorts the bots one time.
-        let latest = ChatList.lastMessageDates(store.messages)
-        let (pinned, others) = Self.sections(bots: store.bots, latest: latest)
-        let chats = ChatList.items(bots: others, latest: latest, rooms: store.team?.rooms ?? [])
+        // One pass over the messages for all sections. A comparison of the sort read every message and parsed its
+        // date, about 3 ms for each body with 1,500 messages.
+        let sections = ChatSections.make(bots: store.bots, messages: store.messages, rooms: store.team?.rooms ?? [])
         return List(selection: $selection) {
             MacSidebarLabel(title: "Inbox", symbol: "tray")
                 .badge(store.inboxBadgeCount)
@@ -173,22 +160,26 @@ struct MacSidebar: View {
                 .badge(store.documents?.count ?? 0)
                 .tag(MacSelection.library)
                 .accessibilityIdentifier("sidebar-library")
-            if !pinned.isEmpty {
+            // A section without rows does not show.
+            if !sections.pinned.isEmpty {
                 Section("Pinned") {
-                    ForEach(pinned) { bot in row(bot) }
+                    ForEach(sections.pinned) { bot in row(bot) }
                 }
             }
-            Section("Chats") {
-                ForEach(chats) { item in
-                    switch item {
-                    case .bot(let bot): row(bot)
-                    case .team(let room):
+            if !sections.people.isEmpty {
+                Section("People") {
+                    ForEach(sections.people) { room in
                         // A team has no pin and no delete here. The Team screen has its leave action.
                         TeamContactRow(room: room, avatarSize: 32)
                             .padding(.vertical, 2)
                             .tag(MacSelection.team(room.room))
                             .accessibilityIdentifier("sidebar-team-\(room.room)")
                     }
+                }
+            }
+            if !sections.bots.isEmpty {
+                Section("Bots") {
+                    ForEach(sections.bots) { bot in row(bot) }
                 }
             }
         }
@@ -270,17 +261,7 @@ private struct MacBotDetails: View {
     }
 
     private func tabButton(_ title: String, _ value: InspectorTab) -> some View {
-        let selected = tab == value
-        return Button { tab = value } label: {
-            Text(title)
-                .font(.body.weight(selected ? .medium : .regular))
-                .foregroundStyle(selected ? .primary : .secondary)
-                .padding(.horizontal, 14).frame(height: 30)
-                .background(selected ? Color.primary.opacity(0.1) : .clear, in: Capsule())
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        ChipButton(title: title, selected: tab == value) { tab = value }
     }
 }
 

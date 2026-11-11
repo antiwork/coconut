@@ -324,4 +324,150 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(retried.idempotencyKey, key, "Each try of one message has the same key.")
         XCTAssertEqual(retried.text, "Hello")
     }
+
+    // MARK: Filters, sections, faces, and who is in the chat
+
+    private func bot(_ id: String, pinned: Bool = false) -> Bot {
+        Bot(id: id, sessionId: "session-\(id)", name: id, role: "", avatar: "sparkle", color: "777777",
+            instructions: "", status: "idle", lastMessage: "", unreadCount: 0, archived: false,
+            createdAt: "2026-11-01T00:00:00Z", pinned: pinned)
+    }
+
+    private func room(_ id: String, name: String = "Example Team", last: String? = nil) -> TeamRoom {
+        TeamRoom(room: id, name: name, state: "active", createdAt: "2026-11-02T00:00:00Z", unread: 0,
+                 lastMessage: last.map { TeamLastMessage(text: "Hi", createdAt: $0) })
+    }
+
+    func testEachFilterShowsItsRowsInTheOrderOfTheList() {
+        let items: [ChatListItem] = [.team(room("r1")), .bot(bot("planner")), .team(room("r2")), .bot(bot("writer"))]
+        XCTAssertEqual(ChatFilter.all.items(items).map(\.id), ["team-r1", "bot-planner", "team-r2", "bot-writer"])
+        XCTAssertEqual(ChatFilter.people.items(items).map(\.id), ["team-r1", "team-r2"])
+        XCTAssertEqual(ChatFilter.bots.items(items).map(\.id), ["bot-planner", "bot-writer"])
+        XCTAssertTrue(ChatFilter.all.showsPinned)
+        XCTAssertTrue(ChatFilter.bots.showsPinned)
+        XCTAssertFalse(ChatFilter.people.showsPinned, "The pinned tiles are bots.")
+    }
+
+    /// The chips show only for a Mac in a team. Without a team the list is "All", also for a choice from before.
+    func testTheChipsShowForATeamAndTheChoiceFallsBackWithout() {
+        XCTAssertFalse(ChatFilter.showsChips(rooms: []))
+        XCTAssertTrue(ChatFilter.showsChips(rooms: [room("r1")]))
+        XCTAssertEqual(ChatFilter.effective(.bots, rooms: [room("r1")]), .bots)
+        XCTAssertEqual(ChatFilter.effective(.people, rooms: []), .all, "A Mac that left its last team is back at All.")
+        XCTAssertEqual(ChatFilter.allCases.map(\.title), ["All", "People", "Bots"])
+    }
+
+    /// A team that the Mac left keeps its row and its history, but brings no chips. A team that the Mac joins does.
+    func testTheChipsShowOnlyForATeamThatTheMacIsIn() {
+        func room(_ state: String) -> TeamRoom { TeamRoom(room: state, name: "Example Team", state: state) }
+        XCTAssertFalse(ChatFilter.showsChips(rooms: [room("removed")]))
+        XCTAssertFalse(ChatFilter.showsChips(rooms: [room("gone")]))
+        XCTAssertFalse(ChatFilter.showsChips(rooms: [room("removed"), room("gone")]))
+        XCTAssertTrue(ChatFilter.showsChips(rooms: [room("joining")]), "A join on its way: the team shows in People.")
+        XCTAssertTrue(ChatFilter.showsChips(rooms: [room("removed"), room("active")]))
+        XCTAssertEqual(ChatFilter.effective(.people, rooms: [room("removed")]), .all,
+                       "People must not hide the bots of a Mac that left its last team.")
+        let items: [ChatListItem] = [.team(room("removed")), .bot(bot("planner"))]
+        XCTAssertEqual(ChatFilter.effective(.people, rooms: [room("removed")]).items(items).map(\.id),
+                       ["team-removed", "bot-planner"], "The left team stays a row of All.")
+    }
+
+    /// The face of a writer comes from the message: the same before and after the writer leaves the team. Only a
+    /// writer without a name has the neutral face.
+    func testAMessageOfAMemberThatLeftKeepsItsFace() {
+        let before = LetterFace.person(memberId: "m-grace", name: "Grace")
+        // After the leave, the member list no longer has Grace, but the message keeps her member ID and her name.
+        let after = LetterFace.person(memberId: "m-grace", name: "Grace")
+        XCTAssertEqual(before.letters, "G")
+        XCTAssertEqual(after.letters, before.letters)
+        XCTAssertEqual(after.colorIndex, before.colorIndex)
+        XCTAssertEqual(after.colorIndex, LetterFace.colorIndex("m-grace"))
+        XCTAssertNil(LetterFace.person(memberId: "m-x", name: nil).letters, "Former member: the neutral face.")
+    }
+
+    /// A new pairing and an unpair set the choice to All.
+    @MainActor
+    func testAnUnpairSetsTheFilterToAll() {
+        let store = AppStore(demo: true)
+        store.chatFilter = .people
+        store.disconnect()
+        XCTAssertEqual(store.chatFilter, .all)
+    }
+
+    func testTheSectionsOfTheMacSidebar() {
+        let bots = [bot("planner", pinned: true), bot("writer")]
+        let rooms = [room("r1", last: "2026-11-05T00:00:00Z"), room("r2", last: "2026-11-09T00:00:00Z"), room("r3")]
+        let sections = ChatSections.make(bots: bots, messages: [], rooms: rooms)
+        XCTAssertEqual(sections.pinned.map(\.id), ["planner"])
+        XCTAssertEqual(sections.people.map(\.room), ["r2", "r1", "r3"], "Newest activity first.")
+        XCTAssertEqual(sections.bots.map(\.id), ["writer"])
+    }
+
+    func testTheLettersOfAFace() {
+        XCTAssertEqual(LetterFace.letters("Example Team"), "ET")
+        XCTAssertEqual(LetterFace.letters("design crew"), "DC")
+        XCTAssertEqual(LetterFace.letters("Planner"), "PL")
+        XCTAssertEqual(LetterFace.letters("Ada", count: 1), "A")
+        XCTAssertEqual(LetterFace.letters("Ada Lovelace", count: 1), "A")
+        XCTAssertEqual(LetterFace.letters("  the  big   team "), "TB")
+        XCTAssertEqual(LetterFace.letters("2026 Launch"), "LA", "A word without a letter does not count.")
+        XCTAssertEqual(LetterFace.letters("Équipe Été"), "ÉÉ")
+        XCTAssertNil(LetterFace.letters("🚀 2026"), "A name without a letter shows the symbol.")
+        XCTAssertNil(LetterFace.letters(""))
+    }
+
+    /// The fill comes from the room ID, so it is the same on each launch and after a new name.
+    func testTheFillOfAFaceIsStableForAnID() {
+        let index = LetterFace.colorIndex("3f7708d5f5cc2bc633b59d2b3a2ed92e")
+        XCTAssertEqual(LetterFace.colorIndex("3f7708d5f5cc2bc633b59d2b3a2ed92e"), index)
+        XCTAssertTrue(BoardStyle.faceColors.indices.contains(index))
+        // The seed of characterSeed does not change between launches, so the value is fixed.
+        XCTAssertEqual(index, Int(characterSeed("3f7708d5f5cc2bc633b59d2b3a2ed92e") % UInt64(BoardStyle.faceColors.count)))
+        let ids = (0..<60).map { "room-\($0)" }
+        XCTAssertGreaterThan(Set(ids.map(LetterFace.colorIndex)).count, 3, "The rooms spread over the fills.")
+        var renamed = room("r1", name: "Example Team")
+        let before = LetterFace.colorIndex(renamed.room)
+        renamed.name = "Design Crew"
+        XCTAssertEqual(LetterFace.colorIndex(renamed.room), before, "A new name keeps the fill.")
+    }
+
+    /// Golden values: the fill of a face is FNV-1a (64 bits) over the UTF-8 bytes of the ID, modulo the count of fills.
+    /// It does not use `hashValue` or `Hasher`, which Swift seeds anew in each process, so each launch gives the same
+    /// fill. The values below come from the same function in Python.
+    func testTheFillsOfFixedIDsAreGolden() {
+        let teams = ["3f7708d5f5cc2bc633b59d2b3a2ed92e": 6, "r1": 4, "r2": 5, "8b1c9e3a0d4f4a6b9c2e7f1a5b3d6c80": 1]
+        let people = ["m-ada": 1, "m-grace": 5, "member-1": 1]
+        for (id, index) in teams.merging(people, uniquingKeysWith: { first, _ in first }) {
+            XCTAssertEqual(LetterFace.colorIndex(id), index, id)
+        }
+        XCTAssertEqual(BoardStyle.faceColors.map(\.fill),
+                       ["7E99D3", "70A779", "AA79C2", "F2A088", "EAA052", "D76C91", "B6C493", "EBC96C"],
+                       "A new fill or a new order changes the face of each team and person.")
+        XCTAssertEqual(BoardStyle.faceColors[LetterFace.colorIndex("r1")].fill, "EAA052", "A team")
+        XCTAssertEqual(BoardStyle.faceColors[LetterFace.colorIndex("m-grace")].fill, "D76C91", "A person")
+    }
+
+    /// A row never has an empty line: a bot without a message says so, as a team does.
+    func testARowWithoutAMessageSaysNoMessagesYet() {
+        XCTAssertEqual(ChatRowText.line(""), "No messages yet")
+        XCTAssertEqual(ChatRowText.line("  \n"), "No messages yet")
+        XCTAssertEqual(ChatRowText.line("You: Hi"), "You: Hi")
+        XCTAssertEqual(TeamChatPreview.text(nil), ChatRowText.line(""), "One rule for each kind of row.")
+        XCTAssertEqual(UnreadBadge.spoken(1), "1 unread message")
+        XCTAssertEqual(UnreadBadge.spoken(140), "140 unread messages")
+        XCTAssertEqual([5, 42, 99, 100, 140].map(UnreadBadge.text), ["5", "42", "99", "99+", "99+"])
+    }
+
+    func testTheLineOfWhoIsInTheChat() {
+        func room(people: Int, bots: Int) -> TeamRoom {
+            TeamRoom(room: "r", name: "Example Team", state: "active",
+                     members: (0..<people).map { TeamMember(member: "m\($0)", name: "P\($0)") },
+                     bots: (0..<bots).map { TeamRoomBot(id: "t-r-\($0)", name: "B\($0)") })
+        }
+        XCTAssertEqual(room(people: 1, bots: 0).whoLine, "1 person")
+        XCTAssertEqual(room(people: 3, bots: 0).whoLine, "3 people")
+        XCTAssertEqual(room(people: 3, bots: 1).whoLine, "3 people, 1 bot")
+        XCTAssertEqual(room(people: 3, bots: 2).whoLine, "3 people, 2 bots")
+        XCTAssertNil(room(people: 0, bots: 0).whoLine, "A team that is joining has no members yet.")
+    }
 }

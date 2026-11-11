@@ -27,8 +27,12 @@ struct TeamChatView: View {
     @ScaledMetric(relativeTo: .headline) private var nameWidth = 150
     #if os(macOS)
     @Environment(\.openSettings) private var openSettings
-    /// The chat runs up under the toolbar of the window, where the title of the team floats.
-    private static let titleHeight: CGFloat = 52
+    /// The title of the team floats over the top of the chat. It has two lines (the name and who is in the chat), so it
+    /// is 10 points taller than the title of a bot (34).
+    private static let titlePillHeight: CGFloat = 44
+    /// The chat runs up under the toolbar of the window, where the title floats. The chat and the pinned day pill start
+    /// below it with the gap of the bot chat: 8 points above the title and 10 below it.
+    private static let titleHeight: CGFloat = 8 + titlePillHeight + 10
     #else
     private static let titleHeight: CGFloat = 0
     #endif
@@ -61,6 +65,9 @@ struct TeamChatView: View {
         ScrollViewReader { proxy in
             List {
                 Group {
+                    #if os(macOS)
+                    ChatTitleSpace(titleHeight: Self.titleHeight)
+                    #endif
                     header(room, chat: chat, empty: allRows.isEmpty)
                     if shown.lowerBound > 0 || chat.before != nil {
                         Button {
@@ -98,9 +105,6 @@ struct TeamChatView: View {
             }
             .listStyle(.plain)
             .id(listId)
-            #if os(macOS)
-            .contentMargins(.top, Self.titleHeight, for: .scrollContent)
-            #endif
             .buttonStyle(.borderless)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 1)
@@ -183,18 +187,14 @@ struct TeamChatView: View {
             ToolbarItem(placement: .leadingBar) {
                 // The title of the team opens its Team screen, as the title of a bot opens its settings.
                 NavigationLink(value: TeamScreenRoute(roomId: room.room)) {
-                    HStack(spacing: 8) {
-                        TeamFace(size: 28)
-                        Text(room.name).font(.headline)
-                            .lineLimit(1).truncationMode(.tail)
-                            .frame(maxWidth: nameWidth, alignment: .leading)
-                    }
-                    .fixedSize(horizontal: true, vertical: false)
+                    TeamTitle(room: room, faceSize: 28)
+                        .frame(maxWidth: nameWidth + 36, alignment: .leading)
+                        .fixedSize(horizontal: true, vertical: false)
                     .padding(.leading, 4).padding(.trailing, 10)
                     .frame(minHeight: 44).contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("\(room.name) team")
+                .accessibilityLabel([room.name + " team", room.whoLine].compactMap { $0 }.joined(separator: ", "))
                 .accessibilityIdentifier("team-chat-title")
                 .simultaneousGesture(TapGesture().onEnded { composerFocused = false })
             }
@@ -204,19 +204,16 @@ struct TeamChatView: View {
         // Settings window.
         .overlay(alignment: .top) {
             Button { openSettings() } label: {
-                HStack(spacing: 8) {
-                    TeamFace(size: 24)
-                    Text(room.name).font(.headline).lineLimit(1).truncationMode(.tail)
-                }
+                TeamTitle(room: room, faceSize: 24)
                 .padding(.leading, 6).padding(.trailing, 12)
-                .frame(height: 34)
+                .frame(height: Self.titlePillHeight)
                 .modifier(FloatingCapsule())
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
             .padding(.top, 8)
             .help("Team settings")
-            .accessibilityLabel("\(room.name) team")
+            .accessibilityLabel([room.name + " team", room.whoLine].compactMap { $0 }.joined(separator: ", "))
             .accessibilityIdentifier("team-chat-title")
         }
         #endif
@@ -224,9 +221,16 @@ struct TeamChatView: View {
 
     private static let bottom = "team-chat-bottom"
 
-    /// The line at the start of the chat: what the chat cannot show yet, or where a message goes.
-    @ViewBuilder
+    /// The first row of the chat: what the chat cannot show yet, or where a message goes. It is always a row, also an
+    /// empty one, as the header of the bot chat (ConversationView.conversationHeader) is. So the first day pill has the
+    /// same gap below the title in both chats.
     private func header(_ room: TeamRoom, chat: TeamChat, empty: Bool) -> some View {
+        VStack(spacing: 0) { headerContent(room, chat: chat, empty: empty) }
+            .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func headerContent(_ room: TeamRoom, chat: TeamChat, empty: Bool) -> some View {
         if !room.hasChat {
             EmptyView()
         } else if !chat.loaded {
@@ -238,7 +242,7 @@ struct TeamChatView: View {
         } else if empty && chat.before == nil {
             // The structure of the empty bot chat (ConversationView.conversationHeader): face, title, one line.
             VStack(spacing: 10) {
-                TeamFace(size: 68)
+                TeamFace(room: room, size: 68)
                 Text(room.name).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
                 Text("Messages here go to each person in \(room.name).")
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
@@ -422,18 +426,19 @@ struct TeamMessageRow: View {
         }
     }
 
-    @ViewBuilder private var writerLabel: some View {
-        Group {
+    /// One form for a bot and a person: a small face, then the name.
+    private var writerLabel: some View {
+        HStack(spacing: 5) {
             if message?.bot != nil {
-                HStack(spacing: 5) {
-                    // The face and the color of the team bot, or a neutral face for a bot that the team no longer has.
-                    BotAvatar(symbol: teamBot?.avatar ?? "", color: teamBot?.color ?? "", size: 18,
-                              identity: teamBot?.id ?? "", animated: false)
-                    Text(writerName)
-                }
+                // The face and the color of the team bot, or a neutral face for a bot that the team no longer has.
+                BotAvatar(symbol: teamBot?.avatar ?? "", color: teamBot?.color ?? "", size: 18,
+                          identity: teamBot?.id ?? "", animated: false)
             } else {
-                Text(writerName)
+                let memberId = message?.member ?? ""
+                PersonFace(member: room.memberList.first { $0.member == memberId }, memberId: memberId,
+                           name: message?.memberName, size: 18)
             }
+            Text(writerName)
         }
         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
         .padding(.horizontal, 10)
@@ -600,19 +605,86 @@ struct TeamChatComposer: View {
     }
 }
 
-/// The face of a team: a plain circle with two people, in the colors of the theme. It has the size of a bot face.
-struct TeamFace: View {
+/// A round face with letters on a fill of `BoardStyle.faceColors`, or a symbol on the neutral surface. It has the size
+/// of a bot face. Teams and people without a face of their own use it.
+struct LetterFaceView: View {
+    /// Nil shows the symbol on the neutral surface.
+    let letters: String?
+    /// The ID that picks the fill.
+    let id: String
+    let symbol: String
     let size: CGFloat
 
     var body: some View {
-        Circle().fill(BoardStyle.surface)
-            .overlay {
-                Image(systemName: "person.2.fill")
-                    .font(.system(size: size * 0.36, weight: .medium))
-                    .foregroundStyle(.secondary)
+        let color = BoardStyle.faceColors[LetterFace.colorIndex(id)]
+        Group {
+            if let letters {
+                Circle().fill(Color(hex: color.fill))
+                    .overlay {
+                        Text(letters)
+                            .font(.system(size: size * (letters.count > 1 ? 0.4 : 0.5), weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color(hex: color.ink))
+                            .minimumScaleFactor(0.5)
+                    }
+            } else {
+                Circle().fill(BoardStyle.surface)
+                    .overlay {
+                        Image(systemName: symbol)
+                            .font(.system(size: size * 0.36, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
             }
-            .frame(width: size * BotAvatar.scale, height: size * BotAvatar.scale)
-            .accessibilityHidden(true)
+        }
+        .frame(width: size * BotAvatar.scale, height: size * BotAvatar.scale)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The face of a team: the letters of its name on the fill of its room ID, so a new name keeps the fill.
+struct TeamFace: View {
+    let room: TeamRoom
+    let size: CGFloat
+
+    var body: some View {
+        LetterFaceView(letters: LetterFace.letters(room.name), id: room.room, symbol: "person.2.fill", size: size)
+    }
+}
+
+/// The face of a person in the chat: the face that the member chose, else the first letter of the name of the message
+/// on the fill of its member ID (`LetterFace.person`). A member that left keeps that face, because both come from the
+/// message. Only a writer whose name the Mac never learned ("Former member") has the neutral face.
+struct PersonFace: View {
+    let member: TeamMember?
+    let memberId: String
+    let name: String?
+    let size: CGFloat
+
+    var body: some View {
+        if let member, let avatar = member.avatar, !avatar.isEmpty {
+            BotAvatar(symbol: avatar, color: member.color ?? "", size: size, identity: memberId, animated: false)
+        } else {
+            LetterFaceView(letters: LetterFace.person(memberId: memberId, name: name).letters, id: memberId,
+                           symbol: "person.fill", size: size)
+        }
+    }
+}
+
+/// The title of a team chat: its face, its name, and one quiet line that says who is in the chat.
+struct TeamTitle: View {
+    let room: TeamRoom
+    let faceSize: CGFloat
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TeamFace(room: room, size: faceSize)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(room.name).font(.headline).lineLimit(1).truncationMode(.tail)
+                if let line = room.whoLine {
+                    Text(line).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        .accessibilityIdentifier("team-chat-who")
+                }
+            }
+        }
     }
 }
 
@@ -627,36 +699,18 @@ struct TeamContactRow: View {
         let unread = room.unread ?? 0
         let preview = room.hasChat ? TeamChatPreview.text(room.lastMessage) : nil
         let date = room.lastMessage?.createdAt?.apiDate
-        HStack(spacing: 14) {
-            TeamFace(size: avatarSize)
-            VStack(alignment: .leading, spacing: 5) {
-                if dynamicTypeSize.isAccessibilitySize {
-                    name(unread)
-                    if let date { CompactAgeLabel(date: date).font(.caption).foregroundStyle(.secondary) }
-                } else {
-                    HStack(alignment: .firstTextBaseline) {
-                        name(unread)
-                        Spacer(minLength: 8)
-                        if let date { CompactAgeLabel(date: date).font(.caption).foregroundStyle(.secondary).fixedSize() }
-                    }
-                }
-                if let preview {
-                    Text(preview)
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                }
+        // An older service sends no chat. The row then has the name only, centered on the face.
+        ChatRowLayout(name: room.name, unread: unread, date: date) {
+            TeamFace(room: room, size: avatarSize)
+        } subtitle: {
+            if let preview {
+                Text(preview)
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
             }
         }
-        .frame(minHeight: 52)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel([room.name, preview, unread > 0 ? "\(unread) unread" : nil].compactMap { $0 }
+        .accessibilityLabel([room.name, preview, unread > 0 ? UnreadBadge.spoken(unread) : nil].compactMap { $0 }
             .joined(separator: ", "))
-    }
-
-    private func name(_ unread: Int) -> some View {
-        HStack(spacing: 5) {
-            Text(room.name).font(.body.weight(unread > 0 ? .semibold : .medium)).lineLimit(1)
-            if unread > 0 { UnreadMarker(count: unread) }
-        }
     }
 }

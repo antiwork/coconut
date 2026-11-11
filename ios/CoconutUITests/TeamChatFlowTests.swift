@@ -33,6 +33,28 @@ final class TeamChatFlowTests: XCTestCase {
         XCTAssertTrue(exampleRow.label.contains("unread"), exampleRow.label)
         shot("01-iphone-chats-list-with-team-unread")
 
+        // Each chip filters the list: People has the teams, Bots has the bots and the pinned tiles.
+        let botRows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'bot-conversation-'"))
+        let teamRows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'team-chat-'"))
+        let pinnedRows = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'pinned-bot-'"))
+        XCTAssertGreaterThan(botRows.count, 0)
+        XCTAssertGreaterThan(pinnedRows.count, 0)
+        XCTAssertTrue(app.buttons["chats-filter-all"].isSelected)
+        app.buttons["chats-filter-people"].tap()
+        XCTAssertTrue(app.buttons["chats-filter-people"].isSelected)
+        XCTAssertTrue(exampleRow.waitForExistence(timeout: 5))
+        XCTAssertEqual(botRows.count, 0)
+        XCTAssertEqual(pinnedRows.count, 0, "People has no pinned bots.")
+        shot("02-iphone-chats-people")
+        app.buttons["chats-filter-bots"].tap()
+        XCTAssertTrue(botRows.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(teamRows.count, 0)
+        XCTAssertGreaterThan(pinnedRows.count, 0)
+        shot("03-iphone-chats-bots")
+        app.buttons["chats-filter-all"].tap()
+        XCTAssertTrue(exampleRow.waitForExistence(timeout: 5))
+        XCTAssertGreaterThan(botRows.count, 0)
+
         // A chat of two people and a bot.
         exampleRow.tap()
         XCTAssertTrue(text("Planned the week").waitForExistence(timeout: 15))
@@ -153,25 +175,92 @@ final class TeamChatFlowTests: XCTestCase {
     }
 
     /// Example Team in dark mode. A test run sets the simulator to light, so the app gets the style as an argument.
+    /// The Chats list, and the chat of Example Team, in one look of the simulator: "dark" (dark mode), "large" (the
+    /// largest text size), or "solo" (a Mac without a team: no chips). A test run sets the simulator to light, so the
+    /// app gets the look as a launch argument.
     @MainActor
-    func testTheTeamChatInDarkMode() throws {
+    func testTheChatsInALook() throws {
         let env = ProcessInfo.processInfo.environment
-        guard env["COCONUT_TEAM_DARK"] != nil, let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"],
-              let example = env["COCONUT_TEAM_EXAMPLE"] else {
-            throw XCTSkip("Run with the test world of the Team chat and COCONUT_TEAM_DARK.")
+        guard let look = env["COCONUT_TEAM_LOOK"], let url = env["COCONUT_TEAM_URL"],
+              let code = env["COCONUT_TEAM_CODE"] else {
+            throw XCTSkip("Run with the test world of the Team chat and COCONUT_TEAM_LOOK.")
         }
         shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
         app = XCUIApplication()
-        app.launchArguments += ["-AppleInterfaceStyle", "Dark", "-UIUserInterfaceStyle", "Dark"]
+        if look == "dark" { app.launchArguments += ["-AppleInterfaceStyle", "Dark", "-UIUserInterfaceStyle", "Dark"] }
+        if look == "large" {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        }
         app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
+        if look == "pill", let example = env["COCONUT_TEAM_EXAMPLE"] {
+            try measureDayPills(example: example)
+            return
+        }
+        if look == "solo" {
+            let anyRow = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'bot-conversation-'")).firstMatch
+            XCTAssertTrue(anyRow.waitForExistence(timeout: 15))
+            sleep(2)
+            XCTAssertFalse(app.buttons["chats-filter-all"].exists, "A Mac without a team shows no chips.")
+            shot("look-solo-list")
+            return
+        }
+        XCTAssertTrue(app.buttons["chats-filter-all"].waitForExistence(timeout: 15))
+        for chip in ["all", "people", "bots"] {
+            // Hittable: the chip is on screen and not cut, also with the largest text.
+            XCTAssertTrue(app.buttons["chats-filter-\(chip)"].isHittable, "Each chip shows: \(chip)")
+        }
+        shot("look-\(look)-list")
+        guard look != "large", let example = env["COCONUT_TEAM_EXAMPLE"] else { return }
         let row = app.buttons["team-chat-\(example)"]
         XCTAssertTrue(row.waitForExistence(timeout: 15))
         row.tap()
         XCTAssertTrue(text("Planned the week").waitForExistence(timeout: 15))
-        shot("07-iphone-team-chat-dark")
+        shot("look-\(look)-chat")
+    }
+
+    /// The gap between the title of a chat and its first day pill, with the chat scrolled to its top: in the team chat
+    /// (a title of two lines) and in a bot chat (one line). Both pills sit fully below their title, with the same gap.
+    @MainActor
+    private func measureDayPills(example: String) throws {
+        func gap(title: String) -> CGFloat {
+            let transcript = app.collectionViews.firstMatch
+            for _ in 0..<6 { transcript.swipeDown(velocity: .fast) }
+            sleep(2)
+            let pill = app.descendants(matching: .any).matching(identifier: "day-separator").firstMatch
+            XCTAssertTrue(pill.waitForExistence(timeout: 10))
+            return pill.frame.minY - app.buttons[title].frame.maxY
+        }
+        let teamRow = app.buttons["team-chat-\(example)"]
+        XCTAssertTrue(teamRow.waitForExistence(timeout: 15))
+        teamRow.tap()
+        XCTAssertTrue(text("Planned the week").waitForExistence(timeout: 15))
+        let teamGap = gap(title: "team-chat-title")
+        shot("pill-team-chat-top")
+        // During a scroll the pinned day pill shows at the top of the chat, below the title.
+        app.collectionViews.firstMatch.swipeUp(velocity: .slow)
+        shot("pill-team-chat-scrolling", settle: false)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let pinned = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'pinned-bot-'")).firstMatch
+        XCTAssertTrue(pinned.waitForExistence(timeout: 10))
+        pinned.tap()
+        let input = element("message-input")
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        input.tap()
+        input.typeText("Hello")
+        app.buttons["send-message"].tap()
+        app.collectionViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        let botGap = gap(title: "bot-settings")
+        shot("pill-bot-chat-top")
+        print("DAY PILL GAPS team=\(teamGap) bot=\(botGap)")
+        let note = XCTAttachment(string: "team gap \(teamGap), bot gap \(botGap)")
+        note.name = "Day pill gaps"
+        note.lifetime = .keepAlways
+        add(note)
+        XCTAssertGreaterThan(teamGap, 0, "The day pill sits fully below the title of the team.")
+        XCTAssertEqual(teamGap, botGap, accuracy: 2, "The same gap as in the bot chat.")
     }
 
     // MARK: Steps
@@ -210,9 +299,9 @@ final class TeamChatFlowTests: XCTestCase {
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 10))
     }
 
-    private func shot(_ name: String) {
+    private func shot(_ name: String, settle: Bool = true) {
         guard let shots else { return }
-        sleep(1)
+        if settle { sleep(1) }
         // COCONUT_TEAM_SHOT_SUFFIX keeps the screenshots of an earlier run.
         let suffix = ProcessInfo.processInfo.environment["COCONUT_TEAM_SHOT_SUFFIX"] ?? ""
         try? app.screenshot().pngRepresentation.write(to: shots.appendingPathComponent(name + suffix + ".png"))

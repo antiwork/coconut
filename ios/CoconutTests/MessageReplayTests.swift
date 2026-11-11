@@ -109,7 +109,10 @@ final class MessageReplayTests: XCTestCase {
         XCTAssertEqual(BotRowSubtitle.needsYou.accessibilityLabel(bot: bot, preview: ""), "\(bot.name), Needs you")
         bot.unreadCount = 2; bot.status = "idle"
         XCTAssertEqual(BotRowSubtitle.preview.accessibilityLabel(bot: bot, preview: "You: Ship it"),
-                       "\(bot.name), idle, You: Ship it, 2 unread")
+                       "\(bot.name), idle, You: Ship it, 2 unread messages")
+        bot.unreadCount = 1
+        XCTAssertEqual(BotRowSubtitle.preview.accessibilityLabel(bot: bot, preview: "You: Ship it"),
+                       "\(bot.name), idle, You: Ship it, 1 unread message")
     }
 
     func testHomeRowShowsABotThatCannotRun() throws {
@@ -124,7 +127,7 @@ final class MessageReplayTests: XCTestCase {
         XCTAssertEqual(BotRowSubtitle(needsYou: false, phase: .thinking, health: health), .phase(.thinking))
         let bot = try PreviewStateFixture.load().bots[0]
         XCTAssertEqual(BotRowSubtitle.health(health).accessibilityLabel(bot: bot, preview: ""),
-                       "\(bot.name), Rate limited · 3 waiting" + (bot.unreadCount > 0 ? ", \(bot.unreadCount) unread" : ""))
+                       "\(bot.name), Rate limited · 3 waiting" + (bot.unreadCount > 0 ? ", " + UnreadBadge.spoken(bot.unreadCount) : ""))
     }
 
     @MainActor
