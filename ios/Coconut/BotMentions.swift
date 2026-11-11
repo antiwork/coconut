@@ -7,6 +7,30 @@ struct SelectedBotMention: Identifiable, Equatable {
     var snapshot: String? = nil
 }
 
+/// A bot that a person can name with `@` in a composer: a bot of this Mac in its chat, or a bot of a team in the
+/// team chat. The picker shows its face and its name.
+protocol MentionableBot: Identifiable where ID == String {
+    var id: String { get }
+    var name: String { get }
+    /// The symbol and the color of the face.
+    var faceSymbol: String { get }
+    var faceColor: String { get }
+    /// False for a bot that the list does not offer, for example an archived bot.
+    var isMentionable: Bool { get }
+}
+
+extension Bot: MentionableBot {
+    var faceSymbol: String { avatar }
+    var faceColor: String { color }
+    var isMentionable: Bool { !archived }
+}
+
+extension TeamRoomBot: MentionableBot {
+    var faceSymbol: String { avatar ?? "" }
+    var faceColor: String { color ?? "" }
+    var isMentionable: Bool { true }
+}
+
 struct BotMentionQuery {
     let range: Range<String.Index>
     let text: String
@@ -29,9 +53,10 @@ enum BotMentions {
         return BotMentionQuery(range: at..<end, text: query)
     }
 
-    static func candidates(in bots: [Bot], text: String, selection: TextSelection?, selected: [SelectedBotMention]) -> [Bot] {
+    static func candidates<B: MentionableBot>(in bots: [B], text: String, selection: TextSelection?,
+                                              selected: [SelectedBotMention]) -> [B] {
         guard let query = query(in: text, selection: selection) else { return [] }
-        return bots.filter { !$0.archived && (query.text.isEmpty || $0.name.range(of: query.text, options: [.anchored, .caseInsensitive, .diacriticInsensitive]) != nil) }
+        return bots.filter { $0.isMentionable && (query.text.isEmpty || $0.name.range(of: query.text, options: [.anchored, .caseInsensitive, .diacriticInsensitive]) != nil) }
     }
 
     static func reconciled(_ selected: [SelectedBotMention], in text: String) -> [SelectedBotMention] {
@@ -57,8 +82,9 @@ enum BotMentions {
         }
     }
 
-    static func occurrences(in text: String, selected: [SelectedBotMention], bots: [Bot]) -> [SelectedBotMention] {
-        let available = bots.filter { !$0.archived }
+    static func occurrences<B: MentionableBot>(in text: String, selected: [SelectedBotMention],
+                                               bots: [B]) -> [SelectedBotMention] {
+        let available = bots.filter(\.isMentionable)
         let anchors = reconciled(selected, in: text).filter { mention in available.contains { $0.id == mention.id } }
         var result: [SelectedBotMention] = []
         for at in text.indices where text[at] == "@" && startsToken(at, in: text) {
@@ -82,12 +108,14 @@ enum BotMentions {
         return result
     }
 
-    static func recipients(in text: String, selected: [SelectedBotMention], bots: [Bot]) -> [SelectedBotMention] {
+    static func recipients<B: MentionableBot>(in text: String, selected: [SelectedBotMention],
+                                              bots: [B]) -> [SelectedBotMention] {
         var seen = Set<String>()
         return occurrences(in: text, selected: selected, bots: bots).filter { seen.insert($0.id).inserted }
     }
 
-    static func replacementRange(for query: BotMentionQuery, in text: String, bots: [Bot]) -> Range<String.Index> {
+    static func replacementRange<B: MentionableBot>(for query: BotMentionQuery, in text: String,
+                                                    bots: [B]) -> Range<String.Index> {
         let length = bots.filter { matches(name: $0.name, at: query.range.lowerBound, in: text) }.map { $0.name.count + 1 }.max()
         guard let length else { return query.range }
         let end = text.index(query.range.lowerBound, offsetBy: length)
@@ -112,15 +140,15 @@ enum BotMentions {
     }
 }
 
-struct BotMentionPicker: View {
+struct BotMentionPicker<B: MentionableBot>: View {
     @ScaledMetric(relativeTo: .body) private var nameHeight: CGFloat = 22
-    let bots: [Bot]
-    let select: (Bot) -> Void
+    let bots: [B]
+    let select: (B) -> Void
 
-    private func accessibleName(for bot: Bot) -> String {
+    private func accessibleName(for bot: B) -> String {
         let matching = bots.filter { $0.name.lowercased() == bot.name.lowercased() }
         guard matching.count > 1, let index = matching.firstIndex(where: { $0.id == bot.id }) else { return bot.name }
-        let fruit = FruitArtwork.all[FruitArtwork.index(symbol: bot.avatar, identity: bot.id)].name
+        let fruit = FruitArtwork.all[FruitArtwork.index(symbol: bot.faceSymbol, identity: bot.id)].name
         return "\(bot.name), \(fruit), bot \(index + 1) of \(matching.count)"
     }
 
@@ -131,7 +159,7 @@ struct BotMentionPicker: View {
                     ForEach(bots) { bot in
                         Button { select(bot) } label: {
                             HStack(spacing: 12) {
-                                BotAvatar(bot: bot, size: 30)
+                                BotAvatar(symbol: bot.faceSymbol, color: bot.faceColor, size: 30, identity: bot.id)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(bot.name).font(.body).lineLimit(1)
                                 }
@@ -185,11 +213,12 @@ struct BotMentionRecipients: View {
     }
 }
 
-struct BotMentionControls: View {
+struct BotMentionControls<B: MentionableBot>: View {
     @Binding var text: String
     @Binding var selection: TextSelection?
     @Binding var selected: [SelectedBotMention]
-    let bots: [Bot]
+    let bots: [B]
+    /// False hides the list, for example while the field is not focused or edits a sent message.
     let focused: Bool
     let focus: () -> Void
 
