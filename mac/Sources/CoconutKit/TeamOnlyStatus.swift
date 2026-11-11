@@ -10,6 +10,8 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
     public var rooms: [Room]
     /// The names of the bots that this Mac declared.
     public var botNames: [String] = []
+    /// Whether each bot answers in the team chat, and whether the adapter of its Hermes gateway takes the messages now.
+    public var chats: [Chat] = []
 
     enum CodingKeys: String, CodingKey {
         case mode, version, helper, rooms
@@ -35,8 +37,29 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
         static func count(_ number: Int, _ noun: String) -> String { "\(number) \(noun)\(number == 1 ? "" : "s")" }
     }
 
+    public struct Chat: Codable, Equatable, Sendable {
+        public var bot: String
+        /// True after `coconut team connect-chat`. A service before the team chat sends no value.
+        public var connected: Bool
+        /// True while the adapter of the Hermes gateway of the bot polls the service.
+        public var hermes: Bool
+
+        /// One line for a person, which says what to run when the chat does not work.
+        public var line: String {
+            guard connected else {
+                return "Team chat of \(bot): off. To turn it on, run: coconut team connect-chat \(TeamTool.shellWord(bot))"
+            }
+            return hermes ? "Team chat of \(bot): on. Hermes takes the messages."
+                : "Team chat of \(bot): on, but Hermes does not take the messages. Restart the Hermes gateway of \(bot)."
+        }
+    }
+
     struct Bots: Decodable {
-        struct Bot: Decodable { var name: String }
+        struct Bot: Decodable {
+            var name: String
+            var chat: Bool?
+            var adapter: Bool?
+        }
         var bots: [Bot]
     }
 
@@ -44,8 +67,9 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
     public static func fetch(transport: TeamTransport) async throws -> TeamServiceStatus {
         let tool = TeamTool(transport: transport)
         var status = try JSONDecoder.team.decode(TeamServiceStatus.self, from: try await tool.call("GET", "/v1/team/status"))
-        status.botNames = try JSONDecoder.team.decode(Bots.self, from: try await tool.call("GET", "/v1/team/bots"))
-            .bots.map(\.name)
+        let bots = try JSONDecoder.team.decode(Bots.self, from: try await tool.call("GET", "/v1/team/bots")).bots
+        status.botNames = bots.map(\.name)
+        status.chats = bots.map { Chat(bot: $0.name, connected: $0.chat ?? false, hermes: $0.adapter ?? false) }
         return status
     }
 
@@ -70,6 +94,7 @@ public struct TeamOnlyReport: Encodable, Equatable {
     public var service: Status.Service
     public var helper: Bool?
     public var bots: [String]?
+    public var teamChats: [TeamServiceStatus.Chat]?
     public var teams: [TeamServiceStatus.Room]?
     /// Why the service gave no teams.
     public var teamError: String?
@@ -81,6 +106,7 @@ public struct TeamOnlyReport: Encodable, Equatable {
         case .success(let answer):
             helper = answer.helper
             bots = answer.botNames
+            teamChats = answer.chats
             teams = answer.rooms
         case .failure(let failure):
             teamError = failure.lines.joined(separator: " ")
@@ -114,6 +140,7 @@ extension StatusText {
                 lines.append(missingHelper)
             }
             lines.append(answer.botNames.isEmpty ? noBots : "Bots: \(answer.botNames.joined(separator: ", "))")
+            lines += answer.chats.map(\.line)
             if answer.rooms.isEmpty {
                 lines.append(noTeams)
             }

@@ -7,6 +7,7 @@ import argparse
 from contextlib import contextmanager
 import fcntl
 import ipaddress
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -305,6 +306,23 @@ def team_folder_refusal(data: Path | None = None) -> str | None:
     service_base.team_folder decides, so a lost preference of Coconut.app never lets a step reach Hermes."""
     base = backend_module("service_base")
     return base.HERMES_REFUSAL if base.team_folder(data if data is not None else DEFAULT_DATA) else None
+
+
+def connected_chats(data: Path | None = None) -> list[str]:
+    """The names of the bots of a team-only Mac whose team chat is connected to their Hermes home. Only
+    `coconut team disconnect-chat` takes that change away, so a removal of Coconut waits for it. The store opens
+    read-only."""
+    import sqlite3
+    path = (data if data is not None else DEFAULT_DATA) / "coconut.sqlite3"
+    if not path.is_file():
+        return []
+    with contextlib.closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=10)) as db:
+        try:
+            rows = db.execute("SELECT json_extract(data, '$.name') FROM bots WHERE json_extract(data, '$.chat')=1 "
+                              "ORDER BY rowid").fetchall()
+        except sqlite3.OperationalError:
+            return []
+    return [row[0] for row in rows]
 
 
 def install_mode() -> str:

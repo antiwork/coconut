@@ -158,9 +158,9 @@ final class InstallModeTests: XCTestCase {
     ]
 
     static let bots: [String: Any] = ["bots": [["id": "b1", "name": "Reporter", "avatar": "", "color": "",
-                                                "home": "/h", "teams": ["r1"]],
+                                                "home": "/h", "teams": ["r1"], "chat": true, "adapter": true],
                                                ["id": "b2", "name": "Planner", "avatar": "", "color": "",
-                                                "home": "/p", "teams": []]]]
+                                                "home": "/p", "teams": [], "chat": false, "adapter": false]]]
 
     func service(status: [String: Any] = answer, bots: [String: Any] = bots) -> FakeService {
         let service = FakeService()
@@ -195,6 +195,8 @@ final class InstallModeTests: XCTestCase {
             "Mode: team only",
             "Service: running (/Users/example/Coconut)",
             "Bots: Reporter, Planner",
+            "Team chat of Reporter: on. Hermes takes the messages.",
+            "Team chat of Planner: off. To turn it on, run: coconut team connect-chat Planner",
             "Team: Example Team (active): 3 members, 2 bots, connected",
             "Team: Second Team (active): 1 member, 0 bots, not connected",
             "Sync error: The relay refused the request.",
@@ -208,6 +210,14 @@ final class InstallModeTests: XCTestCase {
             "Bots: none. To add one, run: coconut team new-bot <name>",
             "Teams: none. To join one, pipe an invite link to: coconut team join",
         ])
+        // A bot with its chat whose Hermes gateway does not poll, and a service before the team chat.
+        let waiting = ["bots": [["id": "b1", "name": "Night Reporter", "home": "/h", "chat": true, "adapter": false],
+                                ["id": "b2", "name": "Planner", "home": "/p"]]]
+        let older = try await TeamServiceStatus.fetch(transport: service(bots: waiting))
+        XCTAssertEqual(older.chats.map(\.line), [
+            "Team chat of Night Reporter: on, but Hermes does not take the messages. Restart the Hermes gateway of "
+                + "Night Reporter.",
+            "Team chat of Planner: off. To turn it on, run: coconut team connect-chat Planner"])
         XCTAssertEqual(lines(.failure(.noAnswer), service: .stopped).suffix(2),
                        ["Service: stopped (/Users/example/Coconut)", "Teams: unknown, because the service does not answer."])
         // No word of the code reaches the reader.
@@ -226,6 +236,7 @@ final class InstallModeTests: XCTestCase {
         XCTAssertEqual(object["mode"] as? String, "team")
         XCTAssertEqual(object["service"] as? String, "running")
         XCTAssertEqual(object["bots"] as? [String], ["Reporter", "Planner"])
+        XCTAssertEqual((object["team_chats"] as? [[String: Any]])?.map { $0["connected"] as? Bool }, [true, false])
         XCTAssertEqual((object["teams"] as? [[String: Any]])?.first?["synced_at"] as? String, "2026-11-11T10:00:00Z")
         XCTAssertNil(object["hermes"])
         XCTAssertNil(object["relay"])

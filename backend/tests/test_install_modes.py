@@ -349,6 +349,26 @@ class RemoveAndSetUpTests(unittest.TestCase):
         # An Apple event can ask for the Automation permission in a dialog that nobody sees.
         self.assertNotIn('osascript', section)
 
+    def test_the_uninstaller_waits_until_each_team_chat_is_disconnected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            data = Path(folder)
+            self.assertEqual(host.connected_chats(data), [])
+            with sqlite3.connect(data / 'coconut.sqlite3') as db:
+                db.execute('CREATE TABLE bots (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
+                db.executemany('INSERT INTO bots VALUES (?, ?)', [
+                    ('a', json.dumps({'name': 'Reporter', 'chat': True})), ('b', json.dumps({'name': 'Planner'})),
+                    ('c', json.dumps({'name': 'Helper', 'chat': False}))])
+            db.close()
+            self.assertEqual(host.connected_chats(data), ['Reporter'])
+        with patch.object(host, 'install_mode', return_value='team'), \
+                patch.object(host, 'connected_chats', return_value=['Reporter']), \
+                patch.object(host, 'login_item_loaded', return_value=False), patch.object(desktop, 'run') as run, \
+                self.assertRaises(SystemExit) as stopped:
+            desktop.uninstall(confirmed=True)
+        self.assertEqual(str(stopped.exception), 'The team chat of Reporter is connected to Hermes. For each bot, run '
+                                                 'coconut team disconnect-chat <bot>, then remove Coconut.')
+        run.assert_not_called()
+
     def test_the_uninstaller_waits_until_the_login_item_is_off(self):
         with patch.object(host, 'install_mode', return_value='team'), \
                 patch.object(host, 'login_item_loaded', return_value=True), patch.object(desktop, 'run') as run, \

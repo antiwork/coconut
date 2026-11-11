@@ -71,6 +71,15 @@ public struct Launch: Equatable {
                       environment: environment, directory: install.root, standardOutput: nil, standardError: nil)
     }
 
+    /// `coconut team connect-chat` and `disconnect-chat`: scripts/team_chat.py, which changes the Hermes home of a bot
+    /// with the Python of Hermes in a process of its own. The output goes to the terminal.
+    public static func teamChat(install: Install, python: URL, environment: [String: String],
+                                arguments: [String]) -> Launch {
+        Launch(executable: python,
+               arguments: [python.path, install.root.appendingPathComponent("scripts/team_chat.py").path] + arguments,
+               environment: environment, directory: install.root, standardOutput: nil, standardError: nil)
+    }
+
     /// The relay sidecar of the bundle. It forwards the iPhone's requests from the relay to the service's tunnel
     /// listener, as the LaunchAgent of scripts/tunnel.py does.
     public static func sidecar(install: Install, binary: URL, environment: [String: String]) -> Launch {

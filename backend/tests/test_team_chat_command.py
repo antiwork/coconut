@@ -1,0 +1,212 @@
+"""`coconut team connect-chat` and `disconnect-chat` (scripts/team_chat.py, coconut/team_chat_config.py).
+
+ConfigTests checks the edit of the config without Hermes. CommandTests runs scripts/team_chat.py against a team-only
+service on a real loopback listener, with the edit of the installed Hermes in a made-up Hermes home. It compares each
+file of that home before and after each command. It skips without a Hermes (hermes_env.py).
+"""
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import threading
+import unittest
+from unittest import mock
+
+from coconut import team_chat_config
+from coconut.server import APIServer
+from coconut.team_chat_config import Refused, with_team
+from hermes_env import PYTHON, SOURCE, needs_hermes
+from test_team_only import TeamOnlyMacs, make_hermes_home, snapshot
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'scripts'))
+import team_chat  # noqa: E402
+
+CONFIG = Path('/home/config.yaml')
+BRIDGE = '/data/gateway/bridge.json'
+TEAM = {'enabled': True, 'extra': {'mode': 'team', 'bridge': BRIDGE}}
+
+
+class ConfigTests(unittest.TestCase):
+    def test_a_connect_adds_the_plugin_and_the_platform_and_a_disconnect_takes_them_away(self):
+        config = {'model': {'default': 'example-model'}, 'plugins': {'enabled': ['example']},
+                  'gateway': {'platforms': {'telegram': {'enabled': True}}}}
+        connected, changes = with_team(config, CONFIG, BRIDGE, True)
+        self.assertEqual(connected, {'model': {'default': 'example-model'}, 'plugins': {'enabled': ['example', 'coconut']},
+                                     'gateway': {'platforms': {'telegram': {'enabled': True}, 'coconut': TEAM}}})
+        self.assertEqual(changes, [f'Add coconut to plugins.enabled in {CONFIG}.',
+                                   f'Set gateway.platforms.coconut in {CONFIG}: enabled true, extra.mode team, '
+                                   f'extra.bridge {BRIDGE}.'])
+        # A second connect changes nothing.
+        self.assertEqual(with_team(connected, CONFIG, BRIDGE, True), (None, []))
+        restored, changes = with_team(connected, CONFIG, BRIDGE, False)
+        self.assertEqual(restored, config)
+        self.assertEqual(changes, [f'Remove coconut from plugins.enabled in {CONFIG}.',
+                                   f'Remove gateway.platforms.coconut from {CONFIG}.'])
+        self.assertEqual(with_team(config, CONFIG, BRIDGE, False), (None, []))
+
+    def test_an_empty_config_gets_the_blocks_and_loses_them_again(self):
+        connected, _ = with_team({}, CONFIG, BRIDGE, True)
+        self.assertEqual(connected, {'plugins': {'enabled': ['coconut']}, 'gateway': {'platforms': {'coconut': TEAM}}})
+        # The list of the plugins stays: Hermes reads a missing list as "nothing chosen yet".
+        self.assertEqual(with_team(connected, CONFIG, BRIDGE, False)[0], {'plugins': {'enabled': []}})
+
+    def test_the_keys_of_the_operator_in_the_block_stay(self):
+        config = {'gateway': {'platforms': {'coconut': {'enabled': True, 'home_channel': 'x',
+                                                         'extra': {'mode': 'team', 'bridge': BRIDGE, 'note': 1}}}}}
+        restored, changes = with_team(config, CONFIG, BRIDGE, False)
+        self.assertEqual(restored, {'gateway': {'platforms': {'coconut': {'home_channel': 'x', 'extra': {'note': 1}}}}})
+        self.assertEqual(changes, [f'Remove enabled, extra.mode and extra.bridge from gateway.platforms.coconut in '
+                                   f'{CONFIG}.'])
+
+    def test_a_block_of_a_full_coconut_and_a_form_that_hermes_does_not_read_are_refused(self):
+        for config in ({'gateway': {'platforms': {'coconut': {'enabled': True}}}},
+                       {'gateway': {'platforms': {'coconut': {'enabled': True, 'extra': {'bridge': BRIDGE}}}}},
+                       {'plugins': ['coconut']}, {'plugins': {'enabled': 'coconut'}}, {'gateway': []}):
+            for present in (True, False):
+                with self.subTest(config=config, present=present), self.assertRaises(Refused):
+                    with_team(config, CONFIG, BRIDGE, present)
+
+
+class Output:
+    """The standard output and error of one run of scripts/team_chat.py."""
+
+    def __init__(self, status, out, err):
+        self.status, self.out, self.err = status, out, err
+
+
+@needs_hermes
+class CommandTests(TeamOnlyMacs, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.bot = self.declare()
+        self.server = APIServer(('127.0.0.1', 0), self.only)
+        threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .1}, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        self.only.gateway_bridge.publish(f'http://127.0.0.1:{self.server.server_address[1]}')
+        self.bridge = (self.only.root / 'gateway/bridge.json').resolve()
+        # A home in which Hermes ran, as the home of a production agent: Hermes makes its folders at each start.
+        self.hermes('import hermes_cli.config')
+        self.config = self.plugin_config()
+
+    def hermes(self, code: str, *arguments) -> str:
+        """Run code under the Python of the installed Hermes, with the made-up home."""
+        environment = {'HERMES_HOME': str(self.home), 'PATH': os.environ['PATH'], 'HOME': os.environ['HOME'],
+                       'HERMES_DISABLE_LAZY_INSTALLS': '1', 'HERMES_DISABLE_TELEMETRY': '1'}
+        result = subprocess.run([PYTHON, '-I', '-B', '-c', f'import sys; sys.path.insert(0, {SOURCE!r}); {code}',
+                                 *arguments], env=environment, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr[-2000:])
+        return result.stdout
+
+    def run_command(self, *arguments) -> Output:
+        environment = {'COCONUT_HERMES_ROOT': SOURCE, 'COCONUT_HERMES_PYTHON': PYTHON, 'PATH': os.environ['PATH'],
+                       'HOME': os.environ['HOME']}
+        out, err = [], []
+        with mock.patch.dict(os.environ, environment, clear=True), \
+                mock.patch.object(sys, 'stdout', Writer(out)), mock.patch.object(sys, 'stderr', Writer(err)):
+            status = team_chat.main([*arguments, '--data-dir', str(self.only.root)])
+        return Output(status, ''.join(out), ''.join(err))
+
+    def record(self):
+        return self.call('GET', '/v1/team/bots')['bots'][0]
+
+    def plugin_config(self) -> dict:
+        return json.loads(self.hermes('import json; from ruamel.yaml import YAML; '
+                                      'print(json.dumps(YAML(typ="safe").load(open(sys.argv[1]))))',
+                                      str(self.home / 'config.yaml')))
+
+    def files(self) -> dict:
+        """Each path of the home with its mode, its bytes and the target of a link. Hermes sets the mode of its
+        folders again at each start, which changes only their times, so the times stay out."""
+        return {path: (row[0], row[5], os.readlink(self.home / path) if (self.home / path).is_symlink() else None)
+                for path, row in snapshot(self.home).items() if path != '.'}
+
+    def changed(self, before: dict, after: dict) -> set[str]:
+        """The changed paths, without the copies of config.yaml that Hermes keeps in backups/config at each start
+        and before each write of its config."""
+        return {path for path in set(before) | set(after) if before.get(path) != after.get(path)
+                and not path.startswith('backups/config/')}
+
+    def test_the_plan_changes_nothing_and_the_confirm_makes_exactly_the_listed_changes(self):
+        before = snapshot(self.home)
+        plan = self.run_command('connect', 'Reporter')
+        self.assertEqual(plan.status, 0, plan.err)
+        home, plugin = os.path.realpath(self.home), team_chat_config.PLUGIN
+        self.assertEqual(plan.out.splitlines(), [
+            f'This command changes nothing yet. With --confirm, it makes these changes in the Hermes home {home}:',
+            f'1. Link {home}/plugins/coconut to {plugin}.',
+            f'2. Add coconut to plugins.enabled in {home}/config.yaml.',
+            f'3. Set gateway.platforms.coconut in {home}/config.yaml: enabled true, extra.mode team, extra.bridge '
+            f'{self.bridge}.',
+            'Then Reporter answers each member of its teams who names it in the team chat. It uses the tools that the '
+            f'Hermes config gives to the channel coconut (platform_toolsets.coconut in {home}/config.yaml).',
+            'Coconut does not restart the Hermes gateway. You restart it after the change.',
+            'To make the change, run: coconut team connect-chat Reporter --confirm'])
+        now = snapshot(self.home)
+        self.assertEqual(sorted(path for path in set(before) | set(now) if before.get(path) != now.get(path)), [])
+        self.assertFalse(self.record()['chat'])
+
+        before = self.files()
+        done = self.run_command('connect', 'reporter', '--confirm')
+        self.assertEqual(done.status, 0, done.err)
+        self.assertEqual(done.out.splitlines()[1:4], plan.out.splitlines()[1:4])
+        self.assertIn('Next step: restart the Hermes gateway of', done.out)
+        # config.yaml changes, and the link is new. Nothing else changes.
+        self.assertEqual(self.changed(before, self.files()), {'config.yaml', 'plugins/coconut'})
+        self.assertEqual(os.readlink(self.home / 'plugins/coconut'), str(plugin))
+        old = self.config
+        self.assertEqual(self.plugin_config(), dict(old, plugins={'enabled': ['coconut']},
+                                                    gateway={'platforms': {'coconut': {
+                                                        'enabled': True,
+                                                        'extra': {'mode': 'team', 'bridge': str(self.bridge)}}}}))
+        self.assertTrue(self.record()['chat'])
+        # A removal of the bot waits for disconnect-chat.
+        self.assertEqual(self.refusal(self.call, 'DELETE', f'/v1/team/bots/{self.bot["id"]}')[0], 409)
+
+        gone = self.run_command('disconnect', 'Reporter')
+        self.assertEqual(gone.status, 0, gone.err)
+        self.assertEqual(gone.out.splitlines()[1:4], [
+            f'1. Remove the link {home}/plugins/coconut.',
+            f'2. Remove coconut from plugins.enabled in {home}/config.yaml.',
+            f'3. Remove gateway.platforms.coconut from {home}/config.yaml.'])
+        self.assertFalse(self.record()['chat'])
+        self.assertFalse((self.home / 'plugins/coconut').is_symlink())
+        # The list of the plugins stays, also when it is empty: Hermes reads a missing list as "nothing chosen yet".
+        self.assertEqual(self.plugin_config(), dict(old, plugins={'enabled': []}))
+        self.assertEqual(self.changed(before, self.files()), {'config.yaml'})
+
+    def test_a_mac_with_a_person_and_a_home_that_is_not_coconuts_are_refused(self):
+        with mock.patch.object(team_chat.host, 'backend_module') as module:
+            module.return_value.team_folder.return_value = False
+            refused = self.run_command('connect', 'Reporter', '--confirm')
+        self.assertEqual((refused.status, refused.err.strip()), (1, team_chat.FULL_MAC))
+        before = snapshot(self.home)
+        (self.home / 'plugins/coconut').mkdir()
+        before = snapshot(self.home)
+        taken = self.run_command('connect', 'Reporter', '--confirm')
+        self.assertEqual(taken.status, 1)
+        self.assertIn('is another plugin, not Coconut', taken.err)
+        self.assertEqual(snapshot(self.home), before)
+        self.assertFalse(self.record()['chat'])
+        shutil.rmtree(self.home / 'plugins/coconut')
+        missing = self.run_command('connect', 'Nobody')
+        self.assertEqual(missing.status, 1)
+        self.assertIn('This Mac has no bot with the name or ID "Nobody"', missing.err)
+
+
+class Writer:
+    def __init__(self, parts):
+        self.parts = parts
+
+    def write(self, text):
+        self.parts.append(text)
+
+    def flush(self):
+        pass
+
+
+if __name__ == '__main__':
+    unittest.main()

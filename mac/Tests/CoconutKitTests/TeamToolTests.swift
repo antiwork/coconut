@@ -133,6 +133,29 @@ final class TeamToolTests: XCTestCase {
         XCTAssertEqual(usage(["leave", "--confirm"])?.status, 64)
     }
 
+    func testTheChatCommandsRunTheScriptWithTheirArguments() throws {
+        XCTAssertEqual(try TeamCommand.parse(["connect-chat", "Reporter"]), .connectChat("Reporter", confirm: false))
+        XCTAssertEqual(try TeamCommand.parse(["connect-chat", "Night Reporter", "--confirm"]),
+                       .connectChat("Night Reporter", confirm: true))
+        XCTAssertEqual(try TeamCommand.parse(["connect-chat", "--confirm", "Reporter"]), .connectChat("Reporter", confirm: true))
+        XCTAssertEqual(try TeamCommand.parse(["disconnect-chat", "Reporter"]), .disconnectChat("Reporter"))
+        XCTAssertEqual(try TeamCommand.parse(["connect-chat", "Reporter", "--confirm"]).chatArguments,
+                       ["connect", "Reporter", "--confirm"])
+        XCTAssertEqual(try TeamCommand.parse(["connect-chat", "Reporter"]).chatArguments, ["connect", "Reporter"])
+        XCTAssertEqual(try TeamCommand.parse(["disconnect-chat", "Reporter"]).chatArguments, ["disconnect", "Reporter"])
+        XCTAssertNil(try TeamCommand.parse(["add-bot", "Reporter"]).chatArguments)
+        for wrong in [["connect-chat"], ["connect-chat", "a", "b"], ["disconnect-chat", "a", "--confirm"],
+                      ["connect-chat", "a", "--team", "x"], ["disconnect-chat"], ["connect-chat", "a", "--json"]] {
+            XCTAssertEqual(usage(wrong), .usage, "\(wrong)")
+        }
+        let launch = Launch.teamChat(install: Install(root: URL(fileURLWithPath: "/Users/a/Coconut")),
+                                     python: URL(fileURLWithPath: "/opt/homebrew/bin/python3"), environment: [:],
+                                     arguments: ["connect", "Reporter"])
+        XCTAssertEqual(launch.arguments, ["/opt/homebrew/bin/python3", "/Users/a/Coconut/scripts/team_chat.py", "connect",
+                                          "Reporter"])
+        XCTAssertNil(launch.standardOutput)
+    }
+
     func testAJoinRefusesTheLinkAsAnArgumentAndDoesNotRepeatIt() {
         let failure = usage(["join", Self.link])
         XCTAssertEqual(failure?.lines, [TeamCommand.linkArgument])

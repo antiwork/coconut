@@ -35,6 +35,12 @@ let usage = """
                 Leave the team, and delete its copy and its keys on this Mac. The name after --confirm chooses the
                 team. --team <ID> is necessary only when two teams of this Mac have the same name. Without
                 --confirm, print what a leave does and the command for each team.
+      team connect-chat <bot> [--confirm]
+                On a Mac that runs Coconut for a team only: let the bot answer each member of its teams who names it
+                in the team chat. Without --confirm, print each change in the Hermes home of the bot and change
+                nothing. With --confirm, make the changes. Then restart the Hermes gateway of the bot yourself.
+      team disconnect-chat <bot>
+                Take away what connect-chat added. Then restart the Hermes gateway of the bot yourself.
       version   Print the version of Coconut.app.
       install-source
                 Install the Coconut source that this app carries. --if-needed skips an install that is current.
@@ -46,8 +52,8 @@ let usage = """
 
     Coconut.app --set-up sets up Coconut without a click, as Set Up Coconut in the menu does. The install script
     opens the app with it. Coconut.app --set-up --team-only sets up a Mac with no person for a team only: Coconut keeps
-    its teams and the pages of its bots, and touches nothing of Hermes. Coconut.app --remove removes a team-only
-    install. See docs/install-and-update.md, "A Mac without a person".
+    its teams and the pages of its bots, and touches nothing of Hermes until coconut team connect-chat --confirm.
+    Coconut.app --remove removes a team-only install. See docs/install-and-update.md, "A Mac without a person".
     """
 
 func fail(_ message: String, code: Int32 = 1) -> Never {
@@ -272,6 +278,14 @@ func team(_ arguments: [String]) -> Never {
         fail(failure.lines.joined(separator: "\n"), code: failure.status)
     } catch {
         fail(TeamCommand.usage, code: 64)
+    }
+    if let arguments = command.chatArguments {
+        // The change of a Hermes home runs in Python (scripts/team_chat.py). It refuses on a Mac with a person.
+        guard install.isInstalled() else { fail("Coconut is not installed in \(install.root.path).") }
+        takeModeFromFolder()
+        let environment = commandEnvironment(loginPath: LoginEnvironment.loginPath())
+        guard let python = PythonLocator(environment: environment, mode: mode).locate() else { fail(noPython) }
+        run(.teamChat(install: install, python: python, environment: environment, arguments: arguments))
     }
     let tool = TeamTool(transport: BridgeTransport(install: install, timeout: command.timeout), readLink: readInviteLink)
     let semaphore = DispatchSemaphore(value: 0)
