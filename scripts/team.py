@@ -15,6 +15,10 @@ script calls its team routes on the main listener, with the token of <data>/gate
     python3 scripts/team.py unshare <room ID> <bot ID>
 
 The invite link lets a Mac into the room, so `join` reads it from standard input and not from an argument.
+
+On a person's Mac the token reaches only `rooms`, `sync`, `join` and `leave` (docs/team-log.md, "Routes"). There the
+person makes a room and an invite in the Coconut app, and `create` and `invite` print the refusal of the service.
+`share` and `unshare` work only on a Mac for a team only.
 """
 from __future__ import annotations
 

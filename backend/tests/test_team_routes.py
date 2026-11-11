@@ -2,8 +2,9 @@
 
 test_team_rooms.py covers the room steps through the service. This file goes through the listeners that the app and
 scripts/team.py talk to, so the path prefix in server.py, the token of a device, the token of the bridge file and
-the answers are covered. It also checks that no log line and no error text of a room operation carries a secret: the
-invite link, a token, a key, a ticket, a welcome or a proof.
+the answers are covered. On a person's Mac the token of the bridge file reaches only the routes of team.tool_route.
+It also checks that no log line and no error text of a room operation carries a secret: the invite link, a token, a
+key, a ticket, a welcome or a proof.
 """
 import http.client
 import json
@@ -23,6 +24,7 @@ from team_fakes import RELAY, TeamMacs
 # The static key of a paired phone, as the tunnel sidecar names it.
 PHONE = {'X-Coconut-Peer': 'a' * 64}
 PAIR = 'Pair this phone with the Mac to continue.'
+REFUSED = (403, {'error': PERSON_ONLY})
 
 
 class Mac:
@@ -76,11 +78,19 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
 
     def make_room(self) -> dict:
         status, answer = self.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada', 'relay': RELAY},
-                                   self.mac_one.token)
+                                   self.mac_one.device)
         self.assertEqual(status, 200, answer)
         return answer['room']
 
-    def test_each_caller_reaches_each_team_route(self):
+    def as_person(self, name, method, path, data, options):
+        """Call a route that only a paired device can call on a person's Mac. The tool gets the refusal, and the
+        device of the first Mac then calls the route in its place."""
+        if name == 'tool':
+            self.assertEqual(self.call(method, path, data, **options), REFUSED)
+            options = self.callers(self.mac_one)['device']
+        return self.call(method, path, data, **options)
+
+    def test_each_caller_reaches_its_team_routes(self):
         bot = self.first.mutate('POST', '/v1/bots', {'name': 'Reporter'}, str(uuid4()), 'phone')
         self.first.publish_page(bot['id'], {'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
                                             'content': '3 tasks are open.'})
@@ -89,37 +99,29 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
         for name, one in self.callers(self.mac_one).items():
             two = self.callers(self.mac_two)[name]
             with self.subTest(caller=name):
-                status, answer = self.call('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
-                                                                      'relay': RELAY}, **one)
+                # A device does each step. The tool lists, joins, syncs and leaves, and gets the refusal for the rest.
+                status, answer = self.as_person(name, 'POST', '/v1/team/rooms',
+                                                {'name': 'Example Team', 'member_name': 'Ada', 'relay': RELAY}, one)
                 self.assertEqual(status, 200, answer)
                 room = answer['room']['room']
-                status, invite = self.call('POST', f'/v1/team/rooms/{room}/invites', {}, **one)
+                status, invite = self.as_person(name, 'POST', f'/v1/team/rooms/{room}/invites', {}, one)
                 self.assertEqual((status, set(invite)), (200, {'link', 'expires', 'uses'}))
                 status, joined = self.call('POST', '/v1/team/join', {'link': invite['link'], 'member_name': 'Grace'}, **two)
                 self.assertEqual((status, joined['room']['state']), (200, 'active'), joined)
-                status, answer = self.call('PATCH', f'/v1/team/rooms/{room}', {'member_name': 'Ada L.'}, **one)
+                status, answer = self.as_person(name, 'PATCH', f'/v1/team/rooms/{room}', {'member_name': 'Ada L.'}, one)
                 self.assertEqual((status, [member['name'] for member in answer['room']['members'] if member['this_mac']]),
                                  (200, ['Ada L.']))
-                # Only a paired device shares a page. The token of the bridge file, which a bot can read, cannot.
-                status, answer = self.call('PUT', f'/v1/team/rooms/{room}/pages/{document}', {}, **one)
-                if name == 'tool':
-                    self.assertEqual((status, answer), (403, {'error': PERSON_ONLY}))
-                    status, answer = self.call('PUT', f'/v1/team/rooms/{room}/pages/{document}', {},
-                                               **self.callers(self.mac_one)['device'])
+                status, answer = self.as_person(name, 'PUT', f'/v1/team/rooms/{room}/pages/{document}', {}, one)
                 self.assertEqual((status, answer['document']['teams']), (200, [{'room': room, 'name': 'Example Team'}]))
                 # A person's Mac does not share a bot. An app of today gets the reason.
-                status, answer = self.call('POST', f'/v1/team/rooms/{room}/bots', {'bot_id': bot['id']}, **one)
+                status, answer = self.as_person(name, 'POST', f'/v1/team/rooms/{room}/bots', {'bot_id': bot['id']}, one)
                 self.assertEqual((status, answer['error']), (409, PERSONAL_BOTS))
                 status, answer = self.call('POST', '/v1/team/sync', {}, **one)
                 self.assertEqual((status, answer['complete']), (200, True))
                 status, answer = self.call('GET', '/v1/team/rooms', None, **one)
                 (view,) = (row for row in answer['rooms'] if row['room'] == room)
                 self.assertEqual((status, [member['name'] for member in view['members']]), (200, ['Ada L.', 'Grace']))
-                status, answer = self.call('DELETE', f'/v1/team/rooms/{room}/pages/{document}', None, **one)
-                if name == 'tool':
-                    self.assertEqual((status, answer), (403, {'error': PERSON_ONLY}))
-                    status, answer = self.call('DELETE', f'/v1/team/rooms/{room}/pages/{document}', None,
-                                               **self.callers(self.mac_one)['device'])
+                status, answer = self.as_person(name, 'DELETE', f'/v1/team/rooms/{room}/pages/{document}', None, one)
                 self.assertEqual((status, answer['document']['teams'], answer['document']['audience']),
                                  (200, [], 'private'))
                 self.assertEqual(self.call('DELETE', f'/v1/team/rooms/{room}', None, **two), (200, {'room': room, 'left': True}))
@@ -128,14 +130,20 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
                 self.assertEqual(self.call('DELETE', f'/v1/team/rooms/{room}', None, **one),
                                  (404, {'error': 'This Mac is not in this team.'}))
 
-    def test_each_caller_reaches_the_team_chat(self):
+    def test_each_device_reaches_the_team_chat_and_the_tool_does_not(self):
         room = self.make_room()['room']
-        invite = self.call('POST', f'/v1/team/rooms/{room}/invites', {'uses': 1}, self.mac_one.token)[1]
+        invite = self.call('POST', f'/v1/team/rooms/{room}/invites', {'uses': 1}, self.mac_one.device)[1]
         self.assertEqual(self.call('POST', '/v1/team/join', {'link': invite['link'], 'member_name': 'Grace'},
                                    self.mac_two.token, server=self.mac_two.server)[0], 200)
         messages = f'/v1/team/rooms/{room}/messages'
         sent = {}
-        for name, one in self.callers(self.mac_one).items():
+        # A bot can read the token of the bridge file, so the tool cannot write or read the chat as the person.
+        tool = self.callers(self.mac_one)['tool']
+        for method, path, data in (('POST', messages, {'text': 'Hello from a bot'}), ('GET', f'{messages}?limit=1', None),
+                                   ('POST', f'/v1/team/rooms/{room}/read', {'first': 1})):
+            self.assertEqual(self.call(method, path, data, **tool), REFUSED)
+        for name in ('device', 'phone'):
+            one = self.callers(self.mac_one)[name]
             with self.subTest(caller=name):
                 status, answer = self.call('POST', messages, {'text': f'Hello from the {name}'}, **one)
                 self.assertEqual((status, answer['message']['text'], answer['message']['this_mac']),
@@ -147,23 +155,26 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
                 # The query of a GET reaches the route.
                 status, page = self.call('GET', f'{messages}?limit=1', None, **one)
                 self.assertEqual((status, [message['id'] for message in page['messages']]), (200, [identity]), page)
-                self.assertEqual(page['before'] is None, name == 'tool')
-        # Each caller of the second Mac reads the chat, moves the read position, and cannot change a message of Ada.
-        # This test starts no sync thread, so it runs the pass itself.
+                self.assertEqual(page['before'] is None, name == 'device')
+                for method, data in (('PATCH', {'text': 'Changed by a bot'}), ('DELETE', None)):
+                    self.assertEqual(self.call(method, f'{messages}/{identity}', data, **tool), REFUSED)
+        # Each device of the second Mac reads the chat and cannot change a message of Ada. This test starts no sync
+        # thread, so it runs the pass itself.
         self.second.team_sync_pass()
-        for name, two in self.callers(self.mac_two).items():
+        for name in ('device', 'phone'):
+            two = self.callers(self.mac_two)[name]
             with self.subTest(reader=name):
                 status, page = self.call('GET', messages, None, **two)
                 self.assertEqual((status, [message['text'] for message in page['messages']]),
-                                 (200, ['Hi from the phone', 'Hi from the device', 'Hi from the tool']), page)
-                self.assertEqual(self.call('PATCH', f'{messages}/{sent["tool"]["id"]}', {'text': 'Mine'}, **two),
+                                 (200, ['Hi from the phone', 'Hi from the device']), page)
+                self.assertEqual(self.call('PATCH', f'{messages}/{sent["device"]["id"]}', {'text': 'Mine'}, **two),
                                  (403, {'error': 'You can change only your own messages.'}))
-                self.assertEqual(self.call('DELETE', f'{messages}/{sent["tool"]["id"]}', None, **two),
+                self.assertEqual(self.call('DELETE', f'{messages}/{sent["device"]["id"]}', None, **two),
                                  (403, {'error': 'You can change only your own messages.'}))
         status, rooms = self.call('GET', '/v1/team/rooms', None, self.mac_two.token, server=self.mac_two.server)
         (view,) = rooms['rooms']
         self.assertEqual((status, view['unread'], view['last_message']['text'], view['last_message']['member_name']),
-                         (200, 3, 'Hi from the phone', 'Ada'))
+                         (200, 2, 'Hi from the phone', 'Ada'))
         status, answer = self.call('POST', f'/v1/team/rooms/{room}/read', {'first': sent['device']['first']},
                                    **self.callers(self.mac_two)['phone'])
         self.assertEqual((status, answer), (200, {'room': room, 'read': sent['device']['first'], 'unread': 1}))
@@ -178,8 +189,64 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
         repeats = [self.call('DELETE', f'{messages}/{identity}', None, phone['token'], server=phone['server'],
                              headers=dict(PHONE, **key)) for _ in range(2)]
         self.assertEqual(repeats, [(200, {'room': room, 'id': identity, 'deleted': True})] * 2)
-        texts = [message['text'] for message in self.call('GET', messages, None, self.mac_one.token)[1]['messages']]
-        self.assertEqual(texts, ['Hi from the phone', 'Hi from the device', 'Hi from the tool'])
+        texts = [message['text'] for message in self.call('GET', messages, None, self.mac_one.device)[1]['messages']]
+        self.assertEqual(texts, ['Hi from the phone', 'Hi from the device'])
+
+    def state(self) -> tuple:
+        """What a refused request must not change on the first Mac: the requests to the relay, the rows of the team
+        tables, and the events for the phone."""
+        tables = [name for (name,) in self.first.db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'team%' ORDER BY name")]
+        rows = {table: self.first.db.execute(f'SELECT * FROM {table}').fetchall() for table in tables}
+        return list(self.relay.requests), rows, self.first._cursor()
+
+    def test_the_bridge_token_reaches_only_the_routes_of_the_tool(self):
+        bot = self.first.mutate('POST', '/v1/bots', {'name': 'Reporter'}, str(uuid4()), 'phone')
+        self.first.publish_page(bot['id'], {'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
+                                            'content': '3 tasks are open.'})
+        document = self.first._document_of_key(bot['id'], 'weekly-report')['id']
+        room = self.make_room()['room']
+        device = self.callers(self.mac_one)['device']
+        pages, messages = f'/v1/team/rooms/{room}/pages/{document}', f'/v1/team/rooms/{room}/messages'
+        self.assertEqual(self.call('PUT', pages, {}, **device)[0], 200)
+        message = self.call('POST', messages, {'text': 'Hello'}, **device)[1]['message']
+        # Each team route of a full service, and routes that a person's Mac does not have. A refused route that ran
+        # would change the state.
+        refused = (('POST', '/v1/team/rooms', {'name': 'Example Team', 'relay': RELAY}),
+                   ('PUT', '/v1/team/rooms', {}),
+                   ('PATCH', f'/v1/team/rooms/{room}', {'member_name': 'Ada L.'}),
+                   ('POST', f'/v1/team/rooms/{room}/invites', {}),
+                   ('PUT', pages, {}), ('DELETE', pages, None),
+                   ('POST', f'/v1/team/rooms/{room}/bots', {'bot_id': bot['id']}),
+                   ('DELETE', f'/v1/team/rooms/{room}/bots/{bot["id"]}', None),
+                   ('GET', messages, None), ('POST', messages, {'text': 'Hello from a bot'}),
+                   ('PATCH', f'{messages}/{message["id"]}', {'text': 'Changed by a bot'}),
+                   ('DELETE', f'{messages}/{message["id"]}', None),
+                   ('POST', f'/v1/team/rooms/{room}/read', {'first': message['first']}),
+                   ('GET', '/v1/team/status', None), ('GET', '/v1/team/bots', None),
+                   ('POST', '/v1/team/bots', {'name': 'Reporter'}), ('GET', '/v1/team/unknown', None),
+                   # A slash in the path that the route does not drop.
+                   ('POST', '/v1/team//rooms', {'name': 'Example Team', 'relay': RELAY}),
+                   ('POST', f'/v1/team/rooms//{room}/invites', {}))
+        # The routes of the tool reach their steps: a join with a link that is not valid, and a leave of a team that
+        # this Mac is not in, get the error of the step and change nothing.
+        allowed = (('GET', '/v1/team/rooms', None, 200), ('POST', '/v1/team/sync', {}, 200),
+                   ('POST', '/v1/team/join', {'link': 'coconut://team/x'}, 400),
+                   ('DELETE', f'/v1/team/rooms/{"b" * 64}', None, 404))
+        tool = self.callers(self.mac_one)['tool']
+        before = self.state()
+        for key in ({}, {'Idempotency-Key': str(uuid4())}):
+            for end in ('', '/', '//', '///'):
+                for method, path, data in refused:
+                    with self.subTest(method=method, path=path, key=bool(key), end=end):
+                        self.assertEqual(self.call(method, path + end, data, **dict(tool, headers=key)), REFUSED)
+                        self.assertEqual(self.state(), before)
+                for method, path, data, status in allowed:
+                    with self.subTest(method=method, path=path, key=bool(key), end=end):
+                        self.assertEqual(self.call(method, path + end, data, **dict(tool, headers=key))[0], status)
+        # The token still leaves a team. The device then finds the room gone.
+        self.assertEqual(self.call('DELETE', f'/v1/team/rooms/{room}///', None, **tool), (200, {'room': room, 'left': True}))
+        self.assertEqual(self.call('GET', messages, None, **device), (404, {'error': 'This Mac is not in this team.'}))
 
     def test_a_request_without_a_valid_token_gets_401(self):
         messages = f'/v1/team/rooms/{"a" * 64}/messages'
@@ -238,7 +305,7 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
 
         room = self.make_room()
         room_id = room['room']
-        _, invite = self.call('POST', f'/v1/team/rooms/{room_id}/invites', {'uses': 1}, self.mac_one.token)
+        _, invite = self.call('POST', f'/v1/team/rooms/{room_id}/invites', {'uses': 1}, self.mac_one.device)
         # A join that the relay does not answer, then the join, then a join with the used link on a third Mac.
         self.relay.down = True
         texts.append(self.call('POST', '/v1/team/join', {'link': invite['link']}, self.mac_two.token,

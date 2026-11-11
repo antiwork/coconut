@@ -283,7 +283,10 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
         for method, path, body in (('POST', f'/v1/team/rooms/{self.room_id}/bots', {'bot_id': self.bot['id']}),
                                    ('DELETE', f'/v1/team/rooms/{self.room_id}/bots/{self.bot["id"]}', {})):
             with self.subTest(method=method):
-                self.assertEqual(self.refusal(self.first.team_request, method, path, body), (409, PERSONAL_BOTS))
+                self.assertEqual(self.refusal(self.first.team_request, method, path, body, '', DEVICE),
+                                 (409, PERSONAL_BOTS))
+                # A tool of this Mac gets the line of the person's Mac. `coconut team add-bot` reads the mode first.
+                self.assertEqual(self.refusal(self.first.team_request, method, path, body), (403, PERSON_ONLY))
         # The refusal changes nothing.
         self.assertEqual(self.own()['teams'], [{'room': self.room_id, 'name': 'Example Team'}])
 
@@ -426,7 +429,7 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
 
     def test_only_a_paired_device_shares_a_page_or_stops(self):
         # A bot can read the token of the bridge file, so a tool of this Mac cannot share or stop, with or without an
-        # Idempotency-Key. The refusal changes nothing.
+        # Idempotency-Key (team.tool_route). The refusal changes nothing.
         self.publish()
         path = f'/v1/team/rooms/{self.room_id}/pages/{self.document_id()}'
         # The route drops each slash at the end of the path, so the check must too.
