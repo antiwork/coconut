@@ -61,8 +61,9 @@ final class NativeDecisionFlowTests: XCTestCase {
         let forge = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000001"]
         let scout = app.buttons["bot-conversation-00000000-0000-4000-8000-000000000002"]
         XCTAssertTrue(scout.waitForExistence(timeout: 10))
-        XCTAssertTrue(scout.label.contains("I am checking background limits and reconnect behavior."),
-                      "Home must show the latest conversation text instead of a generic status.")
+        // A working bot shows what it does now in place of its last message, like a typing notice.
+        XCTAssertTrue(scout.label.contains("Thinking it through"),
+                      "Chats must show the phase of a working bot instead of a generic status.")
         XCTAssertTrue(forge.exists)
 
         app.buttons["app-settings"].tap()
