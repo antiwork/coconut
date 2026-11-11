@@ -838,12 +838,25 @@ class TeamOnlyTests(unittest.TestCase):
         listed = self.library()
         ((bot_id, bot_name),) = listed['bots']
         self.assertEqual((listed['pages'], bot_name), ([('Weekly report', '3 tasks are open.', bot_id)], 'Reporter'))
-        # The bot of a Mac without a person answers each member, so Ada's Mac sees it as open.
-        status, answer = self.ada.call('GET', '/v1/team/rooms')
-        self.assertEqual(status, 200, answer)
-        (room,) = [row for row in answer['rooms'] if row['room'] == room_id]
+        # The bot answers in the chat only after the step that connects it to its agent sets `chat`. Then Ada's Mac
+        # sees it as open, and so the app offers it after @.
+        def room_view() -> dict:
+            status, answer = self.ada.call('GET', '/v1/team/rooms')
+            self.assertEqual(status, 200, answer)
+            return next(row for row in answer['rooms'] if row['room'] == room_id)
+
+        self.assertEqual([(bot['name'], bot['this_mac'], bot['open']) for bot in room_view()['bots']],
+                         [('Reporter', False, False)])
+        (declared,) = self.reporter.call('GET', '/v1/team/bots')[1]['bots']
+        status, answer = self.reporter.call('PATCH', f'/v1/team/bots/{declared["id"]}', {'chat': True})
+        self.assertEqual((status, answer['bot']['chat']), (200, True), answer)
+        self.wait_until(lambda: room_view()['bots'][0]['open'], self.LIMIT_SECONDS + 5)
+        room = room_view()
         self.assertEqual([(bot['name'], bot['this_mac'], bot['open']) for bot in room['bots']],
                          [('Reporter', False, True)])
+        # The Mac without a person is a member with the mark `bot_only`. Ada is a person.
+        self.assertEqual([(member['name'], member['bot_only']) for member in room['members']],
+                         [('Ada', False), ('Reporter Mac', True)])
 
         # A second save reaches Ada through the socket, without a call of POST /v1/team/sync.
         self.assertEqual(self.reporter.call('POST', '/v1/gateway/document', page)[1]['status'], 'unchanged')

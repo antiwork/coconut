@@ -53,8 +53,9 @@ def bot_entry(bot: dict, open: bool = False) -> dict:
     A bot can have a longer name, avatar or color than a `member` entry takes, so the entry gets the start of each.
     A lone surrogate becomes U+FFFD, because UTF-8 cannot encode it and the other Macs refuse it.
 
-    `open` marks a bot that answers each member of the team: only a team-only Mac writes it (team_only.py). A bot of
-    a person answers only that person, so the entry of a full Mac has no `open`.
+    `open` marks a bot that answers each member in the team chat: only a team-only Mac writes it, for a bot whose
+    record has `chat` true (team_only.py). A bot of a person answers only that person, so the entry of a full Mac has
+    no `open`.
     """
     fields = {'kind': 'bot'}
     for name, limit in MEMBER_LIMITS.items():
@@ -166,10 +167,11 @@ class TeamPages:
         self.team_wake()
         return self._team_answer(room_id)
 
-    @property
-    def _team_opens_bots(self) -> bool:
-        """True on a team-only Mac: its bots answer each member of the team, so their entries have `open`."""
-        return getattr(self, 'team_only', False) is True
+    def _team_opens(self, bot: dict) -> bool:
+        """True for a bot that answers each member in the team chat, so its entry has `open`: a bot of a team-only
+        Mac whose record has `chat` true. The step that connects the bot to its agent sets `chat`. A bot of a person
+        answers only that person, so a full Mac never writes the mark."""
+        return getattr(self, 'team_only', False) is True and bot.get('chat') is True
 
     def _team_bot(self, bot_id: str) -> dict | None:
         row = self.db.execute('SELECT data FROM bots WHERE id=?', (bot_id,)).fetchone()
@@ -203,7 +205,7 @@ class TeamPages:
                 fields = bot_entry(bot)
                 bots.append(dict(id=team_id(room['room'], entry), name=fields['name'], avatar=fields['avatar'],
                                  color=fields['color'], member=room['member'], member_name=names[room['member']],
-                                 this_mac=True, bot_id=bot_id, open=self._team_opens_bots))
+                                 this_mac=True, bot_id=bot_id, open=self._team_opens(bot)))
         # The bots follow the order of the members, then their names.
         order = {member: index for index, member in enumerate(names)}
         return sorted(bots, key=lambda bot: (order[bot['member']], bot['name'], bot['id']))
@@ -278,9 +280,9 @@ class TeamPages:
         entries.update(added)
         wanted = {}
         for bot_id, bot in bots.items():
-            fields = bot_entry(bot, open=self._team_opens_bots)
+            fields = bot_entry(bot, open=self._team_opens(bot))
             wanted[shares[bot_id]] = (('bot', fields['name'], fields['avatar'], fields['color'],
-                                       self._team_opens_bots), {'bot_id': bot_id}, fields)
+                                       self._team_opens(bot)), {'bot_id': bot_id}, fields)
         for document in documents:
             wanted[entries[document['id']]] = (('page', shares[document['bot_id']], document['version']),
                                                {'document': document['id'], 'key': document['key']}, document)

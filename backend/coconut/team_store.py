@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS team_entries (room TEXT NOT NULL, id TEXT NOT NULL, s
     kept INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (room, id));
 CREATE TABLE IF NOT EXISTS team_members (room TEXT NOT NULL, member TEXT NOT NULL, name TEXT NOT NULL,
     avatar TEXT NOT NULL, color TEXT NOT NULL, agreement TEXT NOT NULL, entry TEXT NOT NULL,
-    PRIMARY KEY (room, member));
+    bot_only INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (room, member));
 CREATE TABLE IF NOT EXISTS team_pending (room TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
     first INTEGER NOT NULL, member TEXT NOT NULL, at INTEGER NOT NULL, kept INTEGER NOT NULL, body BLOB NOT NULL,
     reason TEXT NOT NULL, PRIMARY KEY (room, id));
@@ -76,7 +76,7 @@ TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_sh
           'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads')
 ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
-MEMBER_FIELDS = ('member', 'name', 'avatar', 'color', 'agreement', 'entry')
+MEMBER_FIELDS = ('member', 'name', 'avatar', 'color', 'agreement', 'entry', 'bot_only')
 PENDING_FIELDS = ('id', 'seq', 'first', 'member', 'at', 'kept', 'body', 'reason')
 PAGE_FIELDS = ('key', 'title', 'format', 'summary', 'size', 'rev', 'expires_at', 'created_at', 'updated_at', 'pinned')
 # What the Library of the phone gets for a team page and a team bot. TeamStore.library reads these rows.
@@ -180,7 +180,9 @@ def bot_fields(fields: dict) -> dict | None:
 
 
 def member_fields(fields: dict) -> dict | None:
-    """The name, avatar, color and agreement key of a `member` payload, or None when a field does not fit."""
+    """The name, avatar, color and agreement key of a `member` payload, or None when a field does not fit. Also the
+    mark `bot_only`: true only for the JSON value true, which a Mac without a person writes. A missing field and each
+    other value are false, so a value that does not fit hides no member."""
     result = profile_fields(fields)
     agreement = fields.get('agreement')
     if not result or not isinstance(agreement, str) or not AGREEMENT.fullmatch(agreement):
@@ -188,7 +190,7 @@ def member_fields(fields: dict) -> dict | None:
     # One key has one text: the unused bits of the last character are zero.
     if base64.urlsafe_b64encode(base64.urlsafe_b64decode(agreement + '=')).decode().rstrip('=') != agreement:
         return None
-    return dict(result, agreement=agreement)
+    return dict(result, agreement=agreement, bot_only=fields.get('bot_only') is True)
 
 
 def page_fields(fields: dict) -> dict | None:
@@ -300,9 +302,11 @@ class TeamStore:
 
     def migrate(self) -> None:
         """Add the columns that a store of an older version lacks. A `bot` row of that version reads as not open
-        until its next write."""
+        until its next write, and a `member` row as a person."""
         if 'open' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_bots)')}:
             self.db.execute('ALTER TABLE team_bots ADD COLUMN open INTEGER NOT NULL DEFAULT 0')
+        if 'bot_only' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_members)')}:
+            self.db.execute('ALTER TABLE team_members ADD COLUMN bot_only INTEGER NOT NULL DEFAULT 0')
 
     def _rows(self, fields, query, values=()) -> list[dict]:
         return [dict(zip(fields, row)) for row in self.db.execute(query, values).fetchall()]
@@ -498,10 +502,12 @@ class TeamStore:
                 payload = self.db.execute('SELECT payload FROM team_entries WHERE room=? AND id=?', (room, entry))
                 fields = member_fields(json.loads(payload.fetchone()[0]))
             if fields:
-                self.db.execute('''INSERT INTO team_members (room, member, name, avatar, color, agreement, entry)
-                    VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, member) DO UPDATE SET name=excluded.name,
-                    avatar=excluded.avatar, color=excluded.color, agreement=excluded.agreement, entry=excluded.entry''',
-                                (room, member, fields['name'], fields['avatar'], fields['color'], fields['agreement'], entry))
+                self.db.execute('''INSERT INTO team_members (room, member, name, avatar, color, agreement, entry,
+                    bot_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, member) DO UPDATE SET
+                    name=excluded.name, avatar=excluded.avatar, color=excluded.color, agreement=excluded.agreement,
+                    entry=excluded.entry, bot_only=excluded.bot_only''',
+                                (room, member, fields['name'], fields['avatar'], fields['color'], fields['agreement'], entry,
+                                 int(fields.get('bot_only') is True)))
                 # A member has one name: the one of the entry that the list shows.
                 if self.db.execute("DELETE FROM team_names WHERE room=? AND member=? AND kind='member' AND entry!=?",
                                    (room, member, entry)).rowcount:

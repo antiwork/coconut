@@ -228,8 +228,9 @@ class TeamStoreTests(unittest.TestCase):
         self.write(1, self.member('Ada', avatar='coconut', color='green'), ADMIN)
         self.write(2, self.member('Grace'))
         self.assertEqual(self.store.members(ROOM), [
-            dict(member=ADMIN, name='Ada', avatar='coconut', color='green', agreement=AGREEMENT, entry=entry_id(1)),
-            dict(member=MEMBER, name='Grace', avatar='', color='', agreement=AGREEMENT, entry=entry_id(2))])
+            dict(member=ADMIN, name='Ada', avatar='coconut', color='green', agreement=AGREEMENT, entry=entry_id(1),
+                 bot_only=0),
+            dict(member=MEMBER, name='Grace', avatar='', color='', agreement=AGREEMENT, entry=entry_id(2), bot_only=0)])
         # A replacement changes the member, and the member keeps its place in the list.
         self.write(1, self.member('Ada L.', rev=2, color='blue'), ADMIN)
         self.assertEqual([(member['name'], member['color']) for member in self.store.members(ROOM)],
@@ -333,6 +334,34 @@ class TeamStoreTests(unittest.TestCase):
         store.migrate()
         store.migrate()
         self.assertEqual(db.execute('SELECT name, open FROM team_bots').fetchall(), [('Planner', 0)])
+
+
+    def test_a_member_entry_with_bot_only_true_is_a_mac_without_a_person(self):
+        self.write(1, self.member('Team Mac', bot_only=True), ADMIN)
+        self.write(2, self.member('Grace'))
+        self.assertEqual([(member['name'], member['bot_only']) for member in self.store.members(ROOM)],
+                         [('Team Mac', 1), ('Grace', 0)])
+        # A later write without the mark makes the member a person again.
+        self.write(1, self.member('Team Mac', rev=2), ADMIN)
+        self.assertEqual(self.store.member(ROOM, ADMIN)['bot_only'], 0)
+
+    def test_a_bot_only_value_that_is_not_true_shows_the_member_as_a_person(self):
+        for rev, value in enumerate(('true', 1, None, {'bot_only': True}, [True]), start=1):
+            with self.subTest(value=value):
+                self.assertEqual(self.write(1, self.member('Team Mac', rev=rev, bot_only=value), ADMIN), (STORED, None))
+                self.assertEqual((self.store.member(ROOM, ADMIN)['name'], self.store.member(ROOM, ADMIN)['bot_only']),
+                                 ('Team Mac', 0))
+
+    def test_an_older_store_gets_the_member_column_and_reads_each_member_as_a_person(self):
+        db = sqlite3.connect(':memory:', isolation_level=None)
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE team_members (room TEXT NOT NULL, member TEXT NOT NULL, name TEXT NOT NULL, '
+                   'avatar TEXT NOT NULL, color TEXT NOT NULL, agreement TEXT NOT NULL, entry TEXT NOT NULL, '
+                   'PRIMARY KEY (room, member))')
+        db.execute("INSERT INTO team_members VALUES (?, ?, 'Grace', '', '', ?, ?)", (ROOM, ADMIN, AGREEMENT, entry_id(1)))
+        db.executescript(team_store.SCHEMA)
+        TeamStore(db).migrate()
+        self.assertEqual(db.execute('SELECT name, bot_only FROM team_members').fetchall(), [('Grace', 0)])
 
 
 if __name__ == '__main__':
