@@ -25,9 +25,8 @@ import threading
 import time
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import hermes_runtime
-from .hermes_unavailable import UnavailableService
-from .service import TUNNEL_PAIRING_LIFETIME, Service, ServiceError, issue_pairing_code, migrate_device_peers
+# The modules of the full service load in main, so a team-only service (team_only.py) never imports them.
+from .service_base import ServiceError
 
 PEER_KEY = re.compile(r'[0-9a-f]{64}')
 # Only the main listener serves these. The tunnel listener carries the phone's requests.
@@ -222,6 +221,19 @@ class Handler(BaseHTTPRequestHandler):
                 else self._body())
         self._json(200, service.team_request(method, url.path, data, key, device))
 
+    def _team_only(self, service, method, url):
+        """The routes of a team-only service (team_only.py): the team routes and the page route, for a tool of this
+        Mac with the token of the bridge file. Each other route says that this Mac runs Coconut for a team only."""
+        page = method == 'POST' and url.path == '/v1/gateway/document'
+        if not page and not url.path.startswith(TEAM_ROUTES):
+            service.refuse()
+        if not service.gateway_bridge.authorized(self.headers.get('Authorization', '')):
+            raise ServiceError(401, 'Use the token in <data>/gateway/bridge.json.')
+        if page:
+            self._json(200, service.gateway_document(self._body()))
+        else:
+            self._team(service, method, url)
+
     def _handle(self, method):
         """Serve one request. Log the time of each request from the phone (see request_timing)."""
         started = time.perf_counter()
@@ -243,6 +255,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise ServiceError(400, 'Send GET requests without a body.')
             if method == 'GET' and url.path == '/health':
                 self._json(200, {'ok': True, 'api_version': 1})
+                return
+            if getattr(service, 'team_only', False):
+                self._team_only(service, method, url)
                 return
             if method == 'POST' and url.path in GATEWAY_ROUTES and not self.server.tunnel and hasattr(service, 'gateway_bridge'):
                 self._gateway(service.gateway_bridge, url.path)
@@ -267,7 +282,7 @@ class Handler(BaseHTTPRequestHandler):
             started = time.perf_counter()
             device = service.authenticate(authorization[7:], peer)
             self.timings = {'auth': (time.perf_counter() - started) * 1000}
-            if isinstance(service, UnavailableService) and not (method == 'GET' and url.path == '/v1/setup'):
+            if getattr(service, 'setup_only', False) and not (method == 'GET' and url.path == '/v1/setup'):
                 # Without Hermes, only the setup status answers. See hermes_unavailable.
                 service.refuse()
             if team:
@@ -364,11 +379,13 @@ def create_pairing_code(data_dir: str | Path, lifetime: int = 300) -> str:
 
 def create_tunnel_pairing(data_dir: str | Path) -> tuple[str, int]:
     """Return the secret of a version 2 pairing link and its expiry in Unix seconds."""
+    from .service import TUNNEL_PAIRING_LIFETIME
     return store_pairing_code(data_dir, TUNNEL_PAIRING_LIFETIME, True)
 
 
 def store_pairing_code(data_dir: str | Path, lifetime: int, tunnel: bool) -> tuple[str, int]:
     """The store keeps only the hash of the code. See issue_pairing_code."""
+    from .service import issue_pairing_code, migrate_device_peers
     path = Path(data_dir).expanduser() / 'coconut.sqlite3'
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
@@ -390,6 +407,8 @@ def write_process_record(service):
         'pid': os.getpid(), 'data_dir': str(service.root),
         'project': str(Path(__file__).resolve().parents[2]),
         'drain': getattr(service, 'drains', True),
+        # The Mac app and the tool tell a team-only service from a full one (team_only.py).
+        **({'mode': 'team'} if getattr(service, 'team_only', False) else {}),
     }))
 
 
@@ -400,6 +419,7 @@ def hermes_status(data_dir, argv) -> dict:
     runs under another Python, it starts again under the Hermes Python, with the checked status in its environment.
     Without a usable Hermes, the service stays under this Python in refuse mode.
     """
+    from . import hermes_runtime
     saved = os.environ.pop('COCONUT_HERMES_STATUS', None)
     # A launcher can name the Hermes Python differently in sys.executable, so this process starts again only once.
     restarted = os.environ.pop('COCONUT_HERMES_RESTARTED', None) == '1'
@@ -431,7 +451,16 @@ def main(argv=None):
     parser.add_argument('--pair', action='store_true')
     parser.add_argument('--tunnel', action='store_true',
                         help='With --pair: print the secret for a version 2 pairing link and its expiry in Unix seconds.')
+    parser.add_argument('--team-only', action='store_true',
+                        help='Keep only the team rooms and the pages of the bots that this Mac declares (team_only.py). '
+                             'COCONUT_MODE=team in the environment does the same.')
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    mode = os.environ.get('COCONUT_MODE', '')
+    if mode not in ('', 'team'):
+        parser.error('COCONUT_MODE must be team, or empty for the full service.')
+    team_only = args.team_only or mode == 'team'
+    if team_only and args.pair:
+        parser.error('A team-only service pairs no phone.')
     if args.pair:
         try:
             if args.tunnel:
@@ -441,12 +470,20 @@ def main(argv=None):
         except ServiceError as error:
             parser.error(str(error))
         return
-    from .providers import FixtureProvider, HermesProvider
     hermes = None
     try:
-        if args.provider == 'fixture':
+        if team_only:
+            from .team_only import TeamOnlyService
+            service = TeamOnlyService(args.data_dir)
+        elif args.provider == 'fixture':
+            from .providers import FixtureProvider
+            from .service import Service
             service = Service(args.data_dir, FixtureProvider(args.data_dir), start_workers=False)
         else:
+            from . import hermes_runtime
+            from .hermes_unavailable import UnavailableService
+            from .providers import HermesProvider
+            from .service import Service
             hermes = hermes_status(args.data_dir, sys.argv[1:] if argv is None else argv)
             if hermes['status'] == 'ok':
                 # The service imports some Hermes modules itself. Like the workers, it loads them from the checked source
@@ -467,7 +504,7 @@ def main(argv=None):
     try:
         # The phone reaches this Mac only through the tunnel sidecar, so no listener accepts connections from the network.
         server = APIServer(('127.0.0.1', args.port), service)
-        if args.tunnel_port:
+        if args.tunnel_port and not team_only:
             tunnel = TunnelServer(args.tunnel_port, service)
     except OSError as error:
         if server:
@@ -483,19 +520,26 @@ def main(argv=None):
         # launchd starts the service again after it exits, so it can restart for a new Hermes.
         service.watch_hermes(hermes)
     service.start()
-    print(f'Coconut is listening on 127.0.0.1:{args.port}. Provider: {args.provider}.', flush=True)
-    if tunnel:
-        threading.Thread(target=tunnel.serve_forever, kwargs={'poll_interval': .2}, name='tunnel-listener', daemon=True).start()
-        print(f'The tunnel sidecar connects to 127.0.0.1:{args.tunnel_port}.', flush=True)
-    if args.provider == 'fixture':
-        print('Fixture mode uses scripted responses. It does not execute Hermes.', flush=True)
-    elif isinstance(service, UnavailableService):
-        print(f'Coconut runs no bots, because Hermes is {hermes["status"]}: {hermes["reason"]}', flush=True)
+    if team_only:
+        print(f'Coconut is listening on 127.0.0.1:{args.port} for a team only. It runs no bot and changes no Hermes.',
+              flush=True)
+        if args.tunnel_port:
+            print('A team-only service has no phone, so it opens no tunnel listener.', flush=True)
     else:
-        print(f'Coconut uses Hermes {hermes["version"] or "of unknown version"} in {hermes["root"]}.', flush=True)
-        warning = hermes_runtime.untested_warning(hermes['version'])
-        if warning:
-            print(warning, flush=True)
+        print(f'Coconut is listening on 127.0.0.1:{args.port}. Provider: {args.provider}.', flush=True)
+        if tunnel:
+            threading.Thread(target=tunnel.serve_forever, kwargs={'poll_interval': .2}, name='tunnel-listener',
+                             daemon=True).start()
+            print(f'The tunnel sidecar connects to 127.0.0.1:{args.tunnel_port}.', flush=True)
+        if args.provider == 'fixture':
+            print('Fixture mode uses scripted responses. It does not execute Hermes.', flush=True)
+        elif isinstance(service, UnavailableService):
+            print(f'Coconut runs no bots, because Hermes is {hermes["status"]}: {hermes["reason"]}', flush=True)
+        else:
+            print(f'Coconut uses Hermes {hermes["version"] or "of unknown version"} in {hermes["root"]}.', flush=True)
+            warning = hermes_runtime.untested_warning(hermes['version'])
+            if warning:
+                print(warning, flush=True)
     def stop(signum, frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, stop)

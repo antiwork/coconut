@@ -7,9 +7,13 @@ import Foundation
 /// is in the tool: an error of a route prints the text of the service.
 ///
 /// The invite link lets a Mac into a team, so `join` reads it from standard input. No output of the tool has it.
+///
+/// A Mac that runs Coconut for a team only (backend/coconut/team_only.py) takes no bot from Hermes: `new-bot` declares
+/// one for the Hermes home that it stands for.
 public enum TeamCommand: Equatable, Sendable {
     case show(json: Bool)
     case join(name: String?)
+    case newBot(String, home: String?)
     case addBot(String, team: String?)
     case removeBot(String, team: String?)
     case leave(team: String?, confirm: String?)
@@ -17,6 +21,7 @@ public enum TeamCommand: Equatable, Sendable {
     public static let usage = """
         Usage: coconut team [--json]
                coconut team join [--name <text>]       (the invite link on standard input)
+               coconut team new-bot <name> [--home <path>]
                coconut team add-bot <bot> [--team <name or ID>]
                coconut team remove-bot <bot> [--team <name or ID>]
                coconut team leave --confirm <name of the team> [--team <name or ID>]
@@ -52,7 +57,7 @@ public enum TeamCommand: Equatable, Sendable {
                 value = arguments[index]
                 index += 1
             }
-            guard ["--name", "--team", "--confirm"].contains(name), let value, !options.keys.contains(name) else {
+            guard ["--name", "--team", "--confirm", "--home"].contains(name), let value, !options.keys.contains(name) else {
                 throw TeamFailure.usage
             }
             options[name] = value
@@ -68,6 +73,10 @@ public enum TeamCommand: Equatable, Sendable {
             try only(["--name"])
             guard positional.count == 1 else { throw TeamFailure(lines: [linkArgument], status: 64) }
             return .join(name: options["--name"])
+        case "new-bot":
+            try only(["--home"])
+            guard positional.count == 2 else { throw TeamFailure.usage }
+            return .newBot(positional[1], home: options["--home"])
         case "add-bot", "remove-bot":
             try only(["--team"])
             guard positional.count == 2 else { throw TeamFailure.usage }
@@ -118,6 +127,8 @@ public struct TeamFailure: Error, Equatable {
         "The Coconut service did not start yet. Run coconut status, then try again.")
     public static let noLink = TeamFailure(
         "Give the invite link on standard input: pipe it to coconut team join. Do not put the link in the command.")
+    public static let fullMac = TeamFailure(
+        "This Mac takes its bots from its Hermes profiles, so it declares no bot. Use coconut team add-bot <bot>.")
 }
 
 public struct TeamResponse: Sendable {
@@ -174,6 +185,10 @@ struct TeamRooms: Decodable {
     var helper: Bool?
     /// The bots of this Mac that a team can take. A service before this field does not send it.
     var macBots: [MacBot]?
+    /// "team" for a Mac that runs Coconut for a team only. A full Mac sends no mode.
+    var mode: String?
+
+    var teamOnly: Bool { mode == "team" }
 
     struct MacBot: Decodable {
         var id: String
@@ -251,6 +266,8 @@ public struct TeamTool: Sendable {
                 return try await show(json: json)
             case .join(let name):
                 return try await join(name: name)
+            case .newBot(let name, let home):
+                return try await newBot(name, home: home)
             case .addBot(let bot, let team):
                 return try await addBot(bot, team: team)
             case .removeBot(let bot, let team):
@@ -329,10 +346,24 @@ public struct TeamTool: Sendable {
         return TeamOutput(lines: ["This Mac joined the team \(room.name)."] + room.lines)
     }
 
+    /// Declare a bot on a Mac that runs Coconut for a team only. The service checks the name and the home, and
+    /// takes its own Hermes home when the command gives none.
+    func newBot(_ name: String, home: String?) async throws -> TeamOutput {
+        guard try decode(try await call("GET", "/v1/team/rooms")).teamOnly else { throw TeamFailure.fullMac }
+        var body: [String: Any] = ["name": name]
+        if let home {
+            // The service takes only a full path. A path of the shell is relative to the current folder.
+            body["home"] = URL(fileURLWithPath: NSString(string: home).expandingTildeInPath).standardizedFileURL.path
+        }
+        let bot = try JSONDecoder.team.decode(Declared.self, from: try await call("POST", "/v1/team/bots", body)).bot
+        return TeamOutput(lines: ["This Mac declared the bot \(bot.name) for the Hermes home \(bot.home).",
+                                  "To add it to a team, run: coconut team add-bot \(quoted(bot.name))"])
+    }
+
     func addBot(_ argument: String, team: String?) async throws -> TeamOutput {
         let answer = try decode(try await call("GET", "/v1/team/rooms"))
         let room = try choose(team, in: answer.rooms)
-        let bot = try match(argument, in: answer.macBots)
+        let bot = try match(argument, in: answer.macBots, declare: answer.teamOnly)
         if room.bots.contains(where: { $0.thisMac && $0.botId == bot.id }) {
             return TeamOutput(lines: ["The bot \(bot.name) is already in the team \(room.name)."])
         }
@@ -399,6 +430,15 @@ public struct TeamTool: Sendable {
         var room: TeamRoom
     }
 
+    struct Declared: Decodable {
+        var bot: Bot
+
+        struct Bot: Decodable {
+            var name: String
+            var home: String
+        }
+    }
+
     /// The team of a command: the one team of this Mac, or the team with this ID or name (case does not matter).
     func choose(_ argument: String?, in rooms: [TeamRoom]) throws -> TeamRoom {
         guard !rooms.isEmpty else { throw TeamFailure("This Mac is in no team.") }
@@ -423,11 +463,16 @@ public struct TeamTool: Sendable {
     }
 
     /// The bot with this ID, else the bot with this name (case does not matter). A service without the list of the bots
-    /// of this Mac gets the argument as the ID, and it says when no bot has it.
-    func match(_ argument: String, in bots: [TeamRooms.MacBot]?) throws -> TeamRooms.MacBot {
+    /// of this Mac gets the argument as the ID, and it says when no bot has it. On a Mac that runs Coconut for a team
+    /// only (`declare`), a missing bot is not a guess: one line says how to declare it.
+    func match(_ argument: String, in bots: [TeamRooms.MacBot]?, declare: Bool = false) throws -> TeamRooms.MacBot {
         guard let bots else { return .init(id: argument, name: argument) }
         let byID = bots.filter { $0.id == argument }
         let found = byID.isEmpty ? bots.filter { $0.name.caseInsensitiveCompare(argument) == .orderedSame } : byID
+        if found.isEmpty && declare {
+            throw TeamFailure("This Mac has no bot with the name or ID \"\(argument)\". Declare it first: coconut team "
+                              + "new-bot \(quoted(argument)) --home <the Hermes home of the bot>")
+        }
         let list = bots.isEmpty ? ["This Mac has no bots that a team can take."] : bots.map { "Bot: \($0.name) (ID \($0.id))" }
         switch found.count {
         case 1:

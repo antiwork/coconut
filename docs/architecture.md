@@ -446,6 +446,14 @@ A task that a guard holds for more than an hour shows: Coconut logs a warning on
   them.
 - `kanban_scheduler.py` and `kanban_runtime.py` only after Hermes gives its dispatcher a spawn hook. Until then they stay.
 
+## Team-only mode
+
+A Mac can run a production Hermes agent with no person at it and no Coconut. To let that agent publish pages to a
+team, such a Mac runs the service with `--team-only` or `COCONUT_MODE=team` (`backend/coconut/team_only.py`). The
+service then keeps only the team rooms and the pages of the bots that the Mac declares. It imports nothing of Hermes and
+nothing of the full service, changes no Hermes file, starts no gateway and pairs no phone. A full service and a
+team-only service never start on the data folder of the other. See [team-only mode](team-log.md#team-only-mode).
+
 ## Transport and future providers
 
 The local Mac provider uses the relay tunnel (Noise, see [relay transport](relay-transport.md)), one-time pairing links, and device tokens bound to the phone key.

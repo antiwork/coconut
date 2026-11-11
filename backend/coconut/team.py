@@ -92,7 +92,7 @@ def checked_name(value, noun: str, *, person: bool) -> str:
     outside EMOJI_FORMAT, and no space at its start or end. A name with a character that this Python does not know
     yet, for example a new emoji, is valid.
     """
-    from .service import ServiceError
+    from .service_base import ServiceError
     if not isinstance(value, str) or not value:
         raise ServiceError(400, f'Give {noun}.')
     if len(value) > MAX_NAME:
@@ -111,12 +111,16 @@ def checked_name(value, noun: str, *, person: bool) -> str:
     return value
 
 
-def member_profile(data: dict, current: dict | None = None) -> dict:
+def member_profile(data: dict, current: dict | None = None, *, field: str = 'member_name',
+                   noun: str = 'your name') -> dict:
     """What this Mac writes about itself in its `member` entry: name, avatar and color. `current` is the profile of
-    the room for a change: a field that the caller leaves out keeps its value."""
-    from .service import ServiceError
+    the room for a change: a field that the caller leaves out keeps its value.
+
+    The bot of a team-only Mac (team_only.py) has the same three fields with the same rules: `field` names the name
+    in the data, and `noun` names it in the text of an error."""
+    from .service_base import ServiceError
     current = current or {'name': MEMBER_NAME, 'avatar': '', 'color': ''}
-    profile = {'name': checked_name(data.get('member_name', current['name']), 'your name', person=True)}
+    profile = {'name': checked_name(data.get(field, current['name']), noun, person=True)}
     for field in ('avatar', 'color'):
         value = data.get(field, current[field])
         if not unicode_text(value) or len(value) > MEMBER_LIMITS[field]:
@@ -126,7 +130,7 @@ def member_profile(data: dict, current: dict | None = None) -> dict:
 
 
 def whole(data: dict, field: str, default: int, limits: tuple[int, int], text: str) -> int:
-    from .service import ServiceError
+    from .service_base import ServiceError
     value = data.get(field, default)
     if type(value) is not int or not limits[0] <= value <= limits[1]:
         raise ServiceError(400, text)
@@ -136,7 +140,7 @@ def whole(data: dict, field: str, default: int, limits: tuple[int, int], text: s
 @contextlib.contextmanager
 def team_errors():
     """Give the caller of a route a failure of the helper, the key file or the relay, as a text for a person."""
-    from .service import ServiceError
+    from .service_base import ServiceError
     try:
         yield
     except ROOM_ERRORS as error:
@@ -189,7 +193,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         waits for it. A failure keeps no answer, because the person tries again. A request without a key, for example
         of a tool on this Mac, runs as before. `POST /v1/team/sync` and the reads need no key.
         """
-        from .service import ServiceError
+        from .service_base import ServiceError
         if not key or method == 'GET' or path.rstrip('/') == '/v1/team/sync':
             return self._team_route(method, path, data)
         try:
@@ -245,7 +249,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
 
     def _team_route(self, method: str, path: str, data: dict, repeat: str = '') -> dict:
         """Serve one route. `repeat` names the device and the `Idempotency-Key` of a write, or is empty."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         parts = path.strip('/').split('/')[2:]
         if parts == ['rooms'] and method == 'GET':
             return self.team_rooms()
@@ -309,7 +313,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
                          'socket': self.team_socket_open(room['room'])}}
 
     def _team_room(self, room_id) -> dict:
-        from .service import ServiceError
+        from .service_base import ServiceError
         if not isinstance(room_id, str) or not ROOM_ID.fullmatch(room_id):
             raise ServiceError(404, 'This Mac is not in this team.')
         with self.lock:
@@ -326,7 +330,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
 
     def team_create(self, data: dict) -> dict:
         """Make a room on the relay. This Mac is its admin, and it writes its `member` entry."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         name = checked_name(data.get('name'), 'the name of the team', person=False)
         profile = member_profile(data)
         try:
@@ -357,7 +361,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
 
     def team_invite(self, room_id: str, data: dict) -> dict:
         """Make an invite: a ticket and a sealed welcome on the relay, and the link that the person shares."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         room = self._team_room(room_id)
         if room['state'] != ACTIVE:
             raise ServiceError(409, INACTIVE[room['state']])
@@ -397,7 +401,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         and a join with a link of the same room and relay asks again with the same member and token, as the
         contract allows.
         """
-        from .service import ServiceError
+        from .service_base import ServiceError
         link = data.get('link')
         if not isinstance(link, str) or not 0 < len(link) <= 4096:
             raise ServiceError(400, 'Paste the invite link of the team.')
@@ -481,7 +485,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         `member` entry. So the Mac first replaces that entry with a `delete` entry, when its helper works (see
         _team_retire_member). An admin leaves only a room without other members, and the relay then deletes the room.
         """
-        from .service import ServiceError
+        from .service_base import ServiceError
         self._team_room(room_id)
         with self._team_operation, team_errors():
             # An operation before this one can have changed the room, for example a join that made it `active`.
@@ -527,7 +531,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         leaves out from the profile. The lock of the room holds from that read to the end of the write, so the sync
         cannot write between them. A failure changes nothing on this Mac, and the person tries again.
         """
-        from .service import ServiceError
+        from .service_base import ServiceError
         self._team_room(room_id)
         with self._team_operation, team_errors(), self._team_room_lock(room_id):
             self._team_settle(room_id)
@@ -599,7 +603,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
     def _team_drop_membership(self, room: dict, secrets: dict) -> None:
         """Leave a room that this Mac joined and cannot read. The keys stay only when the relay does not answer, so
         a later leave can ask again."""
-        from .service import ServiceError
+        from .service_base import ServiceError
         try:
             self.team_relay.remove_member(room['relay'], room['room'], secrets['token'], room['member'], tries=2)
         except TeamRelayError as error:

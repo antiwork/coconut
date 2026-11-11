@@ -21,6 +21,9 @@ let usage = """
       team join [--name <text>]
                 Join a team with the invite link on standard input. The link is a secret: pipe it to the command.
                 --name is the name of this Mac in the member list.
+      team new-bot <name> [--home <path>]
+                On a Mac that runs Coconut for a team only: declare a bot for the Hermes home that it stands for.
+                Without --home, the service takes its own Hermes home.
       team add-bot <bot> [--team <name or ID>]
                 Add a bot of this Mac to the team. <bot> is the ID or the name of the bot. --team is necessary
                 when this Mac is in more than one team.

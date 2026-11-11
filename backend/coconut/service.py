@@ -4,7 +4,6 @@ from __future__ import annotations
 import base64
 import contextlib
 import copy
-import fcntl
 import hashlib
 import hmac
 import json
@@ -20,21 +19,16 @@ from concurrent.futures import Future
 from queue import Empty, Queue
 from datetime import datetime, timezone
 from typing import Any
-from uuid import UUID, uuid4, uuid5
+from uuid import UUID, uuid5
 
 from .pr_tracking import REVIEW_CHECK_NAMES, GitHubPRTracker, PRTrackingError, parse_pr_url
 from .routines import validate_schedule, next_run
 from .native_conversation import reaction_only_turn
 from .profiles import HermesProfiles, ProfileError, profile_id
 from .state_sync import READ_INDEXES, StateSync, index_exchange_audience
-
-
-class ServiceError(Exception):
-    def __init__(self, status: int, message: str, **details):
-        super().__init__(message)
-        self.status = status
-        # Extra fields of the error response, for example a code that the phone acts on.
-        self.details = details
+# service_base holds what the team-only service shares with this one. The names stay importable from here.
+from .service_base import (FULL_MODE, ServiceError, check_data_folder, encoded, now, open_store, release_data_folder,
+                           require_text, take_data_folder, uid)
 
 
 class YieldForDecision(RuntimeError):
@@ -43,18 +37,6 @@ class YieldForDecision(RuntimeError):
     def __init__(self, message, *, decision_id=None):
         super().__init__(message)
         self.decision_id = decision_id
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-
-
-def uid() -> str:
-    return str(uuid4())
-
-
-def encoded(value: Any) -> str:
-    return json.dumps(value, separators=(',', ':'), sort_keys=True)
 
 
 def digest(value: str | bytes) -> str:
@@ -130,14 +112,6 @@ def device_for_token(db, token: str, peer: str | None = None) -> str:
     if not row or row[1] != peer:
         raise ServiceError(401, 'Pair this phone with the Mac to continue.')
     return row[0]
-
-
-def require_text(data: dict, key: str, maximum: int | None = 10000) -> str:
-    value = data.get(key)
-    if not isinstance(value, str) or not value.strip() or (maximum is not None and len(value) > maximum):
-        bound = f'between 1 and {maximum} characters' if maximum is not None else 'nonempty text'
-        raise ServiceError(400, f'{key} must contain {bound}.')
-    return value.strip()
 
 
 def decision_correction(data: dict) -> str:
@@ -223,15 +197,8 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
     def __init__(self, data_dir: str | Path, provider: Any, *, start_workers: bool = True, pr_tracker: Any = None,
                  hermes_home: str | Path | None = None):
         """hermes_home is the person's Hermes home. Each of its profiles is a bot (bot_profiles)."""
-        self.root = Path(data_dir).expanduser().resolve()
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.root, 0o700)
-        self.process_lock = open(self.root / 'service.lock', 'a')
-        try:
-            fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            self.process_lock.close()
-            raise ServiceError(409, 'Another Coconut service already owns this data directory.')
+        self.root, self.process_lock = take_data_folder(data_dir)
+        check_data_folder(self.root, self.process_lock, FULL_MODE)
         self.files = self.root / 'artifacts'
         self.files.mkdir(exist_ok=True, mode=0o700)
         self.provider = provider
@@ -248,12 +215,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
         self.dispatch_gate = threading.RLock()
         self.model_settings_lock = threading.Lock()
         self.changed = threading.Condition(self.lock)
-        self.db = sqlite3.connect(self.root / 'coconut.sqlite3', check_same_thread=False, isolation_level=None)
-        os.chmod(self.root / 'coconut.sqlite3', 0o600)
-        # This takes effect only in a new store. An older store changes mode in DatabaseMaintenance.
-        self.db.execute('PRAGMA auto_vacuum=INCREMENTAL')
-        self.db.execute('PRAGMA journal_mode=WAL')
-        self.db.execute('PRAGMA synchronous=FULL')
+        self.db = open_store(self.root)
         for table in self.TABLES:
             self.db.execute(f'CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, data TEXT NOT NULL)')
         self.db.executescript(TASK_CHANGES_SCHEMA)
@@ -387,8 +349,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             if self.kanban:
                 self.kanban.close()
             self.db.close()
-            fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
-            self.process_lock.close()
+            release_data_folder(self.process_lock)
             raise
         with self.transaction():
             for bot in self._all('bots'):
@@ -624,6 +585,10 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             obj.pop('phase', None)
             obj.pop('turn_started_at', None)
         self.db.execute(f'INSERT INTO {table}(id,data) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', (obj['id'], encoded(obj)))
+
+    def _now(self) -> str:
+        # The global of this module, so a test that sets service.now also sets the clock of the documents.
+        return now()
 
     def _event(self, event_type: str, data: dict, bot_id: str | None = None, task_id: str | None = None):
         self.db.execute('INSERT INTO events(type,bot_id,task_id,data,created_at) VALUES (?,?,?,?,?)', (event_type, bot_id, task_id, encoded(data), now()))
@@ -4500,5 +4465,4 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                                                     *self.gateway_cron_threads.values(), *filter(None, [retirement])]):
             with self.lock:
                 self.db.close()
-                fcntl.flock(self.process_lock.fileno(), fcntl.LOCK_UN)
-                self.process_lock.close()
+                release_data_folder(self.process_lock)

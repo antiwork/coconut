@@ -256,6 +256,8 @@ The relay accepts a member ID only with a proof of its key, so one member cannot
 
 The Mac backend does the steps of this contract for the Team screen of the app and for the tools on the Mac. The modules are in `backend/coconut`: `team.py` (the room operations and the routes), `team_sync.py` (the copy of each log), `team_socket.py` (the socket of each room), `team_store.py` (the tables and the reading rules), `team_keys.py` (the secrets), `team_relay.py` (the relay routes) and `team_helper.py` (the helper).
 
+A Mac that runs a Hermes agent with no Coconut can run Coconut for a team only. See [Team-only mode](#team-only-mode).
+
 A Mac with no person at it, for example a Mac that only runs a Hermes agent, uses the `coconut` tool of Coconut.app (`Contents/Helpers/coconut`). `coconut team` prints the teams of the Mac. `coconut team join` reads the invite link from standard input and joins. `coconut team add-bot <bot>` and `coconut team remove-bot <bot>` add and remove a bot of the Mac by its ID or its name. `coconut team leave --confirm <name of the team>` leaves. The tool calls the routes below with the token of the bridge file, and it prints the error text of the service. It never prints the link. Only a person makes a team and an invite, on the Team screen.
 
 ### Helper
@@ -505,6 +507,34 @@ A message in an answer:
 When the chat of a room changes on this Mac, the Mac adds one `team_messages.updated` event with `{"team": <room ID>}` in the same transaction: a new message, an edit, a removal, a new time from the relay, a new or changed name in `team_names` of a room with messages (for example a rename, or a `bot` entry that makes a message of its bot show), or a new read position, for example from another device of the person. The same name written again adds no event. `GET /v1/updates` then has `team_messages_changed`: the IDs of these rooms. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again.
 
 No log line has the text of a message. A log line names a message by its entry ID and its `seq`, as for each other entry.
+
+### Team-only mode
+
+A Mac can run a production Hermes agent with no person at it and no Coconut. Such a Mac runs Coconut "team only" (`backend/coconut/team_only.py`), so its agent can publish pages to the team. The full service does much more than a team needs, and it changes the Hermes profiles of the Mac. The team-only service does none of that.
+
+The service starts in this mode with `python3 -m coconut --team-only`, or with `COCONUT_MODE=team` in its environment, so a login item can set it. Another value of `COCONUT_MODE` stops the start. The service uses the same data folder as a full Mac: `coconut.sqlite3`, `<data>/team/`, `<data>/gateway/bridge.json`, `process.json` (with `"mode": "team"`) and the same logs. It takes the service lock of the folder, so a full service and a team-only service never share one folder. At its first start, the service writes a mark in its store (the table `service_mode`), and from then on the folder is a team-only folder, also without a bot or a room. The two modes never take the folder of the other (`service_base.check_data_folder`): a folder with the data of a full install (a paired phone, a task, a message, a Hermes profile or a bot) stops a team-only start, and a folder with the mark stops the start of the full service and of its refuse mode without Hermes. Each refusal is one line that names the cause and says to use another data folder, and it writes nothing.
+
+What the service does:
+
+- It keeps the team rooms of this Mac in step with the relay: the store, the sync thread, the socket watcher and the helper, as on a full Mac.
+- It serves the team routes on the main listener with the token of the bridge file, so `coconut team` and `scripts/team.py` work as on a full Mac. Only the routes of this section, the team routes and `POST /v1/gateway/document` need the token. Each other route, and a pair request, answers 503 with `{"error": ..., "code": "team_only"}`. `GET /health` works.
+- It keeps the bots that this Mac declares, and it saves their pages.
+
+What the service never does: it imports no Hermes module and no module of the full service (`service.py` and what it loads), and it runs no contract check of Hermes. It reads and changes no file under a Hermes home. It starts and stops no gateway, loads and installs no plugin and no skill, and copies no key. It runs no scheduler, no kanban adapter and no worker. It opens no tunnel listener, also with `--tunnel-port`, pairs no phone and sends no push notification. It keeps no event, because no phone reads one. Its only child process is the team helper.
+
+A bot of a team-only Mac is a record, because the Mac scans no Hermes profile. A record has an ID, a name, an avatar and a color with the rules of a `member` entry, and the Hermes home that the bot stands for. The home is a full path, and the service keeps its real path (`realpath`). Without a home, the service takes its own: `HERMES_HOME`, else `~/.hermes`. The service only stores and compares the path. It never opens it. One home has one bot, and one name (case does not matter) has one bot, because a tool finds a bot by its name. The routes, each with the token of the bridge file:
+
+| Request | Answer |
+| --- | --- |
+| `GET /v1/team/status` | `mode` (`"team"`), `version` (the commit of the checkout that runs, or null), `helper`, `bots` (the count), and each room in short form: `room`, `name`, `state`, `members` and `bots` (counts), `synced_at`, `error` and `socket`. |
+| `GET /v1/team/bots` | `bots`: for each bot `id`, `name`, `avatar`, `color`, `home` and `teams` (the room IDs that it is shared with). |
+| `POST /v1/team/bots`, body `{name, avatar, color, home}` | Declares a bot. A second bot for one home, or for one name, answers 409. |
+| `PATCH /v1/team/bots/<bot>`, body `{name, avatar, color}` | Changes what the team sees for the bot. The home stays: a body with `home` answers 400. |
+| `DELETE /v1/team/bots/<bot>` | Stops sharing the bot with each room, as `DELETE /v1/team/rooms/<room>/bots/<bot_id>` does, deletes its pages, and deletes the bot, in one transaction. The next pass writes the `delete` entries. |
+
+`GET /v1/team/rooms` also has `"mode": "team"`, and `mac_bots` lists the declared bots. `coconut team new-bot <name> [--home <path>]` declares a bot. `coconut team add-bot <bot>` on a team-only Mac without that bot does not guess: it prints one line that says how to declare it. On a full Mac, `new-bot` says that the Mac takes its bots from its Hermes profiles.
+
+Pages: `POST /v1/gateway/document` works as on a full Mac. The home of the request names the declared bot, and a save that changes nothing answers `unchanged`. No person reads the Library on a team-only Mac, so each save must name `"audience": "team"`. A save without it answers 400 and stores nothing. A page of a shared bot goes to each team of the bot. A page of a bot that no team has yet stays on this Mac, and the sync writes it when the bot is shared. The limits and checks of a page are those of a full Mac.
 
 ## Test vectors
 

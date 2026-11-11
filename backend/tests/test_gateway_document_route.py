@@ -72,6 +72,18 @@ class GatewayPageRouteTests(unittest.TestCase):
         status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home), self.token)
         self.assertEqual((status, answer['status'], answer['version']), (200, 'unchanged', 1))
 
+    def test_the_route_takes_the_audience_of_the_page(self):
+        # A team page needs a bot that the person shares with a team. A team-only Mac takes it without one
+        # (test_team_only.py).
+        status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home, audience='team'), self.token)
+        self.assertEqual(status, 409)
+        self.assertIn('shared with no team', answer['error'])
+        self.assertEqual(self.post('/v1/gateway/document', dict(PAGE, home=self.home, audience='other'), self.token),
+                         (400, {'error': 'audience must be private or team.'}))
+        status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home, audience='private'), self.token)
+        self.assertEqual((status, answer['status']), (200, 'saved'))
+        self.assertEqual(self.service.documents()['documents'][0].get('audience', 'private'), 'private')
+
     def test_the_route_needs_the_token_of_the_bridge(self):
         status, answer = self.post('/v1/gateway/document', dict(PAGE, home=self.home))
         self.assertEqual(status, 401)
