@@ -292,7 +292,9 @@ Each member of the teams of the bot can then name the bot in the team chat, and 
    - in `gateway.platforms.coconut` of `config.yaml`: `enabled: true`, `extra.mode: team` and `extra.bridge` (the address file of the Coconut service).
 2. Read the changes. Then run `coconut team connect-chat Reporter --confirm`. Expect `The team chat of Reporter is connected.`
 3. Restart the Hermes gateway of that Hermes home yourself, for example with `hermes gateway restart`. The gateway loads the plugin at its start.
-4. Run `coconut status`. Expect `Team chat of Reporter: on. Hermes takes the messages.` If the line says that Hermes does not take the messages, the gateway did not load the plugin: restart it, then look at its log.
+4. Run `coconut status`. Expect `Team chat of Reporter: on. Hermes takes the messages.` If the line says that Hermes does not take the messages, the gateway did not load the plugin: restart it, then look at its log. If the line names a path, the Hermes home misses a part of the team chat (the link `plugins/coconut`, the plugin behind it, or the entries in `config.yaml`), and the line gives the command that repairs it. Hermes skips a plugin folder without its plugin and writes no log line about it, so a restart alone does not help there.
+
+When only another profile of a gateway with several profiles has the team chat, Hermes logs `Skipping invalid ... 'coconut' is not a valid Platform` at each start for the sessions of that chat. The line is expected, and the chat works.
 
 The bot uses the tools that the Hermes config gives to the channel `coconut`. Each member of its teams can make it use them. To limit them, set `platform_toolsets.coconut` in `config.yaml` of the Hermes home, for example `platform_toolsets: {coconut: [web]}`, then restart the gateway. The bot cannot get an approval for a command in the team chat: Coconut denies each approval.
 

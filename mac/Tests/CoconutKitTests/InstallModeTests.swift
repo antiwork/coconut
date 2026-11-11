@@ -165,8 +165,59 @@ final class InstallModeTests: XCTestCase {
     func service(status: [String: Any] = answer, bots: [String: Any] = bots) -> FakeService {
         let service = FakeService()
         service.answer("GET", "/v1/team/status", status)
-        service.answer("GET", "/v1/team/bots", bots)
+        // The home "/h" of the fixtures is a Hermes home with the team chat, so its status has no problem line.
+        let list = (bots["bots"] as? [[String: Any]] ?? []).map { bot -> [String: Any] in
+            var bot = bot
+            if bot["home"] as? String == "/h" { bot["home"] = connectedHome().path }
+            return bot
+        }
+        service.answer("GET", "/v1/team/bots", ["bots": list])
         return service
+    }
+
+    /// A Hermes home with the changes of connect-chat: the link to a plugin folder and an entry in config.yaml.
+    func connectedHome() -> URL {
+        let agent = home.appendingPathComponent("agent", isDirectory: true)
+        let plugin = home.appendingPathComponent("hermes_plugin/coconut", isDirectory: true)
+        try? FileManager.default.createDirectory(at: plugin, withIntermediateDirectories: true)
+        try? Data("name: coconut\n".utf8).write(to: plugin.appendingPathComponent("plugin.yaml"))
+        try? FileManager.default.createDirectory(at: agent.appendingPathComponent("plugins"),
+                                                 withIntermediateDirectories: true)
+        try? FileManager.default.createSymbolicLink(at: agent.appendingPathComponent("plugins/coconut"),
+                                                    withDestinationURL: plugin)
+        try? Data("plugins:\n  enabled:\n    - coconut\n".utf8).write(to: agent.appendingPathComponent("config.yaml"))
+        return agent
+    }
+
+    func testTheStatusNamesWhatIsWrongInTheHermesHomeOfABotWhoseChatIsOn() throws {
+        let agent = connectedHome()
+        let link = agent.appendingPathComponent("plugins/coconut")
+        let config = agent.appendingPathComponent("config.yaml")
+        XCTAssertNil(TeamServiceStatus.Chat.homeProblem(bot: "Reporter", home: agent.path))
+        // The link points at a folder without the plugin: Hermes skips it without a log line.
+        let empty = home.appendingPathComponent("empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: empty)
+        XCTAssertEqual(TeamServiceStatus.Chat.homeProblem(bot: "Reporter", home: agent.path),
+                       "\(link.path) (it points at \(empty.path)) has no Coconut plugin. Remove it, then run: coconut "
+                       + "team connect-chat Reporter --confirm")
+        // The link is missing while the record says connected.
+        try FileManager.default.removeItem(at: link)
+        XCTAssertEqual(TeamServiceStatus.Chat.homeProblem(bot: "Reporter", home: agent.path),
+                       "\(link.path) is missing. To repair it, run: coconut team connect-chat Reporter --confirm")
+        // The entries of the config are missing while the link is there.
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL:
+                                                    home.appendingPathComponent("hermes_plugin/coconut"))
+        try Data("model:\n  default: example\n".utf8).write(to: config)
+        XCTAssertEqual(TeamServiceStatus.Chat.homeProblem(bot: "Night Reporter", home: agent.path),
+                       "\(config.path) has no entry of Coconut. To repair it, run: coconut team connect-chat "
+                       + "'Night Reporter' --confirm")
+        // The line of the status says it, and does not ask for a restart.
+        let chat = TeamServiceStatus.Chat(bot: "Reporter", connected: true, hermes: false,
+                                          problem: TeamServiceStatus.Chat.homeProblem(bot: "Reporter", home: agent.path))
+        XCTAssertTrue(chat.line.hasPrefix("Team chat of Reporter: on, but \(config.path) has no entry"), chat.line)
+        XCTAssertFalse(chat.line.contains("Restart"))
     }
 
     func testTheTeamStatusComesFromTheTeamOnlyRoutes() async throws {
