@@ -1,7 +1,6 @@
 // The `coconut` tool in Coconut.app/Contents/Helpers. The login items run `service` and `sidecar`. A person or a
 // Hermes agent runs `pair`, `status` and `team`. On a team-only Mac (InstallMode), each command for a phone or for Hermes
 // prints one line and exits with 1 (TeamOnlyRefusal).
-import AppKit
 import CoconutKit
 import Foundation
 
@@ -43,18 +42,11 @@ let usage = """
       migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       service   Run the Coconut service. The login item uses this command.
       sidecar   Run the relay sidecar. The login item uses this command.
-      remove [--confirm [--no-leave]]
-                On a Mac that runs Coconut for a team only: remove Coconut. This cannot be undone. Without --confirm,
-                print what the removal does and change nothing. With --confirm, first leave each team, so the other
-                Macs no longer show this Mac, its bots and their pages. Then stop Coconut.app, start it with
-                --remove, and wait for the result. The app removes its login items, the data of Coconut, and the key
-                of this Mac in each team, and moves the install folder to the Trash. To come back, this Mac needs a
-                new invite link. A leave that fails removes nothing. --no-leave skips the leave: the other Macs then
-                keep this Mac, its bots and their pages in their lists until an admin can remove a member.
 
     Coconut.app --set-up sets up Coconut without a click, as Set Up Coconut in the menu does. The install script
     opens the app with it. Coconut.app --set-up --team-only sets up a Mac with no person for a team only: Coconut keeps
-    its teams and the pages of its bots, and touches nothing of Hermes. See docs/install-and-update.md.
+    its teams and the pages of its bots, and touches nothing of Hermes. Coconut.app --remove removes a team-only
+    install. See docs/install-and-update.md, "A Mac without a person".
     """
 
 func fail(_ message: String, code: Int32 = 1) -> Never {
@@ -66,7 +58,18 @@ func fail(_ message: String, code: Int32 = 1) -> Never {
 let helpers = URL(fileURLWithPath: Bundle.main.executablePath ?? CommandLine.arguments[0]).resolvingSymlinksInPath()
     .deletingLastPathComponent()
 let install = Install.standard()
-let mode = InstallMode.standard()
+var mode = InstallMode.standard()
+
+/// Before a step that can reach Hermes (the service, an install), the store of the install decides too. When its data
+/// folder has the mark of a team-only service, the command runs in team-only mode, also if the preference is lost. The
+/// tool writes the preference again, except for a command that COCONUT_INSTALL_DIR points at another folder.
+func takeModeFromFolder() {
+    guard mode == .full, TeamFolderMark.isTeamOnly(install: install) else { return }
+    mode = .team
+    if (ProcessInfo.processInfo.environment["COCONUT_INSTALL_DIR"] ?? "").isEmpty {
+        AppPreferences().set(InstallMode.team.preferenceValue, forKey: InstallMode.preferenceKey)
+    }
+}
 
 /// Wait, then exit. launchd starts a login item again after each exit, also after a clean one: the service exits
 /// with 0 when a bot asks for a restart. The wait keeps a login item that cannot start from a restart every few seconds.
@@ -188,64 +191,6 @@ func readStatus() -> Status {
     return StatusReader(install: install).read(healthy: healthy)
 }
 
-/// The processes of the app around this tool. Launch Services lists them without a permission.
-func appProcesses(_ app: URL) -> [NSRunningApplication] {
-    NSRunningApplication.runningApplications(withBundleIdentifier: Install.preferencesDomain)
-        .filter { $0.bundleURL?.standardizedFileURL.path == app.standardizedFileURL.path && !$0.isTerminated }
-}
-
-/// `coconut remove` on a team-only Mac: stop the app that runs, start it with `--remove`, and wait for its result.
-///
-/// The app reads `--remove` only when it starts. The stop is SIGTERM to the process of this bundle, not an Apple event,
-/// because an Apple event can ask for the Automation permission in a dialog that nobody sees. No login item starts the
-/// app again: the login item of the app opens it only at login, and it has no KeepAlive.
-func removeWithApp(left: String) -> Int32 {
-    let app = helpers.deletingLastPathComponent().deletingLastPathComponent()
-    for running in appProcesses(app) {
-        kill(running.processIdentifier, SIGTERM)
-    }
-    let stopDeadline = Date().addingTimeInterval(10)
-    while !appProcesses(app).isEmpty && Date() < stopDeadline {
-        usleep(200_000)
-    }
-    for running in appProcesses(app) {
-        kill(running.processIdentifier, SIGKILL)
-    }
-    let start = Date()
-    let open = Process()
-    open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    open.arguments = RemoveRequest.openArguments(app: app)
-    do {
-        try open.run()
-    } catch {
-        print("Coconut could not open \(app.path): \(error.localizedDescription)")
-        return 1
-    }
-    open.waitUntilExit()
-    print("Removing Coconut. Coconut.app stops the service, removes its data, and quits.")
-    fflush(stdout)
-    let preferences = AppPreferences()
-    let deadline = start.addingTimeInterval(RemoveRequest.wait)
-    while Date() < deadline {
-        sleep(1)
-        let outcome = RemoveRequest.outcome(installed: install.isInstalled(),
-                                            modePreference: preferences.value(forKey: InstallMode.preferenceKey) as? String,
-                                            lastResult: UpdatePreferences(store: preferences).lastResult, start: start)
-        switch outcome {
-        case .waiting: continue
-        case .removed:
-            print(left)
-            print(RemoveRequest.removed)
-            return 0
-        case .failed(let line):
-            print(line)
-            return 1
-        }
-    }
-    print(RemoveRequest.timedOut)
-    return 1
-}
-
 /// The teams of a team-only service (`GET /v1/team/status`).
 func readTeamStatus() -> Result<TeamServiceStatus, TeamFailure> {
     let semaphore = DispatchSemaphore(value: 0)
@@ -348,12 +293,10 @@ func commandEnvironment(loginPath: String?) -> [String: String] {
 }
 
 /// What the tool says when it finds no Python. A team-only Mac takes no Python of Hermes.
-let noPython = PythonLocator.missingLine(mode: mode)
+var noPython: String { PythonLocator.missingLine(mode: mode) }
 
 let command = CommandLine.arguments.dropFirst().first ?? ""
 if let line = TeamOnlyRefusal.line(Array(CommandLine.arguments.dropFirst()), mode: mode) {
-    // launchd starts the relay login item again after each exit, so it waits as it does without a relay route.
-    if command == "sidecar" { waitAndExit(line) }
     fail(line)
 }
 switch command {
@@ -363,16 +306,9 @@ case "service":
         sleep(2)
     }
     guard install.isInstalled() else { waitAndExit("Coconut is not installed in \(install.root.path).") }
-    // A start that a restart cannot heal, such as a data folder of the other mode, waits. The status shows its cause.
-    if let wait = StartError(install: install)?.wait() {
-        sleep(UInt32(wait.rounded(.up)))
-    }
+    takeModeFromFolder()
     let environment = commandEnvironment(loginPath: LoginEnvironment.loginPath())
-    guard let python = PythonLocator(environment: environment, mode: mode).locate() else {
-        // The service never starts, so no service leaves this cause. `coconut status` and the menu show it.
-        StartError.write(code: StartError.noPython, error: noPython, install: install)
-        waitAndExit(noPython)
-    }
+    guard let python = PythonLocator(environment: environment, mode: mode).locate() else { waitAndExit(noPython) }
     run(.service(install: install, python: python, environment: environment,
                  teamHelper: helpers.appendingPathComponent("team-helper"), mode: mode))
 case "sidecar":
@@ -404,6 +340,8 @@ case "install-source":
         print("Coconut is up to date.")
         exit(0)
     }
+    takeModeFromFolder()
+    if let line = TeamOnlyRefusal.line(Array(CommandLine.arguments.dropFirst()), mode: mode) { fail(line) }
     let environment = commandEnvironment(loginPath: LoginEnvironment.loginPath())
     guard let python = PythonLocator(environment: environment, mode: mode).locate() else { fail(noPython) }
     let launch = Launch.update(install: install, source: source, directory: directory, python: python,
@@ -466,57 +404,6 @@ case "settings":
     DistributedNotificationCenter.default().postNotificationName(.init(UpdatePreferences.settingsChanged), object: nil,
                                                                  userInfo: nil, deliverImmediately: true)
     print("Automatic updates: \(preferences.automaticUpdates ? "on" : "off")")
-case "remove" where !CommandLine.arguments.contains(RemoveRequest.fromApp):
-    guard mode == .team else { fail(RemoveRequest.toolFullInstall) }
-    guard install.isInstalled() else { fail("Coconut is not installed in \(install.root.path).") }
-    guard CommandLine.arguments.contains(RemoveRequest.confirm) else {
-        // Nothing changes without the flag. The bot shows these lines to the person and asks for a clear yes.
-        let teams = try? readTeamStatus().get().rooms.filter { !TeamTool.leftStates.contains($0.state) }.map(\.name)
-        fail(RemoveRequest.preview(teams: teams).joined(separator: "\n"))
-    }
-    let semaphore = DispatchSemaphore(value: 0)
-    var status: Int32 = 1
-    // A leave calls the relay with retries, so it has the timeout of coconut team leave.
-    let leaver = TeamTool(transport: BridgeTransport(
-        install: install, timeout: TeamCommand.leave(team: nil, confirm: nil).timeout))
-    // Detached: this top-level code runs on the main thread, which waits below.
-    Task.detached {
-        status = await RemoveRequest.confirmed(noLeave: CommandLine.arguments.contains(RemoveRequest.noLeave),
-                                               leave: { try await leaver.leaveAll() },
-                                               remove: { removeWithApp(left: $0) }, output: { print($0) })
-        semaphore.signal()
-    }
-    semaphore.wait()
-    exit(status)
-case "remove":
-    guard mode == .team else { fail(RemoveRequest.toolFullInstall) }
-    guard install.isInstalled() else { fail("Coconut is not installed in \(install.root.path).") }
-    guard !install.isCheckout() else {
-        fail("\(install.root.path) is a source checkout. coconut remove removes only a folder that Coconut.app installed.")
-    }
-    guard let python = PythonLocator(environment: commandEnvironment(loginPath: nil), mode: mode).locate() else {
-        fail(noPython)
-    }
-    // desktop.py stops while the login item of the service runs, removes the data, and edits nothing in Hermes.
-    let uninstall = Process()
-    uninstall.executableURL = python
-    uninstall.arguments = [install.root.appendingPathComponent("scripts/desktop.py").path, "uninstall", "--yes"]
-    uninstall.currentDirectoryURL = install.root
-    uninstall.standardInput = FileHandle.nullDevice
-    do {
-        try uninstall.run()
-    } catch {
-        fail("Coconut could not start Python: \(error.localizedDescription)")
-    }
-    uninstall.waitUntilExit()
-    guard uninstall.terminationStatus == 0 else { exit(uninstall.terminationStatus) }
-    do {
-        try FileManager.default.trashItem(at: install.root, resultingItemURL: nil)
-    } catch {
-        fail("Coconut removed its data, but it could not move \(install.root.path) to the Trash: "
-             + error.localizedDescription)
-    }
-    print("Coconut is removed. \(install.root.path) is in the Trash.")
 case "version":
     print(appVersion())
 case "", "-h", "--help", "help":

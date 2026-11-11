@@ -226,81 +226,74 @@ If the iPhone already has a pairing, Coconut asks before a link replaces it.
 
 ## A Mac without a person
 
-A Mac that runs a Hermes agent with no person at it can be a member of a team, so that its agent publishes pages for the team. This Mac gets the normal Coconut.app, set up "team only". Its service keeps its teams in step and saves the pages of the bots that the Mac declares. See [team-only mode](team-log.md#team-only-mode). The Mac has the same release path, the same automatic updates, the same signed helper and the same `coconut` tool as a full install.
+Use this when a Mac runs a Hermes agent and nobody sits at it, and you want its agent to publish pages for your team. The Mac gets the normal Coconut.app in team-only mode, with the same updates as any other Mac. Coconut never touches the Hermes of this Mac and pairs no phone.
 
-### What a team-only install never touches
+You work in a terminal on that Mac, for example over SSH. In the steps, `coconut` is `/Applications/Coconut.app/Contents/Helpers/coconut`.
 
-- Hermes: no skills folder, no plugin link, no key in a Hermes `config.yaml`, no `.env`, no key move, no contract check, no search for Hermes. The setup and each update work on a Mac without Hermes, and on a Mac with a Hermes version that full Coconut does not support.
-- The relay sidecar: the app registers only two login items, the app and the service. A relay login item from an earlier full install is removed.
-- A phone: the Mac pairs no iPhone, and it sends no notification.
+### Before you start
 
-The service needs Python 3.11 or later from Homebrew (`/opt/homebrew/bin/python3` or `/usr/local/bin/python3`). It does not use the Python of Hermes. 3.11 is the oldest Python that the tests of Coconut run on. Without such a Python, the set-up stops, and `coconut status` shows this line as the last update error, or as `Service error:` on an installed Mac: "Coconut found no Python 3.11 or later in /opt/homebrew/bin or /usr/local/bin. Install it with Homebrew: brew install python". The Mac needs no Xcode Command Line Tools: nothing compiles, because the app carries its helpers.
+- Install the Python of Homebrew: `brew install python`. Coconut does not use the Python of Hermes.
+- Ask an admin of the team for an invite link. The admin makes it on the Team screen of the app.
 
 ### Install
 
-Run these steps in the macOS account of the Hermes agent, for example over SSH. `coconut` is `/Applications/Coconut.app/Contents/Helpers/coconut`.
-
 1. Download Coconut.app from `https://coconut-updates.gumroad.workers.dev/mac/download`, unzip it, and move it to `/Applications`.
-2. Set up Coconut for a team only:
+2. Run `open -g /Applications/Coconut.app --args --set-up --team-only`.
+3. Wait one or two minutes. Then run `coconut status`. Expect `Mode: team only` and `Service: running (/Users/<you>/Coconut)`.
 
-   ```sh
-   open -g /Applications/Coconut.app --args --set-up --team-only
-   ```
+If macOS asks to allow Coconut in Login Items, allow it in System Settings → General → Login Items. If the Mac already has a full Coconut install, the set-up changes nothing, and `coconut status` shows the reason as `Last update error:`.
 
-   The app keeps the mode in its preference `InstallMode` (`team`), registers its login items, installs the source that it carries in `~/Coconut`, and starts the service. Approve Coconut in **System Settings → General → Login Items** if macOS asks.
-3. Wait until `coconut status` shows `Mode: team only` and `Service: running`.
-4. Join the team. An admin of the team makes an invite on the Team screen of the app. The link is a secret, so the command reads it only from standard input. In a terminal, the command asks for the link and does not show it. A Hermes agent pipes the link to the command.
+### Join a team and add a bot
 
-   ```sh
-   coconut team join --name "Reporter Mac"
-   ```
+1. Run `coconut team join --name "Reporter Mac"`, then paste the invite link when the command asks for it. A bot pipes the link to the command instead. Expect `This Mac joined the team Example Team.`
+2. Run `coconut team new-bot Reporter --home ~/.hermes`. Give the Hermes home of your agent.
+3. Run `coconut team add-bot Reporter --team "Example Team"`.
 
-5. Declare a bot for the Hermes home of the agent, then add it to the team:
+### Publish a page
 
-   ```sh
-   coconut team new-bot Reporter --home ~/.hermes
-   coconut team add-bot Reporter --team "Example Team"
-   ```
+Your agent sends the page to the service on this Mac. The page must name the team as its audience (`"audience": "team"`):
 
-6. Let the agent save a page with `"audience": "team"`. It sends `POST /v1/gateway/document` to the address in `~/Coconut/.runtime/host/gateway/bridge.json`, with the token of that file and the Hermes home of the bot:
+```python
+import json, pathlib, urllib.request
+bridge = json.loads(pathlib.Path('~/Coconut/.runtime/host/gateway/bridge.json').expanduser().read_text())
+page = {'home': str(pathlib.Path('~/.hermes').expanduser()), 'audience': 'team', 'key': 'weekly-report',
+        'title': 'Weekly report', 'format': 'markdown', 'content': '3 tasks are open.'}
+request = urllib.request.Request(bridge['url'] + '/v1/gateway/document', data=json.dumps(page).encode(),
+                                 headers={'Authorization': 'Bearer ' + bridge['token'],
+                                          'Content-Type': 'application/json'})
+print(urllib.request.urlopen(request).read().decode())
+```
 
-   ```python
-   import json, pathlib, urllib.request
-   bridge = json.loads(pathlib.Path('~/Coconut/.runtime/host/gateway/bridge.json').expanduser().read_text())
-   page = {'home': str(pathlib.Path('~/.hermes').expanduser()), 'audience': 'team', 'key': 'weekly-report',
-           'title': 'Weekly report', 'format': 'markdown', 'content': '3 tasks are open.'}
-   request = urllib.request.Request(bridge['url'] + '/v1/gateway/document', data=json.dumps(page).encode(),
-                                    headers={'Authorization': 'Bearer ' + bridge['token'],
-                                             'Content-Type': 'application/json'})
-   print(urllib.request.urlopen(request).read().decode())
-   ```
+The other Macs of the team show the page in their Library within a minute.
 
-   The other Macs of the team see the page in their Library after their next sync.
+### Check that it works
 
-A set-up does not change the mode of an install. On a Mac with a full install, `--set-up --team-only` stops with one line that says to remove Coconut first. `coconut status` shows that line as the last update error. On a team-only Mac, `scripts/setup_coconut.py` stops in the same way.
+Run `coconut status`. Expect:
 
-### What the app and the tool show
+```
+Mode: team only
+Service: running (/Users/<you>/Coconut)
+Bots: Reporter
+Team: Example Team (active): 3 members, 2 bots, connected
+```
 
-The window of the app shows one page: what this Mac does, each team with its state, its members and bots, and the commands above. It has no chat, no Inbox, no Library and no bot settings, and it never shows the pairing page. The menu shows `Mode: team only`, the state of the service, and the login items.
+A line that needs an action says what to run, for example `Teams: none. To join one, pipe an invite link to: coconut team join`.
 
-`coconut status` prints the version and the update lines, then `Mode: team only`, the service, the team helper, the count of the bots of this Mac, and one line for each team with its state, its members and bots, and whether it is connected, with its sync error. `--json` has `"mode": "team"`. These commands are for a phone or for Hermes, so each one prints one line and exits with 1: `coconut pair`, `coconut migrate` and `coconut install-source --set-up`. `coconut team` works as on a full Mac.
+### Update
 
-### When the service does not start
-
-A service that refuses its data folder writes the cause to `<data>/start-error.json`, next to `process.json`, in each mode. `coconut status` prints it as `Service error:`, and the menu shows it. On a team-only Mac, the window shows it too. A start that succeeds removes the file. An example is a data folder of the other mode (code `data_folder_mode`): a restart cannot heal it, so the login item waits five minutes before each new try, and not five seconds. When a person moves the folder away, the service starts within five minutes, without a click.
-
-### Updates
-
-Updates work as on a full Mac: Sparkle installs each new Coconut.app, and the app installs the source that it carries. The mode stays, and the service starts again in team-only mode. The update does not wait for running turns, because this service runs none. It skips each Hermes step and the relay sidecar, and it checks the health of the service on its main listener.
+Coconut.app updates itself, as on every Mac. The Mac stays in team-only mode. To update now, run `coconut update`.
 
 ### Remove
 
-No click is necessary. `coconut remove` removes Coconut from a Mac that runs it for a team only. A removal cannot be undone. First, this Mac leaves each team, so the other Macs no longer show this Mac, its bots and their pages. Then Coconut.app removes its login items, the data of Coconut, and the key of this Mac in each team. To come back, this Mac needs a new invite link. First run `coconut remove` without `--confirm`: it changes nothing, and it prints what the removal does and the teams that this Mac leaves. Show that text to the person, and run `coconut remove --confirm` only after a clear yes. A leave that fails removes nothing: show its lines to the person. `coconut remove --confirm --no-leave` skips the leave, and the other Macs then keep this Mac, its bots and their pages in their lists until an admin can remove a member, so run it only after a second clear yes. A good result names the teams that this Mac left, then reads "Coconut is removed: the login items, the data and the key of this Mac in each team." Then `coconut status` shows `Service: not installed`. On a full install, the command changes nothing and prints one line that says so.
+1. Leave each team: `coconut team leave --confirm "Example Team"`. Expect `This Mac left the team Example Team.` A Mac that does not leave first stays in the member lists of the other Macs, with its bots and their pages.
+2. Stop the app: `pkill -x Coconut`. This sends a signal to the process `Coconut`. An Apple event to quit the app can ask for a permission in a dialog that nobody sees. No login item starts the app again before the next step.
+3. Start it to remove Coconut: `open -g /Applications/Coconut.app --args --remove`. The app removes its login items and the data of Coconut, moves `~/Coconut` to the Trash, and quits. Nothing in Hermes changes.
+4. Run `coconut status`. Expect `Service: not installed (/Users/<you>/Coconut)`. A failure shows as `Last update error:`.
+5. Delete `/Applications/Coconut.app`.
 
-1. Run `coconut remove` and read what it prints. Then run `coconut remove --confirm`. The tool leaves each team, with the call of `coconut team leave`. Then it stops the process `Coconut` of this Coconut.app with a signal, not with an Apple event, because an Apple event can ask for the Automation permission in a dialog that nobody sees. No login item starts the app again in between: the login item of the app opens it only at login. The tool then starts the app with `--remove`. The app removes its login items, which needs no approval, removes the data of Coconut with `Uninstall Coconut.command`, moves `~/Coconut` to the Trash, removes its preference `InstallMode`, and quits. Nothing in Hermes changes, because a team-only install added nothing there.
-2. Delete `/Applications/Coconut.app`.
+### For developers
 
-A failure prints its line, and `coconut status` shows it as `Last update error:`.
+The app keeps the mode in its preference `InstallMode` (`team`) and registers two login items: the app and the service. The service runs with `COCONUT_MODE=team` (see [team-only mode](team-log.md#team-only-mode)). An update of this mode runs no Hermes check, no skill or plugin step, no notification build and no relay sidecar step, and checks health on the main listener. The data folder decides too: when its store has the mark of a team-only service, the app and the tool take team-only mode, and `deploy.py`, `scripts/hermes_skills.py` and `scripts/setup_coconut.py` stop before they touch Hermes (`service_base.team_folder`). `coconut pair`, `coconut migrate` and `coconut install-source --set-up` refuse on this Mac with one line.
 
 ## Releases from CI
 

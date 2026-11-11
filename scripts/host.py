@@ -299,6 +299,14 @@ APP_DOMAIN = "com.gumroad.coconut.mac"
 TEAM_MODE = "team"
 
 
+def team_folder_refusal(data: Path | None = None) -> str | None:
+    """The refusal of a Hermes step when the data folder belongs to a team-only service, else None.
+
+    service_base.team_folder decides, so a lost preference of Coconut.app never lets a step reach Hermes."""
+    base = backend_module("service_base")
+    return base.HERMES_REFUSAL if base.team_folder(data if data is not None else DEFAULT_DATA) else None
+
+
 def install_mode() -> str:
     """The mode of the install of Coconut.app on this Mac: "team", or "full" without the preference."""
     try:

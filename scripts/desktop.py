@@ -103,7 +103,7 @@ def simulator() -> None:
 
 
 def uninstall(confirmed: bool = False) -> None:
-    """Remove the data of Coconut. `confirmed` skips the question: `coconut remove` on a team-only Mac runs this
+    """Remove the data of Coconut. `confirmed` skips the question: `Coconut.app --remove` on a team-only Mac runs this
     without a person."""
     # A team-only install added nothing to Hermes (backend/coconut/team_only.py), so its removal edits nothing there.
     team_only = host.install_mode() == host.TEAM_MODE

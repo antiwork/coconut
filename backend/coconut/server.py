@@ -396,41 +396,12 @@ def store_pairing_code(data_dir: str | Path, lifetime: int, tunnel: bool) -> tup
         return issue_pairing_code(connection, lifetime, tunnel)
 
 
-# The cause of the last start that the service refused, next to process.json. `coconut status` and the menu of Coconut.app
-# show it, because a login item that starts the service again shows only "stopped". A start that succeeds removes it.
-START_ERROR = 'start-error.json'
-
-
-def write_start_error(data_dir, error: ServiceError, team_only: bool) -> None:
-    """Leave the cause of a refused start where the tool and the app read it.
-
-    Only an error with a code is a cause for a person, for example `data_folder_mode`. An error without a code, such as
-    the lock of another service that runs, says nothing about this folder that a person must change.
-    """
-    code = error.details.get('code')
-    root = Path(data_dir).expanduser().resolve()
-    if not code or not root.is_dir():
-        return
-    record = json.dumps({'code': code, 'error': str(error), 'mode': 'team' if team_only else 'full', 'at': time.time()})
-    pending = root / (START_ERROR + '.tmp')
-    try:
-        pending.unlink(missing_ok=True)
-        descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(descriptor, 'w') as handle:
-            handle.write(record)
-        os.replace(pending, root / START_ERROR)
-    except OSError:
-        # The refusal still goes to the error log of the service.
-        pass
-
-
 def write_process_record(service):
     """Write the record that identifies this process and says that it drains before an update stops it.
 
     A drain request belongs to the process that the updater asked. An old one is removed first, so that a request written
     after the record is never removed (see Service.poll_service_drain).
     """
-    (service.root / START_ERROR).unlink(missing_ok=True)
     service.clear_service_drain()
     (service.root / 'process.json').write_text(json.dumps({
         'pid': os.getpid(), 'data_dir': str(service.root),
@@ -528,7 +499,6 @@ def main(argv=None):
             else:
                 service = UnavailableService(args.data_dir, hermes)
     except ServiceError as error:
-        write_start_error(args.data_dir, error, team_only)
         parser.error(str(error))
     server = tunnel = None
     try:

@@ -89,6 +89,23 @@ def folder_mode(db) -> str | None:
     return None
 
 
+HERMES_REFUSAL = ('This data folder belongs to a team-only Coconut service, so Coconut changes nothing in Hermes. Run: '
+                  'open -g /Applications/Coconut.app --args --set-up --team-only')
+
+
+def team_folder(data_dir) -> bool:
+    """True when the store in the data folder has the mark of a team-only service.
+
+    Each step that finds, checks or changes Hermes asks this first (deploy.py, scripts/hermes_skills.py,
+    scripts/setup_coconut.py), so a lost preference of Coconut.app never makes a team-only Mac a full install. The store
+    opens read-only: the check writes nothing and makes no file. A missing store has no mark."""
+    path = Path(data_dir) / 'coconut.sqlite3'
+    if not path.is_file():
+        return False
+    with contextlib.closing(sqlite3.connect(f'{path.resolve().as_uri()}?mode=ro', uri=True, timeout=10)) as db:
+        return folder_mode(db) == TEAM_MODE
+
+
 def check_data_folder(root: Path, process_lock: IO, mode: str) -> None:
     """Stop the start of a service of `mode` on the folder of the other mode, before the service writes anything.
     The full service and the refuse mode would read the bot records of a team-only Mac that they do not understand,

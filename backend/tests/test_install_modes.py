@@ -24,11 +24,12 @@ sys.modules[spec.name] = deploy
 spec.loader.exec_module(deploy)
 sys.path.insert(0, str(SCRIPTS))
 import desktop  # noqa: E402
+import hermes_skills  # noqa: E402
 import host  # noqa: E402
 import remote  # noqa: E402
 import setup_coconut  # noqa: E402
 
-from coconut.service_base import TEAM_MODE, WRONG_FOLDER, ServiceError  # noqa: E402
+from coconut.service_base import HERMES_REFUSAL, MODE_MARK  # noqa: E402
 from test_deploy_tools import FakeOperations, archive, package_files  # noqa: E402
 from test_team_only import make_hermes_home, snapshot  # noqa: E402
 
@@ -96,7 +97,9 @@ def full_plan(home):
     assert target.is_dir()
     real = deploy.Operations()
     commands = {}
-    with patch.dict(os.environ, {deploy.APP_MANAGED: '1'}):
+    # The checks of preflight run on macOS only. The CI runner of these tests runs Linux.
+    with patch.dict(os.environ, {deploy.APP_MANAGED: '1'}), patch.object(deploy.platform, 'system',
+                                                                          return_value='Darwin'):
         for name, call in (('preflight', lambda: real.preflight(ROOT, None)),
                            ('prepare', lambda: real.prepare(ROOT, None)),
                            ('install', lambda: real.install(ROOT)),
@@ -158,7 +161,7 @@ class TeamOnlyPlanTests(unittest.TestCase):
 
     def test_the_team_only_steps_run_no_hermes_or_notification_command(self):
         real = deploy.Operations(team_only=True)
-        with recorded_commands() as commands:
+        with recorded_commands() as commands, patch.object(deploy.platform, 'system', return_value='Darwin'):
             real.preflight(ROOT, None)
             real.prepare(ROOT, None)
         self.assertEqual(commands, [['Team helper build', ['python', '/Coconut/scripts/team.py', 'build']]])
@@ -217,41 +220,84 @@ class TeamOnlyPlanTests(unittest.TestCase):
         self.assertFalse((self.home / 'hermes-ran').exists())
 
 
-class StartErrorTests(unittest.TestCase):
-    """A service that refuses its data folder leaves the cause next to process.json (server.START_ERROR)."""
+def mark_team_folder(data: Path) -> None:
+    """Make the store of a team-only service, as team_only.TeamOnlyService does at its first start."""
+    data.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(data / 'coconut.sqlite3') as database:
+        database.executescript(MODE_MARK)
+    database.close()
+
+
+def listing(folder: Path) -> dict:
+    return {str(path.relative_to(folder)): path.stat().st_mtime_ns for path in folder.rglob('*')}
+
+
+class TeamFolderGuardTests(unittest.TestCase):
+    """A team-only data folder without the preference of the app gets no Hermes step (service_base.team_folder)."""
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.data = Path(temporary.name).resolve() / 'data'
-        self.data.mkdir()
+        self.home = Path(temporary.name).resolve()
+        self.hermes = self.home / '.hermes'
+        make_hermes_home(self.hermes)
+        self.before = snapshot(self.hermes)
 
-    def test_a_refused_folder_leaves_its_cause_and_a_later_start_removes_it(self):
-        from coconut import server
-        with sqlite3.connect(self.data / 'coconut.sqlite3') as database:
+    def tearDown(self):
+        self.assertEqual(snapshot(self.hermes), self.before)
+
+    def test_the_check_reads_the_store_and_writes_nothing(self):
+        data = self.home / 'data'
+        self.assertIsNone(host.team_folder_refusal(data))
+        mark_team_folder(data)
+        files = listing(data)
+        self.assertEqual(host.team_folder_refusal(data), HERMES_REFUSAL)
+        self.assertEqual(listing(data), files)
+        full = self.home / 'full'
+        full.mkdir()
+        with sqlite3.connect(full / 'coconut.sqlite3') as database:
             database.execute('CREATE TABLE devices (id TEXT PRIMARY KEY)')
             database.execute("INSERT INTO devices VALUES ('phone')")
         database.close()
-        with patch.object(sys, 'stderr'), self.assertRaises(SystemExit):
-            server.main(['--data-dir', str(self.data), '--team-only'])
-        cause = json.loads((self.data / server.START_ERROR).read_text())
-        self.assertEqual((cause['code'], cause['mode']), ('data_folder_mode', 'team'))
-        self.assertEqual(cause['error'], WRONG_FOLDER[TEAM_MODE])
-        self.assertEqual((self.data / server.START_ERROR).stat().st_mode & 0o777, 0o600)
+        self.assertIsNone(host.team_folder_refusal(full))
 
-        class Started:
-            root = self.data
+    def test_a_full_install_source_or_update_stops_before_any_step(self):
+        # An install of the app, then a team-only service, then a lost preference: the app runs a full update.
+        files = package_files(**{'backend/coconut/service_base.py': (SCRIPTS.parent / 'backend/coconut/service_base.py')
+                                 .read_bytes()})
+        deploy.receive('Coconut', archive(files), home=self.home, operations=FakeOperations(), team_only=False)
+        data = self.home / 'Coconut/.runtime/host'
+        mark_team_folder(data)
+        source = listing(self.home / 'Coconut')
+        for update in (False, True):
+            operations = FakeOperations(mode='app')
+            changed = dict(files, **{'README.md': b'New code.\n'}) if update else files
+            with self.assertRaises(deploy.DeployError) as refused:
+                deploy.receive('Coconut', archive(changed), home=self.home, operations=operations, team_only=False)
+            self.assertEqual(str(refused.exception), HERMES_REFUSAL)
+            self.assertEqual(operations.calls, [])
+        self.assertEqual(listing(self.home / 'Coconut'), source)
+        # The team-only path of the same folder runs, without a Hermes step.
+        operations = FakeOperations(mode='app')
+        deploy.receive('Coconut', archive(dict(files, **{'README.md': b'New code.\n'})), home=self.home,
+                       operations=operations, team_only=True)
+        self.assertNotIn('hermes', step_names(operations))
 
-            def clear_service_drain(self):
-                pass
-        server.write_process_record(Started())
-        self.assertFalse((self.data / server.START_ERROR).exists())
-
-    def test_an_error_without_a_code_leaves_no_cause(self):
-        from coconut import server
-        server.write_start_error(self.data, ServiceError(409, 'Another Coconut service already owns this data '
-                                                              'directory.'), True)
-        self.assertFalse((self.data / server.START_ERROR).exists())
+    def test_the_hermes_skill_step_and_the_developer_setup_stop(self):
+        data = self.home / 'data'
+        mark_team_folder(data)
+        with patch.object(host, 'DEFAULT_DATA', data), \
+                patch.object(host, 'hermes_runtime', side_effect=AssertionError('Coconut searched for Hermes.')), \
+                patch.object(sys, 'argv', ['hermes_skills.py', 'add']), patch('builtins.print') as printed:
+            self.assertEqual(hermes_skills.main(), 1)
+        printed.assert_called_once_with(HERMES_REFUSAL)
+        with patch.object(host, 'DEFAULT_DATA', data), patch.object(host, 'install_mode', return_value='full'), \
+                patch.object(setup_coconut, 'prerequisites') as prerequisites, \
+                patch.object(sys, 'argv', ['setup_coconut.py']), patch('builtins.print'), \
+                self.assertRaises(SystemExit) as stopped:
+            setup_coconut.main()
+        self.assertEqual(str(stopped.exception), HERMES_REFUSAL)
+        prerequisites.assert_not_called()
 
 
 class RemoveAndSetUpTests(unittest.TestCase):
@@ -279,8 +325,8 @@ class RemoveAndSetUpTests(unittest.TestCase):
         self.assertEqual(commands, [['scripts/cleanup.py'], ['scripts/hermes_skills.py', 'remove'],
                                     ['scripts/cleanup.py', '--yes']])
 
-    def test_coconut_remove_runs_the_uninstaller_without_the_question(self):
-        """`coconut remove` (Coconut.app --remove) runs `desktop.py uninstall --yes` on a Mac with no person."""
+    def test_the_app_runs_the_uninstaller_without_the_question(self):
+        """Coconut.app --remove runs `desktop.py uninstall --yes` on a Mac with no person (AppModel.uninstall)."""
         commands = []
         with patch.object(host, 'install_mode', return_value='team'), \
                 patch.object(host, 'login_item_loaded', return_value=False), \
@@ -291,19 +337,17 @@ class RemoveAndSetUpTests(unittest.TestCase):
             desktop.main()
         self.assertEqual(commands, [['scripts/cleanup.py'], ['scripts/cleanup.py', '--yes']])
 
-    def test_the_docs_and_the_skill_give_the_same_removal_in_one_command(self):
+    def test_the_docs_give_the_removal_in_steps_and_the_skill_has_none(self):
         repository = TESTS.parents[1]
         skill = (repository / 'skills/coconut/SKILL.md').read_text()
         docs = (repository / 'docs/install-and-update.md').read_text()
-        rule = next(line for line in skill.splitlines() if 'coconut remove' in line).removeprefix('6. ')
-        self.assertIn(rule, docs)
-        for text in ('clear yes', 'new invite link', 'the key of this Mac in each team', 'without `--confirm`',
-                     '`coconut remove --confirm` only after a clear yes'):
-            self.assertIn(text, rule)
-        section = docs[docs.index('### Remove'):docs.index('## Releases from CI')]
-        # The app reads --remove only at its start, so no step opens it with the argument by hand.
-        self.assertNotIn('--args --remove', section + skill)
-        self.assertNotIn('osascript', section + skill)
+        self.assertNotIn('coconut remove', skill + docs)
+        section = docs[docs.index('### Remove', docs.index('## A Mac without a person')):docs.index('## Releases from CI')]
+        for step in ('coconut team leave --confirm', 'pkill -x Coconut', 'open -g /Applications/Coconut.app --args --remove',
+                     'Service: not installed'):
+            self.assertIn(step, section)
+        # An Apple event can ask for the Automation permission in a dialog that nobody sees.
+        self.assertNotIn('osascript', section)
 
     def test_the_uninstaller_waits_until_the_login_item_is_off(self):
         with patch.object(host, 'install_mode', return_value='team'), \

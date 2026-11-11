@@ -191,10 +191,8 @@ public enum StatusText {
         return lines
     }
 
-    /// The service, and the cause when it does not start (StartError).
     static func serviceLines(_ status: Status) -> [String] {
         ["Service: \(status.service.rawValue.replacingOccurrences(of: "_", with: " ")) (\(status.install))"]
-            + (status.serviceError.map { ["Service error: \($0)"] } ?? [])
     }
 
     /// The version, the update settings and the last update, the same in each mode.

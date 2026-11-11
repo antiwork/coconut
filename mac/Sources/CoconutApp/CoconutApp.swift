@@ -29,12 +29,15 @@ struct CoconutApp: App {
                 }
         }
         .defaultSize(width: 1100, height: 760)
+        // Nobody sits at a team-only Mac, so its app is a menu bar item only: the window does not open at launch.
+        // .automatic is the behavior of a scene without this modifier, so a full install opens it as before.
+        .defaultLaunchBehavior(model.mode == .team ? .suppressed : .automatic)
 
         // Coconut > Settings: the settings of the chat client. The Team screen is its one page today.
         Settings {
             Group {
                 if model.mode == .team {
-                    MacTeamOnlyView(model: model)
+                    TeamOnlyNote()
                 } else {
                     NavigationStack { TeamView() }
                 }
@@ -69,9 +72,6 @@ struct MenuContent: View {
             Text("Mode: team only")
         }
         Text("Mac: \(Self.describe(model.status.service))")
-        if let error = model.status.serviceError {
-            Text(error)
-        }
         if model.mode == .full {
             Text("Relay: \(model.status.relay.replacingOccurrences(of: "_", with: " "))")
             Text("Hermes: \(Self.describe(hermes: model.status))")
@@ -106,9 +106,11 @@ struct MenuContent: View {
             Button("Allow Coconut in Login Items…") { model.openLoginItemsSettings() }
         }
         Divider()
-        Button("Open Coconut") {
-            openWindow(id: "main")
-            NSApp.activate(ignoringOtherApps: true)
+        if model.mode == .full {
+            Button("Open Coconut") {
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            }
         }
         if model.mode == .full {
             Button("Pair iPhone…") {

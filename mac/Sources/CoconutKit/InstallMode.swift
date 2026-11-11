@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 /// The mode of the install of Coconut.app on this Mac.
 ///
@@ -9,8 +10,8 @@ import Foundation
 ///
 /// The install keeps its mode in the preferences of the app, next to `InstallDirectory`, so the app, the tool, the login
 /// item and each update read one value. Only `Coconut.app --set-up --team-only` writes "team". The store of the service
-/// has its own mark (service_base.MODE_MARK): when the two disagree, the service refuses its data folder with the code
-/// `data_folder_mode`, and `coconut status` and the menu show that cause (StartError).
+/// has its own mark (service_base.MODE_MARK). Before a step that can reach Hermes, the app and the tool read that mark
+/// too (TeamFolderMark), so a lost preference never makes a team-only Mac a full install.
 public enum InstallMode: String, Sendable, Equatable {
     case full
     case team
@@ -86,103 +87,34 @@ public enum SetUpRequest {
     }
 }
 
-/// `Coconut.app --remove`: remove a team-only install without a click. The app removes its login items, which needs no
-/// approval, then `coconut remove` removes the data and moves the install folder to the Trash.
+/// `Coconut.app --remove` on a team-only Mac: the app removes the login items of the mode (no approval needed), runs the
+/// uninstaller of its own install folder, moves that folder to the Trash, removes its preference, and quits. The app reads
+/// the argument only when it starts. On a full install it changes nothing and starts as always.
 public enum RemoveRequest {
     public static let argument = "--remove"
-    public static let fullInstall = "Coconut.app --remove removes a team-only install. On a full install, open "
-        + "Uninstall Coconut.command."
-    public static let toolFullInstall = "coconut remove removes a team-only install. On a full install, open "
-        + "Uninstall Coconut.command."
+    public static let fullInstall = "Coconut.app --remove removes only a team-only install. To remove this install, "
+        + "open Uninstall Coconut.command."
 
     public static func asked(arguments: [String]) -> Bool { arguments.contains(argument) }
+}
 
-    /// `coconut remove --from-app`: the step that the app runs after it removed its login items. A person or a bot runs
-    /// `coconut remove`, which does the whole removal.
-    public static let fromApp = "--from-app"
-    /// The process of the app that `coconut remove` stops: Contents/MacOS/Coconut of the bundle around the tool.
-    public static let appProcess = "Coconut"
-    /// The app reads `--remove` only when it starts, and `open` gives no new arguments to an app that runs. So
-    /// `coconut remove` first stops the app that runs, then starts it with this command.
-    public static func openArguments(app: URL) -> [String] { ["-g", app.path, "--args", argument] }
-    /// The longest wait for the app: the stop of the service can take two minutes (host.STOP_GRACE_SECONDS).
-    public static let wait: TimeInterval = 600
-
-    public static let removed = "Coconut is removed: the login items, the data and the key of this Mac in each team. "
-        + "Its folder is in the Trash. To remove the app, delete Coconut.app."
-    public static let timedOut = "Coconut.app did not finish the removal within ten minutes. Run coconut status to see "
-        + "the last update error."
-
-    public static let confirm = "--confirm"
-    public static let command = "coconut remove --confirm"
-
-    public static let noLeave = "--no-leave"
-    public static let noLeaveCommand = "coconut remove --confirm --no-leave"
-
-    /// What `coconut remove` prints without `--confirm`, as `coconut team leave` does without it: no person can
-    /// confirm here, so the command needs the flag. `teams` are the names of the teams that this Mac leaves (each team
-    /// that is not `removed` or `gone`), or nil when the service does not answer.
-    public static func preview(teams: [String]?) -> [String] {
-        var lines = [
-            "A removal cannot be undone. No person can confirm it here, so the command needs --confirm.",
-            "First, this Mac leaves each team. The other Macs then no longer show this Mac, its bots and their pages.",
-        ]
-        switch teams {
-        case nil: lines.append("The service does not answer, so the teams of this Mac are not known.")
-        case let teams? where teams.isEmpty: lines.append("This Mac is in no team.")
-        case let teams?: lines += teams.map { "This Mac leaves the team \($0)." }
-        }
-        lines += ["Then Coconut.app removes its login items, the data of Coconut, and the key of this Mac in each team.",
-                  "To come back, this Mac needs a new invite link.", "To remove Coconut, run: \(command)"]
-        return lines
-    }
-
-    /// The lines after a leave that failed. Nothing is removed yet. The one way out skips the leave, at a cost.
-    public static func leaveFailed(_ failure: TeamFailure) -> [String] {
-        failure.lines + [
-            "Coconut removed nothing, because this Mac could not leave each team.",
-            "To remove Coconut without the leave, run: \(noLeaveCommand)",
-            "Without the leave, the other Macs keep this Mac, its bots and their pages in their lists until an admin "
-                + "can remove a member.",
-        ]
-    }
-
-    /// The line of the result that names the teams that this Mac left. Nil: the removal skipped the leave.
-    public static func leftLine(_ teams: [String]?) -> String {
-        guard let teams else { return "This Mac did not leave its teams (--no-leave)." }
-        return teams.isEmpty ? "This Mac was in no team." : "This Mac left the teams: \(teams.joined(separator: ", "))."
-    }
-
-    /// `coconut remove --confirm [--no-leave]`: the leave of each team first, then the removal by the app. A failed
-    /// leave stops before the removal. `remove` gets the line of leftLine and returns the exit status.
-    public static func confirmed(noLeave: Bool, leave: () async throws -> [String], remove: (String) -> Int32,
-                                 output: (String) -> Void) async -> Int32 {
-        var left: [String]?
-        if !noLeave {
-            do {
-                left = try await leave()
-            } catch {
-                leaveFailed(error as? TeamFailure ?? .noAnswer).forEach(output)
-                return 1
-            }
-        }
-        return remove(leftLine(left))
-    }
-
-    public enum Outcome: Equatable {
-        case waiting
-        case removed
-        case failed(String)
-    }
-
-    /// The state of a removal that started at `start`. The app removes the preference InstallMode and the install
-    /// folder only after the whole removal. Each failure is the last update error of the app.
-    public static func outcome(installed: Bool, modePreference: String?, lastResult: UpdateResult?,
-                               start: Date) -> Outcome {
-        if let result = lastResult, result.outcome == .failed, result.time >= start {
-            return .failed(result.message ?? "The removal failed.")
-        }
-        return !installed && modePreference == nil ? .removed : .waiting
+/// The mark of a team-only service in the store of an install (backend/coconut/service_base.py, MODE_MARK). It decides
+/// with the preference: if the preference is lost on a team-only Mac, the mark keeps every Hermes step away.
+public enum TeamFolderMark {
+    /// True when the store of the install has the mark. The store is opened read-only, with no wait for a lock: in WAL
+    /// mode a reader does not wait for the writer, and a store that is busy for another reason counts as no mark. A
+    /// missing store, or a store without the table, has no mark. Nothing is written and no file is made.
+    public static func isTeamOnly(install: Install) -> Bool {
+        let path = install.data.appendingPathComponent("coconut.sqlite3").path
+        guard FileManager.default.fileExists(atPath: path) else { return false }
+        var db: OpaquePointer?
+        defer { sqlite3_close(db) }
+        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return false }
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_prepare_v2(db, "SELECT 1 FROM service_mode WHERE mode = 'team' LIMIT 1", -1, &statement,
+                                 nil) == SQLITE_OK else { return false }
+        return sqlite3_step(statement) == SQLITE_ROW
     }
 }
 
@@ -193,7 +125,6 @@ public enum TeamOnlyRefusal {
     public static let migrate = "This Mac runs Coconut for a team only, so it has no LaunchAgents of a full install to move."
     public static let setUpSkill = "This Mac runs Coconut for a team only, so Coconut adds nothing to Hermes. Run coconut "
         + "install-source without --set-up."
-    /// The relay login item waits with this line, as it waits without a relay route.
     public static let sidecar = "This Mac runs Coconut for a team only, so it runs no relay sidecar."
 
     /// The line for the arguments of the tool (without the name of the tool), or nil when the command runs.

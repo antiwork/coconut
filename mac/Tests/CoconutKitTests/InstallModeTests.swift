@@ -1,5 +1,6 @@
 @testable import CoconutKit
 import ServiceManagement
+import SQLite3
 import XCTest
 
 /// The two modes of an install (InstallMode), what each mode runs, and the cause of a service that does not start.
@@ -156,57 +157,75 @@ final class InstallModeTests: XCTestCase {
                    "synced_at": NSNull(), "error": "The relay refused the request.", "socket": false]],
     ]
 
-    func testTheTeamStatusComesFromTheTeamOnlyRoute() async throws {
+    static let bots: [String: Any] = ["bots": [["id": "b1", "name": "Reporter", "avatar": "", "color": "",
+                                                "home": "/h", "teams": ["r1"]],
+                                               ["id": "b2", "name": "Planner", "avatar": "", "color": "",
+                                                "home": "/p", "teams": []]]]
+
+    func service(status: [String: Any] = answer, bots: [String: Any] = bots) -> FakeService {
         let service = FakeService()
-        service.answer("GET", "/v1/team/status", Self.answer)
-        let status = try await TeamServiceStatus.fetch(transport: service)
-        XCTAssertEqual(service.sent, ["GET /v1/team/status"])
-        XCTAssertEqual(status.rooms.map(\.line), ["Example Team (active): 3 members, 2 bots, connected",
-                                                  "Second Team (active): 1 member, 0 bots, not connected"])
-        XCTAssertEqual(status.rooms[1].error, "The relay refused the request.")
+        service.answer("GET", "/v1/team/status", status)
+        service.answer("GET", "/v1/team/bots", bots)
+        return service
     }
 
-    func testTheStatusOfATeamOnlyMacNamesTheModeAndEachTeamAndNothingOfAPhoneOrHermes() async throws {
-        let service = FakeService()
-        service.answer("GET", "/v1/team/status", Self.answer)
-        let team = try await TeamServiceStatus.fetch(transport: service)
-        let preferences = UpdatePreferences(store: MemoryPreferences())
-        let status = Status(install: "/Users/a/Coconut", service: .running, hermes: "missing", relay: "not_installed")
-        XCTAssertEqual(StatusText.teamLines(version: "1.0 (1)", preferences: preferences, status: status,
-                                            team: .success(team)), [
-            "Coconut.app: 1.0 (1)",
+    func testTheTeamStatusComesFromTheTeamOnlyRoutes() async throws {
+        let service = service()
+        let status = try await TeamServiceStatus.fetch(transport: service)
+        XCTAssertEqual(service.sent, ["GET /v1/team/status", "GET /v1/team/bots"])
+        XCTAssertEqual(status.botNames, ["Reporter", "Planner"])
+        XCTAssertEqual(status.rooms.map(\.line), ["Example Team (active): 3 members, 2 bots, connected",
+                                                  "Second Team (active): 1 member, 0 bots, not connected"])
+    }
+
+    func lines(_ team: Result<TeamServiceStatus, TeamFailure>, service: Status.Service = .running) -> [String] {
+        StatusText.teamLines(version: "0.1.0 (688)", preferences: UpdatePreferences(store: MemoryPreferences()),
+                             status: Status(install: "/Users/example/Coconut", service: service, hermes: "missing",
+                                            relay: "not_installed"),
+                             team: team)
+    }
+
+    func testTheStatusOfATeamOnlyMacSaysWhatIsTrueAndWhatToRun() async throws {
+        let team = try await TeamServiceStatus.fetch(transport: service())
+        XCTAssertEqual(lines(.success(team)), [
+            "Coconut.app: 0.1.0 (688)",
             "Automatic updates: on",
             "Last update check: never",
             "Last update error: none",
             "Mode: team only",
-            "Service: running (/Users/a/Coconut)",
-            "Team helper: yes",
-            "Bots of this Mac: 2",
+            "Service: running (/Users/example/Coconut)",
+            "Bots: Reporter, Planner",
             "Team: Example Team (active): 3 members, 2 bots, connected",
             "Team: Second Team (active): 1 member, 0 bots, not connected",
             "Sync error: The relay refused the request.",
         ])
-        let stopped = Status(install: "/Users/a/Coconut", service: .stopped, hermes: "missing", relay: "not_installed",
-                             serviceError: "This data folder belongs to a full Coconut install.")
-        XCTAssertEqual(Array(StatusText.teamLines(version: "1.0 (1)", preferences: preferences, status: stopped,
-                                                  team: .failure(.noAnswer)).suffix(4)), [
-            "Mode: team only",
-            "Service: stopped (/Users/a/Coconut)",
-            "Service error: This data folder belongs to a full Coconut install.",
-            "Teams: unknown while the service does not answer",
+        var empty = Self.answer
+        empty["helper"] = false
+        empty["rooms"] = [[String: Any]]()
+        let nothing = try await TeamServiceStatus.fetch(transport: service(status: empty, bots: ["bots": []]))
+        XCTAssertEqual(Array(lines(.success(nothing)).suffix(3)), [
+            "Coconut cannot join a team: a part of the app is missing. Run coconut update.",
+            "Bots: none. To add one, run: coconut team new-bot <name>",
+            "Teams: none. To join one, pipe an invite link to: coconut team join",
         ])
+        XCTAssertEqual(lines(.failure(.noAnswer), service: .stopped).suffix(2),
+                       ["Service: stopped (/Users/example/Coconut)", "Teams: unknown, because the service does not answer."])
+        // No word of the code reaches the reader.
+        for line in lines(.success(team)) + lines(.success(nothing)) {
+            for word in ["helper", "socket", "room", "mark", "preference"] {
+                XCTAssertFalse(line.lowercased().contains(word), line)
+            }
+        }
     }
 
     func testTheJSONStatusOfATeamOnlyMacHasTheMode() async throws {
-        let service = FakeService()
-        service.answer("GET", "/v1/team/status", Self.answer)
-        let team = try await TeamServiceStatus.fetch(transport: service)
+        let team = try await TeamServiceStatus.fetch(transport: service())
         let status = Status(install: "/Users/a/Coconut", service: .running, hermes: "missing", relay: "not_installed")
         let object = try XCTUnwrap(try JSONSerialization.jsonObject(
             with: Data(TeamOnlyReport(status: status, team: .success(team)).json().utf8)) as? [String: Any])
         XCTAssertEqual(object["mode"] as? String, "team")
         XCTAssertEqual(object["service"] as? String, "running")
-        XCTAssertEqual(object["helper"] as? Bool, true)
+        XCTAssertEqual(object["bots"] as? [String], ["Reporter", "Planner"])
         XCTAssertEqual((object["teams"] as? [[String: Any]])?.first?["synced_at"] as? String, "2026-11-11T10:00:00Z")
         XCTAssertNil(object["hermes"])
         XCTAssertNil(object["relay"])
@@ -215,43 +234,10 @@ final class InstallModeTests: XCTestCase {
         XCTAssertEqual(failed["team_error"] as? String, TeamFailure.noAnswer.lines.first)
     }
 
-    // MARK: The cause of a service that does not start
-
     func write(_ text: String, to relative: String) throws {
         let url = home.appendingPathComponent(relative)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data(text.utf8).write(to: url)
-    }
-
-    func testAStoppedServiceShowsTheCauseThatItLeft() throws {
-        let install = Install(root: home)
-        try write("print('host')", to: "scripts/host.py")
-        let at = Date(timeIntervalSince1970: 1_800_000_000)
-        try write(#"{"code": "data_folder_mode", "error": "This data folder belongs to a full Coconut install.", "#
-                  + #""mode": "team", "at": 1800000000}"#, to: ".runtime/host/start-error.json")
-        let cause = try XCTUnwrap(StartError(install: install))
-        XCTAssertEqual(cause, StartError(code: "data_folder_mode",
-                                         error: "This data folder belongs to a full Coconut install.", at: at))
-        let stopped = StatusReader(install: install).read(isAlive: { _ in false }, healthy: false)
-        XCTAssertEqual(stopped.serviceError, "This data folder belongs to a full Coconut install.")
-        XCTAssertTrue(StatusText.lines(version: "1.0 (1)", preferences: UpdatePreferences(store: MemoryPreferences()),
-                                       status: stopped)
-            .contains("Service error: This data folder belongs to a full Coconut install."))
-        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(stopped)) as? [String: Any]
-        XCTAssertEqual(encoded?["service_error"] as? String, "This data folder belongs to a full Coconut install.")
-        // A service that runs left the old cause behind only until its start removed it. The status shows none.
-        try write(#"{"pid": 42}"#, to: ".runtime/host/process.json")
-        XCTAssertNil(StatusReader(install: install).read(isAlive: { _ in true }, healthy: true).serviceError)
-    }
-
-    func testOnlyALastingCauseSlowsTheRestartsAndOnlyWhileItIsNew() {
-        let at = Date(timeIntervalSince1970: 1_800_000_000)
-        let lasting = StartError(code: "data_folder_mode", error: "", at: at)
-        XCTAssertEqual(lasting.wait(now: at.addingTimeInterval(5)), 295)
-        XCTAssertNil(lasting.wait(now: at.addingTimeInterval(300)))
-        // A clock that went back waits no more than the full wait.
-        XCTAssertEqual(lasting.wait(now: at.addingTimeInterval(-600)), 300)
-        XCTAssertNil(StartError(code: "hermes_unavailable", error: "", at: at).wait(now: at))
     }
 
     // MARK: A Mac without Python
@@ -282,37 +268,44 @@ final class InstallModeTests: XCTestCase {
         XCTAssertTrue(lines.contains("Last update error: The service update failed: \(Self.noPython)"), "\(lines)")
     }
 
-    func testAnInstalledServiceWithoutPythonShowsTheCause() throws {
-        let install = Install(root: home)
-        try write("print('host')", to: "scripts/host.py")
-        // Without a data folder, Coconut is not installed yet, and the tool leaves no file.
-        StartError.write(code: StartError.noPython, error: Self.noPython, install: install)
-        XCTAssertNil(StartError(install: install))
-        try FileManager.default.createDirectory(at: install.data, withIntermediateDirectories: true)
-        StartError.write(code: StartError.noPython, error: Self.noPython, install: install,
-                         now: Date(timeIntervalSince1970: 1_800_000_000))
-        XCTAssertEqual(StartError(install: install),
-                       StartError(code: "no_python", error: Self.noPython, at: Date(timeIntervalSince1970: 1_800_000_000)))
-        let mode = try FileManager.default.attributesOfItem(
-            atPath: install.data.appendingPathComponent("start-error.json").path)[.posixPermissions] as? Int
-        XCTAssertEqual(mode, 0o600)
-        let status = StatusReader(install: install).read(isAlive: { _ in false }, healthy: false)
-        XCTAssertTrue(StatusText.teamLines(version: "1.0 (1)", preferences: UpdatePreferences(store: MemoryPreferences()),
-                                           status: status, team: .failure(.noAnswer))
-            .contains("Service error: \(Self.noPython)"))
-        // A missing Python is not a lasting cause: the login item waits as before.
-        XCTAssertNil(StartError(install: install)?.wait(now: Date(timeIntervalSince1970: 1_800_000_000)))
-    }
+    // MARK: The removal
 
-    func testOnlyRemoveAsksForTheRemoval() {
+    func testOnlyRemoveAsksForTheRemovalAndAFullInstallGetsOneLine() {
         XCTAssertTrue(RemoveRequest.asked(arguments: ["Coconut", "--remove"]))
         XCTAssertFalse(RemoveRequest.asked(arguments: ["Coconut", "--set-up", "--team-only"]))
-        // A full install changes nothing, and each refusal is one line.
-        XCTAssertEqual(RemoveRequest.fullInstall, "Coconut.app --remove removes a team-only install. On a full "
-                       + "install, open Uninstall Coconut.command.")
-        XCTAssertFalse(RemoveRequest.fullInstall.contains("\n") || RemoveRequest.toolFullInstall.contains("\n"))
-        XCTAssertNil(TeamOnlyRefusal.line(["remove"], mode: .team))
+        XCTAssertEqual(RemoveRequest.fullInstall, "Coconut.app --remove removes only a team-only install. To remove "
+                       + "this install, open Uninstall Coconut.command.")
+        XCTAssertFalse(RemoveRequest.fullInstall.contains("\n"))
     }
+
+    // MARK: The mark of the data folder
+
+    func makeStore(_ sql: String) throws -> Install {
+        let install = Install(root: home)
+        try FileManager.default.createDirectory(at: install.data, withIntermediateDirectories: true)
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(install.data.appendingPathComponent("coconut.sqlite3").path, &db), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK)
+        sqlite3_close(db)
+        return install
+    }
+
+    func testTheMarkOfATeamOnlyStoreDecidesWithThePreference() throws {
+        // Without a store, nothing is marked, and the read makes no file.
+        XCTAssertFalse(TeamFolderMark.isTeamOnly(install: Install(root: home)))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: Install(root: home).data.path))
+        // The store of a full install has no mark.
+        let full = try makeStore("CREATE TABLE devices (id TEXT PRIMARY KEY); INSERT INTO devices VALUES ('phone');")
+        XCTAssertFalse(TeamFolderMark.isTeamOnly(install: full))
+        // The mark of service_base.MODE_MARK.
+        let install = try makeStore("CREATE TABLE IF NOT EXISTS service_mode (mode TEXT PRIMARY KEY); "
+                                    + "INSERT OR IGNORE INTO service_mode (mode) VALUES ('team');")
+        let files = try FileManager.default.contentsOfDirectory(atPath: install.data.path)
+        XCTAssertTrue(TeamFolderMark.isTeamOnly(install: install))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: install.data.path), files)
+    }
+
+    // MARK: The timeouts
 
     /// A listener on 127.0.0.1 that takes each connection in its backlog and never answers. Return the socket and port.
     func silentListener() throws -> (Int32, UInt16) {
@@ -344,73 +337,10 @@ final class InstallModeTests: XCTestCase {
         let waited = Date().timeIntervalSince(started)
         XCTAssertLessThan(waited, BridgeTransport.readTimeout + 3, "The read waited \(waited) s.")
         XCTAssertEqual(team, .failure(.noAnswer))
-        let status = Status(install: home.path, service: .starting, hermes: "missing", relay: "not_installed")
-        XCTAssertEqual(StatusText.teamLines(version: "1.0 (1)", preferences: UpdatePreferences(store: MemoryPreferences()),
-                                            status: status, team: team).last,
-                       "Teams: unknown while the service does not answer")
+        XCTAssertEqual(lines(team).last, "Teams: unknown, because the service does not answer.")
         // The list of `coconut team` also runs on a busy full install, so it waits longer. A join or a leave waits longest.
         XCTAssertEqual(TeamCommand.show(json: false).timeout, 15)
         XCTAssertEqual(TeamCommand.join(name: nil).timeout, 180)
         XCTAssertEqual(TeamCommand.leave(team: nil, confirm: nil).timeout, 180)
-    }
-
-    func testCoconutRemoveStartsTheAppWithRemoveAndReadsItsResult() throws {
-        XCTAssertEqual(RemoveRequest.openArguments(app: URL(fileURLWithPath: "/Applications/Coconut.app")),
-                       ["-g", "/Applications/Coconut.app", "--args", "--remove"])
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
-        // While the app works, the install and the preference stay.
-        XCTAssertEqual(RemoveRequest.outcome(installed: true, modePreference: "team", lastResult: nil, start: start), .waiting)
-        // The folder goes to the Trash before the app removes the preference: the removal is not complete yet.
-        XCTAssertEqual(RemoveRequest.outcome(installed: false, modePreference: "team", lastResult: nil, start: start),
-                       .waiting)
-        XCTAssertEqual(RemoveRequest.outcome(installed: false, modePreference: nil, lastResult: nil, start: start), .removed)
-        // A failure of this removal is the last update error. An older failure is not.
-        let failure = UpdateResult(time: start.addingTimeInterval(3), outcome: .failed, message: "Coconut could not remove "
-                                   + "its login item Coconut.app: Operation not permitted")
-        XCTAssertEqual(RemoveRequest.outcome(installed: true, modePreference: "team", lastResult: failure, start: start),
-                       .failed(failure.message!))
-        let older = UpdateResult(time: start.addingTimeInterval(-3), outcome: .failed, message: "Earlier.")
-        XCTAssertEqual(RemoveRequest.outcome(installed: true, modePreference: "team", lastResult: older, start: start),
-                       .waiting)
-        // The docs and the skill quote the line of a good result.
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-            .deletingLastPathComponent().deletingLastPathComponent()
-        let good = String(RemoveRequest.removed.prefix { $0 != "." })
-        for file in ["docs/install-and-update.md", "skills/coconut/SKILL.md"] {
-            let text = try String(contentsOf: root.appendingPathComponent(file), encoding: .utf8)
-            XCTAssertTrue(text.contains(good), file)
-        }
-    }
-
-    func testCoconutRemoveWithoutConfirmSaysWhatItRemovesAndHowToRunIt() {
-        XCTAssertEqual(RemoveRequest.preview(teams: ["Example Team", "Second Team"]), [
-            "A removal cannot be undone. No person can confirm it here, so the command needs --confirm.",
-            "First, this Mac leaves each team. The other Macs then no longer show this Mac, its bots and their pages.",
-            "This Mac leaves the team Example Team.",
-            "This Mac leaves the team Second Team.",
-            "Then Coconut.app removes its login items, the data of Coconut, and the key of this Mac in each team.",
-            "To come back, this Mac needs a new invite link.",
-            "To remove Coconut, run: coconut remove --confirm",
-        ])
-        XCTAssertEqual(RemoveRequest.preview(teams: [])[2], "This Mac is in no team.")
-        XCTAssertEqual(RemoveRequest.preview(teams: nil)[2],
-                       "The service does not answer, so the teams of this Mac are not known.")
-        XCTAssertEqual(RemoveRequest.command, "coconut remove --confirm")
-    }
-
-    func testAPersonReadsWhetherATeamIsConnected() {
-        let room = TeamServiceStatus.Room(room: "r1", name: "Example Team", state: "active", members: 3, bots: 2,
-                                          syncedAt: nil, error: nil, socket: true)
-        XCTAssertEqual(room.counts, "3 members, 2 bots, connected")
-        var closed = room
-        closed.socket = false
-        XCTAssertEqual(closed.line, "Example Team (active): 3 members, 2 bots, not connected")
-    }
-
-    func testAServiceWithoutACauseShowsNone() throws {
-        let install = Install(root: home)
-        try write("print('host')", to: "scripts/host.py")
-        XCTAssertNil(StartError(install: install))
-        XCTAssertNil(StatusReader(install: install).read(isAlive: { _ in false }, healthy: false).serviceError)
     }
 }

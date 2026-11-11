@@ -297,6 +297,29 @@ def sync_directory(path):
         os.close(descriptor)
 
 
+def team_folder_refusal(root, package):
+    """The refusal when the data folder of the install belongs to a team-only service, else None. A full install or
+    update must not touch the Hermes of that Mac.
+
+    The check is service_base.team_folder of the package, the one helper of this check. deploy.py runs from the app
+    bundle without the source next to it, so it loads that module from the checked package. A folder without a store
+    needs no module: a first install has no data yet.
+    """
+    if not safe_path(root / '.runtime/host/coconut.sqlite3', root).is_file():
+        return None
+    source = package.files.get('backend/coconut/service_base.py')
+    if source is None:
+        # Each package of scripts/remote.py has the module. Only the small packages of the tests lack it.
+        return None
+    module = type(sys)('coconut_deploy_service_base')
+    exec(compile(source, 'backend/coconut/service_base.py', 'exec'), module.__dict__)
+    try:
+        return module.HERMES_REFUSAL if module.team_folder(root / '.runtime/host') else None
+    except Exception as error:
+        # A store that cannot be read cannot show that this Mac is a full install, so no Hermes step runs.
+        raise DeployError(f'Coconut could not read the data folder, so it changed nothing: {error}') from None
+
+
 def load_host(root):
     source = safe_path(root / 'scripts/host.py', root)
     spec = importlib.util.spec_from_file_location('coconut_deploy_host_' + uuid4().hex, source)
@@ -777,6 +800,9 @@ def receive(directory, stream, *, home=None, operations=None, team_only=None):
     home = Path(home or Path.home()).resolve()
     root = destination(directory, home)
     package = validate_package(stream)
+    refusal = None if team_only else team_folder_refusal(root, package)
+    if refusal:
+        raise DeployError(refusal)
     marker = read_marker(root)
     runtime_receipt, runtime_present = check_runtime_receipt(root, marker)
     operations = operations or Operations(team_only=team_only)

@@ -307,6 +307,10 @@ def main() -> None:
     if host.install_mode() == host.TEAM_MODE:
         # This setup changes the Hermes config. A team-only Mac never gets that, and a mode does not change in place.
         raise SystemExit("This Mac runs Coconut for a team only. Remove Coconut first, then set it up again.")
+    # The data folder decides too, also when the preference of the app is lost.
+    refusal = host.team_folder_refusal()
+    if refusal:
+        raise SystemExit(refusal)
     prerequisites()
     settings_changed = load_hermes_settings(args.reset_hermes_settings)
     step("Finding Hermes")

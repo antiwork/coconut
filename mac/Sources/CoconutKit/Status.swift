@@ -26,8 +26,6 @@ public struct Status: Codable, Equatable {
     public var relayReconnects: Int? = nil
     /// The notification previews of each phone that reported them, from push-previews.json (backend/coconut/push.py).
     public var previews: [Previews]? = nil
-    /// Why the service does not start, while it is stopped (StartError). Nil while it runs or without a known cause.
-    public var serviceError: String? = nil
 
     public struct Previews: Codable, Equatable {
         public var name: String
@@ -50,7 +48,6 @@ public struct Status: Codable, Equatable {
         case relayLastDisconnect = "relay_last_disconnect"
         case relayReconnects = "relay_reconnects"
         case previews
-        case serviceError = "service_error"
     }
 }
 
@@ -87,9 +84,6 @@ public struct StatusReader {
                 return .init(name: name, line: line)
             }
         }
-        if status.service == .stopped {
-            status.serviceError = StartError(install: install)?.error
-        }
         return status
     }
 
@@ -123,57 +117,5 @@ public struct StatusReader {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         guard let (_, response) = try? await session.data(for: request) else { return false }
         return (response as? HTTPURLResponse)?.statusCode == 200
-    }
-}
-
-/// The cause of the last start that the service refused, which it leaves in `<data>/start-error.json`
-/// (backend/coconut/server.py, write_start_error). A start that succeeds removes the file.
-public struct StartError: Equatable, Sendable {
-    /// The code of the refusal, for example `data_folder_mode`.
-    public var code: String
-    public var error: String
-    public var at: Date
-
-    /// The causes that a restart cannot heal: only a person can change the data folder.
-    static let lasting: Set<String> = ["data_folder_mode"]
-    /// While such a cause is new, the login item waits this long before it starts the service again. launchd would
-    /// start it every 5 seconds, and each start would write the same refusal to the error log.
-    public static let lastingWait: TimeInterval = 300
-
-    public init(code: String, error: String, at: Date) {
-        self.code = code
-        self.error = error
-        self.at = at
-    }
-
-    public init?(install: Install) {
-        guard let data = try? Data(contentsOf: install.data.appendingPathComponent("start-error.json")),
-              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let code = object["code"] as? String, let error = object["error"] as? String,
-              let at = (object["at"] as? NSNumber)?.doubleValue else { return nil }
-        self.init(code: code, error: error, at: Date(timeIntervalSince1970: at))
-    }
-
-    /// The code of the tool when it finds no Python for the service. The service never starts, so the tool leaves the
-    /// cause itself.
-    public static let noPython = "no_python"
-
-    /// Leave a cause in the data folder, as the service does. A missing data folder gets none: Coconut is not
-    /// installed, and the status says that.
-    public static func write(code: String, error: String, install: Install, now: Date = Date()) {
-        guard FileManager.default.fileExists(atPath: install.data.path),
-              let data = try? JSONSerialization.data(withJSONObject: ["code": code, "error": error,
-                                                                      "at": now.timeIntervalSince1970]) else { return }
-        let file = install.data.appendingPathComponent("start-error.json")
-        guard (try? data.write(to: file, options: .atomic)) != nil else { return }
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-    }
-
-    /// How long the login item waits before it starts the service again, or nil to start at once. The wait ends after
-    /// `lastingWait`, so a person who fixed the folder sees the service start within five minutes, without a click.
-    public func wait(now: Date = Date()) -> TimeInterval? {
-        guard Self.lasting.contains(code) else { return nil }
-        let left = Self.lastingWait - now.timeIntervalSince(at)
-        return left > 0 ? min(left, Self.lastingWait) : nil
     }
 }

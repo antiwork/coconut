@@ -787,11 +787,19 @@ class TeamOnlyTests(unittest.TestCase):
 
     def library(self) -> dict:
         """Ada's Library without a pass: the team pages with their content, and the team bots."""
-        status, answer = self.ada.phone('GET', '/v1/documents')
-        self.assertEqual(status, 200, answer)
-        pages = [(page['title'], self.ada.phone('GET', f'/v1/documents/{page["id"]}')[1]['content'], page['bot_id'])
-                 for page in answer['documents'] if 'team' in page]
-        return {'pages': pages, 'bots': [(bot['id'], bot['name']) for bot in answer['team_bots']]}
+        while True:
+            status, answer = self.ada.phone('GET', '/v1/documents')
+            self.assertEqual(status, 200, answer)
+            pages = []
+            for page in (page for page in answer['documents'] if 'team' in page):
+                # A sync can take a page out between the list and the read. Then the list is read again.
+                status, document = self.ada.phone('GET', f'/v1/documents/{page["id"]}')
+                if status == 404:
+                    break
+                self.assertEqual(status, 200, document)
+                pages.append((page['title'], document['content'], page['bot_id']))
+            else:
+                return {'pages': pages, 'bots': [(bot['id'], bot['name']) for bot in answer['team_bots']]}
 
     def test_a_team_only_mac_shares_the_pages_of_its_bot(self):
         from test_team_only import snapshot
@@ -857,10 +865,9 @@ class TeamOnlyTests(unittest.TestCase):
         for mac in (self.ada, self.reporter):
             self.assertNotIn('tasks are open', mac.log.read_text())
 
-    def test_the_leave_of_a_removal_takes_the_mac_its_bot_and_its_page_out_of_the_team(self):
-        """`coconut remove --confirm` first leaves each team with the call of `coconut team leave` (TeamTool.leaveAll).
-        The app part of the removal needs Coconut.app, so this test runs the leave alone, with a bot and its page still
-        in the team."""
+    def test_a_leave_takes_the_mac_its_bot_and_its_page_out_of_the_team(self):
+        """The first step of a removal (docs/install-and-update.md, "Remove"): `coconut team leave` on the team-only
+        Mac, with a bot and its page still in the team. The full Mac then shows none of them."""
         status, answer = self.ada.call('POST', '/v1/team/rooms', {'name': 'Leave Team', 'member_name': 'Ada',
                                                                   'relay': self.url})
         self.assertEqual(status, 200, answer)
