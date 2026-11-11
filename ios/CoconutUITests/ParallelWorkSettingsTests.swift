@@ -15,9 +15,9 @@ final class ParallelWorkSettingsTests: XCTestCase {
         parallelWork.tap()
         let limit = app.buttons["work-item-limit"]
         XCTAssertTrue(limit.waitForExistence(timeout: 5))
-        XCTAssertTrue(limit.label.contains("Automatic"))
+        XCTAssertTrue(choice(of: limit).contains("Automatic"))
         choose("5", in: limit, app: app)
-        XCTAssertTrue(limit.label.contains("5"))
+        XCTAssertTrue(choice(of: limit).contains("5"))
         let proof = XCTAttachment(screenshot: app.screenshot())
         proof.name = "One control for bots working at once"
         proof.lifetime = .keepAlways
@@ -25,9 +25,15 @@ final class ParallelWorkSettingsTests: XCTestCase {
         app.navigationBars.buttons.element(boundBy: 0).tap()
         parallelWork.tap()
         XCTAssertTrue(limit.waitForExistence(timeout: 5))
-        XCTAssertTrue(limit.label.contains("5"))
+        XCTAssertTrue(choice(of: limit).contains("5"))
         choose("Automatic", in: limit, app: app)
-        XCTAssertTrue(limit.label.contains("Automatic"))
+        XCTAssertTrue(choice(of: limit).contains("Automatic"))
+    }
+
+    // A navigation link picker gives its title as the label and the chosen option as the value.
+    @MainActor
+    private func choice(of picker: XCUIElement) -> String {
+        picker.value as? String ?? ""
     }
 
     @MainActor
