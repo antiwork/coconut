@@ -347,8 +347,13 @@ class TeamSocket:
 
     def _team_due(self, room: str, every: bool, woken: set[str]) -> bool:
         """True when this pass reads the room: a room operation, a save or a tool asked for each room, the socket
-        woke this room, the room has no open socket, or its last read is SOCKET_POLL_SECONDS old."""
-        if every or room in woken or not self.team_socket_open(room):
+        woke this room, the last read failed, the room has no open socket, or its last good read is
+        SOCKET_POLL_SECONDS old.
+
+        A room waits after a failure (TeamSync._team_failures), and each pass in that wait drops the wakes of its
+        socket. So a room with a failure is due as soon as its wait ends, whatever its socket says. A good read
+        removes the failure."""
+        if every or room in woken or room in self._team_failures or not self.team_socket_open(room):
             return True
         return time.monotonic() - self._team_read_at.get(room, float('-inf')) >= SOCKET_POLL_SECONDS
 

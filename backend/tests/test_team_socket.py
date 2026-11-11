@@ -179,6 +179,36 @@ class TeamSocketTests(TeamMacs, unittest.TestCase):
         self.assertEqual(self.reads() - before, 1)
         self.assertEqual(self.wakes, [self.room_id, None])
 
+    def test_a_room_whose_woken_read_failed_reads_as_soon_as_its_wait_ends(self):
+        self.start()
+        self.second.team_sync_pass()
+        self.open()
+        # The socket wakes the room after a good read, and the read fails.
+        self.second.team_wake(room=self.room_id)
+        self.relay.down = True
+        with self.assertLogs('coconut.team_sync', 'WARNING'):
+            self.second.team_sync_pass()
+        self.assertIn(self.room_id, self.second._team_failures)
+        # More events of the socket come during the wait. Each pass skips the room and drops the wake.
+        self.relay.down = False
+        before = self.reads()
+        for _ in range(2):
+            self.second.team_wake(room=self.room_id)
+            self.second.team_sync_pass()
+        self.assertEqual(self.reads(), before)
+        # The wait ends. The next pass of the timer reads the room at once, not after SOCKET_POLL_SECONDS.
+        failures, _ = self.second._team_failures[self.room_id]
+        self.second._team_failures[self.room_id] = (failures, time.monotonic() - 1)
+        self.assertTrue(self.second.team_socket_open(self.room_id))
+        self.second.team_sync_pass()
+        self.assertEqual(self.reads() - before, 1)
+        self.assertNotIn(self.room_id, self.second._team_failures)
+        self.assertIsNone(self.rooms(self.second, sync=False)[0]['sync']['error'])
+        # After the good read, the timer waits for the socket again.
+        before = self.reads()
+        self.second.team_sync_pass()
+        self.assertEqual(self.reads(), before)
+
     def test_a_change_of_the_rooms_sends_a_new_line(self):
         self.start()
         other = self.create(self.third, name='Other Team', member_name='Edsger')
