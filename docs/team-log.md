@@ -256,6 +256,8 @@ The relay accepts a member ID only with a proof of its key, so one member cannot
 
 The Mac backend does the steps of this contract for the Team screen of the app and for the tools on the Mac. The modules are in `backend/coconut`: `team.py` (the room operations and the routes), `team_sync.py` (the copy of each log), `team_socket.py` (the socket of each room), `team_store.py` (the tables and the reading rules), `team_keys.py` (the secrets), `team_relay.py` (the relay routes) and `team_helper.py` (the helper).
 
+A Mac with no person at it, for example a Mac that only runs a Hermes agent, uses the `coconut` tool of Coconut.app (`Contents/Helpers/coconut`). `coconut team` prints the teams of the Mac. `coconut team join` reads the invite link from standard input and joins. `coconut team add-bot <bot>` and `coconut team remove-bot <bot>` add and remove a bot of the Mac by its ID or its name. `coconut team leave --confirm <name of the team>` leaves. The tool calls the routes below with the token of the bridge file, and it prints the error text of the service. It never prints the link. Only a person makes a team and an invite, on the Team screen.
+
 ### Helper
 
 `scripts/team-helper.swift` compiles with `ios/Tunnel/TeamLog.swift`, which holds the format. It seals, opens, signs, and reads and makes links and welcomes. It takes no argument and touches no file: it reads one JSON object from standard input and writes one to standard output. So a key, a token or a secret is never in a command line, a file or a log. A failure is `{"error": "<code>"}`, and a code names no value of the input.
@@ -344,13 +346,13 @@ An older helper has no watch mode. It reads to the end of its standard input bef
 Two callers use these routes, and one handler (`Team.team_request`) serves both:
 
 - A paired device, for the Team screen of the app. It calls the routes on the tunnel listener or on the main listener, with the authorization of its other routes: its device token, and on the tunnel listener the static key of the phone.
-- A tool on this Mac, for example `scripts/team.py`. It calls the routes on the main listener with the token of `<data>/gateway/bridge.json`.
+- A tool on this Mac, for example `scripts/team.py` or `coconut team`. It calls the routes on the main listener with the token of `<data>/gateway/bridge.json`.
 
 A request without a valid authorization gets 401.
 
 | Request | Answer |
 | --- | --- |
-| `GET /v1/team/rooms` | The rooms with their members, their bots and their sync state, and `helper`. |
+| `GET /v1/team/rooms` | The rooms with their members, their bots and their sync state, `helper`, and `mac_bots`: the `id` and `name` of each bot of this Mac that is not archived or deleted, so a tool can find a bot by its name. |
 | `POST /v1/team/rooms`, body `{name, member_name, avatar, color, relay}` | Makes a room. This Mac is its admin. |
 | `PATCH /v1/team/rooms/<room>`, body `{member_name, avatar, color}` | Changes what the team sees for this Mac. A field that the body leaves out keeps its value. The Mac first reads back an earlier write without an answer. Then it takes each field that the body leaves out from what the log has for this Mac, and writes its `member` entry again with the next `rev`. A failure changes nothing on this Mac. A room that is not `active` answers 409. |
 | `POST /v1/team/rooms/<room>/invites`, body `{ttl, uses}` | The invite link. Only the admin makes one. The defaults are one day and one use. |
@@ -379,7 +381,7 @@ Each error text of these routes is for a person, because the app shows it: what 
 
 When something changes that the Team screen shows, the Mac adds one `team.updated` event with `{"team": <room ID>}` in the same transaction: this Mac makes, joins or leaves a room, a room becomes `active`, `removed` or `gone`, a member joins, leaves or changes its name, avatar or color, a bot enters or leaves the team, or `sync.error` or `sync.refused` appears, changes or clears. A failed try with the same error adds no event. `GET /v1/updates` then has `team_changed`, and the app reads `GET /v1/team/rooms` again. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again. A change of a bot of this Mac, for example a new name, comes with its own `bot.updated` event.
 
-No answer has a key, a token or an invite secret, and so no answer has the public agreement key of a member. Only the answer of the invite route has the link. The request log of the tunnel listener keeps the route without its IDs and never a body, so the link of a join stays out of it. `scripts/team.py join` reads the link from standard input, so the link is never an argument of a command. `scripts/team.py share <room> <bot>` and `unshare <room> <bot>` call the bot routes.
+No answer has a key, a token or an invite secret, and so no answer has the public agreement key of a member. Only the answer of the invite route has the link. The request log of the tunnel listener keeps the route without its IDs and never a body, so the link of a join stays out of it. `scripts/team.py join` and `coconut team join` read the link from standard input, so the link is never an argument of a command. `scripts/team.py share <room> <bot>` and `unshare <room> <bot>` call the bot routes.
 
 #### Repeat a write
 

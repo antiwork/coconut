@@ -86,7 +86,8 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
     def test_without_the_helper_a_room_operation_asks_for_an_update(self):
         self.first.team_helper.available = False
         self.assertEqual(self.refusal(self.create), (503, 'Update Coconut on this Mac, then try again.'))
-        self.assertEqual(self.first.team_request('GET', '/v1/team/rooms', {}), {'rooms': [], 'helper': False})
+        answer = self.first.team_request('GET', '/v1/team/rooms', {})
+        self.assertEqual((answer['rooms'], answer['helper']), ([], False))
 
     def test_a_mac_can_be_in_more_than_one_room(self):
         one, two = self.create(name='Example Team'), self.create(name='Other Team', member_name='Ada L.')

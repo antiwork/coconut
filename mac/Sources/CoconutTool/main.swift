@@ -1,5 +1,5 @@
 // The `coconut` tool in Coconut.app/Contents/Helpers. The login items run `service` and `sidecar`. A person or a
-// Hermes agent runs `pair` and `status`.
+// Hermes agent runs `pair`, `status` and `team`.
 import CoconutKit
 import Foundation
 
@@ -16,6 +16,19 @@ let usage = """
       pair      Print a one-time iPhone setup link.
       pair <code>
                 Pair the iPhone that shows this code. Hermes runs this from the iPhone's message.
+      team      Print the teams of this Mac: the name, the state, the admin, the members, the bots and the sync
+                error. --json prints the answer of the service as JSON.
+      team join [--name <text>]
+                Join a team with the invite link on standard input. The link is a secret: pipe it to the command.
+                --name is the name of this Mac in the member list.
+      team add-bot <bot> [--team <name or ID>]
+                Add a bot of this Mac to the team. <bot> is the ID or the name of the bot. --team is necessary
+                when this Mac is in more than one team.
+      team remove-bot <bot> [--team <name or ID>]
+                Remove a bot of this Mac from the team.
+      team leave --confirm <name of the team> [--team <name or ID>]
+                Leave the team, and delete its copy and its keys on this Mac. Without --confirm, print what a
+                leave does.
       version   Print the version of Coconut.app.
       install-source
                 Install the Coconut source that this app carries. --if-needed skips an install that is current.
@@ -205,6 +218,41 @@ func pairPhone(code: PairingCode, launch: Launch) -> Never {
     fail("The iPhone did not pair before the code expired. Make a new code on the iPhone, then try again.")
 }
 
+/// The invite link from standard input. A terminal does not show it.
+@Sendable func readInviteLink() -> String? {
+    guard isatty(STDIN_FILENO) == 1 else {
+        return String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
+    }
+    var buffer = [CChar](repeating: 0, count: 8192)
+    guard readpassphrase("Invite link: ", &buffer, buffer.count, RPP_REQUIRE_TTY) != nil else { return nil }
+    defer { memset_s(&buffer, buffer.count, 0, buffer.count) }
+    return String(cString: buffer)
+}
+
+/// `coconut team`: see TeamTool in CoconutKit.
+func team(_ arguments: [String]) -> Never {
+    let command: TeamCommand
+    do {
+        command = try TeamCommand.parse(arguments)
+    } catch let failure as TeamFailure {
+        fail(failure.lines.joined(separator: "\n"), code: failure.status)
+    } catch {
+        fail(TeamCommand.usage, code: 64)
+    }
+    let tool = TeamTool(transport: BridgeTransport(install: install), readLink: readInviteLink)
+    let semaphore = DispatchSemaphore(value: 0)
+    var output = TeamOutput(lines: [])
+    // Detached: this top-level code runs on the main thread, which waits below.
+    Task.detached {
+        output = await tool.run(command)
+        semaphore.signal()
+    }
+    semaphore.wait()
+    guard output.status == 0 else { fail(output.lines.joined(separator: "\n"), code: output.status) }
+    output.lines.forEach { print($0) }
+    exit(0)
+}
+
 let command = CommandLine.arguments.dropFirst().first ?? ""
 switch command {
 case "service":
@@ -288,6 +336,8 @@ case "status":
     }
 case "update":
     exit(checkForUpdates())
+case "team":
+    team(Array(CommandLine.arguments.dropFirst(2)))
 case "settings":
     let arguments = Array(CommandLine.arguments.dropFirst(2))
     let preferences = UpdatePreferences()

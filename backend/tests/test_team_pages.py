@@ -127,6 +127,18 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
         (team_bot,) = self.library()['team_bots']
         self.assertEqual((team_bot['name'], len(team_bot['color'])), ('R' * 80, 20))
 
+    def test_the_rooms_list_the_bots_that_this_mac_can_share(self):
+        def names(service):
+            return [bot['name'] for bot in service.team_request('GET', '/v1/team/rooms', {})['mac_bots']]
+        self.assertIn('Reporter', names(self.first))
+        self.assertNotIn('Reporter', names(self.second))
+        (listed,) = (bot for bot in self.first.team_request('GET', '/v1/team/rooms', {})['mac_bots']
+                     if bot['name'] == 'Reporter')
+        self.assertEqual(listed, {'id': self.bot['id'], 'name': 'Reporter'})
+        # An archived bot cannot join a room, so the list leaves it out.
+        self.first.mutate('PATCH', f'/v1/bots/{self.bot["id"]}', {'archived': True}, str(uuid4()), 'phone')
+        self.assertNotIn('Reporter', names(self.first))
+
     def test_the_share_routes_refuse_what_they_cannot_share(self):
         self.assertEqual(self.refusal(self.first.team_request, 'POST', f'/v1/team/rooms/{self.room_id}/bots',
                                       {'bot_id': 'not-a-bot'})[0], 404)
