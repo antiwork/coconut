@@ -470,4 +470,83 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(room(people: 3, bots: 2).whoLine, "3 people, 2 bots")
         XCTAssertNil(room(people: 0, bots: 0).whoLine, "A team that is joining has no members yet.")
     }
+
+    // MARK: Names of team bots with @
+
+    /// Planner and Reporter answer each member (bots of a Mac without a person). Writer is a bot of this person, and
+    /// Helper a bot of Grace: each answers only its own person.
+    private var mentionRoom: TeamRoom {
+        let planner = TeamRoomBot(id: "t-r1-b1", name: "Planner", avatar: "fruit.blueberry", color: "7E99D3",
+                                  memberName: "Team Mac", thisMac: false, open: true)
+        let reporter = TeamRoomBot(id: "t-r1-b2", name: "Reporter", avatar: "fruit.kiwi", color: "A68456",
+                                   memberName: "Team Mac", thisMac: false, open: true)
+        let writer = TeamRoomBot(id: "t-r1-b3", name: "Writer", avatar: "fruit.peach", color: "F2A088",
+                                 memberName: "Ada", thisMac: true, botId: "bot-writer")
+        let helper = TeamRoomBot(id: "t-r1-b4", name: "Helper", avatar: "fruit.lemon", color: "F1D46B",
+                                 memberName: "Grace", thisMac: false, open: false)
+        return TeamRoom(room: "r1", name: "Example Team", state: "active",
+                        bots: [planner, writer, reporter, helper, planner])
+    }
+
+    func testTheListOffersOnlyTheOpenBotsOfTheTeamEachOnce() {
+        let bots = TeamMentions.bots(of: mentionRoom)
+        XCTAssertEqual(bots.map(\.id), ["t-r1-b1", "t-r1-b2"],
+                       "A bot of a person is not in the list, also not a bot of this person.")
+        XCTAssertEqual(BotMentions.candidates(in: bots, text: "@", selection: nil, selected: []).map(\.name),
+                       ["Planner", "Reporter"])
+        XCTAssertEqual(BotMentions.candidates(in: bots, text: "Ask @pl", selection: nil, selected: []).map(\.name),
+                       ["Planner"], "Letters filter by the start of the name.")
+        XCTAssertEqual(BotMentions.candidates(in: bots, text: "a@", selection: nil, selected: []).count, 0,
+                       "The @ must start a word.")
+        let alone = TeamRoom(room: "r2", name: "Quiet Team", state: "active")
+        XCTAssertTrue(BotMentions.candidates(in: TeamMentions.bots(of: alone), text: "@", selection: nil,
+                                             selected: []).isEmpty, "A team without a bot shows no list.")
+    }
+
+    func testASendCarriesTheBotsThatTheTextStillNames() {
+        let room = mentionRoom
+        let text = "@Planner the plan, please"
+        let picked = [SelectedBotMention(id: "t-r1-b1", name: "Planner", location: 0, snapshot: text)]
+        XCTAssertEqual(TeamMentions.ids(in: text, selected: picked, room: room), ["t-r1-b1"], "A name that stays")
+
+        let changed = "@Planer the plan, please"
+        XCTAssertEqual(TeamMentions.ids(in: changed, selected: picked, room: room), [],
+                       "A name that the person changed is no mention.")
+
+        let two = "@Planner and @Reporter, the week"
+        let both = [SelectedBotMention(id: "t-r1-b1", name: "Planner", location: 0, snapshot: two),
+                    SelectedBotMention(id: "t-r1-b2", name: "Reporter", location: 13, snapshot: two)]
+        XCTAssertEqual(TeamMentions.ids(in: two, selected: both, room: room), ["t-r1-b1", "t-r1-b2"])
+
+        let twice = "@Planner one, @Planner two"
+        XCTAssertEqual(TeamMentions.ids(in: twice, selected: [], room: room), ["t-r1-b1"], "The same bot one time")
+
+        XCTAssertEqual(TeamMentions.ids(in: "No bot here", selected: [], room: room), [])
+        XCTAssertEqual(TeamMentions.ids(in: "Text before @Reporter", selected: [], room: room), ["t-r1-b2"])
+        XCTAssertEqual(TeamMentions.ids(in: "@Writer and @Helper", selected: [], room: room), [],
+                       "A bot that is not open is no mention, also when the text names it.")
+    }
+
+    func testAnUnsentMessageKeepsItsMentionsInTheSavedFile() throws {
+        let pending = TeamPendingMessage(id: "p1", text: "@Planner the plan", replyTo: nil, reply: nil,
+                                         createdAt: "2026-11-10T12:00:00Z", mentions: ["t-r1-b1"])
+        let saved = try JSONEncoder().encode(pending)
+        let restored = try JSONDecoder().decode(TeamPendingMessage.self, from: saved)
+        XCTAssertEqual(restored.mentions, ["t-r1-b1"])
+        XCTAssertEqual(restored.afterRestart.mentions, ["t-r1-b1"])
+        XCTAssertEqual(restored.retried.mentions, ["t-r1-b1"], "The retry keeps the mentions.")
+
+        // A file of an older app has no mentions.
+        let older = #"{"id": "p2", "text": "Hello", "createdAt": "2026-11-10T12:00:00Z", "failed": true}"#
+        XCTAssertNil(try JSONDecoder().decode(TeamPendingMessage.self, from: Data(older.utf8)).mentions)
+    }
+
+    func testABotOfTheListReadsTheMarkOpen() throws {
+        let json = #"{"room": "r1", "name": "Example Team", "state": "active", "bots": ["#
+            + #"{"id": "t-r1-b1", "name": "Planner", "open": true}, {"id": "t-r1-b2", "name": "Writer", "open": false}, "#
+            + #"{"id": "t-r1-b3", "name": "Older"}]}"#
+        let room = try APIJSON.decoder().decode(TeamRoom.self, from: Data(json.utf8))
+        XCTAssertEqual(room.botList.map(\.isOpen), [true, false, false], "A missing mark is false.")
+        XCTAssertEqual(TeamMentions.bots(of: room).map(\.name), ["Planner"])
+    }
 }

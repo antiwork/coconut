@@ -94,6 +94,9 @@ struct TeamPendingMessage: Codable, Identifiable, Equatable, Sendable {
     let reply: TeamMessageQuote?
     let createdAt: String
     var failed = false
+    /// The `id` of each team bot that the text names. Nil for a message without a mention, and for a message that an
+    /// older app saved.
+    var mentions: [String]? = nil
 
     var idempotencyKey: String { id }
 
@@ -448,5 +451,20 @@ extension TeamRoom {
         let bots = botList.count
         guard bots > 0 else { return line }
         return line + (bots == 1 ? ", 1 bot" : ", \(bots) bots")
+    }
+}
+
+/// The names of team bots with `@` in the team chat. People are not in the list yet: a mention of a person does nothing.
+enum TeamMentions {
+    /// The bots that the list offers: the bots of the team that answer each member (`open`). A bot of a person, also
+    /// of this person, answers no teammate, so the list does not offer it. This is the one place of that rule.
+    static func bots(of room: TeamRoom) -> [TeamRoomBot] {
+        var seen = Set<String>()
+        return room.botList.filter { $0.isOpen && seen.insert($0.id).inserted }
+    }
+
+    /// The `mentions` of a send: the `id` of each team bot that the text still names, one time each, in text order.
+    static func ids(in text: String, selected: [SelectedBotMention], room: TeamRoom) -> [String] {
+        BotMentions.recipients(in: text, selected: selected, bots: bots(of: room)).map(\.id)
     }
 }

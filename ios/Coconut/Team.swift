@@ -80,6 +80,11 @@ struct TeamRoomBot: Decodable, Identifiable, Equatable, Sendable {
     var memberName: String? = nil
     var thisMac: Bool? = nil
     var botId: String? = nil
+    /// True for a bot that answers each member of the team: a bot of a Mac without a person. A bot of a person
+    /// answers only that person. An older service sends none, and none is false.
+    var open: Bool? = nil
+
+    var isOpen: Bool { open == true }
 }
 
 struct TeamSync: Decodable, Equatable, Sendable {
