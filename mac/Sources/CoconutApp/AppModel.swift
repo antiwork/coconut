@@ -18,6 +18,10 @@ final class AppModel: ObservableObject {
     /// The install, update or move that runs now, with the text that the menu shows for it.
     @Published private(set) var activity: String?
     @Published private(set) var updateError: String?
+    /// The mode of the install (InstallMode). Only `--set-up` changes it, before the first view shows.
+    @Published private(set) var mode: InstallMode
+    /// The teams of a team-only service, or nil while it does not answer.
+    @Published private(set) var team: TeamServiceStatus?
 
     // The login items start without the environment of the app, so the app ignores COCONUT_INSTALL_DIR too. Both
     // read the same preference.
@@ -25,9 +29,22 @@ final class AppModel: ObservableObject {
     private var timer: Timer?
     private var couldRegister = false
     private var loginItemReads = LatestRead()
+    /// Why `--set-up` did not run: the Mac has an install of the other mode.
+    private var setUpRefusal: String?
 
     init() {
         UserDefaults.standard.register(defaults: [Self.startAtLoginKey: true])
+        // The mode comes from the preference, which a locked screen does not hide (pull request 432). A set-up of a
+        // new mode writes it here, so the window shows the page of that mode from its first frame.
+        var mode = InstallMode.standard(environment: [:])
+        if let requested = SetUpRequest.mode(arguments: CommandLine.arguments) {
+            setUpRefusal = SetUpRequest.check(requested: requested, recorded: mode, installed: install.isInstalled())
+            if setUpRefusal == nil && requested != mode {
+                UserDefaults.standard.set(requested.preferenceValue, forKey: InstallMode.preferenceKey)
+                mode = requested
+            }
+        }
+        self.mode = mode
         status = StatusReader(install: install).read(healthy: false)
         // SwiftUI gives the label of a menu bar extra no dependable task, so the model starts itself.
         start()
@@ -42,15 +59,20 @@ final class AppModel: ObservableObject {
 
     var startAtLogin: Bool { UserDefaults.standard.bool(forKey: Self.startAtLoginKey) }
 
-    var needsApproval: Bool { loginItems.values.contains(.requiresApproval) }
-
     func start() {
         guard timer == nil else { return }
         registerIfNeeded()
         Task {
             await refresh()
+            if let refusal = setUpRefusal {
+                // A command opened the app, so `coconut status` shows this line as the last update error.
+                updateError = refusal
+                UpdatePreferences().record(UpdateResult(time: Date(), outcome: .failed, message: refusal))
+                return
+            }
             // The install script (updates/install.sh) opens the app with --set-up, so the person needs no click.
-            if CommandLine.arguments.contains("--set-up") && legacyAgents.isEmpty && status.service != .running {
+            if CommandLine.arguments.contains(SetUpRequest.argument) && legacyAgents.isEmpty
+                && status.service != .running {
                 await setUp()
             } else if legacyAgents.isEmpty && install.isInstalled() && !install.isCheckout() {
                 // After Sparkle installs a new app, the new app updates the source that it carries.
@@ -70,10 +92,11 @@ final class AppModel: ObservableObject {
     /// returned value: the published one can still be older when a newer read of the timer runs.
     @discardableResult
     func refresh() async -> [LoginItem: SMAppService.Status] {
-        let healthy = await StatusReader.checkHealth()
+        let (healthy, team) = await Self.readService(install: install, mode: mode)
         // The timer runs every five seconds. Each assignment redraws the menu, so only a change is assigned.
         let status = StatusReader(install: install).read(healthy: healthy)
         if status != self.status { self.status = status }
+        if team != self.team { self.team = team }
         let legacyAgents = LegacyAgents.present()
         if legacyAgents != self.legacyAgents { self.legacyAgents = legacyAgents }
         // Coconut can be installed, or the earlier LaunchAgents removed, while the app runs. Register then.
@@ -90,14 +113,27 @@ final class AppModel: ObservableObject {
         return loginItems
     }
 
-    /// Register the login items (the app and its two agents) when the person wants them, Coconut is installed and no
-    /// old LaunchAgent runs it. Each launch registers them again when one is missing.
+    /// Ask the service whether it answers. A team-only service answers with its teams, so one request does both. Its
+    /// short timeout keeps a service that hangs from holding the refresh of the timer.
+    nonisolated static func readService(install: Install, mode: InstallMode) async -> (Bool, TeamServiceStatus?) {
+        guard mode == .team else { return (await StatusReader.checkHealth(), nil) }
+        if let team = try? await TeamServiceStatus.fetch(transport: BridgeTransport(install: install, timeout: 2)) {
+            return (true, team)
+        }
+        return (await StatusReader.checkHealth(url: mode.healthURL), nil)
+    }
+
+    /// Register the login items of the mode (the app and its agents) when the person wants them, Coconut is installed
+    /// and no old LaunchAgent runs it. Each launch registers them again when one is missing.
     /// A first install registers them before the source exists: the tool of the agents waits, and the install starts it.
     func registerIfNeeded(beforeInstall: Bool = false) {
         legacyAgents = LegacyAgents.present()
         guard startAtLogin, legacyAgents.isEmpty, beforeInstall || install.isInstalled() else { return }
-        loginError = LoginItems().register()
+        loginError = LoginItems().register(for: mode)
     }
+
+    /// True while a login item of the mode waits for the approval of the person.
+    var needsApproval: Bool { mode.loginItems.contains { loginItems[$0] == .requiresApproval } }
 
     func setStartAtLogin(_ value: Bool) {
         UserDefaults.standard.set(value, forKey: Self.startAtLoginKey)
@@ -142,8 +178,8 @@ final class AppModel: ObservableObject {
         guard activity == nil else { return false }
         activity = install.isInstalled() ? "Updating Coconut. Running work finishes first." : "Installing Coconut…"
         updateError = nil
-        // Only a setup that the person asked for changes the Hermes config (scripts/hermes_skills.py).
-        let result = await runTool(ifNeeded ? ["install-source", "--if-needed"] : ["install-source"] + (setUp ? ["--set-up"] : []))
+        // Only a full setup that the person asked for changes the Hermes config (scripts/hermes_skills.py).
+        let result = await runTool(SetUpRequest.installSourceArguments(ifNeeded: ifNeeded, setUp: setUp, mode: mode))
         activity = nil
         let preferences = UpdatePreferences()
         if result.0 != 0 {
@@ -211,6 +247,8 @@ final class AppModel: ObservableObject {
         // The tool must use the folder that the menu shows, also when the app inherited another COCONUT_INSTALL_DIR.
         var environment = ProcessInfo.processInfo.environment
         environment["COCONUT_INSTALL_DIR"] = install.root.path
+        // With COCONUT_INSTALL_DIR, the tool takes the mode from COCONUT_MODE (InstallMode.standard).
+        mode.apply(to: &environment)
         return await Task.detached { () -> (Int32, String) in
             let process = Process()
             process.executableURL = tool

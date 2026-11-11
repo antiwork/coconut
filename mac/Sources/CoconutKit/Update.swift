@@ -65,11 +65,14 @@ extension Launch {
     /// instead of a LaunchAgent. COCONUT_SIDECAR names the sidecar of this bundle for scripts/tunnel.py, and
     /// COCONUT_TEAM_HELPER names its team helper for scripts/team.py, so neither script compiles. With
     /// `setUp`, the person asked for the setup. deploy.py now sets Coconut's own Hermes entries at each install, so
-    /// COCONUT_SET_UP no longer changes what it does.
+    /// COCONUT_SET_UP no longer changes what it does. In team-only mode, COCONUT_MODE=team makes deploy.py skip each
+    /// step that finds, checks or changes Hermes, and the relay sidecar.
     public static func update(install: Install, source: BundledSource, directory: String, python: URL, sidecar: URL,
                               teamHelper: URL? = nil, environment: [String: String],
-                              home: URL = Install.homeFolder(), setUp: Bool = false) -> Launch {
+                              home: URL = Install.homeFolder(), setUp: Bool = false,
+                              mode: InstallMode = .full) -> Launch {
         var environment = environment
+        mode.apply(to: &environment)
         environment["COCONUT_APP_MANAGED"] = "1"
         if setUp {
             environment["COCONUT_SET_UP"] = "1"

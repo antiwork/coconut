@@ -66,6 +66,35 @@ final class FullInstallPlanTests: XCTestCase {
         XCTAssertEqual(plan, Self.fixture)
     }
 
+    /// The new arguments, given as `.full`, change nothing of the fixture.
+    func testTheFullModeGivesTheStepsOfTheFixture() throws {
+        let resources = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: resources) }
+        try Data(#"{"package_id": "abc"}"#.utf8).write(to: resources.appendingPathComponent("package.json"))
+        let source = try XCTUnwrap(BundledSource(resources: resources))
+        let plan = try Self.plan(resources: resources)
+        let service = Launch.service(install: Self.install, python: Self.python, environment: ["PATH": "/bin"],
+                                     teamHelper: Self.helpers.appendingPathComponent("team-helper"), mode: .full)
+        XCTAssertEqual(Self.launch(service) as NSDictionary, plan["service"] as? NSDictionary)
+        for setUp in [false, true] {
+            let update = Launch.update(install: Self.install, source: source, directory: "Coconut", python: Self.python,
+                                       sidecar: Self.helpers.appendingPathComponent("tunnel-sidecar"),
+                                       teamHelper: Self.helpers.appendingPathComponent("team-helper"),
+                                       environment: ["PATH": "/bin"], home: URL(fileURLWithPath: "/Users/a"),
+                                       setUp: setUp, mode: .full)
+            XCTAssertEqual(Self.launch(update) as NSDictionary, plan[setUp ? "set up" : "update"] as? NSDictionary)
+        }
+        let register = FakeLoginItems([.app: .notRegistered, .agent(.service): .notRegistered,
+                                       .agent(.relay): .notRegistered])
+        _ = register.items.register(for: .full)
+        XCTAssertEqual(register.calls, plan["register"] as? [String])
+        XCTAssertEqual(PythonLocator(environment: ["COCONUT_HERMES_PYTHON": "/h/python", "HERMES_HOME": "/h"],
+                                     home: URL(fileURLWithPath: "/Users/a"), mode: .full).candidates().map(\.path),
+                       plan["python"] as? [String])
+        XCTAssertEqual(InstallMode.full.healthURL.absoluteString, plan["health"] as? String)
+    }
+
     static let fixture = """
         {
           "environment" : {

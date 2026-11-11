@@ -175,6 +175,30 @@ public final class MemoryPreferences: PreferenceStore {
 public enum StatusText {
     public static func lines(version: String, preferences: UpdatePreferences, status: Status,
                              now: Date = Date()) -> [String] {
+        var lines = updateLines(version: version, preferences: preferences)
+        lines += serviceLines(status)
+        lines.append("Relay: \(status.relay.replacingOccurrences(of: "_", with: " "))")
+        if let last = status.relayLastDisconnect {
+            var line = "Last relay disconnect: \(last.at), \(last.cause)"
+            if let detail = last.detail { line += " (\(detail))" }
+            if let reconnects = status.relayReconnects { line += "; \(reconnects) reconnects since the sidecar started" }
+            lines.append(line)
+        }
+        lines.append("Hermes: \(status.hermes == "ok" ? status.hermesVersion ?? "ok" : status.hermesReason ?? status.hermes)")
+        for phone in status.previews ?? [] {
+            lines.append("Notification previews (\(phone.name)): \(phone.line)")
+        }
+        return lines
+    }
+
+    /// The service, and the cause when it does not start (StartError).
+    static func serviceLines(_ status: Status) -> [String] {
+        ["Service: \(status.service.rawValue.replacingOccurrences(of: "_", with: " ")) (\(status.install))"]
+            + (status.serviceError.map { ["Service error: \($0)"] } ?? [])
+    }
+
+    /// The version, the update settings and the last update, the same in each mode.
+    static func updateLines(version: String, preferences: UpdatePreferences) -> [String] {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         var lines = [
@@ -197,18 +221,6 @@ public enum StatusText {
         }
         let error = preferences.lastResult.flatMap { $0.outcome == .failed ? $0.message ?? "unknown" : nil }
         lines.append("Last update error: \(error ?? "none")")
-        lines.append("Service: \(status.service.rawValue.replacingOccurrences(of: "_", with: " ")) (\(status.install))")
-        lines.append("Relay: \(status.relay.replacingOccurrences(of: "_", with: " "))")
-        if let last = status.relayLastDisconnect {
-            var line = "Last relay disconnect: \(last.at), \(last.cause)"
-            if let detail = last.detail { line += " (\(detail))" }
-            if let reconnects = status.relayReconnects { line += "; \(reconnects) reconnects since the sidecar started" }
-            lines.append(line)
-        }
-        lines.append("Hermes: \(status.hermes == "ok" ? status.hermesVersion ?? "ok" : status.hermesReason ?? status.hermes)")
-        for phone in status.previews ?? [] {
-            lines.append("Notification previews (\(phone.name)): \(phone.line)")
-        }
         return lines
     }
 }

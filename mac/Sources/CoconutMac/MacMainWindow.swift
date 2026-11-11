@@ -1,3 +1,4 @@
+import CoconutKit
 import SwiftUI
 
 /// What the main window shows in its detail column.
@@ -15,7 +16,8 @@ enum InspectorTab: Hashable {
 }
 
 /// The main window of the Mac client: the bots in a sidebar, the chat or the Inbox in the middle, and the details of the
-/// bot in a column on the right. It shows the pairing page until this Mac has a pairing.
+/// bot in a column on the right. It shows the pairing page until this Mac has a pairing. A Mac that runs Coconut for a
+/// team only shows its own page instead, and never the pairing page.
 struct MacMainWindow: View {
     @Environment(AppStore.self) private var store
     @ObservedObject var model: AppModel
@@ -30,6 +32,14 @@ struct MacMainWindow: View {
     @State private var libraryPath = NavigationPath()
 
     var body: some View {
+        if model.mode == .team {
+            MacTeamOnlyView(model: model)
+        } else {
+            clientWindow
+        }
+    }
+
+    private var clientWindow: some View {
         Group {
             if store.hasPairing || store.isDemo {
                 NavigationSplitView {
@@ -296,5 +306,82 @@ private struct MacSidebarLabel: View {
             Image(systemName: symbol).foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)
+    }
+}
+
+
+/// The window of a Mac that runs Coconut for a team only (InstallMode.team). No person works at this Mac, so the page
+/// says what the Mac does, shows its teams, and gives the commands that change them. It has no chat, no Inbox, no Library
+/// and no settings for bots. The cards have the style of the pairing page (MacPairingView).
+struct MacTeamOnlyView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                card {
+                    Text("This Mac runs Coconut for a team").font(.headline)
+                    Text("It keeps its team rooms in step and saves the pages of its bots for the team. It changes "
+                         + "nothing in Hermes and pairs no iPhone.")
+                        .foregroundStyle(.secondary)
+                    Text("Service: \(MenuContent.describe(model.status.service))")
+                    if let error = model.status.serviceError {
+                        Text(error).font(.callout).foregroundStyle(BoardStyle.destructive)
+                    }
+                }
+                card {
+                    Text("Teams").font(.headline)
+                    if let team = model.team {
+                        if !team.helper {
+                            Text("This Mac has no team helper, so no team can sync. Run coconut update.")
+                                .foregroundStyle(BoardStyle.destructive)
+                        }
+                        if team.rooms.isEmpty {
+                            Text("This Mac is in no team yet.").foregroundStyle(.secondary)
+                        }
+                        ForEach(team.rooms) { room in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(room.name)
+                                Text("\(room.state.capitalized): \(room.counts)").font(.callout).foregroundStyle(.secondary)
+                                if let error = room.error {
+                                    Text(error).font(.callout).foregroundStyle(BoardStyle.destructive)
+                                }
+                            }
+                        }
+                    } else {
+                        Text("The service does not answer, so the teams are not known.").foregroundStyle(.secondary)
+                    }
+                }
+                card {
+                    Text("Commands").font(.headline)
+                    command("Join a team. Pipe the invite link to the command.",
+                            "coconut team join --name <name of this Mac>")
+                    command("Declare a bot for the Hermes home that it stands for.",
+                            "coconut team new-bot <name> --home <Hermes home>")
+                    command("Add the bot to a team.", "coconut team add-bot <bot> --team <team>")
+                    Text("coconut is \(model.tool.path).").font(.callout).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: 640, alignment: .leading)
+            .frame(maxWidth: .infinity)
+        }
+        .frame(minWidth: 480, minHeight: 400)
+        .background(BoardStyle.paper)
+    }
+
+    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10, content: content)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium))
+    }
+
+    private func command(_ purpose: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(purpose)
+            Text(text).font(.callout.monospaced()).textSelection(.enabled)
+        }
     }
 }

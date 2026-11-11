@@ -66,11 +66,19 @@ public struct LoginItems {
         Dictionary(uniqueKeysWithValues: LoginItem.allCases.map { ($0, service($0).status) })
     }
 
+    /// Register the items of the mode, and remove each other item. A team-only Mac has no relay sidecar, also when a
+    /// person changed a full install by hand. Return a message for the last item that failed, or nil.
+    public func register(for mode: InstallMode) -> String? {
+        let failure = register(mode.loginItems)
+        let removed = unregister(LoginItem.allCases.filter { !mode.loginItems.contains($0) })
+        return removed ?? failure
+    }
+
     /// Register each item that is not enabled. An item that waits for approval stays registered, and the person
     /// allows it in System Settings. Return a message for the last item that failed, or nil.
-    public func register() -> String? {
+    public func register(_ items: [LoginItem] = LoginItem.allCases) -> String? {
         var failure: String?
-        for item in LoginItem.allCases {
+        for item in items {
             let service = service(item)
             guard service.status != .enabled else { continue }
             do {
@@ -84,9 +92,9 @@ public struct LoginItems {
 
     /// Remove each registered item. An item that waits for approval is registered too: approval would start it later.
     /// Return a message for the last item that failed, or nil.
-    public func unregister() -> String? {
+    public func unregister(_ items: [LoginItem] = LoginItem.allCases) -> String? {
         var failure: String?
-        for item in LoginItem.allCases {
+        for item in items {
             let service = service(item)
             guard [.enabled, .requiresApproval].contains(service.status) else { continue }
             do {

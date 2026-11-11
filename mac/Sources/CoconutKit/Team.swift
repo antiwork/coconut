@@ -149,9 +149,13 @@ public protocol TeamTransport: Sendable {
 /// The main listener of the service, with the address and the token that the service writes at each start.
 public struct BridgeTransport: TeamTransport {
     public let install: Install
+    /// A join and a leave call the relay, with retries, so they can take a while. scripts/team.py waits as long. The
+    /// menu of the app asks with a short timeout, so a service that hangs does not hold its refresh.
+    public let timeout: TimeInterval
 
-    public init(install: Install) {
+    public init(install: Install, timeout: TimeInterval = 180) {
         self.install = install
+        self.timeout = timeout
     }
 
     public func send(method: String, path: String, body: Data?) async throws -> TeamResponse {
@@ -163,8 +167,7 @@ public struct BridgeTransport: TeamTransport {
             guard install.isInstalled() else { throw TeamFailure("Coconut is not installed in \(install.root.path).") }
             throw TeamFailure.notStarted
         }
-        // A join and a leave call the relay, with retries, so they can take a while. scripts/team.py waits as long.
-        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 180)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         if let body {

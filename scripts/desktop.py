@@ -103,13 +103,24 @@ def simulator() -> None:
 
 
 def uninstall() -> None:
+    # A team-only install added nothing to Hermes (backend/coconut/team_only.py), so its removal edits nothing there.
+    team_only = host.install_mode() == host.TEAM_MODE
+    if team_only and host.login_item_loaded():
+        # The login item would start the service again on an empty data folder.
+        raise SystemExit("Coconut.app runs this service. Turn off Start at Login in the Coconut menu, then run this "
+                         "command again.")
     run([sys.executable, "scripts/cleanup.py"])
-    print("This removes Coconut's conversations, files, and model keys stored in the local runtime. Your Hermes stays.")
+    if team_only:
+        print("This removes the team rooms, their keys, the bots of this Mac and their pages stored in the local runtime. "
+              "Coconut changed nothing in Hermes, so Hermes stays as it is.")
+    else:
+        print("This removes Coconut's conversations, files, and model keys stored in the local runtime. Your Hermes stays.")
     if input("Type DELETE to continue: ").strip() != "DELETE":
         print("The local runtime remains installed.")
         return
-    # Hermes skips a missing skill folder, but the entry would stay in its config. A missing Hermes does not stop this.
-    subprocess.run([sys.executable, "scripts/hermes_skills.py", "remove"], cwd=ROOT)
+    if not team_only:
+        # Hermes skips a missing skill folder, but the entry would stay in its config. A missing Hermes does not stop this.
+        subprocess.run([sys.executable, "scripts/hermes_skills.py", "remove"], cwd=ROOT)
     run([sys.executable, "scripts/cleanup.py", "--yes"])
     # An install keeps its skill folders read-only (deploy.SKILL_FOLDER_MODE). Make them writable, so they can go.
     deploy.lock_skills(ROOT, locked=False)

@@ -12,9 +12,11 @@ public struct Launch: Equatable {
 
     /// The service: `host.py serve`. host.py finds the person's Hermes and starts again under its Python.
     /// `teamHelper` is the helper of the team log in this bundle, which the service runs (team_helper.py).
+    /// In team-only mode, `COCONUT_MODE=team` makes the service a team-only service (server.py), which finds no Hermes.
     public static func service(install: Install, python: URL, environment: [String: String],
-                               teamHelper: URL? = nil) -> Launch {
+                               teamHelper: URL? = nil, mode: InstallMode = .full) -> Launch {
         var environment = environment
+        mode.apply(to: &environment)
         environment["PYTHONUNBUFFERED"] = "1"
         if let teamHelper {
             environment["COCONUT_TEAM_HELPER"] = teamHelper.path

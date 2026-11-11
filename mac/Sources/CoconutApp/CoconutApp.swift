@@ -17,8 +17,11 @@ struct CoconutApp: App {
             MacMainWindow(model: model)
                 .environment(store)
                 .tint(.primary)
-                .task { store.start() }
+                // A team-only Mac has no pairing, so its chat client has nothing to connect to.
+                .task { if model.mode == .full { store.start() } }
                 .onOpenURL { url in
+                    // A team-only Mac pairs no iPhone, and it joins a team with coconut team join.
+                    guard model.mode == .full else { return }
                     // A Hermes agent sends this link. Coconut shows the Mac name before it pairs.
                     if PairingSetup.isLink(url) { store.setupLink = url.absoluteString }
                     // An invite link of a team opens the join sheet. The link stays in memory only.
@@ -29,10 +32,16 @@ struct CoconutApp: App {
 
         // Coconut > Settings: the settings of the chat client. The Team screen is its one page today.
         Settings {
-            NavigationStack { TeamView() }
-                .environment(store)
-                .tint(.primary)
-                .frame(width: 480, height: 560)
+            Group {
+                if model.mode == .team {
+                    MacTeamOnlyView(model: model)
+                } else {
+                    NavigationStack { TeamView() }
+                }
+            }
+            .environment(store)
+            .tint(.primary)
+            .frame(width: 480, height: 560)
         }
 
         MenuBarExtra {
@@ -55,29 +64,41 @@ struct MenuContent: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        if model.mode == .team {
+            // A team-only Mac has no relay, no phone and no Hermes of Coconut.
+            Text("Mode: team only")
+        }
         Text("Mac: \(Self.describe(model.status.service))")
-        Text("Relay: \(model.status.relay.replacingOccurrences(of: "_", with: " "))")
-        Text("Hermes: \(Self.describe(hermes: model.status))")
+        if let error = model.status.serviceError {
+            Text(error)
+        }
+        if model.mode == .full {
+            Text("Relay: \(model.status.relay.replacingOccurrences(of: "_", with: " "))")
+            Text("Hermes: \(Self.describe(hermes: model.status))")
+        }
         if let activity = model.activity {
             Text(activity)
         }
         if let error = model.updateError {
             Text(error)
         }
-        if !model.legacyAgents.isEmpty {
-            Text("Runs from the earlier LaunchAgent")
-            Button("Move Coconut to This App") { Task { await model.moveToApp() } }
-                .disabled(model.activity != nil || model.status.service == .notInstalled)
-        } else if model.status.service == .notInstalled {
-            Button("Set Up Coconut") { Task { await model.setUp() } }
-                .disabled(model.activity != nil)
+        // A Mac for a team is set up with Coconut.app --set-up --team-only, never with a click.
+        if model.mode == .full {
+            if !model.legacyAgents.isEmpty {
+                Text("Runs from the earlier LaunchAgent")
+                Button("Move Coconut to This App") { Task { await model.moveToApp() } }
+                    .disabled(model.activity != nil || model.status.service == .notInstalled)
+            } else if model.status.service == .notInstalled {
+                Button("Set Up Coconut") { Task { await model.setUp() } }
+                    .disabled(model.activity != nil)
+            }
         }
         if let error = model.loginError {
             Text(error)
         }
         if model.startAtLogin && model.legacyAgents.isEmpty && model.status.service != .notInstalled {
             // The status of each login item that does not run at login yet: the app and its two agents.
-            ForEach(LoginItem.allCases.filter { model.loginItems[$0].map { $0 != .enabled } ?? false }, id: \.self) { item in
+            ForEach(model.mode.loginItems.filter { model.loginItems[$0].map { $0 != .enabled } ?? false }, id: \.self) { item in
                 Text("Login item \(item.name): \(Self.describe(model.loginItems[item] ?? .notFound))")
             }
         }
@@ -89,11 +110,13 @@ struct MenuContent: View {
             openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)
         }
-        Button("Pair iPhone…") {
-            openWindow(id: "pair")
-            NSApp.activate(ignoringOtherApps: true)
+        if model.mode == .full {
+            Button("Pair iPhone…") {
+                openWindow(id: "pair")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .disabled(model.status.service == .notInstalled)
         }
-        .disabled(model.status.service == .notInstalled)
         Toggle("Start at Login", isOn: Binding(get: { model.startAtLogin }, set: { model.setStartAtLogin($0) }))
             .disabled(!model.legacyAgents.isEmpty)
         Button("Open Logs") { model.openLogs() }

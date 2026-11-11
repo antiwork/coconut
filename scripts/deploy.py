@@ -39,6 +39,11 @@ SERVICE_MODES = ('managed', 'manual', 'stopped', 'app')
 # LaunchAgent.
 APP_MANAGED = 'COCONUT_APP_MANAGED'
 APP_SERVICE_LABEL = 'com.gumroad.coconut.service'
+# Coconut.app sets COCONUT_MODE=team for a Mac that runs Coconut for a team only (backend/coconut/team_only.py). Such an
+# install and each of its updates run no step that finds, checks or changes Hermes, build no notification helper and
+# start no relay sidecar. Its service has no tunnel listener, so the health check asks the main listener.
+MODE_ENVIRONMENT = 'COCONUT_MODE'
+TEAM_MODE = 'team'
 # The service answers its health check after startup finishes.
 HEALTH_WAIT_SECONDS = 300
 # A probe whose failure is expected, such as the check for an already restored service, waits only this long.
@@ -300,7 +305,18 @@ def load_host(root):
     return module
 
 
+def team_only_mode(environ=None):
+    """True when Coconut.app installs or updates a Mac that runs Coconut for a team only."""
+    return (os.environ if environ is None else environ).get(MODE_ENVIRONMENT) == TEAM_MODE
+
+
 class Operations:
+    # A team-only install (see MODE_ENVIRONMENT). receive() gives it to the Operations that it makes.
+    team_only = False
+
+    def __init__(self, team_only=False):
+        self.team_only = team_only
+
     @staticmethod
     def terminate_group(process):
         """Stop the process group of the command. Return the output that the command wrote and nobody read yet."""
@@ -365,6 +381,10 @@ class Operations:
     def preflight(self, root, package):
         if platform.system() != 'Darwin':
             raise DeployError('The execution host must run macOS.')
+        if self.team_only:
+            # Nothing compiles here: the app carries its helpers. Without the Command Line Tools, the Git command opens
+            # an installation dialog that nobody sees on a Mac without a person.
+            return
         self.command(['/usr/bin/xcode-select', '-p'], Path.home(), 'Command Line Tools check', timeout=15)
         self.command(['/usr/bin/xcrun', '--find', 'clang'], Path.home(), 'Compiler check', timeout=15)
         self.command(['/usr/bin/git', '--version'], Path.home(), 'Git check', timeout=15)
@@ -432,7 +452,9 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
         self.helper(root, 'restore', state)
 
     def prepare(self, root, package):
-        self.command([sys.executable, str(root / 'scripts/push.py'), '--rebuild'], root, 'Notification encryption build')
+        if not self.team_only:
+            # A team-only Mac has no phone, so it sends no notification.
+            self.command([sys.executable, str(root / 'scripts/push.py'), '--rebuild'], root, 'Notification encryption build')
         # The helper of the team log (docs/team-log.md). Under Coconut.app nothing compiles: the app carries it.
         self.command([sys.executable, str(root / 'scripts/team.py'), 'build'], root, 'Team helper build')
 
@@ -500,10 +522,12 @@ print('COCONUT_HOST_STATE='+json.dumps(result))
     def _health(self, root, seconds):
         """Check /health on the tunnel listener, which carries the phone's requests.
 
-        The service answers there with plain HTTP on loopback.
+        The service answers there with plain HTTP on loopback. A team-only service has no tunnel listener, so its check
+        asks the main listener.
         """
         try:
-            port = load_host(root).TUNNEL_PORT
+            host = load_host(root)
+            port = host.PORT if self.team_only else host.TUNNEL_PORT
         except (OSError, AttributeError, SyntaxError, DeployError):
             raise DeployError('The installed host helper does not name the tunnel listener.') from None
         # Startup migrations can take minutes on an active host with a large database. A deadline that is
@@ -742,18 +766,20 @@ def recover(directory, *, home=None, operations=None):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise DeployError('Another Coconut deployment is already running.') from None
-        reconcile(root, operations or Operations())
+        reconcile(root, operations or Operations(team_only=team_only_mode()))
     return True
 
 
-def receive(directory, stream, *, home=None, operations=None):
+def receive(directory, stream, *, home=None, operations=None, team_only=None):
+    """Install or update the package. `team_only` defaults to the mode that Coconut.app gives (team_only_mode)."""
     os.umask(0o077)
+    team_only = team_only_mode() if team_only is None else team_only
     home = Path(home or Path.home()).resolve()
     root = destination(directory, home)
     package = validate_package(stream)
     marker = read_marker(root)
     runtime_receipt, runtime_present = check_runtime_receipt(root, marker)
-    operations = operations or Operations()
+    operations = operations or Operations(team_only=team_only)
     operations.preflight(root, package)
     if marker is None and root.exists() and any(root.iterdir()):
         raise DeployError('This destination is no longer empty.')
@@ -806,7 +832,7 @@ def receive(directory, stream, *, home=None, operations=None):
         if not old_names:
             copy_source(staging / 'scripts/host.py', backup / 'scripts/host.py')
         # The service saved its Hermes status at its last start. Read it before the new code checks Hermes again.
-        previous_hermes = read_hermes_status(root)
+        previous_hermes = None if team_only else read_hermes_status(root)
         state = operations.inspect(root, helper) if old_names else {'mode': 'stopped', 'project': str(root), 'data_dir': str(root / '.runtime/host')}
         if not isinstance(state, dict) or state.get('mode') not in SERVICE_MODES:
             raise DeployError('The service returned an invalid execution mode.')
@@ -840,7 +866,8 @@ def receive(directory, stream, *, home=None, operations=None):
                 safe_path(root / name, root).unlink()
                 sync_directory((root / name).parent)
             operations.prepare(root, package)
-            check_hermes(operations, root, previous_hermes, updating=bool(old_names))
+            if not team_only:
+                check_hermes(operations, root, previous_hermes, updating=bool(old_names))
             record['phase'] = 'starting'
             write_json(journal, record)
             if initial_install:
@@ -870,6 +897,10 @@ def receive(directory, stream, *, home=None, operations=None):
                 raise DeployError(str(recovery_error)) from error
             detail = str(error) if isinstance(error, DeployError) else type(error).__name__
             raise DeployError('The update failed. Previous source and mode were restored; runtime data was not rewound. ' + detail) from error
+        if team_only:
+            # No relay sidecar and no entry in Hermes: a team-only Mac has no phone, and Coconut never touches its Hermes.
+            result['team_only'] = True
+            return result
         result['tunnel'] = operations.tunnel(root)
         # Each install sets Coconut's own entries in the Hermes profiles again, so an update brings them up to date.
         result['skills'] = operations.skills(root)
