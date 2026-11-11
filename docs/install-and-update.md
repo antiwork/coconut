@@ -226,7 +226,7 @@ If the iPhone already has a pairing, Coconut asks before a link replaces it.
 
 ## A Mac without a person
 
-A Mac that runs a Hermes agent with no person at it can be a member of a team, so that its agent publishes pages for the team. This Mac gets the normal Coconut.app, set up "team only". Its service keeps the team rooms in step and saves the pages of the bots that the Mac declares. See [team-only mode](team-log.md#team-only-mode). The Mac has the same release path, the same automatic updates, the same signed helper and the same `coconut` tool as a full install.
+A Mac that runs a Hermes agent with no person at it can be a member of a team, so that its agent publishes pages for the team. This Mac gets the normal Coconut.app, set up "team only". Its service keeps its teams in step and saves the pages of the bots that the Mac declares. See [team-only mode](team-log.md#team-only-mode). The Mac has the same release path, the same automatic updates, the same signed helper and the same `coconut` tool as a full install.
 
 ### What a team-only install never touches
 
@@ -283,7 +283,7 @@ A set-up does not change the mode of an install. On a Mac with a full install, `
 
 The window of the app shows one page: what this Mac does, each team with its state, its members and bots, and the commands above. It has no chat, no Inbox, no Library and no bot settings, and it never shows the pairing page. The menu shows `Mode: team only`, the state of the service, and the login items.
 
-`coconut status` prints the version and the update lines, then `Mode: team only`, the service, the team helper, the count of the bots of this Mac, and one line for each team with its state, its members and bots, and whether its socket is open, with its sync error. `--json` has `"mode": "team"`. These commands are for a phone or for Hermes, so each one prints one line and exits with 1: `coconut pair`, `coconut migrate` and `coconut install-source --set-up`. `coconut team` works as on a full Mac.
+`coconut status` prints the version and the update lines, then `Mode: team only`, the service, the team helper, the count of the bots of this Mac, and one line for each team with its state, its members and bots, and whether it is connected, with its sync error. `--json` has `"mode": "team"`. These commands are for a phone or for Hermes, so each one prints one line and exits with 1: `coconut pair`, `coconut migrate` and `coconut install-source --set-up`. `coconut team` works as on a full Mac.
 
 ### When the service does not start
 
@@ -295,7 +295,7 @@ Updates work as on a full Mac: Sparkle installs each new Coconut.app, and the ap
 
 ### Remove
 
-No click is necessary.
+No click is necessary. A removal cannot be undone: it deletes the teams of this Mac, their keys and the member key of this Mac. To come back, the Mac needs a new invite. A bot follows the rule of a leave: it shows the person what the command removes, and runs it only after a clear yes.
 
 1. Leave each team: `coconut team leave --confirm "Example Team"`.
 2. Quit the app, so that it gets the next argument: `osascript -e 'tell application id "com.gumroad.coconut.mac" to quit'`.
@@ -309,7 +309,7 @@ No click is necessary.
 4. Check that `coconut status` shows `Service: not installed`. A failure shows as `Last update error:`.
 5. Delete `/Applications/Coconut.app`.
 
-On a full install, `--remove` and `coconut remove` change nothing and say to use `Uninstall Coconut.command`.
+On a full install, `--remove` and `coconut remove` change nothing. Each one gives one line that says to use `Uninstall Coconut.command`: `coconut remove` prints it, and `coconut status` shows the line of `--remove` as the last update error.
 
 ## Releases from CI
 

@@ -338,7 +338,7 @@ struct TeamOnlyPage: View {
             VStack(alignment: .leading, spacing: 16) {
                 card {
                     Text("This Mac runs Coconut for a team").font(.headline)
-                    Text("It keeps its team rooms in step and saves the pages of its bots for the team. It changes "
+                    Text("It keeps its teams in step and saves the pages of its bots for the team. It changes "
                          + "nothing in Hermes and pairs no iPhone.")
                         .foregroundStyle(.secondary)
                     Text("Service: \(service)")

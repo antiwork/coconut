@@ -47,7 +47,7 @@ let usage = """
 
     Coconut.app --set-up sets up Coconut without a click, as Set Up Coconut in the menu does. The install script
     opens the app with it. Coconut.app --set-up --team-only sets up a Mac with no person for a team only: Coconut keeps
-    its team rooms and the pages of its bots, and touches nothing of Hermes. See docs/install-and-update.md.
+    its teams and the pages of its bots, and touches nothing of Hermes. See docs/install-and-update.md.
     """
 
 func fail(_ message: String, code: Int32 = 1) -> Never {

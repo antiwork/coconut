@@ -4,7 +4,7 @@ import Foundation
 ///
 /// A full install serves the iPhone and the Mac client, runs the bots of the person's Hermes and adds Coconut's entries
 /// to the Hermes config. A team-only install is for a Mac with no person at it (docs/install-and-update.md, "A Mac without
-/// a person"): its service keeps the team rooms in step and saves the pages of the bots that the Mac declares
+/// a person"): its service keeps its teams in step and saves the pages of the bots that the Mac declares
 /// (backend/coconut/team_only.py). It touches nothing of Hermes, registers no relay sidecar and pairs no phone.
 ///
 /// The install keeps its mode in the preferences of the app, next to `InstallDirectory`, so the app, the tool, the login

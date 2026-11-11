@@ -24,13 +24,14 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
 
         public var id: String { room }
 
-        /// One line for a person: "Example Team (active): 3 members, 2 bots, socket open".
+        /// One line for a person: "Example Team (active): 3 members, 2 bots, connected".
         public var line: String { "\(name) (\(state)): \(counts)" }
 
-        /// "3 members, 2 bots, socket open".
-        public var counts: String {
-            "\(Self.count(members, "member")), \(Self.count(bots, "bot")), socket \(socket ? "open" : "closed")"
-        }
+        /// "3 members, 2 bots, connected". The page and `coconut status` both use it.
+        public var counts: String { "\(Self.count(members, "member")), \(Self.count(bots, "bot")), \(connection)" }
+
+        /// The socket is a word of the code. A person reads whether the team is connected.
+        public var connection: String { socket ? "connected" : "not connected" }
 
         static func count(_ number: Int, _ noun: String) -> String { "\(number) \(noun)\(number == 1 ? "" : "s")" }
     }

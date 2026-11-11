@@ -161,8 +161,8 @@ final class InstallModeTests: XCTestCase {
         service.answer("GET", "/v1/team/status", Self.answer)
         let status = try await TeamServiceStatus.fetch(transport: service)
         XCTAssertEqual(service.sent, ["GET /v1/team/status"])
-        XCTAssertEqual(status.rooms.map(\.line), ["Example Team (active): 3 members, 2 bots, socket open",
-                                                  "Second Team (active): 1 member, 0 bots, socket closed"])
+        XCTAssertEqual(status.rooms.map(\.line), ["Example Team (active): 3 members, 2 bots, connected",
+                                                  "Second Team (active): 1 member, 0 bots, not connected"])
         XCTAssertEqual(status.rooms[1].error, "The relay refused the request.")
     }
 
@@ -182,8 +182,8 @@ final class InstallModeTests: XCTestCase {
             "Service: running (/Users/a/Coconut)",
             "Team helper: yes",
             "Bots of this Mac: 2",
-            "Team: Example Team (active): 3 members, 2 bots, socket open",
-            "Team: Second Team (active): 1 member, 0 bots, socket closed",
+            "Team: Example Team (active): 3 members, 2 bots, connected",
+            "Team: Second Team (active): 1 member, 0 bots, not connected",
             "Sync error: The relay refused the request.",
         ])
         let stopped = Status(install: "/Users/a/Coconut", service: .stopped, hermes: "missing", relay: "not_installed",
@@ -307,6 +307,20 @@ final class InstallModeTests: XCTestCase {
     func testOnlyRemoveAsksForTheRemoval() {
         XCTAssertTrue(RemoveRequest.asked(arguments: ["Coconut", "--remove"]))
         XCTAssertFalse(RemoveRequest.asked(arguments: ["Coconut", "--set-up", "--team-only"]))
+        // A full install changes nothing, and each refusal is one line.
+        XCTAssertEqual(RemoveRequest.fullInstall, "Coconut.app --remove removes a team-only install. On a full "
+                       + "install, open Uninstall Coconut.command.")
+        XCTAssertFalse(RemoveRequest.fullInstall.contains("\n") || RemoveRequest.toolFullInstall.contains("\n"))
+        XCTAssertNil(TeamOnlyRefusal.line(["remove"], mode: .team))
+    }
+
+    func testAPersonReadsWhetherATeamIsConnected() {
+        let room = TeamServiceStatus.Room(room: "r1", name: "Example Team", state: "active", members: 3, bots: 2,
+                                          syncedAt: nil, error: nil, socket: true)
+        XCTAssertEqual(room.counts, "3 members, 2 bots, connected")
+        var closed = room
+        closed.socket = false
+        XCTAssertEqual(closed.line, "Example Team (active): 3 members, 2 bots, not connected")
     }
 
     func testAServiceWithoutACauseShowsNone() throws {

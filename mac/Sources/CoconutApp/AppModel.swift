@@ -62,9 +62,14 @@ final class AppModel: ObservableObject {
     func start() {
         guard timer == nil else { return }
         if RemoveRequest.asked(arguments: CommandLine.arguments) {
-            // No registration and no update: the app removes what it installed, then quits.
-            Task { await remove() }
-            return
+            if mode == .team {
+                // No registration and no update: the app removes what it installed, then quits.
+                Task { await remove() }
+                return
+            }
+            // A full install changes nothing and starts as always. `coconut status` shows the line.
+            updateError = RemoveRequest.fullInstall
+            UpdatePreferences().record(UpdateResult(time: Date(), outcome: .failed, message: RemoveRequest.fullInstall))
         }
         registerIfNeeded()
         Task {

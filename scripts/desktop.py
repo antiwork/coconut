@@ -113,7 +113,7 @@ def uninstall(confirmed: bool = False) -> None:
                          "command again.")
     run([sys.executable, "scripts/cleanup.py"])
     if team_only:
-        print("This removes the team rooms, their keys, the bots of this Mac and their pages stored in the local runtime. "
+        print("This removes the teams of this Mac, their keys, the bots of this Mac and their pages stored in the local runtime. "
               "Coconut changed nothing in Hermes, so Hermes stays as it is.")
     else:
         print("This removes Coconut's conversations, files, and model keys stored in the local runtime. Your Hermes stays.")
