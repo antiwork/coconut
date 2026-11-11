@@ -83,38 +83,54 @@ final class TranscriptWindowTests: XCTestCase {
         XCTAssertEqual(window.range(of: rows), (50 - TranscriptWindow.batchRows)..<60)
     }
 
-    // The hold. A header row of 10 points, then the transcript: the oldest row of the window is at position 1.
-    private let rowsBefore: [CGFloat] = [10, 120, 80, 200, 60, 90, 20]
+    // The hold. Rows of a list, from the top: the header, the transcript, the status row, the bottom spacer.
+    private let list: [(id: String, height: CGFloat)] = [("header", 10), ("m1", 120), ("m2", 80), ("m3", 200),
+                                                          ("m4", 60), ("m5", 90), ("status", 40), ("spacer", 20)]
+    /// m3 and m4 are on screen.
+    private let onScreen = ["m3", "m4"]
 
-    func testAReplyAtTheBottomWithAnArmedHoldGivesNoCorrection() {
-        // The window will add 5 rows above. A reply alone arrives first: the hold waits.
-        XCTAssertFalse(TranscriptHoldRule.hasArrived(rowsBefore: 7, rowsAfter: 8, rowsAbove: 5))
-        // A reply with no rows above corrects nothing.
-        let after = Array(rowsBefore.dropLast()) + [150, rowsBefore.last!]
-        XCTAssertEqual(TranscriptHoldRule.correction(heightsBefore: rowsBefore, firstRow: 1,
-                                                     heightsAfter: after, rowsAbove: 0), 0)
+    private func tops(_ rows: [(id: String, height: CGFloat)]) -> [String: CGFloat] {
+        var top: CGFloat = 0
+        var tops: [String: CGFloat] = [:]
+        for row in rows { tops[row.id] = top; top += row.height }
+        return tops
     }
 
-    func testRowsAboveGiveACorrectionOfTheirHeight() {
-        let after = [rowsBefore[0], 300, 45, 130] + rowsBefore.dropFirst()
-        XCTAssertTrue(TranscriptHoldRule.hasArrived(rowsBefore: 7, rowsAfter: 10, rowsAbove: 3))
-        XCTAssertEqual(TranscriptHoldRule.correction(heightsBefore: rowsBefore, firstRow: 1,
-                                                     heightsAfter: Array(after), rowsAbove: 3), 475)
+    private func correction(after: [(id: String, height: CGFloat)]) -> CGFloat? {
+        let before = tops(list)
+        return TranscriptHoldRule.correction(anchors: onScreen.map { ($0, before[$0]!) }, topsAfter: tops(after))
     }
 
-    func testAGrowthAndAReplyInOneUpdateCorrectOnlyForTheRowsAbove() {
-        let grown = [rowsBefore[0], 300, 45] + rowsBefore.dropFirst()
-        let after = Array(grown.dropLast()) + [500, rowsBefore.last!]
-        XCTAssertTrue(TranscriptHoldRule.hasArrived(rowsBefore: 7, rowsAfter: 10, rowsAbove: 2))
-        XCTAssertEqual(TranscriptHoldRule.correction(heightsBefore: rowsBefore, firstRow: 1,
-                                                     heightsAfter: after, rowsAbove: 2), 345)
+    private func older(_ heights: [CGFloat]) -> [(id: String, height: CGFloat)] {
+        heights.enumerated().map { ("old\($0.offset)", $0.element) }
     }
 
-    func testRowsThatAppearAboveTheTranscriptCountWithTheNewRows() {
-        // The window reaches the first row: a button row of 44 points comes with 2 transcript rows.
-        let after = [rowsBefore[0], 44, 300, 45] + rowsBefore.dropFirst()
-        XCTAssertEqual(TranscriptHoldRule.correction(heightsBefore: rowsBefore, firstRow: 1,
-                                                     heightsAfter: Array(after), rowsAbove: 3), 389)
+    func testAGrowthAboveWithTheStatusRowRemovedBelowCorrectsForTheGrowth() {
+        let after = [list[0]] + older([300, 45, 130, 70, 55]) + list[1...5] + [list[7]]
+        XCTAssertEqual(correction(after: Array(after)), 600)
+    }
+
+    func testAGrowthAboveWithAReplyBelowCorrectsForTheGrowth() {
+        let after = [list[0]] + older([300, 45]) + list[1...5] + [(id: "reply", height: CGFloat(150))] + list[6...7]
+        XCTAssertEqual(correction(after: Array(after)), 345)
+    }
+
+    func testARowDeletedAboveTheAnchorMovesBackByItsHeight() {
+        XCTAssertEqual(correction(after: list.filter { $0.id != "m2" }), -80)
+    }
+
+    func testARowDeletedBelowTheAnchorChangesNothing() {
+        XCTAssertEqual(correction(after: list.filter { $0.id != "m5" }), 0)
+    }
+
+    func testADeletedAnchorUsesTheNextRowThatWasOnScreen() {
+        // m3 is gone; m4 was at 410 and is at 210 now.
+        XCTAssertEqual(correction(after: list.filter { $0.id != "m3" }), -200)
+        XCTAssertNil(correction(after: list.filter { !onScreen.contains($0.id) }))
+    }
+
+    func testNoChangeGivesNoCorrection() {
+        XCTAssertEqual(correction(after: list), 0)
     }
 
     func testARemovedFirstRowCountsTheWindowFromTheEnd() {

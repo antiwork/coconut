@@ -114,26 +114,17 @@ struct ConversationView: View {
         }
     }
 
-    /// The rows of the list above the transcript: the header, and while the window holds the first row, the button for
-    /// older history and the links to other chats.
-    private func rowsBeforeTranscript(startsAtFirstRow: Bool) -> Int {
-        guard startsAtFirstRow else { return 1 }
-        return 1 + (store.hasOlderMessages(botId) ? 1 : 0) + originTasks.count
-    }
-
-    /// Changes the window and tells the hold how many rows the change adds above the oldest row of the window, so the
-    /// rows on screen stay in place. A change that adds no row above records nothing.
+    /// Changes the window. When the change adds rows above the window, the hold notes the rows on screen first, so they
+    /// keep their place.
     @discardableResult
     private func changeWindow(_ change: (inout TranscriptWindow, [String]) -> Bool) -> Bool {
         let ids = current.entries.map(\.id)
         let focus = windowFocus
         var next = window
         guard change(&next, ids) else { return false }
-        let before = window.range(of: ids, focusId: focus).lowerBound
-        let after = next.range(of: ids, focusId: focus).lowerBound
-        let headerBefore = rowsBeforeTranscript(startsAtFirstRow: before == 0)
-        let headerAfter = rowsBeforeTranscript(startsAtFirstRow: after == 0)
-        tableHold.prepare(rowsAbove: before - after + headerAfter - headerBefore, firstRow: headerBefore)
+        if next.range(of: ids, focusId: focus).lowerBound < window.range(of: ids, focusId: focus).lowerBound {
+            tableHold.prepare()
+        }
         window = next
         return true
     }
