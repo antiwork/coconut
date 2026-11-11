@@ -43,9 +43,12 @@ let usage = """
       migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       service   Run the Coconut service. The login item uses this command.
       sidecar   Run the relay sidecar. The login item uses this command.
-      remove    On a Mac that runs Coconut for a team only: remove Coconut. The tool stops Coconut.app, starts it
-                with --remove, and waits for the result. The app removes the login items, the data and the key of
-                this Mac in each team, and moves the install folder to the Trash. This cannot be undone.
+      remove [--confirm]
+                On a Mac that runs Coconut for a team only: remove Coconut. This cannot be undone. Without --confirm,
+                print what the removal does and change nothing. With --confirm, stop Coconut.app, start it with
+                --remove, and wait for the result. The app removes its login items, the data of Coconut, and the key
+                of this Mac in each team, and moves the install folder to the Trash. To come back, this Mac needs a
+                new invite link.
 
     Coconut.app --set-up sets up Coconut without a click, as Set Up Coconut in the menu does. The install script
     opens the app with it. Coconut.app --set-up --team-only sets up a Mac with no person for a team only: Coconut keeps
@@ -463,6 +466,11 @@ case "settings":
 case "remove" where !CommandLine.arguments.contains(RemoveRequest.fromApp):
     guard mode == .team else { fail(RemoveRequest.toolFullInstall) }
     guard install.isInstalled() else { fail("Coconut is not installed in \(install.root.path).") }
+    guard CommandLine.arguments.contains(RemoveRequest.confirm) else {
+        // Nothing changes without the flag. The bot shows these lines to the person and asks for a clear yes.
+        let teams = try? readTeamStatus().get().rooms.map(\.name)
+        fail(RemoveRequest.preview(teams: teams).joined(separator: "\n"))
+    }
     exit(removeWithApp())
 case "remove":
     guard mode == .team else { fail(RemoveRequest.toolFullInstall) }

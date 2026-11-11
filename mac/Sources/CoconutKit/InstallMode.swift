@@ -113,6 +113,26 @@ public enum RemoveRequest {
     public static let timedOut = "Coconut.app did not finish the removal within ten minutes. Run coconut status to see "
         + "the last update error."
 
+    public static let confirm = "--confirm"
+    public static let command = "coconut remove --confirm"
+
+    /// What `coconut remove` prints without `--confirm`, as `coconut team leave` does without it: no person can
+    /// confirm here, so the command needs the flag. `teams` are the names of the teams of this Mac, or nil when the
+    /// service does not answer.
+    public static func preview(teams: [String]?) -> [String] {
+        var lines = [
+            "A removal cannot be undone. No person can confirm it here, so the command needs --confirm.",
+            "Coconut.app removes its login items, the data of Coconut, and the key of this Mac in each team.",
+        ]
+        switch teams {
+        case nil: lines.append("The service does not answer, so the teams of this Mac are not known.")
+        case let teams? where teams.isEmpty: lines.append("This Mac is in no team.")
+        case let teams?: lines += teams.map { "This Mac leaves the team \($0)." }
+        }
+        lines += ["To come back, this Mac needs a new invite link.", "To remove Coconut, run: \(command)"]
+        return lines
+    }
+
     public enum Outcome: Equatable {
         case waiting
         case removed

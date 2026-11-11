@@ -382,6 +382,21 @@ final class InstallModeTests: XCTestCase {
         }
     }
 
+    func testCoconutRemoveWithoutConfirmSaysWhatItRemovesAndHowToRunIt() {
+        XCTAssertEqual(RemoveRequest.preview(teams: ["Example Team", "Second Team"]), [
+            "A removal cannot be undone. No person can confirm it here, so the command needs --confirm.",
+            "Coconut.app removes its login items, the data of Coconut, and the key of this Mac in each team.",
+            "This Mac leaves the team Example Team.",
+            "This Mac leaves the team Second Team.",
+            "To come back, this Mac needs a new invite link.",
+            "To remove Coconut, run: coconut remove --confirm",
+        ])
+        XCTAssertEqual(RemoveRequest.preview(teams: [])[2], "This Mac is in no team.")
+        XCTAssertEqual(RemoveRequest.preview(teams: nil)[2],
+                       "The service does not answer, so the teams of this Mac are not known.")
+        XCTAssertEqual(RemoveRequest.command, "coconut remove --confirm")
+    }
+
     func testAPersonReadsWhetherATeamIsConnected() {
         let room = TeamServiceStatus.Room(room: "r1", name: "Example Team", state: "active", members: 3, bots: 2,
                                           syncedAt: nil, error: nil, socket: true)

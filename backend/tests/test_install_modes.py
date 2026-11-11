@@ -297,7 +297,8 @@ class RemoveAndSetUpTests(unittest.TestCase):
         docs = (repository / 'docs/install-and-update.md').read_text()
         rule = next(line for line in skill.splitlines() if 'coconut remove' in line).removeprefix('6. ')
         self.assertIn(rule, docs)
-        for text in ('clear yes', 'new invite', 'key of this Mac'):
+        for text in ('clear yes', 'new invite link', 'the key of this Mac in each team', 'without `--confirm`',
+                     '`coconut remove --confirm` only after a clear yes'):
             self.assertIn(text, rule)
         section = docs[docs.index('### Remove'):docs.index('## Releases from CI')]
         # The app reads --remove only at its start, so no step opens it with the argument by hand.
