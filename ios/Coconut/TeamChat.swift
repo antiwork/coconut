@@ -457,6 +457,16 @@ extension TeamRoom {
 
 /// The names of team bots with `@` in the team chat. People are not in the list yet: a mention of a person does nothing.
 enum TeamMentions {
+    /// The most mentions that the Mac takes in one message (`MAX_MENTIONS` in backend/coconut/team_store.py). A send
+    /// with more saves nothing, so a message that the Mac refuses for its mentions never waits for a retry.
+    static let limit = 16
+    static let overLimit = "Name at most \(limit) bots in one message."
+
+    /// True when the `mentions` of a send fit the limit. Each ID counts once.
+    static func fits(_ mentions: [String]) -> Bool {
+        Set(mentions).count <= limit
+    }
+
     /// The bots that the list offers: the bots of the team that answer each member (`open`). A bot of a person, also
     /// of this person, answers no teammate, so the list does not offer it. This is the one place of that rule.
     static func bots(of room: TeamRoom) -> [TeamRoomBot] {

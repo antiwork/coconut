@@ -550,6 +550,37 @@ final class TeamChatTests: XCTestCase {
                        "A bot that is not open is no mention, also when the text names it.")
     }
 
+    func testASendNamesAtMostSixteenBots() {
+        let bots = (1...17).map { TeamRoomBot(id: "t-r1-\($0)", name: "Bot\($0)", open: true) }
+        let room = TeamRoom(room: "r1", name: "Example Team", state: "active", bots: bots)
+        func ids(_ count: Int) -> [String] {
+            TeamMentions.ids(in: (1...count).map { "@Bot\($0)" }.joined(separator: " "), selected: [], room: room)
+        }
+        XCTAssertEqual(TeamMentions.limit, 16, "The limit of the Mac (MAX_MENTIONS).")
+        XCTAssertEqual(ids(16).count, 16)
+        XCTAssertTrue(TeamMentions.fits(ids(16)))
+        XCTAssertEqual(ids(17).count, 17, "A name typed without a pick counts too.")
+        XCTAssertFalse(TeamMentions.fits(ids(17)))
+        let twice = TeamMentions.ids(in: "@Bot1 and again @Bot1", selected: [], room: room)
+        XCTAssertEqual(twice, ["t-r1-1"], "The same bot named twice counts once.")
+        XCTAssertTrue(TeamMentions.fits(ids(16) + ["t-r1-1"]), "An ID counts once.")
+        XCTAssertEqual(TeamMentions.overLimit, "Name at most 16 bots in one message.")
+    }
+
+    @MainActor
+    func testASendOverTheLimitSavesNothingAndSaysWhy() {
+        let store = AppStore(demo: true)
+        let room = TeamRoom(room: "r1", name: "Example Team", state: "active")
+        store.team = TeamRooms(rooms: [room], helper: true)
+        let mentions = (1...17).map { "t-r1-\($0)" }
+        XCTAssertFalse(store.sendTeamMessage("r1", text: "Hello", replyingTo: nil, mentions: mentions))
+        XCTAssertEqual(store.teamChats["r1"]?.pending ?? [], [], "Nothing is saved, so nothing waits for a retry.")
+        XCTAssertEqual(store.error, "Name at most 16 bots in one message.")
+        store.error = nil
+        XCTAssertTrue(store.sendTeamMessage("r1", text: "Hello", replyingTo: nil, mentions: Array(mentions.prefix(16))))
+        XCTAssertNil(store.error)
+    }
+
     func testAnUnsentMessageKeepsItsMentionsInTheSavedFile() throws {
         let pending = TeamPendingMessage(id: "p1", text: "@Planner the plan", replyTo: nil, reply: nil,
                                          createdAt: "2026-11-10T12:00:00Z", mentions: ["t-r1-b1"])

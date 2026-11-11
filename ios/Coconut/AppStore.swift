@@ -1863,11 +1863,16 @@ final class AppStore {
 
     /// Shows a message of this person at once, and sends it. A failure keeps it in the chat with a way to try again.
     /// The message is saved before the composer clears, so a restart keeps it. False when the save failed.
-    /// `mentions` are the `id` values of the team bots that the text names.
+    /// `mentions` are the `id` values of the team bots that the text names. More than the Mac takes is false too: the
+    /// app saves nothing, the composer keeps the draft, and the error banner says why.
     @discardableResult
     func sendTeamMessage(_ room: String, text: String, replyingTo answered: TeamMessage?, mentions: [String] = []) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, teamListHas(room) else { return false }
+        guard TeamMentions.fits(mentions) else {
+            error = TeamMentions.overLimit
+            return false
+        }
         let quote = answered.map {
             TeamMessageQuote(id: $0.id, member: $0.member, memberName: $0.memberName, bot: $0.bot, botName: $0.botName,
                              text: String($0.text.prefix(200)))
