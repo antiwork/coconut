@@ -310,11 +310,28 @@ private struct MacSidebarLabel: View {
 }
 
 
-/// The window of a Mac that runs Coconut for a team only (InstallMode.team). No person works at this Mac, so the page
-/// says what the Mac does, shows its teams, and gives the commands that change them. It has no chat, no Inbox, no Library
-/// and no settings for bots. The cards have the style of the pairing page (MacPairingView).
+/// The window of a Mac that runs Coconut for a team only (InstallMode.team). It shows TeamOnlyPage with the state of the
+/// model.
 struct MacTeamOnlyView: View {
     @ObservedObject var model: AppModel
+
+    var body: some View {
+        TeamOnlyPage(service: MenuContent.describe(model.status.service), serviceError: model.status.serviceError,
+                     team: model.team, tool: model.tool.path)
+    }
+}
+
+/// The page of a team-only Mac. No person works at this Mac, so the page says what the Mac does, shows its teams, and
+/// gives the commands that change them. It has no chat, no Inbox, no Library and no settings for bots. The cards have the
+/// style of the pairing page (MacPairingView). It reads only its arguments, so a test app can draw it with made-up data.
+struct TeamOnlyPage: View {
+    /// The state of the service, as the menu says it, for example "running".
+    let service: String
+    let serviceError: String?
+    /// The teams, or nil while the service does not answer.
+    let team: TeamServiceStatus?
+    /// The path of the `coconut` tool.
+    let tool: String
 
     var body: some View {
         ScrollView {
@@ -324,14 +341,14 @@ struct MacTeamOnlyView: View {
                     Text("It keeps its team rooms in step and saves the pages of its bots for the team. It changes "
                          + "nothing in Hermes and pairs no iPhone.")
                         .foregroundStyle(.secondary)
-                    Text("Service: \(MenuContent.describe(model.status.service))")
-                    if let error = model.status.serviceError {
-                        Text(error).font(.callout).foregroundStyle(BoardStyle.destructive)
+                    Text("Service: \(service)")
+                    if let serviceError {
+                        Text(serviceError).font(.callout).foregroundStyle(BoardStyle.destructive)
                     }
                 }
                 card {
                     Text("Teams").font(.headline)
-                    if let team = model.team {
+                    if let team {
                         if !team.helper {
                             Text("This Mac has no team helper, so no team can sync. Run coconut update.")
                                 .foregroundStyle(BoardStyle.destructive)
@@ -359,7 +376,7 @@ struct MacTeamOnlyView: View {
                     command("Declare a bot for the Hermes home that it stands for.",
                             "coconut team new-bot <name> --home <Hermes home>")
                     command("Add the bot to a team.", "coconut team add-bot <bot> --team <team>")
-                    Text("coconut is \(model.tool.path).").font(.callout).foregroundStyle(.secondary)
+                    Text("coconut is \(tool).").font(.callout).foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
             }

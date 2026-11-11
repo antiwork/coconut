@@ -103,6 +103,13 @@ public struct DeployResult: Equatable {
     /// The error of the relay step. deploy.py keeps a complete update when only that step fails.
     public let relayError: String?
 
+    /// The line of a failed `coconut install-source`: the error of deploy.py, else the last line of the tool, for
+    /// example the line of PythonLocator.missingLine. The app keeps it as the last update error.
+    public static func failureLine(output: String) -> String {
+        DeployResult(output: output)?.error
+            ?? output.split(whereSeparator: \.isNewline).last.map(String.init) ?? "The update failed."
+    }
+
     public init?(output: String) {
         guard let line = output.split(whereSeparator: \.isNewline).last(where: { $0.hasPrefix("COCONUT_DEPLOY_RESULT=") }),
               let object = (try? JSONSerialization.jsonObject(with: Data(line.dropFirst("COCONUT_DEPLOY_RESULT=".count).utf8)))

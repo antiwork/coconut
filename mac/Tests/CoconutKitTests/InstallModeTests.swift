@@ -254,6 +254,61 @@ final class InstallModeTests: XCTestCase {
         XCTAssertNil(StartError(code: "hermes_unavailable", error: "", at: at).wait(now: at))
     }
 
+    // MARK: A Mac without Python
+
+    static let noPython = "Coconut found no Python 3.11 or later in /opt/homebrew/bin or /usr/local/bin. Install it "
+        + "with Homebrew: brew install python"
+
+    func testATeamOnlyMacWithoutPythonSaysWhatToInstall() {
+        XCTAssertEqual(PythonLocator.missingLine(mode: .team), Self.noPython)
+        // The line of a full install stays as it was.
+        XCTAssertEqual(PythonLocator.missingLine(mode: .full),
+                       "Coconut found no Python 3.11 or later. Install Hermes, or Python 3.11 or later from Homebrew.")
+        let none = PythonLocator(environment: [:], home: home, mode: .team)
+        XCTAssertNil(none.locate(accepts: { _ in false }))
+    }
+
+    func testASetUpWithoutPythonShowsTheLineAsTheLastUpdateError() {
+        // The app keeps the last line of `coconut install-source` (AppModel.update), and coconut status prints it.
+        let line = DeployResult.failureLine(output: Self.noPython + "\n")
+        XCTAssertEqual(line, Self.noPython)
+        XCTAssertEqual(DeployResult.failureLine(output: #"COCONUT_DEPLOY_RESULT={"ok": false, "error": "Bad."}"#), "Bad.")
+        let preferences = UpdatePreferences(store: MemoryPreferences())
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 1_800_000_000), outcome: .failed,
+                                        message: "The service update failed: \(line)"))
+        let status = Status(install: "/Users/a/Coconut", service: .notInstalled, hermes: "missing", relay: "not_installed")
+        let lines = StatusText.teamLines(version: "1.0 (1)", preferences: preferences, status: status,
+                                         team: .failure(.noAnswer))
+        XCTAssertTrue(lines.contains("Last update error: The service update failed: \(Self.noPython)"), "\(lines)")
+    }
+
+    func testAnInstalledServiceWithoutPythonShowsTheCause() throws {
+        let install = Install(root: home)
+        try write("print('host')", to: "scripts/host.py")
+        // Without a data folder, Coconut is not installed yet, and the tool leaves no file.
+        StartError.write(code: StartError.noPython, error: Self.noPython, install: install)
+        XCTAssertNil(StartError(install: install))
+        try FileManager.default.createDirectory(at: install.data, withIntermediateDirectories: true)
+        StartError.write(code: StartError.noPython, error: Self.noPython, install: install,
+                         now: Date(timeIntervalSince1970: 1_800_000_000))
+        XCTAssertEqual(StartError(install: install),
+                       StartError(code: "no_python", error: Self.noPython, at: Date(timeIntervalSince1970: 1_800_000_000)))
+        let mode = try FileManager.default.attributesOfItem(
+            atPath: install.data.appendingPathComponent("start-error.json").path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o600)
+        let status = StatusReader(install: install).read(isAlive: { _ in false }, healthy: false)
+        XCTAssertTrue(StatusText.teamLines(version: "1.0 (1)", preferences: UpdatePreferences(store: MemoryPreferences()),
+                                           status: status, team: .failure(.noAnswer))
+            .contains("Service error: \(Self.noPython)"))
+        // A missing Python is not a lasting cause: the login item waits as before.
+        XCTAssertNil(StartError(install: install)?.wait(now: Date(timeIntervalSince1970: 1_800_000_000)))
+    }
+
+    func testOnlyRemoveAsksForTheRemoval() {
+        XCTAssertTrue(RemoveRequest.asked(arguments: ["Coconut", "--remove"]))
+        XCTAssertFalse(RemoveRequest.asked(arguments: ["Coconut", "--set-up", "--team-only"]))
+    }
+
     func testAServiceWithoutACauseShowsNone() throws {
         let install = Install(root: home)
         try write("print('host')", to: "scripts/host.py")

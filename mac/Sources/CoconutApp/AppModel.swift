@@ -61,6 +61,11 @@ final class AppModel: ObservableObject {
 
     func start() {
         guard timer == nil else { return }
+        if RemoveRequest.asked(arguments: CommandLine.arguments) {
+            // No registration and no update: the app removes what it installed, then quits.
+            Task { await remove() }
+            return
+        }
         registerIfNeeded()
         Task {
             await refresh()
@@ -183,7 +188,7 @@ final class AppModel: ObservableObject {
         activity = nil
         let preferences = UpdatePreferences()
         if result.0 != 0 {
-            updateError = DeployResult(output: result.1)?.error ?? Self.lastLine(result.1) ?? "The update failed."
+            updateError = DeployResult.failureLine(output: result.1)
             // `coconut update --wait` and `coconut status` report this step after an app update.
             preferences.record(UpdateResult(time: Date(), outcome: .failed,
                                             message: "The service update failed: \(updateError ?? "")"))
@@ -219,6 +224,28 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(true, forKey: Self.startAtLoginKey)
         registerIfNeeded()
         await refresh()
+    }
+
+    /// `Coconut.app --remove` on a team-only Mac, for a Mac with no person: remove the login items of the app, which
+    /// needs no approval, then run `coconut remove`, which removes the data and moves the install folder to the Trash.
+    /// A failure goes to the last update error, which `coconut status` prints.
+    func remove() async {
+        func failed(_ line: String) {
+            activity = nil
+            updateError = line
+            UpdatePreferences().record(UpdateResult(time: Date(), outcome: .failed, message: line))
+        }
+        guard mode == .team else { return failed(RemoveRequest.fullInstall) }
+        activity = "Removing Coconut…"
+        UserDefaults.standard.set(false, forKey: Self.startAtLoginKey)
+        // Each change of a login item is a request to launchd, so it runs off the main thread (pull request 441).
+        if let failure = await Task.detached(priority: .utility, operation: { LoginItems().unregister() }).value {
+            return failed(failure)
+        }
+        let result = await runTool(["remove"])
+        guard result.0 == 0 else { return failed(Self.lastLine(result.1) ?? "coconut remove failed.") }
+        UserDefaults.standard.removeObject(forKey: InstallMode.preferenceKey)
+        NSApp.terminate(nil)
     }
 
     static func lastLine(_ text: String) -> String? {

@@ -86,6 +86,18 @@ public enum SetUpRequest {
     }
 }
 
+/// `Coconut.app --remove`: remove a team-only install without a click. The app removes its login items, which needs no
+/// approval, then `coconut remove` removes the data and moves the install folder to the Trash.
+public enum RemoveRequest {
+    public static let argument = "--remove"
+    public static let fullInstall = "Coconut.app --remove removes a team-only install. On a full install, open "
+        + "Uninstall Coconut.command."
+    public static let toolFullInstall = "coconut remove removes a team-only install. On a full install, open "
+        + "Uninstall Coconut.command."
+
+    public static func asked(arguments: [String]) -> Bool { arguments.contains(argument) }
+}
+
 /// The commands of the `coconut` tool that are for a phone or for Hermes. On a team-only Mac each one prints one line
 /// and exits with 1.
 public enum TeamOnlyRefusal {

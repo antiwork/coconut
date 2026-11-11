@@ -102,7 +102,9 @@ def simulator() -> None:
     raise SystemExit("Coconut opened, but synchronization did not finish. Inspect its connection message in Settings.")
 
 
-def uninstall() -> None:
+def uninstall(confirmed: bool = False) -> None:
+    """Remove the data of Coconut. `confirmed` skips the question: `coconut remove` on a team-only Mac runs this
+    without a person."""
     # A team-only install added nothing to Hermes (backend/coconut/team_only.py), so its removal edits nothing there.
     team_only = host.install_mode() == host.TEAM_MODE
     if team_only and host.login_item_loaded():
@@ -115,7 +117,7 @@ def uninstall() -> None:
               "Coconut changed nothing in Hermes, so Hermes stays as it is.")
     else:
         print("This removes Coconut's conversations, files, and model keys stored in the local runtime. Your Hermes stays.")
-    if input("Type DELETE to continue: ").strip() != "DELETE":
+    if not confirmed and input("Type DELETE to continue: ").strip() != "DELETE":
         print("The local runtime remains installed.")
         return
     if not team_only:
@@ -130,9 +132,13 @@ def uninstall() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["start", "simulator", "uninstall"])
+    parser.add_argument("--yes", action="store_true", help="With uninstall: remove without the question.")
     args = parser.parse_args()
     try:
-        {"start": start, "simulator": simulator, "uninstall": uninstall}[args.command]()
+        if args.command == "uninstall":
+            uninstall(confirmed=args.yes)
+        else:
+            {"start": start, "simulator": simulator}[args.command]()
     except subprocess.CalledProcessError as error:
         raise SystemExit(f"The Coconut command stopped with exit code {error.returncode}.") from None
 

@@ -42,6 +42,8 @@ let usage = """
       migrate   Stop the service of the earlier LaunchAgents and move them aside, so the app's login items run it.
       service   Run the Coconut service. The login item uses this command.
       sidecar   Run the relay sidecar. The login item uses this command.
+      remove    On a Mac that runs Coconut for a team only: remove the data of Coconut and move the install folder
+                to the Trash. Coconut.app --remove runs it after it removes the login items.
 
     Coconut.app --set-up sets up Coconut without a click, as Set Up Coconut in the menu does. The install script
     opens the app with it. Coconut.app --set-up --team-only sets up a Mac with no person for a team only: Coconut keeps
@@ -287,9 +289,7 @@ func commandEnvironment(loginPath: String?) -> [String: String] {
 }
 
 /// What the tool says when it finds no Python. A team-only Mac takes no Python of Hermes.
-let noPython = mode == .team
-    ? "Coconut found no Python 3.11 or later. Install Python 3.11 or later from Homebrew."
-    : "Coconut found no Python 3.11 or later. Install Hermes, or Python 3.11 or later from Homebrew."
+let noPython = PythonLocator.missingLine(mode: mode)
 
 let command = CommandLine.arguments.dropFirst().first ?? ""
 if let line = TeamOnlyRefusal.line(Array(CommandLine.arguments.dropFirst()), mode: mode) {
@@ -309,7 +309,11 @@ case "service":
         sleep(UInt32(wait.rounded(.up)))
     }
     let environment = commandEnvironment(loginPath: LoginEnvironment.loginPath())
-    guard let python = PythonLocator(environment: environment, mode: mode).locate() else { waitAndExit(noPython) }
+    guard let python = PythonLocator(environment: environment, mode: mode).locate() else {
+        // The service never starts, so no service leaves this cause. `coconut status` and the menu show it.
+        StartError.write(code: StartError.noPython, error: noPython, install: install)
+        waitAndExit(noPython)
+    }
     run(.service(install: install, python: python, environment: environment,
                  teamHelper: helpers.appendingPathComponent("team-helper"), mode: mode))
 case "sidecar":
@@ -403,6 +407,35 @@ case "settings":
     DistributedNotificationCenter.default().postNotificationName(.init(UpdatePreferences.settingsChanged), object: nil,
                                                                  userInfo: nil, deliverImmediately: true)
     print("Automatic updates: \(preferences.automaticUpdates ? "on" : "off")")
+case "remove":
+    guard mode == .team else { fail(RemoveRequest.toolFullInstall) }
+    guard install.isInstalled() else { fail("Coconut is not installed in \(install.root.path).") }
+    guard !install.isCheckout() else {
+        fail("\(install.root.path) is a source checkout. coconut remove removes only a folder that Coconut.app installed.")
+    }
+    guard let python = PythonLocator(environment: commandEnvironment(loginPath: nil), mode: mode).locate() else {
+        fail(noPython)
+    }
+    // desktop.py stops while the login item of the service runs, removes the data, and edits nothing in Hermes.
+    let uninstall = Process()
+    uninstall.executableURL = python
+    uninstall.arguments = [install.root.appendingPathComponent("scripts/desktop.py").path, "uninstall", "--yes"]
+    uninstall.currentDirectoryURL = install.root
+    uninstall.standardInput = FileHandle.nullDevice
+    do {
+        try uninstall.run()
+    } catch {
+        fail("Coconut could not start Python: \(error.localizedDescription)")
+    }
+    uninstall.waitUntilExit()
+    guard uninstall.terminationStatus == 0 else { exit(uninstall.terminationStatus) }
+    do {
+        try FileManager.default.trashItem(at: install.root, resultingItemURL: nil)
+    } catch {
+        fail("Coconut removed its data, but it could not move \(install.root.path) to the Trash: "
+             + error.localizedDescription)
+    }
+    print("Coconut is removed. \(install.root.path) is in the Trash.")
 case "version":
     print(appVersion())
 case "", "-h", "--help", "help":

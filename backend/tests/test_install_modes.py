@@ -279,6 +279,18 @@ class RemoveAndSetUpTests(unittest.TestCase):
         self.assertEqual(commands, [['scripts/cleanup.py'], ['scripts/hermes_skills.py', 'remove'],
                                     ['scripts/cleanup.py', '--yes']])
 
+    def test_coconut_remove_runs_the_uninstaller_without_the_question(self):
+        """`coconut remove` (Coconut.app --remove) runs `desktop.py uninstall --yes` on a Mac with no person."""
+        commands = []
+        with patch.object(host, 'install_mode', return_value='team'), \
+                patch.object(host, 'login_item_loaded', return_value=False), \
+                patch.object(desktop, 'run', side_effect=lambda arguments, **options: commands.append(arguments[1:])), \
+                patch.object(desktop.deploy, 'lock_skills'), \
+                patch('builtins.input', side_effect=AssertionError('The uninstaller asked a question.')), \
+                patch('builtins.print'), patch.object(sys, 'argv', ['desktop.py', 'uninstall', '--yes']):
+            desktop.main()
+        self.assertEqual(commands, [['scripts/cleanup.py'], ['scripts/cleanup.py', '--yes']])
+
     def test_the_uninstaller_waits_until_the_login_item_is_off(self):
         with patch.object(host, 'install_mode', return_value='team'), \
                 patch.object(host, 'login_item_loaded', return_value=True), patch.object(desktop, 'run') as run, \

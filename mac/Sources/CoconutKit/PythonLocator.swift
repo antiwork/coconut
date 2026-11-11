@@ -71,6 +71,15 @@ public struct PythonLocator {
         return nil
     }
 
+    /// The line when no candidate fits. A team-only Mac takes only the Python of Homebrew, so its line names the two
+    /// folders and the command that installs one. 3.11 is the oldest Python that the tests of Coconut run on.
+    public static func missingLine(mode: InstallMode) -> String {
+        mode == .team
+            ? "Coconut found no Python 3.11 or later in /opt/homebrew/bin or /usr/local/bin. Install it with Homebrew: "
+                + "brew install python"
+            : "Coconut found no Python 3.11 or later. Install Hermes, or Python 3.11 or later from Homebrew."
+    }
+
     /// The first candidate that exists and that `accepts` approves. The default check runs the Python once.
     public func locate(accepts: (URL) -> Bool = PythonLocator.isSupported) -> URL? {
         candidates().first { fileManager.isExecutableFile(atPath: $0.path) && accepts($0) }

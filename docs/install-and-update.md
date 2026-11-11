@@ -234,7 +234,7 @@ A Mac that runs a Hermes agent with no person at it can be a member of a team, s
 - The relay sidecar: the app registers only two login items, the app and the service. A relay login item from an earlier full install is removed.
 - A phone: the Mac pairs no iPhone, and it sends no notification.
 
-The service needs Python 3.11 or later from Homebrew (`/opt/homebrew/bin/python3` or `/usr/local/bin/python3`). It does not use the Python of Hermes. The Mac needs no Xcode Command Line Tools: nothing compiles, because the app carries its helpers.
+The service needs Python 3.11 or later from Homebrew (`/opt/homebrew/bin/python3` or `/usr/local/bin/python3`). It does not use the Python of Hermes. 3.11 is the oldest Python that the tests of Coconut run on. Without such a Python, the set-up stops, and `coconut status` shows this line as the last update error, or as `Service error:` on an installed Mac: "Coconut found no Python 3.11 or later in /opt/homebrew/bin or /usr/local/bin. Install it with Homebrew: brew install python". The Mac needs no Xcode Command Line Tools: nothing compiles, because the app carries its helpers.
 
 ### Install
 
@@ -295,10 +295,21 @@ Updates work as on a full Mac: Sparkle installs each new Coconut.app, and the ap
 
 ### Remove
 
+No click is necessary.
+
 1. Leave each team: `coconut team leave --confirm "Example Team"`.
-2. Turn off **Start at Login** in the Coconut menu, for example over Screen Sharing. This removes the login items. The uninstaller stops while the login item of the service runs, because that item would start the service again.
-3. Run `~/Coconut/Uninstall\ Coconut.command`. It runs `python3` from the `PATH`, so the `PATH` must have the Python of Homebrew. It removes the data of Coconut. It edits nothing in Hermes, because a team-only install added nothing there.
-4. Delete `~/Coconut`, `/Applications/Coconut.app`, and the preference: `defaults delete com.gumroad.coconut.mac InstallMode`.
+2. Quit the app, so that it gets the next argument: `osascript -e 'tell application id "com.gumroad.coconut.mac" to quit'`.
+3. Remove Coconut:
+
+   ```sh
+   open -g /Applications/Coconut.app --args --remove
+   ```
+
+   The app removes its login items. That needs no approval. Then `coconut remove` removes the data of Coconut with `Uninstall Coconut.command` and moves `~/Coconut` to the Trash. The app removes its preference `InstallMode` and quits. Nothing in Hermes changes, because a team-only install added nothing there.
+4. Check that `coconut status` shows `Service: not installed`. A failure shows as `Last update error:`.
+5. Delete `/Applications/Coconut.app`.
+
+On a full install, `--remove` and `coconut remove` change nothing and say to use `Uninstall Coconut.command`.
 
 ## Releases from CI
 

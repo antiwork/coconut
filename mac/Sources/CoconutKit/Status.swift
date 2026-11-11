@@ -154,6 +154,21 @@ public struct StartError: Equatable, Sendable {
         self.init(code: code, error: error, at: Date(timeIntervalSince1970: at))
     }
 
+    /// The code of the tool when it finds no Python for the service. The service never starts, so the tool leaves the
+    /// cause itself.
+    public static let noPython = "no_python"
+
+    /// Leave a cause in the data folder, as the service does. A missing data folder gets none: Coconut is not
+    /// installed, and the status says that.
+    public static func write(code: String, error: String, install: Install, now: Date = Date()) {
+        guard FileManager.default.fileExists(atPath: install.data.path),
+              let data = try? JSONSerialization.data(withJSONObject: ["code": code, "error": error,
+                                                                      "at": now.timeIntervalSince1970]) else { return }
+        let file = install.data.appendingPathComponent("start-error.json")
+        guard (try? data.write(to: file, options: .atomic)) != nil else { return }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
     /// How long the login item waits before it starts the service again, or nil to start at once. The wait ends after
     /// `lastingWait`, so a person who fixed the folder sees the service start within five minutes, without a click.
     public func wait(now: Date = Date()) -> TimeInterval? {
