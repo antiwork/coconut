@@ -32,9 +32,8 @@ struct ConversationView: View {
     @State private var transcript = TranscriptCache()
     /// The rows that the list builds (see TranscriptWindow).
     @State private var window = TranscriptWindow()
-    /// A press of the control above the window adds rows. The control shows that it works.
+    /// A press of the control above the window makes a new list. The control shows that it works.
     @State private var growingAbove = false
-    @State private var reader = TranscriptReader()
     /// The moment that the day labels count from. A new day or a new time zone replaces it, so an open chat groups
     /// its rows and writes its labels again at once.
     @State private var dayReference = Date()
@@ -77,12 +76,12 @@ struct ConversationView: View {
     private func loadAndScrollToMessage(_ id: String, proxy: ScrollViewProxy) async {
         nearBottom = false
         // Pages of history from the Mac stay above the window until the window takes the quoted message.
-        window.pinStart(in: current.entries.map(\.id), focusId: windowFocus)
+        window.keep(current.entries.map(\.id), focusId: windowFocus)
         while !store.messages.contains(where: { $0.id == id || ($0.kind == "decision" && $0.decisionId == id) }) && store.hasOlderMessages(botId) && !Task.isCancelled {
             if !(await store.loadOlderMessages(botId)) { break }
         }
         let row = TranscriptEntry.rowId(for: store.displayedMessageId(for: id), in: current.entries)
-        // The quoted message can be older than the rows that the list holds. The list builds it before the scroll.
+        // The quoted message can be older than the rows that the list holds. Then a new list holds it before the scroll.
         if let entry = Self.entryId(containing: row, in: current.entries) {
             window.include(entry, in: current.entries.map(\.id))
         }
@@ -91,34 +90,20 @@ struct ConversationView: View {
         show(row, proxy: proxy)
     }
 
-    /// Adds small batches of older rows above the window while the reader rests at the bottom of the chat, up to
-    /// `TranscriptWindow.restRows`. At the bottom the chat follows its newest row, as for a new message, so rows that
-    /// arrive above cannot move what the reader sees. While the reader is away from the bottom, nothing changes above.
-    private func growWindow() async {
-        guard TranscriptWindow.isUsed else { return }
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(60))
-            let ids = current.entries.map(\.id)
-            let focus = windowFocus
-            let atBottom = nearBottom && !userScrolling && (focusTarget == nil || didFocusDecision)
-            guard window.growsAtRest(ids: ids, focusId: focus, atBottom: atBottom, idle: reader.idle) else { continue }
-            window.growTop(in: ids, focusId: focus, rows: TranscriptWindow.restBatchRows)
-        }
-    }
-
     /// The control above the window. While the window lacks older rows that the app has, it adds a batch of them;
-    /// when the window holds every row, it loads a page from the Mac. Then the chat shows the row that was first.
-    private func loadEarlier(anchor: String?, atFirstRow: Bool, proxy: ScrollViewProxy) async {
-        if atFirstRow {
-            // The page from the Mac arrives above the window, then the window grows to show it.
-            window.pinStart(in: current.entries.map(\.id), focusId: windowFocus)
+    /// when the window holds every row, it loads a page from the Mac first. Then the chat shows the row that was first.
+    private func loadEarlier(anchor: String?, proxy: ScrollViewProxy) async {
+        let ids = current.entries.map(\.id)
+        if window.range(of: ids, focusId: windowFocus).lowerBound == 0 {
+            // The page from the Mac arrives above the window. Then the window takes a batch of it.
+            window.keep(ids, focusId: windowFocus)
             await store.loadOlderMessages(botId)
         } else {
             growingAbove = true
-            // A frame with the progress, then the rows.
+            // A frame with the progress, then the new list.
             try? await Task.sleep(for: .milliseconds(16))
         }
-        window.growTop(in: current.entries.map(\.id), focusId: windowFocus, rows: TranscriptWindow.pressRows)
+        window.growTop(in: current.entries.map(\.id), focusId: windowFocus)
         await Task.yield()
         growingAbove = false
         if let anchor, let entry = current.entries.first(where: { $0.messages.contains { $0.id == anchor } }) {
@@ -152,6 +137,8 @@ struct ConversationView: View {
         let shown = TranscriptWindow.isUsed ? window.range(of: ids, focusId: focusRow) : entries.indices
         // The rows that come before the first row of the chat show only when the list holds that first row.
         let startsAtFirstRow = shown.lowerBound == 0
+        // A new first row of the window makes a new list, so the list measures every row (see TranscriptWindow).
+        let listId = TranscriptWindow.isUsed && !shown.isEmpty ? entries[shown.lowerBound].id : nil
         Group {
             if let bot {
                 ScrollViewReader { proxy in
@@ -166,7 +153,7 @@ struct ConversationView: View {
                                 Button {
                                     nearBottom = false
                                     let anchor = entries[shown].first?.message.id
-                                    Task { await loadEarlier(anchor: anchor, atFirstRow: startsAtFirstRow, proxy: proxy) }
+                                    Task { await loadEarlier(anchor: anchor, proxy: proxy) }
                                 } label: {
                                     if store.historyLoading.contains(botId) || growingAbove { ProgressView() }
                                     else { Text("Load earlier messages").font(.caption) }
@@ -217,6 +204,7 @@ struct ConversationView: View {
                         .listRowBackground(Color.clear)
                     }
                     .listStyle(.plain)
+                    .id(listId)
                     #if os(macOS)
                     .contentMargins(.top, Self.titleHeight, for: .scrollContent)
                     #endif
@@ -247,8 +235,6 @@ struct ConversationView: View {
                         if next != footerScroll { footerScroll = next }
                     }
                     .onScrollGeometryChange(for: [CGFloat].self) { [$0.contentOffset.y, $0.contentSize.height, $0.containerSize.height, $0.contentInsets.top + $0.contentInsets.bottom] } action: { old, new in
-                        // A move of the offset is the reader's. The window grows on its own only while the reader rests.
-                        if abs(new[0] - old[0]) > 0.5 { reader.lastAction = Date() }
                         #if os(macOS)
                         // A mouse wheel, and some trackpad scrolls, report no scroll phase on the Mac, so userScrolling
                         // stays false. Then the chat never learned that the reader left the bottom, and each new line of
@@ -258,10 +244,13 @@ struct ConversationView: View {
                         let sameViewport = abs(new[2] - old[2]) < 0.5 && abs(new[3] - old[3]) < 0.5
                         if sameViewport && new[0] < old[0] - 0.5 && new[1] >= old[1] - 0.5 { nearBottom = false }
                         else if new[0] > old[0] + 0.5 && new[0] + new[2] >= new[1] - 4 { nearBottom = true }
+                        if sameViewport && abs(new[1] - old[1]) < 0.5 && abs(new[0] - old[0]) > 0.5 { rowHold.offsetMoved() }
                         #endif
                         let change = zip(old.prefix(2), new.prefix(2)).map { abs($1 - $0) }.max() ?? 0
                         if let row = rowHold.rowToRestore(layoutChange: change, userScrolling: userScrolling, followsBottom: nearBottom) {
                             proxy.scrollTo(row, anchor: .top)
+                            // The scroll back to the row is not a move of the reader.
+                            rowHold.hold(row)
                         }
                     }
                     .onScrollPhaseChange { previous, phase, context in
@@ -283,12 +272,9 @@ struct ConversationView: View {
                             }
                         }
                     }
-                    .onScrollGeometryChange(for: ContentSizeChange.self) { ContentSizeChange($0) } action: { old, new in
+                    .onScrollGeometryChange(for: CGSize.self) { $0.contentSize } action: { _, _ in
                         // A scroll of the reader wins over new content: the chat follows again when the scroll ends.
-                        // A Mac wheel reports no scroll phase, and its first move can come in the same frame as new
-                        // rows: then the offset is no longer at the bottom, and the chat does not pull the reader back.
-                        let atBottom = new.offset + new.container >= old.height - 100
-                        if nearBottom && atBottom && !userScrolling && (focusTarget == nil || didFocusDecision) {
+                        if nearBottom && !userScrolling && (focusTarget == nil || didFocusDecision) {
                             proxy.scrollTo("conversation-bottom", anchor: .bottom)
                         }
                     }
@@ -341,15 +327,8 @@ struct ConversationView: View {
                     .pinnedDayPill(pinnedDay, now: dayReference, below: Self.titleHeight)
                     .background(BoardStyle.paper)
                     .task { await store.markRead(bot) }
-                    // The first frame shows only the rows that fill the view. Then the list takes the rest of its
-                    // window, so the reader can scroll up at once.
-                    .task {
-                        await Task.yield()
-                        // A chat that opens at an older message can hold 40 rows already; then settle adds nothing
-                        // and the hold records nothing.
-                        window.settle()
-                        await growWindow()
-                    }
+                    // From now on a new message does not push the first row out of the window.
+                    .onAppear { window.keep(current.entries.map(\.id), focusId: windowFocus) }
                     .task(id: "\(focusMessageId ?? ""):\(store.connection.rawValue):\(store.hasOlderMessages(botId))") {
                         guard store.connection == .connected || store.isDemo else { return }
                         while focusMessageId != nil && !focusTargetExists(in: current.messages) && store.hasOlderMessages(botId) && !Task.isCancelled {
@@ -395,8 +374,6 @@ struct ConversationView: View {
                     composerFocused = true
                 }
                 .onChange(of: composerFocused) { _, _ in footerScroll.reset() }
-                // Typing is an action of the reader too. The window waits while the person writes.
-                .onChange(of: messageDraft) { _, _ in reader.lastAction = Date() }
                 .toolbar {
                     #if os(iOS)
                     if #available(iOS 26.0, *) {
