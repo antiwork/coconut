@@ -101,6 +101,45 @@ public enum RemoveRequest {
 
     public static func asked(arguments: [String]) -> Bool { arguments.contains(argument) }
 
+    /// The line that stops a removal before it changes anything, or nil. A bot whose record has `chat` or `plugin`
+    /// has (or may have) the team chat of Coconut in its Hermes home, and only `coconut team disconnect-chat` takes
+    /// that away (scripts/team_chat.py). The store opens read-only, so the question works also when the service is
+    /// down. A store that does not read gives a refusal too: the removal cannot know.
+    public static func refusal(install: Install) -> String? {
+        let path = install.data.appendingPathComponent("coconut.sqlite3").path
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        var db: OpaquePointer?
+        defer { sqlite3_close(db) }
+        let unknown = "Coconut could not read its store, so it removed nothing. Run coconut status, then try again."
+        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return unknown }
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        let query = "SELECT json_extract(data, '$.name') FROM bots WHERE json_extract(data, '$.chat') = 1 "
+            + "OR json_extract(data, '$.plugin') = 1 ORDER BY rowid"
+        guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
+            // A store without the table of the bots has no bot.
+            return sqlite3_errmsg(db).map { String(cString: $0) }?.contains("no such table") == true ? nil : unknown
+        }
+        var names: [String] = []
+        var step = sqlite3_step(statement)
+        while step == SQLITE_ROW {
+            names.append(sqlite3_column_text(statement, 0).map { String(cString: $0) } ?? "")
+            step = sqlite3_step(statement)
+        }
+        guard step == SQLITE_DONE else { return unknown }
+        guard !names.isEmpty else { return nil }
+        return "The Hermes home of \(names.joined(separator: ", ")) has the team chat of Coconut. For each bot, run "
+            + "coconut team disconnect-chat <bot>, then remove Coconut."
+    }
+
+    /// A removal in its order: the question first, then the steps, so a refusal changes nothing. `unregister` takes
+    /// the login items away, and `uninstall` removes the data and the folder. Each returns the line of a failure.
+    public static func run(install: Install, unregister: () -> String?, uninstall: () -> String?) -> String? {
+        if let line = refusal(install: install) { return line }
+        if let failure = unregister() { return failure }
+        return uninstall()
+    }
+
     /// The preferences that Coconut writes for an install, which a removal deletes, so a later set-up starts clean: the
     /// mode, Start at Login, the update state of `coconut status` and `coconut update`, and the automatic update
     /// setting of `coconut settings`. `InstallDirectory` and `ServiceEnvironment` stay: only the developer setup

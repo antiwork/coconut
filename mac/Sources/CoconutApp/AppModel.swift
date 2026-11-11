@@ -240,14 +240,16 @@ final class AppModel: ObservableObject {
             UpdatePreferences().record(UpdateResult(time: Date(), outcome: .failed, message: line))
         }
         guard mode == .team else { return failed(RemoveRequest.fullInstall) }
+        let install = install
+        // A refusal changes nothing: the service keeps running, and each bot keeps answering.
+        if let refusal = RemoveRequest.refusal(install: install) { return failed(refusal) }
         activity = "Removing Coconut…"
         UserDefaults.standard.set(false, forKey: Self.startAtLoginKey)
-        let install = install
         // Each change of a login item is a request to launchd, and the uninstaller waits for the stop of the service, so
         // both run off the main thread (pull request 441).
         let failure = await Task.detached(priority: .utility) { () -> String? in
-            if let failure = LoginItems().unregister() { return failure }
-            return Self.uninstall(install)
+            RemoveRequest.run(install: install, unregister: { LoginItems().unregister() },
+                              uninstall: { Self.uninstall(install) })
         }.value
         if let failure { return failed(failure) }
         // A later set-up starts clean: coconut status shows no old update error.

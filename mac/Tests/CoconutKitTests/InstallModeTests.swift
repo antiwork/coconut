@@ -339,6 +339,33 @@ final class InstallModeTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: install.data.path), files)
     }
 
+    func testARemovalAsksFirstAndARefusalChangesNothing() throws {
+        var steps: [String] = []
+        func remove(_ install: Install) -> String? {
+            RemoveRequest.run(install: install, unregister: { steps.append("unregister"); return nil },
+                              uninstall: { steps.append("uninstall"); return nil })
+        }
+        // A bot whose chat is connected, and a bot whose clean-up did not finish: nothing runs.
+        let install = try makeStore("CREATE TABLE bots (id TEXT PRIMARY KEY, data TEXT NOT NULL); "
+                                    + "INSERT INTO bots VALUES ('a', '{\"name\": \"Reporter\", \"chat\": true}'); "
+                                    + "INSERT INTO bots VALUES ('b', '{\"name\": \"Planner\", \"chat\": false}'); "
+                                    + "INSERT INTO bots VALUES ('c', '{\"name\": \"Writer\", \"plugin\": true}');")
+        XCTAssertEqual(remove(install), "The Hermes home of Reporter, Writer has the team chat of Coconut. For each bot, "
+                       + "run coconut team disconnect-chat <bot>, then remove Coconut.")
+        XCTAssertEqual(steps, [])
+        // Without them, the steps run in their order.
+        var db: OpaquePointer?
+        sqlite3_open(install.data.appendingPathComponent("coconut.sqlite3").path, &db)
+        sqlite3_exec(db, "DELETE FROM bots WHERE id != 'b'", nil, nil, nil)
+        sqlite3_close(db)
+        XCTAssertNil(remove(install))
+        XCTAssertEqual(steps, ["unregister", "uninstall"])
+        // A store without bots, and no store, have nothing to ask.
+        try FileManager.default.removeItem(at: install.data)
+        XCTAssertNil(RemoveRequest.refusal(install: install))
+        XCTAssertNil(RemoveRequest.refusal(install: try makeStore("CREATE TABLE devices (id TEXT PRIMARY KEY);")))
+    }
+
     // MARK: The timeouts
 
     /// A listener on 127.0.0.1 that takes each connection in its backlog and never answers. Return the socket and port.
