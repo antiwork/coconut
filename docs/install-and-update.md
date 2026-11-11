@@ -298,7 +298,7 @@ The bot uses the tools that the Hermes config gives to the channel `coconut`. Ea
 
 To take it back:
 
-1. Run `coconut team disconnect-chat Reporter`. It removes exactly what `connect-chat` added. A list `plugins.enabled` that only Coconut had stays as an empty list.
+1. Run `coconut team disconnect-chat Reporter`. It removes exactly what `connect-chat` added. Keys that you added to `gateway.platforms.coconut` stay, and a later `connect-chat` takes them as they are. A list `plugins.enabled` that only Coconut had stays as an empty list.
 2. Restart the Hermes gateway of that Hermes home yourself.
 
 A bot whose team chat is connected cannot be removed, and Coconut cannot be removed from the Mac: first run `coconut team disconnect-chat` for each bot. `coconut team remove-bot` takes a bot out of one team only: its chat stays connected, and it answers in its other teams.

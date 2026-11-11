@@ -61,9 +61,27 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(changes, [f'Remove enabled, extra.mode and extra.bridge from gateway.platforms.coconut in '
                                    f'{CONFIG}.'])
 
+    def test_the_keys_of_the_operator_left_by_a_disconnect_do_not_block_a_reconnect(self):
+        connected, _ = with_team({}, CONFIG, BRIDGE, True)
+        block = connected['gateway']['platforms']['coconut']
+        block['home_channel'] = 'x'
+        block['extra']['note'] = 1
+        left, _ = with_team(connected, CONFIG, BRIDGE, False)
+        self.assertEqual(left['gateway']['platforms']['coconut'], {'home_channel': 'x', 'extra': {'note': 1}})
+        # A disconnect of a block without the mode changes nothing more.
+        self.assertEqual(with_team(left, CONFIG, BRIDGE, False), (None, []))
+        again, changes = with_team(left, CONFIG, BRIDGE, True)
+        self.assertEqual(again['gateway']['platforms']['coconut'],
+                         {'home_channel': 'x', 'enabled': True, 'extra': {'note': 1, 'mode': 'team', 'bridge': BRIDGE}})
+        self.assertEqual(len(changes), 2)
+        self.assertEqual(with_team(again, CONFIG, BRIDGE, False)[0], left)
+
     def test_a_block_of_a_full_coconut_and_a_form_that_hermes_does_not_read_are_refused(self):
         for config in ({'gateway': {'platforms': {'coconut': {'enabled': True}}}},
                        {'gateway': {'platforms': {'coconut': {'enabled': True, 'extra': {'bridge': BRIDGE}}}}},
+                       {'gateway': {'platforms': {'coconut': {'enabled': False, 'home_channel': 'x'}}}},
+                       {'gateway': {'platforms': {'coconut': 'on'}}},
+                       {'gateway': {'platforms': {'coconut': {'extra': 'team'}}}},
                        {'plugins': ['coconut']}, {'plugins': {'enabled': 'coconut'}}, {'gateway': []}):
             for present in (True, False):
                 with self.subTest(config=config, present=present), self.assertRaises(Refused):
@@ -177,6 +195,22 @@ class CommandTests(TeamOnlyMacs, unittest.TestCase):
         # The list of the plugins stays, also when it is empty: Hermes reads a missing list as "nothing chosen yet".
         self.assertEqual(self.plugin_config(), dict(old, plugins={'enabled': []}))
         self.assertEqual(self.changed(before, self.files()), {'config.yaml'})
+
+    def test_a_reconnect_keeps_the_keys_of_the_operator_and_ends_where_the_first_disconnect_ended(self):
+        self.assertEqual(self.run_command('connect', 'Reporter', '--confirm').status, 0)
+        # The operator adds a key to the block and one to `extra`, with the round-trip YAML of Hermes.
+        self.hermes('from ruamel.yaml import YAML; yaml = YAML(); path = sys.argv[1]; data = yaml.load(open(path)); '
+                    'block = data["gateway"]["platforms"]["coconut"]; block["home_channel"] = "ops"; '
+                    'block["extra"]["note"] = "kept"; yaml.dump(data, open(path, "w"))', str(self.home / 'config.yaml'))
+        for step in ('disconnect', 'connect', 'disconnect'):
+            with self.subTest(step=step):
+                result = self.run_command(step, 'Reporter', *(['--confirm'] if step == 'connect' else []))
+                self.assertEqual(result.status, 0, result.err)
+                if step == 'disconnect' and not hasattr(self, 'first_disconnect'):
+                    self.first_disconnect = (self.home / 'config.yaml').read_bytes()
+        block = self.plugin_config()['gateway']['platforms']['coconut']
+        self.assertEqual(block, {'home_channel': 'ops', 'extra': {'note': 'kept'}})
+        self.assertEqual((self.home / 'config.yaml').read_bytes(), self.first_disconnect)
 
     def test_a_mac_with_a_person_and_a_home_that_is_not_coconuts_are_refused(self):
         with mock.patch.object(team_chat.host, 'backend_module') as module:

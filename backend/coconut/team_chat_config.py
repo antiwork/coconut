@@ -19,7 +19,8 @@ YAML loader of Hermes's dependencies instead: an import of the config module of 
 home and a copy of config.yaml in `backups/config`, as each start of Hermes does, and a plan must change nothing.
 
 A home whose `plugins/coconut` is another file, or whose `gateway.platforms.coconut` belongs to a full Coconut (a block
-without `mode: team`), gets an error and no change: those are not Coconut's to change here.
+with `enabled` and without `mode: team`), gets an error and no change: those are not Coconut's to change here. A block
+with only keys of the operator, for example what a disconnect left, is free to take.
 """
 from __future__ import annotations
 
@@ -53,8 +54,13 @@ def with_team(config: dict, config_file: Path, bridge: str, present: bool) -> tu
                       'Coconut did not change it.')
     block = platforms.get(NAME)
     extra = block.get('extra') if isinstance(block, dict) else None
-    ours = isinstance(extra, dict) and extra.get('mode') == TEAM
-    if block is not None and not ours:
+    if (block is not None and not isinstance(block, dict)) or (extra is not None and not isinstance(extra, dict)):
+        raise Refused(f'{config_file} has a form of gateway.platforms.{NAME} that Hermes does not read. Coconut did '
+                      'not change it.')
+    ours = extra is not None and extra.get('mode') == TEAM
+    # A full Coconut writes `enabled` and no mode (gateway_plugin.PLATFORM). A block without both has only keys of
+    # the operator, for example what a disconnect left: a connect takes it, and a disconnect leaves it.
+    if block is not None and not ours and 'enabled' in block:
         raise Refused(f'gateway.platforms.{NAME} in {config_file} belongs to a full Coconut, not to the team chat. '
                       'Coconut did not change it.')
     result, changes = deepcopy(config), []
@@ -71,7 +77,7 @@ def with_team(config: dict, config_file: Path, bridge: str, present: bool) -> tu
             result['gateway'] = dict(gateway, platforms=dict(platforms, **{NAME: wanted}))
             changes.append(f'Set gateway.platforms.{NAME} in {config_file}: enabled true, extra.mode {TEAM}, '
                            f'extra.bridge {bridge}.')
-    elif block is not None:
+    elif ours:
         rest = {key: item for key, item in block.items() if key not in ('enabled', 'extra')}
         left = {key: item for key, item in extra.items() if key not in ('mode', 'bridge')}
         if left:
