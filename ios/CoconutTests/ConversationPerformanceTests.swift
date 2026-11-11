@@ -25,4 +25,42 @@ final class ConversationPerformanceTests: XCTestCase {
         XCTAssertNil("invalid".apiDate)
         print("COCONUT_PREVIEW_DURATION=\(elapsed)")
     }
+
+    #if os(macOS)
+    /// The sidebar sorts its bots in one pass over the messages. The order must stay the order of a scan for each bot.
+    @MainActor
+    func testTheMacSidebarKeepsTheOrderOfAScanForEachBot() throws {
+        let store = AppStore(demo: true)
+        var bots = store.bots
+        XCTAssertGreaterThanOrEqual(bots.count, 3)
+        bots[0].pinned = true
+        bots[bots.count - 1].pinned = true
+        bots[1].archived = true
+        var quiet = bots[2]
+        quiet.id = "quiet"
+        quiet.createdAt = "2000-01-01T00:00:00Z"
+        bots.append(quiet)
+        var pinnedQuiet = quiet
+        pinnedQuiet.id = "pinned-quiet"
+        pinnedQuiet.pinned = true
+        bots.append(pinnedQuiet)
+        var messages = store.messages
+        let template = try XCTUnwrap(messages.first)
+        var undated = template
+        undated.id = "undated"
+        undated.createdAt = "invalid"
+        messages.append(undated)
+
+        func scan(_ bot: Bot) -> Date {
+            messages.filter { $0.botId == bot.id }.compactMap { $0.createdAt.apiDate }.max()
+                ?? bot.createdAt.apiDate ?? .distantPast
+        }
+        let active = bots.filter { !$0.archived }.sorted { scan($0) > scan($1) }
+        let sections = MacSidebar.sections(bots: bots, messages: messages)
+        XCTAssertEqual(sections.pinned.map(\.id), active.filter(\.pinned).map(\.id))
+        XCTAssertEqual(sections.others.map(\.id), active.filter { !$0.pinned }.map(\.id))
+        XCTAssertFalse(sections.pinned.isEmpty)
+        XCTAssertFalse(sections.others.isEmpty)
+    }
+    #endif
 }

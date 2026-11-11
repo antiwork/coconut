@@ -24,6 +24,7 @@ final class AppModel: ObservableObject {
     let install = Install.standard(environment: [:])
     private var timer: Timer?
     private var couldRegister = false
+    private var loginItemReads = LatestRead()
 
     init() {
         UserDefaults.standard.register(defaults: [Self.startAtLoginKey: true])
@@ -78,7 +79,10 @@ final class AppModel: ObservableObject {
         couldRegister = canRegister
         // Each status is a request to launchd. On the main thread the three of them held the app for about 95 ms every
         // five seconds, also while the person clicked in a chat.
+        let read = loginItemReads.start()
         let loginItems = await Task.detached(priority: .utility) { LoginItems().statuses() }.value
+        // A timer refresh can overlap a change of "Start at Login". Its older read must not replace the newer status.
+        guard loginItemReads.isLatest(read) else { return }
         if loginItems != self.loginItems { self.loginItems = loginItems }
     }
 

@@ -214,6 +214,20 @@ final class CoconutKitTests: XCTestCase {
         XCTAssertEqual(services.items.unregister()?.hasPrefix("Coconut could not remove its login item Coconut.app:"), true)
     }
 
+    /// A timer refresh and a change of "Start at Login" can read the statuses at the same time. Only the newest read
+    /// applies, also when an older read finishes last.
+    func testOnlyTheNewestReadOfTheLoginItemsApplies() {
+        var reads = LatestRead()
+        let timer = reads.start()
+        XCTAssertTrue(reads.isLatest(timer))
+        let change = reads.start()
+        XCTAssertTrue(reads.isLatest(change))
+        XCTAssertFalse(reads.isLatest(timer))
+        let next = reads.start()
+        XCTAssertFalse(reads.isLatest(change))
+        XCTAssertTrue(reads.isLatest(next))
+    }
+
     func testAnEarlierLaunchAgentIsFound() throws {
         XCTAssertEqual(LegacyAgents.present(home: home), [])
         try write("", to: "Library/LaunchAgents/com.gumroad.coconut.tunnel.plist")
