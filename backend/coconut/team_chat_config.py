@@ -13,7 +13,12 @@ Hermes, so it never runs this.
    file>`. A disconnect removes these keys, then each block that is empty after that.
 
 `plan` and `plan-disconnect` change nothing. Each command prints one JSON object: `changes`, a line for a person for
-each change that the command makes or made, or `error`. The edit uses the config reader of Hermes and the round-trip
+each change that the command makes or made, and `problems`, or `error`.
+
+A disconnect judges each of the three parts by itself (`without_team`). A part is done when Coconut removed it, or
+when the home proves that it has nothing of Coconut there. A part whose form cannot be read is not proved: the
+disconnect removes what it can, and `problems` has one line for each part that the operator must correct. The caller
+then keeps the guard of the bot, and a second run after the correction finishes the job. The edit uses the config reader of Hermes and the round-trip
 writer of Coconut (native_settings), so comments, key order and the other keys stay. A plan reads the file with the safe
 YAML loader of Hermes's dependencies instead: an import of the config module of Hermes makes the folders of a Hermes
 home and a copy of config.yaml in `backups/config`, as each start of Hermes does, and a plan must change nothing.
@@ -39,21 +44,9 @@ class Refused(Exception):
     """The home has a form that this command does not change."""
 
 
-def with_team(config: dict, config_file: Path, bridge: str, present: bool) -> tuple[dict | None, list[str]]:
-    """The config with the team chat (present) or without it, and a line for each change. None when nothing changes.
-
-    A connect refuses a form that is not Coconut's to change. A disconnect never refuses one: such a form has nothing
-    of Coconut, so it leaves it as it is, and the guard of the bot can go (scripts/team_chat.py).
-    """
-    try:
-        return _with_team(config, config_file, bridge, present)
-    except Refused:
-        if present:
-            raise
-        return None, []
-
-
-def _with_team(config: dict, config_file: Path, bridge: str, present: bool) -> tuple[dict | None, list[str]]:
+def with_team(config: dict, config_file: Path, bridge: str) -> tuple[dict | None, list[str]]:
+    """The config with the team chat, and a line for each change. None when nothing changes.
+    Each form that is not Coconut's to change refuses before any write."""
     def value(mapping, key, empty):
         found = mapping.get(key)
         return empty if found is None else found
@@ -77,20 +70,54 @@ def _with_team(config: dict, config_file: Path, bridge: str, present: bool) -> t
         raise Refused(f'gateway.platforms.{NAME} in {config_file} belongs to a full Coconut, not to the team chat. '
                       'Coconut did not change it.')
     result, changes = deepcopy(config), []
-    if present and NAME not in enabled:
+    if NAME not in enabled:
         result['plugins'] = dict(plugins, enabled=[*enabled, NAME])
         changes.append(f'Add {NAME} to plugins.enabled in {config_file}.')
-    elif not present and NAME in enabled:
+    wanted = dict(block or {}, enabled=True, extra=dict(extra or {}, mode=TEAM, bridge=bridge))
+    if wanted != block:
+        result['gateway'] = dict(gateway, platforms=dict(platforms, **{NAME: wanted}))
+        changes.append(f'Set gateway.platforms.{NAME} in {config_file}: enabled true, extra.mode {TEAM}, '
+                       f'extra.bridge {bridge}.')
+    return (None if result == config else result), changes
+
+
+def without_team(config, config_file: Path, bridge: str) -> tuple[dict | None, list[str], list[str]]:
+    """The config without the team chat, the line of each change, and the line of each part that is not proved.
+
+    Each part counts by itself. `plugins.enabled` is done when the key is missing, or when it is a list without
+    `coconut` after the removal. `gateway.platforms.coconut` is done when the block is missing, or when it is a mapping
+    without the keys of the team chat after the removal: `mode: team`, the `bridge` of this Coconut, and the `enabled`
+    that goes with them. A block of a full Coconut (`enabled` without `mode: team`) has none of them. A part whose form
+    cannot be read is not proved, and the config keeps it as it is.
+    """
+    if config is None:
+        config = {}
+    if not isinstance(config, dict):
+        return None, [], [f'{config_file} is not a mapping. Correct it.']
+    result, changes, problems = deepcopy(config), [], []
+    plugins = config.get('plugins')
+    enabled = plugins.get('enabled') if isinstance(plugins, dict) else None
+    if plugins is not None and not isinstance(plugins, dict):
+        problems.append(f'plugins in {config_file} is not a mapping. Correct it, or remove coconut from it.')
+    elif enabled is not None and not isinstance(enabled, list):
+        problems.append(f'plugins.enabled in {config_file} is not a list. Correct it, or remove coconut from it.')
+    elif enabled is not None and NAME in enabled:
         # The list stays, also when it is empty: Hermes reads a missing list as "nothing chosen yet".
         result['plugins'] = dict(plugins, enabled=[entry for entry in enabled if entry != NAME])
         changes.append(f'Remove {NAME} from plugins.enabled in {config_file}.')
-    if present:
-        wanted = dict(block or {}, enabled=True, extra=dict(extra or {}, mode=TEAM, bridge=bridge))
-        if wanted != block:
-            result['gateway'] = dict(gateway, platforms=dict(platforms, **{NAME: wanted}))
-            changes.append(f'Set gateway.platforms.{NAME} in {config_file}: enabled true, extra.mode {TEAM}, '
-                           f'extra.bridge {bridge}.')
-    elif ours:
+    gateway = config.get('gateway')
+    platforms = gateway.get('platforms') if isinstance(gateway, dict) else None
+    block = platforms.get(NAME) if isinstance(platforms, dict) else None
+    extra = block.get('extra') if isinstance(block, dict) else None
+    if gateway is not None and not isinstance(gateway, dict):
+        problems.append(f'gateway in {config_file} is not a mapping. Correct it.')
+    elif platforms is not None and not isinstance(platforms, dict):
+        problems.append(f'gateway.platforms in {config_file} is not a mapping. Correct it.')
+    elif block is not None and not isinstance(block, dict):
+        problems.append(f'gateway.platforms.{NAME} in {config_file} is not a mapping. Correct it, or remove it.')
+    elif extra is not None and not isinstance(extra, dict):
+        problems.append(f'gateway.platforms.{NAME}.extra in {config_file} is not a mapping. Correct it, or remove it.')
+    elif extra is not None and (extra.get('mode') == TEAM or extra.get('bridge') == bridge):
         rest = {key: item for key, item in block.items() if key not in ('enabled', 'extra')}
         left = {key: item for key, item in extra.items() if key not in ('mode', 'bridge')}
         if left:
@@ -106,7 +133,7 @@ def _with_team(config: dict, config_file: Path, bridge: str, present: bool) -> t
             result.pop('gateway', None)
         changes.append(f'Remove gateway.platforms.{NAME} from {config_file}.' if not rest else
                        f'Remove enabled, extra.mode and extra.bridge from gateway.platforms.{NAME} in {config_file}.')
-    return (None if result == config else result), changes
+    return (None if result == config else result), changes, problems
 
 
 def link_state(home: Path, folder: Path) -> str:
@@ -129,8 +156,8 @@ def read_only(home: Path) -> dict:
     return config
 
 
-def run(action: str, home: Path, bridge: str, folder: Path = PLUGIN) -> list[str]:
-    """Plan or make the change. Return the lines of the changes."""
+def run(action: str, home: Path, bridge: str, folder: Path = PLUGIN) -> tuple[list[str], list[str]]:
+    """Plan or make the change. Return the lines of the changes and of the parts that a disconnect did not prove."""
     present = action in ('plan', 'connect')
     write = action in ('connect', 'disconnect')
     config_file = home / 'config.yaml'
@@ -143,9 +170,16 @@ def run(action: str, home: Path, bridge: str, folder: Path = PLUGIN) -> list[str
     os.environ['HERMES_HOME'] = str(home)
     if write:
         from native_settings import raw_config, save_config
-    changed, changes = None, []
-    if config_file.is_file():
-        changed, changes = with_team(raw_config(home) if write else read_only(home), config_file, bridge, present)
+    changed, changes, problems = None, [], []
+    if present and config_file.is_file():
+        changed, changes = with_team(raw_config(home) if write else read_only(home), config_file, bridge)
+    elif not present and (config_file.exists() or config_file.is_symlink()):
+        try:
+            config = raw_config(home) if write else read_only(home)
+        except Exception as error:  # Hermes refuses a config.yaml that it cannot read or parse.
+            problems.append(f'{config_file} does not read ({type(error).__name__}). Correct it.')
+        else:
+            changed, changes, problems = without_team(config, config_file, bridge)
     link = home / 'plugins' / NAME
     if present and linked == 'missing':
         changes.insert(0, f'Link {link} to {folder}.')
@@ -159,7 +193,7 @@ def run(action: str, home: Path, bridge: str, folder: Path = PLUGIN) -> list[str
             save_config(home, changed)
         if not present:
             set_link(home, folder, False)
-    return changes
+    return changes, problems
 
 
 def main(arguments: list[str]) -> int:
@@ -170,14 +204,14 @@ def main(arguments: list[str]) -> int:
     # -I leaves the folder of this file and PYTHONPATH out of sys.path. Hermes comes first, as its launcher puts it.
     sys.path[:0] = [path for path in (source, str(Path(__file__).resolve().parent)) if path]
     try:
-        changes = run(action, Path(home), bridge)
+        changes, problems = run(action, Path(home), bridge)
     except Refused as error:
         print(json.dumps({'error': str(error)}))
         return 1
     except Exception as error:  # Hermes refuses a config.yaml that it cannot read.
         print(json.dumps({'error': f'Coconut could not read or write the config of {home}: {error}'}))
         return 1
-    print(json.dumps({'changes': changes}))
+    print(json.dumps({'changes': changes, 'problems': problems}))
     return 0
 
 

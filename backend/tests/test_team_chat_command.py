@@ -16,7 +16,7 @@ from unittest import mock
 
 from coconut import team_chat_config
 from coconut.server import APIServer
-from coconut.team_chat_config import Refused, with_team
+from coconut.team_chat_config import Refused, with_team, without_team
 from hermes_env import PYTHON, SOURCE, needs_hermes
 from test_team_only import TeamOnlyMacs, make_hermes_home, snapshot
 
@@ -29,64 +29,89 @@ BRIDGE = '/data/gateway/bridge.json'
 TEAM = {'enabled': True, 'extra': {'mode': 'team', 'bridge': BRIDGE}}
 
 
+def without(config):
+    """A disconnect of a config in which each part is proved: the config and the changes."""
+    result, changes, problems = without_team(config, CONFIG, BRIDGE)
+    assert problems == [], problems
+    return result, changes
+
+
 class ConfigTests(unittest.TestCase):
     def test_a_connect_adds_the_plugin_and_the_platform_and_a_disconnect_takes_them_away(self):
         config = {'model': {'default': 'example-model'}, 'plugins': {'enabled': ['example']},
                   'gateway': {'platforms': {'telegram': {'enabled': True}}}}
-        connected, changes = with_team(config, CONFIG, BRIDGE, True)
+        connected, changes = with_team(config, CONFIG, BRIDGE)
         self.assertEqual(connected, {'model': {'default': 'example-model'}, 'plugins': {'enabled': ['example', 'coconut']},
                                      'gateway': {'platforms': {'telegram': {'enabled': True}, 'coconut': TEAM}}})
         self.assertEqual(changes, [f'Add coconut to plugins.enabled in {CONFIG}.',
                                    f'Set gateway.platforms.coconut in {CONFIG}: enabled true, extra.mode team, '
                                    f'extra.bridge {BRIDGE}.'])
         # A second connect changes nothing.
-        self.assertEqual(with_team(connected, CONFIG, BRIDGE, True), (None, []))
-        restored, changes = with_team(connected, CONFIG, BRIDGE, False)
+        self.assertEqual(with_team(connected, CONFIG, BRIDGE), (None, []))
+        restored, changes = without(connected)
         self.assertEqual(restored, config)
         self.assertEqual(changes, [f'Remove coconut from plugins.enabled in {CONFIG}.',
                                    f'Remove gateway.platforms.coconut from {CONFIG}.'])
-        self.assertEqual(with_team(config, CONFIG, BRIDGE, False), (None, []))
+        self.assertEqual(without(config), (None, []))
 
     def test_an_empty_config_gets_the_blocks_and_loses_them_again(self):
-        connected, _ = with_team({}, CONFIG, BRIDGE, True)
+        connected, _ = with_team({}, CONFIG, BRIDGE)
         self.assertEqual(connected, {'plugins': {'enabled': ['coconut']}, 'gateway': {'platforms': {'coconut': TEAM}}})
         # The list of the plugins stays: Hermes reads a missing list as "nothing chosen yet".
-        self.assertEqual(with_team(connected, CONFIG, BRIDGE, False)[0], {'plugins': {'enabled': []}})
+        self.assertEqual(without(connected)[0], {'plugins': {'enabled': []}})
 
     def test_the_keys_of_the_operator_in_the_block_stay(self):
         config = {'gateway': {'platforms': {'coconut': {'enabled': True, 'home_channel': 'x',
                                                          'extra': {'mode': 'team', 'bridge': BRIDGE, 'note': 1}}}}}
-        restored, changes = with_team(config, CONFIG, BRIDGE, False)
+        restored, changes = without(config)
         self.assertEqual(restored, {'gateway': {'platforms': {'coconut': {'home_channel': 'x', 'extra': {'note': 1}}}}})
         self.assertEqual(changes, [f'Remove enabled, extra.mode and extra.bridge from gateway.platforms.coconut in '
                                    f'{CONFIG}.'])
 
     def test_the_keys_of_the_operator_left_by_a_disconnect_do_not_block_a_reconnect(self):
-        connected, _ = with_team({}, CONFIG, BRIDGE, True)
+        connected, _ = with_team({}, CONFIG, BRIDGE)
         block = connected['gateway']['platforms']['coconut']
         block['home_channel'] = 'x'
         block['extra']['note'] = 1
-        left, _ = with_team(connected, CONFIG, BRIDGE, False)
+        left, _ = without(connected)
         self.assertEqual(left['gateway']['platforms']['coconut'], {'home_channel': 'x', 'extra': {'note': 1}})
         # A disconnect of a block without the mode changes nothing more.
-        self.assertEqual(with_team(left, CONFIG, BRIDGE, False), (None, []))
-        again, changes = with_team(left, CONFIG, BRIDGE, True)
+        self.assertEqual(without(left), (None, []))
+        again, changes = with_team(left, CONFIG, BRIDGE)
         self.assertEqual(again['gateway']['platforms']['coconut'],
                          {'home_channel': 'x', 'enabled': True, 'extra': {'note': 1, 'mode': 'team', 'bridge': BRIDGE}})
         self.assertEqual(len(changes), 2)
-        self.assertEqual(with_team(again, CONFIG, BRIDGE, False)[0], left)
+        self.assertEqual(without(again)[0], left)
 
     def test_a_block_of_a_full_coconut_and_a_form_that_hermes_does_not_read_are_refused(self):
-        for config in ({'gateway': {'platforms': {'coconut': {'enabled': True}}}},
-                       {'gateway': {'platforms': {'coconut': {'enabled': True, 'extra': {'bridge': BRIDGE}}}}},
-                       {'gateway': {'platforms': {'coconut': {'enabled': False, 'home_channel': 'x'}}}},
-                       {'gateway': {'platforms': {'coconut': 'on'}}},
-                       {'gateway': {'platforms': {'coconut': {'extra': 'team'}}}},
-                       {'plugins': ['coconut']}, {'plugins': {'enabled': 'coconut'}}, {'gateway': []}):
+        full = {'gateway': {'platforms': {'coconut': {'enabled': True}}}}
+        unread = ({'gateway': {'platforms': {'coconut': {'enabled': False, 'home_channel': 'x'}}}},
+                  {'gateway': {'platforms': {'coconut': 'on'}}}, {'gateway': {'platforms': {'coconut': {'extra': 'team'}}}},
+                  {'plugins': ['coconut']}, {'plugins': {'enabled': 'coconut'}}, {'gateway': []},
+                  {'gateway': {'platforms': ['coconut']}})
+        for config in (full, {'gateway': {'platforms': {'coconut': {'enabled': True, 'extra': {'bridge': '/x'}}}}},
+                       *unread):
             with self.subTest(config=config), self.assertRaises(Refused):
-                with_team(config, CONFIG, BRIDGE, True)
-            # A disconnect finds nothing of Coconut there, so it changes nothing and refuses nothing.
-            self.assertEqual(with_team(config, CONFIG, BRIDGE, False), (None, []))
+                with_team(config, CONFIG, BRIDGE)
+        # A disconnect proves that a block of a full Coconut has nothing of the team chat, and leaves it.
+        self.assertEqual(without(full), (None, []))
+
+    def test_a_disconnect_proves_each_part_by_itself_and_names_each_part_that_does_not_read(self):
+        team = {'enabled': True, 'extra': {'mode': 'team', 'bridge': BRIDGE}}
+        # The case of the review: a list that is a text, beside a block of the team chat.
+        result, changes, problems = without_team({'plugins': {'enabled': 'coconut'},
+                                                  'gateway': {'platforms': {'coconut': team}}}, CONFIG, BRIDGE)
+        self.assertEqual(result, {'plugins': {'enabled': 'coconut'}})
+        self.assertEqual(changes, [f'Remove gateway.platforms.coconut from {CONFIG}.'])
+        self.assertEqual(problems, [f'plugins.enabled in {CONFIG} is not a list. Correct it, or remove coconut from it.'])
+        # The mirror: a platforms section that is a list, beside a list with coconut.
+        result, changes, problems = without_team({'plugins': {'enabled': ['coconut']},
+                                                  'gateway': {'platforms': ['coconut']}}, CONFIG, BRIDGE)
+        self.assertEqual(result, {'plugins': {'enabled': []}, 'gateway': {'platforms': ['coconut']}})
+        self.assertEqual(problems, [f'gateway.platforms in {CONFIG} is not a mapping. Correct it.'])
+        self.assertEqual(without_team(['a'], CONFIG, BRIDGE)[2], [f'{CONFIG} is not a mapping. Correct it.'])
+        # A block with only the bridge of this Coconut is a part of the team chat too.
+        self.assertEqual(without({'gateway': {'platforms': {'coconut': {'extra': {'bridge': BRIDGE}}}}})[0], {})
 
 
 class HalfStateTests(TeamOnlyMacs, unittest.TestCase):
@@ -108,7 +133,7 @@ class HalfStateTests(TeamOnlyMacs, unittest.TestCase):
             self.edits.append(action)
             if fail:
                 raise team_chat.Stop('Coconut found no Hermes that it can use, so it changed nothing.')
-            return []
+            return [], []
         return mock.patch.object(team_chat, 'edit', side_effect=run)
 
     def flags(self):
@@ -124,7 +149,7 @@ class HalfStateTests(TeamOnlyMacs, unittest.TestCase):
         def run(action, home, bridge):
             if action == 'connect':
                 raise team_chat.Stop('Coconut could not read or write the config.')
-            return []
+            return [], []
         with mock.patch.object(team_chat, 'edit', side_effect=run):
             self.assertEqual(self.command('connect', 'Reporter', '--confirm'), 1)
         # The home may have a part of the change, so the bot cannot go, and it does not answer.
@@ -187,6 +212,7 @@ class CommandTests(TeamOnlyMacs, unittest.TestCase):
         # A home in which Hermes ran, as the home of a production agent: Hermes makes its folders at each start.
         self.hermes('import hermes_cli.config')
         self.config = self.plugin_config()
+        self.config_text = (self.home / 'config.yaml').read_text()
 
     def hermes(self, code: str, *arguments) -> str:
         """Run code under the Python of the installed Hermes, with the made-up home."""
@@ -312,6 +338,45 @@ class CommandTests(TeamOnlyMacs, unittest.TestCase):
                     shutil.rmtree(self.home / 'plugins/coconut')
                 (self.home / 'config.yaml').write_text(config)
         self.assertTrue(self.call('DELETE', f'/v1/team/bots/{self.bot["id"]}')['removed'])
+
+    def test_a_part_that_does_not_read_keeps_the_guard_until_a_second_run_after_the_correction(self):
+        def write(text):
+            (self.home / 'config.yaml').chmod(0o600)
+            (self.home / 'config.yaml').write_text(text)
+        cases = {
+            # The case of the review: plugins.enabled is a text, and the block of the team chat is there.
+            'enabled text': ('plugins:\n  enabled: coconut\n', 'plugins.enabled in',
+                             'plugins:\n  enabled: []\n'),
+            'platforms list': ('gateway:\n  platforms: [coconut]\n', 'gateway.platforms in', 'gateway: {}\n'),
+            'no parse': ('plugins: [unclosed\n', 'does not read', 'model: {}\n'),
+            'no read': (None, 'does not read', 'model: {}\n'),
+        }
+        for case, (text, named, corrected) in cases.items():
+            with self.subTest(case=case):
+                self.assertEqual(self.run_command('connect', 'Reporter', '--confirm').status, 0)
+                if case == 'enabled text':
+                    # The block of the team chat is there, and only the list has the wrong form.
+                    write(text + f'gateway:\n  platforms:\n    coconut:\n      enabled: true\n      extra:\n'
+                                 f'        mode: team\n        bridge: {self.bridge}\n')
+                elif text is None:
+                    (self.home / 'config.yaml').chmod(0)
+                else:
+                    write(text)
+                result = self.run_command('disconnect', 'Reporter')
+                self.assertEqual(result.status, 1, result.out)
+                self.assertIn(named, result.err)
+                self.assertIn('Then run again: coconut team disconnect-chat Reporter', result.err)
+                self.assertEqual((self.record()['chat'], self.record()['plugin']), (False, True))
+                self.assertEqual(self.refusal(self.call, 'DELETE', f'/v1/team/bots/{self.bot["id"]}')[0], 409)
+                # The link of Coconut is gone already: the command removes what it can prove.
+                self.assertFalse((self.home / 'plugins/coconut').is_symlink())
+                if case == 'enabled text':
+                    self.assertNotIn('mode: team', (self.home / 'config.yaml').read_text())
+                write(corrected)
+                again = self.run_command('disconnect', 'Reporter')
+                self.assertEqual(again.status, 0, again.err)
+                self.assertEqual((self.record()['chat'], self.record()['plugin']), (False, False))
+                write(self.config_text)
 
     def test_a_mac_with_a_person_and_a_home_that_is_not_coconuts_are_refused(self):
         with mock.patch.object(team_chat.host, 'backend_module') as module:

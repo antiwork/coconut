@@ -73,8 +73,9 @@ def find_bot(data: Path, argument: str) -> dict:
     return found[0]
 
 
-def edit(action: str, home: str, bridge: Path) -> list[str]:
-    """Run team_chat_config.py under the Python of the installed Hermes. Return the lines of the changes."""
+def edit(action: str, home: str, bridge: Path) -> tuple[list[str], list[str]]:
+    """Run team_chat_config.py under the Python of the installed Hermes. Return the lines of the changes, and of the
+    parts of a disconnect that the operator must correct."""
     runtime_module = host.hermes_runtime()
     environment = host.service_environment()
     try:
@@ -93,7 +94,7 @@ def edit(action: str, home: str, bridge: Path) -> list[str]:
                    + runtime_module.last_line(result.stderr)) from None
     if 'error' in answer:
         raise Stop(answer['error'])
-    return answer['changes']
+    return answer['changes'], answer.get('problems', [])
 
 
 def may_have_coconut(home: str) -> bool:
@@ -106,8 +107,11 @@ def may_have_coconut(home: str) -> bool:
         return True
     try:
         return 'coconut' in (path / 'config.yaml').read_text(errors='replace')
-    except OSError:
+    except (FileNotFoundError, NotADirectoryError):
         return False
+    except OSError:
+        # A config that this process cannot read proves nothing.
+        return True
 
 
 def numbered(lines: list[str]) -> list[str]:
@@ -122,7 +126,7 @@ def connect(data: Path, argument: str, confirm: bool) -> list[str]:
            f'Hermes config gives to the channel coconut (platform_toolsets.coconut in {home}/config.yaml).')
     bridge = (data / 'gateway/bridge.json').resolve()
     if not confirm:
-        changes = edit('plan', home, bridge)
+        changes, _ = edit('plan', home, bridge)
         if not changes:
             lines = [f'The Hermes home {home} has the team chat already. Nothing changes there.']
         else:
@@ -136,7 +140,7 @@ def connect(data: Path, argument: str, confirm: bool) -> list[str]:
     # stays, and disconnect-chat clears it, because it finds nothing of Coconut there.
     edit('plan', home, bridge)
     call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'plugin': True})
-    changes = edit('connect', home, bridge)
+    changes, _ = edit('connect', home, bridge)
     call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': True})
     lines = ([f'Coconut made these changes in the Hermes home {home}:', *numbered(changes)] if changes else
              [f'The Hermes home {home} had the team chat already. Nothing changed there.'])
@@ -151,8 +155,14 @@ def disconnect(data: Path, argument: str) -> list[str]:
     # No new turn starts while the plugin goes away.
     call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': False})
     # A home that cannot have anything of Coconut needs no Hermes: the way out also works when Hermes is gone.
-    changes = edit('disconnect', home, (data / 'gateway/bridge.json').resolve()) if may_have_coconut(home) else []
-    # Only a clean-up that worked lets the bot and Coconut go.
+    changes, problems = (edit('disconnect', home, (data / 'gateway/bridge.json').resolve())
+                         if may_have_coconut(home) else ([], []))
+    if problems:
+        # Only a clean-up that worked lets the bot and Coconut go.
+        done = [f'Coconut took these changes away from the Hermes home {home}:', *numbered(changes)] if changes else []
+        raise Stop('\n'.join([*done, f'{name} no longer answers in the team chat. Coconut could not check all of '
+                                      f'{home}:', *problems,
+                               f'Then run again: coconut team disconnect-chat {quoted(name)}']))
     call(data, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'plugin': False})
     lines = ([f'Coconut took these changes away from the Hermes home {home}:', *numbered(changes)] if changes else
              [f'The Hermes home {home} has nothing of the team chat of Coconut. Nothing changed there.'])
