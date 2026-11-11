@@ -314,6 +314,46 @@ final class InstallModeTests: XCTestCase {
         XCTAssertNil(TeamOnlyRefusal.line(["remove"], mode: .team))
     }
 
+    /// A listener on 127.0.0.1 that takes each connection in its backlog and never answers. Return the socket and port.
+    func silentListener() throws -> (Int32, UInt16) {
+        let listener = socket(AF_INET, SOCK_STREAM, 0)
+        var address = sockaddr_in()
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        address.sin_port = 0
+        var length = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let bound = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(listener, $0, length) }
+        }
+        XCTAssertEqual(bound, 0)
+        XCTAssertEqual(listen(listener, 8), 0)
+        _ = withUnsafeMutablePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getsockname(listener, $0, &length) }
+        }
+        return (listener, UInt16(bigEndian: address.sin_port))
+    }
+
+    func testAServiceThatDoesNotAnswerHoldsTheStatusOnlyForTheShortTimeout() async throws {
+        let (listener, port) = try silentListener()
+        defer { close(listener) }
+        let install = Install(root: home)
+        try write("print('host')", to: "scripts/host.py")
+        try write(#"{"url": "http://127.0.0.1:\#(port)", "token": "test-token"}"#, to: ".runtime/host/gateway/bridge.json")
+        let started = Date()
+        let team = await TeamServiceStatus.read(install: install)
+        let waited = Date().timeIntervalSince(started)
+        XCTAssertLessThan(waited, BridgeTransport.readTimeout + 3, "The read waited \(waited) s.")
+        XCTAssertEqual(team, .failure(.noAnswer))
+        let status = Status(install: home.path, service: .starting, hermes: "missing", relay: "not_installed")
+        XCTAssertEqual(StatusText.teamLines(version: "1.0 (1)", preferences: UpdatePreferences(store: MemoryPreferences()),
+                                            status: status, team: team).last,
+                       "Teams: unknown while the service does not answer")
+        // The list of `coconut team` only reads, so it has the same short timeout. A join or a leave waits longer.
+        XCTAssertEqual(TeamCommand.show(json: false).timeout, BridgeTransport.readTimeout)
+        XCTAssertEqual(TeamCommand.join(name: nil).timeout, 180)
+        XCTAssertEqual(TeamCommand.leave(team: nil, confirm: nil).timeout, 180)
+    }
+
     func testAPersonReadsWhetherATeamIsConnected() {
         let room = TeamServiceStatus.Room(room: "r1", name: "Example Team", state: "active", members: 3, bots: 2,
                                           syncedAt: nil, error: nil, socket: true)

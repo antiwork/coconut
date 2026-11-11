@@ -127,7 +127,7 @@ final class AppModel: ObservableObject {
     /// short timeout keeps a service that hangs from holding the refresh of the timer.
     nonisolated static func readService(install: Install, mode: InstallMode) async -> (Bool, TeamServiceStatus?) {
         guard mode == .team else { return (await StatusReader.checkHealth(), nil) }
-        if let team = try? await TeamServiceStatus.fetch(transport: BridgeTransport(install: install, timeout: 2)) {
+        if case .success(let team) = await TeamServiceStatus.read(install: install) {
             return (true, team)
         }
         return (await StatusReader.checkHealth(url: mode.healthURL), nil)

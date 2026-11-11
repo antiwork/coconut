@@ -31,6 +31,13 @@ public enum TeamCommand: Equatable, Sendable {
     public static let linkArgument = "The invite link is a secret, so coconut team join reads it from standard input. "
         + "Pipe the link to the command, and do not put it in the command."
 
+    /// How long the tool waits for each answer of the service. The list only reads, so it has the short timeout of a
+    /// read. Each other command can call the relay with retries, so it waits as long as scripts/team.py.
+    public var timeout: TimeInterval {
+        if case .show = self { return BridgeTransport.readTimeout }
+        return 180
+    }
+
     /// Read the arguments after `team`.
     public static func parse(_ arguments: [String]) throws -> TeamCommand {
         var positional: [String] = []
@@ -153,7 +160,11 @@ public struct BridgeTransport: TeamTransport {
     /// menu of the app asks with a short timeout, so a service that hangs does not hold its refresh.
     public let timeout: TimeInterval
 
-    public init(install: Install, timeout: TimeInterval = 180) {
+    /// The timeout of a read that a person or a timer waits for: `coconut status`, `coconut team`, and the refresh
+    /// of the app. The service answers a read from its store, so a service that takes longer does not answer.
+    public static let readTimeout: TimeInterval = 2
+
+    public init(install: Install, timeout: TimeInterval) {
         self.install = install
         self.timeout = timeout
     }

@@ -474,19 +474,19 @@ final class TeamToolTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let install = Install(root: root)
-        var output = await TeamTool(transport: BridgeTransport(install: install)).run(.show(json: false))
+        var output = await TeamTool(transport: BridgeTransport(install: install, timeout: BridgeTransport.readTimeout)).run(.show(json: false))
         XCTAssertEqual(output, TeamOutput(lines: ["Coconut is not installed in \(install.root.path)."], status: 1))
         try FileManager.default.createDirectory(at: install.hostScript.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
         try Data().write(to: install.hostScript)
-        output = await TeamTool(transport: BridgeTransport(install: install)).run(.show(json: false))
+        output = await TeamTool(transport: BridgeTransport(install: install, timeout: BridgeTransport.readTimeout)).run(.show(json: false))
         XCTAssertEqual(output, TeamOutput(lines: TeamFailure.notStarted.lines, status: 1))
         // A bridge file of a service that stopped: nothing listens on its port.
         try FileManager.default.createDirectory(at: install.data.appendingPathComponent("gateway"),
                                                 withIntermediateDirectories: true)
         try Data(#"{"url": "http://127.0.0.1:9", "token": "test"}"#.utf8)
             .write(to: install.data.appendingPathComponent("gateway/bridge.json"))
-        output = await TeamTool(transport: BridgeTransport(install: install)).run(.show(json: false))
+        output = await TeamTool(transport: BridgeTransport(install: install, timeout: BridgeTransport.readTimeout)).run(.show(json: false))
         XCTAssertEqual(output, TeamOutput(lines: TeamFailure.noAnswer.lines, status: 1))
     }
 }

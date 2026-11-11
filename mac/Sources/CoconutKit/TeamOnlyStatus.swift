@@ -41,6 +41,19 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
         let data = try await TeamTool(transport: transport).call("GET", "/v1/team/status")
         return try JSONDecoder.team.decode(TeamServiceStatus.self, from: data)
     }
+
+    /// The read of `coconut status`: the short timeout of a read, so a service that takes a connection but does not
+    /// answer cannot hold the other lines of the status.
+    public static func read(install: Install) async -> Result<TeamServiceStatus, TeamFailure> {
+        do {
+            return .success(try await fetch(transport: BridgeTransport(install: install,
+                                                                       timeout: BridgeTransport.readTimeout)))
+        } catch let failure as TeamFailure {
+            return .failure(failure)
+        } catch {
+            return .failure(.noAnswer)
+        }
+    }
 }
 
 /// `coconut status --json` on a team-only Mac. It has the mode, and no field of the relay, a phone or Hermes.

@@ -187,13 +187,7 @@ func readTeamStatus() -> Result<TeamServiceStatus, TeamFailure> {
     var result = Result<TeamServiceStatus, TeamFailure>.failure(.noAnswer)
     // Detached: this top-level code runs on the main thread, which waits below.
     Task.detached {
-        do {
-            result = .success(try await TeamServiceStatus.fetch(transport: BridgeTransport(install: install)))
-        } catch let failure as TeamFailure {
-            result = .failure(failure)
-        } catch {
-            result = .failure(.noAnswer)
-        }
+        result = await TeamServiceStatus.read(install: install)
         semaphore.signal()
     }
     semaphore.wait()
@@ -268,7 +262,7 @@ func team(_ arguments: [String]) -> Never {
     } catch {
         fail(TeamCommand.usage, code: 64)
     }
-    let tool = TeamTool(transport: BridgeTransport(install: install), readLink: readInviteLink)
+    let tool = TeamTool(transport: BridgeTransport(install: install, timeout: command.timeout), readLink: readInviteLink)
     let semaphore = DispatchSemaphore(value: 0)
     var output = TeamOutput(lines: [])
     // Detached: this top-level code runs on the main thread, which waits below.
