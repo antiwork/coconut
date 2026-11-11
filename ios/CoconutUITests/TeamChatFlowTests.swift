@@ -195,6 +195,10 @@ final class TeamChatFlowTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
+        if look == "pill", let example = env["COCONUT_TEAM_EXAMPLE"] {
+            try measureDayPills(example: example)
+            return
+        }
         if look == "solo" {
             let anyRow = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'bot-conversation-'")).firstMatch
             XCTAssertTrue(anyRow.waitForExistence(timeout: 15))
@@ -215,6 +219,48 @@ final class TeamChatFlowTests: XCTestCase {
         row.tap()
         XCTAssertTrue(text("Planned the week").waitForExistence(timeout: 15))
         shot("look-\(look)-chat")
+    }
+
+    /// The gap between the title of a chat and its first day pill, with the chat scrolled to its top: in the team chat
+    /// (a title of two lines) and in a bot chat (one line). Both pills sit fully below their title, with the same gap.
+    @MainActor
+    private func measureDayPills(example: String) throws {
+        func gap(title: String) -> CGFloat {
+            let transcript = app.collectionViews.firstMatch
+            for _ in 0..<6 { transcript.swipeDown(velocity: .fast) }
+            sleep(2)
+            let pill = app.descendants(matching: .any).matching(identifier: "day-separator").firstMatch
+            XCTAssertTrue(pill.waitForExistence(timeout: 10))
+            return pill.frame.minY - app.buttons[title].frame.maxY
+        }
+        let teamRow = app.buttons["team-chat-\(example)"]
+        XCTAssertTrue(teamRow.waitForExistence(timeout: 15))
+        teamRow.tap()
+        XCTAssertTrue(text("Planned the week").waitForExistence(timeout: 15))
+        let teamGap = gap(title: "team-chat-title")
+        shot("pill-team-chat-top")
+        // During a scroll the pinned day pill shows at the top of the chat, below the title.
+        app.collectionViews.firstMatch.swipeUp(velocity: .slow)
+        shot("pill-team-chat-scrolling", settle: false)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        let pinned = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'pinned-bot-'")).firstMatch
+        XCTAssertTrue(pinned.waitForExistence(timeout: 10))
+        pinned.tap()
+        let input = element("message-input")
+        XCTAssertTrue(input.waitForExistence(timeout: 10))
+        input.tap()
+        input.typeText("Hello")
+        app.buttons["send-message"].tap()
+        app.collectionViews.firstMatch.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.3)).tap()
+        let botGap = gap(title: "bot-settings")
+        shot("pill-bot-chat-top")
+        print("DAY PILL GAPS team=\(teamGap) bot=\(botGap)")
+        let note = XCTAttachment(string: "team gap \(teamGap), bot gap \(botGap)")
+        note.name = "Day pill gaps"
+        note.lifetime = .keepAlways
+        add(note)
+        XCTAssertGreaterThan(teamGap, 0, "The day pill sits fully below the title of the team.")
+        XCTAssertEqual(teamGap, botGap, accuracy: 2, "The same gap as in the bot chat.")
     }
 
     // MARK: Steps
@@ -253,9 +299,9 @@ final class TeamChatFlowTests: XCTestCase {
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 10))
     }
 
-    private func shot(_ name: String) {
+    private func shot(_ name: String, settle: Bool = true) {
         guard let shots else { return }
-        sleep(1)
+        if settle { sleep(1) }
         // COCONUT_TEAM_SHOT_SUFFIX keeps the screenshots of an earlier run.
         let suffix = ProcessInfo.processInfo.environment["COCONUT_TEAM_SHOT_SUFFIX"] ?? ""
         try? app.screenshot().pngRepresentation.write(to: shots.appendingPathComponent(name + suffix + ".png"))

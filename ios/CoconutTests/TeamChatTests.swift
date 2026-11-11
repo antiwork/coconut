@@ -403,6 +403,22 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(LetterFace.colorIndex(renamed.room), before, "A new name keeps the fill.")
     }
 
+    /// Golden values: the fill of a face is FNV-1a (64 bits) over the UTF-8 bytes of the ID, modulo the count of fills.
+    /// It does not use `hashValue` or `Hasher`, which Swift seeds anew in each process, so each launch gives the same
+    /// fill. The values below come from the same function in Python.
+    func testTheFillsOfFixedIDsAreGolden() {
+        let teams = ["3f7708d5f5cc2bc633b59d2b3a2ed92e": 6, "r1": 4, "r2": 5, "8b1c9e3a0d4f4a6b9c2e7f1a5b3d6c80": 1]
+        let people = ["m-ada": 1, "m-grace": 5, "member-1": 1]
+        for (id, index) in teams.merging(people, uniquingKeysWith: { first, _ in first }) {
+            XCTAssertEqual(LetterFace.colorIndex(id), index, id)
+        }
+        XCTAssertEqual(BoardStyle.faceColors.map(\.fill),
+                       ["7E99D3", "70A779", "AA79C2", "F2A088", "EAA052", "D76C91", "B6C493", "EBC96C"],
+                       "A new fill or a new order changes the face of each team and person.")
+        XCTAssertEqual(BoardStyle.faceColors[LetterFace.colorIndex("r1")].fill, "EAA052", "A team")
+        XCTAssertEqual(BoardStyle.faceColors[LetterFace.colorIndex("m-grace")].fill, "D76C91", "A person")
+    }
+
     func testTheLineOfWhoIsInTheChat() {
         func room(people: Int, bots: Int) -> TeamRoom {
             TeamRoom(room: "r", name: "Example Team", state: "active",

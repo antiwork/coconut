@@ -27,10 +27,12 @@ struct TeamChatView: View {
     @ScaledMetric(relativeTo: .headline) private var nameWidth = 150
     #if os(macOS)
     @Environment(\.openSettings) private var openSettings
-    /// The chat runs up under the toolbar of the window, where the title of the team floats. The title has two lines
-    /// (the name and who is in the chat), so it is taller than the title of a bot, and the chat and the pinned day
-    /// pill start lower.
-    private static let titleHeight: CGFloat = 60
+    /// The title of the team floats over the top of the chat. It has two lines (the name and who is in the chat), so it
+    /// is 10 points taller than the title of a bot (34).
+    private static let titlePillHeight: CGFloat = 44
+    /// The chat runs up under the toolbar of the window, where the title floats. The chat and the pinned day pill start
+    /// below it with the gap of the bot chat: 8 points above the title and 10 below it.
+    private static let titleHeight: CGFloat = 8 + titlePillHeight + 10
     #else
     private static let titleHeight: CGFloat = 0
     #endif
@@ -203,8 +205,8 @@ struct TeamChatView: View {
         .overlay(alignment: .top) {
             Button { openSettings() } label: {
                 TeamTitle(room: room, faceSize: 24)
-                .padding(.leading, 6).padding(.trailing, 12).padding(.vertical, 3)
-                .frame(minHeight: 34)
+                .padding(.leading, 6).padding(.trailing, 12)
+                .frame(height: Self.titlePillHeight)
                 .modifier(FloatingCapsule())
                 .contentShape(Capsule())
             }
@@ -219,9 +221,16 @@ struct TeamChatView: View {
 
     private static let bottom = "team-chat-bottom"
 
-    /// The line at the start of the chat: what the chat cannot show yet, or where a message goes.
-    @ViewBuilder
+    /// The first row of the chat: what the chat cannot show yet, or where a message goes. It is always a row, also an
+    /// empty one, as the header of the bot chat (ConversationView.conversationHeader) is. So the first day pill has the
+    /// same gap below the title in both chats.
     private func header(_ room: TeamRoom, chat: TeamChat, empty: Bool) -> some View {
+        VStack(spacing: 0) { headerContent(room, chat: chat, empty: empty) }
+            .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private func headerContent(_ room: TeamRoom, chat: TeamChat, empty: Bool) -> some View {
         if !room.hasChat {
             EmptyView()
         } else if !chat.loaded {
