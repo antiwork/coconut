@@ -540,9 +540,9 @@ What the chat shows when a turn fails:
 | Case | The chat shows |
 | --- | --- |
 | No adapter of the gateway of the bot in 5 minutes, or the profile is parked | One message of the bot: "Hermes on this Mac does not answer now, so I cannot answer. Write again later." |
-| The gateway stops answering in a turn, the turn fails, or it runs over 30 minutes | The complete messages, then one message: "I could not finish my answer. Write again if you still need it." |
+| The gateway stops answering in a turn, the turn fails, it runs over 30 minutes, it ends without a word, Coconut has a fault in the turn, or the trigger waited in the queue over one hour | The complete messages, then one message: "I could not finish my answer. Write again if you still need it." |
 | The service stops in a turn | The same message at the next start. The trigger does not run again. |
-| The chat of the bot goes off, the bot leaves the team, or this Mac leaves | Nothing. The turn stops. |
+| The chat of the bot goes off, the bot leaves the team, this Mac leaves, the member leaves, or the message is removed | Nothing. The turn stops or does not start. |
 | The relay refuses the write of a reply | Nothing. The relay client tries three times, then the service writes a log line. |
 
 ### Team-only mode
