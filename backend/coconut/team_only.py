@@ -1,17 +1,22 @@
 """Coconut for a team only: a service for a Mac that runs a Hermes agent with no person at it (docs/team-log.md, "Mac").
 
 `python3 -m coconut --team-only` (or COCONUT_MODE=team) runs this service object in server.py in place of Service. It
-does three things:
+does four things:
 
 1. It keeps the team rooms of this Mac in step with the relay: the store, the sync thread, the socket watcher and the
    helper of team.py, as on a full Mac.
 2. It serves the team routes on the main listener with the token of <data>/gateway/bridge.json, so `coconut team` and
    scripts/team.py work against it.
 3. It keeps the bots that this Mac declares for the team, and it saves their pages for the team.
+4. It gives the messages of the team chat that name a bot with its chat connected to the Hermes gateway of that bot,
+   and writes the replies into the chat (team_turns.py). The adapter of the `coconut` plugin in the mode `team` takes
+   the turns with the routes poll, events and messages of the bridge (gateway_bridge.py).
 
 It imports no Hermes module and none of the full runtime (service.py and what it loads). It reads and changes no file
 under a Hermes home, starts no gateway, loads no plugin, copies no key, runs no scheduler, worker or kanban adapter,
 opens no tunnel listener, pairs no phone and sends no push notification. Its only child process is the team helper.
+Only the operator's command `coconut team connect-chat` adds the plugin to the Hermes home of a bot
+(scripts/team_chat.py), in a process of its own, and sets `chat` on the record of the bot.
 
 A bot of this Mac is a record that the person declares (`POST /v1/team/bots`): a name, an avatar and a color with the
 rules of a `member` entry, and the Hermes home that the bot stands for. The service stores the path of the home and
@@ -23,8 +28,11 @@ Routes, each with the token of the bridge file:
 
 - `GET /v1/team/status`: the mode, the version of the code, whether the helper is there, and the rooms in short form.
 - `GET /v1/team/bots`, `POST /v1/team/bots` with `{name, avatar, color, home}`,
-  `PATCH /v1/team/bots/<bot>` with `{name, avatar, color}`, `DELETE /v1/team/bots/<bot>`.
+  `PATCH /v1/team/bots/<bot>` with `{name, avatar, color, chat}`, `DELETE /v1/team/bots/<bot>`. `chat` is true while
+  the bot answers in the team chat. Each bot in `GET` also has `adapter`: whether the adapter of its Hermes gateway
+  polls now.
 - The routes of team.py, and `POST /v1/gateway/document`.
+- `POST /v1/gateway/poll`, `/v1/gateway/events` and `/v1/gateway/messages` for the adapter of the team mode.
 """
 from __future__ import annotations
 
@@ -41,7 +49,8 @@ from .service_base import (MODE_MARK, TEAM_MODE, ServiceError, check_data_folder
                            release_data_folder, take_data_folder, uid)
 from .service_restart import ServiceRestart
 from .team import SCHEMA as TEAM_SCHEMA, Team, member_profile
-from .team_store import unicode_text
+from .team_store import ACTIVE, unicode_text
+from .team_turns import TeamTurns, parse_chat, parts
 
 MODE = TEAM_MODE
 REFUSAL = 'This Mac runs Coconut for a team only, so it does not serve this request.'
@@ -51,6 +60,8 @@ TEAM_PAGE = ('This Mac runs Coconut for a team only, so no person reads a page h
              '"team".')
 UNKNOWN_HOME = ('This Hermes home is not the home of a bot of this Mac. Declare the bot first: coconut team new-bot '
                 '<name> --home <path>.')
+CHAT_CONNECTED = ('The team chat of the bot {name} is connected to its Hermes. Run coconut team disconnect-chat {name} '
+                  'first, then remove the bot.')
 NO_BOT = {'name': None, 'avatar': '', 'color': ''}
 COMMIT = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
 PROJECT = Path(__file__).resolve().parents[2]
@@ -96,12 +107,12 @@ def code_version(project: Path) -> str | None:
         return None
 
 
-class TeamOnlyService(Documents, Team):
+class TeamOnlyService(TeamTurns, Documents, Team):
     """The service object of the team-only mode. server.Handler serves it with Handler._team_only."""
 
     team_only = True
-    # Nothing runs but the sync, so an update can stop this process at once. See host.drain_for_update.
-    drains = False
+    # An update waits for a running turn of a bot (TeamTurns._team_poll_drain, host.drain_for_update).
+    drains = True
     restart_enabled = False
     # No person reads the Library here (Documents._page_audience).
     library_reader = False
@@ -129,9 +140,10 @@ class TeamOnlyService(Documents, Team):
         self.version = code_version(PROJECT)
         self.lock = threading.RLock()
         self.stopping = threading.Event()
-        # Only its token and its file are of use here: Handler._team_only serves no route of the gateway adapter.
+        # Handler._team_only serves the poll, the events and the messages of the adapter of the team mode.
         self.gateway_bridge = GatewayBridge(self.root)
         self._init_team()
+        self._init_team_turns()
 
     # What the team modules and Documents need of a service
 
@@ -177,9 +189,13 @@ class TeamOnlyService(Documents, Team):
 
     def start(self):
         self._start_team()
+        self._start_team_turns()
 
     def close(self):
         self.stopping.set()
+        # A running turn ends at once, and the trigger keeps `started`: the next start posts the notice.
+        self.gateway_bridge.close()
+        self._close_team_turns()
         self._close_team()
         with self.lock:
             self.db.close()
@@ -221,7 +237,8 @@ class TeamOnlyService(Documents, Team):
     def _bot_view(self, bot: dict) -> dict:
         """A bot record with the rooms that it is shared with. The caller holds the service lock."""
         return {'id': bot['id'], 'name': bot['name'], 'avatar': bot['avatar'], 'color': bot['color'],
-                'home': bot['home'], 'teams': self.team_store.rooms_of(bot['id'])}
+                'home': bot['home'], 'teams': self.team_store.rooms_of(bot['id']), 'chat': bot.get('chat') is True,
+                'adapter': self.gateway_bridge.connected(bot['home'])}
 
     def team_declare_bot(self, data: dict) -> dict:
         """Declare a bot for the Hermes home that it stands for. One home has one bot, and one name one bot, because
@@ -235,16 +252,26 @@ class TeamOnlyService(Documents, Team):
             return {'bot': self._bot_view(bot)}
 
     def team_change_bot(self, bot_id: str, data: dict) -> dict:
-        """Change the name, the avatar or the color of a bot. The next pass writes its `bot` entry in each room."""
+        """Change the name, the avatar or the color of a bot. The next pass writes its `bot` entry in each room.
+
+        `chat` says whether the bot answers in the team chat. Only `coconut team connect-chat` sets it true, after it
+        connected the Hermes home of the bot, and `disconnect-chat` sets it false before it takes the plugin away. A
+        bot whose chat goes off stops its running turns and queues no new trigger."""
         if 'home' in data:
             raise ServiceError(400, 'A bot keeps its Hermes home. Remove the bot, then declare it again with the new '
                                     'home.')
+        if 'chat' in data and not isinstance(data['chat'], bool):
+            raise ServiceError(400, 'Give chat as true or false.')
         with self.transaction():
             bot = self._declared_bot(bot_id)
             bot.update(member_profile(data, bot, field='name', noun='the name of the bot'))
+            if 'chat' in data:
+                bot['chat'] = data['chat']
             self._check_bot(bot['name'], bot['home'], bot['id'])
             self._put('bots', bot)
             answer = {'bot': self._bot_view(bot)}
+        if data.get('chat') is False:
+            self._team_stop_turns(bot=bot_id)
         self.team_wake()
         return answer
 
@@ -252,7 +279,10 @@ class TeamOnlyService(Documents, Team):
         """Remove a bot and its pages. It first stops sharing the bot with each room, as team_unshare does, in the
         same transaction. The next pass replaces its entries with `delete` entries."""
         with self.transaction():
-            self._declared_bot(bot_id)
+            bot = self._declared_bot(bot_id)
+            # The plugin in the Hermes home would stay. Only the command that added it takes it away.
+            if bot.get('chat') is True:
+                raise ServiceError(409, CHAT_CONNECTED.format(name=bot['name']))
             for room in self.team_store.rooms_of(bot_id):
                 self.team_store.unshare(room, bot_id)
             self._remove_bot_documents(bot_id)
@@ -290,3 +320,27 @@ class TeamOnlyService(Documents, Team):
         if row is None:
             raise ServiceError(404, UNKNOWN_HOME)
         return self.publish_page(row[0], data)
+
+    def gateway_message(self, data: dict) -> dict:
+        """POST /v1/gateway/messages: a send of Hermes in a chat of the team outside a turn of Coconut, for example the
+        reply of its own turn after a background process. A send becomes a message of the bot without `reply_to`, and
+        its entry ID comes from the message ID of Hermes, so a send that the adapter repeats adds none. A message of
+        the chat is complete, so an edit and a delete change nothing."""
+        home, chat, message_id = data.get('home'), parse_chat(data.get('chat_id')), data.get('message_id')
+        if not isinstance(home, str) or chat is None or not isinstance(message_id, str):
+            raise ServiceError(400, 'Name the home, the chat and the message.')
+        room, bot_id = chat
+        with self.lock:
+            bot = self._team_bot(bot_id) if unicode_text(bot_id) else None
+        if bot is None or bot['home'] != os.path.realpath(home):
+            raise ServiceError(404, 'This chat is not a team chat of a bot of this Hermes home.')
+        text = data.get('text')
+        if data.get('kind') != 'send' or not isinstance(text, str) or not text.strip():
+            return {'recorded': False, 'reason': 'A message of the team chat is complete. It takes no edit.'}
+        with self.lock:
+            room_row = self.team_store.room(room)
+        if room_row is None or room_row['state'] != ACTIVE:
+            return {'recorded': False, 'reason': 'This Mac is not in this team.'}
+        for number, piece in enumerate(parts(text)):
+            self._team_say(room, bot_id, message_id, number, piece)
+        return {'recorded': True}

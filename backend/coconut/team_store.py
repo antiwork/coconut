@@ -19,6 +19,8 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   so a message of a member that left keeps a name, and a message of a bot can still name a valid `bot` entry.
 - `team_reads`: the read position of this Mac in the chat of each room: the `first` of the newest message that the
   person read.
+- `team_triggers`: on a team-only Mac only, the messages that start a turn of a bot of this Mac, in the order in which
+  this Mac accepted them (team_turns.py). `started` marks a trigger whose turn began.
 
 `TeamStore.accept` holds the "Rules for a Mac that reads an entry" of the contract. The secrets of a room are not
 here: team_keys.py keeps them in a private file. The caller holds the transaction of each write.
@@ -30,6 +32,7 @@ from datetime import datetime, timezone
 import json
 import logging
 import re
+import time
 
 from .team_relay import HEX32, number
 
@@ -65,6 +68,8 @@ CREATE TABLE IF NOT EXISTS team_names (room TEXT NOT NULL, entry TEXT NOT NULL, 
     kind TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (room, entry));
 CREATE INDEX IF NOT EXISTS team_names_member ON team_names (room, member, kind);
 CREATE TABLE IF NOT EXISTS team_reads (room TEXT PRIMARY KEY, first INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS team_triggers (number INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL,
+    bot TEXT NOT NULL, entry TEXT NOT NULL, started INTEGER NOT NULL DEFAULT 0, UNIQUE (room, bot, entry));
 -- A store from before team_names gets the names that it shows now. A later accept keeps them current.
 INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
     SELECT room, entry, member, 'member', name FROM team_members;
@@ -72,7 +77,7 @@ INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
     SELECT room, entry, member, 'bot', name FROM team_bots;
 '''
 TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_shares', 'team_page_entries',
-          'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads')
+          'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers')
 ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
 MEMBER_FIELDS = ('member', 'name', 'avatar', 'color', 'agreement', 'entry')
@@ -98,6 +103,12 @@ MAX_TEXT = 16000
 MAX_MENTIONS = 16
 # The unread count of a room stops here, so the count reads at most this many rows.
 MAX_UNREAD = 99
+# A message starts a turn of a bot only while it is younger than this. An older message is history, for example the log
+# that a Mac reads after it joins.
+TRIGGER_SECONDS = 3600
+# At most this many triggers wait for one bot in one room. A member can mention the bot again later.
+MAX_WAITING = 8
+TRIGGER_FIELDS = ('number', 'room', 'bot', 'entry', 'started')
 # The end date of a page as documents.end_time writes it.
 PAGE_END = re.compile(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ')
 
@@ -285,6 +296,11 @@ class TeamStore:
         self.touched: set[str] = set()
         self.changed: set[str] = set()
         self.chatted: set[str] = set()
+        # Only a team-only Mac sets `answers` (team_turns.py): its bots answer in the team chat. `triggered` has the
+        # rooms with a new trigger, and TeamSync wakes the turns. The clock is the wall clock, as the `at` of the relay.
+        self.answers = False
+        self.triggered: set[str] = set()
+        self.clock = time.time
 
     def _rows(self, fields, query, values=()) -> list[dict]:
         return [dict(zip(fields, row)) for row in self.db.execute(query, values).fetchall()]
@@ -400,6 +416,9 @@ class TeamStore:
         if 'message' in kinds and self._show_message(room['room'], entry, fields['rev'],
                                                      shown if fields['kind'] == 'message' else None):
             self.chatted.add(room['room'])
+        # A trigger is the first write of a message of another member that this Mac sees. A later write is an edit.
+        if self.answers and existing is None and other and fields['kind'] == 'message' and fields['rev'] == 1 and shown:
+            self._queue_triggers(room, entry, shown)
         if 'member' in kinds:
             self.show_member(room['room'], entry['member'], (entry['id'], shown) if fields['kind'] == 'member' else None)
             if not other and fields['kind'] == 'member':
@@ -583,6 +602,75 @@ class TeamStore:
             updated_at=excluded.updated_at, created_at=COALESCE(team_pages.created_at, excluded.created_at)''',
                         (room, entry['id'], entry['member'], int(valid), bot, version, page['key'], page['title'],
                          page['format'], page['summary'], page['size'], fields['rev'], page['expires_at'], at, at))
+
+    # The triggers of the bots of a team-only Mac
+
+    def _queue_triggers(self, room: dict, entry: dict, message: dict) -> None:
+        """Queue a turn for each bot of this Mac that the message names or answers (docs/team-log.md, "A bot answers").
+
+        The message has no `bot`, is under TRIGGER_SECONDS old, and its member is in the member list. It names the
+        `bot` entry of a bot in `mentions`, or its `reply_to` is a message of that bot. The bot is shared with the room,
+        is not archived, and has its chat connected (`chat` of its record). The signature of the entry proves its
+        member, and no other field of a payload decides here. A bot with MAX_WAITING triggers that wait skips the
+        message, with a log line and no text of the message.
+        """
+        room_id = room['room']
+        if message['bot'] is not None or self.clock() * 1000 - entry['at'] >= TRIGGER_SECONDS * 1000:
+            return
+        if self.member(room_id, entry['member']) is None:
+            return
+        answered = None
+        if message['reply_to']:
+            row = self.db.execute('SELECT bot FROM team_messages WHERE room=? AND entry=? AND member=?',
+                                  (room_id, message['reply_to'], room['member'])).fetchone()
+            answered = row[0] if row else None
+        for bot, share in self.answering(room_id):
+            if share not in message['mentions'] and share != answered:
+                continue
+            if self.db.execute('SELECT COUNT(*) FROM team_triggers WHERE room=? AND bot=? AND started=0',
+                               (room_id, bot)).fetchone()[0] >= MAX_WAITING:
+                log.warning('coconut.team_log room %s: the bot %s has %d messages that wait, so it skips the entry %s.',
+                            room_id[:8], bot, MAX_WAITING, entry['id'])
+                continue
+            if self.db.execute('INSERT OR IGNORE INTO team_triggers (room, bot, entry) VALUES (?, ?, ?)',
+                               (room_id, bot, entry['id'])).rowcount:
+                self.triggered.add(room_id)
+
+    def answering(self, room: str) -> list[tuple[str, str]]:
+        """The bots of this Mac that answer in the chat of the room, each with the entry ID of its `bot` entry: shared
+        with the room, not archived, and with their chat connected. The `bots` table holds the records."""
+        return self.db.execute('''SELECT s.bot, s.entry FROM team_shares s JOIN bots b ON b.id=s.bot
+            WHERE s.room=? AND json_extract(b.data, '$.chat')=1 AND COALESCE(json_extract(b.data, '$.archived'), 0)=0
+            ORDER BY s.bot''', (room,)).fetchall()
+
+    def next_trigger(self, room: str, bot: str) -> dict | None:
+        """The oldest trigger of the bot in the room whose turn did not begin."""
+        rows = self._rows(TRIGGER_FIELDS, f'''SELECT {", ".join(TRIGGER_FIELDS)} FROM team_triggers
+            WHERE room=? AND bot=? AND started=0 ORDER BY number LIMIT 1''', (room, bot))
+        return rows[0] if rows else None
+
+    def waiting(self) -> list[tuple[str, str]]:
+        """Each room and bot with a trigger whose turn did not begin, in the order of their oldest trigger."""
+        return [tuple(row) for row in self.db.execute('''SELECT room, bot FROM team_triggers WHERE started=0
+            GROUP BY room, bot ORDER BY MIN(number)''')]
+
+    def started_triggers(self) -> list[dict]:
+        """The triggers whose turn began and did not end: the service stopped in their turn."""
+        return self._rows(TRIGGER_FIELDS, f'SELECT {", ".join(TRIGGER_FIELDS)} FROM team_triggers WHERE started=1 '
+                                          'ORDER BY number')
+
+    def start_trigger(self, number: int) -> None:
+        self.db.execute('UPDATE team_triggers SET started=1 WHERE number=?', (number,))
+
+    def drop_trigger(self, number: int) -> None:
+        self.db.execute('DELETE FROM team_triggers WHERE number=?', (number,))
+
+    def context(self, room: str, bot: str, first: int, limit: int) -> list[dict]:
+        """The shown messages before `first` and after the newest message of the bot (its `bot` entry ID), at most
+        `limit`, oldest first."""
+        last = self.db.execute('SELECT MAX(first) FROM team_messages WHERE room=? AND bot=?', (room, bot)).fetchone()[0]
+        rows = self._messages('m.first<? AND m.first>? ORDER BY m.first DESC LIMIT ?', (room, first, last or 0, limit))
+        return rows[::-1]
 
     # What this Mac shares
 

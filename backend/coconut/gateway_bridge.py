@@ -150,6 +150,8 @@ class _Turn:
         self.silent, self.commentary = False, True
         # The context (a follow-up on a pending card) that this turn answers, or None (gateway_chat.run_gateway_context).
         self.context_id = None
+        # The monotonic time at which a turn of the team chat stops (team_turns.TURN_SECONDS), or None.
+        self.deadline = None
 
 
 class GatewayBridge:
@@ -286,7 +288,8 @@ class GatewayBridge:
     def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut',
                  session_root: str | None = None, silent: bool = False, commentary: bool = True,
                  context_id: str | None = None, mode: str | None = None, own: str | None = None,
-                 folder: str | None = None, command: str | None = None, records: list | None = None) -> None:
+                 folder: str | None = None, command: str | None = None, records: list | None = None,
+                 team: dict | None = None, deadline: float | None = None) -> None:
         """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends.
 
         With `silent`, the turn may end in silence. Without `commentary`, it shows no commentary (TurnEvents). With
@@ -295,7 +298,10 @@ class GatewayBridge:
         With `folder`, the terminal commands of the turn run in that folder, as in a worker of a native outcome
         (hooks.guard_tool). With `command`, a command of Hermes that the person typed
         (gateway_chat.gateway_command), the adapter gives the gateway that command instead of a message. `records` are the
-        records that the session of the chat keeps once (native_conversation.turn_records, hooks.add_records)."""
+        records that the session of the chat keeps once (native_conversation.turn_records, hooks.add_records).
+        `team` makes a turn of the team chat of a team-only Mac (team_turns.py): the sender, the context and the rules
+        of the chat, which the adapter of the team mode reads. It has no task and no session root. `deadline` stops
+        the turn at that monotonic time."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, text, chat_name, session_root)
         if own is not None:
             turn.request['own'] = own
@@ -305,6 +311,9 @@ class GatewayBridge:
             turn.request['command'] = command
         if records:
             turn.request['records'] = records
+        if team is not None:
+            turn.request['team'] = team
+        turn.deadline = deadline
         turn.silent, turn.commentary = silent, commentary
         if context_id:
             turn.context_id = context_id
@@ -335,6 +344,8 @@ class GatewayBridge:
                 with self.lock:
                     while not turn.events and turn.state in ('pending', 'active') and not self.closed:
                         current = time.monotonic()
+                        if turn.deadline is not None and current > turn.deadline:
+                            raise TimeoutError('The turn ran past its time.')
                         if turn.state == 'pending' and current - turn.created > TAKE_SECONDS:
                             raise GatewayUnavailable('No Hermes gateway took this turn.')
                         if turn.state == 'active' and current - turn.seen > turn.silent_seconds:
@@ -344,6 +355,9 @@ class GatewayBridge:
                         return
                     if self.closed and not turn.events:
                         raise RuntimeError('The Coconut service stops.')
+                    if turn.deadline is not None and time.monotonic() > turn.deadline:
+                        # A turn that sends without a pause also stops at its time.
+                        raise TimeoutError('The turn ran past its time.')
                     batch, turn.events = turn.events, []
                 for event in batch:
                     if events.apply(event):
