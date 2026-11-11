@@ -153,7 +153,7 @@ final class NativeDecisionFlowTests: XCTestCase {
         XCTAssertFalse(app.buttons["inbox-filter-all"].exists)
         XCTAssertFalse(app.buttons["inbox-filter-done"].exists)
         XCTAssertFalse(app.buttons["inbox-filter-needsYou"].exists)
-        XCTAssertTrue(app.buttons["1 decisions left. Show all"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.buttons["1 decision left. Show all"].waitForExistence(timeout: 5),
                       "Inbox must hold only the pending decision, not completed work.")
         let openChat = app.buttons["inbox-context-00000000-0000-4000-8000-000000000031"]
         XCTAssertTrue(openChat.waitForExistence(timeout: 10))
