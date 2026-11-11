@@ -134,18 +134,21 @@ struct MacSidebar: View {
     @Binding var selection: MacSelection?
     @State private var deleting: Bot?
 
-    private var activeBots: [Bot] {
-        // One pass over the messages for each body. A comparison of the sort read every message and parsed its date,
-        // about 3 ms for each body with 1,500 messages.
-        let latest = Self.lastMessageDates(store.messages)
+    /// The bots that are not archived, newest activity first, split into the pinned bots and the other bots.
+    /// It reads only its arguments, so it needs no main actor, and a test can call it from any context.
+    nonisolated static func sections(bots: [Bot], messages: [Message]) -> (pinned: [Bot], others: [Bot]) {
+        // One pass over the messages. A comparison of the sort read every message and parsed its date, about 3 ms for
+        // each body with 1,500 messages.
+        let latest = lastMessageDates(messages)
         func lastActivity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
-        return store.bots.filter { !$0.archived }.sorted { lastActivity($0) > lastActivity($1) }
+        let active = bots.filter { !$0.archived }.sorted { lastActivity($0) > lastActivity($1) }
+        return (active.filter(\.pinned), active.filter { !$0.pinned })
     }
-    private var pinned: [Bot] { activeBots.filter(\.pinned) }
-    private var others: [Bot] { activeBots.filter { !$0.pinned } }
 
     var body: some View {
-        List(selection: $selection) {
+        // The body reads both sections, so it sorts the bots one time and not for each section.
+        let (pinned, others) = Self.sections(bots: store.bots, messages: store.messages)
+        return List(selection: $selection) {
             MacSidebarLabel(title: "Inbox", symbol: "tray")
                 .badge(store.inboxBadgeCount)
                 .tag(MacSelection.inbox)
@@ -185,7 +188,7 @@ struct MacSidebar: View {
     }
 
     /// The date of the newest message of each bot.
-    static func lastMessageDates(_ messages: [Message]) -> [String: Date] {
+    nonisolated static func lastMessageDates(_ messages: [Message]) -> [String: Date] {
         var latest: [String: Date] = [:]
         for message in messages {
             guard let date = message.createdAt.apiDate else { continue }

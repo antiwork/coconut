@@ -28,6 +28,23 @@ public enum LoginItem: Hashable, CaseIterable, Sendable {
     }
 }
 
+/// The numbers of reads that can overlap. Only the result of the newest read applies, so an older read that finishes
+/// last cannot put back an older value.
+public struct LatestRead: Sendable {
+    private var started = 0
+
+    public init() {}
+
+    /// Start a read and return its number.
+    public mutating func start() -> Int {
+        started += 1
+        return started
+    }
+
+    /// True when no read started after this one.
+    public func isLatest(_ read: Int) -> Bool { read == started }
+}
+
 /// The part of `SMAppService` that Coconut uses. Tests give a stand-in.
 public protocol LoginItemService {
     var status: SMAppService.Status { get }
