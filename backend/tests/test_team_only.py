@@ -227,9 +227,9 @@ class TeamOnlyFlowTests(TeamOnlyMacs, unittest.TestCase):
 class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
     def test_a_bot_record_has_the_fields_of_a_bot_entry(self):
         bot = self.declare('Reporter 📊', avatar='📊', color='blue')
-        self.assertEqual({name: bot[name] for name in ('name', 'avatar', 'color', 'home', 'teams')},
+        self.assertEqual({name: bot[name] for name in ('name', 'avatar', 'color', 'home', 'chat', 'teams')},
                          {'name': 'Reporter 📊', 'avatar': '📊', 'color': 'blue', 'home': os.path.realpath(self.home),
-                          'teams': []})
+                          'chat': False, 'teams': []})
         self.assertEqual(self.call('GET', '/v1/team/bots')['bots'], [bot])
 
     def test_a_bot_record_refuses_hostile_input(self):
@@ -276,6 +276,76 @@ class BotRecordTests(TeamOnlyMacs, unittest.TestCase):
         with mock.patch.dict(os.environ, {'HOME': str(user), 'HERMES_HOME': ''}):
             bot = self.call('POST', '/v1/team/bots', {'name': 'Helper'})['bot']
         self.assertEqual(bot['home'], os.path.realpath(user / '.hermes'))
+
+    def test_a_bot_is_open_only_while_it_answers_in_the_chat(self):
+        room = self.team()
+        bot = self.declare()
+        self.assertIs(bot['chat'], False, 'A declared bot does not answer in the chat yet.')
+        (own,) = self.share(room, bot)['bots']
+        self.assertIs(own['open'], False)
+        self.sync()
+        member = self.only.team_store.room(room)['member']
+
+        def seen() -> tuple:
+            (row,) = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]['bots']
+            return row['name'], row['this_mac'], row['open']
+
+        self.assertEqual(list(self.only.team_store.written(room, member).values()), [('bot', 'Reporter', '', '', 0)])
+        self.assertEqual(seen(), ('Reporter', False, False), 'No mark while the bot does not answer.')
+        # The step that connects the bot to its agent sets `chat`. The next pass writes the mark.
+        changed = self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': True})['bot']
+        self.assertIs(changed['chat'], True)
+        self.assertEqual(self.call('GET', '/v1/team/status')['chat_bots'], 1)
+        self.sync()
+        self.assertEqual(list(self.only.team_store.written(room, member).values()), [('bot', 'Reporter', '', '', 1)])
+        self.assertEqual(seen(), ('Reporter', False, True))
+        # A change of the name keeps the mark, and a pass with nothing new writes nothing.
+        self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'name': 'Night Reporter'})
+        self.sync()
+        self.assertEqual(seen(), ('Night Reporter', False, True))
+        self.assertEqual(self.only._team_steps(self.only.team_store.room(room))[0], [])
+        # Back to false takes the mark away on the other Mac.
+        self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': False})
+        self.sync()
+        self.assertEqual(seen(), ('Night Reporter', False, False))
+        # Only a boolean is a value of `chat`.
+        for value in ('true', 1, None, {}):
+            with self.subTest(value=value):
+                self.assertEqual(self.refusal(self.call, 'PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': value}),
+                                 (400, 'Give chat as true or false.'))
+        self.assertIs(self.call('GET', '/v1/team/bots')['bots'][0]['chat'], False)
+
+    def test_a_team_only_mac_is_a_member_without_a_person(self):
+        room = self.team()
+        self.sync()
+        own = self.only.team_store.room(room)['member']
+        view = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]
+        self.assertEqual([(member['name'], member['bot_only']) for member in view['members']],
+                         [('Ada', False), ('Reporter Mac', True)])
+        self.assertTrue(self.only.team_store.member(room, own)['bot_only'])
+        # A pass with nothing new writes no `member` entry again.
+        before = self.only.team_store.entry(room, self.only.team_store.member(room, own)['entry'])['rev']
+        self.sync()
+        self.sync()
+        self.assertEqual(self.only.team_store.entry(room, self.only.team_store.member(room, own)['entry'])['rev'], before)
+        # A full Mac writes no mark.
+        self.assertIs(view['members'][0]['bot_only'], False)
+
+    def test_a_team_only_mac_of_an_older_version_writes_its_member_entry_once_with_the_mark(self):
+        room = self.team()
+        self.sync()
+        own = self.only.team_store.room(room)['member']
+        with self.only.lock:
+            self.only.db.execute('UPDATE team_members SET bot_only=0 WHERE room=? AND member=?', (room, own))
+        # The update starts a new process, which has written no `member` entry yet.
+        self.only._team_announced.clear()
+        rev = self.only.team_store.entry(room, self.only.team_store.member(room, own)['entry'])['rev']
+        self.sync()
+        self.assertEqual(self.only.team_store.entry(room, self.only.team_store.member(room, own)['entry'])['rev'], rev + 1)
+        self.sync()
+        self.assertEqual(self.only.team_store.entry(room, self.only.team_store.member(room, own)['entry'])['rev'], rev + 1)
+        view = self.first.team_request('GET', '/v1/team/rooms', {})['rooms'][0]
+        self.assertEqual([member['bot_only'] for member in view['members']], [False, True])
 
     def test_a_change_keeps_the_home_and_reaches_the_team(self):
         room = self.team()

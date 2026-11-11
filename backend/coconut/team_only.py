@@ -21,9 +21,14 @@ waits on this Mac, and the sync writes it when the bot is shared.
 
 Routes, each with the token of the bridge file:
 
-- `GET /v1/team/status`: the mode, the version of the code, whether the helper is there, and the rooms in short form.
+- `GET /v1/team/status`: the mode, the version of the code, whether the helper is there, the count of the bots and of
+  the bots that answer in the team chat, and the rooms in short form.
 - `GET /v1/team/bots`, `POST /v1/team/bots` with `{name, avatar, color, home}`,
-  `PATCH /v1/team/bots/<bot>` with `{name, avatar, color}`, `DELETE /v1/team/bots/<bot>`.
+  `PATCH /v1/team/bots/<bot>` with `{name, avatar, color, chat}`, `DELETE /v1/team/bots/<bot>`.
+
+`chat` says that the bot answers in the team chat. A declared bot starts with false. The step that connects the bot
+to its Hermes agent sets it to true. While it is true, the `bot` entry of the bot has `open: true`, so the app offers
+the bot after `@`. A change of `chat` writes the entry again in each team of the bot at the next pass.
 - The routes of team.py, and `POST /v1/gateway/document`.
 """
 from __future__ import annotations
@@ -211,8 +216,10 @@ class TeamOnlyService(Documents, Team):
         rooms = [{'room': room['room'], 'name': room['name'], 'state': room['state'], 'members': len(room['members']),
                   'bots': len(room['bots']), 'synced_at': room['sync']['synced_at'], 'error': room['sync']['error'],
                   'socket': room['sync']['socket']} for room in answer['rooms']]
+        with self.lock:
+            chat = sum(bot.get('chat') is True for bot in self._all('bots'))
         return {'mode': MODE, 'version': self.version, 'helper': answer['helper'], 'bots': len(answer['mac_bots']),
-                'rooms': rooms}
+                'chat_bots': chat, 'rooms': rooms}
 
     def team_mac_bots(self) -> list[dict]:
         with self.lock:
@@ -221,7 +228,7 @@ class TeamOnlyService(Documents, Team):
     def _bot_view(self, bot: dict) -> dict:
         """A bot record with the rooms that it is shared with. The caller holds the service lock."""
         return {'id': bot['id'], 'name': bot['name'], 'avatar': bot['avatar'], 'color': bot['color'],
-                'home': bot['home'], 'teams': self.team_store.rooms_of(bot['id'])}
+                'home': bot['home'], 'chat': bot.get('chat') is True, 'teams': self.team_store.rooms_of(bot['id'])}
 
     def team_declare_bot(self, data: dict) -> dict:
         """Declare a bot for the Hermes home that it stands for. One home has one bot, and one name one bot, because
@@ -230,18 +237,24 @@ class TeamOnlyService(Documents, Team):
         home = checked_home(data['home']) if 'home' in data else default_home()
         with self.transaction():
             self._check_bot(fields['name'], home)
-            bot = dict(fields, id=uid(), home=home, archived=False, created_at=now())
+            # The bot answers in the team chat only after the step that connects it to its agent.
+            bot = dict(fields, id=uid(), home=home, chat=False, archived=False, created_at=now())
             self._put('bots', bot)
             return {'bot': self._bot_view(bot)}
 
     def team_change_bot(self, bot_id: str, data: dict) -> dict:
-        """Change the name, the avatar or the color of a bot. The next pass writes its `bot` entry in each room."""
+        """Change the name, the avatar, the color or `chat` of a bot. The next pass writes its `bot` entry in each
+        room."""
         if 'home' in data:
             raise ServiceError(400, 'A bot keeps its Hermes home. Remove the bot, then declare it again with the new '
                                     'home.')
+        if 'chat' in data and not isinstance(data['chat'], bool):
+            raise ServiceError(400, 'Give chat as true or false.')
         with self.transaction():
             bot = self._declared_bot(bot_id)
             bot.update(member_profile(data, bot, field='name', noun='the name of the bot'))
+            if 'chat' in data:
+                bot['chat'] = data['chat']
             self._check_bot(bot['name'], bot['home'], bot['id'])
             self._put('bots', bot)
             answer = {'bot': self._bot_view(bot)}

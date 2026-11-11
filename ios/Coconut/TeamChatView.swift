@@ -10,6 +10,8 @@ struct TeamChatView: View {
     @State private var draft = ""
     @State private var replyTo: TeamMessage?
     @State private var editing: TeamMessage?
+    /// The bots that the person picked with `@` in the draft (see BotMentions).
+    @State private var mentions: [SelectedBotMention] = []
     @State private var deleting: TeamMessage?
     /// New messages pull the chat down while the reader is at its bottom. Only a move of the reader changes it.
     @State private var follows = true
@@ -244,7 +246,7 @@ struct TeamChatView: View {
             VStack(spacing: 10) {
                 TeamFace(room: room, size: 68)
                 Text(room.name).font(.title2.weight(.semibold)).multilineTextAlignment(.center)
-                Text("Messages here go to each person in \(room.name).")
+                Text(TeamChatEmptyLine.text(for: room))
                     .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity).padding(.vertical, 45)
@@ -264,7 +266,8 @@ struct TeamChatView: View {
                 .modifier(ComposerBackdrop())
                 .accessibilityIdentifier("team-chat-closed")
         } else {
-            TeamChatComposer(room: room, text: $draft, replyTo: $replyTo, editing: $editing, focused: $composerFocused,
+            TeamChatComposer(room: room, text: $draft, mentions: $mentions, replyTo: $replyTo, editing: $editing,
+                             focused: $composerFocused,
                              enabled: canWrite(room), send: send)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -284,6 +287,7 @@ struct TeamChatView: View {
             edit: { message in
                 replyTo = nil
                 editing = message
+                mentions = []
                 draft = message.text
                 composerFocused = true
             },
@@ -308,8 +312,11 @@ struct TeamChatView: View {
             }
         } else {
             // The store saves the message first. When the save fails, the composer keeps the text.
-            guard store.sendTeamMessage(roomId, text: text, replyingTo: replyTo) else { return }
+            // The mentions count in the draft before the trim: their places are places in the draft.
+            let named = TeamMentions.ids(in: draft, selected: mentions, room: room)
+            guard store.sendTeamMessage(roomId, text: text, replyingTo: replyTo, mentions: named) else { return }
             draft = ""
+            mentions = []
             replyTo = nil
         }
     }
@@ -557,9 +564,12 @@ struct TeamMessageRow: View {
 }
 
 /// The composer of the Team chat: text only. A reply or an edit shows its message above the field, with a way to cancel.
+/// `@` opens the list of the team bots, as in the composer of a bot chat. An edit changes only the text, so it has no list.
 struct TeamChatComposer: View {
     let room: TeamRoom
     @Binding var text: String
+    @Binding var mentions: [SelectedBotMention]
+    @State private var selection: TextSelection?
     @Binding var replyTo: TeamMessage?
     @Binding var editing: TeamMessage?
     @FocusState.Binding var focused: Bool
@@ -584,8 +594,12 @@ struct TeamChatComposer: View {
                                  cancelLabel: "Cancel reply") { self.replyTo = nil }
                     .accessibilityIdentifier("reply-preview")
             }
+            if editing == nil {
+                BotMentionControls(text: $text, selection: $selection, selected: $mentions,
+                                   bots: TeamMentions.bots(of: room), focused: focused) { focused = true }
+            }
             HStack(alignment: .bottom, spacing: 4) {
-                TextField("Message \(room.name)", text: $text, axis: .vertical)
+                TextField("Message \(room.name)", text: $text, selection: $selection, axis: .vertical)
                     .focused($focused)
                     .modifier(ComposerFieldStyle(send: { if canSend { send() } }))
                     .accessibilityIdentifier("message-input")
@@ -602,6 +616,8 @@ struct TeamChatComposer: View {
         .padding(.top, 4)
         .padding(.bottom, 8)
         .modifier(ComposerBackdrop())
+        // A sent or cancelled draft leaves no caret in the old text.
+        .onChange(of: text) { _, value in if value.isEmpty { selection = nil } }
     }
 }
 

@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS team_entries (room TEXT NOT NULL, id TEXT NOT NULL, s
     kept INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (room, id));
 CREATE TABLE IF NOT EXISTS team_members (room TEXT NOT NULL, member TEXT NOT NULL, name TEXT NOT NULL,
     avatar TEXT NOT NULL, color TEXT NOT NULL, agreement TEXT NOT NULL, entry TEXT NOT NULL,
-    PRIMARY KEY (room, member));
+    bot_only INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (room, member));
 CREATE TABLE IF NOT EXISTS team_pending (room TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
     first INTEGER NOT NULL, member TEXT NOT NULL, at INTEGER NOT NULL, kept INTEGER NOT NULL, body BLOB NOT NULL,
     reason TEXT NOT NULL, PRIMARY KEY (room, id));
@@ -60,7 +60,8 @@ CREATE INDEX IF NOT EXISTS team_page_shares_document ON team_page_shares (docume
 CREATE TABLE IF NOT EXISTS team_page_entries (room TEXT NOT NULL, document TEXT NOT NULL, entry TEXT NOT NULL,
     PRIMARY KEY (room, document));
 CREATE TABLE IF NOT EXISTS team_bots (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL,
-    name TEXT NOT NULL, avatar TEXT NOT NULL, color TEXT NOT NULL, PRIMARY KEY (room, entry));
+    name TEXT NOT NULL, avatar TEXT NOT NULL, color TEXT NOT NULL, open INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (room, entry));
 CREATE TABLE IF NOT EXISTS team_pages (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL,
     valid INTEGER NOT NULL, bot TEXT, version INTEGER, key TEXT, title TEXT, format TEXT, summary TEXT, size INTEGER, rev INTEGER,
     expires_at TEXT, created_at TEXT, updated_at TEXT, pinned INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (room, entry));
@@ -82,13 +83,13 @@ TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_sh
           'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads')
 ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
-MEMBER_FIELDS = ('member', 'name', 'avatar', 'color', 'agreement', 'entry')
+MEMBER_FIELDS = ('member', 'name', 'avatar', 'color', 'agreement', 'entry', 'bot_only')
 PENDING_FIELDS = ('id', 'seq', 'first', 'member', 'at', 'kept', 'body', 'reason')
 PAGE_FIELDS = ('key', 'title', 'format', 'summary', 'size', 'rev', 'expires_at', 'created_at', 'updated_at', 'pinned')
 # What the Library of the phone gets for a team page and a team bot. TeamStore.library reads these rows.
 LIBRARY_PAGE = ('room', 'entry', 'bot', 'team', *PAGE_FIELDS)
 LIBRARY_BOT = ('room', 'entry', 'name', 'avatar', 'color', 'team', 'member', 'member_name')
-TEAM_BOT = ('entry', 'member', 'name', 'avatar', 'color')
+TEAM_BOT = ('entry', 'member', 'name', 'avatar', 'color', 'open')
 # What the chat of the phone gets for a message. TeamStore.messages reads these rows.
 MESSAGE_FIELDS = ('entry', 'first', 'member', 'member_name', 'bot', 'bot_name', 'text', 'reply_to', 'mentions',
                   'created_at', 'updated_at', 'edited')
@@ -174,8 +175,21 @@ def profile_fields(fields: dict) -> dict | None:
     return result if result['name'] else None
 
 
+def bot_fields(fields: dict) -> dict | None:
+    """The profile of a `bot` payload and its mark `open`, or None when a field of the profile does not fit.
+
+    `open` is true only for the JSON value true: a team-only Mac writes it for a bot that answers each member of the
+    team. A missing field and each other value are false, so a value that does not fit hides no bot. A reader trusts
+    the mark only for the list of the bots that a member can name in the chat.
+    """
+    result = profile_fields(fields)
+    return dict(result, open=fields.get('open') is True) if result else None
+
+
 def member_fields(fields: dict) -> dict | None:
-    """The name, avatar, color and agreement key of a `member` payload, or None when a field does not fit."""
+    """The name, avatar, color and agreement key of a `member` payload, or None when a field does not fit. Also the
+    mark `bot_only`: true only for the JSON value true, which a Mac without a person writes. A missing field and each
+    other value are false, so a value that does not fit hides no member."""
     result = profile_fields(fields)
     agreement = fields.get('agreement')
     if not result or not isinstance(agreement, str) or not AGREEMENT.fullmatch(agreement):
@@ -183,7 +197,7 @@ def member_fields(fields: dict) -> dict | None:
     # One key has one text: the unused bits of the last character are zero.
     if base64.urlsafe_b64encode(base64.urlsafe_b64decode(agreement + '=')).decode().rstrip('=') != agreement:
         return None
-    return dict(result, agreement=agreement)
+    return dict(result, agreement=agreement, bot_only=fields.get('bot_only') is True)
 
 
 def page_fields(fields: dict) -> dict | None:
@@ -256,7 +270,7 @@ def message_fields(fields: dict) -> dict | None:
     return dict(text=text, reply_to=reply_to, mentions=list(dict.fromkeys(mentions)), bot=bot)
 
 
-SHOWN = {'member': member_fields, 'bot': profile_fields, 'page': page_fields, 'message': message_fields}
+SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'message': message_fields}
 
 
 def read_entry(opened: dict) -> dict:
@@ -292,6 +306,14 @@ class TeamStore:
         self.touched: set[str] = set()
         self.changed: set[str] = set()
         self.chatted: set[str] = set()
+
+    def migrate(self) -> None:
+        """Add the columns that a store of an older version lacks. A `bot` row of that version reads as not open
+        until its next write, and a `member` row as a person."""
+        if 'open' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_bots)')}:
+            self.db.execute('ALTER TABLE team_bots ADD COLUMN open INTEGER NOT NULL DEFAULT 0')
+        if 'bot_only' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_members)')}:
+            self.db.execute('ALTER TABLE team_members ADD COLUMN bot_only INTEGER NOT NULL DEFAULT 0')
 
     def _rows(self, fields, query, values=()) -> list[dict]:
         return [dict(zip(fields, row)) for row in self.db.execute(query, values).fetchall()]
@@ -487,10 +509,12 @@ class TeamStore:
                 payload = self.db.execute('SELECT payload FROM team_entries WHERE room=? AND id=?', (room, entry))
                 fields = member_fields(json.loads(payload.fetchone()[0]))
             if fields:
-                self.db.execute('''INSERT INTO team_members (room, member, name, avatar, color, agreement, entry)
-                    VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, member) DO UPDATE SET name=excluded.name,
-                    avatar=excluded.avatar, color=excluded.color, agreement=excluded.agreement, entry=excluded.entry''',
-                                (room, member, fields['name'], fields['avatar'], fields['color'], fields['agreement'], entry))
+                self.db.execute('''INSERT INTO team_members (room, member, name, avatar, color, agreement, entry,
+                    bot_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, member) DO UPDATE SET
+                    name=excluded.name, avatar=excluded.avatar, color=excluded.color, agreement=excluded.agreement,
+                    entry=excluded.entry, bot_only=excluded.bot_only''',
+                                (room, member, fields['name'], fields['avatar'], fields['color'], fields['agreement'], entry,
+                                 int(fields.get('bot_only') is True)))
                 # A member has one name: the one of the entry that the list shows.
                 if self.db.execute("DELETE FROM team_names WHERE room=? AND member=? AND kind='member' AND entry!=?",
                                    (room, member, entry)).rowcount:
@@ -506,10 +530,11 @@ class TeamStore:
         if profile is None:
             self.db.execute('DELETE FROM team_bots WHERE room=? AND entry=?', (room, entry['id']))
             return
-        self.db.execute('''INSERT INTO team_bots (room, entry, member, name, avatar, color) VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT (room, entry) DO UPDATE SET member=excluded.member, name=excluded.name, avatar=excluded.avatar,
-            color=excluded.color''', (room, entry['id'], entry['member'], profile['name'], profile['avatar'],
-                                      profile['color']))
+        self.db.execute('''INSERT INTO team_bots (room, entry, member, name, avatar, color, open)
+            VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, entry) DO UPDATE SET member=excluded.member,
+            name=excluded.name, avatar=excluded.avatar, color=excluded.color, open=excluded.open''',
+                        (room, entry['id'], entry['member'], profile['name'], profile['avatar'], profile['color'],
+                         int(profile.get('open') is True)))
         self._name(room, entry['id'], entry['member'], 'bot', profile['name'])
 
     def _name(self, room: str, entry: str, member: str, kind: str, name: str) -> None:
@@ -661,9 +686,10 @@ class TeamStore:
         self.db.execute('DELETE FROM team_page_entries WHERE room=? AND document=?', (room, document))
 
     def written(self, room: str, member: str) -> dict[str, tuple]:
-        """The `bot` and `page` entries that this Mac wrote and did not delete, each with its form: the profile of a
-        bot, or the bot and the version of a page. `accept` keeps the form in columns, so no payload is parsed."""
-        bots = self.db.execute('SELECT entry, name, avatar, color FROM team_bots WHERE room=? AND member=?',
+        """The `bot` and `page` entries that this Mac wrote and did not delete, each with its form: the profile and
+        the mark `open` of a bot, or the bot and the version of a page. `accept` keeps the form in columns, so no
+        payload is parsed."""
+        bots = self.db.execute('SELECT entry, name, avatar, color, open FROM team_bots WHERE room=? AND member=?',
                                (room, member)).fetchall()
         pages = self.db.execute('SELECT entry, bot, version FROM team_pages WHERE room=? AND member=?',
                                 (room, member)).fetchall()
@@ -678,7 +704,7 @@ class TeamStore:
 
     def bots(self, room: str) -> list[dict]:
         """The valid `bot` entries of the other members of the room, for the Team screen."""
-        return self._rows(TEAM_BOT, '''SELECT b.entry, b.member, b.name, b.avatar, b.color FROM team_bots b
+        return self._rows(TEAM_BOT, '''SELECT b.entry, b.member, b.name, b.avatar, b.color, b.open FROM team_bots b
             JOIN team_rooms r ON r.room=b.room WHERE b.room=? AND b.member!=r.member ORDER BY b.name, b.entry''',
                           (room,))
 
