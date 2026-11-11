@@ -14,7 +14,7 @@ let usage = """
                 starts: the service updates after its running bot work finishes, also the turn that ran this
                 command. Run coconut status later to see the end. --wait waits for the end (not inside a bot turn).
       settings automatic-updates on|off
-                Turn automatic updates on or off. When on, Coconut.app checks every six hours and installs.
+                Turn automatic updates on or off. When on, Coconut.app checks every hour and installs.
       pair      Print a one-time iPhone setup link. Not on a Mac that runs Coconut for a team only.
       pair <code>
                 Pair the iPhone that shows this code. Hermes runs this from the iPhone's message.

@@ -93,6 +93,9 @@ final class FullInstallPlanTests: XCTestCase {
                                      home: URL(fileURLWithPath: "/Users/a"), mode: .full).candidates().map(\.path),
                        plan["python"] as? [String])
         XCTAssertEqual(InstallMode.full.healthURL.absoluteString, plan["health"] as? String)
+        // A full install keeps its Dock icon (Info.plist has LSUIElement false). Only a team-only Mac hides it.
+        XCTAssertTrue(InstallMode.full.showsDockIcon)
+        XCTAssertFalse(InstallMode.team.showsDockIcon)
     }
 
     static let fixture = """

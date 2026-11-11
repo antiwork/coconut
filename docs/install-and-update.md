@@ -241,7 +241,7 @@ You work in a terminal on that Mac, for example over SSH. In the steps, `coconut
 2. Run `open -g /Applications/Coconut.app --args --set-up --team-only`.
 3. Wait one or two minutes. Then run `coconut status`. Expect `Mode: team only` and `Service: running (/Users/<you>/Coconut)`.
 
-If macOS asks to allow Coconut in Login Items, allow it in System Settings → General → Login Items. If the Mac already has a full Coconut install, the set-up changes nothing, and `coconut status` shows the reason as `Last update error:`.
+If macOS asks to allow Coconut in Login Items, allow it in System Settings → General → Login Items. If Coconut already runs on this Mac, the set-up does nothing: `open` gives no arguments to an app that runs. To see why, stop the app first with `pkill -x Coconut`, then run step 2 again. If the Mac has a full Coconut install, the set-up then changes nothing, and `coconut status` shows the reason as `Last update error:`.
 
 ### Join a team and add a bot
 
@@ -287,13 +287,13 @@ Coconut.app updates itself, as on every Mac. The Mac stays in team-only mode. To
 
 1. Leave each team: `coconut team leave --confirm "Example Team"`. Do this for each team. `coconut team` lists them. Expect `This Mac left the team Example Team.` A Mac that does not leave first stays in the member lists of the other Macs, with its bots and their pages.
 2. Stop the app: `pkill -x Coconut`. This sends a signal to the process `Coconut`. An Apple event to quit the app can ask for a permission in a dialog that nobody sees. No login item starts the app again before the next step.
-3. Start it to remove Coconut: `open -g /Applications/Coconut.app --args --remove`. The app removes its login items and the data of Coconut, moves `~/Coconut` to the Trash, and quits. Nothing in Hermes changes.
+3. Start it to remove Coconut: `open -g /Applications/Coconut.app --args --remove`. The app removes its login items, its settings and the data of Coconut, moves `~/Coconut` to the Trash, and quits. Nothing in Hermes changes.
 4. Run `coconut status`. Expect `Service: not installed (/Users/<you>/Coconut)`. A failure shows as `Last update error:`.
 5. Delete `/Applications/Coconut.app`.
 
 ### For developers
 
-The app keeps the mode in its preference `InstallMode` (`team`) and registers two login items: the app and the service. The service runs with `COCONUT_MODE=team` (see [team-only mode](team-log.md#team-only-mode)). An update of this mode runs no Hermes check, no skill or plugin step, no notification build and no relay sidecar step, and checks health on the main listener. The data folder decides too: when its store has the mark of a team-only service, the app and the tool take team-only mode, and `deploy.py`, `scripts/hermes_skills.py` and `scripts/setup_coconut.py` stop before they touch Hermes (`service_base.team_folder`). `coconut pair`, `coconut migrate` and `coconut install-source --set-up` refuse on this Mac with one line.
+The app reads `--set-up`, `--team-only` and `--remove` only when it starts, so a command for an app that runs does nothing. The app keeps the mode in its preference `InstallMode` (`team`) and registers two login items: the app and the service. In this mode the app has no Dock icon and opens no window. The service runs with `COCONUT_MODE=team` (see [team-only mode](team-log.md#team-only-mode)). An update of this mode runs no Hermes check, no skill or plugin step, no notification build and no relay sidecar step, and checks health on the main listener. The data folder decides too: when its store has the mark of a team-only service, the app and the tool take team-only mode, and `deploy.py`, `scripts/hermes_skills.py` and `scripts/setup_coconut.py` stop before they touch Hermes (`service_base.team_folder`). `coconut pair`, `coconut migrate` and `coconut install-source --set-up` refuse on this Mac with one line.
 
 ## Releases from CI
 

@@ -49,6 +49,11 @@ final class AppModel: ObservableObject {
             }
         }
         self.mode = mode
+        // The model starts before any scene shows, so a team-only Mac never shows a Dock icon. A full install keeps the
+        // policy of Info.plist.
+        if !mode.showsDockIcon {
+            NSApplication.shared.setActivationPolicy(.accessory)
+        }
         status = StatusReader(install: install).read(healthy: false)
         // SwiftUI gives the label of a menu bar extra no dependable task, so the model starts itself.
         start()
@@ -245,7 +250,8 @@ final class AppModel: ObservableObject {
             return Self.uninstall(install)
         }.value
         if let failure { return failed(failure) }
-        UserDefaults.standard.removeObject(forKey: InstallMode.preferenceKey)
+        // A later set-up starts clean: coconut status shows no old update error.
+        RemoveRequest.preferenceKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
         NSApp.terminate(nil)
     }
 

@@ -35,7 +35,7 @@ Do not add `--wait` inside a bot turn or your own turn. The service update waits
 
 ## Automatic updates
 
-When automatic updates are on, Coconut.app checks every six hours and installs a new version without a question. The install script turns them on, because often nobody watches the Mac.
+When automatic updates are on, Coconut.app checks every hour and installs a new version without a question. The install script turns them on, because often nobody watches the Mac.
 
 - To turn them off: `coconut settings automatic-updates off`.
 - To turn them on: `coconut settings automatic-updates on`.

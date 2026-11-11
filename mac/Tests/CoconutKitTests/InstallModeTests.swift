@@ -278,6 +278,26 @@ final class InstallModeTests: XCTestCase {
         XCTAssertFalse(RemoveRequest.fullInstall.contains("\n"))
     }
 
+    func testARemovalDeletesThePreferencesOfTheInstall() {
+        let store = MemoryPreferences(["InstallMode": "team", "startAtLogin": false, "InstallDirectory": "/srv/checkout"])
+        let preferences = UpdatePreferences(store: store)
+        preferences.setAutomaticUpdates(false)
+        preferences.requestCheck(at: Date(timeIntervalSince1970: 1_800_000_000))
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 1_800_000_001), outcome: .installing))
+        preferences.record(UpdateResult(time: Date(timeIntervalSince1970: 1_800_000_002), outcome: .failed,
+                                        message: "An old error."))
+        store.set(Date(), forKey: UpdatePreferences.lastCheckKey)
+        RemoveRequest.preferenceKeys.forEach { store.set(nil, forKey: $0) }
+        // Only the setting of the developer setup stays.
+        XCTAssertEqual(Array(store.values.keys), ["InstallDirectory"])
+        let status = Status(install: "/Users/a/Coconut", service: .notInstalled, hermes: "missing", relay: "not_installed")
+        XCTAssertTrue(StatusText.lines(version: "1.0 (1)", preferences: preferences, status: status)
+            .contains("Last update error: none"))
+        XCTAssertEqual(RemoveRequest.preferenceKeys, ["InstallMode", "startAtLogin", "lastUpdateResult", "pendingInstall",
+                                                      "updateRequestedAt", "SUEnableAutomaticChecks",
+                                                      "SUAutomaticallyUpdate", "SULastCheckTime"])
+    }
+
     // MARK: The mark of the data folder
 
     func makeStore(_ sql: String) throws -> Install {

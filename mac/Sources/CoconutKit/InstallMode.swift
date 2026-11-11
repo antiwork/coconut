@@ -40,6 +40,10 @@ public enum InstallMode: String, Sendable, Equatable {
     /// The value of the preference. Nil removes it: a full install has none, as before this mode existed.
     public var preferenceValue: String? { self == .team ? rawValue : nil }
 
+    /// Whether the app has a Dock icon. Nobody sits at a team-only Mac, so its app is a menu bar item only (the
+    /// accessory activation policy). A full install keeps the Dock icon of its chat window.
+    public var showsDockIcon: Bool { self == .full }
+
     /// The login items of the mode. A team-only Mac has no phone, so it has no relay sidecar.
     public var loginItems: [LoginItem] { self == .team ? [.app, .agent(.service)] : LoginItem.allCases }
 
@@ -96,6 +100,16 @@ public enum RemoveRequest {
         + "open Uninstall Coconut.command."
 
     public static func asked(arguments: [String]) -> Bool { arguments.contains(argument) }
+
+    /// The preferences that Coconut writes for an install, which a removal deletes, so a later set-up starts clean: the
+    /// mode, Start at Login, the update state of `coconut status` and `coconut update`, and the automatic update
+    /// setting of `coconut settings`. `InstallDirectory` and `ServiceEnvironment` stay: only the developer setup
+    /// (scripts/setup_coconut.py) writes them, and they name a checkout.
+    public static let preferenceKeys = [
+        InstallMode.preferenceKey, "startAtLogin", UpdatePreferences.resultKey, UpdatePreferences.pendingInstallKey,
+        UpdatePreferences.requestKey, UpdatePreferences.automaticChecksKey, UpdatePreferences.automaticInstallKey,
+        UpdatePreferences.lastCheckKey,
+    ]
 }
 
 /// The mark of a team-only service in the store of an install (backend/coconut/service_base.py, MODE_MARK). It decides
