@@ -10,6 +10,7 @@ import json
 import logging
 from pathlib import Path
 import threading
+import time
 import unittest
 from uuid import uuid4
 
@@ -218,6 +219,11 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
         self.assertEqual(self.call('POST', '/v1/team/join', {'link': link, 'member_name': 'Grace'}, **two)[0], 200)
         # A join with a link that is not valid writes its route too, and the link stays out of the log.
         self.assertEqual(self.call('POST', '/v1/team/join', {'link': link + 'x'}, **two)[0], 400)
+        # The listener writes the line of a request after it sends the answer (server.Handler._handle), so the last
+        # line can come a moment after the answer. Wait for the four lines, with a limit.
+        deadline = time.monotonic() + 5
+        while len(records) < 4 and time.monotonic() < deadline:
+            time.sleep(.01)
         output = '\n'.join(record.getMessage() for record in records)
         routes = [json.loads(line.split(' ', 1)[1])['route'] for line in output.splitlines()]
         self.assertEqual(routes, ['/v1/team/rooms', '/v1/team/rooms/:id/invites', '/v1/team/join', '/v1/team/join'])
