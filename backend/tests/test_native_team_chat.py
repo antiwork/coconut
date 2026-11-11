@@ -25,6 +25,7 @@ from hermes_env import PYTHON, SOURCE, needs_hermes
 import test_native_gateway_chat
 from test_native_gateway_chat import Model
 from test_team_only import TeamOnlyMacs
+from test_team_turns import AsThePerson
 
 ROOT = Path(__file__).resolve().parents[2]
 LAUNCH = ('import sys; sys.path.insert(0, sys.argv[1]); sys.argv = ["hermes", *sys.argv[2:]]; '
@@ -61,7 +62,7 @@ def results(request) -> bool:
 
 
 @needs_hermes
-class NativeTeamChatTests(TeamOnlyMacs, unittest.TestCase):
+class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
     def setUp(self):
         super().setUp()
         test_native_gateway_chat.answer, self.saved = answer, test_native_gateway_chat.answer

@@ -15,6 +15,7 @@ from uuid import uuid4
 from coconut import team_store, team_turns
 from coconut.team_relay import TeamRelayError
 from coconut.team_turns import ASKED, DENIED, UNAVAILABLE, UNFINISHED
+from team_fakes import DEVICE
 from test_team_only import TeamOnlyMacs
 
 
@@ -60,7 +61,17 @@ def reply(text):
                          {'kind': 'done', 'outcome': 'success'}]
 
 
-class TeamTurnMacs(TeamOnlyMacs):
+class AsThePerson:
+    """Call a team route with the token of the bridge file on the team-only Mac, as its tools do, and as the paired
+    device of the person on a full Mac, whose token reaches only the routes of the coconut tool."""
+
+    def call(self, method, path, data=None, service=None):
+        service = service or self.only
+        device = '' if getattr(service, 'team_only', False) else DEVICE
+        return service.team_request(method, path, data or {}, '', device)
+
+
+class TeamTurnMacs(AsThePerson, TeamOnlyMacs):
     def setUp(self):
         super().setUp()
         self.room = self.team()
