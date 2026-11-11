@@ -369,8 +369,12 @@ enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// The chips show only while the paired Mac is in a team. Without them the list is "All".
-    static func showsChips(rooms: [TeamRoom]) -> Bool { !rooms.isEmpty }
+    /// The chips show only while the paired Mac is a member of a team: an active team, or one that it joins. A team
+    /// that the Mac left (`removed`, `gone`) keeps its history as a row of "All", but it brings no chips. Without them
+    /// the list is "All".
+    static func showsChips(rooms: [TeamRoom]) -> Bool {
+        rooms.contains { $0.status == .active || $0.status == .joining }
+    }
 
     /// The filter that the list uses: the choice of the person while the chips show, else "All". The store also keeps
     /// this value after each list of the teams, so a Mac that left its last team starts at "All" when chips return.
@@ -419,6 +423,14 @@ enum LetterFace {
             return String([a, b]).uppercased()
         }
         return String(first.filter(\.isLetter).prefix(count)).uppercased()
+    }
+
+    /// The face of the writer of a message without a face of its own: the first letter of the name that the message
+    /// has, on the fill of the member ID of the message. Both come from the message, not from the member list, so a
+    /// message looks the same before and after its writer leaves the team. Only a writer whose name the Mac never
+    /// learned ("Former member") has no letter: the neutral face.
+    static func person(memberId: String, name: String?) -> (letters: String?, colorIndex: Int) {
+        (name.flatMap { letters($0, count: 1) }, colorIndex(memberId))
     }
 
     /// The fill for an ID: the same ID always gets the same fill, also after a new name.

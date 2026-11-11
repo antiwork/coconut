@@ -357,6 +357,34 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(ChatFilter.allCases.map(\.title), ["All", "People", "Bots"])
     }
 
+    /// A team that the Mac left keeps its row and its history, but brings no chips. A team that the Mac joins does.
+    func testTheChipsShowOnlyForATeamThatTheMacIsIn() {
+        func room(_ state: String) -> TeamRoom { TeamRoom(room: state, name: "Example Team", state: state) }
+        XCTAssertFalse(ChatFilter.showsChips(rooms: [room("removed")]))
+        XCTAssertFalse(ChatFilter.showsChips(rooms: [room("gone")]))
+        XCTAssertFalse(ChatFilter.showsChips(rooms: [room("removed"), room("gone")]))
+        XCTAssertTrue(ChatFilter.showsChips(rooms: [room("joining")]), "A join on its way: the team shows in People.")
+        XCTAssertTrue(ChatFilter.showsChips(rooms: [room("removed"), room("active")]))
+        XCTAssertEqual(ChatFilter.effective(.people, rooms: [room("removed")]), .all,
+                       "People must not hide the bots of a Mac that left its last team.")
+        let items: [ChatListItem] = [.team(room("removed")), .bot(bot("planner"))]
+        XCTAssertEqual(ChatFilter.effective(.people, rooms: [room("removed")]).items(items).map(\.id),
+                       ["team-removed", "bot-planner"], "The left team stays a row of All.")
+    }
+
+    /// The face of a writer comes from the message: the same before and after the writer leaves the team. Only a
+    /// writer without a name has the neutral face.
+    func testAMessageOfAMemberThatLeftKeepsItsFace() {
+        let before = LetterFace.person(memberId: "m-grace", name: "Grace")
+        // After the leave, the member list no longer has Grace, but the message keeps her member ID and her name.
+        let after = LetterFace.person(memberId: "m-grace", name: "Grace")
+        XCTAssertEqual(before.letters, "G")
+        XCTAssertEqual(after.letters, before.letters)
+        XCTAssertEqual(after.colorIndex, before.colorIndex)
+        XCTAssertEqual(after.colorIndex, LetterFace.colorIndex("m-grace"))
+        XCTAssertNil(LetterFace.person(memberId: "m-x", name: nil).letters, "Former member: the neutral face.")
+    }
+
     /// A new pairing and an unpair set the choice to All.
     @MainActor
     func testAnUnpairSetsTheFilterToAll() {
@@ -417,6 +445,17 @@ final class TeamChatTests: XCTestCase {
                        "A new fill or a new order changes the face of each team and person.")
         XCTAssertEqual(BoardStyle.faceColors[LetterFace.colorIndex("r1")].fill, "EAA052", "A team")
         XCTAssertEqual(BoardStyle.faceColors[LetterFace.colorIndex("m-grace")].fill, "D76C91", "A person")
+    }
+
+    /// A row never has an empty line: a bot without a message says so, as a team does.
+    func testARowWithoutAMessageSaysNoMessagesYet() {
+        XCTAssertEqual(ChatRowText.line(""), "No messages yet")
+        XCTAssertEqual(ChatRowText.line("  \n"), "No messages yet")
+        XCTAssertEqual(ChatRowText.line("You: Hi"), "You: Hi")
+        XCTAssertEqual(TeamChatPreview.text(nil), ChatRowText.line(""), "One rule for each kind of row.")
+        XCTAssertEqual(UnreadBadge.spoken(1), "1 unread message")
+        XCTAssertEqual(UnreadBadge.spoken(140), "140 unread messages")
+        XCTAssertEqual([5, 42, 99, 100, 140].map(UnreadBadge.text), ["5", "42", "99", "99+", "99+"])
     }
 
     func testTheLineOfWhoIsInTheChat() {

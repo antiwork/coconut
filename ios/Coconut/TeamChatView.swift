@@ -65,6 +65,13 @@ struct TeamChatView: View {
         ScrollViewReader { proxy in
             List {
                 Group {
+                    #if os(macOS)
+                    // The title floats over the top of the chat. A Mac list ignores a top content margin (its scroll
+                    // view keeps a top inset of 0), so the first row of the list keeps the space under the title.
+                    // The row insets add the last 10 points.
+                    Color.clear.frame(height: Self.titleHeight - 10)
+                        .accessibilityHidden(true)
+                    #endif
                     header(room, chat: chat, empty: allRows.isEmpty)
                     if shown.lowerBound > 0 || chat.before != nil {
                         Button {
@@ -102,9 +109,6 @@ struct TeamChatView: View {
             }
             .listStyle(.plain)
             .id(listId)
-            #if os(macOS)
-            .contentMargins(.top, Self.titleHeight, for: .scrollContent)
-            #endif
             .buttonStyle(.borderless)
             .scrollContentBackground(.hidden)
             .environment(\.defaultMinListRowHeight, 1)
@@ -650,8 +654,9 @@ struct TeamFace: View {
     }
 }
 
-/// The face of a person in the chat: the face that the member chose, else the first letter of the name on the fill of
-/// the member ID. A former member, whose name the Mac does not know, has the neutral face.
+/// The face of a person in the chat: the face that the member chose, else the first letter of the name of the message
+/// on the fill of its member ID (`LetterFace.person`). A member that left keeps that face, because both come from the
+/// message. Only a writer whose name the Mac never learned ("Former member") has the neutral face.
 struct PersonFace: View {
     let member: TeamMember?
     let memberId: String
@@ -662,7 +667,7 @@ struct PersonFace: View {
         if let member, let avatar = member.avatar, !avatar.isEmpty {
             BotAvatar(symbol: avatar, color: member.color ?? "", size: size, identity: memberId, animated: false)
         } else {
-            LetterFaceView(letters: name.flatMap { LetterFace.letters($0, count: 1) }, id: memberId,
+            LetterFaceView(letters: LetterFace.person(memberId: memberId, name: name).letters, id: memberId,
                            symbol: "person.fill", size: size)
         }
     }
@@ -698,36 +703,18 @@ struct TeamContactRow: View {
         let unread = room.unread ?? 0
         let preview = room.hasChat ? TeamChatPreview.text(room.lastMessage) : nil
         let date = room.lastMessage?.createdAt?.apiDate
-        HStack(spacing: 14) {
+        // An older service sends no chat. The row then has the name only, centered on the face.
+        ChatRowLayout(name: room.name, unread: unread, date: date) {
             TeamFace(room: room, size: avatarSize)
-            VStack(alignment: .leading, spacing: 5) {
-                if dynamicTypeSize.isAccessibilitySize {
-                    name(unread)
-                    if let date { CompactAgeLabel(date: date).font(.caption).foregroundStyle(.secondary) }
-                } else {
-                    HStack(alignment: .firstTextBaseline) {
-                        name(unread)
-                        Spacer(minLength: 8)
-                        if let date { CompactAgeLabel(date: date).font(.caption).foregroundStyle(.secondary).fixedSize() }
-                    }
-                }
-                if let preview {
-                    Text(preview)
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
-                }
+        } subtitle: {
+            if let preview {
+                Text(preview)
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? 2 : 1)
             }
         }
-        .frame(minHeight: 52)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel([room.name, preview, unread > 0 ? "\(unread) unread" : nil].compactMap { $0 }
+        .accessibilityLabel([room.name, preview, unread > 0 ? UnreadBadge.spoken(unread) : nil].compactMap { $0 }
             .joined(separator: ", "))
-    }
-
-    private func name(_ unread: Int) -> some View {
-        HStack(spacing: 5) {
-            Text(room.name).font(.body.weight(unread > 0 ? .semibold : .medium)).lineLimit(1)
-            if unread > 0 { UnreadMarker(count: unread) }
-        }
     }
 }
