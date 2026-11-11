@@ -395,6 +395,64 @@ class TeamLogTests(unittest.TestCase):
             self.assertEqual((status, [row['room'] for row in answer['rooms']]), (200, []))
             self.assertNotIn(invite['link'], self.log(mac))
 
+    def test_two_macs_share_the_team_chat(self):
+        first, second, _ = self.macs
+        status, answer = first.phone('POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                                'relay': self.url})
+        self.assertEqual(status, 200, answer)
+        room_id = answer['room']['room']
+        link = first.phone('POST', f'/v1/team/rooms/{room_id}/invites', {})[1]['link']
+        self.assertEqual(second.phone('POST', '/v1/team/join', {'link': link, 'member_name': 'Grace'})[0], 200)
+        messages = f'/v1/team/rooms/{room_id}/messages'
+
+        # Ada sends, and Grace reads it after a sync of her Mac.
+        status, answer = first.phone('POST', messages, {'text': 'Hello **Grace**'})
+        self.assertEqual(status, 200, answer)
+        hello = answer['message']
+        view = self.team_view(second, room_id)
+        self.assertEqual((view['unread'], view['last_message']['text'], view['last_message']['member_name']),
+                         (1, 'Hello **Grace**', 'Ada'))
+        (received,) = second.phone('GET', messages)[1]['messages']
+        self.assertEqual((received['id'], received['first'], received['this_mac']), (hello['id'], hello['first'], False))
+        self.assertEqual(second.phone('POST', f'/v1/team/rooms/{room_id}/read', {'first': hello['first']})[1],
+                         {'room': room_id, 'read': hello['first'], 'unread': 0})
+
+        # Grace answers. Ada sees the answer as unread, and reads it.
+        status, answer = second.phone('POST', messages, {'text': 'Hello Ada', 'reply_to': hello['id']})
+        self.assertEqual((status, answer['message']['reply_to']), (200, hello['id']), answer)
+        reply = answer['message']
+        self.assertEqual(self.team_view(first, room_id)['unread'], 1)
+        self.assertEqual(first.phone('POST', f'/v1/team/rooms/{room_id}/read', {'first': reply['first']})[1]['unread'], 0)
+
+        # Ada edits, then deletes her message. Each Mac ends with the same chat.
+        status, answer = first.phone('PATCH', f'{messages}/{hello["id"]}', {'text': 'Hello, Grace'})
+        self.assertEqual((status, answer['message']['first']), (200, hello['first']), answer)
+        self.team_view(second, room_id)
+        (edited,) = [row for row in second.phone('GET', messages)[1]['messages'] if row['id'] == hello['id']]
+        self.assertEqual(edited['text'], 'Hello, Grace')
+        self.assertIsNotNone(edited['edited_at'])
+        self.assertEqual(first.phone('DELETE', f'{messages}/{hello["id"]}', {}),
+                         (200, {'room': room_id, 'id': hello['id'], 'deleted': True}))
+        chats = []
+        for mac in (first, second):
+            view = self.team_view(mac, room_id)
+            self.assertEqual(view['unread'], 0, mac.data.name)
+            page = mac.phone('GET', messages)[1]
+            chats.append([{name: value for name, value in row.items() if name != 'this_mac'} for row in page['messages']])
+        self.assertEqual(chats[0], chats[1])
+        self.assertEqual([(row['text'], row['reply_to'], row['member_name']) for row in chats[0]],
+                         [('Hello Ada', hello['id'], 'Grace')])
+        # The read position of each Mac stays, and a position from before does not move it back.
+        self.assertEqual(second.phone('POST', f'/v1/team/rooms/{room_id}/read', {'first': 1})[1]['read'], hello['first'])
+        self.assertEqual(first.phone('POST', f'/v1/team/rooms/{room_id}/read', {'first': 1})[1]['read'], reply['first'])
+
+        self.assertEqual(second.phone('DELETE', f'/v1/team/rooms/{room_id}', {})[0], 200)
+        self.assertEqual(first.phone('DELETE', f'/v1/team/rooms/{room_id}', {})[0], 200)
+        # The text of a message is private, so no log line has it.
+        for mac in (first, second):
+            for text in ('Hello **Grace**', 'Hello, Grace', 'Hello Ada'):
+                self.assertNotIn(text, self.log(mac))
+
     def team_view(self, mac: Mac, room_id: str) -> dict:
         """A pass of the Mac, started by the phone, then its room as the Team screen gets it."""
         status, answer = mac.phone('POST', '/v1/team/sync', {})

@@ -307,7 +307,7 @@ class StateSync:
             bot.read bot.updated bot.settings_pending bot_message.delivered bots.addressed settings.updated settings.pending
             settings.update_unconfirmed model_catalog.updated routine.created routine.updated routine.deleted routine.triggered
             routine.reconciliation_required routines.unavailable google.updated device.paired maintenance.withdrawal_corrected
-            document.created document.updated document.deleted team.updated""".split())
+            document.created document.updated document.deleted team.updated team_messages.updated""".split())
         # The state holds no document, because the phone reads the Library with GET /v1/documents. A document event
         # sends only its task. The save of a turn also adds the message of its card, which has its own event.
         if (after > cursor or len(rows) > 1000 or len(rows) != cursor - after
@@ -403,7 +403,10 @@ class StateSync:
                           # The Library reads GET /v1/documents again: a local document or a team page changed.
                           documents_changed=any(r[1].startswith('document.') for r in rows),
                           # The Team screen reads GET /v1/team/rooms again: a room, a member or a team bot changed.
-                          team_changed=any(r[1] == 'team.updated' for r in rows))
+                          team_changed=any(r[1] == 'team.updated' for r in rows),
+                          # The chat of each of these rooms changed: a message, an edit, a removal or the read position.
+                          team_messages_changed=sorted({json.loads(r[3])['team'] for r in rows
+                                                        if r[1] == 'team_messages.updated'}))
             if any(m.get('client_request_id') for m in messages):
                 receipts = self.db.execute("SELECT json_group_array(DISTINCT json_extract(data,'$.client_request_id')) FROM messages "
                     "WHERE json_type(data,'$.client_request_id')='text' AND EXISTS(SELECT 1 FROM bots "
@@ -412,7 +415,7 @@ class StateSync:
         # Native task changes publish work.updated. Age alone changes no native state. A document event or a team
         # event changes no Work row and no card.
         structural = not rows or refresh_activity or any(r[1] not in ('message.created', 'message.updated', 'bot.read', 'bot.updated',
-            'document.created', 'document.updated', 'document.deleted', 'team.updated') for r in rows)
+            'document.created', 'document.updated', 'document.deleted', 'team.updated', 'team_messages.updated') for r in rows)
         if structural:
             work_outcomes = set()
             if not collection_deltas:

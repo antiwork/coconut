@@ -13,6 +13,12 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_bots` and `team_pages`: views of `team_entries` for the Library: the valid `bot` entries and the `page`
   entries of the other members. The Library list reads them and parses no payload. A page row also keeps the pin of
   this Mac and the time of the first write that this Mac saw.
+- `team_messages`: a view of `team_entries` for the Team chat: one row for each valid `message` entry, in the order
+  of `first`.
+- `team_names`: the last name that the store showed for each member and each bot. It stays after a `delete` entry,
+  so a message of a member that left keeps a name, and a message of a bot can still name a valid `bot` entry.
+- `team_reads`: the read position of this Mac in the chat of each room: the `first` of the newest message that the
+  person read.
 
 `TeamStore.accept` holds the "Rules for a Mac that reads an entry" of the contract. The secrets of a room are not
 here: team_keys.py keeps them in a private file. The caller holds the transaction of each write.
@@ -51,9 +57,22 @@ CREATE TABLE IF NOT EXISTS team_bots (room TEXT NOT NULL, entry TEXT NOT NULL, m
 CREATE TABLE IF NOT EXISTS team_pages (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL,
     valid INTEGER NOT NULL, bot TEXT, version INTEGER, key TEXT, title TEXT, format TEXT, summary TEXT, size INTEGER, rev INTEGER,
     expires_at TEXT, created_at TEXT, updated_at TEXT, pinned INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (room, entry));
+CREATE TABLE IF NOT EXISTS team_messages (room TEXT NOT NULL, entry TEXT NOT NULL, first INTEGER NOT NULL,
+    member TEXT NOT NULL, bot TEXT, text TEXT NOT NULL, reply_to TEXT, mentions TEXT NOT NULL, created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL, edited INTEGER NOT NULL, PRIMARY KEY (room, entry));
+CREATE INDEX IF NOT EXISTS team_messages_order ON team_messages (room, first);
+CREATE TABLE IF NOT EXISTS team_names (room TEXT NOT NULL, entry TEXT NOT NULL, member TEXT NOT NULL,
+    kind TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY (room, entry));
+CREATE INDEX IF NOT EXISTS team_names_member ON team_names (room, member, kind);
+CREATE TABLE IF NOT EXISTS team_reads (room TEXT PRIMARY KEY, first INTEGER NOT NULL);
+-- A store from before team_names gets the names that it shows now. A later accept keeps them current.
+INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
+    SELECT room, entry, member, 'member', name FROM team_members;
+INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
+    SELECT room, entry, member, 'bot', name FROM team_bots;
 '''
 TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_shares', 'team_page_entries',
-          'team_bots', 'team_pages')
+          'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads')
 ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
 MEMBER_FIELDS = ('member', 'name', 'avatar', 'color', 'agreement', 'entry')
@@ -63,6 +82,22 @@ PAGE_FIELDS = ('key', 'title', 'format', 'summary', 'size', 'rev', 'expires_at',
 LIBRARY_PAGE = ('room', 'entry', 'bot', 'team', *PAGE_FIELDS)
 LIBRARY_BOT = ('room', 'entry', 'name', 'avatar', 'color', 'team', 'member', 'member_name')
 TEAM_BOT = ('entry', 'member', 'name', 'avatar', 'color')
+# What the chat of the phone gets for a message. TeamStore.messages reads these rows.
+MESSAGE_FIELDS = ('entry', 'first', 'member', 'member_name', 'bot', 'text', 'reply_to', 'mentions', 'created_at',
+                  'updated_at', 'edited')
+# A message shows only when its `bot` is null or names a `bot` entry of the same member that the store showed once.
+# The bot entry can come after the message, because the relay keeps only its newest write, so the check runs at read
+# time. team_names keeps the bot after a `delete`, so the history of a bot that the team no longer has stays.
+SHOWN_MESSAGE = '''(m.bot IS NULL OR EXISTS (SELECT 1 FROM team_names b WHERE b.room=m.room AND b.entry=m.bot
+    AND b.kind='bot' AND b.member=m.member))'''
+# The event of each transaction that changes the chat of a room: a message, an edit, a removal, or the read position.
+# GET /v1/updates then has `team_messages_changed`.
+MESSAGES_EVENT = 'team_messages.updated'
+# The limits of a `message` entry, in Unicode code points and in entry IDs.
+MAX_TEXT = 16000
+MAX_MENTIONS = 16
+# The unread count of a room stops here, so the count reads at most this many rows.
+MAX_UNREAD = 99
 # The end date of a page as documents.end_time writes it.
 PAGE_END = re.compile(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ')
 
@@ -191,15 +226,38 @@ def relay_time(at: int) -> str | None:
     return moment.isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 
-SHOWN = {'member': member_fields, 'bot': profile_fields, 'page': page_fields}
+def entry_id(value) -> bool:
+    """True when a value of JSON is an entry ID: 32 lowercase hex characters."""
+    return isinstance(value, str) and HEX32.fullmatch(value) is not None
+
+
+def message_fields(fields: dict) -> dict | None:
+    """What the chat shows of a `message` payload, or None when a field does not fit.
+
+    `text` has 1 to MAX_TEXT code points of valid Unicode text. `reply_to` and `bot` are entry IDs, and `mentions` is
+    a list of at most MAX_MENTIONS entry IDs. A reader takes null as an absent field, so a later writer can write
+    either. Fields that this version does not know stay in the payload, and nothing reads them.
+    """
+    text, reply_to, mentions, bot = (fields.get(name) for name in ('text', 'reply_to', 'mentions', 'bot'))
+    if not unicode_text(text) or not 0 < len(text) <= MAX_TEXT:
+        return None
+    if any(value is not None and not entry_id(value) for value in (reply_to, bot)):
+        return None
+    mentions = [] if mentions is None else mentions
+    if not isinstance(mentions, list) or len(mentions) > MAX_MENTIONS or not all(map(entry_id, mentions)):
+        return None
+    return dict(text=text, reply_to=reply_to, mentions=list(dict.fromkeys(mentions)), bot=bot)
+
+
+SHOWN = {'member': member_fields, 'bot': profile_fields, 'page': page_fields, 'message': message_fields}
 
 
 def read_entry(opened: dict) -> dict:
     """The first part of the reading rules for one entry: the work that needs no database.
 
-    It reads the payload (rule 2), and for a `member`, `bot` or `page` entry it checks the fields that the store
-    shows. The page rules run an HTML parser on up to 512 KiB that another member wrote, so a caller runs this part
-    before its transaction and without the lock of the service. A page that is slow to check then slows only the
+    It reads the payload (rule 2), and for a `member`, `bot`, `page` or `message` entry it checks the fields that the
+    store shows. The page rules run an HTML parser on up to 512 KiB that another member wrote, so a caller runs this
+    part before its transaction and without the lock of the service. A page that is slow to check then slows only the
     sync thread. The result is `opened` with `read` (the text and the fields of the payload, or None) and `shown`
     (the checked fields, or None). TeamStore.accept is the second part.
     """
@@ -222,10 +280,11 @@ def read_entry(opened: dict) -> dict:
 class TeamStore:
     def __init__(self, db):
         self.db = db
-        # The rooms whose Library rows `accept` changed, and the rooms whose members or team bots it changed. TeamSync
-        # tells the phone and empties each set.
+        # The rooms whose Library rows `accept` changed, the rooms whose members or team bots it changed, and the rooms
+        # whose chat it changed. TeamSync tells the phone and empties each set.
         self.touched: set[str] = set()
         self.changed: set[str] = set()
+        self.chatted: set[str] = set()
 
     def _rows(self, fields, query, values=()) -> list[dict]:
         return [dict(zip(fields, row)) for row in self.db.execute(query, values).fetchall()]
@@ -316,6 +375,8 @@ class TeamStore:
         existing = self.entry(room['room'], entry['id'])
         if existing:
             if existing['seq'] == entry['seq']:
+                if existing['at'] != entry['at']:
+                    self._relay_time(room['room'], existing, entry['at'])
                 return SAME, None
             if existing['member'] != entry['member']:
                 return REFUSED, 'member'
@@ -336,10 +397,18 @@ class TeamStore:
                         (room['room'], entry['id'], entry['seq']))
         kinds = {fields['kind'], existing['kind'] if existing else None}
         other = entry['member'] != room['member']
+        if 'message' in kinds and self._show_message(room['room'], entry, fields['rev'],
+                                                     shown if fields['kind'] == 'message' else None):
+            self.chatted.add(room['room'])
         if 'member' in kinds:
             self.show_member(room['room'], entry['member'], (entry['id'], shown) if fields['kind'] == 'member' else None)
-            if not other and fields['kind'] == 'member' and shown:
-                self._follow_profile(room['room'], shown)
+            if not other and fields['kind'] == 'member':
+                if shown:
+                    self._follow_profile(room['room'], shown)
+                # The chat of a Mac that joins starts at its own `member` entry, so the history before the join does
+                # not count as unread. A later write of the entry keeps its `first`, and the position only moves on.
+                self.db.execute('INSERT OR IGNORE INTO team_reads (room, first) VALUES (?, ?)',
+                                (room['room'], entry['first']))
             # The Library shows a bot only while its member is in the list, and it names that member.
             if other and self.db.execute('SELECT 1 FROM team_bots WHERE room=? AND member=? LIMIT 1',
                                          (room['room'], entry['member'])).fetchone():
@@ -415,6 +484,10 @@ class TeamStore:
                     VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, member) DO UPDATE SET name=excluded.name,
                     avatar=excluded.avatar, color=excluded.color, agreement=excluded.agreement, entry=excluded.entry''',
                                 (room, member, fields['name'], fields['avatar'], fields['color'], fields['agreement'], entry))
+                # A member has one name: the one of the entry that the list shows.
+                self.db.execute("DELETE FROM team_names WHERE room=? AND member=? AND kind='member' AND entry!=?",
+                                (room, member, entry))
+                self._name(room, entry, member, 'member', fields['name'])
                 return
         self.db.execute('DELETE FROM team_members WHERE room=? AND member=?', (room, member))
 
@@ -429,6 +502,47 @@ class TeamStore:
             ON CONFLICT (room, entry) DO UPDATE SET member=excluded.member, name=excluded.name, avatar=excluded.avatar,
             color=excluded.color''', (room, entry['id'], entry['member'], profile['name'], profile['avatar'],
                                       profile['color']))
+        self._name(room, entry['id'], entry['member'], 'bot', profile['name'])
+
+    def _name(self, room: str, entry: str, member: str, kind: str, name: str) -> None:
+        """Keep the name that the store shows for a member or a bot. No `delete` entry removes it (see team_names)."""
+        self.db.execute('''INSERT INTO team_names (room, entry, member, kind, name) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (room, entry) DO UPDATE SET member=excluded.member, kind=excluded.kind, name=excluded.name''',
+                        (room, entry, member, kind, name))
+
+    def _relay_time(self, room: str, existing: dict, at: int) -> None:
+        """Take the time of the relay for a write that the store has with another time.
+
+        This Mac stores its own write at once, with the clock of this Mac, because the answer of a write has no time.
+        The read of the same write gives the time of the relay. Each Mac shows the time of the relay in the chat, so
+        the clock of one Mac does not change what the others see.
+        """
+        self.db.execute('UPDATE team_entries SET at=? WHERE room=? AND id=?', (at, room, existing['id']))
+        old, new = relay_time(existing['at']), relay_time(at)
+        if existing['kind'] == 'message' and new is not None and self.db.execute(
+                '''UPDATE team_messages SET created_at=CASE WHEN created_at=? THEN ? ELSE created_at END, updated_at=?
+                WHERE room=? AND entry=? AND updated_at=?''', (old, new, new, room, existing['id'], old)).rowcount:
+            self.chatted.add(room)
+
+    def _show_message(self, room: str, entry: dict, rev: int, message: dict | None) -> bool:
+        """Set the row of a `message` entry, or remove it. `message` is what read_entry found valid, or None for a
+        message that does not fit and for a `delete` entry over a message. True when the chat changed.
+
+        The times come from the relay: `created_at` is the `at` of the first write that this Mac saw, and `updated_at`
+        the `at` of this write. A message is edited when its `rev` is over 1, so each Mac gives the same answer, also a
+        Mac that only saw the newest write.
+        """
+        at = relay_time(entry['at'])
+        if message is None or at is None:
+            removed = self.db.execute('DELETE FROM team_messages WHERE room=? AND entry=?', (room, entry['id']))
+            return removed.rowcount > 0
+        self.db.execute('''INSERT INTO team_messages (room, entry, first, member, bot, text, reply_to, mentions,
+            created_at, updated_at, edited) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, entry) DO UPDATE
+            SET first=excluded.first, bot=excluded.bot, text=excluded.text, reply_to=excluded.reply_to,
+            mentions=excluded.mentions, updated_at=excluded.updated_at, edited=excluded.edited''',
+                        (room, entry['id'], entry['first'], entry['member'], message['bot'], message['text'],
+                         message['reply_to'], json.dumps(message['mentions']), at, at, int(rev > 1)))
+        return True
 
     def _show_page(self, room: str, entry: dict, fields: dict, page: dict | None, other: bool) -> None:
         """Set the row of a `page` entry. `page` is what read_entry found valid, or None.
@@ -503,6 +617,53 @@ class TeamStore:
         return self._rows(TEAM_BOT, '''SELECT b.entry, b.member, b.name, b.avatar, b.color FROM team_bots b
             JOIN team_rooms r ON r.room=b.room WHERE b.room=? AND b.member!=r.member ORDER BY b.name, b.entry''',
                           (room,))
+
+    # The Team chat
+
+    def messages(self, room: str, before: int | None = None, limit: int = 50) -> list[dict]:
+        """The shown messages of a room before the `first` of `before`, newest first, at most `limit`. The index
+        team_messages_order gives the rows in order, so a page reads about `limit` rows in any room."""
+        return self._messages('(? IS NULL OR m.first<?) ORDER BY m.first DESC LIMIT ?', (room, before, before, limit))
+
+    def message(self, room: str, entry: str) -> dict | None:
+        """One shown message, or None."""
+        rows = self._messages('m.entry=?', (room, entry))
+        return rows[0] if rows else None
+
+    def _messages(self, where: str, values: tuple) -> list[dict]:
+        # The name of a member is the last one that the store showed, also after the member left (team_names).
+        return self._rows(MESSAGE_FIELDS, f'''SELECT m.entry, m.first, m.member, n.name, m.bot, m.text, m.reply_to,
+            m.mentions, m.created_at, m.updated_at, m.edited FROM team_messages m
+            LEFT JOIN team_names n ON n.room=m.room AND n.member=m.member AND n.kind='member'
+            WHERE m.room=? AND {SHOWN_MESSAGE} AND {where}''', values)
+
+    def names(self, room: str, entries) -> dict[str, tuple[str, str]]:
+        """The kind and the member of each entry ID that is a member or a bot of the room in team_names."""
+        rows = self.db.execute('''SELECT entry, kind, member FROM team_names WHERE room=?
+            AND entry IN (SELECT value FROM json_each(?))''', (room, json.dumps(sorted(set(entries))))).fetchall()
+        return {entry: (kind, member) for entry, kind, member in rows}
+
+    def read_position(self, room: str) -> int:
+        row = self.db.execute('SELECT first FROM team_reads WHERE room=?', (room,)).fetchone()
+        return row[0] if row else 0
+
+    def mark_read(self, room: str, first: int) -> int | None:
+        """Move the read position of the room to `first`, but never back and never past the newest message. The new
+        position, or None when it stays."""
+        newest = self.db.execute('SELECT MAX(first) FROM team_messages WHERE room=?', (room,)).fetchone()[0] or 0
+        position = min(first, newest)
+        if position <= self.read_position(room):
+            return None
+        self.db.execute('''INSERT INTO team_reads (room, first) VALUES (?, ?)
+            ON CONFLICT (room) DO UPDATE SET first=excluded.first''', (room, position))
+        return position
+
+    def unread(self, room: str, member: str) -> int:
+        """How many shown messages of the other members are after the read position, up to MAX_UNREAD. A message of
+        this Mac counts as read. The LIMIT keeps the count to at most MAX_UNREAD rows of the index."""
+        return self.db.execute(f'''SELECT COUNT(*) FROM (SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>?
+            AND m.member!=? AND {SHOWN_MESSAGE} LIMIT {MAX_UNREAD})''',
+                               (room, self.read_position(room), member)).fetchone()[0]
 
     # The Library of the phone
 

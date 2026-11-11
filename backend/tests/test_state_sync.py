@@ -473,6 +473,29 @@ class StateSyncTests(unittest.TestCase):
         self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
         self.assertFalse(self.service.updates(cursor, collection_deltas=True)['team_changed'])
 
+    def test_a_team_chat_event_is_no_reset_and_names_its_rooms(self):
+        cursor = self.service._cursor()
+        timestamp = self.service.db.execute('SELECT created_at FROM events WHERE seq=?', (cursor,)).fetchone()[0]
+        with self.service.transaction():
+            for room in ('b' * 64, 'a' * 64, 'b' * 64):
+                self.service._event('team_messages.updated', {'team': room})
+        # Each update version of an app of today replays the event, and none reads its whole state again.
+        for options in ({}, {'collection_deltas': True}, {'collection_deltas': True, 'native_events': True},
+                        {'collection_deltas': True, 'native_events': True, 'compact_history': True}):
+            with self.subTest(options=options), patch('coconut.service.now', return_value=timestamp), \
+                 patch.object(Service, '_snapshot', side_effect=AssertionError('A chat event must not reset')), \
+                 patch.object(Service, '_work_projection', side_effect=AssertionError('A chat event must not rebuild Work')):
+                page = self.service.updates(cursor, **options)
+            self.assertEqual(page['team_messages_changed'], ['a' * 64, 'b' * 64])
+            self.assertEqual((page['team_changed'], page['documents_changed'], page['settings_changed']),
+                             (False, False, False))
+            self.assertNotIn('artifacts', page)
+            self.assertNotIn('decisions', page)
+        # Another event names no room.
+        cursor = self.service._cursor()
+        self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
+        self.assertEqual(self.service.updates(cursor, collection_deltas=True)['team_messages_changed'], [])
+
     def test_continuous_text_refreshes_time_dependent_work(self):
         task = self.write('POST', f"/v1/bots/{self.bot['id']}/messages", {'text': 'Check this.'})
         with self.service.transaction():

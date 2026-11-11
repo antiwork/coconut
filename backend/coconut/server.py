@@ -211,13 +211,16 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError) as error:
             raise ServiceError(400, str(error)) from None
 
-    def _team(self, service, method, path, device=''):
+    def _team(self, service, method, url, device=''):
         """The routes of the team rooms. The caller checked the token of a device or of the bridge file. See team.py.
 
         Only a paired device gives its `Idempotency-Key`, because the app repeats a write after a lost answer. A tool
-        of this Mac sends no key, and its request runs each time."""
+        of this Mac sends no key, and its request runs each time. A GET has no body, so its data is the query, with
+        the last value of each name."""
         key = self.headers.get('Idempotency-Key', '') if device else ''
-        self._json(200, service.team_request(method, path, {} if method == 'GET' else self._body(), key, device))
+        data = ({name: values[-1] for name, values in parse_qs(url.query).items()} if method == 'GET'
+                else self._body())
+        self._json(200, service.team_request(method, url.path, data, key, device))
 
     def _handle(self, method):
         """Serve one request. Log the time of each request from the phone (see request_timing)."""
@@ -247,7 +250,7 @@ class Handler(BaseHTTPRequestHandler):
             team = url.path.startswith(TEAM_ROUTES) and hasattr(service, 'team_request')
             if (team and not self.server.tunnel
                     and service.gateway_bridge.authorized(self.headers.get('Authorization', ''))):
-                self._team(service, method, url.path)
+                self._team(service, method, url)
                 return
             peer = None
             if self.server.tunnel:
@@ -270,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
             if team:
                 # The request log of the tunnel listener keeps the route without its IDs, and never a body, so an
                 # invite link in a join stays out of it.
-                self._team(service, method, url.path, device)
+                self._team(service, method, url, device)
                 return
             if method == 'POST' and url.path == '/v1/maintenance/workspace-recovery':
                 self._json(200, service.request_workspace_recovery(

@@ -4,14 +4,14 @@ A team is a set of Macs that share one log. The log lives on the Cloudflare rela
 
 The log carries everything that a team shares: the people and bots of the team, the messages of the Team chat, and the shared pages. A phone talks only to its own Mac, as before.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac (see [Mac](#mac)). It shares bots and their pages, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). These parts are not built yet:
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac (see [Mac](#mac)). It shares bots and their pages, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat of the people and serves it to the phone (see [Team chat](#team-chat)). These parts are not built yet:
 
 - The socket on the Mac. The Mac reads each room every 30 seconds.
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
 - A record of the open invites on the Mac.
 - The member removal and the key change.
-- The screens of the app for the teams and the team pages. The app of today hides a team page, because it does not know its bot.
-- The kind `message`.
+- The screens of the app for the teams, the team pages and the Team chat. The app of today hides a team page, because it does not know its bot.
+- A bot that reads or writes the Team chat, and a push notification for a team message.
 
 ## Terms
 
@@ -83,11 +83,11 @@ Each payload has these fields:
 | `delete` | `false` | The member of the replaced entry | None. It replaces an entry that its author deletes. |
 | `bot` | `true` | The Mac that runs the bot, one entry for each bot | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20) |
 | `page` | `true` | The Mac that runs the bot of the page, one entry for each document | `bot` (the entry ID of the `bot` entry), `key`, `title`, `format`, `summary` (or null), `content`, `version` (the version of the document on its Mac), `expires_at` (or null) |
-| `message` | `false` | Any member | One message of the Team chat, from a person or a bot. |
+| `message` | `false` | Any member | `text` (1 to 16,000 characters), `reply_to` (an entry ID, or absent), `mentions` (at most 16 entry IDs, or absent), `bot` (the entry ID of a `bot` entry of the same member, or absent). See [Team chat](#team-chat). |
 | `remove` | `true` | The admin | The removal of a member. See [Member removal](#member-removal-and-key-change). |
 | `key` | `true` | The admin | The room key of the next epoch. |
 
-The kinds `member`, `delete`, `bot` and `page` are complete. See [Bots and pages](#bots-and-pages) for the rules of `bot` and `page`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
+The kinds `member`, `delete`, `bot`, `page` and `message` are complete. See [Bots and pages](#bots-and-pages) for the rules of `bot` and `page`, and [Team chat](#team-chat) for `message`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
@@ -164,7 +164,7 @@ A long poll would keep the Durable Object in memory, and Cloudflare bills that t
 
 A member that leaves and joins again continues its counts: its entries that are not kept stay on the relay, and so does its count of writes in the minute.
 
-A page can have 512 KiB of content (`MAX_CONTENT` in `backend/coconut/documents.py`), and one entry holds a whole page. JSON can make the content larger, so a save of a team page checks that its payload fits (see [Bots and pages](#bots-and-pages)). Each Mac keeps the full history of the chat in its own store. The retention time only limits how far back a new member or a Mac that was off can read.
+A page can have 512 KiB of content (`MAX_CONTENT` in `backend/coconut/documents.py`), and one entry holds a whole page. JSON can make the content larger, so a save of a team page checks that its payload fits (see [Bots and pages](#bots-and-pages)). Each Mac keeps the full history of the chat in its own store, also after the relay deletes an old `message` entry. The retention time only limits how far back a new member or a Mac that was off for longer than 90 days can read.
 
 ## Invite and join
 
@@ -281,6 +281,9 @@ Everything else is in `coconut.sqlite3`:
 | `team_page_entries` | The entry ID of each document of this Mac that a room has or had as a `page` entry. One document keeps one entry ID. |
 | `team_bots` | A view of `team_entries`: the valid `bot` entries of the other members, and the `bot` entries of this Mac with the profile that it wrote. |
 | `team_pages` | A view of `team_entries`: the `page` entries of the other members, with the pin of this Mac and the time of the first write that this Mac saw, and the `page` entries of this Mac with the bot and the version that it wrote. |
+| `team_messages` | A view of `team_entries`: one row for each valid `message` entry, with its `first`, member, bot, text, reply, mentions, the times of the relay, and whether it was edited. An index on the room and `first` gives a page of messages and the unread count without a scan of the room. |
+| `team_names` | The last name that the store showed for each member and each bot of a room. A `delete` entry does not remove it. |
+| `team_reads` | The read position of this Mac in the chat of each room. |
 
 A room is `joining` (the relay did not answer the join yet), `active`, `removed` (the relay answered 401) or `gone` (the relay answered 404). The copy of a `removed` or `gone` room stays until the person leaves the room on the Mac. The Library does not show the bots and the pages of such a room.
 
@@ -323,6 +326,7 @@ A request without a valid authorization gets 401.
 | `POST /v1/team/sync` | Starts a pass, waits up to 60 seconds for it, and returns the rooms with `complete`. |
 | `POST /v1/team/rooms/<room>/bots`, body `{bot_id}` | Shares a bot of this Mac with the room. An archived or deleted bot answers 409 or 404. |
 | `DELETE /v1/team/rooms/<room>/bots/<bot_id>` | Stops sharing the bot with the room. |
+| The routes of the Team chat | See [Team chat](#team-chat). |
 
 A room in an answer has what the Team screen shows, so the app needs no other request:
 
@@ -333,6 +337,7 @@ A room in an answer has what the Team screen shows, so the app needs no other re
 | `members` | In the order of their first `member` entry: `member` (the member ID), `name`, `avatar`, `color`, `admin` and `this_mac`. |
 | `bots` | Each bot of the team, while the room is `active` and the member of the bot is in `members`: `id`, `name`, `avatar`, `color`, `member` (the ID of the Mac that runs the bot), `member_name` and `this_mac`. A bot of this Mac also has `bot_id`, its ID on this Mac, and its profile comes from that bot. An archived or deleted bot of this Mac is not in the list. The bots follow the order of the members, then their names. |
 | `sync` | `synced_at`, and `error`: one sentence for a person, or null. Also `seq`, `entries`, `waiting` and `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)). |
+| `unread`, `last_message` | The unread count of the Team chat, from 0 to 99, and the newest message that the chat shows: `first`, `member_name`, `text` (its first 200 characters) and `created_at`, or null. See [Team chat](#team-chat). |
 | `relay`, `member`, `admin`, `epoch` | For the tools. |
 
 The `id` of a bot is `t-<room ID>-<entry ID>`, as in `team_bots` of `GET /v1/documents`.
@@ -405,6 +410,65 @@ The Library of the phone:
 - `GET /v1/documents/<id>` of a team page adds `content`. `PATCH` sets the pin of this Mac. `DELETE` answers 403, because only the Mac of the page can delete it. A page past its end answers 404 as an ended local document does.
 - When a read changes the team pages or bots that the Library shows, or a room with team bots stops being `active` or goes from this Mac, the Mac adds one `document.updated` event with `{"team": <room ID>}`. `GET /v1/updates` then has `documents_changed`, also for a local document, and the app can read the list again. The app of today knows the event type, so the event does not make it read the whole state again.
 - The list reads the views `team_bots` and `team_pages` and parses no payload. The content stays in the payload of the entry, and the Mac reads it when a page opens.
+
+### Team chat
+
+`backend/coconut/team_messages.py` serves the Team chat of each room. One message is one `message` entry, not kept. The relay holds it for its retention time, and each Mac keeps the history in `team_messages`.
+
+The payload of a `message` entry:
+
+| Field | Value |
+| --- | --- |
+| `text` | The message: 1 to 16,000 code points of valid Unicode text. It is Markdown, as in a bot chat. The Mac does not interpret it. |
+| `reply_to` | The entry ID of the message that this one answers, or absent. |
+| `mentions` | A list of at most 16 entry IDs of `member` or `bot` entries that the message names, or absent. |
+| `bot` | The entry ID of a `bot` entry of the same member when a bot of that Mac wrote the message, or absent for a message of the person. |
+
+- An edit is a new write of the same entry ID with the next `rev`. A removal is a `delete` entry over it. Only the member of a message can do either (rule 3).
+- A Mac of today writes no `bot`. A later step writes it, and grows a reply of a bot with more writes of the same entry.
+
+Rules for a Mac that reads a `message` entry:
+
+1. A message is valid only when `text` has 1 to 16,000 code points of valid Unicode text, `reply_to` and `bot` are entry IDs, and `mentions` is a list of at most 16 entry IDs. A reader takes null as an absent field. A message that does not fit stays in the store and shows nothing.
+2. A field that the reader does not know stays in the payload, and the reader ignores it. So a later field, for example an attachment, does not break a Mac of today.
+3. A message with a `bot` shows only when `bot` names a valid `bot` entry of the same member. The bot entry can come after the message, so the check runs when the Mac reads the chat, not when it accepts the entry. A `delete` over the bot entry does not hide the messages of the bot that the chat already had.
+4. The newest write of an entry counts, as the relay keeps only that write. A `delete` over a message removes its row. A later `message` write over the `delete` shows the message again, also on a Mac that joins later and reads only that write. A Mac of today never writes it.
+5. The chat sorts the messages by `first`, so an edit keeps its place.
+6. The times come from the relay, not from the payload: `created_at` is the `at` of the first write that this Mac saw, and `edited_at` is the `at` of the newest write. A message is edited when its `rev` is over 1, so each Mac gives the same answer. A time after the year 9999 makes the message not valid. This Mac stores its own write at once with its own clock, and takes the time of the relay when the sync reads the write back.
+7. A message of a member that left stays in the history. The relay deletes the kept entries of that member, and a `delete` entry replaces its `member` entry. So `team_names` keeps the last name that the store showed for each member and each bot. A Mac that joins after the member left never saw a name, and `member_name` is null.
+
+What a Mac keeps after the relay drops an old entry: the row of each message in `team_messages`, its payload in `team_entries`, and the names in `team_names`. A Mac that joins later reads only what the relay still has: the messages of the last 90 days.
+
+The read position:
+
+- `team_reads` keeps, for each room, the `first` of the newest message that the person read. The unread count is the number of shown messages of the other members after that position, up to 99. A message of this Mac counts as read.
+- The position starts at the `first` of the own `member` entry of this Mac. So the history from before a join does not count as unread.
+- The position only moves forward, and never past the newest message of the room.
+
+The routes have the authorization of the other team routes, and a write with an `Idempotency-Key` is safe to repeat (see [Repeat a write](#repeat-a-write)). A write goes to the relay inside the request. A failure is an error for the person and changes nothing on this Mac. A write in a room that is not `active` answers 409.
+
+| Request | Answer |
+| --- | --- |
+| `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>` | One page, newest first: `{room, messages, before}`. `limit` is 1 to 100, and 50 without it. `before` of the answer is the `first` to ask for the next page, or null when no older message exists. Also a room that is not `active` has its history. |
+| `POST /v1/team/rooms/<room>/messages`, body `{text, reply_to?, mentions?}` | Writes a message of the person and answers `{room, message}`. `reply_to` is the `id` of a message that the chat shows. `mentions` is a list of member IDs of `members` and `id` values of `bots` of `GET /v1/team/rooms`. The Mac writes the entry IDs of the contract. With an `Idempotency-Key`, the entry ID of the message comes from the room, the device and the key. So a repeat after a write without an answer finds that write and sends no second message. |
+| `PATCH /v1/team/rooms/<room>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, and answers `{room, message}`. The other fields stay. The same text writes nothing. A message of another member or of a bot answers 403. |
+| `DELETE /v1/team/rooms/<room>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, id, deleted: true}`. |
+| `POST /v1/team/rooms/<room>/read`, body `{first}` | Moves the read position, and answers `{room, read, unread}`. |
+
+A message in an answer:
+
+| Field | Value |
+| --- | --- |
+| `id`, `first` | The entry ID and the `first` of the entry. |
+| `member`, `member_name`, `this_mac` | The member ID of the writer, its name (see rule 7), and true for a message of this Mac. |
+| `bot` | The `t-<room ID>-<entry ID>` ID of the team bot that wrote the message, or null. |
+| `text`, `reply_to` | The text, and the `id` of the message that this one answers, or null. |
+| `mentions` | For each mention: the member ID of a member, or the `t-` ID of a team bot. A mention that the store cannot name stays out. |
+| `created_at`, `edited_at` | The times of rule 6. `edited_at` is null for a message without an edit. |
+
+When the chat of a room changes on this Mac, the Mac adds one `team_messages.updated` event with `{"team": <room ID>}` in the same transaction: a new message, an edit, a removal, a new time from the relay, or a new read position, for example from another device of the person. `GET /v1/updates` then has `team_messages_changed`: the IDs of these rooms. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again.
+
+No log line has the text of a message. A log line names a message by its entry ID and its `seq`, as for each other entry.
 
 ## Test vectors
 

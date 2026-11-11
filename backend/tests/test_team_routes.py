@@ -110,9 +110,66 @@ class TeamRouteTests(TeamMacs, unittest.TestCase):
                 self.assertEqual(self.call('DELETE', f'/v1/team/rooms/{room}', None, **one),
                                  (404, {'error': 'This Mac is not in this team.'}))
 
+    def test_each_caller_reaches_the_team_chat(self):
+        room = self.make_room()['room']
+        invite = self.call('POST', f'/v1/team/rooms/{room}/invites', {'uses': 1}, self.mac_one.token)[1]
+        self.assertEqual(self.call('POST', '/v1/team/join', {'link': invite['link'], 'member_name': 'Grace'},
+                                   self.mac_two.token, server=self.mac_two.server)[0], 200)
+        messages = f'/v1/team/rooms/{room}/messages'
+        sent = {}
+        for name, one in self.callers(self.mac_one).items():
+            with self.subTest(caller=name):
+                status, answer = self.call('POST', messages, {'text': f'Hello from the {name}'}, **one)
+                self.assertEqual((status, answer['message']['text'], answer['message']['this_mac']),
+                                 (200, f'Hello from the {name}', True), answer)
+                sent[name] = answer['message']
+                identity = sent[name]['id']
+                status, answer = self.call('PATCH', f'{messages}/{identity}', {'text': f'Hi from the {name}'}, **one)
+                self.assertEqual((status, answer['message']['text']), (200, f'Hi from the {name}'), answer)
+                # The query of a GET reaches the route.
+                status, page = self.call('GET', f'{messages}?limit=1', None, **one)
+                self.assertEqual((status, [message['id'] for message in page['messages']]), (200, [identity]), page)
+                self.assertEqual(page['before'] is None, name == 'tool')
+        # Each caller of the second Mac reads the chat, moves the read position, and cannot change a message of Ada.
+        # This test starts no sync thread, so it runs the pass itself.
+        self.second.team_sync_pass()
+        for name, two in self.callers(self.mac_two).items():
+            with self.subTest(reader=name):
+                status, page = self.call('GET', messages, None, **two)
+                self.assertEqual((status, [message['text'] for message in page['messages']]),
+                                 (200, ['Hi from the phone', 'Hi from the device', 'Hi from the tool']), page)
+                self.assertEqual(self.call('PATCH', f'{messages}/{sent["tool"]["id"]}', {'text': 'Mine'}, **two),
+                                 (403, {'error': 'You can change only your own messages.'}))
+                self.assertEqual(self.call('DELETE', f'{messages}/{sent["tool"]["id"]}', None, **two),
+                                 (403, {'error': 'You can change only your own messages.'}))
+        status, rooms = self.call('GET', '/v1/team/rooms', None, self.mac_two.token, server=self.mac_two.server)
+        (view,) = rooms['rooms']
+        self.assertEqual((status, view['unread'], view['last_message']['text'], view['last_message']['member_name']),
+                         (200, 3, 'Hi from the phone', 'Ada'))
+        status, answer = self.call('POST', f'/v1/team/rooms/{room}/read', {'first': sent['device']['first']},
+                                   **self.callers(self.mac_two)['phone'])
+        self.assertEqual((status, answer), (200, {'room': room, 'read': sent['device']['first'], 'unread': 1}))
+        # A repeat of a send with the same key gives one message, and a repeat of a delete the same answer.
+        phone = self.callers(self.mac_one)['phone']
+        key = {'Idempotency-Key': str(uuid4())}
+        repeats = [self.call('POST', messages, {'text': 'Once'}, phone['token'], server=phone['server'],
+                             headers=dict(PHONE, **key)) for _ in range(2)]
+        self.assertEqual((repeats[0][0], repeats[0]), (200, repeats[1]))
+        key = {'Idempotency-Key': str(uuid4())}
+        identity = repeats[0][1]['message']['id']
+        repeats = [self.call('DELETE', f'{messages}/{identity}', None, phone['token'], server=phone['server'],
+                             headers=dict(PHONE, **key)) for _ in range(2)]
+        self.assertEqual(repeats, [(200, {'room': room, 'id': identity, 'deleted': True})] * 2)
+        texts = [message['text'] for message in self.call('GET', messages, None, self.mac_one.token)[1]['messages']]
+        self.assertEqual(texts, ['Hi from the phone', 'Hi from the device', 'Hi from the tool'])
+
     def test_a_request_without_a_valid_token_gets_401(self):
+        messages = f'/v1/team/rooms/{"a" * 64}/messages'
         routes = (('GET', '/v1/team/rooms', None), ('POST', '/v1/team/rooms', {'name': 'Example Team'}),
-                  ('POST', '/v1/team/join', {'link': 'coconut://team/x'}), ('PATCH', f'/v1/team/rooms/{"a" * 64}', {}))
+                  ('POST', '/v1/team/join', {'link': 'coconut://team/x'}), ('PATCH', f'/v1/team/rooms/{"a" * 64}', {}),
+                  ('GET', messages + '?limit=1', None), ('POST', messages, {'text': 'Hello'}),
+                  ('PATCH', f'{messages}/{"b" * 32}', {'text': 'Hello'}), ('DELETE', f'{messages}/{"b" * 32}', None),
+                  ('POST', f'/v1/team/rooms/{"a" * 64}/read', {'first': 1}))
         main = {'no token': {}, 'another token': {'token': 'not-the-token'},
                 'the bridge token of another Mac': {'token': self.mac_two.token},
                 'a device of another Mac': {'token': self.mac_two.device},

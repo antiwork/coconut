@@ -18,6 +18,8 @@ error texts are for a person, because the app shows them.
 - `POST /v1/team/sync`: read each room from the relay now, and return the rooms.
 - `POST /v1/team/rooms/<room>/bots` with `{bot_id}`: share a bot of this Mac with the room (team_pages.py).
 - `DELETE /v1/team/rooms/<room>/bots/<bot_id>`: stop sharing the bot with the room.
+- The routes of the Team chat under `/v1/team/rooms/<room>/messages` and `/v1/team/rooms/<room>/read`
+  (team_messages.py).
 
 No answer has a key, a token or an invite secret. Only the invite link, which the person shares, carries a secret.
 
@@ -44,6 +46,7 @@ from . import team_keys
 from .push_relay import RELAY_URL
 from .team_helper import TeamFormatError, TeamHelper, TeamHelperError
 from .team_keys import ROOM_ID, TeamKeysError
+from .team_messages import TeamMessages
 from .team_pages import TeamPages
 from .team_relay import TeamRelay, TeamRelayError, relay_origin
 from .team_store import ACTIVE, JOINING, MEMBER_LIMITS, SCHEMA, TeamStore, unicode_text
@@ -148,7 +151,7 @@ def team_errors():
         raise ServiceError(status, room_error(error)) from None
 
 
-class Team(TeamSync, TeamPages):
+class Team(TeamSync, TeamPages, TeamMessages):
     """The team rooms of this Mac: the routes of the tools, and the thread that copies each log."""
 
     def _init_team(self):
@@ -206,7 +209,7 @@ class Team(TeamSync, TeamPages):
             # The first request runs. When it fails, it removes its slot, and this request runs itself.
             reply['done'].wait()
         try:
-            answer = self._team_route(method, path, data)
+            answer = self._team_route(method, path, data, f'{device}:{key}')
         except BaseException:
             with self._team_replies_lock:
                 self._team_replies.pop(slot, None)
@@ -235,7 +238,8 @@ class Team(TeamSync, TeamPages):
             if at < old or number < over:
                 del self._team_replies[slot]
 
-    def _team_route(self, method: str, path: str, data: dict) -> dict:
+    def _team_route(self, method: str, path: str, data: dict, repeat: str = '') -> dict:
+        """Serve one route. `repeat` names the device and the `Idempotency-Key` of a write, or is empty."""
         from .service import ServiceError
         parts = path.strip('/').split('/')[2:]
         if parts == ['rooms'] and method == 'GET':
@@ -256,6 +260,16 @@ class Team(TeamSync, TeamPages):
             return self.team_share(parts[1], data)
         if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'bots' and method == 'DELETE':
             return self.team_unshare(parts[1], parts[3])
+        if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'messages' and method == 'GET':
+            return self.team_messages(parts[1], data)
+        if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'messages' and method == 'POST':
+            return self.team_send(parts[1], data, repeat)
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'messages' and method == 'PATCH':
+            return self.team_edit(parts[1], parts[3], data)
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'messages' and method == 'DELETE':
+            return self.team_unsend(parts[1], parts[3])
+        if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'read' and method == 'POST':
+            return self.team_mark_read(parts[1], data)
         raise ServiceError(404, 'This route was not found.')
 
     # Reads
@@ -279,6 +293,7 @@ class Team(TeamSync, TeamPages):
                 'member': room['member'], 'admin': room['admin'], 'is_admin': is_admin,
                 'can_invite': is_admin and room['state'] == ACTIVE, 'epoch': room['epoch'],
                 'created_at': room['created_at'], 'members': members, 'bots': self._team_bots(room, members),
+                **self._team_chat_summary(room),
                 'sync': {'seq': room['seq'], 'entries': entries, 'waiting': waiting,
                          'synced_at': status.get('synced_at'), 'error': status.get('error'), 'refused': refused}}
 
