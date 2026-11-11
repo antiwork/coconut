@@ -256,7 +256,8 @@ class TeamSync:
             # 401: the token of this Mac is no longer a member's. 404: the relay has no such room. The copy stays.
             state = REMOVED if error.status == 401 else GONE
             with self.transaction():
-                # The Library shows a room only while it is active, so the phone reads the list again.
+                # The Library shows a room only while it is active: the team pages and bots of the room, and the room
+                # in the teams of a page of this Mac. So the phone reads the list again.
                 if self.team_store.shows(room_id):
                     self._event('document.updated', {'team': room_id})
                 self._event(TEAM_EVENT, {'team': room_id})

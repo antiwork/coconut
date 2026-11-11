@@ -441,6 +441,30 @@ class TeamPageTests(TeamMacs, unittest.TestCase):
         self.assertEqual(self.first._cursor(), cursor, 'A refusal adds no event.')
         self.assertEqual(self.stop()['teams'], [])
 
+    def test_a_room_with_only_own_shares_that_stops_being_active_tells_the_phone(self):
+        # This Mac shares a page, and no other member shares anything, so the Library has no team page of the room.
+        self.publish()
+        self.share()
+        self.first.team_sync_pass()
+        self.assertEqual(self.library(self.first)['team_bots'], [])
+        member = self.relay.rooms[self.room_id]['members'][self.room['member']]
+        for state, change in (('removed', lambda: self.relay.rooms[self.room_id]['members'].pop(self.room['member'])),
+                              ('gone', lambda: self.relay.rooms.pop(self.room_id))):
+            with self.subTest(state):
+                if state == 'gone':
+                    # The relay knows this Mac again, and the room is active again on this Mac.
+                    self.relay.rooms[self.room_id]['members'][self.room['member']] = member
+                    with self.first.transaction():
+                        self.first.team_store.update_room(self.room_id, state='active')
+                self.assertEqual(self.own()['teams'], [{'room': self.room_id, 'name': 'Example Team'}])
+                change()
+                cursor = self.first._cursor()
+                with self.assertLogs('coconut.team_sync', 'WARNING'):
+                    self.first.team_sync_pass()
+                self.assertEqual(self.first.team_store.room(self.room_id)['state'], state)
+                self.assertTrue(self.first.updates(cursor, 0, collection_deltas=True)['documents_changed'])
+                self.assertEqual((self.own()['teams'], self.own()['audience']), ([], 'private'))
+
     def test_a_mac_that_runs_coconut_for_a_team_only_takes_no_page_share(self):
         self.publish()
         with mock.patch.object(Service, 'library_reader', False):

@@ -670,9 +670,11 @@ class TeamStore:
         return {entry: ('bot', *form) for entry, *form in bots} | {entry: ('page', *form) for entry, *form in pages}
 
     def shows(self, room: str) -> bool:
-        """True when the Library shows something of the room now: a bot of another member."""
+        """True when the Library shows something of the room now: a bot of another member, or the room in the teams
+        of a page that this Mac shares. A room that stops being active or goes changes both."""
         return self.db.execute('''SELECT 1 FROM team_bots b JOIN team_rooms r ON r.room=b.room
-            WHERE b.room=? AND b.member!=r.member LIMIT 1''', (room,)).fetchone() is not None
+            WHERE b.room=? AND b.member!=r.member LIMIT 1''', (room,)).fetchone() is not None or bool(
+            self.page_shares(room))
 
     def bots(self, room: str) -> list[dict]:
         """The valid `bot` entries of the other members of the room, for the Team screen."""

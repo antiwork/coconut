@@ -632,7 +632,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         with self.transaction():
             # The bots and the pages of the room go from the Library, and the shared pages of this Mac lose the room,
             # so the phone reads the list again.
-            if self.team_store.shows(room_id) or self.team_store.page_shares(room_id):
+            if self.team_store.shows(room_id):
                 self._event('document.updated', {'team': room_id})
             self._event(TEAM_EVENT, {'team': room_id})
             self.team_store.remove_room(room_id)
