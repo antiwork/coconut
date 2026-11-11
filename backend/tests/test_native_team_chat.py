@@ -18,6 +18,7 @@ import subprocess
 import threading
 import time
 import unittest
+from unittest import mock
 
 from coconut.server import APIServer
 from hermes_env import PYTHON, SOURCE, needs_hermes
@@ -30,13 +31,30 @@ LAUNCH = ('import sys; sys.path.insert(0, sys.argv[1]); sys.argv = ["hermes", *s
           'from hermes_cli.main import main; sys.exit(main())')
 FIRST = 'Three tasks are open.'
 SECOND = 'Start with the export.'
+# A turn that runs a slow command, then asks the model again with its result.
+SLOW = 'SLOWTOOL'
+AFTER = 'The slow command is done.'
 
 
 def answer(request):
-    """The reply of the stand-in model: SECOND for a question that answers the bot, else FIRST."""
-    users = [message for message in request.get('messages') or [] if message.get('role') == 'user']
-    last = json.dumps(users[-1].get('content')) if users else ''
+    """The reply of the stand-in model: a terminal call that takes some seconds for SLOW, then AFTER with its result;
+    SECOND for a question that answers the bot; else FIRST."""
+    messages = request.get('messages') or []
+    users = [index for index, message in enumerate(messages) if message.get('role') == 'user']
+    last = json.dumps(messages[users[-1]].get('content')) if users else ''
+    if SLOW in last and request.get('tools'):
+        if any(message.get('role') == 'tool' for message in messages[users[-1]:]):
+            return dict(role='assistant', content=AFTER)
+        arguments = dict(command='sleep 6; echo slow-tool-done')
+        return dict(role='assistant', content=None, tool_calls=[dict(
+            id='call-slow', type='function', function=dict(name='terminal', arguments=json.dumps(arguments)))])
     return dict(role='assistant', content=SECOND if 'Which one first' in last else FIRST)
+
+
+def results(request) -> bool:
+    """True for a model request that carries the result of the slow command: the turn went on after the tool."""
+    return SLOW in json.dumps(request.get('messages')) and any(
+        message.get('role') == 'tool' for message in request.get('messages') or [])
 
 
 @needs_hermes
@@ -60,7 +78,9 @@ class NativeTeamChatTests(TeamOnlyMacs, unittest.TestCase):
         self.environment.update(HERMES_HOME=str(self.hermes_home), HERMES_DISABLE_LAZY_INSTALLS='1',
                                 HERMES_DISABLE_TELEMETRY='1')
 
-    def test_ada_names_the_bot_and_its_reply_reaches_her_chat(self):
+    def start_chat(self):
+        """Ada's team with the bot Reporter, its Hermes home connected as connect-chat --confirm does, the team-only
+        service with its threads, and a real gateway for the home. Return the room and the bot."""
         room = self.team()
         bot = self.declare(home=self.hermes_home)
         self.share(room, bot)
@@ -70,6 +90,10 @@ class NativeTeamChatTests(TeamOnlyMacs, unittest.TestCase):
         self.addCleanup(server.shutdown)
         bridge = self.only.root / 'gateway/bridge.json'
         self.only.gateway_bridge.publish(f'http://127.0.0.1:{server.server_address[1]}')
+        # The events of the adapter, also those of a turn that the bridge no longer has.
+        self.events = []
+        record = self.only.gateway_bridge.event
+        self.only.gateway_bridge.event = lambda event: (self.events.append(dict(event)), record(event))[1]
         # The edit of coconut team connect-chat --confirm, under the Python of Hermes.
         edit = subprocess.run([PYTHON, '-I', '-B', str(ROOT / 'backend/coconut/team_chat_config.py'), 'connect',
                                SOURCE, str(self.hermes_home), str(bridge)], env=self.environment, capture_output=True,
@@ -78,8 +102,8 @@ class NativeTeamChatTests(TeamOnlyMacs, unittest.TestCase):
         self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': True})
         self.sync()
         self.only.start()
-        log = Path(self.temp.name) / 'gateway.log'
-        with open(log, 'ab') as output:
+        self.log = Path(self.temp.name) / 'gateway.log'
+        with open(self.log, 'ab') as output:
             gateway = subprocess.Popen([PYTHON, '-c', LAUNCH, SOURCE, 'gateway', 'run'], cwd=self.temp.name,
                                        env=self.environment, stdin=subprocess.DEVNULL, stdout=output,
                                        stderr=subprocess.STDOUT, start_new_session=True)
@@ -93,41 +117,44 @@ class NativeTeamChatTests(TeamOnlyMacs, unittest.TestCase):
                     os.killpg(gateway.pid, signal.SIGKILL)
                     gateway.wait(5)
         self.addCleanup(stop_gateway)
-
-        def diagnostics():
-            parts = [f'Model requests: {len(Model.requests)}', 'gateway.log:', log.read_text(errors='replace')[-4000:]]
-            for path in sorted((self.hermes_home / 'logs').glob('*.log')):
-                parts += [path.name + ':', path.read_text(errors='replace')[-4000:]]
-            return '\n'.join(parts)
-
         deadline = time.monotonic() + 180
         while not self.only.gateway_bridge.connected(self.hermes_home) and time.monotonic() < deadline:
-            self.assertIsNone(gateway.poll(), diagnostics())
+            self.assertIsNone(gateway.poll(), self.diagnostics())
             time.sleep(.5)
-        self.assertTrue(self.only.gateway_bridge.connected(self.hermes_home), diagnostics())
-        mention = self.call('GET', '/v1/team/rooms', service=self.first)['rooms'][0]['bots'][0]['id']
+        self.assertTrue(self.only.gateway_bridge.connected(self.hermes_home), self.diagnostics())
+        self.room = room
+        self.mention = self.call('GET', '/v1/team/rooms', service=self.first)['rooms'][0]['bots'][0]['id']
+        return room, bot
 
-        def send(text, **fields):
-            return self.call('POST', f'/v1/team/rooms/{room}/messages', dict(fields, text=text),
-                             service=self.first)['message']
+    def diagnostics(self):
+        parts = [f'Model requests: {len(Model.requests)}', 'gateway.log:', self.log.read_text(errors='replace')[-4000:]]
+        for path in sorted((self.hermes_home / 'logs').glob('*.log')):
+            parts += [path.name + ':', path.read_text(errors='replace')[-4000:]]
+        return '\n'.join(parts)
 
-        def bot_messages():
-            self.first.team_sync_pass()
-            rows = self.call('GET', f'/v1/team/rooms/{room}/messages', service=self.first)['messages']
-            return [row for row in reversed(rows) if row['bot']]
+    def send(self, text, **fields):
+        return self.call('POST', f'/v1/team/rooms/{self.room}/messages', dict(fields, text=text),
+                         service=self.first)['message']
 
-        def wait_for(count):
-            deadline = time.monotonic() + 180
-            while time.monotonic() < deadline:
-                self.only.team_wake()
-                found = bot_messages()
-                if len(found) >= count:
-                    return found
-                time.sleep(1)
-            self.fail(diagnostics())
+    def bot_messages(self):
+        self.first.team_sync_pass()
+        rows = self.call('GET', f'/v1/team/rooms/{self.room}/messages', service=self.first)['messages']
+        return [row for row in reversed(rows) if row['bot']]
 
-        named = send('@Reporter what is open?', mentions=[mention])
-        (first,) = wait_for(1)
+    def wait_until(self, check, seconds=180):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self.only.team_wake()
+            found = check()
+            if found:
+                return found
+            time.sleep(.5)
+        self.fail(self.diagnostics())
+
+    def test_ada_names_the_bot_and_its_reply_reaches_her_chat(self):
+        self.start_chat()
+        named = self.send('@Reporter what is open?', mentions=[self.mention])
+        (first,) = self.wait_until(lambda: self.bot_messages()[:1])
         self.assertEqual((first['bot_name'], first['text'], first['reply_to']), ('Reporter', FIRST, named['id']))
         call = next(request for request in Model.requests if 'what is open' in json.dumps(request['messages']))
         # The sender and the team reach the model: Hermes names the sender in a group chat.
@@ -135,14 +162,52 @@ class NativeTeamChatTests(TeamOnlyMacs, unittest.TestCase):
         # The mode team registers no Coconut tool.
         self.assertNotIn('coconut_', json.dumps(call.get('tools') or []))
 
-        answered = send('Which one first?', reply_to=first['id'])
-        second = wait_for(2)[1]
+        answered = self.send('Which one first?', reply_to=first['id'])
+        second = self.wait_until(lambda: self.bot_messages()[1:2])[0]
         self.assertEqual((second['text'], second['reply_to']), (SECOND, answered['id']))
 
         calls = len(Model.requests)
-        send('Lunch is at noon.')
+        self.send('Lunch is at noon.')
         self.only.team_wake()
         time.sleep(5)
-        self.assertEqual(len(bot_messages()), 2)
+        self.assertEqual(len(self.bot_messages()), 2)
         self.assertEqual(len(Model.requests), calls, 'A message that names nobody starts no turn.')
-        self.assertNotIn('Traceback', log.read_text(errors='replace'))
+        self.assertNotIn('Traceback', self.log.read_text(errors='replace'))
+
+    def stop_in_the_tool(self, stop):
+        """Start a turn whose model runs a slow command, call `stop` while the command runs, and check that Hermes
+        ends the turn: the model gets no request with the result of the command, and the adapter reports the end."""
+        self.send(f'@Reporter {SLOW} run the slow one', mentions=[self.mention])
+        first = self.wait_until(lambda: [request for request in Model.requests
+                                         if SLOW in json.dumps(request['messages'])])[0]
+        # The model has the terminal of Hermes, so the turn runs the slow command.
+        self.assertIn('"terminal"', json.dumps(first.get('tools') or []), self.diagnostics())
+        turn_id = self.wait_until(lambda: [turn.id for turn in self.only.gateway_bridge.turns.values()
+                                           if turn.chat_id.startswith(self.only.team_store.answering(self.room)[0][0])
+                                           and turn.state == 'active'])[0]
+        stop()
+        self.wait_until(lambda: [event for event in self.events if event.get('turn_id') == turn_id
+                                 and event['kind'] == 'done'], seconds=60)
+        # The command takes 6 seconds. Hermes would ask the model again after it, if the turn went on.
+        time.sleep(10)
+        self.assertEqual([request for request in Model.requests if results(request)], [], self.diagnostics())
+        self.assertNotIn(AFTER, [row['text'] for row in self.bot_messages()])
+        # The `/stop` reaches the session of the member itself. A `/stop` of another user would stop the turn only
+        # through the chat scope of Hermes, which its log names.
+        agent = (self.hermes_home / 'logs/agent.log').read_text(errors='replace')
+        self.assertIn('STOP', agent, self.diagnostics())
+        self.assertNotIn('stop_command_chat_scope', agent, self.diagnostics())
+        return turn_id
+
+    def test_a_disconnect_in_a_tool_call_ends_the_turn_in_hermes(self):
+        room, bot = self.start_chat()
+        self.stop_in_the_tool(lambda: self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': False}))
+
+    def test_a_turn_past_its_time_ends_in_hermes(self):
+        from coconut import team_turns
+        self.start_chat()
+        with mock.patch.object(team_turns, 'TURN_SECONDS', 3):
+            self.stop_in_the_tool(lambda: None)
+        # The chat gets the notice of a turn past its time, and no text of the stop of Hermes.
+        texts = self.wait_until(lambda: [row['text'] for row in self.bot_messages()])
+        self.assertEqual(texts, [team_turns.UNFINISHED])

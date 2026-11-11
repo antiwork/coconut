@@ -68,6 +68,9 @@ class TeamAdapter(CoconutAdapter):
         super().__init__(config)
         # The name of each team chat, for get_chat_info.
         self._names: dict[str, str] = {}
+        # The source of each running turn: its member is the user of its session key, when Hermes keeps a session for
+        # each member of a group (group_sessions_per_user). A `/stop` with that source finds that session.
+        self._sources: dict[str, object] = {}
 
     def _event(self, turn: dict) -> MessageEvent:
         try:
@@ -78,6 +81,7 @@ class TeamAdapter(CoconutAdapter):
             source = self.build_source(chat_id=chat, chat_name=self._names[chat], chat_type='group', user_id=member,
                                        user_name=name)
             answered = team.get('reply_to') or {}
+            self._sources[str(turn['id'])] = source
             return MessageEvent(text=str(turn['text']), message_type=MessageType.TEXT, source=source,
                                 message_id=str(turn['id']), user_id=member, user_name=name,
                                 allow_gateway_control=False, reply_expected=True,
@@ -98,12 +102,12 @@ class TeamAdapter(CoconutAdapter):
 
     @guarded()
     async def _stop(self, chat_id: str) -> None:
-        """Stop the running turn of a chat, as `/stop` does, with the source of a group chat."""
+        """Stop the running turn of a chat, as `/stop` does, with the source of that turn: the session key of Hermes
+        has the member of the turn, so a `/stop` of another user would reach another session."""
         turn = self._turns.get(chat_id)
-        if turn is None:
+        source = self._sources.get(turn) if turn is not None else None
+        if source is None:
             return
-        source = self.build_source(chat_id=chat_id, chat_name=self._names.get(chat_id), chat_type='group',
-                                   user_id='coconut', user_name='Coconut')
         await self.handle_message(MessageEvent(text='/stop', message_type=MessageType.COMMAND, source=source,
                                                message_id=turn + ':stop'))
 
@@ -120,6 +124,7 @@ class TeamAdapter(CoconutAdapter):
         if self._turns.get(event.source.chat_id) == event.message_id:
             del self._turns[event.source.chat_id]
         self._typing.discard(event.message_id)
+        self._sources.pop(event.message_id, None)
         for delay in (*RETRY_SECONDS, None):
             if await self._report(event.message_id, 'done', outcome=getattr(outcome, 'value', str(outcome))):
                 break
