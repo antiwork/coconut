@@ -31,6 +31,18 @@ final class ConversationRowHoldTests: XCTestCase {
         hold.phaseChanged(.interacting)
         XCTAssertNil(hold.row)
     }
+
+    func testAMoveOfTheOffsetAloneEndsTheHoldOnlyAfterTheRowIsPlaced() {
+        var hold = ConversationRowHold()
+        let placed = Date(timeIntervalSinceReferenceDate: 1_000)
+        hold.hold("card", now: placed)
+        // The scroll of the chat to the row is a move of the offset too.
+        hold.offsetMoved(now: placed.addingTimeInterval(0.1))
+        XCTAssertEqual(hold.row, "card")
+        // A mouse wheel later.
+        hold.offsetMoved(now: placed.addingTimeInterval(1))
+        XCTAssertNil(hold.row)
+    }
 }
 
 @MainActor
