@@ -201,15 +201,18 @@ class TriggerTests(TeamTurnMacs, unittest.TestCase):
         self.assertEqual((self.triggers(), gateway.turns), ([], []))
 
     def test_a_full_service_queues_nothing(self):
-        # Grace's Mac is a full Mac with a bot that has `chat` in its record and is in the team.
+        # Grace's Mac is a full Mac. A page of its bot Helper is shared with the team, so Helper has a `bot` entry and a
+        # row in team_shares, and its record even has `chat`.
         self.join(self.second, self.invite({'room': self.room})['link'], 'Grace')
         helper = self.second.mutate('POST', '/v1/bots', {'name': 'Helper'}, str(uuid4()), 'phone')
         with self.second.transaction():
             record = self.second._get('bots', helper['id'])
             self.second._put('bots', dict(record, chat=True))
-        self.call('POST', f'/v1/team/rooms/{self.room}/bots', {'bot_id': helper['id']}, service=self.second)
+        self.share_page(self.second, self.room, helper)
         self.second.team_sync_pass()
         self.first.team_sync_pass()
+        with self.second.lock:
+            self.assertEqual(list(self.second.team_store.shares(self.room)), [helper['id']])
         bots = {bot['name']: bot['id'] for bot in self.call('GET', '/v1/team/rooms', service=self.first)['rooms'][0]['bots']}
         self.send('@Helper @Reporter', mentions=[bots['Helper'], bots['Reporter']])
         self.second.team_sync_pass()
@@ -220,7 +223,9 @@ class TriggerTests(TeamTurnMacs, unittest.TestCase):
             with service.lock:
                 self.assertEqual(service.db.execute('SELECT COUNT(*) FROM team_triggers').fetchone()[0], 0)
             self.assertIsNone(getattr(service, '_turns_thread', None))
-
+        # The team-only Mac queues its own bot only.
+        self.only.team_sync_pass()
+        self.assertEqual(len(self.triggers()), 1)
 
 class TurnTests(TeamTurnMacs, unittest.TestCase):
     def trigger(self, text='@Reporter what is open?', **fields):
