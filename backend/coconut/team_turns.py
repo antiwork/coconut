@@ -234,23 +234,22 @@ class TeamTurns:
 
     def _team_say(self, room: str, bot: str, trigger: str, part, text: str, reply_to: str | None = None) -> None:
         """Write one message of the bot into the chat. Nothing when the bot no longer answers there, for example after
-        a removal or a leave. A failure of the relay leaves a log line, and the chat shows nothing."""
-        with self.lock:
-            share = dict(self.team_store.answering(room)).get(bot)
-        if share is None:
-            return
+        a removal or a leave. A failure of the relay leaves a log line, and the chat shows nothing.
+
+        The lock of the room holds from the check to the write, so a leave cannot come between them."""
         entry = reply_entry(room, trigger, bot, part)
-        fields = {'kind': 'message', 'text': text, 'bot': share}
-        if reply_to:
-            fields['reply_to'] = reply_to
         try:
             with self._team_room_lock(room):
                 self._team_settle(room)
                 with self.lock:
                     room_row = self.team_store.room(room)
+                    share = dict(self.team_store.answering(room)).get(bot)
                     written = self.team_store.entry(room, entry) is not None
-                if room_row is None or room_row['state'] != ACTIVE or written:
+                if room_row is None or room_row['state'] != ACTIVE or share is None or written:
                     return
+                fields = {'kind': 'message', 'text': text, 'bot': share}
+                if reply_to:
+                    fields['reply_to'] = reply_to
                 self._team_write(room_row, entry, False, fields, tries=3)
         except ROOM_ERRORS as error:
             log.warning('coconut.team_turns room %s: a message of the bot %s did not reach the relay (%s).',

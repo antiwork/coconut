@@ -131,13 +131,13 @@ def run(action: str, home: Path, bridge: str, folder: Path = PLUGIN) -> list[str
     elif not present and linked == 'ours':
         changes.insert(0, f'Remove the link {link}.')
     if write:
-        if present and linked == 'missing':
-            link.parent.mkdir(exist_ok=True, mode=0o700)
-            link.symlink_to(folder, target_is_directory=True)
+        from gateway_plugin import link as set_link
+        if present:
+            set_link(home, folder, True)
         if changed is not None:
             save_config(home, changed)
-        if not present and linked == 'ours':
-            link.unlink()
+        if not present:
+            set_link(home, folder, False)
     return changes
 
 

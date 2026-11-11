@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from shlex import quote as quoted
 import subprocess
 import sys
 import urllib.error
@@ -132,13 +133,6 @@ def disconnect(data: Path, argument: str) -> list[str]:
     return lines + [f'{name} no longer answers in the team chat.',
                     f'Next step: restart the Hermes gateway of {home} yourself, so that it unloads the plugin. Coconut '
                     'does not restart it.']
-
-
-def quoted(word: str) -> str:
-    """A word for a shell: in single quotes when it has more than letters, digits and `-_.`."""
-    if word and all(character.isascii() and (character.isalnum() or character in '-_.') for character in word):
-        return word
-    return "'" + word.replace("'", "'\\''") + "'"
 
 
 def main(arguments=None) -> int:
