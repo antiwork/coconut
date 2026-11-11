@@ -1,0 +1,111 @@
+{
+  "setup": [
+    "preflight",
+    "prepare",
+    "hermes",
+    "install",
+    "health",
+    "tunnel",
+    "skills"
+  ],
+  "update": [
+    "preflight",
+    "inspect",
+    "drain",
+    "stop",
+    "prepare",
+    "hermes",
+    "restore",
+    "health",
+    "tunnel",
+    "skills"
+  ],
+  "commands": {
+    "preflight": [
+      [
+        "Command Line Tools check",
+        [
+          "/usr/bin/xcode-select",
+          "-p"
+        ]
+      ],
+      [
+        "Compiler check",
+        [
+          "/usr/bin/xcrun",
+          "--find",
+          "clang"
+        ]
+      ],
+      [
+        "Git check",
+        [
+          "/usr/bin/git",
+          "--version"
+        ]
+      ]
+    ],
+    "prepare": [
+      [
+        "Notification encryption build",
+        [
+          "python",
+          "/Coconut/scripts/push.py",
+          "--rebuild"
+        ]
+      ],
+      [
+        "Team helper build",
+        [
+          "python",
+          "/Coconut/scripts/team.py",
+          "build"
+        ]
+      ]
+    ],
+    "install": [
+      [
+        "Login item start",
+        [
+          "/bin/launchctl",
+          "kickstart",
+          "-k",
+          "gui/<uid>/com.gumroad.coconut.service"
+        ]
+      ]
+    ],
+    "tunnel": [
+      [
+        "Tunnel sidecar build",
+        [
+          "python",
+          "/Coconut/scripts/tunnel.py",
+          "rebuild"
+        ]
+      ]
+    ],
+    "skills": [
+      [
+        "Hermes skill setup",
+        [
+          "python",
+          "/Coconut/scripts/hermes_skills.py",
+          "add"
+        ]
+      ]
+    ],
+    "hermes": [
+      [
+        "Hermes check",
+        [
+          "python",
+          "/Coconut/scripts/host.py",
+          "hermes-status"
+        ]
+      ]
+    ]
+  },
+  "health_port": [
+    8961
+  ]
+}
