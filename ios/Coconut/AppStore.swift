@@ -1863,16 +1863,22 @@ final class AppStore {
 
     /// Shows a message of this person at once, and sends it. A failure keeps it in the chat with a way to try again.
     /// The message is saved before the composer clears, so a restart keeps it. False when the save failed.
+    /// `mentions` are the `id` values of the team bots that the text names. More than the Mac takes is false too: the
+    /// app saves nothing, the composer keeps the draft, and the error banner says why.
     @discardableResult
-    func sendTeamMessage(_ room: String, text: String, replyingTo answered: TeamMessage?) -> Bool {
+    func sendTeamMessage(_ room: String, text: String, replyingTo answered: TeamMessage?, mentions: [String] = []) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, teamListHas(room) else { return false }
+        guard TeamMentions.fits(mentions) else {
+            error = TeamMentions.overLimit
+            return false
+        }
         let quote = answered.map {
             TeamMessageQuote(id: $0.id, member: $0.member, memberName: $0.memberName, bot: $0.bot, botName: $0.botName,
                              text: String($0.text.prefix(200)))
         }
         let pending = TeamPendingMessage(id: UUID().uuidString, text: text, replyTo: answered?.id, reply: quote,
-                                         createdAt: Self.now)
+                                         createdAt: Self.now, mentions: mentions.isEmpty ? nil : mentions)
         teamChats[room, default: TeamChat()].pending.append(pending)
         do { try saveOutgoing() } catch {
             teamChats[room]?.pending.removeAll { $0.id == pending.id }
@@ -1909,12 +1915,14 @@ final class AppStore {
             teamChats[room]?.pending.removeAll { $0.id == id }
             let first = (teamChats[room]?.newestFirst ?? 0) + 1
             teamChats[room]?.put(TeamMessage(id: id, first: first, thisMac: true, text: pending.text, replyTo: pending.replyTo,
-                                             reply: pending.reply, createdAt: pending.createdAt))
+                                             reply: pending.reply, mentions: pending.mentions,
+                                             createdAt: pending.createdAt))
             return
         }
         let change = startMessageChange(room, id)
         let answer: TeamMessageAnswer? = await write("team/rooms/\(room)/messages",
-                                                     payload: TeamSendRequest(text: pending.text, replyTo: pending.replyTo),
+                                                     payload: TeamSendRequest(text: pending.text, replyTo: pending.replyTo,
+                                                                              mentions: pending.mentions),
                                                      as: TeamMessageAnswer.self, refreshInBackground: true,
                                                      idempotencyKey: pending.idempotencyKey)
         // A new pairing or a removal of the room removed the message, or a newer try of it runs.
@@ -2778,7 +2786,8 @@ private struct TeamCreateRequest: Encodable { let name: String; let memberName: 
 private struct TeamJoinBody: Encodable { let link: String; let memberName: String }
 private struct TeamProfileRequest: Encodable { let memberName: String }
 private struct TeamBotRequest: Encodable { let botId: String }
-private struct TeamSendRequest: Encodable { let text: String; let replyTo: String? }
+/// A nil `mentions` is not in the JSON: a message without a mention sends none.
+private struct TeamSendRequest: Encodable { let text: String; let replyTo: String?; let mentions: [String]? }
 private struct TeamEditRequest: Encodable { let text: String }
 private struct TeamReadRequest: Encodable { let first: Int }
 private struct InstructionsRequest: Encodable { let instructions: String }

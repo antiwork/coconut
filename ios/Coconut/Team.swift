@@ -67,8 +67,12 @@ struct TeamMember: Decodable, Identifiable, Equatable, Sendable {
     var color: String? = nil
     var admin: Bool? = nil
     var thisMac: Bool? = nil
+    /// True for a Mac that runs Coconut for a team only: no person is at it. An older service sends none, and none is
+    /// false.
+    var botOnly: Bool? = nil
 
     var id: String { member }
+    var isBotOnly: Bool { botOnly == true }
 }
 
 /// A bot that is in a team. `botId` is the ID of a bot of this Mac. A bot of another Mac has none.
@@ -80,6 +84,11 @@ struct TeamRoomBot: Decodable, Identifiable, Equatable, Sendable {
     var memberName: String? = nil
     var thisMac: Bool? = nil
     var botId: String? = nil
+    /// True for a bot that answers each member of the team: a bot of a Mac without a person. A bot of a person
+    /// answers only that person. An older service sends none, and none is false.
+    var open: Bool? = nil
+
+    var isOpen: Bool { open == true }
 }
 
 struct TeamSync: Decodable, Equatable, Sendable {
