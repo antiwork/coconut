@@ -577,7 +577,6 @@ struct TranscriptMessageRow: View {
 struct MessageBubble: View {
     @Environment(AppStore.self) private var store
     @State private var editingOutgoing: OutgoingMessage?
-    @State private var replyOffset: CGFloat = 0
     @State private var held = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let message: Message
@@ -640,17 +639,9 @@ struct MessageBubble: View {
                 if let requestId = message.clientRequestId,
                    let outgoing = store.outgoingMessages.first(where: { $0.id == requestId }) {
                     if outgoing.status == .failed {
-                        HStack(spacing: 16) {
-                            Button("Not sent · Retry", systemImage: "arrow.clockwise") {
-                                Task { await store.retryOutgoing(requestId) }
-                            }
-                            .accessibilityIdentifier("retry-message-\(requestId)")
-                            // A failed message holds the later messages to this bot. Delete lets them go.
-                            Button("Delete", role: .destructive) { store.deleteUnsent(requestId) }
-                                .accessibilityIdentifier("delete-message-\(requestId)")
-                        }
-                        .font(.caption).foregroundStyle(.secondary)
-                        .frame(minHeight: 44)
+                        // A failed message holds the later messages to this bot. Delete lets them go.
+                        NotSentControls(id: requestId, retry: { Task { await store.retryOutgoing(requestId) } },
+                                        delete: { store.deleteUnsent(requestId) })
                     } else if outgoing.status == .rejected {
                         Button("Not sent · Edit", systemImage: "pencil") { editingOutgoing = outgoing }
                             .font(.caption).foregroundStyle(.secondary)
@@ -658,9 +649,7 @@ struct MessageBubble: View {
                     }
                 }
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .background(isUser ? BoardStyle.userBubble : BoardStyle.surface, in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
+            .modifier(ChatBubbleBackground(own: isUser))
             #if os(iOS)
             .simultaneousGesture(LongPressGesture(minimumDuration: 0.45).onEnded { _ in
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -673,16 +662,7 @@ struct MessageBubble: View {
                 HeldMessageView(message: message, onReply: onReply.map { reply in { _ in reply() } }, copyTitle: "Copy",
                                 copy: { Pasteboard.copy(message.text) }, share: .text(message.text),
                                 trailing: isUser) { maxHeight in
-                    // A long message shows its start.
-                    MessageText(text: displayText, linkColor: isUser ? BoardStyle.userBubbleLink : .blue,
-                                allowsTextSelection: false)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 11)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxHeight: maxHeight, alignment: .top)
-                        .background(isUser ? BoardStyle.userBubble : BoardStyle.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
-                        .frame(maxWidth: 340, alignment: isUser ? .trailing : .leading)
+                    HeldTextPreview(text: displayText, own: isUser, maxHeight: maxHeight)
                 }
             }
             #else
@@ -702,18 +682,7 @@ struct MessageBubble: View {
             }
             if !isUser { Spacer(minLength: 18) }
         }
-        .offset(x: replyOffset)
-        .background(alignment: .leading) {
-            Image(systemName: "arrowshape.turn.up.left.fill").font(.body)
-                .foregroundStyle(.secondary).opacity(min(replyOffset / 55, 1))
-        }
-        #if os(iOS)
-        .gesture(MessageReplyGesture(enabled: onReply != nil && store.messageReference(for: message) != nil,
-            changed: { replyOffset = min(72, $0 * 0.7) }, ended: { shouldReply in
-                if shouldReply { onReply?() }
-                withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.8)) { replyOffset = 0 }
-            }))
-        #endif
+        .modifier(SwipeToReply(enabled: onReply != nil && store.messageReference(for: message) != nil) { onReply?() })
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: "Copy") { Pasteboard.copy(message.text) }
         .accessibilityActions {
@@ -767,7 +736,7 @@ struct MessageQuote: View {
                         Image(systemName: "doc.text").imageScale(.small)
                         Text("Library page")
                     }.font(.caption.weight(.semibold))
-                } else {
+                } else if !reference.author.isEmpty {
                     Text(reference.author).font(.caption.weight(.semibold))
                 }
                 Text(reference.text).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
@@ -828,7 +797,6 @@ struct ConversationComposer: View {
     @Binding var replyTo: MessageReference?
     @Binding var workContext: WorkReference?
     var onStop: (AgentTask) -> Void = { _ in }
-    @ScaledMetric(relativeTo: .body) private var sendSize = 34
 
     private var connected: Bool { store.hasPairing || store.isDemo }
     private var recipients: [SelectedBotMention] { BotMentions.recipients(in: text, selected: mentions, bots: store.bots) }
@@ -849,17 +817,9 @@ struct ConversationComposer: View {
                     .accessibilityIdentifier("work-context-preview")
             }
             if let reference = replyTo {
-                // The chat scrolls under the composer, so the quote needs a surface of its own, as the field has.
-                HStack(spacing: 8) {
-                    MessageQuote(reference: reference)
-                    Button { replyTo = nil } label: {
-                        Image(systemName: "xmark").foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
-                    }.accessibilityLabel(reference.documentId == nil ? "Cancel reply" : "Remove the page")
-                }
-                .padding(.leading, 14).padding(.trailing, 4).padding(.vertical, 2)
-                .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium, style: .continuous)))
-                .padding(.horizontal, 12).padding(.bottom, 6)
-                .accessibilityIdentifier("reply-preview")
+                ComposerQuoteBar(reference: reference,
+                                 cancelLabel: reference.documentId == nil ? "Cancel reply" : "Remove the page") { replyTo = nil }
+                    .accessibilityIdentifier("reply-preview")
             }
             BotMentionControls(text: $text, selection: $selection, selected: $mentions, bots: store.bots, focused: focused) { focused = true }
             if !attachments.isEmpty {
@@ -906,37 +866,12 @@ struct ConversationComposer: View {
                 .accessibilityLabel("More options")
                 HStack(alignment: .bottom, spacing: 4) {
                 TextField("Message \(bot.name)", text: $text, selection: $selection, axis: .vertical)
-                    .lineLimit(1...5).font(.body)
-                    #if os(macOS)
-                    // The composer draws the box. A Mac text field would draw a second one inside it. Its line is
-                    // shorter than on an iPhone, so it gets the height of the buttons next to it.
-                    .textFieldStyle(.plain)
-                    .frame(minHeight: 20)
-                    #endif
-                    .padding(.vertical, 12)
                     .focused($focused)
-                    #if os(macOS)
-                    // On a Mac, Return sends and Shift-Return starts a new line, as in Messages.
-                    .onKeyPress(.return, phases: .down) { press in
-                        guard !press.modifiers.contains(.shift) else { return .ignored }
-                        send()
-                        return .handled
-                    }
-                    #endif
+                    .modifier(ComposerFieldStyle(send: send))
                     .accessibilityIdentifier("message-input")
                 if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button(action: send) {
-                    Image(systemName: scheduling ? "clock.fill" : "arrow.up")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(canSend ? BoardStyle.controlLabel : .secondary)
-                        .frame(width: sendSize, height: sendSize)
-                        .modifier(SendButtonFill(enabled: canSend))
-                        .frame(minWidth: 44, minHeight: 44)
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-                .accessibilityLabel(scheduling ? "Schedule task" : "Send message")
-                .accessibilityIdentifier("send-message")
+                    ComposerSendButton(symbol: scheduling ? "clock.fill" : "arrow.up", enabled: canSend,
+                                       label: scheduling ? "Schedule task" : "Send message", action: send)
                 } else if let task, task.isRunning, connected {
                     Button { onStop(task) } label: {
                         Image(systemName: "stop.fill").font(.footnote)
@@ -996,7 +931,7 @@ struct ConversationComposer: View {
 
 /// The field and the plus button of the composer. With Liquid Glass (iOS 26, macOS 26) each is a glass shape that the
 /// chat scrolls under; before, a tinted shape with a hairline.
-private struct ComposerSurface<S: Shape>: ViewModifier {
+struct ComposerSurface<S: Shape>: ViewModifier {
     let shape: S
     func body(content: Content) -> some View {
         if #available(iOS 26.0, macOS 26.0, *) {
@@ -1023,7 +958,7 @@ private struct SendButtonFill: ViewModifier {
 }
 
 /// The glass shapes of the composer blend into each other when they come close.
-private struct ComposerGlassGroup: ViewModifier {
+struct ComposerGlassGroup: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, macOS 26.0, *) {
             GlassEffectContainer(spacing: 8) { content }
@@ -1034,7 +969,7 @@ private struct ComposerGlassGroup: ViewModifier {
 }
 
 /// Behind the composer. Glass shows the chat through it, so only the earlier design paints the page there.
-private struct ComposerBackdrop: ViewModifier {
+struct ComposerBackdrop: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, macOS 26.0, *) {
             content
@@ -1045,12 +980,137 @@ private struct ComposerBackdrop: ViewModifier {
 }
 
 /// A small floating shape: Liquid Glass on macOS 26 and iOS 26, and a thin material before.
-private struct FloatingCapsule: ViewModifier {
+struct FloatingCapsule: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, macOS 26.0, *) {
             content.glassEffect(.regular, in: Capsule())
         } else {
             content.background(.regularMaterial, in: Capsule())
         }
+    }
+}
+
+/// The bubble of a message: on the right in the fill of the person's messages, on the left in the fill of the page
+/// surface. The bot chat and the Team chat share it.
+struct ChatBubbleBackground: ViewModifier {
+    let own: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .background(own ? BoardStyle.userBubble : BoardStyle.surface,
+                        in: RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
+    }
+}
+
+/// The controls under a message that did not send: try again with the same request, or remove the message.
+struct NotSentControls: View {
+    let id: String
+    let retry: () -> Void
+    let delete: () -> Void
+
+    var body: some View {
+        HStack(spacing: 16) {
+            Button("Not sent · Retry", systemImage: "arrow.clockwise", action: retry)
+                .accessibilityIdentifier("retry-message-\(id)")
+            Button("Delete", role: .destructive, action: delete)
+                .accessibilityIdentifier("delete-message-\(id)")
+        }
+        .font(.caption).foregroundStyle(.secondary)
+        .frame(minHeight: 44)
+    }
+}
+
+/// A quote above the field of a composer, with a way to cancel it. The chat scrolls under the composer, so the quote
+/// needs a surface of its own, as the field has.
+struct ComposerQuoteBar: View {
+    let reference: MessageReference
+    let cancelLabel: String
+    let cancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            MessageQuote(reference: reference)
+            Button(action: cancel) {
+                Image(systemName: "xmark").foregroundStyle(.secondary).frame(minWidth: 44, minHeight: 44)
+            }.accessibilityLabel(cancelLabel)
+        }
+        .padding(.leading, 14).padding(.trailing, 4).padding(.vertical, 2)
+        .modifier(ComposerSurface(shape: RoundedRectangle(cornerRadius: BoardStyle.Radius.medium, style: .continuous)))
+        .padding(.horizontal, 12).padding(.bottom, 6)
+    }
+}
+
+/// The text field of a composer: at most five lines. On a Mac, Return sends and Shift-Return starts a new line, as in
+/// Messages.
+struct ComposerFieldStyle: ViewModifier {
+    let send: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .lineLimit(1...5).font(.body)
+            #if os(macOS)
+            // The composer draws the box. A Mac text field would draw a second one inside it. Its line is shorter than
+            // on an iPhone, so it gets the height of the buttons next to it.
+            .textFieldStyle(.plain)
+            .frame(minHeight: 20)
+            #endif
+            .padding(.vertical, 12)
+            #if os(macOS)
+            .onKeyPress(.return, phases: .down) { press in
+                guard !press.modifiers.contains(.shift) else { return .ignored }
+                send()
+                return .handled
+            }
+            #endif
+    }
+}
+
+/// The round send button inside the field of a composer.
+struct ComposerSendButton: View {
+    let symbol: String
+    let enabled: Bool
+    let label: String
+    let action: () -> Void
+    @ScaledMetric(relativeTo: .body) private var size = 34
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(enabled ? BoardStyle.controlLabel : .secondary)
+                .frame(width: size, height: size)
+                .modifier(SendButtonFill(enabled: enabled))
+                .frame(minWidth: 44, minHeight: 44)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(label)
+        .accessibilityIdentifier("send-message")
+    }
+}
+
+/// A swipe to the right on a message answers it, with an arrow that shows how far the swipe goes. A Mac has no swipe:
+/// there Reply is in the menu of a secondary click.
+struct SwipeToReply: ViewModifier {
+    let enabled: Bool
+    let reply: () -> Void
+    @State private var offset: CGFloat = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .offset(x: offset)
+            .background(alignment: .leading) {
+                Image(systemName: "arrowshape.turn.up.left.fill").font(.body)
+                    .foregroundStyle(.secondary).opacity(min(offset / 55, 1))
+            }
+            #if os(iOS)
+            .gesture(MessageReplyGesture(enabled: enabled, changed: { offset = min(72, $0 * 0.7) }, ended: { shouldReply in
+                if shouldReply { reply() }
+                withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.8)) { offset = 0 }
+            }))
+            #endif
     }
 }

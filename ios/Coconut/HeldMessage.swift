@@ -3,29 +3,36 @@
 import SwiftUI
 import UIKit
 
-/// A held message over the blurred chat, as Messages shows one: its reactions above, the message, and short action
-/// rows below. Text messages and photos share it.
-struct HeldMessageView<Preview: View>: View {
-    enum Share { case url(URL), text(String), image(UIImage, String) }
+/// What Share of a held message gives.
+enum HeldShare { case url(URL), text(String), image(UIImage, String) }
 
-    @Environment(AppStore.self) private var store
+/// One action row of a held message. Nil `perform` shows the row turned off, for example while a photo loads.
+struct HeldAction: Identifiable {
+    let title: String
+    let systemImage: String
+    var destructive = false
+    let perform: (() -> Void)?
+
+    var id: String { title }
+}
+
+/// A held message over the blurred chat, as Messages shows one: an optional row above it, the message, and short action
+/// rows below. The bot chat and the Team chat share it.
+struct HeldBubbleView<Header: View, Preview: View>: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    let message: Message
-    let onReply: ((Message) -> Void)?
-    let copyTitle: String
-    /// Nil keeps Copy and Share off, for example while a photo from the Mac loads.
-    let copy: (() -> Void)?
-    let share: Share?
     /// The person's own messages stay on the right, as in the chat.
     var trailing = false
+    let actions: [HeldAction]
+    /// Nil keeps Share off.
+    let share: HeldShare?
+    /// The row above the message. It gets a function that closes the view and then runs an action.
+    @ViewBuilder let header: (_ close: @escaping (@escaping () -> Void) -> Void) -> Header
     /// The message, at most the given height.
     @ViewBuilder let preview: (CGFloat) -> Preview
     @State private var shown = false
 
     var body: some View {
-        let canReply = onReply != nil && store.messageReference(for: message) != nil
-        let reactions = store.reactions(for: message)
         let alignment: HorizontalAlignment = trailing ? .trailing : .leading
         GeometryReader { geometry in
             // The message takes the height that the reactions and the actions leave free. In landscape that can be
@@ -33,27 +40,20 @@ struct HeldMessageView<Preview: View>: View {
             let previewHeight = min(380, max(120, geometry.size.height - 260))
             ScrollView {
                 VStack(alignment: alignment, spacing: 10) {
-                    if canReply {
-                        HStack(spacing: 2) {
-                            ForEach(MessageReactions.selectable, id: \.self) { emoji in
-                                Button { close { Task { await store.react(to: message, emoji: emoji) } } } label: {
-                                    Text(emoji).font(.system(size: 24)).frame(width: 40, height: 40)
-                                        .background(reactions.contains(emoji) ? Color.primary.opacity(0.12) : .clear, in: Circle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))")
-                            }
-                        }
-                        .padding(4)
-                        .background(.regularMaterial, in: Capsule())
-                    }
+                    header { action in close(then: action) }
                     // The message keeps its own height. Without this, the stack would stretch it to fill the screen.
                     preview(previewHeight).fixedSize(horizontal: false, vertical: true)
                     VStack(alignment: .leading, spacing: 0) {
-                        if canReply {
-                            action("Reply", systemImage: "arrowshape.turn.up.left") { onReply?(message) }
+                        ForEach(actions) { action in
+                            Button { if let perform = action.perform { close(then: perform) } } label: {
+                                row(action.title, systemImage: action.systemImage)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(action.perform == nil)
+                            .foregroundStyle(action.perform == nil ? AnyShapeStyle(.secondary)
+                                             : action.destructive ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
+                            .accessibilityIdentifier("held-\(action.title.lowercased().replacingOccurrences(of: " ", with: "-"))")
                         }
-                        action(copyTitle, systemImage: copyTitle == "Copy link" ? "link" : "doc.on.doc", perform: copy)
                         Group {
                             switch share {
                             case nil: row("Share", systemImage: "square.and.arrow.up").foregroundStyle(.secondary)
@@ -87,13 +87,6 @@ struct HeldMessageView<Preview: View>: View {
         .accessibilityAction(.escape) { close() }
     }
 
-    private func action(_ title: String, systemImage: String, perform: (() -> Void)?) -> some View {
-        Button { if let perform { close(then: perform) } } label: { row(title, systemImage: systemImage) }
-            .buttonStyle(.plain)
-            .disabled(perform == nil)
-            .foregroundStyle(perform == nil ? .secondary : .primary)
-    }
-
     private func row(_ title: String, systemImage: String) -> some View {
         HStack(spacing: 12) {
             Image(systemName: systemImage).frame(width: 22)
@@ -111,6 +104,68 @@ struct HeldMessageView<Preview: View>: View {
         transaction.disablesAnimations = true
         withTransaction(transaction) { dismiss() }
         if let action { DispatchQueue.main.async(execute: action) }
+    }
+}
+
+/// The text of a held message in its bubble. A long message shows its start.
+struct HeldTextPreview: View {
+    let text: String
+    let own: Bool
+    let maxHeight: CGFloat
+
+    var body: some View {
+        MessageText(text: text, linkColor: own ? BoardStyle.userBubbleLink : .blue, allowsTextSelection: false)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxHeight: maxHeight, alignment: .top)
+            .background(own ? BoardStyle.userBubble : BoardStyle.surface)
+            .clipShape(RoundedRectangle(cornerRadius: BoardStyle.Radius.large))
+            .frame(maxWidth: 340, alignment: own ? .trailing : .leading)
+    }
+}
+
+/// A held message of a bot chat: its reactions above, the message, then Reply, Copy and Share. Text messages and photos
+/// share it.
+struct HeldMessageView<Preview: View>: View {
+    typealias Share = HeldShare
+
+    @Environment(AppStore.self) private var store
+    let message: Message
+    let onReply: ((Message) -> Void)?
+    let copyTitle: String
+    /// Nil keeps Copy and Share off, for example while a photo from the Mac loads.
+    let copy: (() -> Void)?
+    let share: Share?
+    /// The person's own messages stay on the right, as in the chat.
+    var trailing = false
+    /// The message, at most the given height.
+    @ViewBuilder let preview: (CGFloat) -> Preview
+
+    var body: some View {
+        let canReply = onReply != nil && store.messageReference(for: message) != nil
+        let reactions = store.reactions(for: message)
+        var actions: [HeldAction] = []
+        if canReply { actions.append(HeldAction(title: "Reply", systemImage: "arrowshape.turn.up.left") { onReply?(message) }) }
+        actions.append(HeldAction(title: copyTitle, systemImage: copyTitle == "Copy link" ? "link" : "doc.on.doc", perform: copy))
+        return HeldBubbleView(trailing: trailing, actions: actions, share: share) { close in
+            if canReply {
+                HStack(spacing: 2) {
+                    ForEach(MessageReactions.selectable, id: \.self) { emoji in
+                        Button { close { Task { await store.react(to: message, emoji: emoji) } } } label: {
+                            Text(emoji).font(.system(size: 24)).frame(width: 40, height: 40)
+                                .background(reactions.contains(emoji) ? Color.primary.opacity(0.12) : .clear, in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(reactions.contains(emoji) ? "Remove" : "React with") \(MessageReactions.name(emoji))")
+                    }
+                }
+                .padding(4)
+                .background(.regularMaterial, in: Capsule())
+            }
+        } preview: { maxHeight in
+            preview(maxHeight)
+        }
     }
 }
 #endif
