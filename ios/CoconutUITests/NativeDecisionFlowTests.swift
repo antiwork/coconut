@@ -23,7 +23,12 @@ final class NativeDecisionFlowTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Workflow permissions"].exists)
         instructions.tap()
         instructions.typeText(" Keep progress updates concise.")
-        app.swipeUp()
+        // A field that has focus gets it back when the routine page closes, and the form scrolls back to it. Return in
+        // the name field ends the edit, as a person does, so the keyboard does not cover the routines.
+        let name = app.textFields["bot-name"]
+        name.tap()
+        name.typeText("\n")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5))
         let addRoutine = app.buttons["add-routine"]
         revealInList(addRoutine, in: app)
         addRoutine.tap()
