@@ -38,7 +38,7 @@ import threading
 from .documents import SCHEMA as DOCUMENTS_SCHEMA, Documents
 from .gateway_bridge import GatewayBridge
 from .service_base import (MODE_MARK, TEAM_MODE, ServiceError, check_data_folder, encoded, now, open_store,
-                           release_data_folder, require_text, take_data_folder, uid)
+                           release_data_folder, take_data_folder, uid)
 from .service_restart import ServiceRestart
 from .team import SCHEMA as TEAM_SCHEMA, Team, member_profile
 from .team_store import unicode_text
@@ -281,7 +281,8 @@ class TeamOnlyService(Documents, Team):
     def gateway_document(self, data: dict) -> dict:
         """POST /v1/gateway/document: a page of a declared bot for its teams. The rules are those of a full Mac
         (Documents.publish_page), and each page names the audience "team"."""
-        home = checked_home(require_text(data, 'home', MAX_HOME))
+        # The raw text, as at the declaration: a strip would change a home whose folder name ends with a space.
+        home = checked_home(data.get('home'))
         if data.get('audience') != 'team':
             raise ServiceError(400, TEAM_PAGE)
         with self.lock:

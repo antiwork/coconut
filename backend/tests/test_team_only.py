@@ -165,6 +165,29 @@ class TeamOnlyFlowTests(TeamOnlyMacs, unittest.TestCase):
                 self.assertEqual(self.refusal(lambda: self.save(home=home))[0], 400)
         self.assertEqual(self.stored(), 0)
 
+    def test_a_save_names_the_home_as_the_declaration_does(self):
+        # A folder name that ends with a space is a home of its own. A strip would name another folder.
+        spaced = Path(self.temp.name) / 'agent '
+        spaced.mkdir()
+        bot = self.declare('Spaced', home=spaced)
+        self.assertEqual(bot['home'], os.path.realpath(spaced))
+        self.assertEqual(self.save(home=str(spaced))['status'], 'saved')
+        self.assertEqual(self.refusal(lambda: self.save(home=str(spaced).rstrip()))[0], 404)
+        # A trailing slash and a link name the same home as the declaration.
+        self.declare()
+        self.assertEqual(self.save()['status'], 'saved')
+        link = Path(self.temp.name) / 'link'
+        link.symlink_to(self.home)
+        for home in (f'{self.home}/', str(link), f'{link}/'):
+            with self.subTest(home=home):
+                self.assertEqual(self.save(home=home)['status'], 'unchanged')
+        # A missing home, and a home that is not a full path, answer the same clear error.
+        page = {**PAGE, 'audience': 'team'}
+        for home in (None, '', '   ', 7):
+            with self.subTest(home=home):
+                fields = page if home is None else dict(page, home=home)
+                self.assertEqual(self.refusal(self.only.gateway_document, fields), (400, team_only.HOME))
+
     def test_the_tool_reads_the_mode_and_the_bots(self):
         self.team()
         bot = self.declare()
