@@ -20,6 +20,7 @@ on:
       - 'ios/Coconut.xcodeproj/**'
       - 'ios/Coconut/**'
       - 'ios/PushShared/**'
+      - 'ios/Packages/**' # The Mac app builds the Swift package in this folder.
       - 'scripts/push-envelope.swift'
       - 'relay/**'
       - '.github/workflows/mac-app.yml'
@@ -42,6 +43,7 @@ on:
       - 'ios/Coconut.xcodeproj/**'
       - 'ios/Coconut/**'
       - 'ios/PushShared/**'
+      - 'ios/Packages/**' # The Mac app builds the Swift package in this folder.
       - 'scripts/push-envelope.swift'
       - 'relay/**'
       - '.github/workflows/mac-app.yml'
