@@ -462,9 +462,9 @@ enum TeamMentions {
     static let limit = 16
     static let overLimit = "Name at most \(limit) bots in one message."
 
-    /// True when the `mentions` of a send fit the limit. Each ID counts once.
+    /// True when the `mentions` of a send fit the limit. The Mac counts each item of the list, so this does too.
     static func fits(_ mentions: [String]) -> Bool {
-        Set(mentions).count <= limit
+        mentions.count <= limit
     }
 
     /// The bots that the list offers: the bots of the team that answer each member (`open`). A bot of a person, also

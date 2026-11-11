@@ -563,7 +563,7 @@ final class TeamChatTests: XCTestCase {
         XCTAssertFalse(TeamMentions.fits(ids(17)))
         let twice = TeamMentions.ids(in: "@Bot1 and again @Bot1", selected: [], room: room)
         XCTAssertEqual(twice, ["t-r1-1"], "The same bot named twice counts once.")
-        XCTAssertTrue(TeamMentions.fits(ids(16) + ["t-r1-1"]), "An ID counts once.")
+        XCTAssertFalse(TeamMentions.fits(ids(16) + ["t-r1-1"]), "The Mac counts each item, also a second copy of an ID.")
         XCTAssertEqual(TeamMentions.overLimit, "Name at most 16 bots in one message.")
     }
 
