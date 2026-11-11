@@ -1242,7 +1242,10 @@ class ServiceRoutingTests(unittest.TestCase):
         self.assertEqual(stops, [self.bot['id']])
         self.assertTrue(wait(lambda: self.read('tasks', person['id'])['status'] == 'completed'))
         # Then the stopped exchange runs again, with its input and a note, and then the queued one.
+        # The turn saves `completed` first, and its end drops the mark `_preempted` in a later transaction
+        # (_requeue_if_preempted). So the test waits for both.
         self.assertTrue(wait(lambda: self.read('tasks', running)['status'] == 'completed'
+                             and '_preempted' not in self.read('tasks', running)
                              and len([t for t in turns if t['chat_id'] == self.bot['id']]) >= 3))
         with lock:
             order = [turn['text'] for turn in turns if turn['chat_id'] == self.bot['id']]
