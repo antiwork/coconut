@@ -390,31 +390,120 @@ final class InstallModeTests: XCTestCase {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: install.data.path), files)
     }
 
+    /// A removal with stand-ins of its steps, which records each step. `loadedRounds` is how many checks of launchd
+    /// still find the job of the service, and `uninstall` the line of the uninstaller.
+    func remove(_ install: Install, steps: inout [String], loadedRounds: Int = 0,
+                uninstall: String? = nil) -> String? {
+        var rounds = loadedRounds
+        var recorded: [String] = []
+        let line = RemoveRequest.run(install: install, unregister: { recorded.append("unregister"); return nil },
+                                     unloaded: { recorded.append("check"); rounds -= 1; return rounds < 0 },
+                                     uninstall: { recorded.append("uninstall"); return uninstall },
+                                     register: { recorded.append("register"); return nil },
+                                     wait: { _ in })
+        steps = recorded
+        return line
+    }
+
+    func botsStore(_ rows: String = "") throws -> Install {
+        try makeStore("CREATE TABLE bots (id TEXT PRIMARY KEY, data TEXT NOT NULL); " + rows)
+    }
+
     func testARemovalAsksFirstAndARefusalChangesNothing() throws {
         var steps: [String] = []
-        func remove(_ install: Install) -> String? {
-            RemoveRequest.run(install: install, unregister: { steps.append("unregister"); return nil },
-                              uninstall: { steps.append("uninstall"); return nil })
-        }
         // A bot whose chat is connected, and a bot whose clean-up did not finish: nothing runs.
-        let install = try makeStore("CREATE TABLE bots (id TEXT PRIMARY KEY, data TEXT NOT NULL); "
-                                    + "INSERT INTO bots VALUES ('a', '{\"name\": \"Reporter\", \"chat\": true}'); "
+        let install = try botsStore("INSERT INTO bots VALUES ('a', '{\"name\": \"Reporter\", \"chat\": true}'); "
                                     + "INSERT INTO bots VALUES ('b', '{\"name\": \"Planner\", \"chat\": false}'); "
                                     + "INSERT INTO bots VALUES ('c', '{\"name\": \"Writer\", \"plugin\": true}');")
-        XCTAssertEqual(remove(install), "The Hermes home of Reporter, Writer has the team chat of Coconut. For each bot, "
-                       + "run coconut team disconnect-chat <bot>, then remove Coconut.")
+        XCTAssertEqual(remove(install, steps: &steps), "The Hermes home of Reporter, Writer has the team chat of Coconut. "
+                       + "For each bot, run coconut team disconnect-chat <bot>, then remove Coconut.")
         XCTAssertEqual(steps, [])
         // Without them, the steps run in their order.
         var db: OpaquePointer?
         sqlite3_open(install.data.appendingPathComponent("coconut.sqlite3").path, &db)
         sqlite3_exec(db, "DELETE FROM bots WHERE id != 'b'", nil, nil, nil)
         sqlite3_close(db)
-        XCTAssertNil(remove(install))
-        XCTAssertEqual(steps, ["unregister", "uninstall"])
+        XCTAssertNil(remove(install, steps: &steps))
+        XCTAssertEqual(steps, ["unregister", "check", "uninstall"])
         // A store without bots, and no store, have nothing to ask.
         try FileManager.default.removeItem(at: install.data)
         XCTAssertNil(RemoveRequest.refusal(install: install))
         XCTAssertNil(RemoveRequest.refusal(install: try makeStore("CREATE TABLE devices (id TEXT PRIMARY KEY);")))
+    }
+
+    func testARemovalWaitsForLaunchdAndPutsTheLoginItemsBackWhenItStops() throws {
+        var steps: [String] = []
+        let install = try botsStore()
+        // The job of the service goes after three checks: the uninstaller runs after that.
+        XCTAssertNil(remove(install, steps: &steps, loadedRounds: 3))
+        XCTAssertEqual(steps, ["unregister", "check", "check", "check", "check", "uninstall"])
+        // A job that does not go: the login items come back, and nothing else ran.
+        let line = remove(install, steps: &steps, loadedRounds: 1000)
+        XCTAssertEqual(line, "launchd did not stop the Coconut service within 30 seconds, so Coconut removed nothing."
+                       + RemoveRequest.restored)
+        XCTAssertEqual(steps.filter { $0 != "check" }, ["unregister", "register"])
+        // An uninstaller that refuses with the store still there removed nothing: the login items come back.
+        let refused = "Coconut.app runs this service. Turn off Start at Login in the Coconut menu, then run this command again."
+        XCTAssertEqual(remove(install, steps: &steps, uninstall: refused), refused + RemoveRequest.restored)
+        XCTAssertEqual(steps, ["unregister", "check", "uninstall", "register"])
+        // An uninstaller that removed the store and then failed keeps its line: the data is gone.
+        try FileManager.default.removeItem(at: install.data.appendingPathComponent("coconut.sqlite3"))
+        XCTAssertEqual(remove(install, steps: &steps, uninstall: "The Trash failed."), "The Trash failed.")
+        XCTAssertEqual(steps, ["unregister", "check", "uninstall"])
+    }
+
+    func testTheQuestionReadsAStoreAfterAKilledWriterAndWhileAnotherProcessHoldsIt() throws {
+        // A store in WAL mode whose writer was killed: the copy has the -wal file and no -shm file, so a reader must
+        // recover the log first, which a read-only connection cannot do.
+        let source = home.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        var writer: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(source.appendingPathComponent("coconut.sqlite3").path, &writer), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(writer, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; "
+                                    + "CREATE TABLE bots (id TEXT PRIMARY KEY, data TEXT NOT NULL); "
+                                    + "INSERT INTO bots VALUES ('a', '{\"name\": \"Reporter\", \"chat\": true}');",
+                                    nil, nil, nil), SQLITE_OK)
+        let install = Install(root: home.appendingPathComponent("killed", isDirectory: true))
+        try FileManager.default.createDirectory(at: install.data, withIntermediateDirectories: true)
+        for name in ["coconut.sqlite3", "coconut.sqlite3-wal"] {
+            try FileManager.default.copyItem(at: source.appendingPathComponent(name),
+                                             to: install.data.appendingPathComponent(name))
+        }
+        sqlite3_close(writer)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: install.data.appendingPathComponent("coconut.sqlite3-wal").path))
+        XCTAssertEqual(RemoveRequest.refusal(install: install), "The Hermes home of Reporter has the team chat of "
+                       + "Coconut. For each bot, run coconut team disconnect-chat <bot>, then remove Coconut.")
+        // A store that another process holds for two seconds, for example the service while it starts.
+        let held = try botsStore("INSERT INTO bots VALUES ('a', '{\"name\": \"Planner\", \"plugin\": true}');")
+        let path = held.data.appendingPathComponent("coconut.sqlite3").path
+        var holder: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path, &holder), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(holder, "BEGIN EXCLUSIVE", nil, nil, nil), SQLITE_OK)
+        let released = expectation(description: "released")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+            sqlite3_exec(holder, "COMMIT", nil, nil, nil)
+            sqlite3_close(holder)
+            released.fulfill()
+        }
+        let started = Date()
+        XCTAssertEqual(RemoveRequest.refusal(install: held), "The Hermes home of Planner has the team chat of Coconut. "
+                       + "For each bot, run coconut team disconnect-chat <bot>, then remove Coconut.")
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 1.5)
+        wait(for: [released], timeout: 5)
+    }
+
+    func testAStoreThatIsNotADatabaseRefusesAndChangesNothing() throws {
+        let install = Install(root: home)
+        try FileManager.default.createDirectory(at: install.data, withIntermediateDirectories: true)
+        let store = install.data.appendingPathComponent("coconut.sqlite3")
+        try Data(String(repeating: "not a database ", count: 100).utf8).write(to: store)
+        let before = try Data(contentsOf: store)
+        var steps: [String] = []
+        XCTAssertEqual(remove(install, steps: &steps),
+                       "Coconut could not read its store, so it removed nothing. Run coconut status, then try again.")
+        XCTAssertEqual(steps, [])
+        XCTAssertEqual(try Data(contentsOf: store), before)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: install.data.path), ["coconut.sqlite3"])
     }
 
     // MARK: The timeouts

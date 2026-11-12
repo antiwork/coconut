@@ -249,9 +249,16 @@ final class AppModel: ObservableObject {
         // both run off the main thread (pull request 441).
         let failure = await Task.detached(priority: .utility) { () -> String? in
             RemoveRequest.run(install: install, unregister: { LoginItems().unregister() },
-                              uninstall: { Self.uninstall(install) })
+                              unloaded: RemoveRequest.serviceUnloaded, uninstall: { Self.uninstall(install) },
+                              register: { LoginItems().register(for: .team) })
         }.value
-        if let failure { return failed(failure) }
+        if let failure {
+            // A removal that put the login items back keeps Start at Login.
+            if failure.hasSuffix(RemoveRequest.restored) {
+                UserDefaults.standard.set(true, forKey: Self.startAtLoginKey)
+            }
+            return failed(failure)
+        }
         // A later set-up starts clean: coconut status shows no old update error.
         RemoveRequest.preferenceKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
         NSApp.terminate(nil)

@@ -101,24 +101,54 @@ public enum RemoveRequest {
 
     public static func asked(arguments: [String]) -> Bool { arguments.contains(argument) }
 
+    /// How long a removal waits until launchd unloaded the service job after the unregister, and how long a read of
+    /// the store waits while another process holds it.
+    public static let unloadSeconds: TimeInterval = 30
+    public static let busyMilliseconds: Int32 = 5000
+    /// The end of the line of a removal that stopped after the login items went: they come back, and the service runs.
+    public static let restored = " Coconut added its login items again, so the service runs as before."
+
     /// The line that stops a removal before it changes anything, or nil. A bot whose record has `chat` or `plugin`
     /// has (or may have) the team chat of Coconut in its Hermes home, and only `coconut team disconnect-chat` takes
-    /// that away (scripts/team_chat.py). The store opens read-only, so the question works also when the service is
-    /// down. A store that does not read gives a refusal too: the removal cannot know.
+    /// that away (scripts/team_chat.py). The question works also when the service is down. A store that does not read
+    /// gives a refusal too: the removal cannot know.
     public static func refusal(install: Install) -> String? {
         let path = install.data.appendingPathComponent("coconut.sqlite3").path
         guard FileManager.default.fileExists(atPath: path) else { return nil }
+        let unknown = "Coconut could not read its store, so it removed nothing. Run coconut status, then try again."
+        // First read-only, with a wait while the service holds the store, for example while it starts. A store in
+        // WAL mode whose last writer was killed needs a recovery, which a read-only connection cannot run: the second
+        // try opens it for writing, without creating a file. The recovery changes no row, and the removal deletes the
+        // store after this question anyway.
+        for flags in [SQLITE_OPEN_READONLY, SQLITE_OPEN_READWRITE] {
+            switch chatBots(path: path, flags: flags) {
+            case .success(let names):
+                guard !names.isEmpty else { return nil }
+                return "The Hermes home of \(names.joined(separator: ", ")) has the team chat of Coconut. For each bot, "
+                    + "run coconut team disconnect-chat <bot>, then remove Coconut."
+            case .failure:
+                continue
+            }
+        }
+        return unknown
+    }
+
+    struct StoreError: Error {}
+
+    /// The names of the bots with `chat` or `plugin`, read with these open flags. A store without the table of the
+    /// bots has no bot.
+    static func chatBots(path: String, flags: Int32) -> Result<[String], StoreError> {
         var db: OpaquePointer?
         defer { sqlite3_close(db) }
-        let unknown = "Coconut could not read its store, so it removed nothing. Run coconut status, then try again."
-        guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return unknown }
+        guard sqlite3_open_v2(path, &db, flags, nil) == SQLITE_OK else { return .failure(StoreError()) }
+        sqlite3_busy_timeout(db, busyMilliseconds)
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
         let query = "SELECT json_extract(data, '$.name') FROM bots WHERE json_extract(data, '$.chat') = 1 "
             + "OR json_extract(data, '$.plugin') = 1 ORDER BY rowid"
         guard sqlite3_prepare_v2(db, query, -1, &statement, nil) == SQLITE_OK else {
-            // A store without the table of the bots has no bot.
-            return sqlite3_errmsg(db).map { String(cString: $0) }?.contains("no such table") == true ? nil : unknown
+            let message = sqlite3_errmsg(db).map { String(cString: $0) } ?? ""
+            return message.contains("no such table") ? .success([]) : .failure(StoreError())
         }
         var names: [String] = []
         var step = sqlite3_step(statement)
@@ -126,18 +156,57 @@ public enum RemoveRequest {
             names.append(sqlite3_column_text(statement, 0).map { String(cString: $0) } ?? "")
             step = sqlite3_step(statement)
         }
-        guard step == SQLITE_DONE else { return unknown }
-        guard !names.isEmpty else { return nil }
-        return "The Hermes home of \(names.joined(separator: ", ")) has the team chat of Coconut. For each bot, run "
-            + "coconut team disconnect-chat <bot>, then remove Coconut."
+        return step == SQLITE_DONE ? .success(names) : .failure(StoreError())
     }
 
-    /// A removal in its order: the question first, then the steps, so a refusal changes nothing. `unregister` takes
-    /// the login items away, and `uninstall` removes the data and the folder. Each returns the line of a failure.
-    public static func run(install: Install, unregister: () -> String?, uninstall: () -> String?) -> String? {
+    /// A removal in an order in which a refusal changes nothing that stays changed:
+    /// 1. The question of the store (`refusal`): nothing changed yet.
+    /// 2. The login items go (`unregister`).
+    /// 3. A wait, at most `unloadSeconds`, until launchd unloaded the service job (`unloaded`): the uninstaller
+    ///    refuses while it still runs.
+    /// 4. The uninstaller removes the data and the folder (`uninstall`).
+    /// When step 2 or 3 fails, or the uninstaller fails while the store is still there (it refused, so it removed
+    /// nothing), the login items come back (`register`), and the line says so. Each closure returns the line of a
+    /// failure, or nil.
+    public static func run(install: Install, unregister: () -> String?, unloaded: () -> Bool,
+                           uninstall: () -> String?, register: () -> String?,
+                           wait: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }) -> String? {
         if let line = refusal(install: install) { return line }
-        if let failure = unregister() { return failure }
-        return uninstall()
+        func putBack(_ line: String) -> String {
+            if let failure = register() { return line + " " + failure }
+            return line + restored
+        }
+        if let failure = unregister() { return putBack(failure) }
+        var waited: TimeInterval = 0
+        while !unloaded() {
+            guard waited < unloadSeconds else {
+                return putBack("launchd did not stop the Coconut service within \(Int(unloadSeconds)) seconds, so "
+                               + "Coconut removed nothing.")
+            }
+            wait(0.5)
+            waited += 0.5
+        }
+        if let failure = uninstall() {
+            let store = install.data.appendingPathComponent("coconut.sqlite3").path
+            return FileManager.default.fileExists(atPath: store) ? putBack(failure) : failure
+        }
+        return nil
+    }
+
+    /// True when launchd no longer has the job of the service of this account.
+    public static func serviceUnloaded() -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["print", "gui/\(getuid())/\(Agent.service.rawValue)"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+        } catch {
+            return true
+        }
+        process.waitUntilExit()
+        return process.terminationStatus != 0
     }
 
     /// The preferences that Coconut writes for an install, which a removal deletes, so a later set-up starts clean: the
