@@ -357,8 +357,8 @@ class TeamSync:
         The phone learns of a local document from its `document.*` event in GET /v1/updates, so a change of the team
         pages or bots of the Library uses the same type. A change of the members or of the bots of the team adds
         TEAM_EVENT for the Team screen, and a change of the chat adds MESSAGES_EVENT. Each type is in the `known` set
-        of GET /v1/updates, so an event does not make a phone of today read the whole state again. The caller holds
-        the transaction.
+        of GET /v1/updates, so an event does not make a phone of today read the whole state again. The fresh messages
+        of other members go to `_team_notify` in the same transaction. The caller holds the transaction.
         """
         if room_id in self.team_store.touched:
             self.team_store.touched.discard(room_id)
@@ -373,6 +373,13 @@ class TeamSync:
             # Only a team-only Mac queues triggers (TeamStore.answers). Its turn thread reads them after the commit.
             self.team_store.triggered.discard(room_id)
             self._team_turns_due()
+        fresh = self.team_store.fresh.pop(room_id, None)
+        if fresh:
+            self._team_notify(room_id, fresh)
+
+    def _team_notify(self, room_id: str, entries: list[str]) -> None:
+        """Fresh messages of other members wait in the room. Only a person's Mac has phones, and Service queues a
+        notification for each one (PushDelivery.record_team). A team-only Mac does nothing here."""
 
     def _team_turns_due(self) -> None:
         """A new trigger waits. A full Mac queues none, so it does nothing here. See team_turns.TeamTurns."""

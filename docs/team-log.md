@@ -9,13 +9,13 @@ A team has two kinds of Mac:
 - **A person's Mac** (a full install): its bots are the person's, and nobody else can ask them. The person shares a page of a bot with a team by one act on the page, and stops when they want. The bot of the page is then the author of the page in the team, and nothing more.
 - **A Mac for a team only** (see [Team-only mode](#team-only-mode)): its bots are the team's. Each page that such a bot saves with the audience "team" goes to the teams of the bot.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat of the people and serves it to the phone (see [Team chat](#team-chat)). A message of another member reaches this Mac through the socket in about one second. These parts are not built yet:
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat of the people and serves it to the phone (see [Team chat](#team-chat)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). These parts are not built yet:
 
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
 - A record of the open invites on the Mac.
 - The member removal and the key change.
 - The mentions of the Team chat in the app. The app shows each team in its Chats list, and the chat of the team sends and shows text only.
-- A bot that reads or writes the Team chat, and a push notification for a team message.
+- A bot that reads or writes the Team chat.
 
 ## Terms
 
@@ -282,7 +282,7 @@ Everything else is in `coconut.sqlite3`:
 
 | Table | Holds |
 | --- | --- |
-| `team_rooms` | One row for each room: its relay, its name, the member ID of this Mac, the admin, the state, the epoch, the read position (`seq`), and the profile that this Mac writes in its `member` entry. |
+| `team_rooms` | One row for each room: its relay, its name, the member ID of this Mac, the admin, the state, the epoch, the read position (`seq`), the profile that this Mac writes in its `member` entry, and `notifications`: the choice of the person of this Mac to get notifications of the room. |
 | `team_entries` | The newest accepted write of each entry ID, with its payload. |
 | `team_members` | The members that a Mac shows: the newest valid `member` entry of each member. |
 | `team_pending` | The bodies that the Mac cannot open yet, for a later version or a later epoch. |
@@ -512,6 +512,7 @@ The read position:
 - `team_reads` keeps, for each room, the `first` of the newest message that the person read. The unread count is the number of shown messages of the other members after that position, up to 99. Only a message of this Mac's person counts as read. A message with a `bot` of this Mac counts as unread, because the person did not write it.
 - The position starts at the `first` of the own `member` entry of this Mac. So the history from before a join does not count as unread.
 - The position only moves forward, and never past the newest message of the room.
+- A message notifies the phones of a person's Mac only while it is after the position. So a message that the person reads on the Mac or on another device before the notification goes sends nothing (see [Notifications](#notifications)).
 
 The routes have the authorization of the other team routes, and a write with an `Idempotency-Key` is safe to repeat (see [Repeat a write](#repeat-a-write)). A write goes to the relay inside the request. A failure is an error for the person and changes nothing on this Mac. A write in a room that is not `active` answers 409.
 
@@ -522,6 +523,7 @@ The routes have the authorization of the other team routes, and a write with an 
 | `PATCH /v1/team/rooms/<room>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, and answers `{room, message}`. The other fields stay. The same text writes nothing. A message of another member or of a bot answers 403. |
 | `DELETE /v1/team/rooms/<room>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, id, deleted: true}`. When the entry is already a `delete` entry of this Mac, for example after a delete without an answer, the Mac gives the same answer and writes nothing. An ID that the store does not have answers 404, and an entry of another member 403. |
 | `POST /v1/team/rooms/<room>/read`, body `{first}` | Moves the read position, and answers `{room, read, unread}`. |
+| `PUT /v1/team/rooms/<room>/notifications`, body `{enabled}` | Turns the notifications of the room on or off for the phones of this Mac, and answers `{room, notifications}`. See [Notifications](#notifications). |
 
 A message in an answer:
 
@@ -538,6 +540,22 @@ A message in an answer:
 When the chat of a room changes on this Mac, the Mac adds one `team_messages.updated` event with `{"team": <room ID>}` in the same transaction: a new message, an edit, a removal, a new time from the relay, a new or changed name in `team_names` of a room with messages (for example a rename, or a `bot` entry that makes a message of its bot show), or a new read position, for example from another device of the person. The same name written again adds no event. `GET /v1/updates` then has `team_messages_changed`: the IDs of these rooms. A pass that changes nothing adds no event. The event type is in the `known` set of `GET /v1/updates` and changes no Work row, so an app of today does not read its whole state again.
 
 No log line has the text of a message. A log line names a message by its entry ID and its `seq`, as for each other entry.
+
+#### Notifications
+
+A team message notifies the person like a bot reply: the same pipeline, the same timing and the same privacy (`backend/coconut/push.py`). Only a person's Mac does this. A Mac for a team only has no phone and no push.
+
+1. A message notifies only when it is the first write (`rev` 1) of a `message` entry that this Mac sees for the first time, shows, counts as unread (a message of another member, or a message with a `bot`), is after the read position, and has an `at` under one hour old. The read position comes with the own `member` entry of this Mac, so the history that a Mac reads after a join notifies nothing. An edit, a removal and a read again notify nothing.
+2. The transaction that accepts the entry writes one item of the kind `team` for each phone in `push_items`: the room in `team`, the entry ID in `message_id`, and no bot, task or turn. No network call runs in that transaction.
+3. A phone gets an item when its notifications are on, it sent its preferences, and its level is not Only urgent. The switch for bot replies does not decide. A phone without stored preferences has an older app and gets none.
+4. Each room has `notifications` on this Mac, on at the start. It is a choice of the person, not of the team: it never goes into the log or to the relay. `GET /v1/team/rooms` gives it for each room on a person's Mac, and `PUT /v1/team/rooms/<room>/notifications` changes it. Only a paired device calls that route, and a change adds `team.updated`. A Mac for a team only answers 409.
+5. Each plan and each send checks the item again: the room is `active` with `notifications` on, the message still shows, and it is after the read position. So a message that the person read on another device, a removed message, a team that the person left and a quiet team send nothing.
+6. An item waits and groups as a bot reply does (level, work hours, the gap after the last notification). It is never urgent. The app icon badge counts cards only.
+7. The sealed alert has the name of the writer as its title (the name of the bot for a message with a `bot`), the name of the team as its subtitle, and the text as its body. When the store has no name for the writer, the title is the name of the team, and the alert has no subtitle. `thread-id` is the room ID. A phone without a relay route gets "Your team has a new message." and no text.
+8. A group counts "team message" and "team messages" after "message". A group of the messages of one team has the thread of the team and `{"kind": "group", "count": n, "team": <room ID>}`, so a tap opens the chat. Each other group opens Inbox, and its fields for older apps come from an item that is not a team message.
+9. The `coconut` part of one message is `{"version": 1, "device_id": ..., "kind": "team", "team": <room ID>}`. An older app finds no `bot_id` there, so a tap opens the app and nothing more.
+
+No log line has the text of a message, the name of a writer or the name of a team.
 
 #### A bot answers
 

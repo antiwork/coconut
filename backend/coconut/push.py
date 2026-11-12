@@ -1,6 +1,8 @@
 """Durable, private notification delivery through Apple APNs.
 
-Each bot event that can notify becomes one item per phone in `push_items`. Coconut decides when items notify
+Each bot event that can notify becomes one item per phone in `push_items`, and so does each fresh message of another
+member in a team chat (`record_team`). A team item has the room in `team` and the entry ID in `message_id`, and no
+bot, task or turn. Coconut decides when items notify
 (`push_schedule.due`) and writes one `push_outbox` row per notification: one urgent card, or one group of the items
 that waited. The row ID is fixed, and a sealed envelope is kept, so a retry never sends a second notification."""
 from __future__ import annotations
@@ -17,7 +19,8 @@ import tempfile
 import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
-from .push_relay import RelayTransport, validate_route, notification_alert, group_text
+from .push_relay import RelayTransport, validate_route, notification_alert, group_text, team_alert
+from .team_store import ACTIVE
 from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, in_window, merge as merge_schedule,
                             stored as stored_schedule)
 
@@ -36,6 +39,11 @@ PUSH_TABLES = ('push_devices', 'push_routes', 'push_preferences', 'push_schedule
 PREVIEWS_FILE = 'push-previews.json'
 PREVIEW_TIMES = ('failing_since', 'failed_at', 'worked_at')
 URGENT_DECISION = "json_extract(data,'$.needs_attention_now') IS 1"
+# The columns of an item. A store from before team notifications gets `team` as the last column.
+ITEM_COLUMNS = ('device_id', 'event_key', 'kind', 'bot_id', 'task_id', 'decision_id', 'message_id', 'turn_id', 'urgent',
+                'created', 'status', 'delivery_id', 'reason', 'team')
+# The text of a team message for a phone without a relay route. That phone gets no text of a message.
+TEAM_BODY = 'Your team has a new message.'
 # A phone reaches the Mac only through the relay tunnel, which needs the phone's static key. A device without one is an
 # old version 1 pairing or a tool on this Mac, so it is not paired for notifications.
 PHONES = 'SELECT id FROM devices WHERE peer_key IS NOT NULL'
@@ -137,7 +145,7 @@ class PushDelivery:
             device_id TEXT NOT NULL, event_key TEXT NOT NULL, kind TEXT NOT NULL, bot_id TEXT NOT NULL,
             task_id TEXT NOT NULL, decision_id TEXT, message_id TEXT, turn_id TEXT NOT NULL,
             urgent INTEGER NOT NULL, created REAL NOT NULL, status TEXT NOT NULL, delivery_id TEXT, reason TEXT,
-            PRIMARY KEY(device_id, event_key));
+            team TEXT, PRIMARY KEY(device_id, event_key));
         CREATE INDEX IF NOT EXISTS push_items_waiting ON push_items(status, device_id);
         CREATE INDEX IF NOT EXISTS push_items_delivery ON push_items(delivery_id);
         CREATE TABLE IF NOT EXISTS push_preferences (
@@ -155,12 +163,15 @@ class PushDelivery:
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='decisions'").fetchone():
             db.execute("CREATE INDEX IF NOT EXISTS decisions_created ON decisions (json_extract(data,'$.created_at'))")
             db.execute(f"CREATE INDEX IF NOT EXISTS decisions_urgent ON decisions (json_extract(data,'$.created_at')) WHERE {URGENT_DECISION}")
+        if 'team' not in {row[1] for row in db.execute('PRAGMA table_info(push_items)')}:
+            db.execute('ALTER TABLE push_items ADD COLUMN team TEXT')
         columns = {row[1] for row in db.execute('PRAGMA table_info(push_outbox)')}
         if 'kind' in columns:
             # The outbox before grouping held one row per event. Its rows become items, so nothing notifies twice.
             urgent = 'urgent' if 'urgent' in columns else "explicit_importance IS 'urgent'" if 'explicit_importance' in columns else '0'
             message = 'message_id' if 'message_id' in columns else 'NULL'
-            db.execute(f'''INSERT OR IGNORE INTO push_items
+            # The statement names its columns, because push_items has more columns than this outbox had.
+            db.execute(f'''INSERT OR IGNORE INTO push_items ({','.join(ITEM_COLUMNS[:13])})
                 SELECT device_id,event_key,kind,bot_id,task_id,decision_id,{message},turn_id,{urgent},not_before,
                        CASE status WHEN 'queued' THEN 'waiting' ELSE 'sent' END,NULL,reason FROM push_outbox''')
             db.execute('DROP TABLE push_outbox')
@@ -345,10 +356,15 @@ class PushDelivery:
             self.note(device_id, 'NotRefreshed')
 
     def allows(self, device_id, kind, urgent=False):
-        """Whether the phone's preferences let this item notify. A card that needs attention now always may."""
+        """Whether the phone's preferences let this item notify. A card that needs attention now always may.
+
+        A team message needs preferences that the phone sent and a level other than Only urgent. The switch for bot
+        replies does not decide it. A phone without stored preferences has an app from before team notifications."""
         chosen = self.stored_preferences(device_id)
         if kind == 'decision':
             return bool(urgent) or (chosen or LEGACY_PREFERENCES)['level'] != 'urgent_only'
+        if kind == 'team':
+            return chosen is not None and chosen['level'] != 'urgent_only'
         if chosen is None:
             return kind in ('failed', 'completed')
         return kind in ('message', 'failed') and chosen['messages'] and chosen['level'] != 'urgent_only'
@@ -401,10 +417,37 @@ class PushDelivery:
                     VALUES (?,?,?,?,?,?,?,?,?,?,'waiting')''',
                     (device_id, event_key, kind, bot_id, task_id, decision_id, message_id, turn, urgent, stamp))
 
+    def record_team(self, room, entry):
+        """Queue one item for each phone for a fresh team message (TeamStore._note_fresh). The caller holds the
+        transaction that accepts the entry."""
+        found = self.service.team_store.room(room)
+        if found is None or not found['notifications']:
+            return
+        event_key = ':'.join(('team', room, entry))
+        stamp = time.time()
+        for (device_id,) in self.service.db.execute(f'SELECT device_id FROM push_devices WHERE enabled=1 AND device_id IN ({PHONES})').fetchall():
+            if self.allows(device_id, 'team'):
+                self.service.db.execute('''INSERT OR IGNORE INTO push_items
+                    (device_id,event_key,kind,bot_id,task_id,decision_id,message_id,turn_id,urgent,created,status,team)
+                    VALUES (?,?,'team','','',NULL,?,'',0,?,'waiting',?)''', (device_id, event_key, entry, stamp, room))
+
+    def team_relevant(self, item):
+        """Whether a team message still notifies: the room is active with its notifications on, and the message
+        shows after the read position of the room. So a message that the person read, a removed message, a team that
+        the person left and a quiet team send nothing."""
+        store = self.service.team_store
+        room = store.room(item['team'])
+        if room is None or room['state'] != ACTIVE or not room['notifications']:
+            return False
+        message = store.message(item['team'], item['message_id'])
+        return message is not None and message['first'] > store.read_position(item['team'])
+
     def relevant(self, item):
         """Whether the item still describes something the person has not seen: an open card, a visible message,
         or a task that is still failed or finished in the same turn."""
         service = self.service
+        if item['team']:
+            return self.allows(item['device_id'], item['kind']) and self.team_relevant(item)
         task = service._get('tasks', item['task_id'])
         bot = service._get('bots', item['bot_id'])
         conversation = service._get('bots', task.get('conversation_bot_id', bot['id']))
@@ -513,14 +556,30 @@ class PushDelivery:
         """The notification for one item, or the count of several. Items are rechecked when the text is written."""
         service = self.service
         if len(items) > 1:
+            rooms = {item['team'] for item in items}
+            if len(rooms) == 1 and None not in rooms:
+                # A group of one team has the thread of the team, and a tap opens its chat. An older app opens Inbox.
+                return {'aps': {'alert': {'title': 'Coconut', 'body': group_text(items)}, 'sound': 'default',
+                                'thread-id': items[0]['team']},
+                        'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items),
+                                    'team': items[0]['team']}}, None
             # Apps before groups need a bot, task, and card to open a notification. They open the first card in Inbox.
-            first = next((item for item in items if item['decision_id']), items[0])
-            task = service._get('tasks', first['task_id'])
+            # A team item has none, so they come from another item. A group of team items only has none.
+            first = next((item for item in items if item['decision_id']), None) or next(
+                (item for item in items if not item['team']), None)
+            task = service._get('tasks', first['task_id']) if first else None
             return {'aps': {'alert': {'title': 'Coconut', 'body': group_text(items)}, 'sound': 'default', 'thread-id': 'coconut-inbox'},
                     'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items),
-                                'bot_id': task.get('conversation_bot_id', task['bot_id']), 'task_id': task['id'],
-                                'decision_id': first['decision_id'], 'message_id': None}}, None
+                                'bot_id': task.get('conversation_bot_id', task['bot_id']) if task else None,
+                                'task_id': task['id'] if task else None,
+                                'decision_id': first['decision_id'] if first else None, 'message_id': None}}, None
         item = items[0]
+        if item['team']:
+            payload = {'aps': {'alert': {'title': 'Coconut', 'body': TEAM_BODY}, 'sound': 'default', 'thread-id': item['team']},
+                       'coconut': {'version': 1, 'device_id': device_id, 'kind': 'team', 'team': item['team']}}
+            if sealed:
+                payload['aps']['alert'] = team_alert(service.team_store, item['team'], item['message_id'])
+            return payload, item['message_id']
         task = service._get('tasks', item['task_id'])
         bot = service._get('bots', item['bot_id'])
         conversation = service._get('bots', task.get('conversation_bot_id', bot['id']))

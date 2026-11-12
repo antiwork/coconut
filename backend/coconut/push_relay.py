@@ -149,8 +149,21 @@ def notification_alert(service, job, bot, task, decision):
     return {'title': title, 'subtitle': 'Finished', 'body': notification_text(task['title'])}
 
 
-GROUP_NOUNS = (('decision', 'decision', 'decisions'), ('message', 'message', 'messages'), ('failed', 'failed task', 'failed tasks'),
-               ('completed', 'finished task', 'finished tasks'))
+def team_alert(store, room, entry):
+    """The alert of a team message, in the pattern of a group chat: the writer in the title, the team in the
+    subtitle, the text in the body. A message of a bot names the bot. When the store has no name for the writer, the
+    title is the name of the team, and the alert has no subtitle."""
+    message = store.message(room, entry)
+    team = notification_text(store.room(room)['name'], limit=80, byte_limit=256)
+    writer = notification_text(message['bot_name'] if message['bot'] else message['member_name'], limit=80, byte_limit=256)
+    body = notification_text(message['text'])
+    if not writer:
+        return {'title': team, 'body': body}
+    return {'title': writer, 'subtitle': team, 'body': body}
+
+
+GROUP_NOUNS = (('decision', 'decision', 'decisions'), ('message', 'message', 'messages'), ('team', 'team message', 'team messages'),
+               ('failed', 'failed task', 'failed tasks'), ('completed', 'finished task', 'finished tasks'))
 
 
 def group_text(items):

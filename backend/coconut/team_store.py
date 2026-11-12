@@ -3,7 +3,8 @@
 Each table has the room ID in its key, because a Mac can be in more than one room.
 
 - `team_rooms`: one row for each room of this Mac: its relay, its name, this Mac's member ID, the admin, and how far
-  the sync read (`seq`). `profile` is what this Mac writes about itself in its `member` entry.
+  the sync read (`seq`). `profile` is what this Mac writes about itself in its `member` entry. `notifications` is the
+  choice of the person of this Mac: a new message of the room notifies the phone. It never goes into the log.
 - `team_entries`: the newest accepted write of each entry ID, with the payload as its member wrote it.
 - `team_members`: the members that the app shows. It is a view of `team_entries`: the newest valid `member` entry
   of each member.
@@ -45,7 +46,8 @@ log = logging.getLogger(__name__)
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS team_rooms (room TEXT PRIMARY KEY, relay TEXT NOT NULL, name TEXT NOT NULL,
     member TEXT NOT NULL, admin TEXT NOT NULL, state TEXT NOT NULL, epoch INTEGER NOT NULL,
-    seq INTEGER NOT NULL DEFAULT 0, profile TEXT NOT NULL, created_at TEXT NOT NULL);
+    seq INTEGER NOT NULL DEFAULT 0, profile TEXT NOT NULL, created_at TEXT NOT NULL,
+    notifications INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS team_entries (room TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
     first INTEGER NOT NULL, member TEXT NOT NULL, kind TEXT NOT NULL, rev INTEGER NOT NULL, at INTEGER NOT NULL,
     kept INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (room, id));
@@ -86,7 +88,8 @@ INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
 '''
 TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_shares', 'team_page_shares',
           'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers')
-ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at')
+ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at',
+               'notifications')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
 MEMBER_FIELDS = ('member', 'name', 'avatar', 'color', 'agreement', 'entry', 'bot_only')
 PENDING_FIELDS = ('id', 'seq', 'first', 'member', 'at', 'kept', 'body', 'reason')
@@ -111,8 +114,8 @@ MAX_TEXT = 16000
 MAX_MENTIONS = 16
 # The unread count of a room stops here, so the count reads at most this many rows.
 MAX_UNREAD = 99
-# A message starts a turn of a bot only while it is younger than this. An older message is history, for example the log
-# that a Mac reads after it joins.
+# A message starts a turn of a bot, or notifies the phone of a person, only while it is younger than this. An older
+# message is history, for example the log that a Mac reads after it joins.
 TRIGGER_SECONDS = 3600
 # At most this many triggers wait for one bot in one room. A member can mention the bot again later.
 MAX_WAITING = 8
@@ -321,15 +324,20 @@ class TeamStore:
         # rooms with a new trigger, and TeamSync wakes the turns. The clock is the wall clock, as the `at` of the relay.
         self.answers = False
         self.triggered: set[str] = set()
+        # The fresh messages of the other members, by room (_note_fresh). TeamSync gives them to the push code of a
+        # person's Mac and empties the list. A team-only Mac has no push, and the list goes nowhere.
+        self.fresh: dict[str, list[str]] = {}
         self.clock = time.time
 
     def migrate(self) -> None:
         """Add the columns that a store of an older version lacks. A `bot` row of that version reads as not open
-        until its next write, and a `member` row as a person."""
+        until its next write, a `member` row as a person, and a room has its notifications on."""
         if 'open' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_bots)')}:
             self.db.execute('ALTER TABLE team_bots ADD COLUMN open INTEGER NOT NULL DEFAULT 0')
         if 'bot_only' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_members)')}:
             self.db.execute('ALTER TABLE team_members ADD COLUMN bot_only INTEGER NOT NULL DEFAULT 0')
+        if 'notifications' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_rooms)')}:
+            self.db.execute('ALTER TABLE team_rooms ADD COLUMN notifications INTEGER NOT NULL DEFAULT 1')
 
     def _rows(self, fields, query, values=()) -> list[dict]:
         return [dict(zip(fields, row)) for row in self.db.execute(query, values).fetchall()]
@@ -476,6 +484,9 @@ class TeamStore:
                     self.db.execute(f'DELETE FROM {table} WHERE room=? AND entry=?', (room['room'], entry['id']))
             if other:
                 self.touched.add(room['room'])
+        # The last step, so a failure of an earlier step leaves no note of an entry that the savepoint takes back.
+        if existing is None and fields['kind'] == 'message' and fields['rev'] == 1 and shown:
+            self._note_fresh(room, entry, shown)
         return STORED, None
 
     def _follow_profile(self, room: str, shown: dict) -> None:
@@ -634,6 +645,24 @@ class TeamStore:
             updated_at=excluded.updated_at, created_at=COALESCE(team_pages.created_at, excluded.created_at)''',
                         (room, entry['id'], entry['member'], int(valid), bot, version, page['key'], page['title'],
                          page['format'], page['summary'], page['size'], fields['rev'], page['expires_at'], at, at))
+
+    def _note_fresh(self, room: dict, entry: dict, message: dict) -> None:
+        """Note a message that can notify the phone of the person (docs/team-log.md, "Notifications").
+
+        The caller checked that this is the first write of a valid message that this Mac sees. The message also shows
+        now, counts as unread by the rule of `unread`, is under TRIGGER_SECONDS old, and is after the read position of
+        the room. A room has a read position only after the own `member` entry of this Mac, so the history that a Mac
+        reads after a join notifies nothing.
+        """
+        room_id = room['room']
+        if entry['member'] == room['member'] and message['bot'] is None:
+            return
+        if self.clock() * 1000 - entry['at'] >= TRIGGER_SECONDS * 1000:
+            return
+        position = self.db.execute('SELECT first FROM team_reads WHERE room=?', (room_id,)).fetchone()
+        if position is None or entry['first'] <= position[0] or self.message(room_id, entry['id']) is None:
+            return
+        self.fresh.setdefault(room_id, []).append(entry['id'])
 
     # The triggers of the bots of a team-only Mac
 
