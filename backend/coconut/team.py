@@ -25,6 +25,8 @@ for a person, because the app shows them.
 - `DELETE /v1/team/rooms/<room>/bots/<bot_id>`: stop sharing the bot with the room, with the same rule.
 - The routes of the Team chat under `/v1/team/rooms/<room>/messages` and `/v1/team/rooms/<room>/read`
   (team_messages.py).
+- `PUT /v1/team/rooms/<room>/notifications` with `{enabled}`: the person turns the notifications of the room on or off
+  for the phones of this Mac. Only a person's Mac has phones, so a Mac for a team only answers 409.
 
 No answer has a key, a token or an invite secret. Only the invite link, which the person shares, carries a secret.
 
@@ -307,6 +309,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
             return self.team_unsend(parts[1], parts[3])
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'read' and method == 'POST':
             return self.team_mark_read(parts[1], data)
+        if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'notifications' and method == 'PUT':
+            return self.team_notifications(parts[1], data)
         raise ServiceError(404, 'This route was not found.')
 
     # Reads
@@ -332,7 +336,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
                         bot_only=bool(member['bot_only']))
                    for member in self.team_store.members(room['room'])]
         is_admin = room['member'] == room['admin']
-        return {'room': room['room'], 'name': room['name'], 'relay': room['relay'], 'state': room['state'],
+        view = {'room': room['room'], 'name': room['name'], 'relay': room['relay'], 'state': room['state'],
                 'member': room['member'], 'admin': room['admin'], 'is_admin': is_admin,
                 'can_invite': is_admin and room['state'] == ACTIVE, 'epoch': room['epoch'],
                 'created_at': room['created_at'], 'members': members, 'bots': self._team_bots(room, members),
@@ -340,6 +344,15 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
                 'sync': {'seq': room['seq'], 'entries': entries, 'waiting': waiting,
                          'synced_at': status.get('synced_at'), 'error': status.get('error'), 'refused': refused,
                          'socket': self.team_socket_open(room['room'])}}
+        # Only a person's Mac has phones to notify. The app shows the switch only when the room has this field.
+        if self._team_has_phones:
+            view['notifications'] = bool(room['notifications'])
+        return view
+
+    @property
+    def _team_has_phones(self) -> bool:
+        """True on a person's Mac (Service), which notifies its phones. A Mac for a team only has no push."""
+        return getattr(self, 'push', None) is not None
 
     def _team_room(self, room_id) -> dict:
         from .service_base import ServiceError
@@ -575,6 +588,25 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
             # The accepted write of this Mac saves the profile in the same transaction.
             self._team_write(room, profile['entry'], True, member_payload(profile, self._team_bot_only), tries=2)
         return self._team_answer(room_id)
+
+    def team_notifications(self, room_id: str, data: dict) -> dict:
+        """Turn the notifications of a room on or off for the phones of this Mac. The choice is the person's, so it
+        stays on this Mac and never goes into the log. TEAM_EVENT tells the other devices of the person."""
+        from .service_base import ServiceError
+        if not self._team_has_phones:
+            raise ServiceError(409, 'This Mac has no phone to notify.')
+        enabled = data.get('enabled')
+        if type(enabled) is not bool:
+            raise ServiceError(400, 'Supply true or false for enabled.')
+        self._team_room(room_id)
+        with self.transaction():
+            room = self.team_store.room(room_id)
+            if room is None:
+                raise ServiceError(404, 'This Mac is not in this team.')
+            if bool(room['notifications']) != enabled:
+                self.team_store.update_room(room_id, notifications=int(enabled))
+                self._event(TEAM_EVENT, {'team': room_id})
+        return {'room': room_id, 'notifications': enabled}
 
     def team_sync_now(self) -> dict:
         """Read each room from the relay now, also a room that waits after a failure. Return the rooms."""

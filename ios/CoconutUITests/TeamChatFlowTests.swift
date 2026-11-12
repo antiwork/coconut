@@ -26,7 +26,7 @@ final class TeamChatFlowTests: XCTestCase {
         shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
+        app.launchEnvironment = Self.pairing(url: url, code: code)
         app.launch()
 
         // The Chats tab lists the bots and the teams.
@@ -235,7 +235,7 @@ final class TeamChatFlowTests: XCTestCase {
         if look == "large" {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         }
-        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
+        app.launchEnvironment = Self.pairing(url: url, code: code)
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
@@ -294,7 +294,7 @@ final class TeamChatFlowTests: XCTestCase {
         if look == "large" {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         }
-        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
+        app.launchEnvironment = Self.pairing(url: url, code: code)
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
@@ -420,6 +420,182 @@ final class TeamChatFlowTests: XCTestCase {
         input.tap()
         input.typeText(value)
         app.buttons["send-message"].tap()
+    }
+
+    /// A tap on a team notification opens the chat of the team, also after the app was terminated. As in
+    /// NotificationFlowTests, the test world sends the notification: the test writes the file `backgrounded` into the
+    /// folder of COCONUT_TEAM_FLAGS, and a script of the world pushes to the simulator the payload that the service
+    /// makes for Ada's phone. COCONUT_TEAM_NOTIFY names the team, and COCONUT_PUSH_EXPECTED_TITLE and
+    /// COCONUT_PUSH_EXPECTED_BODY the alert.
+    @MainActor
+    func testATapOnATeamNotificationOpensTheTeamChat() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"], let room = env["COCONUT_TEAM_NOTIFY"],
+              let flags = env["COCONUT_TEAM_FLAGS"].map({ URL(fileURLWithPath: $0) }),
+              let title = env["COCONUT_PUSH_EXPECTED_TITLE"], let body = env["COCONUT_PUSH_EXPECTED_BODY"] else {
+            throw XCTSkip("Run with the test world of the team notifications.")
+        }
+        shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchEnvironment = Self.pairing(url: url, code: code)
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        allowNotifications()
+        XCUIDevice.shared.press(.home)
+        app.terminate()
+        try Data().write(to: flags.appendingPathComponent("backgrounded"))
+
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let banner = springboard.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", body)).firstMatch
+        XCTAssertTrue(banner.waitForExistence(timeout: 45), "The banner must show the text of the message.")
+        XCTAssertTrue(banner.label.contains(title), banner.label)
+        screen("team-push-banner")
+        banner.tap()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+        let chat = app.buttons["team-chat-title"]
+        XCTAssertTrue(chat.waitForExistence(timeout: 15), "The tap opens the chat of the team.")
+        XCTAssertFalse(app.buttons["team-chat-\(room)"].exists, "The chat is open, not the Chats list.")
+        shot("team-push-chat-after-tap")
+    }
+
+    /// The switch "Notifications" on the Team screen saves at once and shows the same state after the app opens again.
+    /// COCONUT_TEAM_NOTIFY names the team. COCONUT_TEAM_LOOK "dark" or "large" sets the look.
+    @MainActor
+    func testTheSwitchOfTheTeamSavesAndShowsAgainAfterAReopen() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"],
+              let room = env["COCONUT_TEAM_NOTIFY"] else {
+            throw XCTSkip("Run with the test world of the team notifications.")
+        }
+        shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
+        let look = env["COCONUT_TEAM_LOOK"] ?? "light"
+        continueAfterFailure = false
+        app = XCUIApplication()
+        if look == "dark" { app.launchArguments += ["-AppleInterfaceStyle", "Dark", "-UIUserInterfaceStyle", "Dark"] }
+        if look == "large" {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        }
+        app.launchEnvironment = Self.pairing(url: url, code: code)
+        app.launch()
+        let toggle = try openTeamScreen(room)
+        XCTAssertEqual(toggle.value as? String, "1", "A team notifies at the start.")
+        XCTAssertTrue(app.staticTexts["Get notified when someone writes in this team."].exists)
+        shot("team-push-\(look)-switch-on")
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        XCTAssertTrue(waitForValue(toggle, "0"))
+        // The answer of the Mac keeps the switch off.
+        sleep(2)
+        XCTAssertEqual(toggle.value as? String, "0")
+        shot("team-push-\(look)-switch-off")
+
+        app.terminate()
+        app.launchEnvironment = [:]
+        app.launch()
+        let again = try openTeamScreen(room)
+        XCTAssertEqual(again.value as? String, "0", "The Mac kept the choice.")
+        again.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        XCTAssertTrue(waitForValue(again, "1"))
+    }
+
+    /// When the Mac refuses the change, the switch goes back and the screen shows the error. The test writes the file
+    /// `hold-store` into the folder of COCONUT_TEAM_FLAGS. A script of the test world then holds the write lock of
+    /// the store of Ada's Mac and writes `store-held`, so the next write fails. The test writes `release-store` at
+    /// its end.
+    @MainActor
+    func testTheSwitchGoesBackWhenTheMacRefusesTheChange() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"],
+              let room = env["COCONUT_TEAM_NOTIFY"], env["COCONUT_TEAM_REFUSE"] == "1",
+              let flags = env["COCONUT_TEAM_FLAGS"].map({ URL(fileURLWithPath: $0) }) else {
+            throw XCTSkip("Run with the test world of the team notifications and COCONUT_TEAM_REFUSE.")
+        }
+        shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchEnvironment = Self.pairing(url: url, code: code)
+        app.launch()
+        let toggle = try openTeamScreen(room)
+        XCTAssertEqual(toggle.value as? String, "1")
+        try Data().write(to: flags.appendingPathComponent("hold-store"))
+        defer { try? Data().write(to: flags.appendingPathComponent("release-store")) }
+        let held = flags.appendingPathComponent("store-held")
+        for _ in 0..<30 where !FileManager.default.fileExists(atPath: held.path) { sleep(1) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: held.path), "The script holds the store.")
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        let banner = app.descendants(matching: .any).matching(identifier: "action-error").firstMatch
+        XCTAssertTrue(banner.waitForExistence(timeout: 30), "The screen shows the error of the Mac.")
+        XCTAssertTrue(waitForValue(toggle, "1"), "The switch goes back.")
+        shot("team-push-switch-refused")
+    }
+
+    /// The Team screen of a team, from its chat. Return the switch "Notifications".
+    private func openTeamScreen(_ room: String) throws -> XCUIElement {
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
+        // The app can open again on the chat that it showed last, for example after a tap on a notification.
+        let row = app.buttons["team-chat-\(room)"]
+        let title = app.buttons["team-chat-title"]
+        if !title.waitForExistence(timeout: 3) {
+            XCTAssertTrue(row.waitForExistence(timeout: 15))
+            row.tap()
+        }
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        title.tap()
+        let toggle = app.switches["team-notifications"]
+        // With the largest text, the switch and its footer are below the first screen.
+        let footer = app.staticTexts["Get notified when someone writes in this team."]
+        for _ in 0..<6 where !(toggle.exists && toggle.isHittable && footer.exists) { app.swipeUp(velocity: .slow) }
+        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+        return toggle
+    }
+
+    private func waitForValue(_ element: XCUIElement, _ value: String) -> Bool {
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", value), object: element)
+        return XCTWaiter().wait(for: [expectation], timeout: 10) == .completed
+    }
+
+    /// Allows notifications in Settings, as a person does. The services of the test world have no push relay, so the
+    /// app registers with no relay.
+    private func allowNotifications() {
+        app.buttons["app-settings"].tap()
+        let row = app.buttons["notification-settings"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        // The button is the last row, and the list makes a row only when it comes on screen.
+        let enable = app.buttons["Enable notifications"]
+        let allowed = app.buttons["iOS notification settings"]
+        for _ in 0..<6 where !enable.exists && !allowed.exists { app.swipeUp(velocity: .slow) }
+        if enable.waitForExistence(timeout: 5) {
+            enable.tap()
+            let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Allow"]
+            if allow.waitForExistence(timeout: 10) { allow.tap() }
+        }
+        XCTAssertTrue(allowed.waitForExistence(timeout: 10), "Notifications are allowed.")
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        app.buttons["close-settings"].tap()
+    }
+
+    /// A screenshot of the whole screen, for a page of the system such as the Home Screen with a banner.
+    private func screen(_ name: String) {
+        guard let shots else { return }
+        let image = XCUIScreen.main.screenshot()
+        try? image.pngRepresentation.write(to: shots.appendingPathComponent(name + ".png"))
+        let attachment = XCTAttachment(screenshot: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    /// The pairing codes that a test of this run already gave to the app.
+    @MainActor private static var usedCodes: Set<String> = []
+
+    /// The launch environment of the app for the service at `url`. A pairing code works one time: the Mac refuses it
+    /// at a second pairing, and the app then stays disconnected. All tests of one run share one code and one app,
+    /// which keeps its pairing, so only the first launch of the run gets the code.
+    @MainActor private static func pairing(url: String, code: String) -> [String: String] {
+        guard usedCodes.insert(code).inserted else { return ["COCONUT_SERVER_URL": url] }
+        return ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
     }
 
     private func back() {

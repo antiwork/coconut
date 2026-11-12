@@ -51,6 +51,8 @@ struct CoconutHome: View {
     @State private var notificationDecisionId: String?
     @State private var openingNotification = false
     @State private var previewedNotification: NotificationTarget?
+    /// The place that the preview of `previewedNotification` showed.
+    @State private var previewedPlace: NotificationDestination?
     @State private var botsPath = NavigationPath()
     @State private var inboxPath = NavigationPath()
     @State private var libraryPath = NavigationPath()
@@ -243,15 +245,20 @@ struct CoconutHome: View {
             PushNotifications.shared.target = nil
             return
         }
-        if target.group || target.decisionId == nil {
+        if target.team == nil && (target.group || target.decisionId == nil) {
             PushNotifications.shared.target = nil
             previewedNotification = nil
             showNotification(target.group ? .inboxList : .conversation(target.conversationRoute))
             return
         }
+        // A card and a team show their place at once. The Mac then confirms it: a card can be answered already, and
+        // the person can have left the team.
         if previewedNotification != target {
             previewedNotification = target
-            showNotification(target.decisionId.map(NotificationDestination.inbox) ?? .conversation(target.conversationRoute))
+            let preview = target.team.map(store.teamNotificationPlace)
+                ?? target.decisionId.map(NotificationDestination.inbox) ?? .conversation(target.conversationRoute)
+            previewedPlace = preview
+            showNotification(preview)
         }
         guard !openingNotification else { return }
         openingNotification = true
@@ -262,7 +269,10 @@ struct CoconutHome: View {
             guard let destination else { return }
             PushNotifications.shared.target = nil
             previewedNotification = nil
-            showNotification(destination)
+            // The chat of a team that the preview opened stays as it is: a second push would animate again and lose
+            // the scroll position. A card shows again, so its Inbox focuses the fresh card.
+            if target.team == nil || destination != previewedPlace { showNotification(destination) }
+            previewedPlace = nil
         }
     }
 
@@ -283,6 +293,15 @@ struct CoconutHome: View {
             selectedTab = .bots
             botsPath = NavigationPath()
             botsPath.append(route)
+        case .team(let room):
+            notificationDecisionId = nil
+            selectedTab = .bots
+            botsPath = NavigationPath()
+            botsPath.append(TeamChatRoute(roomId: room))
+        case .chatList:
+            notificationDecisionId = nil
+            selectedTab = .bots
+            botsPath = NavigationPath()
         }
     }
 

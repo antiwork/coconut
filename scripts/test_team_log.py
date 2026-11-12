@@ -973,6 +973,76 @@ class TeamOnlyTests(unittest.TestCase):
         self.assertEqual(self.ada.call('DELETE', f'/v1/team/rooms/{room_id}')[0], 200)
 
 
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The team push test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamPushTests(unittest.TestCase):
+    """A message of Grace reaches Ada's phone through the real relay and the real helper (backend/coconut/push.py,
+    record_team). Both services run in this process, so the phone of Ada gets its notification through the fake
+    transport of the push tests, and no notification leaves this Mac."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory()
+        folder = Path(cls.temp.name)
+        cls.helper_path = folder / 'team-helper'
+        compile_helper(cls.helper_path)
+        cls.relay_process = subprocess.Popen(['node', 'test/room-server.mjs', '0'], cwd=ROOT / 'relay',
+                                             stdout=subprocess.PIPE, text=True)
+        cls.url = cls.relay_process.stdout.readline().strip()
+        cls.relay_process.stdout.close()
+        assert cls.url.startswith('http://127.0.0.1:'), cls.url
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.relay_process.terminate()
+        try:
+            cls.relay_process.wait(30)
+        except subprocess.TimeoutExpired:
+            cls.relay_process.kill()
+        cls.temp.cleanup()
+
+    def test_a_message_of_another_member_notifies_the_phone_once(self):
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service
+        from test_push import pair_phone
+        from test_push_relay import EncryptedTransport
+        from test_team_push import ROUTE, flush, register
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        macs = []
+        for name in ('ada', 'grace'):
+            root = Path(self.temp.name) / name
+            service = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(service.close)
+            macs.append(service)
+        ada, grace = macs
+        phone = pair_phone(ada)
+        relay = EncryptedTransport()
+        ada.push.relay = relay
+        register(ada, phone, route=ROUTE, level='grouped')
+
+        def call(service, method, path, data):
+            return service.team_request(method, path, data, '', 'test-device')
+        room = call(ada, 'POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada', 'relay': self.url})
+        room_id = room['room']['room']
+        link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+        call(grace, 'POST', '/v1/team/join', {'link': link, 'member_name': 'Grace'})
+        ada.team_sync_pass()
+        call(grace, 'POST', f'/v1/team/rooms/{room_id}/messages', {'text': 'The report is ready.'})
+        ada.team_sync_pass()
+        flush(ada)
+        (payload,) = relay.sealed
+        self.assertEqual(payload['aps']['alert'], {'title': 'Grace', 'subtitle': 'Example Team',
+                                                   'body': 'The report is ready.'})
+        self.assertEqual(payload['coconut'], {'version': 1, 'device_id': phone, 'kind': 'team', 'team': room_id})
+        # A second pass reads nothing new and sends nothing.
+        ada.team_wake(retry=True)
+        ada.team_sync_pass()
+        flush(ada)
+        self.assertEqual(len(relay.sent), 1)
+
+
 def run_of(start: int, count: int) -> bytes:
     """The bytes from `start`, one higher each time, as the inputs of the test vectors name them."""
     return bytes(range(start, start + count))
