@@ -838,16 +838,24 @@ extension View {
 struct TeamTypingRow: View {
     let room: TeamRoom
     let subjects: [TeamTyping]
+    /// The height of one line of the text, so the faces stand at the middle of the first line.
+    @ScaledMetric(relativeTo: .subheadline) private var lineHeight: CGFloat = 20
+    /// The gap between the last word and the dots, as before an ellipsis.
+    @ScaledMetric(relativeTo: .subheadline) private var dotsGap: CGFloat = 4
 
     private var text: String { TeamTypingText.text(subjects) ?? "" }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             HStack(spacing: 2) {
                 ForEach(subjects.prefix(3)) { face($0) }
             }
-            Text(text).foregroundStyle(.secondary).lineLimit(2)
-            TypingDots()
+            .frame(height: lineHeight)
+            // The dots end the sentence: their bottom sits on the baseline of the last line of the text.
+            HStack(alignment: .lastTextBaseline, spacing: dotsGap) {
+                Text(text).foregroundStyle(.secondary).lineLimit(2)
+                TypingDots().alignmentGuide(.lastTextBaseline) { $0[.bottom] }
+            }
         }
         .font(.subheadline)
         .frame(minHeight: 32, alignment: .leading)
