@@ -371,12 +371,14 @@ class SupportedVersionTests(unittest.TestCase):
         self.assertIsNone(hermes_runtime.public(None)['tested'])
 
     def test_the_setup_route_reports_an_untested_version(self):
-        with tempfile.TemporaryDirectory() as directory:
-            service = Service(directory, FixtureProvider(directory), start_workers=False)
-            self.addCleanup(service.close)
-            service.hermes_status = hermes_runtime.public({'status': 'ok', 'version': '0.23.0'})
-            self.assertEqual(service.hermes_setup(),
-                             {'hermes': {'status': 'ok', 'version': '0.23.0', 'reason': None, 'tested': False}})
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        directory = temp.name
+        service = Service(directory, FixtureProvider(directory), start_workers=False)
+        self.addCleanup(service.close)
+        service.hermes_status = hermes_runtime.public({'status': 'ok', 'version': '0.23.0'})
+        self.assertEqual(service.hermes_setup(),
+                         {'hermes': {'status': 'ok', 'version': '0.23.0', 'reason': None, 'tested': False}})
 
 
 if __name__ == '__main__':
