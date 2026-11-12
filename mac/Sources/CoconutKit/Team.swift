@@ -11,6 +11,8 @@ import Foundation
 /// A Mac that runs Coconut for a team only (backend/coconut/team_only.py) takes no bot from Hermes: `new-bot` declares
 /// one for the Hermes home that it stands for, and `add-bot` and `remove-bot` give it to a team or take it back. On a
 /// person's Mac the bots stay the person's: the person shares a page in the Library, so these commands print how.
+/// `connect-chat` and `disconnect-chat` change the Hermes home of a bot, so scripts/team_chat.py runs them under
+/// Python (`chatArguments`), not this tool.
 public enum TeamCommand: Equatable, Sendable {
     case show(json: Bool)
     case join(name: String?)
@@ -18,6 +20,8 @@ public enum TeamCommand: Equatable, Sendable {
     case addBot(String, team: String?)
     case removeBot(String, team: String?)
     case leave(team: String?, confirm: String?)
+    case connectChat(String, confirm: Bool)
+    case disconnectChat(String)
 
     public static let usage = """
         Usage: coconut team [--json]
@@ -26,11 +30,22 @@ public enum TeamCommand: Equatable, Sendable {
                coconut team add-bot <bot> [--team <name or ID>]
                coconut team remove-bot <bot> [--team <name or ID>]
                coconut team leave --confirm <name of the team> [--team <name or ID>]
+               coconut team connect-chat <bot> [--confirm]
+               coconut team disconnect-chat <bot>
         """
 
     /// The text when `join` gets an argument. It does not repeat the argument, because that can be the link.
     public static let linkArgument = "The invite link is a secret, so coconut team join reads it from standard input. "
         + "Pipe the link to the command, and do not put it in the command."
+
+    /// The arguments of scripts/team_chat.py for a command that changes the Hermes home of a bot, or nil.
+    public var chatArguments: [String]? {
+        switch self {
+        case .connectChat(let bot, let confirm): return ["connect", bot] + (confirm ? ["--confirm"] : [])
+        case .disconnectChat(let bot): return ["disconnect", bot]
+        default: return nil
+        }
+    }
 
     /// How long the tool waits for each answer of the service. The list only reads (BridgeTransport.listTimeout). Each
     /// other command can call the relay with retries, so it waits as long as scripts/team.py.
@@ -44,12 +59,18 @@ public enum TeamCommand: Equatable, Sendable {
         var positional: [String] = []
         var options: [String: String] = [:]
         var json = false
+        var confirmed = false
         var index = 0
         while index < arguments.count {
             let argument = arguments[index]
             index += 1
             if argument == "--json" {
                 json = true
+                continue
+            }
+            // `--confirm` of connect-chat takes no value: the plan of the command is the question.
+            if argument == "--confirm" && arguments.first == "connect-chat" {
+                confirmed = true
                 continue
             }
             guard argument.hasPrefix("--") else {
@@ -94,6 +115,11 @@ public enum TeamCommand: Equatable, Sendable {
             try only(["--team", "--confirm"])
             guard positional.count == 1 else { throw TeamFailure.usage }
             return .leave(team: options["--team"], confirm: options["--confirm"])
+        case "connect-chat", "disconnect-chat":
+            try only([])
+            guard positional.count == 2, positional[0] == "connect-chat" || !confirmed else { throw TeamFailure.usage }
+            return positional[0] == "connect-chat" ? .connectChat(positional[1], confirm: confirmed)
+                : .disconnectChat(positional[1])
         default:
             throw TeamFailure.usage
         }
@@ -299,6 +325,9 @@ public struct TeamTool: Sendable {
                 return try await removeBot(bot, team: team)
             case .leave(let team, let confirm):
                 return try await leave(team: team, confirm: confirm)
+            case .connectChat, .disconnectChat:
+                // The tool runs scripts/team_chat.py for these (TeamCommand.chatArguments).
+                return TeamOutput(lines: [TeamCommand.usage], status: 64)
             }
         } catch let failure as TeamFailure {
             return TeamOutput(lines: failure.lines, status: failure.status)
@@ -575,8 +604,12 @@ public struct TeamTool: Sendable {
         try JSONDecoder.team.decode(TeamRooms.self, from: data)
     }
 
-    /// A word for a shell: in single quotes when it has more than letters, digits and `-_.`.
     func quoted(_ word: String) -> String {
+        Self.shellWord(word)
+    }
+
+    /// A word for a shell: in single quotes when it has more than letters, digits and `-_.`.
+    public static func shellWord(_ word: String) -> String {
         if !word.isEmpty, word.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) && $0.isASCII
                                                            || "-_.".unicodeScalars.contains($0) }) {
             return word

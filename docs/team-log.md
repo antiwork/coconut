@@ -294,6 +294,7 @@ Everything else is in `coconut.sqlite3`:
 | `team_messages` | A view of `team_entries`: one row for each valid `message` entry, with its `first`, member, bot, text, reply, mentions, the times of the relay, and whether it was edited. An index on the room and `first` gives a page of messages and the unread count without a scan of the room. |
 | `team_names` | The last name that the store showed for each member and each bot of a room. A `delete` entry does not remove it. |
 | `team_reads` | The read position of this Mac in the chat of each room. |
+| `team_triggers` | Only on a team-only Mac: the messages that start a turn of a bot of this Mac, in the order in which the Mac accepted them, each with a mark for a turn that began. See [A bot answers](#a-bot-answers). |
 
 A room is `joining` (the relay did not answer the join yet), `active`, `removed` (the relay answered 401) or `gone` (the relay answered 404). The copy of a `removed` or `gone` room stays until the person leaves the room on the Mac. The Library does not show the bots and the pages of such a room.
 
@@ -492,7 +493,7 @@ The payload of a `message` entry:
 | `bot` | The entry ID of a `bot` entry of the same member when a bot of that Mac wrote the message, or absent for a message of the person. |
 
 - An edit is a new write of the same entry ID with the next `rev`. A removal is a `delete` entry over it. Only the member of a message can do either (rule 3).
-- A Mac of today writes no `bot`. A later step writes it, with one entry for each complete message of a bot. So `edited_at` means an edit for the message of a bot too.
+- Only a team-only Mac writes `bot`: one entry for each complete message of a bot that answers in the chat. See [A bot answers](#a-bot-answers). It never edits such a message, so `edited_at` of a message of a bot means an edit of another version.
 
 Rules for a Mac that reads a `message` entry:
 
@@ -538,6 +539,41 @@ When the chat of a room changes on this Mac, the Mac adds one `team_messages.upd
 
 No log line has the text of a message. A log line names a message by its entry ID and its `seq`, as for each other entry.
 
+#### A bot answers
+
+A bot of a team-only Mac answers in the team chat when a person names it. A bot of a full Mac never does: it is the bot of its person, and only that person can ask it. `backend/coconut/team_turns.py` holds these rules. Only the team-only service sets `TeamStore.answers`, so a full Mac queues no trigger and starts no turn.
+
+Rules of a trigger. A `message` entry starts a turn of a bot of this Mac when each of these holds:
+
+1. This Mac sees the entry for the first time, and its `rev` is 1. An edit starts no turn, and neither does a read again of the same entry, also after a restart.
+2. The entry has no `bot`, its member is another member than this Mac, and that member is in the member list. The signature proves the member. No other field of the payload decides.
+3. The `at` of the relay is under one hour old. The history that a Mac reads after a join starts nothing.
+4. `mentions` has the entry ID of the `bot` entry of the bot, or `reply_to` names a message of that bot on this Mac.
+5. The bot is shared with the room, is not archived, and its chat is connected: `chat` is true in its record (`coconut team connect-chat`).
+
+The Mac keeps the triggers in `team_triggers`, in the order in which it accepted them, in the transaction of the accept. At most 8 triggers wait for one bot in one room. The Mac skips a trigger over that bound, with a log line. One thread runs the triggers of one bot in one room one at a time. Before a turn, one transaction checks rules 2, 3 and 5 again, checks that the message still shows (a removal skips the trigger), and marks the trigger as started. When the turn ends, the row goes. So a trigger runs at most once: a row that is started at a start of the service is a turn that a stop cut off, and the bot posts a notice instead of a second run, which could repeat a tool action. An update drains the service: no new turn starts, and the running turn ends first.
+
+The turn goes to the Hermes gateway of the bot through the gateway bridge (`team` of `GatewayBridge.run_turn`): the text, the member ID and the name of the sender, the team as a group chat with the chat ID `<bot ID>:team:<room ID>`, the rules of the chat, and as quoted context at most 20 messages since the last message of the bot, each with the name of its writer. The context is data, not instructions. A turn has no task, no card and no row in `tasks`, `messages` or `decisions`. It stops after 30 minutes.
+
+Rules of a reply:
+
+1. Each complete segment of the reply and each commentary of Hermes is one `message` entry of this Mac with `bot`: the entry ID of the `bot` entry of the bot. No message shows before it is complete, and the chat shows no typing state.
+2. The first message of a turn has `reply_to`: the trigger. A text over 16,000 code points goes into more than one message.
+3. The entry ID comes from the room, the trigger, the bot and the number of the message in the turn. So a write that runs again adds no message.
+4. An approval of a command is denied, with a reason that the bot can repeat: nobody can approve in the team chat. A clarify question goes into the chat as a message of the bot, with its choices as a list, and Hermes gets the answer to end the turn. The reply of a person starts the next turn.
+5. A send of Hermes outside a turn in the chat of the bot, for example after a background process, is a message of the bot without `reply_to`.
+6. The bot writes a message of a turn, and a notice, only while the bot answers in the room and the request stands: the trigger still shows, and its member is in the member list. A `delete` over the trigger, a member that leaves or is removed, a bot whose chat goes off or that leaves the team, and a leave of this Mac stop the running turn, also while it waits for the gateway. The last check comes directly before the bridge registers the turn, and a stop waits for that registration, so no stop gets lost. A send outside a turn answers no message, so for it only the bot must still answer.
+
+What the chat shows when a turn fails:
+
+| Case | The chat shows |
+| --- | --- |
+| No adapter of the gateway of the bot takes the turn within 2 minutes of its start, or the profile is parked. The bridge counts a gateway as there for 60 seconds after its last poll, so a gateway that just stopped looks there; the turn still waits until the 2 minutes end, and a gateway that restarts in that time takes it. A turn counts as taken only when the adapter that got it shows it: an event of the turn, or its next poll that lists it in `active`. A gateway that stops can still hold a poll for some seconds and take a turn that it drops. A poll of the same home that starts 5 seconds after the hand-out and does not list the turn takes it again, and a turn that no adapter shows for 30 seconds counts as not taken. A living adapter shows a turn at once, and the adapter runs a turn once also if it gets it again | One message of the bot: "Hermes on this Mac does not answer now, so I cannot answer. Write again later." |
+| The gateway stops answering in a turn, the turn fails, it runs over 30 minutes, it ends without a word, Coconut has a fault in the turn, or the trigger waited in the queue over one hour | The complete messages, then one message: "I could not finish my answer. Write again if you still need it." |
+| The service stops in a turn. Hermes ends the turn too: a clean stop stops each running turn while the listener still answers, and waits up to 10 seconds until the adapters collected the stops. After a crash, the adapter of the team mode stops a turn when a new service does not know it (`unknown` in the answer of a poll), or when it cannot reach the service for 30 seconds. An update drains the service first, so no turn runs while it restarts. A late reply of a stopped turn, and the answer of Hermes to its `/stop`, stay in the log of Hermes | The same message at the next start. The trigger does not run again. |
+| The chat of the bot goes off, the bot leaves the team, this Mac leaves, the member leaves, or the message is removed | Nothing. The turn stops or does not start. |
+| The relay refuses the write of a reply | Nothing. The relay client tries three times, then the service writes a log line. |
+
 ### Team-only mode
 
 A Mac can run a production Hermes agent with no person at it and no Coconut. Such a Mac runs Coconut "team only" (`backend/coconut/team_only.py`), so its agent can publish pages to the team. The full service does much more than a team needs, and it changes the Hermes profiles of the Mac. The team-only service does none of that.
@@ -549,18 +585,19 @@ What the service does:
 - It keeps the team rooms of this Mac in step with the relay: the store, the sync thread, the socket watcher and the helper, as on a full Mac.
 - It serves the team routes on the main listener with the token of the bridge file, so `coconut team` and `scripts/team.py` work as on a full Mac. Only the routes of this section, the team routes and `POST /v1/gateway/document` need the token. Each other route, and a pair request, answers 503 with `{"error": ..., "code": "team_only"}`. `GET /health` works.
 - It keeps the bots that this Mac declares, and it saves their pages.
+- It gives the messages that name a bot with its chat connected to the Hermes gateway of that bot, and writes the replies into the chat. See [A bot answers](#a-bot-answers). For that, the main listener also serves `POST /v1/gateway/poll`, `/v1/gateway/events` and `/v1/gateway/messages` with the token of the bridge file. No other route of the gateway answers.
 
-What the service never does: it imports no Hermes module and no module of the full service (`service.py` and what it loads), and it runs no contract check of Hermes. It reads and changes no file under a Hermes home. It starts and stops no gateway, loads and installs no plugin and no skill, and copies no key. It runs no scheduler, no kanban adapter and no worker. It opens no tunnel listener, also with `--tunnel-port`, pairs no phone and sends no push notification. It keeps no event, because no phone reads one. Its only child process is the team helper.
+What the service never does: it imports no Hermes module and no module of the full service (`service.py` and what it loads), and it runs no contract check of Hermes. It reads and changes no file under a Hermes home. Only the command of the operator `coconut team connect-chat --confirm` adds the plugin to the Hermes home of a bot, in a process of its own (`scripts/team_chat.py`), and `coconut team disconnect-chat` takes it away. It starts and stops no gateway, loads and installs no plugin and no skill, and copies no key. It runs no scheduler, no kanban adapter and no worker. It opens no tunnel listener, also with `--tunnel-port`, pairs no phone and sends no push notification. It keeps no event, because no phone reads one. Its only child process is the team helper.
 
 A bot of a team-only Mac is a record, because the Mac scans no Hermes profile. A record has an ID, a name, an avatar and a color with the rules of a `member` entry, and the Hermes home that the bot stands for. The home is a full path, and the service keeps its real path (`realpath`). Without a home, the service takes its own: `HERMES_HOME`, else `~/.hermes`. The service only stores and compares the path. It never opens it. One home has one bot, and one name (case does not matter) has one bot, because a tool finds a bot by its name. The routes, each with the token of the bridge file:
 
 | Request | Answer |
 | --- | --- |
 | `GET /v1/team/status` | `mode` (`"team"`), `version` (the commit of the checkout that runs, or null), `helper`, `bots` (the count), and each room in short form: `room`, `name`, `state`, `members` and `bots` (counts), `synced_at`, `error` and `socket`. |
-| `GET /v1/team/bots` | `bots`: for each bot `id`, `name`, `avatar`, `color`, `home` and `teams` (the room IDs that it is shared with). |
+| `GET /v1/team/bots` | `bots`: for each bot `id`, `name`, `avatar`, `color`, `home`, `teams` (the room IDs that it is shared with), `chat` (true while it answers in the team chat), `plugin` (true while its Hermes home has, or may have, the team chat) and `adapter` (true while the adapter of its Hermes gateway polls). |
 | `POST /v1/team/bots`, body `{name, avatar, color, home}` | Declares a bot. A second bot for one home, or for one name, answers 409. |
-| `PATCH /v1/team/bots/<bot>`, body `{name, avatar, color}` | Changes what the team sees for the bot. The home stays: a body with `home` answers 400. |
-| `DELETE /v1/team/bots/<bot>` | Stops sharing the bot with each room, as `DELETE /v1/team/rooms/<room>/bots/<bot_id>` does, deletes its pages, and deletes the bot, in one transaction. The next pass writes the `delete` entries. |
+| `PATCH /v1/team/bots/<bot>`, body `{name, avatar, color, chat, plugin}` | Changes what the team sees for the bot. The home stays: a body with `home` answers 400. `chat` and `plugin` are true or false. Only `coconut team connect-chat` and `disconnect-chat` set them: `plugin` is true from before the first change of the Hermes home until a clean-up that worked, and `chat` is true while the bot answers. A change of `chat` to false stops the running turns of the bot. |
+| `DELETE /v1/team/bots/<bot>` | Stops sharing the bot with each room, as `DELETE /v1/team/rooms/<room>/bots/<bot_id>` does, deletes its pages, and deletes the bot, in one transaction. The next pass writes the `delete` entries. A bot with `chat` or `plugin` answers 409 with the command to run first: the plugin in its Hermes home would stay. |
 
 `GET /v1/team/rooms` also has `"mode": "team"`, and `mac_bots` lists the declared bots. `coconut team new-bot <name> [--home <path>]` declares a bot. `coconut team add-bot <bot>` on a team-only Mac without that bot does not guess: it prints one line that says how to declare it. On a full Mac, `new-bot` says that the Mac takes its bots from its Hermes profiles.
 

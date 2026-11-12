@@ -107,6 +107,11 @@ def uninstall(confirmed: bool = False) -> None:
     without a person."""
     # A team-only install added nothing to Hermes (backend/coconut/team_only.py), so its removal edits nothing there.
     team_only = host.install_mode() == host.TEAM_MODE
+    chats = host.connected_chats() if team_only else []
+    if chats:
+        # The plugin in the Hermes home would point to a folder that goes to the Trash.
+        raise SystemExit(f"The Hermes home of {', '.join(chats)} has the team chat of Coconut. For each bot, run "
+                         "coconut team disconnect-chat <bot>, then remove Coconut.")
     if team_only and host.login_item_loaded():
         # The login item would start the service again on an empty data folder.
         raise SystemExit("Coconut.app runs this service. Turn off Start at Login in the Coconut menu, then run this "
@@ -114,7 +119,7 @@ def uninstall(confirmed: bool = False) -> None:
     run([sys.executable, "scripts/cleanup.py"])
     if team_only:
         print("This removes the teams of this Mac, their keys, the bots of this Mac and their pages stored in the local runtime. "
-              "Coconut changed nothing in Hermes, so Hermes stays as it is.")
+              "No team chat is connected to Hermes, so Hermes stays as it is.")
     else:
         print("This removes Coconut's conversations, files, and model keys stored in the local runtime. Your Hermes stays.")
     if not confirmed and input("Type DELETE to continue: ").strip() != "DELETE":

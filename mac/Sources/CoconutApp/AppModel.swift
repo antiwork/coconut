@@ -240,16 +240,29 @@ final class AppModel: ObservableObject {
             UpdatePreferences().record(UpdateResult(time: Date(), outcome: .failed, message: line))
         }
         guard mode == .team else { return failed(RemoveRequest.fullInstall) }
-        activity = "Removing Coconut…"
-        UserDefaults.standard.set(false, forKey: Self.startAtLoginKey)
         let install = install
-        // Each change of a login item is a request to launchd, and the uninstaller waits for the stop of the service, so
-        // both run off the main thread (pull request 441).
+        let key = Self.startAtLoginKey
+        // The menu shows the removal at once, also while the question of the store waits for a busy store.
+        activity = "Removing Coconut…"
+        // The question of the store, each change of a login item and the uninstaller run off the main thread (pull
+        // request 441), in the order of RemoveRequest.run: a refusal of the question changes nothing, also not Start at
+        // Login, so the service keeps running, and each bot keeps answering.
         let failure = await Task.detached(priority: .utility) { () -> String? in
-            if let failure = LoginItems().unregister() { return failure }
-            return Self.uninstall(install)
+            RemoveRequest.run(install: install,
+                              unregister: {
+                                  UserDefaults.standard.set(false, forKey: key)
+                                  return LoginItems().unregister()
+                              },
+                              unloaded: RemoveRequest.serviceUnloaded, uninstall: { Self.uninstall(install) },
+                              register: { LoginItems().register(for: .team) })
         }.value
-        if let failure { return failed(failure) }
+        if let failure {
+            // A removal that put the login items back keeps Start at Login.
+            if failure.hasSuffix(RemoveRequest.restored) {
+                UserDefaults.standard.set(true, forKey: Self.startAtLoginKey)
+            }
+            return failed(failure)
+        }
         // A later set-up starts clean: coconut status shows no old update error.
         RemoveRequest.preferenceKeys.forEach { UserDefaults.standard.removeObject(forKey: $0) }
         NSApp.terminate(nil)

@@ -924,6 +924,9 @@ class TeamOnlyTests(unittest.TestCase):
 
         # The removal of the bot takes its page out of Ada's Library.
         (bot,) = self.reporter.call('GET', '/v1/team/bots')[1]['bots']
+        # A bot whose chat is connected waits for disconnect-chat, which first sets chat to false.
+        self.assertEqual(self.reporter.call('DELETE', f'/v1/team/bots/{bot["id"]}')[0], 409)
+        self.assertEqual(self.reporter.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': False})[0], 200)
         self.assertEqual(self.reporter.call('DELETE', f'/v1/team/bots/{bot["id"]}')[0], 200)
         self.wait_until(lambda: self.library() == {'pages': [], 'bots': []}, self.LIMIT_SECONDS + 5)
 

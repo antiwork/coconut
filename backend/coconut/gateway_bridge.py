@@ -46,6 +46,12 @@ SILENT_SECONDS = 90
 # HERMES_CRON_TIMEOUT (600 s by default), and the plugin then reports its end.
 CRON_SILENT_SECONDS = 3 * 3600
 ADAPTER_SECONDS = 60
+# A turn of the team chat counts as taken only when the adapter that got it shows that it has it: an event of the
+# turn, or a later poll that lists it in `active`. A living adapter does both at once: it lists a turn that it took in
+# its next poll, which it sends as soon as it gave the turns to Hermes. A gateway that stops can still hold a poll for
+# some seconds and take a turn that it drops. So a poll of the same home that starts this long after the hand-out and
+# does not list the turn takes it again, and a turn that nobody shows for TAKE_SECONDS counts as not taken.
+HANDOFF_SECONDS = 5
 MAX_TEXT = 200_000
 # `delta` stays known: a gateway that still runs the plugin of an earlier version sends partial text for each turn.
 # The bridge drops it (event), so the turn goes on with its complete sends. Remove `delta` when no install has that plugin.
@@ -150,6 +156,11 @@ class _Turn:
         self.silent, self.commentary = False, True
         # The context (a follow-up on a pending card) that this turn answers, or None (gateway_chat.run_gateway_context).
         self.context_id = None
+        # The monotonic time at which a turn of the team chat stops (team_turns.TURN_SECONDS), or None.
+        self.deadline = None
+        # A turn of the team chat (team_turns.py), the time of its last hand-out to a poll, and whether the adapter
+        # showed that it has it (HANDOFF_SECONDS).
+        self.team, self.taken, self.shown = False, 0.0, False
 
 
 class GatewayBridge:
@@ -195,7 +206,8 @@ class GatewayBridge:
         home = os.path.realpath(home)
         active = {value for value in data.get('active') or [] if isinstance(value, str)}
         wait = max(0.0, min(float(data.get('wait', POLL_SECONDS)), POLL_SECONDS))
-        deadline = time.monotonic() + wait
+        started = time.monotonic()
+        deadline = started + wait
         with self.lock:
             while True:
                 current = time.monotonic()
@@ -203,7 +215,12 @@ class GatewayBridge:
                 mine = [turn for turn in self.turns.values() if turn.home == home]
                 for turn in mine:
                     if turn.id in active:
-                        turn.seen = current
+                        turn.seen, turn.shown = current, True
+                    elif (turn.team and turn.state == 'active' and not turn.shown
+                          and turn.taken + HANDOFF_SECONDS < started):
+                        # The adapter that got this turn did not show it, and an adapter of the home polls without
+                        # it: nothing of the turn ran, so this poll takes it again.
+                        turn.state, turn.created = 'pending', current
                 offered = [turn for turn in mine if turn.state == 'pending']
                 stopping = [turn for turn in mine if turn.state == 'stopping']
                 if offered or stopping or self.answers.get(home) or self.closed or current >= deadline:
@@ -211,13 +228,19 @@ class GatewayBridge:
                 self.lock.wait(deadline - current)
             for turn in offered:
                 turn.state, turn.seen = 'active', time.monotonic()
+                turn.taken, turn.shown = turn.seen, False
             for turn in stopping:
                 self.turns.pop(turn.id, None)
             answers = self.answers.pop(home, [])
             self.lock.notify_all()
+            # A turn that the adapter lists and that this process does not know, for example after a restart of the
+            # service: the adapter of the team mode stops it (hermes_plugin/coconut/team.py). Another adapter ignores it.
+            unknown = sorted(active - set(self.turns))
         result = {'turns': [turn.request for turn in offered], 'stop': [turn.chat_id for turn in stopping]}
         if answers:
             result['answers'] = answers
+        if unknown:
+            result['unknown'] = unknown
         return result
 
     def event(self, data: dict) -> dict:
@@ -233,7 +256,7 @@ class GatewayBridge:
             if turn is None or turn.state != 'active':
                 # A cancelled or finished turn. The gateway may still send its last messages.
                 return {'ok': False}
-            turn.seen = time.monotonic()
+            turn.seen, turn.shown = time.monotonic(), True
             if kind == 'delta':
                 return {'ok': True}
             turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome',
@@ -283,11 +306,18 @@ class GatewayBridge:
             self.turns[turn.id] = turn
         return turn.id
 
-    def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, *, chat_name: str = 'Coconut',
+    def run_turn(self, task_id: str, home, chat_id: str, text: str, emit, **options) -> None:
+        """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends. See
+        submit_turn for the options."""
+        self.follow(self.submit_turn(task_id, home, chat_id, text, **options), emit)
+
+    def submit_turn(self, task_id: str, home, chat_id: str, text: str, *, chat_name: str = 'Coconut',
                  session_root: str | None = None, silent: bool = False, commentary: bool = True,
                  context_id: str | None = None, mode: str | None = None, own: str | None = None,
-                 folder: str | None = None, command: str | None = None, records: list | None = None) -> None:
-        """Give the turn to the adapter of `home` and translate its events with `emit` until the turn ends.
+                 folder: str | None = None, command: str | None = None, records: list | None = None,
+                 team: dict | None = None, deadline: float | None = None) -> str:
+        """Register a turn for the adapter of `home`, and return its ID for follow(). From then on, cancel() of its
+        task stops it, also before an adapter takes it.
 
         With `silent`, the turn may end in silence. Without `commentary`, it shows no commentary (TurnEvents). With
         `context_id`, the turn answers a follow-up on a pending card: the plugin blocks the card tools in it. With `own`, the turn's own text, Hermes saves only `own`
@@ -295,7 +325,10 @@ class GatewayBridge:
         With `folder`, the terminal commands of the turn run in that folder, as in a worker of a native outcome
         (hooks.guard_tool). With `command`, a command of Hermes that the person typed
         (gateway_chat.gateway_command), the adapter gives the gateway that command instead of a message. `records` are the
-        records that the session of the chat keeps once (native_conversation.turn_records, hooks.add_records)."""
+        records that the session of the chat keeps once (native_conversation.turn_records, hooks.add_records).
+        `team` makes a turn of the team chat of a team-only Mac (team_turns.py): the sender, the context and the rules
+        of the chat, which the adapter of the team mode reads. It has no task and no session root. `deadline` stops
+        the turn at that monotonic time."""
         turn = _Turn(task_id, os.path.realpath(home), chat_id, text, chat_name, session_root)
         if own is not None:
             turn.request['own'] = own
@@ -305,6 +338,10 @@ class GatewayBridge:
             turn.request['command'] = command
         if records:
             turn.request['records'] = records
+        if team is not None:
+            turn.request['team'] = team
+            turn.team = True
+        turn.deadline = deadline
         turn.silent, turn.commentary = silent, commentary
         if context_id:
             turn.context_id = context_id
@@ -323,7 +360,7 @@ class GatewayBridge:
                 del self.turns[old.id]
             self.turns[turn.id] = turn
             self.lock.notify_all()
-        self.follow(turn.id, emit)
+        return turn.id
 
     def follow(self, turn_id: str, emit) -> None:
         """Translate the events of a registered turn with `emit` until the turn ends."""
@@ -335,15 +372,23 @@ class GatewayBridge:
                 with self.lock:
                     while not turn.events and turn.state in ('pending', 'active') and not self.closed:
                         current = time.monotonic()
+                        if turn.deadline is not None and current > turn.deadline:
+                            raise TimeoutError('The turn ran past its time.')
                         if turn.state == 'pending' and current - turn.created > TAKE_SECONDS:
                             raise GatewayUnavailable('No Hermes gateway took this turn.')
                         if turn.state == 'active' and current - turn.seen > turn.silent_seconds:
                             raise RuntimeError('The Hermes gateway stopped answering during this turn.')
+                        if turn.team and turn.state == 'active' and not turn.shown and current - turn.taken > TAKE_SECONDS:
+                            # A living adapter shows a turn at once. One that never does dropped it, so nothing ran.
+                            raise GatewayUnavailable('No Hermes gateway kept this turn.')
                         self.lock.wait(1)
                     if turn.state in ('cancelled', 'stopping'):
                         return
                     if self.closed and not turn.events:
                         raise RuntimeError('The Coconut service stops.')
+                    if turn.deadline is not None and time.monotonic() > turn.deadline:
+                        # A turn that sends without a pause also stops at its time.
+                        raise TimeoutError('The turn ran past its time.')
                     batch, turn.events = turn.events, []
                 for event in batch:
                     if events.apply(event):

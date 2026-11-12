@@ -158,15 +158,66 @@ final class InstallModeTests: XCTestCase {
     ]
 
     static let bots: [String: Any] = ["bots": [["id": "b1", "name": "Reporter", "avatar": "", "color": "",
-                                                "home": "/h", "teams": ["r1"]],
+                                                "home": "/h", "teams": ["r1"], "chat": true, "adapter": true],
                                                ["id": "b2", "name": "Planner", "avatar": "", "color": "",
-                                                "home": "/p", "teams": []]]]
+                                                "home": "/p", "teams": [], "chat": false, "adapter": false]]]
 
     func service(status: [String: Any] = answer, bots: [String: Any] = bots) -> FakeService {
         let service = FakeService()
         service.answer("GET", "/v1/team/status", status)
-        service.answer("GET", "/v1/team/bots", bots)
+        // The home "/h" of the fixtures is a Hermes home with the team chat, so its status has no problem line.
+        let list = (bots["bots"] as? [[String: Any]] ?? []).map { bot -> [String: Any] in
+            var bot = bot
+            if bot["home"] as? String == "/h" { bot["home"] = connectedHome().path }
+            return bot
+        }
+        service.answer("GET", "/v1/team/bots", ["bots": list])
         return service
+    }
+
+    /// A Hermes home with the changes of connect-chat: the link to a plugin folder and an entry in config.yaml.
+    func connectedHome() -> URL {
+        let agent = home.appendingPathComponent("agent", isDirectory: true)
+        let plugin = home.appendingPathComponent("hermes_plugin/coconut", isDirectory: true)
+        try? FileManager.default.createDirectory(at: plugin, withIntermediateDirectories: true)
+        try? Data("name: coconut\n".utf8).write(to: plugin.appendingPathComponent("plugin.yaml"))
+        try? FileManager.default.createDirectory(at: agent.appendingPathComponent("plugins"),
+                                                 withIntermediateDirectories: true)
+        try? FileManager.default.createSymbolicLink(at: agent.appendingPathComponent("plugins/coconut"),
+                                                    withDestinationURL: plugin)
+        try? Data("plugins:\n  enabled:\n    - coconut\n".utf8).write(to: agent.appendingPathComponent("config.yaml"))
+        return agent
+    }
+
+    func testTheStatusNamesWhatIsWrongInTheHermesHomeOfABotWhoseChatIsOn() throws {
+        let agent = connectedHome()
+        let link = agent.appendingPathComponent("plugins/coconut")
+        let config = agent.appendingPathComponent("config.yaml")
+        XCTAssertNil(TeamServiceStatus.Chat.homeProblem(bot: "Reporter", home: agent.path))
+        // The link points at a folder without the plugin: Hermes skips it without a log line.
+        let empty = home.appendingPathComponent("empty", isDirectory: true)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: empty)
+        XCTAssertEqual(TeamServiceStatus.Chat.homeProblem(bot: "Reporter", home: agent.path),
+                       "\(link.path) (it points at \(empty.path)) has no Coconut plugin. Remove it, then run: coconut "
+                       + "team connect-chat Reporter --confirm")
+        // The link is missing while the record says connected.
+        try FileManager.default.removeItem(at: link)
+        XCTAssertEqual(TeamServiceStatus.Chat.homeProblem(bot: "Reporter", home: agent.path),
+                       "\(link.path) is missing. To repair it, run: coconut team connect-chat Reporter --confirm")
+        // The entries of the config are missing while the link is there.
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL:
+                                                    home.appendingPathComponent("hermes_plugin/coconut"))
+        try Data("model:\n  default: example\n".utf8).write(to: config)
+        XCTAssertEqual(TeamServiceStatus.Chat.homeProblem(bot: "Night Reporter", home: agent.path),
+                       "\(config.path) has no entry of Coconut. To repair it, run: coconut team connect-chat "
+                       + "'Night Reporter' --confirm")
+        // The line of the status says it, and does not ask for a restart.
+        let chat = TeamServiceStatus.Chat(bot: "Reporter", connected: true, hermes: false,
+                                          problem: TeamServiceStatus.Chat.homeProblem(bot: "Reporter", home: agent.path))
+        XCTAssertTrue(chat.line.hasPrefix("Team chat of Reporter: on, but \(config.path) has no entry"), chat.line)
+        XCTAssertFalse(chat.line.contains("Restart"))
     }
 
     func testTheTeamStatusComesFromTheTeamOnlyRoutes() async throws {
@@ -195,6 +246,8 @@ final class InstallModeTests: XCTestCase {
             "Mode: team only",
             "Service: running (/Users/example/Coconut)",
             "Bots: Reporter, Planner",
+            "Team chat of Reporter: on. Hermes takes the messages.",
+            "Team chat of Planner: off. To turn it on, run: coconut team connect-chat Planner",
             "Team: Example Team (active): 3 members, 2 bots, connected",
             "Team: Second Team (active): 1 member, 0 bots, not connected",
             "Sync error: The relay refused the request.",
@@ -208,6 +261,17 @@ final class InstallModeTests: XCTestCase {
             "Bots: none. To add one, run: coconut team new-bot <name>",
             "Teams: none. To join one, pipe an invite link to: coconut team join",
         ])
+        // A bot with its chat whose Hermes gateway does not poll, and a service before the team chat.
+        let waiting = ["bots": [["id": "b1", "name": "Night Reporter", "home": "/h", "chat": true, "adapter": false],
+                                ["id": "b2", "name": "Planner", "home": "/p"],
+                                ["id": "b3", "name": "Writer", "home": "/w", "chat": false, "plugin": true]]]
+        let older = try await TeamServiceStatus.fetch(transport: service(bots: waiting))
+        XCTAssertEqual(older.chats.map(\.line), [
+            "Team chat of Night Reporter: on, but Hermes does not take the messages. Restart the Hermes gateway of "
+                + "Night Reporter.",
+            "Team chat of Planner: off. To turn it on, run: coconut team connect-chat Planner",
+            "Team chat of Writer: not finished. To turn it on, run: coconut team connect-chat Writer --confirm. To turn "
+                + "it off, run: coconut team disconnect-chat Writer"])
         XCTAssertEqual(lines(.failure(.noAnswer), service: .stopped).suffix(2),
                        ["Service: stopped (/Users/example/Coconut)", "Teams: unknown, because the service does not answer."])
         // No word of the code reaches the reader.
@@ -226,6 +290,7 @@ final class InstallModeTests: XCTestCase {
         XCTAssertEqual(object["mode"] as? String, "team")
         XCTAssertEqual(object["service"] as? String, "running")
         XCTAssertEqual(object["bots"] as? [String], ["Reporter", "Planner"])
+        XCTAssertEqual((object["team_chats"] as? [[String: Any]])?.map { $0["connected"] as? Bool }, [true, false])
         XCTAssertEqual((object["teams"] as? [[String: Any]])?.first?["synced_at"] as? String, "2026-11-11T10:00:00Z")
         XCTAssertNil(object["hermes"])
         XCTAssertNil(object["relay"])
@@ -323,6 +388,142 @@ final class InstallModeTests: XCTestCase {
         let files = try FileManager.default.contentsOfDirectory(atPath: install.data.path)
         XCTAssertTrue(TeamFolderMark.isTeamOnly(install: install))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: install.data.path), files)
+    }
+
+    /// A removal with stand-ins of its steps, which records each step. `loadedRounds` is how many checks of launchd
+    /// still find the job of the service, and `uninstall` the line of the uninstaller.
+    func remove(_ install: Install, steps: inout [String], loadedRounds: Int = 0,
+                uninstall: String? = nil) -> String? {
+        var rounds = loadedRounds
+        var recorded: [String] = []
+        let line = RemoveRequest.run(install: install, unregister: { recorded.append("unregister"); return nil },
+                                     unloaded: { recorded.append("check"); rounds -= 1; return rounds < 0 },
+                                     uninstall: { recorded.append("uninstall"); return uninstall },
+                                     register: { recorded.append("register"); return nil },
+                                     wait: { _ in })
+        steps = recorded
+        return line
+    }
+
+    func botsStore(_ rows: String = "") throws -> Install {
+        try makeStore("CREATE TABLE bots (id TEXT PRIMARY KEY, data TEXT NOT NULL); " + rows)
+    }
+
+    func testARemovalAsksFirstAndARefusalChangesNothing() throws {
+        var steps: [String] = []
+        // A bot whose chat is connected, and a bot whose clean-up did not finish: nothing runs.
+        let install = try botsStore("INSERT INTO bots VALUES ('a', '{\"name\": \"Reporter\", \"chat\": true}'); "
+                                    + "INSERT INTO bots VALUES ('b', '{\"name\": \"Planner\", \"chat\": false}'); "
+                                    + "INSERT INTO bots VALUES ('c', '{\"name\": \"Writer\", \"plugin\": true}');")
+        XCTAssertEqual(remove(install, steps: &steps), "The Hermes home of Reporter, Writer has the team chat of Coconut. "
+                       + "For each bot, run coconut team disconnect-chat <bot>, then remove Coconut.")
+        XCTAssertEqual(steps, [])
+        // Without them, the steps run in their order.
+        var db: OpaquePointer?
+        sqlite3_open(install.data.appendingPathComponent("coconut.sqlite3").path, &db)
+        sqlite3_exec(db, "DELETE FROM bots WHERE id != 'b'", nil, nil, nil)
+        sqlite3_close(db)
+        XCTAssertNil(remove(install, steps: &steps))
+        XCTAssertEqual(steps, ["unregister", "check", "uninstall"])
+        // A store without bots, and no store, have nothing to ask.
+        try FileManager.default.removeItem(at: install.data)
+        XCTAssertNil(RemoveRequest.refusal(install: install))
+        XCTAssertNil(RemoveRequest.refusal(install: try makeStore("CREATE TABLE devices (id TEXT PRIMARY KEY);")))
+    }
+
+    func testARemovalAsksTheQuestionOnceAndBeforeEachStep() throws {
+        let install = try botsStore()
+        var steps: [String] = []
+        let line = RemoveRequest.run(install: install,
+                                     question: { steps.append("asked"); return RemoveRequest.refusal(install: $0) },
+                                     unregister: { steps.append("unregister"); return nil },
+                                     unloaded: { steps.append("check"); return true },
+                                     uninstall: { steps.append("uninstall"); return nil },
+                                     register: { steps.append("register"); return nil }, wait: { _ in })
+        XCTAssertNil(line)
+        XCTAssertEqual(steps, ["asked", "unregister", "check", "uninstall"])
+        // A refusal of the question runs no step.
+        steps = []
+        XCTAssertEqual(RemoveRequest.run(install: install, question: { _ in steps.append("asked"); return "No." },
+                                         unregister: { steps.append("unregister"); return nil },
+                                         unloaded: { true }, uninstall: { steps.append("uninstall"); return nil },
+                                         register: { steps.append("register"); return nil }), "No.")
+        XCTAssertEqual(steps, ["asked"])
+    }
+
+    func testARemovalWaitsForLaunchdAndPutsTheLoginItemsBackWhenItStops() throws {
+        var steps: [String] = []
+        let install = try botsStore()
+        // The job of the service goes after three checks: the uninstaller runs after that.
+        XCTAssertNil(remove(install, steps: &steps, loadedRounds: 3))
+        XCTAssertEqual(steps, ["unregister", "check", "check", "check", "check", "uninstall"])
+        // A job that does not go: the login items come back, and nothing else ran.
+        let line = remove(install, steps: &steps, loadedRounds: 1000)
+        XCTAssertEqual(line, "launchd did not stop the Coconut service within 30 seconds, so Coconut removed nothing."
+                       + RemoveRequest.restored)
+        XCTAssertEqual(steps.filter { $0 != "check" }, ["unregister", "register"])
+        // An uninstaller that refuses with the store still there removed nothing: the login items come back.
+        let refused = "Coconut.app runs this service. Turn off Start at Login in the Coconut menu, then run this command again."
+        XCTAssertEqual(remove(install, steps: &steps, uninstall: refused), refused + RemoveRequest.restored)
+        XCTAssertEqual(steps, ["unregister", "check", "uninstall", "register"])
+        // An uninstaller that removed the store and then failed keeps its line: the data is gone.
+        try FileManager.default.removeItem(at: install.data.appendingPathComponent("coconut.sqlite3"))
+        XCTAssertEqual(remove(install, steps: &steps, uninstall: "The Trash failed."), "The Trash failed.")
+        XCTAssertEqual(steps, ["unregister", "check", "uninstall"])
+    }
+
+    func testTheQuestionReadsAStoreAfterAKilledWriterAndWhileAnotherProcessHoldsIt() throws {
+        // A store in WAL mode whose writer was killed: the copy has the -wal file and no -shm file, so a reader must
+        // recover the log first, which a read-only connection cannot do.
+        let source = home.appendingPathComponent("source", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        var writer: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(source.appendingPathComponent("coconut.sqlite3").path, &writer), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(writer, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; "
+                                    + "CREATE TABLE bots (id TEXT PRIMARY KEY, data TEXT NOT NULL); "
+                                    + "INSERT INTO bots VALUES ('a', '{\"name\": \"Reporter\", \"chat\": true}');",
+                                    nil, nil, nil), SQLITE_OK)
+        let install = Install(root: home.appendingPathComponent("killed", isDirectory: true))
+        try FileManager.default.createDirectory(at: install.data, withIntermediateDirectories: true)
+        for name in ["coconut.sqlite3", "coconut.sqlite3-wal"] {
+            try FileManager.default.copyItem(at: source.appendingPathComponent(name),
+                                             to: install.data.appendingPathComponent(name))
+        }
+        sqlite3_close(writer)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: install.data.appendingPathComponent("coconut.sqlite3-wal").path))
+        XCTAssertEqual(RemoveRequest.refusal(install: install), "The Hermes home of Reporter has the team chat of "
+                       + "Coconut. For each bot, run coconut team disconnect-chat <bot>, then remove Coconut.")
+        // A store that another process holds for two seconds, for example the service while it starts.
+        let held = try botsStore("INSERT INTO bots VALUES ('a', '{\"name\": \"Planner\", \"plugin\": true}');")
+        let path = held.data.appendingPathComponent("coconut.sqlite3").path
+        var holder: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path, &holder), SQLITE_OK)
+        XCTAssertEqual(sqlite3_exec(holder, "BEGIN EXCLUSIVE", nil, nil, nil), SQLITE_OK)
+        let released = expectation(description: "released")
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+            sqlite3_exec(holder, "COMMIT", nil, nil, nil)
+            sqlite3_close(holder)
+            released.fulfill()
+        }
+        let started = Date()
+        XCTAssertEqual(RemoveRequest.refusal(install: held), "The Hermes home of Planner has the team chat of Coconut. "
+                       + "For each bot, run coconut team disconnect-chat <bot>, then remove Coconut.")
+        XCTAssertGreaterThan(Date().timeIntervalSince(started), 1.5)
+        wait(for: [released], timeout: 5)
+    }
+
+    func testAStoreThatIsNotADatabaseRefusesAndChangesNothing() throws {
+        let install = Install(root: home)
+        try FileManager.default.createDirectory(at: install.data, withIntermediateDirectories: true)
+        let store = install.data.appendingPathComponent("coconut.sqlite3")
+        try Data(String(repeating: "not a database ", count: 100).utf8).write(to: store)
+        let before = try Data(contentsOf: store)
+        var steps: [String] = []
+        XCTAssertEqual(remove(install, steps: &steps),
+                       "Coconut could not read its store, so it removed nothing. Run coconut status, then try again.")
+        XCTAssertEqual(steps, [])
+        XCTAssertEqual(try Data(contentsOf: store), before)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: install.data.path), ["coconut.sqlite3"])
     }
 
     // MARK: The timeouts

@@ -34,7 +34,7 @@ TEAM_ONLY_MODULES = {'coconut', 'coconut.server', 'coconut.service_base', 'cocon
                      'coconut.gateway_bridge', 'coconut.silent_responses', 'coconut.service_restart', 'coconut.team',
                      'coconut.team_helper', 'coconut.team_keys', 'coconut.team_messages', 'coconut.team_pages',
                      'coconut.team_relay', 'coconut.team_socket', 'coconut.team_store', 'coconut.team_sync',
-                     'coconut.push_relay'}
+                     'coconut.push_relay', 'coconut.team_turns'}
 
 
 def make_hermes_home(home: Path) -> None:
@@ -571,11 +571,16 @@ class ProcessTests(unittest.TestCase):
         create = {'code': '0123456789', 'device_name': 'iPhone'}
         refusal = {'error': team_only.REFUSAL, 'code': 'team_only'}
         for method, path, body, token in (('POST', '/v1/pair', create, None), ('GET', '/v1/state', None, self.token),
-                                          ('POST', '/v1/gateway/poll', {'home': str(self.home)}, self.token),
                                           ('POST', '/v1/gateway/tools', {}, self.token),
+                                          ('POST', '/v1/gateway/cron', {}, self.token),
+                                          ('POST', '/v1/gateway/files', {}, self.token),
                                           ('GET', '/v1/documents', None, None)):
             with self.subTest(path=path):
                 self.assertEqual(self.request(method, path, body, token), (503, refusal))
+        # The adapter of the team mode polls with the token of the bridge file. No bot has its chat, so no turn comes.
+        self.assertEqual(self.request('POST', '/v1/gateway/poll', {'home': str(self.home), 'wait': 0}, self.token),
+                         (200, {'turns': [], 'stop': []}))
+        self.assertEqual(self.request('POST', '/v1/gateway/poll', {'home': str(self.home), 'wait': 0})[0], 401)
         # No tunnel listener, and no child process without a room.
         with self.assertRaises(ConnectionRefusedError):
             self.request('GET', '/health', port=self.tunnel_port)

@@ -102,7 +102,7 @@ class SkillAuthoringTests(unittest.TestCase):
                     if path.suffix in ('.py', '.yaml')}
         self.assertEqual(expected, {'hermes_plugin/coconut/plugin.yaml', 'hermes_plugin/coconut/__init__.py',
                                     'hermes_plugin/coconut/adapter.py', 'hermes_plugin/coconut/cron.py', 'hermes_plugin/coconut/hooks.py',
-                                    'hermes_plugin/coconut/tools.py'})
+                                    'hermes_plugin/coconut/team.py', 'hermes_plugin/coconut/tools.py'})
         self.assertLessEqual(expected, set(files))
         for name in expected:
             with self.subTest(name=name):

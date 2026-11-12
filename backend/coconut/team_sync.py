@@ -369,6 +369,13 @@ class TeamSync:
         if room_id in self.team_store.chatted:
             self.team_store.chatted.discard(room_id)
             self._event(MESSAGES_EVENT, {'team': room_id})
+        if room_id in self.team_store.triggered:
+            # Only a team-only Mac queues triggers (TeamStore.answers). Its turn thread reads them after the commit.
+            self.team_store.triggered.discard(room_id)
+            self._team_turns_due()
+
+    def _team_turns_due(self) -> None:
+        """A new trigger waits. A full Mac queues none, so it does nothing here. See team_turns.TeamTurns."""
 
     def _team_report(self, room_id: str, results: list) -> None:
         """Write a log line for each entry that the Mac dropped or refused, and one for those that it skipped or
