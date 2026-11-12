@@ -6,8 +6,8 @@ enum MacSelection: Hashable {
     case inbox
     case library
     case bot(String)
-    /// The chat of a team, by room ID.
-    case team(String)
+    /// The Team chat of a team, or a direct chat with one person of a team.
+    case team(TeamChatKey)
 }
 
 /// The tabs of the details next to a chat.
@@ -63,6 +63,13 @@ struct MacMainWindow: View {
         // chat (300) and its details (320). When they did not fit, the sidebar moved out to the left and the right side
         // was cut off.
         .environment(\.openChat) { id in selection = .bot(id) }
+        .environment(\.showTeamChat) { chat in selection = .team(chat) }
+        // The Team screen of the Settings window asks for a direct chat. The window shows it.
+        .onChange(of: model.shownChat, initial: true) { _, chat in
+            guard let chat else { return }
+            selection = .team(chat)
+            model.shownChat = nil
+        }
         .environment(\.openDocument) { id in
             libraryPath = NavigationPath()
             libraryPath.append(DocumentRoute(id: id))
@@ -136,11 +143,11 @@ struct MacMainWindow: View {
             // The pill over the chat names the bot, so the window shows no title of its own. Without this, the title of
             // the bot settings in the details repeats the bot name.
             .toolbar(removing: .title)
-        case .team(let roomId):
+        case .team(let chat):
             // A team has no details column, so the chat takes the whole detail column and has no control for one.
             NavigationStack(path: $chatPath) {
-                TeamChatView(roomId: roomId)
-                    .id(roomId)
+                TeamChatView(chatKey: chat)
+                    .id(chat)
             }
             .ignoresSafeArea(.container, edges: .top)
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
@@ -178,12 +185,15 @@ struct MacSidebar: View {
             }
             if !sections.people.isEmpty {
                 Section("People") {
-                    ForEach(sections.people) { room in
-                        // A team has no pin and no delete here. The Team screen has its leave action.
-                        TeamContactRow(room: room, avatarSize: 32)
-                            .padding(.vertical, 2)
-                            .tag(MacSelection.team(room.room))
-                            .accessibilityIdentifier("sidebar-team-\(room.room)")
+                    ForEach(sections.people) { item in
+                        // A team and a direct chat have no pin and no delete here. The Team screen has the leave
+                        // action.
+                        if let chat = item.chat {
+                            PeopleRow(item: item, avatarSize: 32)
+                                .padding(.vertical, 2)
+                                .tag(MacSelection.team(chat))
+                                .accessibilityIdentifier("sidebar-" + HomeLaunchView.identifier(chat))
+                        }
                     }
                 }
             }
@@ -201,7 +211,7 @@ struct MacSidebar: View {
         }
         // A team that this Mac removed leaves the list too.
         .onChange(of: store.team?.rooms.map(\.room)) { _, ids in
-            if case .team(let id) = selection, let ids, !ids.contains(id) { selection = .inbox }
+            if case .team(let chat) = selection, let ids, !ids.contains(chat.room) { selection = .inbox }
         }
         .safeAreaInset(edge: .bottom) { MacConnectionFooter() }
     }

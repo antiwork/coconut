@@ -4,6 +4,74 @@ import Foundation
 // other members of the team. So a decode keeps each field that can be missing optional, and a page drops a message
 // that it cannot read instead of the whole page.
 
+/// The key of one chat of a team: the Team chat of a room, or the direct chat of this person with one other member of
+/// the room (docs/team-log.md, "Direct messages"). The view, the route, the store and the paths of the requests use it,
+/// so both chats have one code path. A room ID alone names the Team chat of the room.
+struct TeamChatKey: Hashable, Sendable, ExpressibleByStringLiteral {
+    let room: String
+    /// The member ID of the other person of a direct chat. Nil for the Team chat.
+    var member: String? = nil
+
+    init(room: String, member: String? = nil) {
+        self.room = room
+        self.member = member
+    }
+
+    init(stringLiteral room: String) { self.init(room: room) }
+
+    var isDirect: Bool { member != nil }
+
+    /// The path of the chat on the Mac. The messages and the read position are under it.
+    var path: String {
+        guard let member else { return "team/rooms/\(room)" }
+        return "team/rooms/\(room)/directs/\(member)"
+    }
+}
+
+/// One direct chat of a room, from `directs` of the list of the teams: the other member, its last name, the unread
+/// count and the newest message. A chat with a member that left stays.
+struct TeamDirect: Decodable, Identifiable, Equatable, Sendable {
+    var member: String
+    var memberName: String? = nil
+    var unread: Int? = nil
+    var lastMessage: TeamLastMessage? = nil
+
+    var id: String { member }
+}
+
+/// The other person of a direct chat, as the chat and its row show it.
+struct TeamDirectPeer: Equatable, Sendable {
+    let member: String
+    /// The member entry while the member is in the team. Its face comes from it.
+    let entry: TeamMember?
+    let name: String
+    /// The Mac can send a direct message to the member now.
+    let canReceive: Bool
+
+    /// The line that takes the place of the composer when the person cannot write to the member.
+    var closedLine: String { name + " is no longer in this team." }
+}
+
+extension TeamRoom {
+    /// The member that this person can send a direct message to now: another person whose `direct` is true. The
+    /// service sets `direct` only for a member that can get one, in an active team. Nil for each other member, for an
+    /// older service, and for a member that is not in the list. This is the one place of that rule: the arrow of the
+    /// Team screen, the name above a message and the composer of a direct chat read it.
+    func directMember(_ member: String?) -> TeamMember? {
+        memberList.first { $0.member == member && $0.direct == true && $0.thisMac != true && !$0.isBotOnly }
+    }
+
+    /// The other person of a direct chat. The name comes from the member list, else from the list of the direct
+    /// chats, which keeps the last name of a member that left.
+    func directPeer(_ member: String) -> TeamDirectPeer {
+        let entry = memberList.first { $0.member == member }
+        let name = entry?.name ?? directList.first { $0.member == member }?.memberName ?? TeamNames.formerMember
+        return TeamDirectPeer(member: member, entry: entry, name: name, canReceive: directMember(member) != nil)
+    }
+
+    var directList: [TeamDirect] { directs ?? [] }
+}
+
 /// The newest message of a team, for its row in the Chats list. `text` is the start of the message.
 struct TeamLastMessage: Decodable, Equatable, Sendable {
     var first: Int? = nil
@@ -20,6 +88,8 @@ struct TeamLastMessage: Decodable, Equatable, Sendable {
 /// The answered message that a message quotes: the start of its text.
 struct TeamMessageQuote: Codable, Equatable, Sendable {
     var id: String? = nil
+    /// True for a message of this Mac. A quote in a direct chat has it instead of a member.
+    var thisMac: Bool? = nil
     var member: String? = nil
     var memberName: String? = nil
     var bot: String? = nil
@@ -282,45 +352,79 @@ enum TeamReadPosition {
 enum TeamNames {
     static let formerMember = "Former member"
 
-    /// The writer of a quoted message. `ownMember` is the member ID of this Mac.
-    static func author(of quote: TeamMessageQuote, ownMember: String?) -> String {
+    /// The writer of a quoted message. `ownMember` is the member ID of this Mac. `peer` is the name of the other
+    /// person of a direct chat, whose messages have no name of their own.
+    static func author(of quote: TeamMessageQuote, ownMember: String?, peer: String? = nil) -> String {
         if let bot = quote.botName ?? quote.bot.map({ _ in "Bot" }) { return bot }
+        if quote.thisMac == true { return "You" }
         if let member = quote.member, member == ownMember { return "You" }
-        return quote.memberName ?? formerMember
+        return peer ?? quote.memberName ?? formerMember
     }
 
-    /// The writer of a message, for a quote of a reply in the composer and for VoiceOver.
-    static func author(of message: TeamMessage) -> String {
+    /// The writer of a message of the Team chat, for a quote of a reply in the composer and for VoiceOver.
+    static func author(of message: TeamMessage) -> String { author(of: message, peer: nil) }
+
+    /// The writer of a message of a chat. `peer` as above.
+    static func author(of message: TeamMessage, peer: String?) -> String {
         if message.bot != nil { return message.botName ?? "Bot" }
         if message.isOwn { return "You" }
-        return message.memberName ?? formerMember
+        return peer ?? message.memberName ?? formerMember
     }
 }
 
-/// The second line of the row of a team in the Chats list.
+/// The second line of the row of a team or a direct chat in the Chats list.
 enum TeamChatPreview {
     static let empty = "No messages yet"
 
     /// "Ada: text" for a message of another member, "You: text" for a message of this person, and the name of the bot
-    /// for a message of a bot. An older service does not say whose message it is, so its row never says "You".
-    static func text(_ last: TeamLastMessage?) -> String {
+    /// for a message of a bot. An older service does not say whose message it is, so its row never says "You". A
+    /// direct chat has one other writer, so its row names nobody but "You".
+    static func text(_ last: TeamLastMessage?, direct: Bool = false) -> String {
         guard let last, let text = last.text else { return empty }
         let body = TranscriptPresentation.previewText(text)
         if last.bot != nil || last.botName != nil { return (last.botName ?? "Bot") + ": " + body }
         if last.thisMac == true { return "You: " + body }
+        if direct { return body }
         return (last.memberName ?? TeamNames.formerMember) + ": " + body
     }
 }
 
-/// One row of the Chats list: a bot or a team.
+/// One row of the Chats list: a bot, a team, or a direct chat with one person of a team.
 enum ChatListItem: Identifiable, Equatable {
     case bot(Bot)
     case team(TeamRoom)
+    case direct(TeamRoom, TeamDirect)
 
     var id: String {
         switch self {
         case .bot(let bot): "bot-" + bot.id
         case .team(let room): "team-" + room.room
+        case .direct(let room, let direct): "direct-" + room.room + "-" + direct.member
+        }
+    }
+
+    /// The chat of a team or a direct chat. Nil for a bot.
+    var chat: TeamChatKey? {
+        switch self {
+        case .bot: nil
+        case .team(let room): TeamChatKey(room: room.room)
+        case .direct(let room, let direct): TeamChatKey(room: room.room, member: direct.member)
+        }
+    }
+
+    /// The room of a team or a direct chat. Nil for a bot.
+    var room: String? { chat?.room }
+
+    /// A row of "People": a team or a direct chat.
+    var isPeople: Bool { chat != nil }
+
+    /// The newest activity of a team or a direct chat: its newest message, or for a team the time when this Mac made
+    /// or joined it.
+    fileprivate var peopleActivity: Date {
+        switch self {
+        case .bot: .distantPast
+        case .team(let room): room.lastActivity
+        case .direct(_, let direct): direct.lastMessage?.createdAt?.apiDate ?? .distantPast
         }
     }
 }
@@ -337,28 +441,34 @@ enum ChatList {
     }
 
     /// One list, newest activity first. `bots` is in that order already. The activity of a team is its newest message,
-    /// or the time when this Mac made or joined it. A team and a bot with the same time keep the bot first.
+    /// or the time when this Mac made or joined it, and the activity of a direct chat is its newest message. A team
+    /// or a direct chat and a bot with the same time keep the bot first.
     static func items(bots: [Bot], latest: [String: Date], rooms: [TeamRoom]) -> [ChatListItem] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
-        let teams = rooms.sorted {
-            ($0.lastActivity, $1.room) > ($1.lastActivity, $0.room)
-        }
+        let people = people(rooms)
         var items: [ChatListItem] = []
-        items.reserveCapacity(bots.count + teams.count)
-        var team = teams.startIndex
+        items.reserveCapacity(bots.count + people.count)
+        var next = people.startIndex
         for bot in bots {
-            while team < teams.endIndex, teams[team].lastActivity > activity(bot) {
-                items.append(.team(teams[team]))
-                team += 1
+            while next < people.endIndex, people[next].peopleActivity > activity(bot) {
+                items.append(people[next])
+                next += 1
             }
             items.append(.bot(bot))
         }
-        items += teams[team...].map(ChatListItem.team)
+        items += people[next...]
         return items
+    }
+
+    /// The teams and the direct chats of the rooms, newest activity first. An older service sends no `directs`, so
+    /// its rooms bring the teams only.
+    static func people(_ rooms: [TeamRoom]) -> [ChatListItem] {
+        let items = rooms.flatMap { room in [.team(room)] + room.directList.map { ChatListItem.direct(room, $0) } }
+        return items.sorted { ($0.peopleActivity, $1.id) > ($1.peopleActivity, $0.id) }
     }
 }
 
-/// The filter of the Chats list on an iPhone. "People" has the teams, and later the direct messages.
+/// The filter of the Chats list on an iPhone. "People" has the teams and the direct chats.
 enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
     case all, people, bots
 
@@ -392,17 +502,17 @@ enum ChatFilter: String, CaseIterable, Identifiable, Sendable {
     func items(_ items: [ChatListItem]) -> [ChatListItem] {
         switch self {
         case .all: items
-        case .people: items.filter { if case .team = $0 { true } else { false } }
-        case .bots: items.filter { if case .bot = $0 { true } else { false } }
+        case .people: items.filter(\.isPeople)
+        case .bots: items.filter { !$0.isPeople }
         }
     }
 }
 
-/// The sections of the Mac sidebar: the pinned bots, the people (the teams), and the other bots. Each one newest
-/// activity first.
+/// The sections of the Mac sidebar: the pinned bots, the people (the teams and the direct chats), and the other bots.
+/// Each one newest activity first.
 struct ChatSections: Equatable {
     var pinned: [Bot]
-    var people: [TeamRoom]
+    var people: [ChatListItem]
     var bots: [Bot]
 
     /// One pass over the messages. A section without rows does not show.
@@ -410,8 +520,8 @@ struct ChatSections: Equatable {
         let latest = ChatList.lastMessageDates(messages)
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         let active = bots.filter { !$0.archived }.sorted { activity($0) > activity($1) }
-        let people = rooms.sorted { ($0.lastActivity, $1.room) > ($1.lastActivity, $0.room) }
-        return ChatSections(pinned: active.filter(\.pinned), people: people, bots: active.filter { !$0.pinned })
+        return ChatSections(pinned: active.filter(\.pinned), people: ChatList.people(rooms),
+                            bots: active.filter { !$0.pinned })
     }
 }
 
@@ -570,8 +680,10 @@ enum TeamBotSection {
 
 /// The line under the name in an empty team chat.
 enum TeamChatEmptyLine {
-    /// One sentence, and a second one when the team has a bot that the person can ask (TeamMentions.bots).
-    static func text(for room: TeamRoom) -> String {
+    /// One sentence, and a second one when the team has a bot that the person can ask (TeamMentions.bots). A direct
+    /// chat has one sentence about its person.
+    static func text(for room: TeamRoom, peer: TeamDirectPeer? = nil) -> String {
+        if let peer { return "Messages here go only to \(peer.name)." }
         let line = "Messages here go to each person in \(room.name)."
         return TeamMentions.bots(of: room).isEmpty ? line : line + " Type @ to ask a bot."
     }

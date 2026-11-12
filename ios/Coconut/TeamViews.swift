@@ -149,6 +149,7 @@ private struct TeamEmptyView: View {
 struct TeamRoomView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.showTeamChat) private var showTeamChat
     let roomId: String
     /// True when the list of teams opened this page. The only team shows inside TeamView, which has the title and
     /// the banners.
@@ -264,12 +265,33 @@ struct TeamRoomView: View {
         }
     }
 
+    /// The face, the name and the tags of a member. The row of this person opens the name editor. The row of a person
+    /// that can get a direct message (TeamRoom.directMember) opens the direct chat with that person. Each other row
+    /// opens nothing.
     @ViewBuilder private func memberRow(_ member: TeamMember, in room: TeamRoom) -> some View {
         let tags = [member.thisMac == true ? "You" : nil, member.admin == true ? "Admin" : nil].compactMap { $0 }
-        let label = TeamRowText(name: member.name, note: tags.isEmpty ? nil : tags.joined(separator: " · "))
+        let label = HStack(spacing: 12) {
+            PersonFace(member: member, memberId: member.member, name: member.name, size: avatarSize)
+            TeamRowText(name: member.name, note: tags.isEmpty ? nil : tags.joined(separator: " · "))
+        }
         if member.thisMac == true {
             NavigationLink { TeamNameView(roomId: room.room, name: member.name) } label: { label }
                 .accessibilityIdentifier("team-member-you")
+        } else if room.directMember(member.member) != nil, let showTeamChat {
+            Button { showTeamChat(TeamChatKey(room: room.room, member: member.member)) } label: {
+                HStack(spacing: 8) {
+                    label
+                    // The arrow of a row that opens something, as a navigation link draws it.
+                    Image(systemName: "chevron.right")
+                        .font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityHint("Opens a direct chat")
+            .accessibilityIdentifier("team-member-\(member.member)")
         } else {
             label
         }

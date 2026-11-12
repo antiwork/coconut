@@ -57,17 +57,20 @@ struct HomeLaunchView: View {
                             .buttonStyle(HomePressStyle())
                             .accessibilityIdentifier("bot-conversation-\(bot.id)")
                             .padding(.horizontal, 24)
-                    case .team(let room):
-                        // A team has no pin and no delete here. The Team screen has its leave action.
-                        NavigationLink(value: TeamChatRoute(roomId: room.room)) {
-                            TeamContactRow(room: room)
-                                .padding(.vertical, 12)
-                                .background(BoardStyle.paper)
-                                .contentShape(Rectangle())
+                    case .team, .direct:
+                        // A team and a direct chat have no pin and no delete here. The Team screen has the leave
+                        // action.
+                        if let chat = item.chat {
+                            NavigationLink(value: TeamChatRoute(chat: chat)) {
+                                PeopleRow(item: item)
+                                    .padding(.vertical, 12)
+                                    .background(BoardStyle.paper)
+                                    .contentShape(Rectangle())
+                            }
+                                .buttonStyle(HomePressStyle())
+                                .accessibilityIdentifier(Self.identifier(chat))
+                                .padding(.horizontal, 24)
                         }
-                            .buttonStyle(HomePressStyle())
-                            .accessibilityIdentifier("team-chat-\(room.room)")
-                            .padding(.horizontal, 24)
                     }
                 }
             }
@@ -122,6 +125,11 @@ struct HomeLaunchView: View {
                 .accessibilityIdentifier("pinned-bot-\(bot.id)")
             }
         }.padding(.horizontal, 24)
+    }
+
+    /// "team-chat-<room>" for a team, "direct-chat-<member>" for a direct chat.
+    static func identifier(_ chat: TeamChatKey) -> String {
+        chat.member.map { "direct-chat-" + $0 } ?? "team-chat-" + chat.room
     }
 
     @ViewBuilder

@@ -12,9 +12,9 @@ struct BotSettingsRoute: Hashable {
     let botId: String
 }
 
-/// The chat of a team.
+/// The Team chat of a team, or a direct chat with one person of a team.
 struct TeamChatRoute: Hashable {
-    let roomId: String
+    let chat: TeamChatKey
 }
 
 /// The Team screen of one team. The title of its chat opens it.
@@ -33,6 +33,9 @@ extension EnvironmentValues {
     @Entry var openDocument: ((String) -> Void)? = nil
     /// Opens the chat of a bot. Only the Mac window sets it. Without it, a page pushes the chat onto its stack.
     @Entry var openChat: ((String) -> Void)? = nil
+    /// Shows a chat of a team: the Chats tab on the iPhone, the main window on the Mac. The Team screen and the name
+    /// above a message open a direct chat with it.
+    @Entry var showTeamChat: ((TeamChatKey) -> Void)? = nil
 }
 
 enum HomeDestination: Hashable {

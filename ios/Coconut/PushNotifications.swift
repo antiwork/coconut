@@ -22,7 +22,8 @@ struct NotificationSettingsView: View {
             Section {
                 Text(NotificationSentence.text(level: push.notificationLevel, outside: push.outsideWorkHours,
                                                replies: push.messageNotifications,
-                                               team: store.team?.notifiesPhone ?? false, schedule: push.schedule))
+                                               team: store.team?.notifiesPhone ?? false,
+                                               direct: store.team?.notifiesDirect ?? false, schedule: push.schedule))
                     .accessibilityIdentifier("notification-summary")
             }
             Section {
@@ -388,8 +389,24 @@ enum NotificationDestination: Equatable {
     case conversation(ConversationRoute)
     /// The chat of a team, by its room ID.
     case team(String)
+    /// A direct chat with one person of a team.
+    case direct(TeamChatKey)
     /// The Chats list: a team notification of a team that the app no longer has.
     case chatList
+
+    /// The place of the chat of a team, a Team chat or a direct chat.
+    init(chat: TeamChatKey) {
+        self = chat.isDirect ? .direct(chat) : .team(chat.room)
+    }
+
+    /// The chat that this place shows. Nil for a place that is not a chat of a team.
+    var teamChat: TeamChatKey? {
+        switch self {
+        case .team(let room): TeamChatKey(room: room)
+        case .direct(let chat): chat
+        default: nil
+        }
+    }
 }
 
 struct NotificationTarget: Equatable, Sendable {
@@ -400,13 +417,18 @@ struct NotificationTarget: Equatable, Sendable {
     let messageId: String?
     /// A group counts several items and names none of them.
     var group = false
-    /// The room ID of a team message, or of a group of the messages of one team.
+    /// The room ID of a team message, or of a group of the messages of one team. For a direct message, the room of
+    /// its chat.
     var team: String? = nil
+    /// The other member of a direct chat, for a direct message or a group of the messages of one direct chat.
+    var member: String? = nil
 
     var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId, messageId: messageId) }
+    /// The chat of a team that the notification opens: a Team chat or a direct chat.
+    var chat: TeamChatKey? { team.map { TeamChatKey(room: $0, member: member) } }
 
     func destination(pendingDecisionIds: Set<String>, snapshotReady: Bool) -> NotificationDestination? {
-        if let team { return .team(team) }
+        if let chat { return NotificationDestination(chat: chat) }
         if group { return .inboxList }
         if let decisionId {
             guard snapshotReady else { return nil }
@@ -423,13 +445,29 @@ struct NotificationTarget: Equatable, Sendable {
         // A team message names its room. A group of one team names it too, and each other group names none.
         let room = data["team"] as? String
         guard room == nil || isLowercaseHex64(room!) else { return nil }
+        // A direct message names the room and the other member of its chat. A group of one direct chat names both too.
+        var direct: (room: String, member: String)?
+        if let value = data["direct"], !(value is NSNull) {
+            guard let fields = value as? [String: Any], let room = fields["team"] as? String,
+                  let member = fields["member"] as? String, isLowercaseHex64(room), isLowercaseHex64(member) else {
+                return nil
+            }
+            direct = (room, member)
+        }
         if data["kind"] as? String == "group" {
-            deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; group = true; team = room
+            deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; group = true
+            team = direct?.room ?? room; member = direct?.member
             return
         }
         if data["kind"] as? String == "team" {
             guard let room else { return nil }
             deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; team = room
+            return
+        }
+        if data["kind"] as? String == "direct" {
+            guard let direct else { return nil }
+            deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil
+            team = direct.room; member = direct.member
             return
         }
         guard let bot = data["bot_id"] as? String, UUID(uuidString: bot) != nil,

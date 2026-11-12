@@ -13,6 +13,10 @@ struct TeamRooms: Decodable, Equatable, Sendable {
 
     /// True when a message of at least one team notifies this phone. The sentence of the notification settings reads it.
     var notifiesPhone: Bool { rooms.contains(where: \.notifiesPhone) }
+
+    /// True when an active team has a Mac that serves direct messages. A direct message then notifies this phone. The
+    /// sentence of the notification settings reads it.
+    var notifiesDirect: Bool { rooms.contains { $0.status == .active && $0.directs != nil } }
 }
 
 struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
@@ -37,6 +41,9 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     /// Whether a new message of the team notifies this phone. It is a choice of the person on this Mac. A Mac for a
     /// team only and an older service send none, and the Team screen then has no switch.
     var notifications: Bool? = nil
+    /// The direct chats of this person in the team, newest first. Only a service that serves direct messages sends it,
+    /// for an app that asks with the header `X-Coconut-Team: direct`.
+    var directs: [TeamDirect]? = nil
 
     var id: String { room }
 
@@ -81,6 +88,9 @@ struct TeamMember: Decodable, Identifiable, Equatable, Sendable {
     /// True for a Mac that runs Coconut for a team only: no person is at it. An older service sends none, and none is
     /// false.
     var botOnly: Bool? = nil
+    /// True when this person can send the member a direct message now (TeamRoom.directMember). An older service sends
+    /// none, and none is false.
+    var direct: Bool? = nil
 
     var id: String { member }
     var isBotOnly: Bool { botOnly == true }

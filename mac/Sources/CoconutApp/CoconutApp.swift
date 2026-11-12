@@ -39,7 +39,7 @@ struct CoconutApp: App {
                 if model.mode == .team {
                     TeamOnlyNote()
                 } else {
-                    NavigationStack { TeamView() }
+                    TeamSettings(model: model)
                 }
             }
             .environment(store)
@@ -58,6 +58,21 @@ struct CoconutApp: App {
             PairingView(model: model)
         }
         .windowResizability(.contentSize)
+    }
+}
+
+/// The Team screen in the Settings window. A person on it opens a direct chat: the main window shows the chat in front.
+struct TeamSettings: View {
+    @ObservedObject var model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        NavigationStack { TeamView() }
+            .environment(\.showTeamChat) { chat in
+                model.shownChat = chat
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            }
     }
 }
 
