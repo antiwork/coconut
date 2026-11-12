@@ -154,10 +154,16 @@ MAX_TEXT = 16000
 MAX_MENTIONS = 16
 # The unread count of a room stops here, so the count reads at most this many rows.
 MAX_UNREAD = 99
-# The check of a mention (`mentioned`) reads at most this many unread messages, the newest first. GET /v1/team/rooms
-# runs it for each room on each load, so it needs a bound. It is larger than MAX_UNREAD: the badge stops at 99, but a
-# mention of the person in the 100th unread message must still show the mark.
+# The check of a mention (`mention_first`) reads at most this many rows of the index after the read position, the
+# newest first, also own messages and messages that do not show. GET /v1/team/rooms runs it for each room on each load
+# under the service lock, so it needs a bound. It is larger than MAX_UNREAD: the badge stops at 99, but a mention of
+# the person in the 100th unread message must still show the mark.
 MAX_MENTION_ROWS = 1000
+# The statement of TeamStore.mention_first. The values are the room, the read position, and the member ID of this Mac
+# two times.
+MENTION_SQL = f'''SELECT MAX(m.first) FROM (SELECT room, first, member, bot, mentions FROM team_messages
+    WHERE room=? AND first>? ORDER BY first DESC LIMIT {MAX_MENTION_ROWS}) m
+    WHERE {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} AND {NAMES_MEMBER}'''
 # A message starts a turn of a bot, or notifies the phone of a person, only while it is younger than this. An older
 # message is history, for example the log that a Mac reads after it joins.
 TRIGGER_SECONDS = 3600
@@ -1229,13 +1235,11 @@ class TeamStore:
         return self.db.execute(f'''SELECT 1 FROM team_messages m WHERE m.room=? AND m.entry=? AND {SHOWN_MESSAGE}
             AND {NAMES_MEMBER}''', (room, entry, member)).fetchone() is not None
 
-    def mentioned(self, room: str, member: str) -> bool:
-        """True when one of the newest MAX_MENTION_ROWS unread messages (the rule of `unread`) names `member`. The
-        query walks the index team_messages_order back from the newest message to the read position, and reads at
-        most MAX_MENTION_ROWS rows."""
-        return self.db.execute(f'''SELECT 1 FROM (SELECT m.room, m.mentions FROM team_messages m WHERE m.room=?
-            AND m.first>? AND {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} ORDER BY m.first DESC LIMIT {MAX_MENTION_ROWS}) m
-            WHERE {NAMES_MEMBER} LIMIT 1''', (room, self.read_position(room), member, member)).fetchone() is not None
+    def mention_first(self, room: str, member: str) -> int | None:
+        """The `first` of the newest unread message (the rule of `unread`) that names `member`, or None. The inner
+        query walks the index team_messages_order back from the newest message and stops after MAX_MENTION_ROWS rows
+        after the read position. The outer query applies the rules to those rows only."""
+        return self.db.execute(MENTION_SQL, (room, self.read_position(room), member, member)).fetchone()[0]
 
     # Direct messages
 

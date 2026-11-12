@@ -1088,9 +1088,9 @@ class TeamPushTests(unittest.TestCase):
                                                    'body': 'Ada, the report is yours.'})
         self.assertEqual(relays['lin'].sealed, [])
         (view,) = call(ada, 'GET', '/v1/team/rooms', {})['rooms']
-        self.assertEqual((view['mentioned'], view['last_message']['mentions_me']), (True, True))
+        self.assertEqual((view['mentioned'], view['mention_first']), (True, view['last_message']['first']))
         (view,) = call(lin, 'GET', '/v1/team/rooms', {})['rooms']
-        self.assertEqual((view['mentioned'], view['last_message']['mentions_me']), (False, False))
+        self.assertEqual((view['mentioned'], 'mention_first' in view), (False, False))
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')

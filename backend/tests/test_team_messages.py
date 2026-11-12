@@ -203,42 +203,46 @@ class TeamMessageStoreTests(unittest.TestCase):
         # Entry 1 is the `member` entry of this Mac's person (Grace), and entry 2 the one of Ada.
         self.write(1, self.member('Grace'), MEMBER)
         self.write(2, self.member('Ada'), ADMIN)
-        self.assertFalse(self.store.mentioned(ROOM, MEMBER))
+        self.assertIsNone(self.store.mention_first(ROOM, MEMBER))
         self.write(3, self.message('For Grace', mentions=[entry_id(1)]))
         self.assertTrue(self.store.names_member(ROOM, entry_id(3), MEMBER))
         self.assertFalse(self.store.names_member(ROOM, entry_id(3), ADMIN))
-        self.assertTrue(self.store.mentioned(ROOM, MEMBER))
+        self.assertEqual(self.store.mention_first(ROOM, MEMBER), 3)
+        # A later plain message keeps the `first` of the mention.
+        self.write(4, self.message('A note for everyone'))
+        self.assertEqual(self.store.mention_first(ROOM, MEMBER), 3)
         # A read past the message ends the mention.
-        self.store.mark_read(ROOM, 3)
-        self.assertFalse(self.store.mentioned(ROOM, MEMBER))
+        self.store.mark_read(ROOM, 4)
+        self.assertIsNone(self.store.mention_first(ROOM, MEMBER))
         self.assertTrue(self.store.names_member(ROOM, entry_id(3), MEMBER), 'A read message still names the person.')
         # An own message, a mention of another person or of a bot, and a message that does not show count for nothing.
-        self.write(4, self.message('Note to self', mentions=[entry_id(1)]), MEMBER)
-        self.write(5, self.message('For Ada', mentions=[entry_id(2)]), OTHER)
-        self.write(6, self.bot(), ADMIN)
-        self.write(7, self.message('For the bot', mentions=[entry_id(6)]))
-        self.write(8, self.message('From a bot without its entry', bot=entry_id(9), mentions=[entry_id(1)]))
-        self.assertFalse(self.store.mentioned(ROOM, MEMBER))
+        self.write(5, self.message('Note to self', mentions=[entry_id(1)]), MEMBER)
+        self.write(6, self.message('For Ada', mentions=[entry_id(2)]), OTHER)
+        self.write(7, self.bot(), ADMIN)
+        self.write(8, self.message('For the bot', mentions=[entry_id(7)]))
+        self.write(9, self.message('From a bot without its entry', bot=entry_id(99), mentions=[entry_id(1)]))
+        self.assertIsNone(self.store.mention_first(ROOM, MEMBER))
         # A removed message counts for nothing.
         self.write(10, self.message('For Grace again', mentions=[entry_id(2), entry_id(1)]), OTHER)
-        self.assertTrue(self.store.mentioned(ROOM, MEMBER))
+        self.assertEqual(self.store.mention_first(ROOM, MEMBER), 10)
         self.write(10, {'kind': 'delete', 'rev': 2}, OTHER)
-        self.assertFalse(self.store.mentioned(ROOM, MEMBER))
+        self.assertIsNone(self.store.mention_first(ROOM, MEMBER))
         self.assertFalse(self.store.names_member(ROOM, entry_id(10), MEMBER))
-        # A mention under the newest MAX_MENTION_ROWS unread messages does not count, so the check reads a bounded part
-        # of the index.
-        self.store.mark_read(ROOM, MAX_NUMBER)
-        self.write(20, self.message('For Grace, long ago', mentions=[entry_id(1)]))
-        for number in range(21, 21 + team_store.MAX_MENTION_ROWS - 1):
-            self.write(number, self.message(f'Message {number}'))
-        self.assertTrue(self.store.mentioned(ROOM, MEMBER), 'The mention is the oldest of the newest rows.')
-        self.write(21 + team_store.MAX_MENTION_ROWS, self.message('One more'))
-        self.assertFalse(self.store.mentioned(ROOM, MEMBER), 'The mention is under the bound.')
-        self.store.mark_read(ROOM, MAX_NUMBER)
-        # A second `member` entry of the person counts as the person too.
+        # A second `member` entry of the person counts as the person too, and the newest mention gives the `first`.
         self.write(11, self.member('Grace L.'), MEMBER)
-        self.write(12, self.message('For Grace L.', mentions=[entry_id(11)]))
-        self.assertTrue(self.store.mentioned(ROOM, MEMBER))
+        self.write(12, self.message('For Grace', mentions=[entry_id(1)]))
+        self.write(13, self.message('For Grace L.', mentions=[entry_id(11)]))
+        self.assertEqual(self.store.mention_first(ROOM, MEMBER), self.store.entry(ROOM, entry_id(13))['first'])
+
+    def test_the_check_of_a_mention_reads_at_most_the_newest_rows_after_the_read_position(self):
+        # The bound counts each row of the index, also an own message, so a long run of own messages costs no more.
+        self.write(1, self.member('Grace'), MEMBER)
+        self.write(2, self.message('For Grace', mentions=[entry_id(1)]))
+        for number in range(3, 3 + team_store.MAX_MENTION_ROWS - 1):
+            self.write(number, self.message(f'Mine {number}'), MEMBER)
+        self.assertEqual(self.store.mention_first(ROOM, MEMBER), 2, 'The mention is the oldest of the newest rows.')
+        self.write(3 + team_store.MAX_MENTION_ROWS, self.message('One more of mine'), MEMBER)
+        self.assertIsNone(self.store.mention_first(ROOM, MEMBER), 'The mention is under the bound.')
 
     def plan(self, query: str, values: tuple) -> str:
         return ' '.join(row[-1] for row in self.db.execute('EXPLAIN QUERY PLAN ' + query, values))
@@ -274,13 +278,13 @@ class TeamMessageStoreTests(unittest.TestCase):
         for name, call in (('newest page', lambda: self.store.messages(ROOM, None, 101)),
                            ('oldest page', lambda: self.store.messages(ROOM, 102, 101)),
                            ('unread count', lambda: self.store.unread(ROOM, MEMBER)),
-                           ('mention', lambda: self.store.mentioned(ROOM, MEMBER)),
+                           ('mention', lambda: self.store.mention_first(ROOM, MEMBER)),
                            ('newest message', lambda: self.store.messages(ROOM, None, 1))):
             started = time.perf_counter()
             for _ in range(10):
                 result = call()
             timings[name] = (time.perf_counter() - started) / 10 * 1000
-            # No message names the person, so the check of a mention is false after its whole bound.
+            # No message names the person, so the check of a mention finds nothing after its whole bound.
             self.assertEqual(bool(result), name != 'mention')
         print('\n10,000 messages, milliseconds for each call: ' +
               ', '.join(f'{name} {value:.2f}' for name, value in timings.items()))
@@ -295,11 +299,10 @@ class TeamMessageStoreTests(unittest.TestCase):
         plan = self.plan('SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>? AND m.member!=? LIMIT 99',
                          (ROOM, 50, MEMBER))
         self.assertIn('team_messages_order', plan)
-        # The check of a mention searches the index from the read position and sorts nothing.
-        plan = self.plan(f'''SELECT 1 FROM (SELECT m.room, m.mentions FROM team_messages m WHERE m.room=? AND m.first>?
-            AND {team_store.UNREAD_MESSAGE} AND {team_store.SHOWN_MESSAGE} ORDER BY m.first DESC
-            LIMIT {team_store.MAX_MENTION_ROWS}) m WHERE {team_store.NAMES_MEMBER} LIMIT 1''', (ROOM, 50, MEMBER, MEMBER))
-        self.assertIn('SEARCH m USING INDEX team_messages_order (room=? AND first>?)', plan)
+        # The check of a mention walks the index back from the newest row to the read position and sorts nothing.
+        # The LIMIT of the inner query stops the walk after MAX_MENTION_ROWS rows.
+        plan = self.plan(team_store.MENTION_SQL, (ROOM, 50, MEMBER, MEMBER))
+        self.assertIn('SEARCH team_messages USING INDEX team_messages_order (room=? AND first>?)', plan)
         self.assertNotIn('TEMP B-TREE', plan)
         for value in timings.values():
             self.assertLess(value, 50)
@@ -381,7 +384,7 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
         self.assertEqual(view['last_message'], {'first': sent['first'], 'member': sent['member'], 'member_name': 'Ada',
                                                 'this_mac': False, 'bot': None, 'bot_name': None,
                                                 'text': 'x' * 200,
-                                                'created_at': created, 'mentions_me': False})
+                                                'created_at': created})
         self.assertTrue(self.view(self.first)['last_message']['this_mac'], 'The writer sees its own message.')
         self.send(self.second, 'Mine')
         self.assertEqual({name: self.view(self.second)['last_message'][name] for name in ('member_name', 'this_mac')},
@@ -401,24 +404,25 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
     def test_the_rooms_say_when_a_message_names_the_person(self):
         grace = next(member['member'] for member in self.view(self.first)['members'] if not member['this_mac'])
         view = self.view(self.second)
-        self.assertEqual((view['mentioned'], view['last_message']), (False, None))
+        self.assertEqual((view['mentioned'], 'mention_first' in view), (False, False))
         named = self.send(self.first, 'Grace, this is for you.', mentions=[grace])
         view = self.view(self.second)
-        self.assertEqual((view['mentioned'], view['last_message']['mentions_me']), (True, True))
+        self.assertEqual((view['mentioned'], view['mention_first']), (True, named['first']))
         # The writer is not named, and its own message is no mention for it.
         view = self.view(self.first)
-        self.assertEqual((view['mentioned'], view['last_message']['mentions_me']), (False, False))
-        # A newer message without a mention keeps the mention of the room, and its own `mentions_me` is false.
+        self.assertEqual((view['mentioned'], 'mention_first' in view), (False, False))
+        # A later plain message keeps the `first` of the mention.
         later = self.send(self.first, 'And a note for everyone.')
         view = self.view(self.second)
-        self.assertEqual((view['mentioned'], view['last_message']['mentions_me']), (True, False))
+        self.assertEqual((view['mentioned'], view['mention_first'], view['last_message']['first']),
+                         (True, named['first'], later['first']))
         # A read past the named message ends the mention, also while a later message is unread.
         self.phone(self.second)('POST', self.path('read'), {'first': named['first']})
         view = self.view(self.second)
-        self.assertEqual((view['mentioned'], view['unread']), (False, 1))
-        # A removed message ends its mention.
+        self.assertEqual((view['mentioned'], 'mention_first' in view, view['unread']), (False, False, 1))
+        # A second mention gives its own `first`. A removed message ends its mention.
         removed = self.send(self.first, 'Grace, one more thing.', mentions=[grace])
-        self.assertTrue(self.view(self.second)['mentioned'])
+        self.assertEqual(self.view(self.second)['mention_first'], removed['first'])
         self.phone(self.first)('DELETE', self.path(f'messages/{removed["id"]}'), {})
         self.assertFalse(self.view(self.second)['mentioned'])
         self.assertEqual(self.view(self.second)['last_message']['first'], later['first'])
