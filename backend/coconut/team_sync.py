@@ -177,7 +177,8 @@ class TeamSync:
             if self.stopping.is_set():
                 return
             failures, due = self._team_failures.get(room, (0, 0))
-            if time.monotonic() < due or not self._team_due(room, every, woken):
+            # A room with kept entries to write again with a new room key reads at each pass (TeamEpochs).
+            if time.monotonic() < due or not (self._team_due(room, every, woken) or room in self._team_busy):
                 continue
             try:
                 self.team_sync_room(room)
@@ -234,8 +235,10 @@ class TeamSync:
             self._team_told.pop(room_id, None)
 
     def team_sync_room(self, room: str) -> None:
-        """Read the room until the store has each entry of the relay. Then make sure that the log shows this Mac, and
-        that it has the bots and the pages that this Mac shares (TeamPages._team_publish)."""
+        """Read the room until the store has each entry of the relay, and take each new room key (TeamEpochs). Then
+        make sure that the log shows this Mac, that the admin made the key change after a removal, that the log has the
+        bots and the pages that this Mac shares (TeamPages._team_publish), and that each kept entry of this Mac has the
+        room key of its epoch."""
         lock = self._team_room_lock(room)
         if room not in self._team_retried:
             with lock:
@@ -246,11 +249,15 @@ class TeamSync:
             with lock:
                 more = self._team_read(room)
         with lock:
-            # The read is at the end of the room, so each `member` entry that the relay has is in the store now.
+            # A new room key opens the bodies that wait for it. Then the read is at the end of the room, so each
+            # `member` entry that the relay has is in the store now.
+            self._team_take_keys(room)
             if not more:
                 self._team_retry_directs(room)
             self._team_announce(room)
+            self._team_change_key(room)
             self._team_publish(room)
+            self._team_write_again(room)
 
     def _team_read(self, room_id: str) -> bool:
         """Read one answer of the relay after the saved `seq`, and store it. Return True when the relay has more."""
@@ -301,7 +308,8 @@ class TeamSync:
 
     def _team_retry_waiting(self, room_id: str) -> None:
         """Try again the bodies that this Mac could not open. An update of Coconut starts the service again, so this
-        runs once for each room after each start."""
+        runs once for each room after each start. A new room key runs it too (TeamEpochs._team_take_keys). The caller
+        holds the lock of the room."""
         after = 0
         while not self.stopping.is_set():
             with self.lock:
@@ -564,22 +572,24 @@ class TeamSync:
         self._team_write(room, profile['entry'], True, self._team_member_payload(profile))
 
     def _team_write(self, room: dict, entry_id: str, kept: bool, fields: dict, tries: int = 1,
-                    direct: dict | None = None) -> None:
+                    direct: dict | None = None, epoch: int | None = None) -> None:
         """Seal an entry of this Mac, write it to the relay, and put it into the store.
 
         A write with an entry ID that the store has replaces that entry, with the next `rev`. The caller holds the
         lock of the room. `direct` is what the box of a `direct` entry holds for this Mac: the other member of the
-        chat, the text and the reply. The store does not open an own box again.
+        chat, the text and the reply. The store does not open an own box again. The body has the epoch of the room,
+        or `epoch`: a `key` entry has the epoch before its new one (TeamEpochs).
         """
+        epoch = room['epoch'] if epoch is None else epoch
         secrets = team_keys.read(self.root, room['room'])
-        key = secrets['keys'].get(str(room['epoch']))
+        key = secrets['keys'].get(str(epoch))
         if key is None:
             raise TeamKeysError('This Mac has no room key for its epoch.')
         self._team_settle(room['room'])
         with self.lock:
             existing = self.team_store.entry(room['room'], entry_id)
         payload = encode_payload(fields, (existing['rev'] if existing else 0) + 1, utc_now())
-        body = self.team_helper.seal(room['room'], entry_id, room['epoch'], key, secrets['member_key'], payload)
+        body = self.team_helper.seal(room['room'], entry_id, epoch, key, secrets['member_key'], payload)
         try:
             position = self.team_relay.write(room['relay'], room['room'], secrets['token'], entry_id, kept, body, tries=tries)
         except TeamRelayError as error:
@@ -587,7 +597,7 @@ class TeamSync:
                 self._team_unsure.add(room['room'])
             raise
         entry = dict(position, id=entry_id, member=room['member'], at=int(time.time() * 1000), kept=kept, body=b'')
-        opened = read_entry({'epoch': room['epoch'], 'payload': payload})
+        opened = read_entry({'epoch': epoch, 'payload': payload})
         if fields['kind'] == 'direct':
             opened['direct'] = direct
         with self.transaction():

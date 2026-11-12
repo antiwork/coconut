@@ -5,7 +5,7 @@
 - `member_key`: the private member key (Ed25519), which signs each entry of this Mac.
 - `agreement_key`: the private agreement key (X25519), which receives the room key after a key change.
 - `token`: the member token, which authorizes this Mac at the relay.
-- `keys`: the room key of each epoch that this Mac has, by the number of the epoch.
+- `keys`: the room key of each epoch that this Mac has, by the number of the epoch. A key change adds one (add_key).
 
 The keys are standard base64, and the token is lowercase hex, as the helper takes them (team_helper.py). The folder
 has mode 0700 and each file mode 0600, as <data>/tunnel. The store (team_store.py) holds everything else about a room.
@@ -74,6 +74,15 @@ def write(root, room: str, *, member_key: str, agreement_key: str, token: str, k
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def add_key(root, room: str, epoch: int, key: str) -> dict:
+    """Add the room key of an epoch to the key file of the room, in one step, and return the new content. The caller
+    holds the lock of the room, so no other write of the file comes between the read and the write."""
+    value = read(root, room)
+    write(root, room, member_key=value['member_key'], agreement_key=value['agreement_key'], token=value['token'],
+          keys=dict(value['keys'], **{str(epoch): key}))
+    return read(root, room)
 
 
 def remove(root, room: str) -> None:

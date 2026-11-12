@@ -1275,6 +1275,123 @@ class TeamRemovalTests(unittest.TestCase):
             self.assertNotIn(text, output)
 
 
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The key change test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamKeyChangeTests(unittest.TestCase):
+    """Ada, the admin, removes Grace through the real relay and the real helper. The room gets the key of epoch 1, and
+    Grace's key file opens no entry of it. Ada and Lin still read each other, and Noor, who joins later, reads the kept
+    entries of the others. The services run in this process."""
+
+    @classmethod
+    def setUpClass(cls):
+        TeamPushTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        TeamPushTests.tearDownClass.__func__(cls)
+
+    def test_after_a_removal_the_room_has_a_key_that_the_removed_member_never_gets(self):
+        import logging
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        records = []
+        handler = logging.Handler(logging.DEBUG)
+        handler.emit = records.append
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        self.addCleanup(root_logger.setLevel, root_logger.level)
+        root_logger.setLevel(logging.DEBUG)
+        self.addCleanup(root_logger.removeHandler, handler)
+        macs = []
+        for name in ('ada', 'grace', 'lin', 'noor'):
+            root = Path(self.temp.name) / name
+            service = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(service.close)
+            macs.append(service)
+        ada, grace, lin, noor = macs
+
+        def call(service, method, path, data=None, direct=False):
+            return service.team_request(method, path, data or {}, '', 'test-device', direct)
+
+        def sync(*services):
+            for _ in range(2):
+                for service in services:
+                    service.team_sync_pass()
+
+        def keys(service):
+            return json.loads((service.root / f'team/{room_id}.json').read_text())
+
+        def texts(service, path):
+            return [message['text'] for message in call(service, 'GET', path)['messages']]
+
+        room_id = call(ada, 'POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                       'relay': self.url})['room']['room']
+        for service, name in ((grace, 'Grace'), (lin, 'Lin')):
+            link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+            call(service, 'POST', '/v1/team/join', {'link': link, 'member_name': name})
+        ada_id, grace_id, lin_id = (service.team_store.room(room_id)['member'] for service in (ada, grace, lin))
+        # Lin shares a page of her bot, and the apps of Ada and Lin ask for direct messages.
+        bot = lin.mutate('POST', '/v1/bots', {'name': 'Helper'}, secrets.token_hex(16), 'phone')
+        lin.publish_page(bot['id'], {'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
+                                     'content': '3 tasks are open.'})
+        call(lin, 'PUT', f'/v1/team/rooms/{room_id}/pages/{lin._document_of_key(bot["id"], "weekly-report")["id"]}')
+        for service in (ada, lin):
+            call(service, 'GET', '/v1/team/rooms', direct=True)
+        call(grace, 'POST', f'/v1/team/rooms/{room_id}/messages', {'text': 'Before the change'})
+        sync(ada, grace, lin)
+
+        call(ada, 'DELETE', f'/v1/team/rooms/{room_id}/members/{grace_id}')
+        sync(ada, lin)
+        # Ada and Lin use epoch 1 with the same key. Grace has only the key of epoch 0.
+        self.assertEqual([service.team_store.room(room_id)['epoch'] for service in (ada, lin)], [1, 1])
+        self.assertEqual(keys(lin)['keys']['1'], keys(ada)['keys']['1'])
+        self.assertEqual(sorted(keys(grace)['keys']), ['0'])
+
+        # Ada and Lin still read each other in the team chat and in a direct chat.
+        chat = f'/v1/team/rooms/{room_id}/messages'
+        call(lin, 'POST', chat, {'text': 'Hello from Lin'})
+        call(ada, 'POST', chat, {'text': 'Hello from Ada'})
+        call(ada, 'POST', f'/v1/team/rooms/{room_id}/directs/{lin_id}/messages', {'text': 'Only for Lin'})
+        sync(ada, lin)
+        for service in (ada, lin):
+            self.assertEqual(texts(service, chat), ['Hello from Ada', 'Hello from Lin', 'Before the change'])
+        self.assertEqual(texts(lin, f'/v1/team/rooms/{room_id}/directs/{ada_id}/messages'), ['Only for Lin'])
+
+        # Noor joins with a new invite, gets only the key of epoch 1, and reads the kept entries of the others and the
+        # messages after the change.
+        link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+        joined = call(noor, 'POST', '/v1/team/join', {'link': link, 'member_name': 'Noor'})['room']
+        self.assertEqual((joined['epoch'], sorted(keys(noor)['keys'])), (1, ['1']))
+        sync(noor)
+        (view,) = call(noor, 'GET', '/v1/team/rooms')['rooms']
+        self.assertEqual([member['name'] for member in view['members']], ['Ada', 'Lin', 'Noor'])
+        self.assertEqual([bot['name'] for bot in view['bots']], ['Helper'])
+        self.assertEqual([page['title'] for page in noor.documents()['documents'] if 'team' in page], ['Weekly report'])
+        self.assertEqual(texts(noor, chat), ['Hello from Ada', 'Hello from Lin'])
+
+        # The key file of Grace opens no body of epoch 1, also with her key of epoch 0 in its place.
+        answer = TeamRelay().read(self.url, room_id, keys(ada)['token'], 0)
+        (entry,) = [row for row in answer['entries']
+                    if row['member'] == lin_id and base64.b64decode(row['body'])[1:5] == b'\0\0\0\1'
+                    and row['kept'] and row['id'] == lin.team_store.member(room_id, lin_id)['entry']]
+        grace_keys = keys(grace)['keys']
+        self.assertEqual(self.helper_open(room_id, grace_keys, entry), {'error': 'unknown_epoch', 'epoch': 1})
+        self.assertEqual(self.helper_open(room_id, {'1': grace_keys['0']}, entry), {'error': 'seal'})
+        self.assertIn('payload', self.helper_open(room_id, keys(ada)['keys'], entry))
+        # No log line has a key or a name.
+        output = '\n'.join(logging.Formatter().format(record) for record in records)
+        new_key = keys(ada)['keys']['1']
+        for text in ('Grace', 'Lin', 'Noor', 'Example Team', 'Hello', new_key, new_key[:12]):
+            self.assertNotIn(text, output)
+
+    def helper_open(self, room: str, keys: dict, entry: dict) -> dict:
+        (result,) = TeamHelper(self.temp.name).open(room, keys, [entry])
+        return result
+
+
 def run_of(start: int, count: int) -> bytes:
     """The bytes from `start`, one higher each time, as the inputs of the test vectors name them."""
     return bytes(range(start, start + count))
@@ -1317,6 +1434,13 @@ BOX = bytes.fromhex(
     'f0f1f2f3f4f5f6f7f8f9fafb33e43c192dd25841a9fdffa40e61265aa37d51c1c7363a4803ccf485d7ae13e09a75e006914d5f3feeddd09e'
     'd30dc1ddaaa3f4e5311aac1732bf7070e95d0273c0e0b87ec0d6d1cbc438d7deee6138dba44205e6c8f8decba995e6ddd5e9ed63f1d46e5b'
     'c09457d158d768b49c27')
+# The key box of the vectors: MEMBER, the admin, seals the room key of epoch 1 (the bytes `80` to `9f`) for READER in
+# the entry ENTRY, with the nonce `d0` to `db`.
+KEY_PAIR_KEY = bytes.fromhex('19f3c68ac593a603428b74650a69601b6646dd3a77ded33bdf2e22ba1d5f9b87')
+NEW_ROOM_KEY = b64(run_of(0x80, 32))
+KEY_BOX = bytes.fromhex(
+    'd0d1d2d3d4d5d6d7d8d9dadb2c4dba36e7ae9260e0a7363b61bb113381f5cbf96e6a3986abf2aaeeb4e46564f9f6c1eb25ceffad16bc4c1c'
+    'f077c77c')
 
 
 def b64url(data: bytes) -> str:
@@ -1418,6 +1542,42 @@ class TeamLogVectorTests(unittest.TestCase):
         box = self.helper.seal_direct(ROOM, ENTRY, WRITER_AGREEMENT_KEY, MEMBER, READER, READER_AGREEMENT, DIRECT)
         self.assertNotEqual(box, b64url(BOX))
         self.assertEqual(opened(base64.urlsafe_b64decode(box + '==')), {'plaintext': DIRECT})
+
+    def test_the_pair_key_and_the_box_of_a_room_key(self):
+        # The pair key of a key box has its own label, so it differs from the pair key of a direct message.
+        self.assertEqual(hkdf(SHARED, b'coconut room key' + bytes.fromhex(ROOM + READER + MEMBER)), KEY_PAIR_KEY)
+        self.assertEqual(len(KEY_BOX), 60)
+
+        def opened(box: bytes = KEY_BOX, *, room: str = ROOM, entry: str = ENTRY, admin: str = MEMBER, epoch: int = 1,
+                   agreement: str = WRITER_AGREEMENT) -> str:
+            try:
+                return self.helper.open_key(room, entry, epoch, READER_AGREEMENT_KEY, READER, admin, agreement,
+                                            b64url(box))
+            except TeamFormatError as error:
+                return error.code
+        self.assertEqual(opened(), NEW_ROOM_KEY)
+        # The box belongs to its room, its entry, its admin, its epoch and its pair key.
+        self.assertEqual(opened(room='21' + ROOM[2:]), 'seal')
+        self.assertEqual(opened(entry='41' + ENTRY[2:]), 'seal')
+        self.assertEqual(opened(epoch=2), 'seal')
+        self.assertEqual(opened(agreement=READER_AGREEMENT), 'seal')
+        self.assertEqual(opened(admin=READER), 'malformed')
+        changed = bytearray(KEY_BOX)
+        changed[30] ^= 1
+        self.assertEqual(opened(bytes(changed)), 'seal')
+        self.assertEqual(opened(KEY_BOX[:59]), 'malformed')
+        # A box of a direct message is no key box, and a key box is no box of a direct message.
+        self.assertEqual(opened(BOX), 'malformed')
+        (direct,) = self.helper.open_direct(ROOM, READER_AGREEMENT_KEY, READER, [
+            {'entry': ENTRY, 'writer': MEMBER, 'other': MEMBER, 'agreement': WRITER_AGREEMENT, 'box': b64url(KEY_BOX)}])
+        self.assertEqual(direct, {'error': 'seal'})
+        # A box that the admin seals opens for the reader, and a new nonce makes it differ from the vector.
+        (sealed, refused) = self.helper.seal_key(ROOM, ENTRY, 1, NEW_ROOM_KEY, WRITER_AGREEMENT_KEY, MEMBER, [
+            {'member': READER, 'agreement': READER_AGREEMENT}, {'member': MEMBER, 'agreement': READER_AGREEMENT}])
+        self.assertNotEqual(sealed['box'], b64url(KEY_BOX))
+        self.assertEqual(opened(base64.urlsafe_b64decode(sealed['box'] + '==')), NEW_ROOM_KEY)
+        # The admin has no pair key with itself, so its own item fails alone.
+        self.assertEqual(refused, {'error': 'malformed'})
 
 
 if __name__ == '__main__':

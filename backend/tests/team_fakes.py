@@ -104,6 +104,35 @@ class FakeHelper:
                 results.append({'plaintext': plaintext})
         return results
 
+    def seal_key(self, room: str, entry: str, epoch: int, key: str, agreement_key: str, member: str,
+                 members: list) -> list:
+        """A box of a room key that names its room, its entry, its admin, its epoch and its pair, as a direct box does.
+        Only the same pair opens it, and a direct box is no key box."""
+        self._call('seal_key')
+        results = []
+        for other in members:
+            if other['member'] == member:
+                results.append({'error': 'malformed'})
+                continue
+            results.append({'box': base64.urlsafe_b64encode(json.dumps({
+                'label': 'key', 'room': room, 'entry': entry, 'admin': member, 'epoch': epoch,
+                'keys': sorted([public_agreement(agreement_key), other['agreement']]),
+                'members': sorted([member, other['member']]), 'key': key}).encode()).decode().rstrip('=')})
+        return results
+
+    def open_key(self, room: str, entry: str, epoch: int, agreement_key: str, member: str, admin: str, agreement: str,
+                 box: str) -> str:
+        self._call('open_key')
+        try:
+            sealed = json.loads(base64.urlsafe_b64decode(box + '=' * (-len(box) % 4)))
+            fields = tuple(sealed[name] for name in ('label', 'room', 'entry', 'admin', 'epoch', 'keys', 'members'))
+        except (ValueError, TypeError, KeyError):
+            raise TeamFormatError('seal') from None
+        if fields != ('key', room, entry, admin, epoch, sorted([public_agreement(agreement_key), agreement]),
+                      sorted([member, admin])):
+            raise TeamFormatError('seal')
+        return sealed['key']
+
     def proof(self, room: str, token: str, member_key: str) -> dict:
         self._call('proof')
         return {'proof': encode({'room': room, 'hash': digest(token), 'signer': member_key.removeprefix('key of ')}),
