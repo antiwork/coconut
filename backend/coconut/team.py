@@ -62,7 +62,7 @@ from .team_messages import TeamMessages
 from .team_pages import TeamPages
 from .team_relay import HEX64, TeamRelay, TeamRelayError, relay_origin
 from .team_socket import TeamSocket
-from .team_store import ACTIVE, JOINING, MEMBER_LIMITS, SCHEMA, TeamStore, unicode_text
+from .team_store import ACTIVE, JOINING, MAX_TICKET_SECONDS, MEMBER_LIMITS, SCHEMA, TeamStore, unicode_text
 from .team_sync import INACTIVE, ROOM_ERRORS, TEAM_EVENT, TeamSync, room_error, utc_now
 
 __all__ = ['SCHEMA', 'Team']
@@ -75,7 +75,7 @@ MAX_NAME = 80
 # change the direction of text, can hide what a name says.
 EMOJI_FORMAT = re.compile('[\u200d\U000e0020-\U000e007f]')
 # The limits of the relay for a ticket (docs/team-log.md, "Limits").
-INVITE_SECONDS = (60, 7 * 86400)
+INVITE_SECONDS = (60, MAX_TICKET_SECONDS)
 INVITE_USES = (1, 64)
 DEFAULT_INVITE_SECONDS = 86400
 # `POST /v1/team/sync` waits this long for the pass that it started.
@@ -683,13 +683,21 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpoch
         return self._team_answer(room_id)
 
     def _team_close_invites(self, room: dict, token: str) -> None:
-        """Remove each open invite of the room on the relay, and forget each kept invite. An invite of a version
-        without the record ends by itself: the app makes each invite for one day."""
+        """Remove each recorded ticket of the room on the relay, whatever its saved end is, and forget its record
+        after the answer.
+
+        This Mac computes the end before it sends the ticket, and the relay starts its own count when it gets it. So a
+        slow request, a repeat or another clock can keep a ticket open after its saved end. The relay answers 204 also
+        for a ticket that it no longer has. A failure stops the removal before the member goes, and the record stays,
+        so the repeat tries again. An invite of a version without the record ends by itself: the app makes each invite
+        for one day.
+        """
+        with self.transaction():
+            self.team_store.drop_old_invites(time.time())
         with self.lock:
             invites = self.team_store.invites(room['room'])
-        for ticket_hash, expires in invites:
-            if expires > time.time():
-                self.team_relay.remove_ticket(room['relay'], room['room'], token, ticket_hash, tries=2)
+        for ticket_hash, _ in invites:
+            self.team_relay.remove_ticket(room['relay'], room['room'], token, ticket_hash, tries=2)
             with self.transaction():
                 self.team_store.drop_invite(room['room'], ticket_hash)
 

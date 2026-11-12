@@ -170,6 +170,10 @@ SKIPPED = 'skipped'  # The entry is from before this Mac joined, and it cannot g
 DROPPED = 'dropped'  # The body does not open, or its payload is not the payload of an entry.
 REFUSED = 'refused'  # The body opens, and a rule of the contract refuses the entry.
 
+# The longest life of a ticket on the relay (docs/team-log.md, "Limits"). The Mac forgets the record of an invite only
+# this long after its saved end, because the relay starts its own count later than this Mac, and its clock can differ.
+MAX_TICKET_SECONDS = 7 * 86400
+
 # Only the admin writes these kinds (rule 4).
 ADMIN_KINDS = ('remove', 'key')
 MAX_KIND = 64
@@ -717,6 +721,11 @@ class TeamStore:
                                (room_id, room_id, removal['member'])).rowcount:
                 # The turn thread also checks a running turn, and stops the turn of a member that is out.
                 self.triggered.add(room_id)
+            # A Mac that reads the room after the removal gets no `member` entry of the member, because the relay
+            # deleted it, but it gets the messages. The name of the entry names them. A name that this Mac showed wins.
+            name = removal['name']
+            if name is not None and self.last_name(room_id, removal['member']) is None:
+                self._name(room_id, entry['id'], removal['member'], 'member', name)
         for member in sorted(members):
             self.show_member(room_id, member)
             # The Library shows a bot only while its member is in the list.
@@ -785,8 +794,9 @@ class TeamStore:
         self.db.execute('DELETE FROM team_invites WHERE room=? AND hash=?', (room, ticket_hash))
 
     def drop_old_invites(self, now: float) -> None:
-        """Forget the invites past their end. The relay deletes their tickets by itself."""
-        self.db.execute('DELETE FROM team_invites WHERE expires<=?', (int(now),))
+        """Forget the invites whose saved end is more than MAX_TICKET_SECONDS in the past. The relay deleted their
+        tickets by then, also when its count started later than the count of this Mac."""
+        self.db.execute('DELETE FROM team_invites WHERE expires<=?', (int(now) - MAX_TICKET_SECONDS,))
 
     def _show_bot(self, room: str, entry: dict, profile: dict | None) -> None:
         """Set the row of a `bot` entry: the profile that read_entry found valid for another member, or the profile

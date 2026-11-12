@@ -34,9 +34,12 @@ FINISHED = 'The background job finished.'
 ATTACHED = 'native-attachment-marker'
 READ = 'I read the attached notes.'
 REACTION = 'changed an emoji reaction'
-# A chat turn that asks on a card, and the turn that continues after the answer.
+# A chat turn that asks on a card, and the turn that continues after the answer. After its card the model writes no
+# text, as models often do (hooks.end_turn_text).
 ASK = 'Ask me on a card.'
-ASKED = 'I asked you on a card.'
+ASKED = ''
+# The nudge of Hermes after an empty reply that follows a tool call (agent/conversation_loop.py).
+EMPTY_NUDGE = 'returned an empty response'
 RESUMED = 'Continue the original task using this recorded answer.'
 SHIPPED = 'Shipping now.'
 # A chat turn that leaves its task list unfinished, and the turn that Coconut starts to continue it.
@@ -156,6 +159,63 @@ class Model(BaseHTTPRequestHandler):
             data.update(object='chat.completion', usage=usage,
                         choices=[dict(index=0, message=message, finish_reason=finish)])
             self.wfile.write(json.dumps(data).encode())
+
+
+def adapter_text(name):
+    """A constant of the plugin's adapter, read from its source without an import of the plugin."""
+    import ast
+    tree = ast.parse((ROOT / 'hermes_plugin/coconut/adapter.py').read_text())
+    return next(ast.literal_eval(node.value) for node in tree.body if isinstance(node, ast.Assign)
+                and any(getattr(target, 'id', None) == name for target in node.targets))
+
+
+@needs_hermes
+class EmptyReplyFormatTests(unittest.TestCase):
+    """The closing text of hooks.end_turn_text in each response format, as the transports of this Hermes read it."""
+
+    def setUp(self):
+        if SOURCE not in sys.path:
+            sys.path.insert(1, SOURCE)
+        import importlib.util
+        import types
+        plugin = ROOT / 'hermes_plugin/coconut'
+        sys.modules.setdefault('hermes_plugins', types.ModuleType('hermes_plugins')).__path__ = []
+        spec = importlib.util.spec_from_file_location('hermes_plugins.coconut', plugin / '__init__.py',
+                                                      submodule_search_locations=[str(plugin)])
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        import hermes_plugins.coconut.hooks as hooks
+        self.hooks = hooks
+
+    def test_an_empty_reply_gets_the_closing_text_in_each_format(self):
+        from types import SimpleNamespace as N
+        from agent.transports import get_transport
+        end = self.hooks.with_end_text
+        chat = lambda content, calls=None: N(choices=[N(index=0, finish_reason='tool_calls' if calls else 'stop', message=N(
+            role='assistant', content=content, tool_calls=calls, reasoning_content=None))], usage=None)
+        anthropic = lambda *blocks: N(content=list(blocks), stop_reason='end_turn', usage=None)
+        responses = lambda *items: N(output=list(items), status='completed', usage=None)
+        reasoning = N(type='reasoning', id='rs_1', summary=[], encrypted_content=None, status='completed')
+        empty = {'chat_completions': chat(''), 'anthropic_messages': anthropic(),
+                 'codex_responses': responses(reasoning)}
+        for mode, response in empty.items():
+            with self.subTest(mode):
+                closed = end(response, mode)
+                self.assertIsNotNone(closed)
+                reply = get_transport(mode).normalize_response(closed)
+                self.assertEqual((reply.content.strip(), reply.tool_calls, reply.finish_reason),
+                                 (adapter_text('END_TEXT'), None, 'stop'))
+        call = N(id='call_1', type='function', function=N(name='terminal', arguments='{}'))
+        written = {'chat_completions': [chat('Done.'), chat(None, [call])],
+                   'anthropic_messages': [anthropic(N(type='text', text='Done.')),
+                                          anthropic(N(type='tool_use', id='toolu_1', name='terminal', input={}))],
+                   'codex_responses': [responses(N(type='message', role='assistant', status='completed', phase='final_answer',
+                                                   content=[N(type='output_text', text='Done.')]))]}
+        for mode, items in written.items():
+            for response in items:
+                with self.subTest(mode, response=response):
+                    self.assertIsNone(end(response, mode))
 
 
 @needs_hermes
@@ -343,9 +403,15 @@ class NativeGatewayChatTests(unittest.TestCase):
             self.assertNotIn(LARGE, json.dumps(fresh['messages']), diagnostics())
 
             # A card of coconut_ask ends the gateway turn. The answer continues the conversation in a later turn.
+            asked = len(Model.requests)
             task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': ASK}, str(uuid4()), 'phone')
             service._run_task(task['id'])
             self.assertEqual(service._get('tasks', task['id'])['status'], 'needs_you', diagnostics())
+            from hermes_cli.middleware import VALID_MIDDLEWARE
+            if 'llm_execution' in VALID_MIDDLEWARE:
+                # The model wrote no text after its card. Hermes ended the turn with the closing text of the plugin. It
+                # did not nudge the model, which is the first step before its retries and its fallback model.
+                self.assertNotIn(EMPTY_NUDGE, json.dumps(Model.requests[asked:]), diagnostics())
             card = next(d for d in service._all('decisions') if d['task_id'] == task['id'])
             self.assertEqual((card['title'], card['status']), (CARD['title'], 'pending'), diagnostics())
             service.mutate('POST', f'/v1/decisions/{card["id"]}/answer', {'option_id': 'ship', 'revision': 1},
@@ -354,7 +420,7 @@ class NativeGatewayChatTests(unittest.TestCase):
             replies = [m['text'] for m in service._task_messages(task['id']) if m['role'] == 'assistant' and m['kind'] == 'text']
             self.assertEqual((service._get('tasks', task['id'])['status'], replies[-1:]), ('completed', [SHIPPED]),
                              diagnostics())
-            self.assertNotIn(ASKED, replies, diagnostics())
+            self.assertNotIn(adapter_text('END_TEXT'), replies, diagnostics())
 
             # The todo list of a gateway turn is the work of its task. An unfinished list continues in a later turn.
             task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': LIST}, str(uuid4()), 'phone')

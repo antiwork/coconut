@@ -70,13 +70,15 @@ CRON_DELIVERY_SECONDS = 24 * 3600
 # A chat turn waits this long for an adapter of the bot's profile, for example while the gateway starts again.
 GATEWAY_WAIT_SECONDS = 5 * 60
 # A recorded wait ends its turn (gateway_wait). The plugin blocks each further tool call of the turn.
-WAIT_FINISH = ('This wait is recorded. Finish this turn now with a short summary, and call no other tool. Coconut '
+WAIT_FINISH = ('This wait is recorded. Call no other tool. End this turn now with one short sentence. Coconut '
                'continues the work when the wait ends.')
+# A recorded result of a card check ends its turn too (_gateway_tool).
+CHECK_FINISH = 'This check is recorded. Call no other tool. End this turn now with one short sentence.'
 WAIT_REPEATED = 'This wait is already recorded. ' + WAIT_FINISH
 # The wait calls of one turn, at most. A model that repeats its wait would otherwise keep the turn running.
 WAIT_CALLS = 6
-WAIT_CALLS_SPENT = ('This turn called coconut_wait ' + str(WAIT_CALLS) + ' times. Finish this turn now with a short '
-                    'summary.')
+WAIT_CALLS_SPENT = ('This turn called coconut_wait ' + str(WAIT_CALLS) + ' times. Call no other tool. End this turn '
+                    'now with one short sentence.')
 # A turn waits this long, at most, while the gateway runs another turn in the session of its chat (GatewayBusy), and
 # tries again after each pause.
 BUSY_WAIT_SECONDS = 30 * 60
@@ -897,7 +899,9 @@ class GatewayChat:
             with self.lock:
                 check = bool(self._get('contexts', context_id).get('_decision_refresh'))
             if check and tool == 'refresh_decision':
-                return self.refresh_decision(context_id, arguments)
+                result = self.refresh_decision(context_id, arguments)
+                # The recorded result ends the check, so the plugin blocks each further tool call of the turn.
+                return dict(result, instruction=CHECK_FINISH, ended=True) if result.get('status') == 'recorded' else result
             if not check and tool == 'resolve_reply':
                 return self.resolve_decision_reply(context_id, arguments)
             if check:
