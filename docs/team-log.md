@@ -321,7 +321,15 @@ A Mac that joins after the change gets only the new key in its welcome, so it ca
 
 - The store keeps the epoch of the body of each entry (`team_entries`). So the Mac finds the entries that are left after a stop, and a repeat writes nothing.
 - The Mac writes at most 100 entries again in one minute in one room, and the rest at the next passes. The relay takes 300 writes of one member in one minute, so the person can still write in the chat.
-- The phone gets the `rev` of a team page as its version, so the Library of the other Macs shows the new write as a new version of the same page.
+
+A write again changes nothing that a person sees. A reader follows this rule:
+
+- A new write of a `member`, `bot` or `page` entry with the same fields as the write that the store has (each field except `rev` and `at`) is a write again.
+- A write again goes into `team_entries` as each other write does: its `seq`, its `rev`, its epoch and its payload. So the rule of `rev` and the work of the kept entries above stay correct.
+- A write again changes nothing that a person sees. A page keeps its `created_at` and its `updated_at`, a member and a bot keep their rows and their names, and no event goes to the phone. The version of a page for the phone is the `rev` of its entry, so it can move by one, with no event. The Mac that wrote again keeps its own rows the same way.
+- A Mac that reads the entry for the first time, for example a member that joins later, takes it as it comes.
+- A real change after a write again, for example a new version of a page, gets a new time and an event, as before.
+- The move of a room to a new epoch adds no event, because the phone shows no epoch.
 
 An invite that the admin makes after the change carries the new epoch and the new key in its welcome.
 

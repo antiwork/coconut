@@ -1343,12 +1343,23 @@ class TeamKeyChangeTests(unittest.TestCase):
         call(grace, 'POST', f'/v1/team/rooms/{room_id}/messages', {'text': 'Before the change'})
         sync(ada, grace, lin)
 
+        def team_page():
+            (page,) = [page for page in ada.documents()['documents'] if 'team' in page]
+            return page
+        page = team_page()
+        cursor = ada._cursor()
         call(ada, 'DELETE', f'/v1/team/rooms/{room_id}/members/{grace_id}')
         sync(ada, lin)
         # Ada and Lin use epoch 1 with the same key. Grace has only the key of epoch 0.
         self.assertEqual([service.team_store.room(room_id)['epoch'] for service in (ada, lin)], [1, 1])
         self.assertEqual(keys(lin)['keys']['1'], keys(ada)['keys']['1'])
         self.assertEqual(sorted(keys(grace)['keys']), ['0'])
+        # Lin wrote her page again in epoch 1, and Ada's Library shows the page with its old times and no event.
+        again = team_page()
+        self.assertEqual((again['created_at'], again['updated_at'], again['version']),
+                         (page['created_at'], page['updated_at'], page['version'] + 1))
+        self.assertNotIn('document.updated',
+                         [row[0] for row in ada.db.execute('SELECT type FROM events WHERE seq>?', (cursor,))])
 
         # Ada and Lin still read each other in the team chat and in a direct chat.
         chat = f'/v1/team/rooms/{room_id}/messages'

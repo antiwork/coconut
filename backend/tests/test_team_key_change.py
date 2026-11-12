@@ -373,6 +373,57 @@ class WriteAgainTests(KeyChangeMacs, unittest.TestCase):
         self.sync()
         self.assertEqual(self.writes(), writes)
 
+    def team_page(self, service) -> dict:
+        (page,) = [page for page in service.documents()['documents'] if 'team' in page]
+        return page
+
+    def events(self, service, cursor: int) -> list[str]:
+        return [row[0] for row in service.db.execute('SELECT type FROM events WHERE seq>?', (cursor,))]
+
+    def own_page(self) -> tuple:
+        return self.third.db.execute('SELECT version, created_at, updated_at FROM team_pages WHERE room=? AND member=?',
+                                     (self.room, self.lin)).fetchone()
+
+    def test_a_write_again_changes_nothing_that_a_person_sees(self):
+        before = self.team_page(self.first)
+        bots = self.view(self.first)['bots']
+        own = self.own_page()
+        self.remove(self.grace)
+        self.sync(self.first)
+        # Lin takes the key first, then writes her kept entries again in a pass of its own.
+        with mock.patch.object(self.third, '_team_write_again'):
+            self.third.team_sync_pass()
+        lin_cursor, ada_cursor = self.third._cursor(), self.first._cursor()
+        self.third.team_sync_pass()
+        self.assertEqual(set(self.body_epochs(self.lin).values()), {1})
+        # The own rows of Lin keep their times, and Lin's phone gets no event.
+        self.assertEqual(self.own_page(), own)
+        self.assertEqual(self.events(self.third, lin_cursor), [])
+        # Ada's Mac reads the writes again: the page keeps its times, only its version moves, and no event comes.
+        self.first.team_sync_pass()
+        after = self.team_page(self.first)
+        self.assertEqual((after['created_at'], after['updated_at'], after['version']),
+                         (before['created_at'], before['updated_at'], before['version'] + 1))
+        self.assertEqual(self.view(self.first)['bots'], bots)
+        self.assertEqual(self.names_of(self.first), ['Ada', 'Lin'])
+        self.assertEqual(self.events(self.first, ada_cursor), [])
+        # A real change of the page after it gets a new time and an event.
+        bot = self.third.team_store.shares(self.room)
+        (bot_id,) = bot
+        self.third.publish_page(bot_id, dict(key='weekly-report', title='Weekly report', format='markdown',
+                                             content='4 tasks are open.'))
+        self.sync(self.third, self.first)
+        changed = self.team_page(self.first)
+        self.assertGreater(changed['updated_at'], before['updated_at'])
+        self.assertEqual(changed['created_at'], before['created_at'])
+        self.assertIn('document.updated', self.events(self.first, ada_cursor))
+        # A Mac that joins later takes the page as it comes.
+        noor = self.mac('fourth')
+        self.join(noor, self.invite({'room': self.room})['link'], 'Noor')
+        noor.team_sync_pass()
+        self.assertEqual(self.team_page(noor)['title'], 'Weekly report')
+        self.assertEqual(self.first.document(changed['id'])['content'], '4 tasks are open.')
+
     def test_a_stop_in_the_middle_writes_the_rest_at_the_next_pass(self):
         self.remove(self.grace)
         self.sync(self.first)

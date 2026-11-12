@@ -370,6 +370,13 @@ def agreement_key(value) -> bool:
     return base64.urlsafe_b64encode(base64.urlsafe_b64decode(value + '=')).decode().rstrip('=') == value
 
 
+def same_fields(payload: str, fields: dict) -> bool:
+    """True when the payload of the store has the same fields as `fields`, each field but `rev` and `at`."""
+    stored = json.loads(payload)
+    return {name: value for name, value in stored.items() if name not in ('rev', 'at')} == {
+        name: value for name, value in fields.items() if name not in ('rev', 'at')}
+
+
 def key_fields(fields: dict, epoch) -> dict | None:
     """The new epoch, the agreement key of the admin and the boxes of a `key` payload, or None when a field does not
     fit (docs/team-log.md, "Key change").
@@ -571,6 +578,15 @@ class TeamStore:
         # The relay keeps only the newest write of an entry ID, so an earlier body that waits is gone there.
         self.db.execute('DELETE FROM team_pending WHERE room=? AND id=? AND seq<=?',
                         (room['room'], entry['id'], entry['seq']))
+        # A Mac writes its kept entries again with the room key of a new epoch (TeamEpochs). Such a write has the
+        # fields of the write that the store has, and it changes nothing that a person sees: the rows, the times and
+        # the names stay, and no event goes to the phone. Only the version of a page, the `rev`, moves.
+        if existing and existing['kind'] == fields['kind'] and fields['kind'] in WRITTEN_AGAIN and same_fields(
+                existing['payload'], fields):
+            if fields['kind'] == 'page':
+                self.db.execute('UPDATE team_pages SET rev=? WHERE room=? AND entry=?',
+                                (fields['rev'], room['room'], entry['id']))
+            return STORED, None
         kinds = {fields['kind'], existing['kind'] if existing else None}
         other = entry['member'] != room['member']
         if 'message' in kinds and self._show_message(room['room'], entry, fields['rev'],

@@ -27,7 +27,6 @@ import time
 from . import team_keys
 from .team_helper import TeamFormatError
 from .team_store import ACTIVE
-from .team_sync import TEAM_EVENT
 
 # The label of the entry ID of a `key` entry (key_entry).
 KEY_LABEL = b'coconut room key'
@@ -116,9 +115,9 @@ class TeamEpochs:
                 current = self.team_store.room(room_id)
                 if current is None:
                     return
+                # The phone shows no epoch, so the move adds no event.
                 if current['epoch'] < epoch:
                     self.team_store.update_room(room_id, epoch=epoch)
-                    self._event(TEAM_EVENT, {'team': room_id})
             log.info('coconut.team_log room %s: this Mac writes with the room key of epoch %d now.', room_id[:8], epoch)
             self._team_retry_waiting(room_id)
 
