@@ -176,6 +176,36 @@ final class MessageBannerTests: XCTestCase {
         XCTAssertEqual(MessageBanners.plan(before: nil, after: after).remove, ["team-chat:r1", "team-chat:r1:grace"])
     }
 
+    func testAReadInTheAppThenAnEqualListRemovesTheBannerOfTheChat() {
+        var posted = PostedBanners(identifiers: [])
+        let before = rooms(room(unread: 0, last: last(1)))
+        let new = rooms(room(unread: 1, last: last(2)))
+        XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: before, after: new)), [])
+        XCTAssertEqual(posted.identifiers, ["team-chat:r1"])
+        // The answer of the read sets the count to 0 in the list of the store. The next list of the Mac is equal.
+        let read = rooms(room(unread: 0, last: last(2)))
+        XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: read, after: read)), ["team-chat:r1"])
+        XCTAssertEqual(posted.identifiers, [])
+        XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: read, after: read)), [],
+                       "A removed banner is not removed again.")
+    }
+
+    func testAnEqualListWithoutAPostedBannerAsksMacOSForNothing() {
+        var posted = PostedBanners(identifiers: [])
+        let list = rooms(room(unread: 0, last: last(1), directs: [direct(unread: 0, last: last(1))]))
+        XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: list, after: list)), [])
+        XCTAssertEqual(posted.identifiers, [])
+    }
+
+    func testTheFirstPlanAfterAStartRemovesEachBannerOnce() {
+        var posted = PostedBanners()
+        let list = rooms(room(unread: 0, last: last(1), directs: [direct(unread: 0, last: last(1))]))
+        // Banners of an earlier run can still be in Notification Center.
+        XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: nil, after: list)),
+                       ["team-chat:r1", "team-chat:r1:grace"])
+        XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: list, after: list)), [])
+    }
+
     func testPermissionWaitsForAnActiveTeam() {
         XCTAssertFalse(MessageBanners.plan(before: nil, after: rooms()).asksPermission)
         XCTAssertFalse(MessageBanners.plan(before: nil, after: rooms(room(state: "joining"))).asksPermission)

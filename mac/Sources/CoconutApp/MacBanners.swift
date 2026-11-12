@@ -17,6 +17,7 @@ final class MacBanners: NSObject, UNUserNotificationCenterDelegate {
     /// before an earlier banner of the same chat.
     private var lastChange: Task<Void, Never>?
     private var askedForPermission = false
+    private var posted = PostedBanners()
 
     init(model: AppModel, store: AppStore) {
         self.model = model
@@ -27,9 +28,9 @@ final class MacBanners: NSObject, UNUserNotificationCenterDelegate {
     /// that started the app to the delegate that the app sets before the launch ends.
     func start() {
         center.delegate = self
+        // Each list goes to the rule, also a list that is equal to the one before: a read in the app changes the count
+        // in the list of the store before the next list loads, and that next list must still remove the banner.
         store.teamListLoaded = { [weak self] before, after in
-            // A list that changes nothing changes no banner.
-            guard before != after else { return }
             self?.apply(MessageBanners.plan(before: before, after: after))
         }
     }
@@ -37,11 +38,12 @@ final class MacBanners: NSObject, UNUserNotificationCenterDelegate {
     private func apply(_ plan: MessageBannerPlan) {
         let asks = plan.asksPermission && !askedForPermission
         if asks { askedForPermission = true }
-        guard asks || !plan.remove.isEmpty || !plan.post.isEmpty else { return }
+        let removals = posted.removals(for: plan)
+        guard asks || !removals.isEmpty || !plan.post.isEmpty else { return }
         let previous = lastChange
         lastChange = Task {
             await previous?.value
-            if !plan.remove.isEmpty { center.removeDeliveredNotifications(withIdentifiers: plan.remove) }
+            if !removals.isEmpty { center.removeDeliveredNotifications(withIdentifiers: removals) }
             guard asks || !plan.post.isEmpty, await allowed(asking: asks) else { return }
             for banner in plan.post { try? await center.add(Self.request(banner)) }
         }

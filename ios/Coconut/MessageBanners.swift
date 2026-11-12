@@ -25,6 +25,21 @@ struct MessageBannerPlan: Equatable, Sendable {
     var asksPermission = false
 }
 
+/// The banners that the app posted in this run and that are still in Notification Center, as far as the app knows. It
+/// keeps an equal list from a call to macOS: a list removes only the banners that are there.
+struct PostedBanners: Equatable, Sendable {
+    /// Nil after a start of the app: the app does not know the banners of an earlier run, which can still be there.
+    var identifiers: Set<String>? = nil
+
+    /// The removals of `plan` to ask macOS for: each one that the app posted, or each one for the first plan after a
+    /// start. Then it records the removals and the posts of the plan.
+    mutating func removals(for plan: MessageBannerPlan) -> [String] {
+        let removals = identifiers.map { posted in plan.remove.filter(posted.contains) } ?? plan.remove
+        identifiers = (identifiers ?? []).subtracting(plan.remove).union(plan.post.map(\.identifier))
+        return removals
+    }
+}
+
 enum MessageBanners {
     /// The banners for the change from the list `before` to the list `after`.
     ///
