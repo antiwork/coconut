@@ -134,6 +134,8 @@ struct CoconutHome: View {
         // page of Settings has its own state, so the count of the pages decides.
         .onChange(of: onboardingOpen) { _, _ in showTeamJoin() }
         .onChange(of: PairingPages.shared.isOpen) { _, _ in showTeamJoin() }
+        // After the sheets, so that the Team screen in Settings gets it too.
+        .environment(\.showTeamChat) { chat in showTeamChat(chat) }
         .onChange(of: PushNotifications.shared.target) { _, _ in openNotification() }
         .onChange(of: store.lastSync) { _, _ in openNotification() }
         .onChange(of: store.connection) { _, _ in openNotification() }
@@ -190,7 +192,7 @@ struct CoconutHome: View {
                     DocumentView(documentId: route.id)
                 }
                 .navigationDestination(for: TeamChatRoute.self) { route in
-                    TeamChatView(roomId: route.roomId)
+                    TeamChatView(chatKey: route.chat)
                 }
                 .navigationDestination(for: TeamScreenRoute.self) { route in
                     TeamRoomView(roomId: route.roomId, pushed: true)
@@ -255,7 +257,7 @@ struct CoconutHome: View {
         // the person can have left the team.
         if previewedNotification != target {
             previewedNotification = target
-            let preview = target.team.map(store.teamNotificationPlace)
+            let preview = target.chat.map { store.teamNotificationPlace($0.room, member: $0.member) }
                 ?? target.decisionId.map(NotificationDestination.inbox) ?? .conversation(target.conversationRoute)
             previewedPlace = preview
             showNotification(preview)
@@ -276,6 +278,15 @@ struct CoconutHome: View {
         }
     }
 
+    /// Shows a Team chat or a direct chat on the Chats tab, with the Chats list under it. Settings and the sheets close.
+    private func showTeamChat(_ chat: TeamChatKey) {
+        settingsOpen = false; createOpen = false
+        notificationDecisionId = nil
+        selectedTab = .bots
+        botsPath = NavigationPath()
+        botsPath.append(TeamChatRoute(chat: chat))
+    }
+
     private func showNotification(_ destination: NotificationDestination) {
         settingsOpen = false; createOpen = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
@@ -293,11 +304,8 @@ struct CoconutHome: View {
             selectedTab = .bots
             botsPath = NavigationPath()
             botsPath.append(route)
-        case .team(let room):
-            notificationDecisionId = nil
-            selectedTab = .bots
-            botsPath = NavigationPath()
-            botsPath.append(TeamChatRoute(roomId: room))
+        case .team, .direct:
+            if let chat = destination.teamChat { showTeamChat(chat) }
         case .chatList:
             notificationDecisionId = nil
             selectedTab = .bots

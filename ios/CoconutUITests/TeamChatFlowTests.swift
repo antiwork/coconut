@@ -529,6 +529,226 @@ final class TeamChatFlowTests: XCTestCase {
         shot("team-push-switch-refused")
     }
 
+    // MARK: Direct messages
+
+    /// The test world of the direct messages: Example Team (COCONUT_TEAM_EXAMPLE) with Ada, the person of this app,
+    /// Grace and Lin, whose Macs read direct messages, and Noor, whose Mac does not. COCONUT_DIRECT_GRACE,
+    /// COCONUT_DIRECT_LIN and COCONUT_DIRECT_NOOR are their member IDs. Grace and Ada wrote each other already.
+    private struct DirectWorld {
+        let url: String, code: String, room: String, grace: String, lin: String, noor: String
+        let flags: URL?
+
+        init() throws {
+            let env = ProcessInfo.processInfo.environment
+            guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"],
+                  let room = env["COCONUT_TEAM_EXAMPLE"], let grace = env["COCONUT_DIRECT_GRACE"],
+                  let lin = env["COCONUT_DIRECT_LIN"], let noor = env["COCONUT_DIRECT_NOOR"] else {
+                throw XCTSkip("Run with the test world of the direct messages.")
+            }
+            self.url = url; self.code = code; self.room = room; self.grace = grace; self.lin = lin; self.noor = noor
+            flags = env["COCONUT_TEAM_FLAGS"].map { URL(fileURLWithPath: $0) }
+        }
+    }
+
+    @MainActor
+    private func launchDirect(_ world: DirectWorld, look: String = "light") {
+        shots = ProcessInfo.processInfo.environment["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
+        continueAfterFailure = false
+        app = XCUIApplication()
+        if look == "dark" { app.launchArguments += ["-AppleInterfaceStyle", "Dark", "-UIUserInterfaceStyle", "Dark"] }
+        if look == "large" {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        }
+        app.launchEnvironment = Self.pairing(url: world.url, code: world.code)
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
+    }
+
+    /// Waits for a script of the test world: the test writes `flag`, and the script writes `done` when it acted.
+    private func act(_ world: DirectWorld, _ flag: String, done: String) throws {
+        let flags = try XCTUnwrap(world.flags, "Set COCONUT_TEAM_FLAGS.")
+        try? FileManager.default.removeItem(at: flags.appendingPathComponent(done))
+        try Data().write(to: flags.appendingPathComponent(flag))
+        let path = flags.appendingPathComponent(done).path
+        for _ in 0..<60 where !FileManager.default.fileExists(atPath: path) { sleep(1) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path), "The script of the test world did \(flag).")
+    }
+
+    /// An element whose label contains the text, such as a message of a chat.
+    private func labeled(_ text: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+    }
+
+    private func waitForLabel(_ element: XCUIElement, contains text: String?, timeout: TimeInterval = 30) -> Bool {
+        let format = text == nil ? "NOT (label CONTAINS 'unread')" : "label CONTAINS %@"
+        let predicate = text.map { NSPredicate(format: format, $0) } ?? NSPredicate(format: format)
+        return XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: predicate, object: element)],
+                                timeout: timeout) == .completed
+    }
+
+    /// One tap on a person of the Team screen opens the direct chat. A message sends. The row of the chat shows a new
+    /// message of Grace as unread, and the count goes when the chat opens. The name of Grace above her message in the
+    /// team chat opens the direct chat too.
+    @MainActor
+    func testADirectChatOpensFromTheTeamScreenAndFromAName() throws {
+        let world = try DirectWorld()
+        launchDirect(world)
+        let graceRow = app.buttons["direct-chat-\(world.grace)"]
+        XCTAssertTrue(graceRow.waitForExistence(timeout: 15), "The direct chat with Grace is a row of the Chats list.")
+        shot("dm-chats-list")
+        app.buttons["chats-filter-people"].tap()
+        XCTAssertTrue(graceRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["team-chat-\(world.room)"].exists)
+        shot("dm-chats-people")
+        app.buttons["chats-filter-bots"].tap()
+        XCTAssertFalse(graceRow.waitForExistence(timeout: 2), "Bots shows no direct chat.")
+        app.buttons["chats-filter-all"].tap()
+
+        // The Team screen: an arrow for Grace and Lin, none for Noor.
+        app.buttons["team-chat-\(world.room)"].tap()
+        let title = app.buttons["team-chat-title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        title.tap()
+        let grace = app.buttons["team-member-\(world.grace)"]
+        XCTAssertTrue(grace.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["team-member-\(world.lin)"].exists)
+        XCTAssertFalse(app.buttons["team-member-\(world.noor)"].exists, "Noor's Mac has no direct messages.")
+        XCTAssertTrue(app.staticTexts["Noor"].exists)
+        shot("dm-team-screen")
+        grace.tap()
+
+        // The direct chat: Grace and the team in the title, the reply with its quote, and a send.
+        let chatTitle = app.descendants(matching: .any).matching(identifier: "direct-chat-title").firstMatch
+        XCTAssertTrue(chatTitle.waitForExistence(timeout: 10), "One tap opens the direct chat.")
+        XCTAssertTrue(chatTitle.label.contains("Grace") && chatTitle.label.contains("Example Team"), chatTitle.label)
+        XCTAssertTrue(labeled("I will bring the draft.").waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == 'View replied message from You'")).firstMatch
+            .exists, "Grace's reply quotes Ada's message.")
+        shot("dm-chat-grace")
+        let input = app.textViews["message-input"].exists ? app.textViews["message-input"] : app.textFields["message-input"]
+        XCTAssertEqual(input.placeholderValue, "Message Grace")
+        input.tap()
+        input.typeText("Thanks, see you then.")
+        app.buttons["send-message"].tap()
+        XCTAssertTrue(labeled("Thanks, see you then.").waitForExistence(timeout: 15))
+        sleep(2)
+        back()
+
+        // The chat is read. A new message of Grace shows as unread, and the count goes when the chat opens.
+        XCTAssertTrue(graceRow.waitForExistence(timeout: 10))
+        XCTAssertTrue(waitForLabel(graceRow, contains: nil), graceRow.label)
+        XCTAssertTrue(graceRow.label.contains("You: Thanks, see you then."), graceRow.label)
+        try act(world, "grace-writes", done: "grace-wrote")
+        XCTAssertTrue(waitForLabel(graceRow, contains: "1 unread message"), graceRow.label)
+        XCTAssertTrue(graceRow.label.contains("One more question about Friday."), graceRow.label)
+        shot("dm-chats-unread")
+        graceRow.tap()
+        XCTAssertTrue(chatTitle.waitForExistence(timeout: 10))
+        XCTAssertTrue(labeled("One more question about Friday.").waitForExistence(timeout: 15))
+        sleep(2)
+        back()
+        XCTAssertTrue(waitForLabel(graceRow, contains: nil), "The count goes when the chat opens: \(graceRow.label)")
+
+        // The name of Grace above her message in the team chat.
+        app.buttons["team-chat-\(world.room)"].tap()
+        let writer = app.buttons["team-writer-\(world.grace)"]
+        XCTAssertTrue(writer.waitForExistence(timeout: 15))
+        XCTAssertEqual(writer.label, "Message Grace")
+        XCTAssertFalse(app.buttons["team-writer-\(world.noor)"].exists)
+        writer.tap()
+        XCTAssertTrue(chatTitle.waitForExistence(timeout: 10), "The name opens the direct chat.")
+        back()
+    }
+
+    /// A tap on the banner of a direct message in a terminated app opens the direct chat. COCONUT_DIRECT_NOTIFY turns
+    /// it on. A script of the test world pushes the payload of the newest message of Grace when the test writes
+    /// `backgrounded`. COCONUT_PUSH_EXPECTED_BODY is its text.
+    @MainActor
+    func testATapOnADirectNotificationOpensTheDirectChat() throws {
+        let world = try DirectWorld()
+        let env = ProcessInfo.processInfo.environment
+        guard env["COCONUT_DIRECT_NOTIFY"] == "1", let body = env["COCONUT_PUSH_EXPECTED_BODY"],
+              let flags = world.flags else {
+            throw XCTSkip("Run with the test world of the direct messages and COCONUT_DIRECT_NOTIFY.")
+        }
+        launchDirect(world)
+        allowNotifications()
+        XCUIDevice.shared.press(.home)
+        app.terminate()
+        try Data().write(to: flags.appendingPathComponent("backgrounded"))
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let banner = springboard.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", body)).firstMatch
+        XCTAssertTrue(banner.waitForExistence(timeout: 45), "The banner must show the text of the message.")
+        XCTAssertTrue(banner.label.contains("Grace"), banner.label)
+        // The banner slides in. The picture waits until it is at rest.
+        sleep(2)
+        screen("dm-push-banner")
+        banner.tap()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "direct-chat-title").firstMatch.waitForExistence(timeout: 15),
+                      "The tap opens the direct chat.")
+        XCTAssertFalse(app.buttons["direct-chat-\(world.grace)"].exists, "The chat is open, not the Chats list.")
+        shot("dm-push-chat-after-tap")
+    }
+
+    /// The pictures of the Team screen, the direct chat, the Chats list and the sentence of the notification settings
+    /// in one look. COCONUT_DIRECT_LOOK is "light", "dark" or "large".
+    @MainActor
+    func testTheDirectChatsInALook() throws {
+        let world = try DirectWorld()
+        guard let look = ProcessInfo.processInfo.environment["COCONUT_DIRECT_LOOK"] else {
+            throw XCTSkip("Run with the test world of the direct messages and COCONUT_DIRECT_LOOK.")
+        }
+        launchDirect(world, look: look)
+        let graceRow = app.buttons["direct-chat-\(world.grace)"]
+        XCTAssertTrue(graceRow.waitForExistence(timeout: 15))
+        shot("dm-\(look)-chats-list")
+        app.buttons["team-chat-\(world.room)"].tap()
+        let title = app.buttons["team-chat-title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        title.tap()
+        let grace = app.buttons["team-member-\(world.grace)"]
+        XCTAssertTrue(grace.waitForExistence(timeout: 15))
+        shot("dm-\(look)-team-screen")
+        grace.tap()
+        XCTAssertTrue(app.descendants(matching: .any).matching(identifier: "direct-chat-title").firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(labeled("Thanks, see you then.").waitForExistence(timeout: 15))
+        shot("dm-\(look)-chat-grace")
+        back()
+        guard look == "light" else { return }
+        app.buttons["app-settings"].tap()
+        let row = app.buttons["notification-settings"]
+        XCTAssertTrue(row.waitForExistence(timeout: 10))
+        row.tap()
+        let summary = app.staticTexts["notification-summary"]
+        XCTAssertTrue(summary.waitForExistence(timeout: 10))
+        XCTAssertTrue(summary.label.contains("direct messages") || summary.label.contains("every direct message"),
+                      summary.label)
+        shot("dm-settings-notifications")
+    }
+
+    /// The direct chat after Grace left the team: its history, and one quiet line in the place of the composer.
+    /// COCONUT_DIRECT_LEAVE turns it on, because the leave changes the test world for good.
+    @MainActor
+    func testADirectChatKeepsItsHistoryAfterThePersonLeft() throws {
+        let world = try DirectWorld()
+        guard ProcessInfo.processInfo.environment["COCONUT_DIRECT_LEAVE"] == "1" else {
+            throw XCTSkip("Run with the test world of the direct messages and COCONUT_DIRECT_LEAVE.")
+        }
+        try act(world, "grace-leaves", done: "grace-left")
+        launchDirect(world)
+        let graceRow = app.buttons["direct-chat-\(world.grace)"]
+        XCTAssertTrue(graceRow.waitForExistence(timeout: 15), "The chat stays in the list.")
+        graceRow.tap()
+        let closed = app.staticTexts["team-chat-closed"]
+        XCTAssertTrue(closed.waitForExistence(timeout: 15))
+        XCTAssertEqual(closed.label, "Grace is no longer in this team.")
+        XCTAssertTrue(labeled("I will bring the draft.").waitForExistence(timeout: 15), "The history stays.")
+        XCTAssertFalse(app.textViews["message-input"].exists || app.textFields["message-input"].exists)
+        shot("dm-chat-after-leave")
+    }
+
     /// The Team screen of a team, from its chat. Return the switch "Notifications".
     private func openTeamScreen(_ room: String) throws -> XCUIElement {
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))

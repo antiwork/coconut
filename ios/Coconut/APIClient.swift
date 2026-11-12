@@ -191,6 +191,8 @@ final class APIClient: @unchecked Sendable {
             headers["X-Coconut-Updates"] = "4"
             headers["X-Coconut-Work"] = "recent"
         }
+        // This app shows direct messages. The Mac then adds them to the list of the teams, and lets the team send them.
+        if path == "team/rooms" && method == "GET" { headers["X-Coconut-Team"] = "direct" }
         if body != nil { headers["Content-Type"] = "application/json" }
         if let token { headers["Authorization"] = "Bearer " + token }
         if method != "GET" {

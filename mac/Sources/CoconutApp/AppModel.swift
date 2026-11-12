@@ -20,6 +20,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var updateError: String?
     /// The mode of the install (InstallMode). Only `--set-up` changes it, before the first view shows.
     @Published private(set) var mode: InstallMode
+    /// A chat that the Settings window asked the main window to show. The main window shows it and sets it to nil.
+    @Published var shownChat: TeamChatKey?
 
     // The login items start without the environment of the app, so the app ignores COCONUT_INSTALL_DIR too. Both
     // read the same preference.
