@@ -22,6 +22,47 @@ final class TeamChatTests: XCTestCase {
         TeamMessagePage(messages: messages.reversed(), before: before)
     }
 
+    // MARK: Delete
+
+    /// The admin of an active team deletes a message of another person or of a bot in the Team chat. Each person deletes
+    /// an own message, also without the field.
+    func testTheAdminHasDeleteOnAMessageOfAnotherPersonOrOfABot() {
+        let admin = TeamRoom(room: "r1", name: "Example Team", state: "active", canDeleteMessages: true)
+        let grace = message("e1", 1)
+        let reporter = message("e2", 2, bot: "t-r1-b1")
+        let mine = message("e3", 3, own: true)
+        for item in [grace, reporter, mine] {
+            XCTAssertTrue(TeamMessageDeletion.allows(item, in: admin, direct: false), item.id)
+        }
+        // A direct chat keeps the rule of an own message only.
+        XCTAssertFalse(TeamMessageDeletion.allows(grace, in: admin, direct: true))
+        XCTAssertTrue(TeamMessageDeletion.allows(mine, in: admin, direct: true))
+    }
+
+    func testAMemberThatIsNotTheAdminAndAnOlderServiceHaveDeleteOnlyOnAnOwnMessage() throws {
+        let rooms = #"{"rooms": [{"room": "r1", "name": "Example Team", "state": "active", "can_delete_messages": false},"#
+            + #" {"room": "r2", "name": "Example Team", "state": "active"},"#
+            + #" {"room": "r3", "name": "Example Team", "state": "active", "can_delete_messages": true}]}"#
+        let decoded = try APIJSON.decoder().decode(TeamRooms.self, from: Data(rooms.utf8)).rooms
+        XCTAssertEqual(decoded.map(\.canDeleteMessages), [false, nil, true])
+        for room in decoded.prefix(2) {
+            XCTAssertFalse(TeamMessageDeletion.allows(message("e1", 1), in: room, direct: false), room.room)
+            XCTAssertFalse(TeamMessageDeletion.allows(message("e2", 2, bot: "t-r1-b1"), in: room, direct: false))
+            XCTAssertTrue(TeamMessageDeletion.allows(message("e3", 3, own: true), in: room, direct: false))
+        }
+        // A team that is not active has no Delete for a message of another person.
+        for state in ["joining", "removed", "gone"] {
+            let room = TeamRoom(room: "r1", name: "Example Team", state: state, canDeleteMessages: true)
+            XCTAssertFalse(TeamMessageDeletion.allows(message("e1", 1), in: room, direct: false), state)
+        }
+    }
+
+    /// One confirmation for each message that has the action. Its words are true for a message of another person too.
+    func testTheConfirmationHasTheWordsOfAnOwnDelete() {
+        XCTAssertEqual(TeamMessageDeletion.title, "Delete this message for everyone?")
+        XCTAssertEqual(TeamMessageDeletion.confirm, "Delete")
+    }
+
     // MARK: Decode
 
     /// The answer of GET /v1/team/rooms/<room>/messages (backend/coconut/team_messages.py), with nulls and a message

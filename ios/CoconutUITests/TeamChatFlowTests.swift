@@ -83,11 +83,10 @@ final class TeamChatFlowTests: XCTestCase {
         app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.55)).tap()
         XCTAssertTrue(app.buttons["team-delete-confirm"].waitForNonExistence(timeout: 5))
         XCTAssertTrue(text("I will bring the printed slides.").exists)
-        // A message of another member has no Edit and no Delete.
+        // A message of another member has no Edit. Delete follows the admin (testTheAdminDeletesAMessageOfAnotherPerson).
         hold(text("I booked a table for four."))
         XCTAssertTrue(app.buttons["held-reply"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["held-edit"].exists)
-        XCTAssertFalse(app.buttons["held-delete"].exists)
         app.buttons["held-copy"].tap()
         back()
 
@@ -848,17 +847,52 @@ final class TeamChatFlowTests: XCTestCase {
         XCTAssertFalse(app.buttons["Remove from team"].exists)
     }
 
-    /// Closes a question without its action. An iPhone shows it as a popover without a Cancel button, so a tap beside
-    /// it cancels it.
-    private func cancelQuestion() {
-        if app.buttons["Cancel"].exists { app.buttons["Cancel"].tap() } else {
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).tap()
+    /// The test world of a removal, with a message of Grace and a message of the bot Reporter in the chat of Example
+    /// Team (COCONUT_TEAM_ERASE). As Ada, the admin, the test opens the menu of each message and finds Delete, and asks
+    /// the question of a delete. COCONUT_TEAM_LOOK "dark" or "large" sets the look, and stops after the question. In
+    /// the light look the test deletes the message of Grace, and it goes from the chat. With COCONUT_ERASE_AS, the
+    /// test runs as a person who is not the admin, and the message of Grace has no Delete.
+    @MainActor
+    func testTheAdminDeletesAMessageOfAnotherPerson() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"],
+              let room = env["COCONUT_TEAM_ERASE"] else {
+            throw XCTSkip("Run with the test world of a member removal and COCONUT_TEAM_ERASE.")
         }
+        let look = launchTeamChat(url: url, code: code, room: room)
+        let grace = text("The weekly report is out.")
+        XCTAssertTrue(grace.waitForExistence(timeout: 15))
+        hold(grace)
+        XCTAssertTrue(app.buttons["held-reply"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["held-edit"].exists, "Only the writer edits a message.")
+        if let name = env["COCONUT_ERASE_AS"] {
+            XCTAssertFalse(app.buttons["held-delete"].exists, "A person who is not the admin has no Delete.")
+            shot("erase-\(name)-menu-grace")
+            return
+        }
+        XCTAssertTrue(app.buttons["held-delete"].exists)
+        shot("erase-\(look)-1-menu-grace")
+        app.buttons["held-delete"].tap()
+        let confirm = app.buttons["team-delete-confirm"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Delete this message for everyone?"].exists)
+        shot("erase-\(look)-2-confirm")
+        guard look == "light" else { return }
+        confirm.tap()
+        XCTAssertTrue(grace.waitForNonExistence(timeout: 15), "The message goes at once.")
+        let reporter = text("The numbers of the week are ready.")
+        XCTAssertTrue(reporter.exists)
+        shot("erase-\(look)-3-after")
+        // A message of a bot of the team has Delete too.
+        hold(reporter)
+        XCTAssertTrue(app.buttons["held-delete"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["held-edit"].exists)
+        shot("erase-\(look)-4-menu-reporter")
     }
 
-    /// Opens the Team screen of a team from its chat, in the look of COCONUT_TEAM_LOOK. Return the look.
-    @MainActor @discardableResult
-    private func launchTeamScreen(url: String, code: String, room: String, chatShot: String? = nil) -> String {
+    /// Opens the chat of a team in the look of COCONUT_TEAM_LOOK. Return the look.
+    @MainActor
+    private func launchTeamChat(url: String, code: String, room: String) -> String {
         let env = ProcessInfo.processInfo.environment
         shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
         let look = env["COCONUT_TEAM_LOOK"] ?? "light"
@@ -875,6 +909,21 @@ final class TeamChatFlowTests: XCTestCase {
         let row = app.buttons["team-chat-\(room)"]
         XCTAssertTrue(row.waitForExistence(timeout: 15))
         row.tap()
+        return look
+    }
+
+    /// Closes a question without its action. An iPhone shows it as a popover without a Cancel button, so a tap beside
+    /// it cancels it.
+    private func cancelQuestion() {
+        if app.buttons["Cancel"].exists { app.buttons["Cancel"].tap() } else {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).tap()
+        }
+    }
+
+    /// Opens the Team screen of a team from its chat, in the look of COCONUT_TEAM_LOOK. Return the look.
+    @MainActor @discardableResult
+    private func launchTeamScreen(url: String, code: String, room: String, chatShot: String? = nil) -> String {
+        let look = launchTeamChat(url: url, code: code, room: room)
         let title = app.buttons["team-chat-title"]
         XCTAssertTrue(title.waitForExistence(timeout: 10))
         if let chatShot { shot(chatShot) }

@@ -141,6 +141,21 @@ struct TeamMessage: Decodable, Identifiable, Equatable, Sendable {
     var isEdited: Bool { editedAt != nil }
 }
 
+/// Which message of a chat has the action "Delete", and the words of the one confirmation (backend/coconut/
+/// team_messages.py, `team_unsend`). The person deletes an own message. In the Team chat, the admin of an active team
+/// also deletes a message of another person or of a bot: `can_delete_messages` of the service is the one rule, so an
+/// older service shows no action. A direct chat keeps the rule of an own message only.
+enum TeamMessageDeletion {
+    /// The words are true for each message that has the action: the message goes for each member of the chat.
+    static let title = "Delete this message for everyone?"
+    static let confirm = "Delete"
+
+    static func allows(_ message: TeamMessage, in room: TeamRoom, direct: Bool) -> Bool {
+        if message.isOwn { return true }
+        return !direct && room.status == .active && room.canDeleteMessages == true
+    }
+}
+
 /// One page of the chat, newest first. `before` is the `first` to ask for the next older page, or nil.
 struct TeamMessagePage: Decodable, Sendable {
     var messages: [TeamMessage]
