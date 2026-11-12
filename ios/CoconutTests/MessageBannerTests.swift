@@ -86,6 +86,71 @@ final class MessageBannerTests: XCTestCase {
                        [TeamChatKey(room: "r1", member: grace)])
     }
 
+    /// A quiet team: the switch is off. `mention` is `mention_first` of the service, nil when no unread message names
+    /// this person.
+    private func quiet(state: String = "active", unread: Int, last: TeamLastMessage, mention: Int?) -> TeamRooms {
+        var team = room(state: state, notifications: false, unread: unread, last: last)
+        team.mentioned = mention != nil
+        team.mentionFirst = mention
+        return rooms(team)
+    }
+
+    func testAMentionAndALaterPlainMessageInOneLoadMakeOneBannerInAQuietTeam() {
+        let plan = MessageBanners.plan(before: quiet(unread: 0, last: last(1), mention: nil),
+                                       after: quiet(unread: 2, last: last(3, text: "And one more thing"), mention: 2))
+        XCTAssertEqual(plan.post.map(\.chat), [TeamChatKey(room: "r1")])
+        XCTAssertEqual(plan.post.map(\.body), ["And one more thing"], "The banner has the newest message.")
+    }
+
+    func testAPlainMessageInAQuietTeamMakesNoBanner() {
+        XCTAssertEqual(MessageBanners.plan(before: quiet(unread: 0, last: last(1), mention: nil),
+                                           after: quiet(unread: 1, last: last(2), mention: nil)).post, [])
+    }
+
+    func testAnOldMentionAndANewPlainMessageMakeNoBanner() {
+        XCTAssertEqual(MessageBanners.plan(before: quiet(unread: 1, last: last(2), mention: 2),
+                                           after: quiet(unread: 2, last: last(3), mention: 2)).post, [])
+    }
+
+    func testASecondMentionMakesABanner() {
+        let plan = MessageBanners.plan(before: quiet(unread: 1, last: last(2), mention: 2),
+                                       after: quiet(unread: 2, last: last(3), mention: 3))
+        XCTAssertEqual(plan.post.map(\.chat), [TeamChatKey(room: "r1")])
+    }
+
+    func testAMentionInATeamThatIsNotActiveOrOfAnOlderServiceMakesNoBanner() {
+        XCTAssertEqual(MessageBanners.plan(before: quiet(state: "removed", unread: 0, last: last(1), mention: nil),
+                                           after: quiet(state: "removed", unread: 1, last: last(2), mention: 2)).post, [])
+        // An older service sends neither `mentioned` nor `mention_first`.
+        XCTAssertEqual(MessageBanners.plan(before: rooms(room(notifications: false, unread: 0, last: last(1))),
+                                           after: rooms(room(notifications: false, unread: 1, last: last(2)))).post, [])
+    }
+
+    // MARK: A count at its limit
+
+    func testANewMentionInAQuietTeamAtTheLimitMakesABanner() {
+        let full = TeamRoom.maxUnread
+        let plan = MessageBanners.plan(before: quiet(unread: full, last: last(200), mention: 150),
+                                       after: quiet(unread: full, last: last(201), mention: 201))
+        XCTAssertEqual(plan.post.map(\.chat), [TeamChatKey(room: "r1")])
+    }
+
+    func testATeamWithItsSwitchOnAtTheLimitMakesABannerForANewerMessageOnly() {
+        let full = TeamRoom.maxUnread
+        XCTAssertEqual(MessageBanners.plan(before: rooms(room(unread: full, last: last(200))),
+                                           after: rooms(room(unread: full, last: last(201)))).post.map(\.chat),
+                       [TeamChatKey(room: "r1")])
+        XCTAssertEqual(MessageBanners.plan(before: rooms(room(unread: full, last: last(200))),
+                                           after: rooms(room(unread: full, last: last(200)))).post, [])
+    }
+
+    func testADirectChatAtTheLimitMakesABannerForANewerMessage() {
+        let full = TeamRoom.maxUnread
+        let plan = MessageBanners.plan(before: rooms(room(directs: [direct(unread: full, last: last(200))])),
+                                       after: rooms(room(directs: [direct(unread: full, last: last(201))])))
+        XCTAssertEqual(plan.post.map(\.chat), [TeamChatKey(room: "r1", member: grace)])
+    }
+
     func testATeamThatIsNotActiveMakesNoBanner() {
         for state in ["joining", "removed", "gone"] {
             let before = rooms(room(state: state, unread: 0, last: last(1), directs: [direct(unread: 0, last: last(1))]))

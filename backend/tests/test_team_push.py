@@ -239,6 +239,98 @@ class SwitchAndRelevance(TeamPushMacs, unittest.TestCase):
         self.assertEqual(self.transport.calls, [])
 
 
+class Mentions(TeamPushMacs, unittest.TestCase):
+    """A message that names Ada, the person of the second Mac, notifies her phone also in a quiet team. Lin on the
+    third Mac is another person of the team."""
+
+    def setUp(self):
+        super().setUp()
+        self.join(self.third, self.invite({'room': self.room})['link'], name='Lin')
+        members = {member['name']: member['member'] for member in self.rooms(self.first)[0]['members']}
+        self.ada, self.lin = members['Ada'], members['Lin']
+        self.second.team_sync_pass()
+
+    def quiet(self, enabled=False):
+        self.phone(self.second)('PUT', f'/v1/team/rooms/{self.room}/notifications', {'enabled': enabled})
+
+    def notified(self, text, mentions):
+        """Send a message of Grace, and return the IDs of the messages that have an item on the phone of Ada."""
+        sent = self.send(text, mentions=mentions)
+        self.second.team_sync_pass()
+        return sent['id'], [item[6] for item in self.items()]
+
+    def test_a_message_that_names_the_person_notifies_with_the_switch_off_and_on(self):
+        self.quiet()
+        named, items = self.notified('Ada, this is for you.', [self.ada])
+        self.assertEqual(items, [named])
+        flush(self.second)
+        self.assertEqual([payload['coconut']['kind'] for payload in self.payloads()], ['team'])
+        # With the switch on, the mention makes one item as each other message does.
+        self.quiet(enabled=True)
+        again, items = self.notified('Ada, one more thing.', [self.lin, self.ada])
+        self.assertEqual(items, [named, again])
+
+    def test_a_message_that_names_another_person_or_nobody_follows_the_switch(self):
+        self.quiet()
+        self.notified('Lin, this is for you.', [self.lin])
+        self.notified('A note for everyone.', [])
+        self.assertEqual(self.items(), [])
+        self.quiet(enabled=True)
+        for_lin, items = self.notified('Lin, again.', [self.lin])
+        self.assertEqual(items, [for_lin])
+
+    def test_a_waiting_mention_still_notifies_after_the_switch_goes_off(self):
+        def outcome():
+            flush(self.second)
+            return self.items()[-1][9:]
+
+        # The switch goes off while both wait: the mention sends, the other message drops.
+        self.notified('A note for everyone.', [])
+        self.notified('Ada, this is for you.', [self.ada])
+        self.quiet()
+        flush(self.second)
+        self.assertEqual([item[9:] for item in self.items()], [('dropped', 'NoLongerRelevant'), ('sent', None)])
+        # A mention that the person read, or that its writer removed, sends nothing.
+        named, _ = self.notified('Ada, read this.', [self.ada])
+        self.phone(self.second)('POST', f'/v1/team/rooms/{self.room}/read', {'first': 10 ** 9})
+        self.assertEqual(outcome(), ('dropped', 'NoLongerRelevant'))
+        named, _ = self.notified('Ada, never mind.', [self.ada])
+        self.phone(self.first)('DELETE', f'/v1/team/rooms/{self.room}/messages/{named}', {})
+        self.second.team_sync_pass()
+        self.assertEqual(outcome(), ('dropped', 'NoLongerRelevant'))
+
+    def test_relevant_follows_the_same_rule(self):
+        self.quiet(enabled=True)
+        named, _ = self.notified('Ada, this is for you.', [self.ada])
+        other, _ = self.notified('Lin, this is for you.', [self.lin])
+        self.quiet()
+        items = {item['message_id']: item for item in self.second.push._items("kind='team'", ())}
+        self.assertTrue(self.second.push.relevant(items[named]))
+        self.assertFalse(self.second.push.relevant(items[other]))
+        self.quiet(enabled=True)
+        self.assertTrue(self.second.push.relevant(items[other]))
+
+    def test_no_log_line_has_the_text_or_a_name_of_a_mention(self):
+        records = []
+        handler = logging.Handler(logging.DEBUG)
+        handler.emit = records.append
+        root = logging.getLogger()
+        level = root.level
+        root.addHandler(handler)
+        root.setLevel(logging.DEBUG)
+        self.addCleanup(root.setLevel, level)
+        self.addCleanup(root.removeHandler, handler)
+        self.quiet()
+        self.seal()
+        self.notified('The private words 7e2a', [self.ada, self.lin])
+        self.rooms(self.second)
+        flush(self.second)
+        self.assertEqual(len(self.relay.sealed), 1)
+        output = '\n'.join(logging.Formatter().format(record) for record in records)
+        for text in ('private words', 'Grace', 'Ada', 'Lin', 'Example Team'):
+            self.assertNotIn(text, output)
+
+
 class Alerts(TeamPushMacs, unittest.TestCase):
     def test_the_sealed_alert_names_the_writer_and_the_team(self):
         self.seal()

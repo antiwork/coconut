@@ -130,6 +130,13 @@ MESSAGE_FIELDS = ('entry', 'first', 'member', 'member_name', 'bot', 'bot_name', 
 # time. team_names keeps the bot after a `delete`, so the history of a bot that the team no longer has stays.
 SHOWN_MESSAGE = '''(m.bot IS NULL OR EXISTS (SELECT 1 FROM team_names b WHERE b.room=m.room AND b.entry=m.bot
     AND b.kind='bot' AND b.member=m.member))'''
+# A message names a member when its `mentions` have a `member` entry of that member. The value is the member ID. The
+# primary key of team_names finds each mention, so the check reads at most 16 rows.
+NAMES_MEMBER = '''EXISTS (SELECT 1 FROM json_each(m.mentions) j JOIN team_names n ON n.room=m.room AND n.entry=j.value
+    WHERE n.kind='member' AND n.member=?)'''
+# A message counts as unread for this Mac's person when another member wrote it, or a bot wrote it. The value is the
+# member ID of this Mac.
+UNREAD_MESSAGE = '(m.member!=? OR m.bot IS NOT NULL)'
 # The event of each transaction that changes the chat of a room: a message, an edit, a removal, or the read position.
 # GET /v1/updates then has `team_messages_changed`.
 MESSAGES_EVENT = 'team_messages.updated'
@@ -147,6 +154,16 @@ MAX_TEXT = 16000
 MAX_MENTIONS = 16
 # The unread count of a room stops here, so the count reads at most this many rows.
 MAX_UNREAD = 99
+# The check of a mention (`mention_first`) reads at most this many rows of the index after the read position, the
+# newest first, also own messages and messages that do not show. GET /v1/team/rooms runs it for each room on each load
+# under the service lock, so it needs a bound. It is larger than MAX_UNREAD: the badge stops at 99, but a mention of
+# the person in the 100th unread message must still show the mark.
+MAX_MENTION_ROWS = 1000
+# The statement of TeamStore.mention_first. The values are the room, the read position, and the member ID of this Mac
+# two times.
+MENTION_SQL = f'''SELECT MAX(m.first) FROM (SELECT room, first, member, bot, mentions FROM team_messages
+    WHERE room=? AND first>? ORDER BY first DESC LIMIT {MAX_MENTION_ROWS}) m
+    WHERE {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} AND {NAMES_MEMBER}'''
 # A message starts a turn of a bot, or notifies the phone of a person, only while it is younger than this. An older
 # message is history, for example the log that a Mac reads after it joins.
 TRIGGER_SECONDS = 3600
@@ -1210,8 +1227,19 @@ class TeamStore:
         person counts as read: the person did not write the reply of a bot of this Mac. The LIMIT keeps the count to
         at most MAX_UNREAD rows of the index."""
         return self.db.execute(f'''SELECT COUNT(*) FROM (SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>?
-            AND (m.member!=? OR m.bot IS NOT NULL) AND {SHOWN_MESSAGE} LIMIT {MAX_UNREAD})''',
+            AND {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} LIMIT {MAX_UNREAD})''',
                                (room, self.read_position(room), member)).fetchone()[0]
+
+    def names_member(self, room: str, entry: str, member: str) -> bool:
+        """True when the shown message `entry` names `member` in its `mentions`."""
+        return self.db.execute(f'''SELECT 1 FROM team_messages m WHERE m.room=? AND m.entry=? AND {SHOWN_MESSAGE}
+            AND {NAMES_MEMBER}''', (room, entry, member)).fetchone() is not None
+
+    def mention_first(self, room: str, member: str) -> int | None:
+        """The `first` of the newest unread message (the rule of `unread`) that names `member`, or None. The inner
+        query walks the index team_messages_order back from the newest message and stops after MAX_MENTION_ROWS rows
+        after the read position. The outer query applies the rules to those rows only."""
+        return self.db.execute(MENTION_SQL, (room, self.read_position(room), member, member)).fetchone()[0]
 
     # Direct messages
 
