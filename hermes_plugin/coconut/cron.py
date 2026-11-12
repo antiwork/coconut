@@ -18,7 +18,7 @@ import logging
 import os
 import threading
 
-from .adapter import DEFAULT_BRIDGE, PAUSED, REQUEST_SECONDS, WAITED, Bridge
+from .adapter import CLOSED, DEFAULT_BRIDGE, PAUSED, REQUEST_SECONDS, WAITED, Bridge, ends_quietly
 
 LOG = logging.getLogger(__name__)
 _RUNS: dict[str, 'CronRun'] = {}
@@ -74,6 +74,8 @@ class CronRun:
             return False
 
     def send(self, text, interim=False):
+        if not interim and ends_quietly(self.turn, text):
+            return
         self.count += 1
         self.report('send', message_id=f'{self.turn}:{self.count}', text=str(text), interim=interim)
 
@@ -118,3 +120,4 @@ def finish(outcome):
         if run is not None:
             PAUSED.discard(run.turn)
             WAITED.discard(run.turn)
+            CLOSED.discard(run.turn)

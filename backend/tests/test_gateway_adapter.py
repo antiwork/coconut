@@ -713,6 +713,110 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(self.replies(task), [('Nothing needs you now.', False)])
         self.assertEqual(self.adapter_module.WAITED, set())
 
+    def test_the_closing_text_needs_the_execution_middleware_of_hermes(self):
+        # A Hermes without execution middleware retries an empty reply after a card or a wait, as before.
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        for kinds, expected in ((set(), ['llm_request']), ({'llm_request', 'llm_execution'}, ['llm_request', 'llm_execution'])):
+            registered = []
+            ctx = types.SimpleNamespace(register_hook=lambda *_: None,
+                                        register_middleware=lambda kind, callback: registered.append(kind))
+            middleware = types.ModuleType('hermes_cli.middleware')
+            middleware.VALID_MIDDLEWARE = kinds
+            with patch.dict(sys.modules, {'hermes_cli.middleware': middleware}), \
+                    patch.dict(self.adapter_module.CONTEXT_MIDDLEWARE):
+                hooks.register(ctx)
+            self.assertEqual(registered, expected)
+
+    def test_an_empty_reply_after_the_end_of_a_turn_ends_it_without_a_message(self):
+        # Hermes retries a reply without text after a tool call, and then tries its fallback model. After a recorded
+        # wait or a card, the execution middleware gives that reply a closing text, and the chat does not show it.
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        END_TEXT = self.adapter_module.END_TEXT
+
+        def response(content=None, tool_calls=None):
+            message = types.SimpleNamespace(role='assistant', content=content, tool_calls=tool_calls)
+            return types.SimpleNamespace(choices=[types.SimpleNamespace(
+                message=message, finish_reason='tool_calls' if tool_calls else 'stop')])
+
+        class Transport:
+            # The chat format, as Hermes reads it (agent/transports/chat_completions.py).
+            def normalize_response(self, raw):
+                choice = raw.choices[0]
+                return types.SimpleNamespace(content=choice.message.content, tool_calls=choice.message.tool_calls,
+                                             finish_reason=choice.finish_reason)
+        transports = types.ModuleType('agent.transports')
+        transports.get_transport = lambda api_mode: Transport() if api_mode == 'chat_completions' else None
+        agent = types.ModuleType('agent')
+        agent.transports = transports
+
+        def call(raw, api_mode='chat_completions'):
+            return hooks.end_turn_text(request={}, next_call=lambda request: raw, api_mode=api_mode)
+
+        results = []
+        async def runner(event):
+            def tool_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    empty = response('')
+                    # Before the wait, an empty reply stays empty: Hermes handles it as before.
+                    results.append(call(empty))
+                    results.append(json.loads(tools._service_tool('wait')({'no_card': True, 'reason': 'Nothing.'})))
+                    results.append(call(empty))
+                    results.append(call(response('<think>Done.</think>')))
+                    # A reply with text or with a tool call stays as it is, and so does an API that Hermes cannot read.
+                    results.append(call(response('Nothing needs you now.')))
+                    results.append(call(response(None, [{'id': 'call', 'name': 'terminal'}])))
+                    results.append(call(empty, api_mode='other'))
+                    return results[2].choices[0].message.content
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            return await asyncio.to_thread(tool_calls)
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Check the source.'})
+        with patch.dict(sys.modules, {'agent': agent, 'agent.transports': transports}), \
+                patch.object(self.service, 'wait_for_task', return_value={'status': 'recorded'}):
+            self.service._run_task(task['id'])
+        self.assertEqual(results[0].choices[0].message.content, '')
+        self.assertTrue(results[1]['ended'])
+        self.assertEqual([results[2].choices[0].message.content, results[3].choices[0].message.content],
+                         [END_TEXT, END_TEXT])
+        # The middleware changes a copy. Hermes keeps the response of the provider as it came.
+        self.assertEqual(results[0].choices[0].message.content, '')
+        self.assertEqual(results[4].choices[0].message.content, 'Nothing needs you now.')
+        self.assertIsNone(results[5].choices[0].message.content)
+        self.assertEqual(results[6].choices[0].message.content, '')
+        # The gateway sent the closing text as the reply. The chat shows no message for it, and the turn completed.
+        self.assertEqual(self.replies(task), [])
+        self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
+
+    def test_a_reply_of_the_model_with_the_words_of_the_closing_text_reaches_the_chat(self):
+        # The chat leaves out only the closing text that the plugin gave an empty reply. After a recorded wait, a model
+        # that writes the same words itself gets its reply shown.
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        END_TEXT = self.adapter_module.END_TEXT
+        self.assertFalse(self.adapter_module.ends_quietly('turn', END_TEXT))
+        with patch.object(self.adapter_module, 'CLOSED', {'turn'}):
+            self.assertTrue(self.adapter_module.ends_quietly('turn', ' ' + END_TEXT + '\n'))
+            self.assertFalse(self.adapter_module.ends_quietly('turn', 'The wait is recorded.'))
+
+        async def runner(event):
+            def tool_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    tools._service_tool('wait')({'no_card': True, 'reason': 'Nothing.'})
+                    return END_TEXT
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            return await asyncio.to_thread(tool_calls)
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Check the source.'})
+        with patch.object(self.service, 'wait_for_task', return_value={'status': 'recorded'}):
+            self.service._run_task(task['id'])
+        self.assertEqual(self.replies(task), [(END_TEXT, False)])
+
     def test_the_coconut_tools_act_for_the_turn_of_the_chat_and_a_card_ends_the_turn(self):
         tools = sys.modules['hermes_plugins.coconut.tools']
         hooks = sys.modules['hermes_plugins.coconut.hooks']

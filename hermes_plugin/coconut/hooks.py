@@ -22,6 +22,11 @@ Cards. A card of coconut_ask ends its turn, and a follow-up on a pending card ca
 (pre_tool_call) blocks those tool calls. The card rules of the worker go into the system prompt of each Coconut session
 with the hint of the platform (coconut.platform_hint).
 
+End of a turn. A card, a recorded wait and a recorded card check end their turn. The model then often writes no text,
+and Hermes treats an empty reply after a tool call as a failure: it asks again, waits, tries again and then tries the
+fallback model. `end_turn_text` (llm_execution middleware) gives such an empty reply a fixed closing text, so Hermes
+ends the turn at once. The chat does not show that text (adapter.ends_quietly).
+
 Compression. `note_prompt_size` (post_api_request) marks a Coconut chat whose model call reached the compression
 threshold of Hermes, and the adapter compresses that chat after the turn. `follow_new_session` (on_session_reset) keeps
 the bot's conversation in the new session after /new.
@@ -31,9 +36,12 @@ the gateway, and for a cron run each commentary and the answer (cron.py).
 """
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from pathlib import Path
+import re
+from types import SimpleNamespace
 
 from . import NAME
 
@@ -59,6 +67,18 @@ def register(ctx):
         from .adapter import CONTEXT_MIDDLEWARE
         ctx.register_middleware('llm_request', add_turn_context)
         CONTEXT_MIDDLEWARE['registered'] = True
+        if 'llm_execution' in middleware_kinds():
+            # A Hermes without execution middleware retries an empty reply after a card or a wait, as before.
+            ctx.register_middleware('llm_execution', end_turn_text)
+
+
+def middleware_kinds():
+    """The middleware kinds that this Hermes knows, or an empty set."""
+    try:
+        from hermes_cli.middleware import VALID_MIDDLEWARE
+        return set(VALID_MIDDLEWARE)
+    except Exception:
+        return set()
 
 
 # Tools that a follow-up on a pending card must not call: it answers a question and leaves the card as it is.
@@ -66,10 +86,10 @@ CARD_TOOLS = ('coconut_ask', 'coconut_suggest', 'clarify', 'coconut_track_pr', '
               'coconut_wait', 'coconut_correct_withdrawal', 'coconut_create_bot', 'coconut_delete_bot',
               'coconut_continue_work', 'coconut_track_work', 'coconut_save_document', 'coconut_read_document',
               'coconut_delete_document')
-PAUSED_MESSAGE = ('Coconut shows a card and waits for the answer of the person. End this turn now. Coconut continues '
-                  'this conversation with the answer.')
-WAITED_MESSAGE = ('Coconut recorded the wait of this turn. Finish this turn now with a short summary, and call no other '
-                  'tool. Coconut continues the work when the wait ends.')
+PAUSED_MESSAGE = ('Coconut shows a card and waits for the answer of the person. Call no other tool. End this turn now '
+                  'with one short sentence. Coconut continues this conversation with the answer.')
+WAITED_MESSAGE = ('Coconut recorded the result of this turn. Call no other tool. End this turn now with one short '
+                  'sentence. Coconut continues the work later.')
 CONTEXT_MESSAGE = 'Answer the current question. Its pending decision stays open.'
 REFRESH_TOOL = 'coconut_refresh_decision'
 REFRESH_MESSAGE = 'Record this check with coconut_refresh_decision. The check does not change the card in other ways.'
@@ -232,6 +252,70 @@ def _tool_name(tool):
         return None
     function = tool.get('function')
     return function.get('name') if isinstance(function, dict) else tool.get('name')
+
+
+def end_turn_text(request=None, next_call=None, api_mode='', **_):
+    """llm_execution middleware: end a turn that a card, a recorded wait or a recorded card check ended (PAUSED,
+    WAITED), also when the model writes no text after it.
+
+    Hermes treats a reply without text and without tool calls after a tool call as a failure. It asks the model again,
+    tries again after a wait three times, then tries its fallback model, and at last fails the turn
+    (agent/turn_empty_response.py, recover_empty_response). After such a tool, a reply without text is the normal end of
+    the turn. So the middleware gives that reply the text adapter.END_TEXT, and Hermes ends the turn with it. The chat
+    does not show END_TEXT (adapter.ends_quietly). A reply with text or with a tool call stays as it is. Every other
+    model call goes through unchanged."""
+    response = next_call(request)
+    from .adapter import CLOSED, PAUSED, WAITED
+    _holder, turn = _turn()
+    if turn is None or (turn not in PAUSED and turn not in WAITED):
+        return response
+    try:
+        closed = with_end_text(response, api_mode)
+    except Exception:
+        LOG.exception('Coconut: the empty reply of turn %s did not get its closing text.', turn)
+        return response
+    if closed is None:
+        return response
+    # The chat leaves out only this closing text, not the same words from the model (adapter.ends_quietly).
+    CLOSED.add(turn)
+    LOG.info('Coconut: the model wrote no text after the end of turn %s. The turn ends with its closing text.', turn)
+    return closed
+
+
+# Think blocks that some models write in the text. Hermes does not count them as a reply.
+THINK_BLOCK = re.compile(r'<(think|thinking|reasoning)>.*?(</\1>|$)', re.DOTALL | re.IGNORECASE)
+
+
+def with_end_text(response, api_mode):
+    """A copy of a model response with adapter.END_TEXT as its text, or None.
+
+    None when the response has text or a tool call, or when Hermes does not read the copy as a final reply with that
+    text. The transport of Hermes for the API mode reads the response, as the agent loop reads it
+    (agent/transports, normalize_response). The copy adds the text in the shape of the API: the message of the chat
+    format, a text block of the Anthropic format, or an output message of the Responses format."""
+    from agent.transports import get_transport
+    from .adapter import END_TEXT
+    transport = get_transport(api_mode)
+    if transport is None:
+        return None
+    reply = transport.normalize_response(copy.deepcopy(response))
+    if reply.tool_calls or THINK_BLOCK.sub('', reply.content or '').strip():
+        return None
+    closed = copy.deepcopy(response)
+    if getattr(closed, 'choices', None):
+        closed.choices[0].message.content = END_TEXT
+    elif isinstance(getattr(closed, 'output', None), list):
+        closed.output = [*closed.output, SimpleNamespace(
+            type='message', role='assistant', status='completed', phase='final_answer',
+            content=[SimpleNamespace(type='output_text', text=END_TEXT)])]
+    elif isinstance(getattr(closed, 'content', None), list):
+        closed.content = [*closed.content, SimpleNamespace(type='text', text=END_TEXT)]
+    else:
+        return None
+    check = transport.normalize_response(copy.deepcopy(closed))
+    if check.tool_calls or check.finish_reason != 'stop' or END_TEXT not in (check.content or ''):
+        return None
+    return closed
 
 
 def compression_threshold(context_length):
