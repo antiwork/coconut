@@ -176,8 +176,8 @@ final class MessageBannerTests: XCTestCase {
         XCTAssertEqual(MessageBanners.plan(before: nil, after: after).remove, ["team-chat:r1", "team-chat:r1:grace"])
     }
 
-    func testAReadInTheAppThenAnEqualListRemovesTheBannerOfTheChat() {
-        var posted = PostedBanners(identifiers: [])
+    func testAPostThenAReadInTheAppThenAnEqualListRemovesTheBannerOfTheChat() {
+        var posted = PostedBanners()
         let before = rooms(room(unread: 0, last: last(1)))
         let new = rooms(room(unread: 1, last: last(2)))
         XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: before, after: new)), [])
@@ -190,20 +190,28 @@ final class MessageBannerTests: XCTestCase {
                        "A removed banner is not removed again.")
     }
 
-    func testAnEqualListWithoutAPostedBannerAsksMacOSForNothing() {
-        var posted = PostedBanners(identifiers: [])
-        let list = rooms(room(unread: 0, last: last(1), directs: [direct(unread: 0, last: last(1))]))
-        XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: list, after: list)), [])
-        XCTAssertEqual(posted.identifiers, [])
+    func testABannerOfAnEarlierRunGoesWhenThePersonReadsItsChat() {
+        // macOS still has the banner of an unread chat from an earlier run.
+        var posted = PostedBanners(delivered: ["team-chat:r1:grace"])
+        let unread = rooms(room(directs: [direct(unread: 2, last: last(3))]))
+        XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: nil, after: unread)), [],
+                       "The first list leaves the banner of an unread chat.")
+        let read = rooms(room(directs: [direct(unread: 0, last: last(3))]))
+        XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: unread, after: read)), ["team-chat:r1:grace"])
     }
 
-    func testTheFirstPlanAfterAStartRemovesEachBannerOnce() {
-        var posted = PostedBanners()
+    func testTheSeedIgnoresANotificationThatIsNotTheBannerOfAChat() {
+        let posted = PostedBanners(delivered: ["team-chat:r1", "inbox-1", "r1"])
+        XCTAssertEqual(posted.identifiers, ["team-chat:r1"])
+        XCTAssertTrue(MessageBanners.isIdentifier(MessageBanners.identifier(TeamChatKey(room: "r1", member: grace))))
+    }
+
+    func testAnEmptySeedAndAnEqualListAskMacOSForNothing() {
+        var posted = PostedBanners(delivered: [])
         let list = rooms(room(unread: 0, last: last(1), directs: [direct(unread: 0, last: last(1))]))
-        // Banners of an earlier run can still be in Notification Center.
-        XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: nil, after: list)),
-                       ["team-chat:r1", "team-chat:r1:grace"])
+        XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: nil, after: list)), [])
         XCTAssertEqual(posted.removals(for: MessageBanners.plan(before: list, after: list)), [])
+        XCTAssertEqual(posted.identifiers, [])
     }
 
     func testPermissionWaitsForAnActiveTeam() {

@@ -28,6 +28,12 @@ final class MacBanners: NSObject, UNUserNotificationCenterDelegate {
     /// that started the app to the delegate that the app sets before the launch ends.
     func start() {
         center.delegate = self
+        // The first change of Notification Center reads the banners that macOS has, also from an earlier run. Each
+        // plan waits for it, so no plan runs before the set is known.
+        lastChange = Task {
+            let delivered = await center.deliveredNotifications().map(\.request.identifier)
+            posted = PostedBanners(delivered: delivered)
+        }
         // Each list goes to the rule, also a list that is equal to the one before: a read in the app changes the count
         // in the list of the store before the next list loads, and that next list must still remove the banner.
         store.teamListLoaded = { [weak self] before, after in
@@ -38,11 +44,11 @@ final class MacBanners: NSObject, UNUserNotificationCenterDelegate {
     private func apply(_ plan: MessageBannerPlan) {
         let asks = plan.asksPermission && !askedForPermission
         if asks { askedForPermission = true }
-        let removals = posted.removals(for: plan)
-        guard asks || !removals.isEmpty || !plan.post.isEmpty else { return }
+        guard asks || !plan.remove.isEmpty || !plan.post.isEmpty else { return }
         let previous = lastChange
         lastChange = Task {
             await previous?.value
+            let removals = posted.removals(for: plan)
             if !removals.isEmpty { center.removeDeliveredNotifications(withIdentifiers: removals) }
             guard asks || !plan.post.isEmpty, await allowed(asking: asks) else { return }
             for banner in plan.post { try? await center.add(Self.request(banner)) }

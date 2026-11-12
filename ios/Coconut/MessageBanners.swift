@@ -25,17 +25,22 @@ struct MessageBannerPlan: Equatable, Sendable {
     var asksPermission = false
 }
 
-/// The banners that the app posted in this run and that are still in Notification Center, as far as the app knows. It
-/// keeps an equal list from a call to macOS: a list removes only the banners that are there.
+/// The banners of the app that are in Notification Center, as far as the app knows. The app asks macOS to remove a
+/// banner only when this set has it, so an equal list costs no call to macOS.
 struct PostedBanners: Equatable, Sendable {
-    /// Nil after a start of the app: the app does not know the banners of an earlier run, which can still be there.
-    var identifiers: Set<String>? = nil
+    var identifiers: Set<String> = []
 
-    /// The removals of `plan` to ask macOS for: each one that the app posted, or each one for the first plan after a
-    /// start. Then it records the removals and the posts of the plan.
+    /// The set at a start of the app: the banners of a chat that macOS still has from an earlier run. It ignores each
+    /// other identifier.
+    init(delivered: [String] = []) {
+        identifiers = Set(delivered.filter(MessageBanners.isIdentifier))
+    }
+
+    /// The removals of `plan` that the set has. The set then loses the removals and gets the posts of the plan.
     mutating func removals(for plan: MessageBannerPlan) -> [String] {
-        let removals = identifiers.map { posted in plan.remove.filter(posted.contains) } ?? plan.remove
-        identifiers = (identifiers ?? []).subtracting(plan.remove).union(plan.post.map(\.identifier))
+        let removals = plan.remove.filter(identifiers.contains)
+        identifiers.subtract(removals)
+        identifiers.formUnion(plan.post.map(\.identifier))
         return removals
     }
 }
@@ -82,7 +87,12 @@ enum MessageBanners {
     }
 
     /// The identifier of the banner of a chat. A newer banner of the chat takes the place of the older one.
-    static func identifier(_ chat: TeamChatKey) -> String { "team-chat:" + thread(chat) }
+    static func identifier(_ chat: TeamChatKey) -> String { identifierPrefix + thread(chat) }
+
+    /// True for the identifier of the banner of a chat.
+    static func isIdentifier(_ identifier: String) -> Bool { identifier.hasPrefix(identifierPrefix) }
+
+    private static let identifierPrefix = "team-chat:"
 
     /// The thread of a chat, so macOS keeps the banners of one chat together. The push of the iPhone has the same one.
     static func thread(_ chat: TeamChatKey) -> String {
