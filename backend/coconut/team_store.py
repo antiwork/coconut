@@ -37,6 +37,8 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   entry. A member here shows in no list, also when the store still has its `member` entry.
 - `team_invites`: on the admin's Mac, the invites that this Mac made: the hash of the ticket and its end. A removal
   removes the open ones on the relay first.
+- `team_erased`: the messages that an `erase` entry of the admin took out of the chat. A later write of such a message
+  shows nothing.
 
 Who types in the Team chat is in memory only (`TeamStore.typing`), not in a table: a restart of the service forgets it.
 
@@ -105,6 +107,7 @@ CREATE TABLE IF NOT EXISTS team_removed (room TEXT NOT NULL, member TEXT NOT NUL
     PRIMARY KEY (room, member));
 CREATE TABLE IF NOT EXISTS team_invites (room TEXT NOT NULL, hash TEXT NOT NULL, expires INTEGER NOT NULL,
     PRIMARY KEY (room, hash));
+CREATE TABLE IF NOT EXISTS team_erased (room TEXT NOT NULL, entry TEXT NOT NULL, PRIMARY KEY (room, entry));
 -- A store from before team_names gets the names that it shows now. A later accept keeps them current.
 INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
     SELECT room, entry, member, 'member', name FROM team_members;
@@ -113,7 +116,8 @@ INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
 '''
 TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_shares', 'team_page_shares',
           'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers',
-          'team_directs', 'team_direct_reads', 'team_direct_waits', 'team_removed', 'team_invites')
+          'team_directs', 'team_direct_reads', 'team_direct_waits', 'team_removed', 'team_invites',
+          'team_erased')
 ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at',
                'notifications')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
@@ -203,7 +207,7 @@ REFUSED = 'refused'  # The body opens, and a rule of the contract refuses the en
 MAX_TICKET_SECONDS = 7 * 86400
 
 # Only the admin writes these kinds (rule 4).
-ADMIN_KINDS = ('remove', 'key')
+ADMIN_KINDS = ('remove', 'key', 'erase')
 MAX_KIND = 64
 # The fields of a `member` entry, with the most Unicode code points of each.
 MEMBER_LIMITS = {'name': 80, 'avatar': 80, 'color': 20}
@@ -402,6 +406,16 @@ def remove_fields(fields: dict) -> dict | None:
     return dict(member=member, name=name if unicode_text(name) and 0 < len(name) <= MEMBER_LIMITS['name'] else None)
 
 
+def erase_fields(fields: dict) -> dict | None:
+    """The message that an `erase` payload takes out of the chat, or None when the field does not fit.
+
+    `entry` is the entry ID of a `message` entry. A reader cannot know the kind of an entry that it does not have yet,
+    so this check reads only the form of the ID.
+    """
+    entry = fields.get('entry')
+    return dict(entry=entry) if entry_id(entry) else None
+
+
 def agreement_key(value) -> bool:
     """True when a value is a public agreement key: 32 bytes as unpadded base64url, in the one text of these bytes (the
     unused bits of the last character are zero)."""
@@ -437,14 +451,14 @@ def key_fields(fields: dict, epoch) -> dict | None:
 
 
 SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'message': message_fields,
-         'remove': remove_fields, 'typing': typing_fields}
+         'remove': remove_fields, 'erase': erase_fields, 'typing': typing_fields}
 
 
 def read_entry(opened: dict) -> dict:
     """The first part of the reading rules for one entry: the work that needs no database.
 
-    It reads the payload (rule 2), and for a `member`, `bot`, `page`, `message`, `remove`, `typing` or `key` entry it checks the
-    fields that the store uses. The page rules run an HTML parser on up to 512 KiB that another member wrote, so a
+    It reads the payload (rule 2), and for a `member`, `bot`, `page`, `message`, `remove`, `erase`, `typing` or `key`
+    entry it checks the fields that the store uses. The page rules run an HTML parser on up to 512 KiB that another member wrote, so a
     caller runs this part before its transaction and without the lock of the service. A page that is slow to check then slows only the
     sync thread. The result is `opened` with `read` (the text and the fields of the payload, or None) and `shown`
     (the checked fields, or None). TeamStore.accept is the second part.
@@ -652,6 +666,10 @@ class TeamStore:
         # A trigger is the first write of a message of another member that this Mac sees. A later write is an edit.
         if self.answers and existing is None and other and fields['kind'] == 'message' and fields['rev'] == 1 and shown:
             self._queue_triggers(room, entry, shown)
+        # An `erase` entry of the admin takes a message of another member out of the chat. Rule 4 checked the writer
+        # above. A later write over the `erase` entry does not bring the message back.
+        if fields['kind'] == 'erase' and shown:
+            self._erase(room['room'], shown['entry'])
         # A `remove` entry of the admin takes a member out. Rule 4 checked the writer above.
         if 'remove' in kinds:
             self._show_removal(room, entry, shown if fields['kind'] == 'remove' else None)
@@ -802,6 +820,28 @@ class TeamStore:
             if self.db.execute('SELECT 1 FROM team_bots WHERE room=? AND member=? LIMIT 1', (room_id, member)).fetchone():
                 self.touched.add(room_id)
 
+    def _erase(self, room: str, entry: str) -> None:
+        """Apply an `erase` entry of the admin (docs/team-log.md, "The admin deletes a message").
+
+        The named message leaves the chat as after a `delete` over it (_show_message), and so it leaves the unread
+        count, the notifications that wait, and the triggers that did not start. A running turn of such a trigger
+        stops, because the turn thread checks that its trigger still shows. `team_erased` keeps the entry ID, so a
+        later write of the message shows nothing, and an `erase` that comes before its message counts too. An `erase`
+        of an entry of another kind, for example a `direct` entry, does nothing.
+        """
+        existing = self.entry(room, entry)
+        if existing and existing['kind'] not in ('message', 'delete'):
+            return
+        self.db.execute('INSERT OR IGNORE INTO team_erased (room, entry) VALUES (?, ?)', (room, entry))
+        if existing and self._show_message(room, existing, existing['rev'], None):
+            self.chatted.add(room)
+        if self.db.execute('DELETE FROM team_triggers WHERE room=? AND entry=? AND started=0', (room, entry)).rowcount:
+            self.triggered.add(room)
+
+    def erased(self, room: str, entry: str) -> bool:
+        """True when an `erase` entry of the admin took the message out of the chat."""
+        return self.db.execute('SELECT 1 FROM team_erased WHERE room=? AND entry=?', (room, entry)).fetchone() is not None
+
     def removed(self, room: str, member: str) -> bool:
         """True when a `remove` entry of the admin took the member out of the room."""
         return self.db.execute('SELECT 1 FROM team_removed WHERE room=? AND member=?', (room, member)).fetchone() is not None
@@ -933,10 +973,10 @@ class TeamStore:
 
         The times come from the relay: `created_at` is the `at` of the first write that this Mac saw, and `updated_at`
         the `at` of this write. A message is edited when its `rev` is over 1, so each Mac gives the same answer, also a
-        Mac that only saw the newest write.
+        Mac that only saw the newest write. A message that the admin erased shows nothing.
         """
         at = relay_time(entry['at'])
-        if message is None or at is None:
+        if message is None or at is None or self.erased(room, entry['id']):
             removed = self.db.execute('DELETE FROM team_messages WHERE room=? AND entry=?', (room, entry['id']))
             return removed.rowcount > 0
         self.db.execute('''INSERT INTO team_messages (room, entry, first, member, bot, text, reply_to, mentions,

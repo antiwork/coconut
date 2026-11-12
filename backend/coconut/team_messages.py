@@ -7,7 +7,8 @@ removal is a `delete` entry over it. The routes are for the chat of the app:
 - `GET /v1/team/rooms/<room>/messages?before=<first>&limit=<n>`: one page of messages, newest first.
 - `POST /v1/team/rooms/<room>/messages` with `{text, reply_to?, mentions?}`: send a message.
 - `PATCH /v1/team/rooms/<room>/messages/<id>` with `{text}`: change a message of this Mac's person.
-- `DELETE /v1/team/rooms/<room>/messages/<id>`: remove a message of this Mac's person.
+- `DELETE /v1/team/rooms/<room>/messages/<id>`: remove a message of this Mac's person. On the admin's Mac, also a
+  message of another member or of a bot: an `erase` entry takes it out of the chat on each Mac.
 - `POST /v1/team/rooms/<room>/read` with `{first}`: move the read position of this Mac.
 
 A write goes to the relay inside the request, as the other team writes do, and a failure is an error for the person.
@@ -16,12 +17,17 @@ The text of a message is private, so no log line of this module has it.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import logging
 from secrets import token_hex
 
+from . import team_keys
 from .team_pages import team_id, team_ids
 from .team_relay import MAX_NUMBER, number
 from .team_store import ACTIVE, MAX_MENTIONS, MAX_TEXT, MESSAGES_EVENT, entry_id, unicode_text
+
+log = logging.getLogger(__name__)
 
 # The size of a page of messages: the default and the most.
 PAGE = 50
@@ -29,6 +35,17 @@ MAX_PAGE = 100
 # The start of the text that the chat list shows for the newest message of a room.
 PREVIEW = 200
 GONE_MESSAGE = 'This message is no longer in the chat.'
+OWN_MESSAGE = 'You can change only your own messages.'
+# The label of the entry ID of an `erase` entry (erase_entry).
+ERASE_LABEL = b'coconut room erase'
+
+
+def erase_entry(token: str, room: str, message: str) -> str:
+    """The entry ID of the `erase` entry of a message: from the room and the entry ID of the message, so a repeat
+    writes the same entry. The member token of the admin is the key of the HMAC, as for a `remove` entry
+    (team.removal_entry), so another member cannot take the ID first."""
+    return hmac.new(token.encode(), ERASE_LABEL + bytes.fromhex(room) + bytes.fromhex(message),
+                    hashlib.sha256).hexdigest()[:32]
 
 
 def message_text(value) -> str:
@@ -125,18 +142,28 @@ class TeamMessages:
         return self._team_message_answer(room_id, entry)
 
     def team_unsend(self, room_id: str, entry: str) -> dict:
-        """Remove a message of this Mac's person: a `delete` entry replaces it on each Mac.
+        """Remove a message: a `delete` entry replaces a message of this Mac's person on each Mac. On the admin's
+        Mac, an `erase` entry takes a message of another member or of a bot out of the chat on each Mac
+        (docs/team-log.md, "The admin deletes a message").
 
-        A delete can reach the relay without an answer, and team_request keeps no answer of a request that failed. So
-        a repeat finds a `delete` entry of this Mac after the read of _team_writable, and gets the same answer without
-        a write.
+        A write can reach the relay without an answer, and team_request keeps no answer of a request that failed. So
+        a repeat finds the `delete` or the `erase` entry of this Mac after the read of _team_writable, and gets the
+        same answer without a write.
         """
         from .team import team_errors
         self._team_room(room_id)
         with team_errors(), self._team_room_lock(room_id):
-            room, existing = self._team_own_message(room_id, entry, deleted=True)
-            if existing['kind'] != 'delete':
+            room, existing, own = self._team_deletable(room_id, entry)
+            if own and existing['kind'] != 'delete':
                 self._team_write(room, entry, False, {'kind': 'delete'}, tries=2)
+            elif not own and existing['kind'] == 'message':
+                with self.lock:
+                    done = self.team_store.erased(room_id, entry)
+                if not done:
+                    token = team_keys.read(self.root, room_id)['token']
+                    self._team_write(room, erase_entry(token, room_id, entry), False,
+                                     {'kind': 'erase', 'entry': entry}, tries=2)
+                    log.info('coconut.team_log room %s: the admin erased the message %s.', room_id[:8], entry)
         return {'room': room_id, 'id': entry, 'deleted': True}
 
     def team_mark_read(self, room_id: str, data: dict) -> dict:
@@ -173,21 +200,44 @@ class TeamMessages:
             raise ServiceError(409, INACTIVE[room['state']])
         return room
 
-    def _team_own_message(self, room_id: str, entry: str, deleted: bool = False) -> tuple[dict, dict]:
-        """The room and the entry of a message that this Mac's person wrote. With `deleted`, also a `delete` entry of
-        this Mac. The caller holds the lock of the room."""
+    def _team_own_message(self, room_id: str, entry: str) -> tuple[dict, dict]:
+        """The room and the entry of a message that this Mac's person wrote. The caller holds the lock of the room."""
+        from .service_base import ServiceError
+        room, existing = self._team_message_entry(room_id, entry, ('message',))
+        if not self._team_person_wrote(room, existing):
+            raise ServiceError(403, OWN_MESSAGE)
+        # The admin erased the message, so a new write of it shows nothing on any Mac.
+        with self.lock:
+            if self.team_store.erased(room_id, entry):
+                raise ServiceError(404, GONE_MESSAGE)
+        return room, existing
+
+    def _team_deletable(self, room_id: str, entry: str) -> tuple[dict, dict, bool]:
+        """The room and the entry of a message that the person can delete, and True when the person wrote it. This
+        Mac's person deletes an own message, and the admin also a message of another member or of a bot. The entry
+        can be a `delete` entry already, after a delete without an answer. The caller holds the lock of the room."""
+        from .service_base import ServiceError
+        room, existing = self._team_message_entry(room_id, entry, ('message', 'delete'))
+        own = self._team_person_wrote(room, existing)
+        if not own and room['admin'] != room['member']:
+            raise ServiceError(403, OWN_MESSAGE)
+        return room, existing, own
+
+    def _team_message_entry(self, room_id: str, entry: str, kinds: tuple) -> tuple[dict, dict]:
         from .service_base import ServiceError
         if not entry_id(entry):
             raise ServiceError(404, GONE_MESSAGE)
         room = self._team_writable(room_id)
         with self.lock:
             existing = self.team_store.entry(room_id, entry)
-        if existing is None or existing['kind'] not in (('message', 'delete') if deleted else ('message',)):
+        if existing is None or existing['kind'] not in kinds:
             raise ServiceError(404, GONE_MESSAGE)
-        # A message of a bot of this Mac belongs to the bot, not to the person.
-        if existing['member'] != room['member'] or json.loads(existing['payload']).get('bot') is not None:
-            raise ServiceError(403, 'You can change only your own messages.')
         return room, existing
+
+    @staticmethod
+    def _team_person_wrote(room: dict, existing: dict) -> bool:
+        """True when this Mac's person wrote the entry. A message of a bot of this Mac belongs to the bot."""
+        return existing['member'] == room['member'] and json.loads(existing['payload']).get('bot') is None
 
     def _team_mention_entries(self, room: dict, mentions: list) -> list[str]:
         """The entry IDs of the mentions that the app gives: the member ID of a member in the list, or the ID of a bot

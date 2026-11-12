@@ -1400,6 +1400,87 @@ class TeamRemovalTests(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
                      and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The message erase test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamEraseTests(unittest.TestCase):
+    """Ada, the admin, deletes a message of Grace through the real relay and the real helper. The message goes from
+    the chat of Grace and of Lin. Lin is not the admin, so her try changes nothing. The services run in this process."""
+
+    @classmethod
+    def setUpClass(cls):
+        TeamPushTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        TeamPushTests.tearDownClass.__func__(cls)
+
+    def test_the_admin_erases_a_message_of_another_member_on_each_mac(self):
+        import logging
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service, ServiceError
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        records = []
+        handler = logging.Handler(logging.DEBUG)
+        handler.emit = records.append
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        self.addCleanup(root_logger.setLevel, root_logger.level)
+        root_logger.setLevel(logging.DEBUG)
+        self.addCleanup(root_logger.removeHandler, handler)
+        macs = []
+        for name in ('ada', 'grace', 'lin'):
+            root = Path(self.temp.name) / f'erase-{name}'
+            service = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(service.close)
+            macs.append(service)
+        ada, grace, lin = macs
+
+        def call(service, method, path, data=None):
+            return service.team_request(method, path, data or {}, '', 'test-device')
+
+        def sync():
+            for service in (ada, grace, lin):
+                service.team_sync_pass()
+
+        def texts(service):
+            return [message['text'] for message in call(service, 'GET', f'/v1/team/rooms/{room_id}/messages')['messages']]
+
+        room_id = call(ada, 'POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                       'relay': self.url})['room']['room']
+        for service, name in ((grace, 'Grace'), (lin, 'Lin')):
+            link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+            call(service, 'POST', '/v1/team/join', {'link': link, 'member_name': name})
+        wrong = call(grace, 'POST', f'/v1/team/rooms/{room_id}/messages', {'text': 'Wrong words'})['message']
+        kept = call(grace, 'POST', f'/v1/team/rooms/{room_id}/messages', {'text': 'Kept words'})['message']
+        sync()
+        self.assertEqual([texts(service) for service in macs], [['Kept words', 'Wrong words']] * 3)
+        self.assertEqual([call(service, 'GET', '/v1/team/rooms')['rooms'][0]['can_delete_messages'] for service in macs],
+                         [True, False, False])
+
+        # Ada is the admin: her delete writes an `erase` entry, and the message goes on each Mac.
+        answer = call(ada, 'DELETE', f'/v1/team/rooms/{room_id}/messages/{wrong["id"]}')
+        self.assertEqual(answer, {'room': room_id, 'id': wrong['id'], 'deleted': True})
+        self.assertEqual(texts(ada), ['Kept words'])
+        sync()
+        self.assertEqual([texts(service) for service in macs], [['Kept words']] * 3)
+
+        # Lin is not the admin. Her route refuses, and an `erase` entry that she writes past the route does nothing.
+        with self.assertRaises(ServiceError) as raised:
+            call(lin, 'DELETE', f'/v1/team/rooms/{room_id}/messages/{kept["id"]}')
+        self.assertEqual(raised.exception.status, 403)
+        room = lin.team_store.room(room_id)
+        with lin._team_room_lock(room_id):
+            lin._team_write(room, secrets.token_hex(16), False, {'kind': 'erase', 'entry': kept['id']})
+        sync()
+        self.assertEqual([texts(service) for service in macs], [['Kept words']] * 3)
+        # No log line has a name or the text of a message.
+        output = '\n'.join(logging.Formatter().format(record) for record in records)
+        for text in ('Grace', 'Example Team', 'words'):
+            self.assertNotIn(text, output)
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
                      'The key change test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
 class TeamKeyChangeTests(unittest.TestCase):
     """Ada, the admin, removes Grace through the real relay and the real helper. The room gets the key of epoch 1, and

@@ -2,7 +2,8 @@ import SwiftUI
 
 /// The chat of a team: a bot chat with more than one other party (docs/team-log.md, "Team chat"). It reuses the bubble,
 /// the quote, the day pill, the times and the composer of the bot chat, and adds only what a group needs: the name of
-/// the writer above a run, and Edit and Delete for the person's own messages.
+/// the writer above a run, Edit and Delete for the person's own messages, and Delete for the admin of the team
+/// (TeamMessageDeletion).
 ///
 /// The same view is the direct chat with one person of the team ("Direct messages"): its title is the person, no name
 /// shows above a message, and the composer has no list for `@`.
@@ -204,10 +205,10 @@ struct TeamChatView: View {
             guard editing == nil, canWrite(room) else { return }
             store.teamDraftChanged(chatKey, draft: value)
         }
-        .confirmationDialog("Delete this message for everyone?", isPresented: Binding(
+        .confirmationDialog(TeamMessageDeletion.title, isPresented: Binding(
             get: { deleting != nil }, set: { if !$0 { deleting = nil } }), titleVisibility: .visible,
                             presenting: deleting) { message in
-            Button("Delete", role: .destructive) { delete(message) }
+            Button(TeamMessageDeletion.confirm, role: .destructive) { delete(message) }
                 .accessibilityIdentifier("team-delete-confirm")
         }
         #if os(iOS)
@@ -494,6 +495,11 @@ struct TeamMessageRow: View {
     }
     /// Only a saved message of this person can change. A message of a bot of this Mac belongs to the bot.
     private var canChange: Bool { canWrite && message?.isOwn == true }
+    /// An own message, and for the admin of the team also a message of another person or of a bot.
+    private var canDelete: Bool {
+        guard canWrite, let message else { return false }
+        return TeamMessageDeletion.allows(message, in: room, direct: peer != nil)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -593,6 +599,8 @@ struct TeamMessageRow: View {
             Button("Copy", systemImage: "doc.on.doc") { Pasteboard.copy(row.text) }
             if let message, canChange {
                 Button("Edit", systemImage: "pencil") { actions.edit(message) }
+            }
+            if let message, canDelete {
                 Button("Delete", systemImage: "trash", role: .destructive) { actions.delete(message) }
             }
         }
@@ -610,11 +618,15 @@ struct TeamMessageRow: View {
         return items
     }
 
-    /// Edit and Delete of an own message, after Share. The destructive action is the last row.
+    /// Edit of an own message and Delete, after Share. The destructive action is the last row.
     private var changeActions: [HeldAction] {
-        guard let message, canChange else { return [] }
-        return [HeldAction(title: "Edit", systemImage: "pencil") { actions.edit(message) },
-                HeldAction(title: "Delete", systemImage: "trash", destructive: true) { actions.delete(message) }]
+        guard let message else { return [] }
+        var items: [HeldAction] = []
+        if canChange { items.append(HeldAction(title: "Edit", systemImage: "pencil") { actions.edit(message) }) }
+        if canDelete {
+            items.append(HeldAction(title: "Delete", systemImage: "trash", destructive: true) { actions.delete(message) })
+        }
+        return items
     }
     #endif
 
@@ -622,10 +634,8 @@ struct TeamMessageRow: View {
     @ViewBuilder private var accessibilityMenu: some View {
         if let message, canWrite { Button("Reply") { actions.reply(message) } }
         Button("Copy") { Pasteboard.copy(row.text) }
-        if let message, canChange {
-            Button("Edit") { actions.edit(message) }
-            Button("Delete") { actions.delete(message) }
-        }
+        if let message, canChange { Button("Edit") { actions.edit(message) } }
+        if let message, canDelete { Button("Delete") { actions.delete(message) } }
     }
 
     /// VoiceOver reads the writer, the time and the text.

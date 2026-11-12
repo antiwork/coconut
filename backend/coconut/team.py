@@ -381,6 +381,9 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpoch
         view = {'room': room['room'], 'name': room['name'], 'relay': room['relay'], 'state': room['state'],
                 'member': room['member'], 'admin': room['admin'], 'is_admin': is_admin,
                 'can_invite': is_admin and room['state'] == ACTIVE, 'epoch': room['epoch'],
+                # The admin of an active room deletes a message of another member or of a bot (team_unsend). An app
+                # reads only this field, so an older service shows no action.
+                'can_delete_messages': removes,
                 'created_at': room['created_at'], 'members': members, 'bots': self._team_bots(room, members),
                 **self._team_chat_summary(room), 'typing': self._team_typing_view(room, members),
                 'sync': {'seq': room['seq'], 'entries': entries, 'waiting': waiting,
