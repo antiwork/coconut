@@ -145,6 +145,80 @@ final class TeamScreenTests: XCTestCase {
                                             "Spare Mac, no bot yet"])
     }
 
+    // MARK: The removal of a member
+
+    /// The mixed team on the admin's Mac: the service sets `can_remove` for each other member.
+    private static func adminTeam() -> TeamRoom {
+        var room = mixedTeam()
+        room.isAdmin = true
+        room.members = room.memberList.map { member in
+            var member = member
+            member.canRemove = member.thisMac != true
+            return member
+        }
+        return room
+    }
+
+    /// Each person of "Members" but the admin, and each row of a Mac for a team only in "Bots", has the action. The
+    /// row of a bot removes the Mac of the bot.
+    func testTheAdminHasTheRemovalOnEachOtherPersonAndOnEachRowOfAMacForATeamOnly() {
+        let room = Self.adminTeam()
+        XCTAssertEqual(room.people.map { TeamRemoval(member: $0.member, in: room)?.member.name },
+                       [nil, "Grace"], "The own row of the admin has no action.")
+        let rows = TeamBotSection.rows(of: room)
+        XCTAssertEqual(rows.map { TeamRemoval(member: $0.member, in: room)?.member.name },
+                       ["Planner Mac", "Reporter Mac", "Reporter Mac", "Spare Mac"])
+        XCTAssertNil(TeamRemoval(member: nil, in: room))
+        XCTAssertNil(TeamRemoval(member: "m-unknown", in: room))
+    }
+
+    /// A member that is not the admin, an older service, and a team that is not active show no action.
+    func testOnlyTheAdminOfAnActiveTeamOfAServiceOfTodayHasTheRemoval() throws {
+        let member = Self.mixedTeam()
+        XCTAssertTrue(member.memberList.allSatisfy { TeamRemoval(member: $0.member, in: member) == nil },
+                      "A service that sends no can_remove shows no action.")
+        var lin = Self.adminTeam()
+        lin.members = lin.memberList.map { var row = $0; row.canRemove = false; return row }
+        XCTAssertTrue(lin.memberList.allSatisfy { TeamRemoval(member: $0.member, in: lin) == nil })
+        var removed = Self.adminTeam()
+        for state in ["removed", "gone", "joining"] {
+            removed.state = state
+            XCTAssertNil(TeamRemoval(member: "m-grace", in: removed), state)
+        }
+        // A service that wrongly marks the own row still shows no action there.
+        var own = Self.adminTeam()
+        own.members?[0].canRemove = true
+        XCTAssertNil(TeamRemoval(member: "m-ada", in: own))
+        let answer = #"{"member": "m-grace", "name": "Grace", "can_remove": true}"#
+        XCTAssertEqual(try APIJSON.decoder().decode(TeamMember.self, from: Data(answer.utf8)).canRemove, true)
+    }
+
+    /// The one confirmation says plainly what happens: for a person, for a Mac with two bots, with one bot, and
+    /// without a bot.
+    func testTheConfirmationHasTheTextOfEachCase() throws {
+        var room = Self.adminTeam()
+        let grace = try XCTUnwrap(TeamRemoval(member: "m-grace", in: room))
+        XCTAssertEqual(grace.title, "Remove Grace from Example Team?")
+        XCTAssertEqual(grace.message,
+                       "Grace can no longer read or write in this team. The pages that Grace shared leave the Library.")
+        // The bots of Reporter Mac move to Spare Mac. They follow the order of the Team screen.
+        room.bots = room.botList.map { bot in
+            var bot = bot
+            if bot.member == "m-reporter" { bot.member = "m-spare" }
+            return bot
+        }
+        let spare = try XCTUnwrap(TeamRemoval(member: "m-spare", in: room))
+        XCTAssertEqual(spare.bots, ["Reporter", "Scribe"])
+        XCTAssertEqual(spare.title, "Remove Spare Mac from Example Team?")
+        XCTAssertEqual(spare.message, "Spare Mac can no longer read or write in this team. Its bots Reporter and Scribe "
+                       + "leave the team with it.")
+        let planner = try XCTUnwrap(TeamRemoval(member: "m-planner", in: room))
+        XCTAssertEqual(planner.message, "Planner Mac can no longer read or write in this team. Its bot Planner leaves "
+                       + "the team with it.")
+        let empty = try XCTUnwrap(TeamRemoval(member: "m-reporter", in: room))
+        XCTAssertEqual(empty.message, "Reporter Mac can no longer read or write in this team.")
+    }
+
     /// An older service, or a room that is not active, leaves fields out. The app shows what it has.
     func testAnAnswerWithFieldsMissingStillDecodes() throws {
         let answer = #"{"rooms": [{"room": "r1", "name": "Example Team", "state": "joining"}]}"#

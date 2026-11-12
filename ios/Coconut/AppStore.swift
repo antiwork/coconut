@@ -1737,6 +1737,18 @@ final class AppStore {
         return invite.flatMap { URL(string: $0.link) }
     }
 
+    /// The admin takes another member out of a team (backend/coconut/team.py, `team_remove`). Return whether the Mac
+    /// did it. The answer is the room without the member.
+    func removeTeamMember(_ member: String, from room: TeamRoom) async -> Bool {
+        let ticket = startTeamWrite(room.room)
+        let answer: TeamRoomAnswer? = await write("team/rooms/\(room.room)/members/\(member)", method: "DELETE",
+                                                  payload: EmptyRequest(), as: TeamRoomAnswer.self,
+                                                  refreshInBackground: true)
+        guard let answer else { return false }
+        applyTeamChange(room: answer.room, write: ticket)
+        return true
+    }
+
     /// Leaves a team, or removes a team that this Mac is no longer in. The Mac deletes its copy and its keys.
     func leaveTeam(_ room: TeamRoom) async -> Bool {
         // An answer of an earlier write of the room must not bring the room back.

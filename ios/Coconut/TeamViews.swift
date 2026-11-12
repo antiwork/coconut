@@ -160,6 +160,8 @@ struct TeamRoomView: View {
     @State private var joining = false
     /// The choice of the switch while its request runs. Without it, the switch shows the state of the Mac.
     @State private var notificationChoice: Bool?
+    /// The member that the confirmation of a removal asks about.
+    @State private var removing: TeamRemoval?
 
     private var room: TeamRoom? { store.team?.rooms.first { $0.room == roomId } }
 
@@ -171,6 +173,18 @@ struct TeamRoomView: View {
                     .disabled(busy)
                     .refreshable { await store.loadTeam() }
                     .sheet(isPresented: $joining) { TeamJoinView(link: nil) }
+                    // An alert, not a popover: it keeps a visible Cancel and fits the largest text, on an iPhone
+                    // and on a Mac.
+                    .alert(removing?.title ?? "", isPresented: Binding(
+                        get: { removing != nil }, set: { if !$0 { removing = nil } }), presenting: removing) { removal in
+                        Button("Remove", role: .destructive) {
+                            run { await store.removeTeamMember(removal.member.member, from: room) }
+                        }
+                        .accessibilityIdentifier("team-remove-confirm")
+                        Button("Cancel", role: .cancel) {}
+                    } message: { removal in
+                        Text(removal.message)
+                    }
             }
         }
         .modifier(PushedTeamPage(pushed: pushed, title: room?.name ?? "Team"))
@@ -205,7 +219,7 @@ struct TeamRoomView: View {
             let botRows = TeamBotSection.rows(of: room)
             if !botRows.isEmpty {
                 Section {
-                    ForEach(botRows) { botRow($0) }
+                    ForEach(botRows) { botRow($0, in: room) }
                 } header: {
                     Text("Bots")
                 } footer: {
@@ -265,10 +279,18 @@ struct TeamRoomView: View {
         }
     }
 
+    /// A row of a member, with the actions of a removal when this person is the admin (TeamRemoval).
+    private func memberRow(_ member: TeamMember, in room: TeamRoom) -> some View {
+        let message: (() -> Void)? = room.directMember(member.member) != nil
+            ? showTeamChat.map { open in { open(TeamChatKey(room: room.room, member: member.member)) } } : nil
+        return memberLabel(member, in: room)
+            .teamRemovalActions(TeamRemoval(member: member.member, in: room), message: message) { removing = $0 }
+    }
+
     /// The face, the name and the tags of a member. The row of this person opens the name editor. The row of a person
     /// that can get a direct message (TeamRoom.directMember) opens the direct chat with that person. Each other row
     /// opens nothing.
-    @ViewBuilder private func memberRow(_ member: TeamMember, in room: TeamRoom) -> some View {
+    @ViewBuilder private func memberLabel(_ member: TeamMember, in room: TeamRoom) -> some View {
         let tags = [member.thisMac == true ? "You" : nil, member.admin == true ? "Admin" : nil].compactMap { $0 }
         let label = HStack(spacing: 12) {
             PersonFace(member: member, memberId: member.member, name: member.name, size: avatarSize)
@@ -299,7 +321,7 @@ struct TeamRoomView: View {
 
     /// A face, the name and the quiet text, as the row of a member has. A Mac without a bot has a quiet symbol of a
     /// Mac in the space of the face, so each name of the section starts at the same edge.
-    private func botRow(_ row: TeamBotRow) -> some View {
+    private func botRow(_ row: TeamBotRow, in room: TeamRoom) -> some View {
         HStack(spacing: 12) {
             if let bot = row.bot {
                 BotAvatar(symbol: bot.avatar ?? "", color: bot.color ?? "", size: avatarSize, identity: bot.id,
@@ -313,9 +335,13 @@ struct TeamRoomView: View {
             }
             TeamRowText(name: row.name, note: row.note)
         }
+        // The whole row takes the right click and the long press, also the space after the name.
+        .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(row.spoken)
         .accessibilityIdentifier(row.id)
+        // A row of a Mac for a team only removes that Mac, with each of its bots.
+        .teamRemovalActions(TeamRemoval(member: row.member, in: room), message: nil) { removing = $0 }
     }
 
     @ScaledMetric(relativeTo: .body) private var avatarSize = 32.0
@@ -340,6 +366,48 @@ struct TeamRoomView: View {
             _ = await action()
             busy = false
         }
+    }
+}
+
+/// The actions of a removal on a row of the Team screen. An iPhone has a swipe to the left and a long press, and a Mac
+/// has a right click. Each one asks first (TeamRoomView). VoiceOver offers the swipe action and the menu of the row. A
+/// row without a removal keeps its plain form, so a member that is not the admin sees nothing new.
+private struct TeamRemovalActions: ViewModifier {
+    let removal: TeamRemoval?
+    /// Opens the direct chat with the person of the row, or nil when the person cannot get a direct message.
+    let message: (() -> Void)?
+    let remove: (TeamRemoval) -> Void
+
+    func body(content: Content) -> some View {
+        if let removal {
+            content
+                #if os(iOS)
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    // No destructive role: that role takes the row away at once, before the confirmation.
+                    Button("Remove") { remove(removal) }
+                        .tint(.red)
+                        .accessibilityIdentifier("team-remove-swipe")
+                }
+                #endif
+                .contextMenu {
+                    if let message {
+                        Button("Message \(removal.member.name)", systemImage: "bubble.left", action: message)
+                    }
+                    Button("Remove from team", systemImage: "person.crop.circle.badge.minus", role: .destructive) {
+                        remove(removal)
+                    }
+                    .accessibilityIdentifier("team-remove-menu")
+                }
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    fileprivate func teamRemovalActions(_ removal: TeamRemoval?, message: (() -> Void)?,
+                                        remove: @escaping (TeamRemoval) -> Void) -> some View {
+        modifier(TeamRemovalActions(removal: removal, message: message, remove: remove))
     }
 }
 
