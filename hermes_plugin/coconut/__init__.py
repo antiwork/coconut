@@ -57,7 +57,8 @@ def mode() -> str | None:
 
 def register_team(ctx):
     """Register the platform with the adapter of the team chat, and nothing else. Each fault, also an import of a
-    Hermes that lacks a part, gives one log line and leaves the channel off."""
+    Hermes that lacks a part, gives one log line and leaves the channel off. A Hermes that lacks only a field of the
+    registration that the chat needs (team.unregistered) gets one log line and a channel that takes no message."""
     try:
         from gateway.platform_registry import PlatformEntry
         from . import team
@@ -69,6 +70,10 @@ def register_team(ctx):
         options = dict(trusted_inbound=True, display_tier='high', display_overrides=DISPLAY, platform_hint=TEAM_HINT,
                        max_message_length=100_000, emoji='🥥')
         known = {field.name for field in dataclasses.fields(PlatformEntry)}
+        team.TeamAdapter.lacking = team.unregistered(known)
+        if team.TeamAdapter.lacking:
+            LOG.warning('Coconut: the team chat takes no message, because this Hermes lacks %s. Update Hermes.',
+                        team.TeamAdapter.lacking)
         ctx.register_platform(name=NAME, label='Coconut', adapter_factory=team.TeamAdapter, check_fn=lambda: True,
                               **{key: value for key, value in options.items() if key in known})
     except Exception as error:

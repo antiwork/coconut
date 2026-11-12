@@ -11,7 +11,9 @@ team, and the earlier messages of the chat are `channel_context`. Each reply goe
 
 A production agent runs in this gateway. Each entry point of the adapter catches its own faults, so a fault of Coconut
 never stops the gateway or its other channels. A Hermes without the fields that the adapter needs gets one log line
-and no Coconut channel (`missing`).
+and no Coconut channel (`missing`). A Hermes without a field of the registration that the chat needs (`unregistered`)
+gets a channel that takes no message: the adapter polls, each poll names what Hermes lacks, and the service tells the
+team that Hermes needs an update (backend/coconut/team_turns.py).
 """
 from __future__ import annotations
 
@@ -38,14 +40,23 @@ EVENT_FIELDS = ('text', 'message_type', 'source', 'message_id', 'user_id', 'user
                 'reply_to_is_own_message')
 # What the adapter calls on the base adapter of Hermes.
 BASE_METHODS = ('build_source', 'handle_message', 'send_image_file', '_mark_connected', '_mark_disconnected')
+# The fields of the registration (PlatformEntry) without which the team chat does not work. Without
+# `trusted_inbound`, Hermes refuses each member of the team as an unknown user and ends the turn with no reply. Without
+# `display_overrides`, Hermes sends its tool progress into the chat as messages of the bot.
+REGISTRATION_FIELDS = ('trusted_inbound', 'display_overrides')
 
 
 def missing() -> str | None:
-    """What this Hermes lacks for the team chat, or None."""
+    """What this Hermes lacks for the adapter of the team chat, or None."""
     fields = {field.name for field in dataclasses.fields(MessageEvent)}
     lacking = [name for name in EVENT_FIELDS if name not in fields]
     lacking += [name for name in BASE_METHODS if not callable(getattr(BasePlatformAdapter, name, None))]
     return ', '.join(lacking) or None
+
+
+def unregistered(known) -> str | None:
+    """The fields of REGISTRATION_FIELDS that are not in `known` (the fields of PlatformEntry), or None."""
+    return ', '.join(name for name in REGISTRATION_FIELDS if name not in known) or None
 
 
 def guarded(result=None):
@@ -70,6 +81,10 @@ class TeamAdapter(CoconutAdapter):
     """The adapter of CoconutAdapter, with group events and without the parts of a phone: no card, no session join,
     no compression, no photo file and no turn for a run of Hermes."""
 
+    # What this Hermes lacks for the team chat (`unregistered`), or None. register_team sets it. With it, each poll
+    # names it, the service gives no turn, and the adapter gives no turn to Hermes.
+    lacking: str | None = None
+
     def __init__(self, config):
         super().__init__(config)
         # The name of each team chat, for get_chat_info.
@@ -91,6 +106,9 @@ class TeamAdapter(CoconutAdapter):
         self._stop_tasks: set = set()
 
     def _event(self, turn: dict) -> MessageEvent:
+        if self.lacking:
+            # Hermes would refuse the sender or show wrong content. The poll skips the turn, and the service ends it.
+            raise ValueError('This Hermes cannot run a turn of the team chat.')
         try:
             team = turn['team']
             chat = str(turn['chat_id'])
@@ -175,7 +193,9 @@ class TeamAdapter(CoconutAdapter):
     async def _request(self, route: str, payload: dict, timeout: float = REQUEST_SECONDS) -> dict:
         """A request to the service. A poll answer can name active turns that the service does not know, for example
         after its restart: the adapter stops them. A service that this adapter cannot reach for LOST_SECONDS stops
-        each running turn."""
+        each running turn. A poll names what this Hermes lacks for the team chat."""
+        if route == '/v1/gateway/poll' and self.lacking:
+            payload = dict(payload, lacking=self.lacking)
         try:
             answer = await super()._request(route, payload, timeout)
         except asyncio.CancelledError:

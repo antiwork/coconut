@@ -51,6 +51,8 @@ CONTEXT_MESSAGES = 20
 # What the chat shows when a turn fails. The bot writes it as its own message.
 UNAVAILABLE = 'Hermes on this Mac does not answer now, so I cannot answer. Write again later.'
 UNFINISHED = 'I could not finish my answer. Write again if you still need it.'
+# The adapter polls, but its Hermes lacks a part of the team chat (gateway_bridge.lacking_of).
+OUTDATED = 'Hermes on this Mac needs an update, so I cannot answer. Ask the person who runs this Mac to update it.'
 # The answers that Hermes gets for a question of a turn.
 DENIED = ('Nobody can approve a command in the team chat, so Coconut denied it. Tell the team that you could not run '
           'it.')
@@ -254,6 +256,13 @@ class TeamTurns:
                     return True
                 if self.stopping.wait(1):
                     return False
+            lacking = self.gateway_bridge.lacking_of(home)
+            if lacking:
+                # The adapter takes no turn. A wait does not help: only an update of Hermes does.
+                log.warning('coconut.team_turns room %s: the bot %s cannot answer, because its Hermes lacks %s.',
+                            room[:8], bot, lacking)
+                reply.say(OUTDATED)
+                return True
             try:
                 with self._turns_gate:
                     if not self._team_still_asked(room, bot, turn['entry']):

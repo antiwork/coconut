@@ -1927,8 +1927,8 @@ final class AppStore {
 
     /// Shows a message of this person at once, and sends it. A failure keeps it in the chat with a way to try again.
     /// The message is saved before the composer clears, so a restart keeps it. False when the save failed.
-    /// `mentions` are the `id` values of the team bots that the text names. More than the Mac takes is false too: the
-    /// app saves nothing, the composer keeps the draft, and the error banner says why.
+    /// `mentions` are the IDs of the team bots and the people that the text names (TeamMentions.ids). More than the
+    /// Mac takes is false too: the app saves nothing, the composer keeps the draft, and the error banner says why.
     @discardableResult
     func sendTeamMessage(_ chat: TeamChatKey, text: String, replyingTo answered: TeamMessage?, mentions: [String] = []) -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)

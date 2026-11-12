@@ -919,6 +919,109 @@ final class TeamChatFlowTests: XCTestCase {
         XCTAssertFalse(app.buttons["Remove from team"].exists)
     }
 
+    // MARK: Mentions of a person
+
+    /// The test world of person mentions: Example Team (COCONUT_MENTION_TEAM) with Ada, the person of this app, the
+    /// people Grace (COCONUT_MENTION_GRACE) and Lin, and Reporter Mac, a Mac for a team only whose bot Reporter answers
+    /// each member. Grace wrote "The weekly report is out." A script of the world acts for Grace: when the test writes
+    /// `grace-names-ada` into the folder of COCONUT_TEAM_FLAGS, Grace writes "@Ada can you check the numbers?" with a
+    /// mention of Ada, and the script writes `grace-named-ada`. COCONUT_TEAM_LOOK "dark" or "large" sets the look.
+    ///
+    /// `@` lists the bot, then the people. A pick of Grace names her in the sent message. A message that names Ada puts
+    /// the "@" mark on the row of the team, and the bubble shows her name in bold. The mark goes when Ada reads the
+    /// chat. The switch of the team, off, says that only a mention notifies.
+    @MainActor
+    func testAPersonNamesAnotherPersonWithAt() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"],
+              let room = env["COCONUT_MENTION_TEAM"], let grace = env["COCONUT_MENTION_GRACE"],
+              let flags = env["COCONUT_TEAM_FLAGS"].map({ URL(fileURLWithPath: $0) }) else {
+            throw XCTSkip("Run with the test world of person mentions.")
+        }
+        shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
+        let look = env["COCONUT_TEAM_LOOK"] ?? "light"
+        continueAfterFailure = false
+        app = XCUIApplication()
+        if look == "dark" { app.launchArguments += ["-AppleInterfaceStyle", "Dark", "-UIUserInterfaceStyle", "Dark"] }
+        if look == "large" {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        }
+        app.launchEnvironment = Self.pairing(url: url, code: code)
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
+        let row = app.buttons["team-chat-\(room)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        row.tap()
+        // The chat opens at its newest message. A run before can leave the first message above the screen.
+        XCTAssertTrue(element("team-chat-transcript").waitForExistence(timeout: 15))
+
+        // @ lists the bot that answers each member, then the people. Ada and Reporter Mac are no rows.
+        let bots = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'mention-bot-'"))
+        let people = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'mention-person-'"))
+        let field = element("message-input")
+        field.tap()
+        field.typeText("@")
+        XCTAssertTrue(element("bot-mention-picker").waitForExistence(timeout: 5))
+        XCTAssertEqual(bots.count, 1, "Reporter")
+        XCTAssertEqual(people.count, 2, "Grace and Lin")
+        let graceRow = app.buttons["mention-person-\(grace)"]
+        XCTAssertEqual(graceRow.label, "Grace")
+        XCTAssertLessThan(bots.firstMatch.frame.minY, graceRow.frame.minY, "The bot comes first.")
+        XCTAssertLessThan(graceRow.frame.minY, app.buttons["Lin"].frame.minY, "The people in the order of the names.")
+        XCTAssertFalse(app.buttons["Ada"].exists, "This person is not in the list.")
+        XCTAssertFalse(app.buttons["Reporter Mac"].exists, "A Mac for a team only is not in the list.")
+        shot("mention-\(look)-1-list")
+
+        // The letters filter, and a pick names Grace.
+        field.typeText("g")
+        XCTAssertTrue(app.buttons["Reporter"].waitForNonExistence(timeout: 5))
+        XCTAssertEqual(people.count, 1)
+        if look == "light" { shot("mention-\(look)-2-list-after-g") }
+        graceRow.tap()
+        XCTAssertTrue(element("bot-mention-picker").waitForNonExistence(timeout: 5))
+        field.typeText("the report is yours.")
+        XCTAssertEqual(field.value as? String, "@Grace the report is yours.")
+        app.buttons["send-message"].tap()
+        XCTAssertTrue(text("@Grace the report is yours.").waitForExistence(timeout: 15))
+        sleep(2)
+        back()
+
+        // Grace names Ada. The row of the team shows the mark.
+        try? FileManager.default.removeItem(at: flags.appendingPathComponent("grace-named-ada"))
+        try Data().write(to: flags.appendingPathComponent("grace-names-ada"))
+        let named = flags.appendingPathComponent("grace-named-ada").path
+        for _ in 0..<60 where !FileManager.default.fileExists(atPath: named) { sleep(1) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: named), "Grace wrote the message.")
+        XCTAssertTrue(waitForLabel(row, contains: "You are named"), row.label)
+        shot("mention-\(look)-4-chats-mark")
+
+        // The bubble shows the name of Ada in bold, and VoiceOver says so.
+        row.tap()
+        let received = text("@Ada can you check the numbers?")
+        XCTAssertTrue(received.waitForExistence(timeout: 15))
+        XCTAssertTrue(received.label.contains("Names you"), received.label)
+        XCTAssertTrue(text("@Grace the report is yours.").exists)
+        shot("mention-\(look)-3-chat")
+        sleep(2)
+        back()
+        let read = XCTNSPredicateExpectation(predicate: NSPredicate(format: "NOT (label CONTAINS 'You are named')"),
+                                             object: row)
+        XCTAssertEqual(XCTWaiter().wait(for: [read], timeout: 30), .completed, "The mark goes after the read: \(row.label)")
+        guard look == "light" else { return }
+
+        // The switch off says that only a mention notifies.
+        let toggle = try openTeamScreen(room)
+        if toggle.value as? String == "1" {
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+            XCTAssertTrue(waitForValue(toggle, "0"))
+        }
+        let footer = element("team-notifications-footer")
+        XCTAssertTrue(footer.waitForExistence(timeout: 5))
+        XCTAssertEqual(footer.label, "You get a notification only when someone names you with @.")
+        shot("mention-\(look)-5-switch-off")
+    }
+
     /// Closes a question without its action. An iPhone shows it as a popover without a Cancel button, so a tap beside
     /// it cancels it.
     private func cancelQuestion() {
@@ -968,7 +1071,7 @@ final class TeamChatFlowTests: XCTestCase {
         title.tap()
         let toggle = app.switches["team-notifications"]
         // With the largest text, the switch and its footer are below the first screen.
-        let footer = app.staticTexts["Get notified when someone writes in this team."]
+        let footer = element("team-notifications-footer")
         for _ in 0..<6 where !(toggle.exists && toggle.isHittable && footer.exists) { app.swipeUp(velocity: .slow) }
         XCTAssertTrue(toggle.waitForExistence(timeout: 10))
         return toggle

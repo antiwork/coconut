@@ -13,7 +13,7 @@ struct TeamChatView: View {
     @State private var draft = ""
     @State private var replyTo: TeamMessage?
     @State private var editing: TeamMessage?
-    /// The bots that the person picked with `@` in the draft (see BotMentions).
+    /// The bots and the people that the person picked with `@` in the draft (see BotMentions).
     @State private var mentions: [SelectedBotMention] = []
     @State private var deleting: TeamMessage?
     /// New messages pull the chat down while the reader is at its bottom. Only a move of the reader changes it.
@@ -323,7 +323,7 @@ struct TeamChatView: View {
                 .modifier(ComposerBackdrop())
                 .accessibilityIdentifier("team-chat-closed")
         } else {
-            TeamChatComposer(placeholder: "Message " + (peer(room)?.name ?? room.name), bots: mentionBots(room),
+            TeamChatComposer(placeholder: "Message " + (peer(room)?.name ?? room.name), targets: mentionTargets(room),
                              peer: peer(room)?.name, text: $draft, mentions: $mentions, replyTo: $replyTo,
                              editing: $editing, focused: $composerFocused, enabled: canWrite(room), send: send)
                 .fixedSize(horizontal: false, vertical: true)
@@ -342,9 +342,9 @@ struct TeamChatView: View {
         (store.hasPairing || store.isDemo) && closedReason(room) == nil
     }
 
-    /// The bots that `@` lists. A direct chat is for two people, so it lists none.
-    private func mentionBots(_ room: TeamRoom) -> [TeamRoomBot] {
-        chatKey.isDirect ? [] : TeamMentions.bots(of: room)
+    /// The rows that `@` lists. A direct chat is for two people, so it lists none.
+    private func mentionTargets(_ room: TeamRoom) -> [TeamMentionTarget] {
+        chatKey.isDirect ? [] : TeamMentions.targets(of: room)
     }
 
     private func actions(proxy: ScrollViewProxy) -> TeamMessageActions {
@@ -383,7 +383,7 @@ struct TeamChatView: View {
         } else {
             // The store saves the message first. When the save fails, the composer keeps the text.
             // The mentions count in the draft before the trim: their places are places in the draft.
-            let named = BotMentions.recipients(in: draft, selected: mentions, bots: mentionBots(room)).map(\.id)
+            let named = BotMentions.recipients(in: draft, selected: mentions, bots: mentionTargets(room)).map(\.id)
             guard store.sendTeamMessage(chatKey, text: text, replyingTo: replyTo, mentions: named) else { return }
             draft = ""
             mentions = []
@@ -485,6 +485,8 @@ struct TeamMessageRow: View {
     private var message: TeamMessage? { row.message }
     private var pending: TeamPendingMessage? { if case .pending(let pending) = row.content { pending } else { nil } }
     private var text: String { (editedText ?? row.text).trimmingCharacters(in: .newlines) }
+    /// The text that the bubble draws: the `@` name of this person in bold when the message names the person.
+    private var shownText: String { TeamMentionEmphasis.text(text, message: message, room: room) }
     private var teamBot: TeamRoomBot? { message?.bot.flatMap { id in room.botList.first { $0.id == id } } }
     private var writerName: String {
         if let message, message.bot != nil { return teamBot?.name ?? message.botName ?? "Bot" }
@@ -557,7 +559,7 @@ struct TeamMessageRow: View {
                 .accessibilityLabel(reference.author.isEmpty ? reference.text : "View replied message from \(reference.author)")
                 .accessibilityIdentifier("team-message-quote-\(row.id)")
             }
-            MessageText(text: text, linkColor: own ? BoardStyle.userBubbleLink : .blue, allowsTextSelection: false)
+            MessageText(text: shownText, linkColor: own ? BoardStyle.userBubbleLink : .blue, allowsTextSelection: false)
                 .accessibilityLabel(Text(spokenLabel))
                 .accessibilityActions { accessibilityMenu }
                 .accessibilityIdentifier("team-message-\(row.id)")
@@ -634,6 +636,7 @@ struct TeamMessageRow: View {
         parts.append(text)
         if message?.isEdited == true || editedText != nil { parts.append("Edited") }
         if pending?.failed == true { parts.append("Not sent") }
+        if TeamMentionEmphasis.namesMe(message, room: room) { parts.append(TeamMentionEmphasis.spoken) }
         return parts.joined(separator: ", ")
     }
 
@@ -651,12 +654,13 @@ struct TeamMessageRow: View {
 }
 
 /// The composer of the Team chat: text only. A reply or an edit shows its message above the field, with a way to cancel.
-/// `@` opens the list of the team bots, as in the composer of a bot chat. An edit changes only the text, so it has no list.
+/// `@` opens the list of the team bots and the people, as in the composer of a bot chat. An edit changes only the text,
+/// so it has no list.
 struct TeamChatComposer: View {
     /// "Message Example Team", or "Message Grace" in a direct chat.
     let placeholder: String
-    /// The bots that `@` lists. None in a direct chat.
-    let bots: [TeamRoomBot]
+    /// The rows that `@` lists (TeamMentions.targets). None in a direct chat.
+    let targets: [TeamMentionTarget]
     /// The name of the other person of a direct chat, for the quote of a reply. Nil for the Team chat.
     let peer: String?
     @Binding var text: String
@@ -686,9 +690,9 @@ struct TeamChatComposer: View {
                                  cancelLabel: "Cancel reply") { self.replyTo = nil }
                     .accessibilityIdentifier("reply-preview")
             }
-            if editing == nil && !bots.isEmpty {
+            if editing == nil && !targets.isEmpty {
                 BotMentionControls(text: $text, selection: $selection, selected: $mentions,
-                                   bots: bots, focused: focused) { focused = true }
+                                   bots: targets, focused: focused) { focused = true }
             }
             HStack(alignment: .bottom, spacing: 4) {
                 TextField(placeholder, text: $text, selection: $selection, axis: .vertical)
@@ -886,7 +890,7 @@ struct TeamContactRow: View {
         let unread = room.unread ?? 0
         let date = room.lastMessage?.createdAt?.apiDate
         // An older service sends no chat. The row then has the name only, centered on the face.
-        return ChatRowLayout(name: room.name, unread: unread, date: date) {
+        return ChatRowLayout(name: room.name, unread: unread, date: date, mentioned: room.showsMentionMark) {
             TeamFace(room: room, size: avatarSize)
         } subtitle: {
             Group {
@@ -913,8 +917,8 @@ struct TeamContactRow: View {
             .animation(BoardStyle.fade(reduceMotion: reduceMotion), value: line)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel([room.name, line?.text, unread > 0 ? UnreadBadge.spoken(unread) : nil].compactMap { $0 }
-            .joined(separator: ", "))
+        // VoiceOver reads who types in place of the newest message, as the row shows it.
+        .accessibilityLabel(TeamRowSpeech.label(room, preview: line?.text))
     }
 }
 

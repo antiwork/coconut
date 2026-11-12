@@ -49,6 +49,9 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
         /// What is wrong in the Hermes home of a bot whose chat is on, with the command that repairs it, or nil
         /// (`homeProblem`).
         public var problem: String? = nil
+        /// The fields that the Hermes of the adapter lacks for the team chat, for example "trusted_inbound", or nil.
+        /// The adapter then polls, but takes no message.
+        public var lacking: String? = nil
 
         /// What is wrong in the Hermes home of a bot whose chat is on, or nil. Hermes skips a plugin folder without
         /// its manifest without a log line, and a restart does not help, so the status names the path. The check
@@ -87,6 +90,10 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
             if let problem {
                 return "Team chat of \(bot): on, but \(problem)"
             }
+            if let lacking {
+                return "Team chat of \(bot): on, but this Hermes is too old for it (it lacks \(lacking)). Update Hermes, "
+                    + "then restart the Hermes gateway of \(bot)."
+            }
             return hermes ? "Team chat of \(bot): on. Hermes takes the messages."
                 : "Team chat of \(bot): on, but Hermes does not take the messages. Restart the Hermes gateway of \(bot)."
         }
@@ -99,6 +106,7 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
             var adapter: Bool?
             var plugin: Bool?
             var home: String?
+            var lacking: String?
         }
         var bots: [Bot]
     }
@@ -112,7 +120,8 @@ public struct TeamServiceStatus: Codable, Equatable, Sendable {
         status.chats = bots.map { bot in
             let connected = bot.chat ?? false
             return Chat(bot: bot.name, connected: connected, hermes: bot.adapter ?? false, plugin: bot.plugin ?? false,
-                        problem: connected ? bot.home.flatMap { Chat.homeProblem(bot: bot.name, home: $0) } : nil)
+                        problem: connected ? bot.home.flatMap { Chat.homeProblem(bot: bot.name, home: $0) } : nil,
+                        lacking: bot.lacking)
         }
         return status
     }
