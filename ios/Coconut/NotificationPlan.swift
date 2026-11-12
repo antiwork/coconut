@@ -72,37 +72,51 @@ enum NotificationSentence {
         return text
     }
 
-    static func text(level: NotificationLevel, outside: OutsideWorkHours, replies: Bool, schedule: NotificationSchedule) -> String {
-        // Only urgent turns bot replies off on the Mac.
+    /// `team` is true when a message of at least one team notifies this phone (`TeamRooms.notifiesPhone`).
+    static func text(level: NotificationLevel, outside: OutsideWorkHours, replies: Bool, team: Bool = false,
+                     schedule: NotificationSchedule) -> String {
+        // Only urgent turns bot replies and team messages off on the Mac.
         let replies = replies && level != .urgentOnly
+        let team = team && level != .urgentOnly
         if outside == .same || (level == .urgentOnly && outside == .urgent) {
-            return during(level, replies: replies, from: "At any time")
+            return during(level, replies: replies, team: team, from: "At any time")
         }
         let start = time(NotificationSchedule.minutes(fromClock: schedule.start) ?? 0)
         let end = time(NotificationSchedule.minutes(fromClock: schedule.end) ?? 0)
         let days = days(schedule.weekdays)
         let window = "From \(start) to \(end)" + (days.map { " on \($0)" } ?? "")
         let until = "until \(start)" + (days == nil ? "" : " on the next work day")
+        // A team message does not wait in Inbox.
+        let wait = "wait" + (team ? "" : " in Inbox") + " \(until), then one notification tells you about them."
         let rest: String
         switch (outside, level) {
         case (.nothing, .urgentOnly):
             rest = "Outside those hours, nothing notifies you. Urgent cards wait \(until), then one notification tells you about them."
         case (.nothing, _):
-            rest = "Outside those hours, nothing notifies you. Cards\(replies ? " and bot replies" : "") wait in Inbox \(until), "
-                + "then one notification tells you about them."
+            rest = "Outside those hours, nothing notifies you. "
+                + list(["Cards", replies ? "bot replies" : nil, team ? "team messages" : nil]) + " " + wait
         default:
-            rest = "Outside those hours, only urgent cards notify you. Other cards\(replies ? " and bot replies" : "") wait in Inbox "
-                + "\(until), then one notification tells you about them."
+            rest = "Outside those hours, only urgent cards notify you. "
+                + list(["Other cards", replies ? "bot replies" : nil, team ? "team messages" : nil]) + " " + wait
         }
-        return during(level, replies: replies, from: window) + " " + rest
+        return during(level, replies: replies, team: team, from: window) + " " + rest
     }
 
-    private static func during(_ level: NotificationLevel, replies: Bool, from window: String) -> String {
+    /// "a", "a and b", or "a, b and c". The summary of the Mac also has no comma before "and".
+    private static func list(_ items: [String?]) -> String {
+        let items = items.compactMap { $0 }
+        guard let last = items.last, items.count > 1 else { return items.first ?? "" }
+        return items.dropLast().joined(separator: ", ") + " and " + last
+    }
+
+    private static func during(_ level: NotificationLevel, replies: Bool, team: Bool, from window: String) -> String {
         switch level {
         case .every:
-            "\(window), Coconut notifies you about every card\(replies ? " and every bot reply" : "")."
+            "\(window), Coconut notifies you about "
+                + list(["every card", replies ? "every bot reply" : nil, team ? "every team message" : nil]) + "."
         case .grouped:
-            "\(window), Coconut sends one summary at a time about new cards\(replies ? " and bot replies" : ""). "
+            "\(window), Coconut sends one summary at a time about "
+                + list(["new cards", replies ? "bot replies" : nil, team ? "team messages" : nil]) + ". "
                 + "Urgent cards notify you at once."
         case .urgentOnly:
             "\(window), only urgent cards notify you. Other cards wait in Inbox without a notification."
