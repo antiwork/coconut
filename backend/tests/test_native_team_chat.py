@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import threading
 import time
 import unittest
@@ -90,7 +91,7 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         room = self.team()
         bot = self.declare(home=self.hermes_home)
         self.share(room, bot)
-        server = APIServer(('127.0.0.1', 0), self.only)
+        server = self.server = APIServer(('127.0.0.1', 0), self.only)
         threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .1}, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -238,6 +239,50 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
     def test_a_disconnect_in_a_tool_call_ends_the_turn_in_hermes(self):
         room, bot = self.start_chat()
         self.stop_in_the_tool(lambda: self.call('PATCH', f'/v1/team/bots/{bot["id"]}', {'chat': False}))
+
+    def stop_the_service(self, clean: bool):
+        """Start a turn in the middle of a slow command, stop the service, and check that Hermes interrupts the
+        command, the model gets no request with its result, and after a new start the chat has exactly the notice.
+        Return the seconds from the stop to the interrupt of the command."""
+        from coconut import team_turns
+        self.start_chat()
+        named = self.send(f'@Reporter {SLOW} run the slow one', mentions=[self.mention])
+        self.wait_until(lambda: MARKERS['started'].exists(), seconds=60)
+        agent = self.hermes_home / 'logs/agent.log'
+        before = agent.read_text(errors='replace').count('Interrupt requested')
+        started = time.monotonic()
+        if clean:
+            # The order of a clean stop (server.main): the adapters collect the stops while the listener answers.
+            self.only.team_close_turns()
+        self.server.shutdown()
+        self.server.server_close()
+        self.only.close()
+        self.wait_until(lambda: agent.read_text(errors='replace').count('Interrupt requested') > before,
+                        seconds=SLEEP_SECONDS - 5)
+        took = time.monotonic() - started
+        # Hermes interrupted the command: its second marker never comes, also after its sleep.
+        time.sleep(max(0, SLEEP_SECONDS - took) + 4)
+        self.assertFalse(MARKERS['ended'].exists(), self.diagnostics())
+        self.assertEqual([request for request in Model.requests if results(request)], [], self.diagnostics())
+        self.assertNotIn('stop_command_chat_scope', agent.read_text(errors='replace'))
+        # The next start of the service posts the one notice, and no late reply comes.
+        restarted = self.team_only_mac('only')
+        restarted._turns_recover()
+        self.first.team_sync_pass()
+        self.assertEqual([(row['text'], row['reply_to']) for row in self.bot_messages()],
+                         [(team_turns.UNFINISHED, named['id'])])
+        return took
+
+    def test_a_clean_stop_of_the_service_ends_the_turn_in_hermes_at_once(self):
+        with mock.patch.object(sys.modules[__name__], 'SLEEP_SECONDS', 30):
+            took = self.stop_the_service(clean=True)
+        self.assertLess(took, 10)
+
+    def test_a_service_that_dies_in_a_turn_ends_it_in_hermes_within_a_minute(self):
+        # The adapter stops the turn after LOST_SECONDS (30) without the service, at its next try of the poll.
+        with mock.patch.object(sys.modules[__name__], 'SLEEP_SECONDS', 80):
+            took = self.stop_the_service(clean=False)
+        self.assertLess(took, 65)
 
     def test_a_turn_past_its_time_ends_in_hermes(self):
         from coconut import team_turns

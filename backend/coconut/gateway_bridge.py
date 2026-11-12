@@ -233,9 +233,14 @@ class GatewayBridge:
                 self.turns.pop(turn.id, None)
             answers = self.answers.pop(home, [])
             self.lock.notify_all()
+            # A turn that the adapter lists and that this process does not know, for example after a restart of the
+            # service: the adapter of the team mode stops it (hermes_plugin/coconut/team.py). Another adapter ignores it.
+            unknown = sorted(active - set(self.turns))
         result = {'turns': [turn.request for turn in offered], 'stop': [turn.chat_id for turn in stopping]}
         if answers:
             result['answers'] = answers
+        if unknown:
+            result['unknown'] = unknown
         return result
 
     def event(self, data: dict) -> dict:

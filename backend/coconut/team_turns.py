@@ -39,6 +39,8 @@ log = logging.getLogger(__name__)
 # waits ends only at this time: a restart of the gateway takes seconds and gets the turn, and a gateway that is gone
 # gets the notice after two minutes, not at once and not after five.
 ADAPTER_SECONDS = 120
+# A clean stop of the service waits this long for the adapters to collect the stops of the running turns.
+CLOSE_SECONDS = 10
 # A turn stops after this long. A person can ask again.
 TURN_SECONDS = 1800
 # The turn gets at most this many messages since the bot's last message.
@@ -252,7 +254,9 @@ class TeamTurns:
                         f'team:{room}:{bot}', home, chat_id(room, bot), turn['text'], chat_name=turn['team_name'],
                         team=turn['team'], deadline=time.monotonic() + TURN_SECONDS)
                 self.gateway_bridge.follow(turn_id, reply.emit)
-                return True
+                # A stop of the service cancels the turn too. The trigger keeps `started`, so the next start posts
+                # the notice.
+                return not self.stopping.is_set()
             except GatewayUnavailable:
                 # No adapter took the turn, so nothing of it ran. A gateway that restarts can take it again.
                 if time.monotonic() < deadline and not self.stopping.is_set():
@@ -359,6 +363,22 @@ class TeamTurns:
         with self._turns_gate:
             for key_room, key_bot in keys:
                 self.gateway_bridge.cancel(f'team:{key_room}:{key_bot}')
+
+    def team_close_turns(self, timeout: float = CLOSE_SECONDS) -> None:
+        """Before a clean stop of the service, while its listener still answers: stop each running turn of the team
+        chat, and wait until the adapters collected the stops, at most `timeout`. Hermes then ends each turn, and the
+        next start of the service posts its notice."""
+        self.stopping.set()
+        self._turns_wake.set()
+        self._team_stop_turns()
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self.gateway_bridge.lock:
+                if not any(turn.team and turn.state == 'stopping' for turn in self.gateway_bridge.turns.values()):
+                    return
+            time.sleep(0.1)
+        log.warning('coconut.team_turns: an adapter did not collect the stop of a turn. It stops the turn when it '
+                    'cannot reach this service.')
 
     def _team_forget(self, room_id: str) -> None:
         super()._team_forget(room_id)

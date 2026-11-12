@@ -558,6 +558,12 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     finally:
+        if team_only:
+            # The order of a clean stop: the listener answers again while the adapters collect the stops of the
+            # running turns of the team chat (team_turns.TeamTurns.team_close_turns), then it stops, then the service.
+            threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .2}, daemon=True).start()
+            service.team_close_turns()
+            server.shutdown()
         if tunnel:
             tunnel.shutdown()
             tunnel.server_close()

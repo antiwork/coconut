@@ -457,6 +457,13 @@ class HandoffTests(unittest.TestCase):
         self.assertIsInstance(self.error, GatewayUnavailable)
         self.assertEqual(self.events, [])
 
+    def test_a_poll_names_the_active_turns_that_this_service_does_not_know(self):
+        turn_id = self.submit()
+        answer = self.bridge.poll({'home': self.home, 'wait': 0, 'active': ['old-turn']})
+        self.assertEqual(([turn['id'] for turn in answer['turns']], answer['unknown']), ([turn_id], ['old-turn']))
+        self.assertNotIn('unknown', self.poll(active=[turn_id]))
+        self.finish(turn_id)
+
     def test_a_turn_of_a_full_install_keeps_the_rule_of_before(self):
         turn_id = self.submit(team=False)
         self.assertEqual(len(self.poll()['turns']), 1)
@@ -770,6 +777,25 @@ class FailureTests(TeamTurnMacs, unittest.TestCase):
         self.assertEqual(self.replies(), [])
         with self.only.lock:
             self.assertEqual(self.only.db.execute('SELECT COUNT(*) FROM team_triggers').fetchone()[0], 0)
+
+    def test_a_clean_stop_hands_the_stop_to_the_adapter_and_the_next_start_posts_one_notice(self):
+        named = self.trigger()
+        self.serve(lambda turn: [{'kind': 'typing'}])
+        runner = self.runner()
+        self.wait_for_turn()
+        started = time.monotonic()
+        self.only.team_close_turns()
+        # The fake gateway collected the stop within the time of a clean stop.
+        self.assertLess(time.monotonic() - started, team_turns.CLOSE_SECONDS)
+        self.assertEqual([t for t in self.only.gateway_bridge.turns.values() if t.state == 'stopping'], [])
+        runner.join(5)
+        self.assertEqual(self.triggers(), [(named['id'], 1)])
+        self.gateway.stop()
+        self.only.close()
+        restarted = self.team_only_mac('only')
+        restarted._turns_recover()
+        self.first.team_sync_pass()
+        self.assertEqual(self.replies(), [(UNFINISHED, named['id'])])
 
     def test_a_drain_waits_for_the_running_turn(self):
         self.assertTrue(self.only.drains)

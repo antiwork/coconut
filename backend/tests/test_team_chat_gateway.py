@@ -229,6 +229,58 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         replies = [(text, to) for writer, text, to in self.chat() if writer == 'Reporter']
         self.assertEqual(replies, [('Which build?\n- Debug\n- Release', named['id']), ('I asked in the chat.', None)])
 
+    def start_slow_turn(self):
+        """A turn whose run waits in Hermes until the test releases it. Return the release event and the event."""
+        release = threading.Event()
+
+        async def runner(event):
+            if event.message_type.value == 'text':
+                await asyncio.to_thread(release.wait, 60)
+            return None
+        self.connect(runner)
+        self.addCleanup(release.set)
+        self.send('@Reporter slow', mentions=[self.mention])
+        self.sync()
+        runner_thread = threading.Thread(target=self.only._turns_run, args=(self.room, self.bot['id']), daemon=True)
+        runner_thread.start()
+        deadline = time.monotonic() + 5
+        while not self.adapter._turns and time.monotonic() < deadline:
+            time.sleep(.05)
+        (chat, turn), = self.adapter._turns.items()
+        return release, chat, turn
+
+    def stops(self):
+        return [event for event in self.adapter.events if event.text == '/stop']
+
+    def test_a_turn_that_a_new_service_does_not_know_stops_with_the_source_of_its_member(self):
+        release, chat, turn = self.start_slow_turn()
+        # The service restarts: the new process has no turn, and the adapter lists it in its next poll.
+        with self.only.gateway_bridge.lock:
+            self.only.gateway_bridge.turns.pop(turn)
+        deadline = time.monotonic() + 30
+        while not self.stops() and time.monotonic() < deadline:
+            time.sleep(.05)
+        (stop,) = self.stops()
+        ada = self.first.team_store.room(self.room)['member']
+        self.assertEqual((stop.message_id, stop.source.user_id, stop.source.chat_id), (turn + ':stop', ada, chat))
+        # A late send of the stopped turn, and the answer of Hermes to its /stop, do not reach the chat.
+        with mock.patch.object(self.only, 'gateway_message', side_effect=AssertionError('A late send reached Coconut.')):
+            self.assertTrue(self.complete(self.adapter.send(chat, 'Late reply.', reply_to=turn)).success)
+            self.assertTrue(self.complete(self.adapter.send(chat, 'Stopped.', reply_to=turn + ':stop')).success)
+        release.set()
+
+    def test_a_turn_stops_when_the_service_cannot_be_reached_for_long(self):
+        release, chat, turn = self.start_slow_turn()
+        # The service is gone: the listener closes, and nothing answers.
+        self.server.shutdown()
+        self.server.server_close()
+        with mock.patch.object(team, 'LOST_SECONDS', 1.5):
+            deadline = time.monotonic() + 30
+            while not self.stops() and time.monotonic() < deadline:
+                time.sleep(.1)
+        self.assertEqual([stop.message_id for stop in self.stops()], [turn + ':stop'])
+        release.set()
+
     def test_a_turn_that_comes_again_runs_once(self):
         runs = []
 

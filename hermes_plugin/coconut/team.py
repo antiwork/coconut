@@ -16,16 +16,22 @@ and no Coconut channel (`missing`).
 from __future__ import annotations
 
 import asyncio
+import collections
 import dataclasses
 import functools
 import logging
+import time
 
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
-from .adapter import RETRY_SECONDS, CoconutAdapter
+from .adapter import REQUEST_SECONDS, RETRY_SECONDS, CoconutAdapter
 
 LOG = logging.getLogger(__name__)
+# A running turn stops when the adapter cannot reach the service for this long: its reply can no longer reach the chat,
+# and its tools must not run on unseen. A restart of the service takes some seconds, and the new process names the turn
+# as unknown at once, which stops it too. An update drains the service first, so no turn runs while it restarts.
+LOST_SECONDS = 30
 # The fields of a message event that a turn of the team chat sets.
 EVENT_FIELDS = ('text', 'message_type', 'source', 'message_id', 'user_id', 'user_name', 'allow_gateway_control',
                 'reply_expected', 'channel_context', 'channel_prompt', 'reply_to_message_id', 'reply_to_text',
@@ -76,6 +82,13 @@ class TeamAdapter(CoconutAdapter):
         # living adapter: it keeps the rule "at most once" also if the service is wrong. (The base adapter of Hermes
         # has its own `_running`, so the name is of this adapter.)
         self._team_runs: set[str] = set()
+        # The turns that this adapter stopped, newest last. A late send of such a turn stays in the log, so the chat
+        # never shows a reply after the notice of the service.
+        self._stopped: collections.OrderedDict[str, None] = collections.OrderedDict()
+        # The monotonic time of the last request that reached the service, and the stops that run (the loop keeps only
+        # a weak reference to a task).
+        self._reached = time.monotonic()
+        self._stop_tasks: set = set()
 
     def _event(self, turn: dict) -> MessageEvent:
         try:
@@ -121,6 +134,9 @@ class TeamAdapter(CoconutAdapter):
         source = self._sources.get(turn) if turn is not None else None
         if source is None:
             return
+        self._stopped[turn] = None
+        while len(self._stopped) > 256:
+            self._stopped.popitem(last=False)
         await self.handle_message(MessageEvent(text='/stop', message_type=MessageType.COMMAND, source=source,
                                                message_id=turn + ':stop'))
 
@@ -149,7 +165,42 @@ class TeamAdapter(CoconutAdapter):
 
     @guarded(failed)
     async def send(self, chat_id: str, content: str, reply_to=None, metadata=None) -> SendResult:
+        anchor = str(reply_to or '')
+        if anchor in self._stopped or anchor.removesuffix(':stop') in self._stopped:
+            # The reply of a stopped turn, or the answer of Hermes to its `/stop`: the turn ended for the chat.
+            LOG.info('Coconut: a send of a stopped turn of the team chat stays in the log.')
+            return SendResult(success=True)
         return await super().send(chat_id, content, reply_to=reply_to, metadata=metadata)
+
+    async def _request(self, route: str, payload: dict, timeout: float = REQUEST_SECONDS) -> dict:
+        """A request to the service. A poll answer can name active turns that the service does not know, for example
+        after its restart: the adapter stops them. A service that this adapter cannot reach for LOST_SECONDS stops
+        each running turn."""
+        try:
+            answer = await super()._request(route, payload, timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            if time.monotonic() - self._reached > LOST_SECONDS:
+                self._stop_turns(list(self._turns.values()), 'the Coconut service does not answer')
+            raise
+        self._reached = time.monotonic()
+        if route == '/v1/gateway/poll' and isinstance(answer, dict) and answer.get('unknown'):
+            self._stop_turns([str(turn) for turn in answer['unknown']], 'the Coconut service does not know them')
+        return answer
+
+    def _stop_turns(self, turns: list, reason: str) -> None:
+        """Stop running turns of this adapter, each once. A fault stays here, as in each entry point."""
+        try:
+            chats = {turn: chat for chat, turn in self._turns.items()}
+            for turn in turns:
+                if turn in chats and turn not in self._stopped:
+                    LOG.warning('Coconut: the team chat stops a turn, because %s.', reason)
+                    task = asyncio.ensure_future(self._stop(chats[turn]))
+                    self._stop_tasks.add(task)
+                    task.add_done_callback(self._stop_tasks.discard)
+        except Exception:
+            LOG.exception('Coconut: the team chat did not stop a turn.')
 
     @guarded(failed)
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
