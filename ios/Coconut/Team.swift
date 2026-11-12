@@ -10,6 +10,9 @@ import AppKit
 struct TeamRooms: Decodable, Equatable, Sendable {
     var rooms: [TeamRoom]
     var helper: Bool? = nil
+
+    /// True when a message of at least one team notifies this phone. The sentence of the notification settings reads it.
+    var notifiesPhone: Bool { rooms.contains(where: \.notifiesPhone) }
 }
 
 struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
@@ -36,6 +39,10 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     var notifications: Bool? = nil
 
     var id: String { room }
+
+    /// A message of this team notifies this phone: the team is active and its switch is on. A team of an older
+    /// service has no switch and does not notify.
+    var notifiesPhone: Bool { status == .active && notifications == true }
 
     /// The Mac serves the Team chat of this team. An older service has no `unread`.
     var hasChat: Bool { unread != nil }

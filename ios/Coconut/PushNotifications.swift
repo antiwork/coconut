@@ -21,7 +21,8 @@ struct NotificationSettingsView: View {
         Form {
             Section {
                 Text(NotificationSentence.text(level: push.notificationLevel, outside: push.outsideWorkHours,
-                                               replies: push.messageNotifications, schedule: push.schedule))
+                                               replies: push.messageNotifications,
+                                               team: store.team?.notifiesPhone ?? false, schedule: push.schedule))
                     .accessibilityIdentifier("notification-summary")
             }
             Section {

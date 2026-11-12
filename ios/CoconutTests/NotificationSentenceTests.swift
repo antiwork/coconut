@@ -53,6 +53,76 @@ final class NotificationSentenceTests: XCTestCase {
         }
     }
 
+    func testATeamAddsTeamMessagesToEachSentence() {
+        func team(_ level: NotificationLevel, _ outside: OutsideWorkHours, replies: Bool) -> String {
+            NotificationSentence.text(level: level, outside: outside, replies: replies, team: true, schedule: nineToSix)
+        }
+        let urgentOutside = " Outside those hours, only urgent cards notify you."
+        let nothingOutside = " Outside those hours, nothing notifies you."
+        let expected: [(NotificationLevel, OutsideWorkHours, Bool, String)] = [
+            (.every, .urgent, true, "From 9:00 to 18:00, Coconut notifies you about every card, every bot reply and every team message."
+                + urgentOutside + " Other cards, bot replies and team messages wait until 9:00, then one notification tells you about them."),
+            (.every, .urgent, false, "From 9:00 to 18:00, Coconut notifies you about every card and every team message."
+                + urgentOutside + " Other cards and team messages wait until 9:00, then one notification tells you about them."),
+            (.every, .nothing, true, "From 9:00 to 18:00, Coconut notifies you about every card, every bot reply and every team message."
+                + nothingOutside + " Cards, bot replies and team messages wait until 9:00, then one notification tells you about them."),
+            (.every, .nothing, false, "From 9:00 to 18:00, Coconut notifies you about every card and every team message."
+                + nothingOutside + " Cards and team messages wait until 9:00, then one notification tells you about them."),
+            (.every, .same, true, "At any time, Coconut notifies you about every card, every bot reply and every team message."),
+            (.every, .same, false, "At any time, Coconut notifies you about every card and every team message."),
+            (.grouped, .urgent, true, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards, bot replies and team messages. "
+                + "Urgent cards notify you at once." + urgentOutside
+                + " Other cards, bot replies and team messages wait until 9:00, then one notification tells you about them."),
+            (.grouped, .urgent, false, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards and team messages. "
+                + "Urgent cards notify you at once." + urgentOutside
+                + " Other cards and team messages wait until 9:00, then one notification tells you about them."),
+            (.grouped, .nothing, true, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards, bot replies and team messages. "
+                + "Urgent cards notify you at once." + nothingOutside
+                + " Cards, bot replies and team messages wait until 9:00, then one notification tells you about them."),
+            (.grouped, .nothing, false, "From 9:00 to 18:00, Coconut sends one summary at a time about new cards and team messages. "
+                + "Urgent cards notify you at once." + nothingOutside
+                + " Cards and team messages wait until 9:00, then one notification tells you about them."),
+            (.grouped, .same, true, "At any time, Coconut sends one summary at a time about new cards, bot replies and team messages. "
+                + "Urgent cards notify you at once."),
+            (.grouped, .same, false, "At any time, Coconut sends one summary at a time about new cards and team messages. "
+                + "Urgent cards notify you at once."),
+        ]
+        for (level, outside, replies, sentence) in expected {
+            XCTAssertEqual(team(level, outside, replies: replies), sentence, "\(level) \(outside) \(replies)")
+        }
+        // Only urgent turns team messages off, as it turns bot replies off. The text stays as without a team.
+        for outside in OutsideWorkHours.allCases {
+            for replies in [false, true] {
+                XCTAssertEqual(team(.urgentOnly, outside, replies: replies), text(.urgentOnly, outside, replies: replies))
+            }
+        }
+        // The next work day stays in the sentence with a team.
+        XCTAssertTrue(NotificationSentence.text(level: .grouped, outside: .urgent, replies: true, team: true,
+                                                schedule: NotificationSchedule(weekdays: [1, 2, 3, 4, 5]))
+            .hasSuffix(" Other cards, bot replies and team messages wait until 9:00 on the next work day, "
+                       + "then one notification tells you about them."))
+    }
+
+    func testOnlyAnActiveTeamWithItsSwitchOnNotifiesThePhone() throws {
+        func room(_ state: String, _ notifications: Bool?) -> TeamRoom {
+            TeamRoom(room: "r-\(state)-\(String(describing: notifications))", name: "Example Team", state: state,
+                     notifications: notifications)
+        }
+        XCTAssertTrue(room("active", true).notifiesPhone)
+        XCTAssertFalse(room("active", false).notifiesPhone)
+        XCTAssertFalse(room("active", nil).notifiesPhone, "A team of an older service has no switch.")
+        for state in ["joining", "removed", "gone"] {
+            XCTAssertFalse(room(state, true).notifiesPhone, state)
+        }
+        XCTAssertFalse(TeamRooms(rooms: []).notifiesPhone)
+        XCTAssertFalse(TeamRooms(rooms: [room("active", false), room("joining", true), room("active", nil)]).notifiesPhone)
+        XCTAssertTrue(TeamRooms(rooms: [room("active", false), room("active", true)]).notifiesPhone)
+        // An older service sends no switch.
+        let old = try APIJSON.decoder().decode(TeamRooms.self,
+                                               from: Data(#"{"rooms": [{"room": "r", "name": "Example Team", "state": "active"}]}"#.utf8))
+        XCTAssertFalse(old.notifiesPhone)
+    }
+
     func testTheSentenceNamesTheWorkDaysAndTheNextWorkDay() {
         let weekdays = NotificationSchedule(start: "08:30", end: "17:00", weekdays: [1, 2, 3, 4, 5])
         XCTAssertEqual(text(.every, .urgent, replies: false, schedule: weekdays),
