@@ -1306,12 +1306,12 @@ class TeamKeyChangeTests(unittest.TestCase):
         root_logger.setLevel(logging.DEBUG)
         self.addCleanup(root_logger.removeHandler, handler)
         macs = []
-        for name in ('ada', 'grace', 'lin', 'noor'):
+        for name in ('ada', 'grace', 'lin', 'noor', 'spare', 'late'):
             root = Path(self.temp.name) / name
             service = Service(root, FixtureProvider(root), start_workers=False)
             self.addCleanup(service.close)
             macs.append(service)
-        ada, grace, lin, noor = macs
+        ada, grace, lin, noor, spare, late = macs
 
         def call(service, method, path, data=None, direct=False):
             return service.team_request(method, path, data or {}, '', 'test-device', direct)
@@ -1392,6 +1392,23 @@ class TeamKeyChangeTests(unittest.TestCase):
         self.assertEqual(self.helper_open(room_id, grace_keys, entry), {'error': 'unknown_epoch', 'epoch': 1})
         self.assertEqual(self.helper_open(room_id, {'1': grace_keys['0']}, entry), {'error': 'seal'})
         self.assertIn('payload', self.helper_open(room_id, keys(ada)['keys'], entry))
+
+        # Two more removals come before Ada's Mac reads the `member` entry of a Mac that joined with the key of epoch 1.
+        # Ada writes the `key` entries of epochs 2 and 3 again with a box for it, and it takes one key after the other.
+        for service, name in ((spare, 'Grace'), (late, 'Noor')):
+            link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+            call(service, 'POST', '/v1/team/join', {'link': link, 'member_name': name})
+            if service is spare:
+                sync(ada, spare)
+        for service in (noor, spare):
+            call(ada, 'DELETE', f'/v1/team/rooms/{room_id}/members/{service.team_store.room(room_id)["member"]}')
+        sync(ada, lin)
+        call(ada, 'POST', chat, {'text': 'Hello in epoch 3'})
+        sync(ada, lin, late)
+        self.assertEqual([service.team_store.room(room_id)['epoch'] for service in (ada, lin, late)], [3, 3, 3])
+        self.assertEqual(sorted(keys(late)['keys']), ['1', '2', '3'])
+        self.assertEqual(texts(late, chat)[0], 'Hello in epoch 3')
+        self.assertEqual([page['title'] for page in late.documents()['documents'] if 'team' in page], ['Weekly report'])
         # No log line has a key or a name.
         output = '\n'.join(logging.Formatter().format(record) for record in records)
         new_key = keys(ada)['keys']['1']

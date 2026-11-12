@@ -65,9 +65,9 @@ class TeamEpochs:
         self._team_written_again: dict[str, tuple[float, int]] = {}
         # The rooms with kept entries that this Mac still writes again. TeamSync reads such a room at each pass.
         self._team_busy: set[str] = set()
-        # On the admin's Mac, for each room: the members that the helper could not seal a box for in the newest `key`
-        # entry. A new write would fail for them again, so they cause none (_team_fill_boxes).
-        self._team_unboxed: dict[str, set[str]] = {}
+        # On the admin's Mac, for each room and each `key` entry: the members that the helper could not seal a box
+        # for. A new write would fail for them again, so they cause none (_team_fill_boxes).
+        self._team_unboxed: dict[str, dict[str, set[str]]] = {}
 
     def _team_forget_epochs(self, room_id: str) -> None:
         for state in (self._team_key_tried, self._team_written_again, self._team_unboxed):
@@ -181,8 +181,8 @@ class TeamEpochs:
     # The admin's Mac
 
     def _team_change_key(self, room_id: str) -> None:
-        """On the admin's Mac: make the key change when a removal is newer than the newest `key` entry, and write the
-        newest `key` entry again for a member that it missed. The caller holds the lock of the room.
+        """On the admin's Mac: make the key change when a removal is newer than the newest `key` entry, and write
+        each `key` entry again that missed a member (_team_fill_boxes). The caller holds the lock of the room.
 
         The steps of a change, each safe to repeat:
 
@@ -218,45 +218,65 @@ class TeamEpochs:
             if key is None:
                 key = base64.b64encode(token_bytes(32)).decode()
                 secrets = team_keys.add_key(self.root, room_id, epoch, key)
-            self._team_write_key(room, secrets, entry_id, epoch, key)
+            with self.lock:
+                members = [member for member in self.team_store.members(room_id) if member['member'] != room['member']]
+            self._team_write_key(room, secrets, entry_id, epoch, key, {}, members)
             log.info('coconut.team_log room %s: this Mac wrote the key entry %s of epoch %d.', room_id[:8], entry_id,
                      epoch)
         self._team_take_keys(room_id)
 
     def _team_fill_boxes(self, room: dict) -> None:
-        """Write the newest `key` entry again when a member of the list has no box in it and has only the key before
-        it: a Mac that took its invite before the removal closed the invites, and whose `member` entry came after the
-        `key` entry. The new write has a box for each member of the list now. The caller holds the lock of the room."""
+        """Write each `key` entry again that a member of the list needs and has no box in. The caller holds the lock
+        of the room.
+
+        A Mac can join at the time of a change: it took its invite before the removal closed the invites, and its
+        `member` entry came after the `key` entry. It has the key of the epoch of the body of that `member` entry, so it
+        needs each `key` entry after that epoch, up to the epoch of the room. One Mac can miss more than one change. The
+        Mac writes each such entry again, in the order of the epochs: the same entry ID, the next `rev`, a body of the
+        epoch before its own, the boxes that the entry has, and a box for each member that needs it. A reader takes one
+        epoch after the other. A removed member is not in the list, so it gets no box, and its old box goes.
+        """
         room_id = room['room']
         with self.lock:
-            changes = self.team_store.key_changes(room_id, room['epoch'] - 1)
-            if not changes or changes[-1]['epoch'] != room['epoch']:
-                return
-            change = changes[-1]
-            unboxed = self._team_unboxed.get(room_id, set())
-            missed = [member for member, epoch in self.team_store.member_epochs(room_id).items()
-                      if member != room['member'] and member not in change['boxes'] and member not in unboxed
-                      and epoch < change['epoch']]
-        if not missed:
+            changes = [change for change in self.team_store.key_changes(room_id, 0) if change['epoch'] <= room['epoch']]
+            members = {member['member']: member for member in self.team_store.members(room_id)
+                       if member['member'] != room['member']}
+            epochs = self.team_store.member_epochs(room_id)
+        unboxed = self._team_unboxed.get(room_id, {})
+        needs = [(change, [members[member] for member in members if epochs[member] < change['epoch']
+                           and member not in change['boxes'] and member not in unboxed.get(change['entry'], ())])
+                 for change in changes]
+        needs = [(change, missed) for change, missed in needs if missed]
+        if not needs:
             return
         secrets = team_keys.read(self.root, room_id)
-        self._team_write_key(room, secrets, change['entry'], change['epoch'], secrets['keys'][str(change['epoch'])])
-        log.info('coconut.team_log room %s: this Mac wrote the key entry %s again for %d members.', room_id[:8],
-                 change['entry'], len(missed))
+        for change, missed in needs:
+            key = secrets['keys'].get(str(change['epoch']))
+            if key is None or str(change['epoch'] - 1) not in secrets['keys']:
+                log.warning('coconut.team_log room %s: this Mac has no room key to write the key entry %s again.',
+                            room_id[:8], change['entry'])
+                continue
+            # The boxes of the members that the list still has stay.
+            kept = {member: box for member, box in change['boxes'].items() if member in members}
+            self._team_write_key(room, secrets, change['entry'], change['epoch'], key, kept, missed)
+            log.info('coconut.team_log room %s: this Mac wrote the key entry %s again for %d members.', room_id[:8],
+                     change['entry'], len(missed))
 
-    def _team_write_key(self, room: dict, secrets: dict, entry_id: str, epoch: int, key: str) -> None:
-        """Seal the room key of `epoch` for each other member of the list now, and write the `key` entry in the epoch
-        before it. A member whose box the helper cannot seal gets none, and the Mac writes a log line."""
+    def _team_write_key(self, room: dict, secrets: dict, entry_id: str, epoch: int, key: str, boxes: dict,
+                        members: list[dict]) -> None:
+        """Seal the room key of `epoch` for each of `members`, add these boxes to `boxes`, and write the `key` entry
+        with a body of the epoch before it. A member whose box the helper cannot seal gets none, and the Mac writes a
+        log line."""
         room_id = room['room']
-        with self.lock:
-            members = [member for member in self.team_store.members(room_id) if member['member'] != room['member']]
         sealed = self.team_helper.seal_key(room_id, entry_id, epoch, key, secrets['agreement_key'], room['member'],
                                            [{'member': member['member'], 'agreement': member['agreement']}
                                             for member in members])
-        boxes = {member['member']: result['box'] for member, result in zip(members, sealed) if 'box' in result}
-        self._team_unboxed[room_id] = {member['member'] for member in members} - set(boxes)
-        if len(boxes) < len(members):
+        added = {member['member']: result['box'] for member, result in zip(members, sealed) if 'box' in result}
+        failed = {member['member'] for member in members} - set(added)
+        self._team_unboxed.setdefault(room_id, {}).setdefault(entry_id, set()).update(failed)
+        if failed:
             log.warning('coconut.team_log room %s: %d members get no box in the key entry %s.', room_id[:8],
-                        len(members) - len(boxes), entry_id)
-        fields = {'kind': 'key', 'epoch': epoch, 'agreement': json.loads(room['profile'])['agreement'], 'boxes': boxes}
+                        len(failed), entry_id)
+        fields = {'kind': 'key', 'epoch': epoch, 'agreement': json.loads(room['profile'])['agreement'],
+                  'boxes': dict(boxes, **added)}
         self._team_write(room, entry_id, True, fields, tries=2, epoch=epoch - 1)

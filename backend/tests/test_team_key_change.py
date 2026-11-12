@@ -323,6 +323,73 @@ class MissedMemberTests(KeyChangeMacs, unittest.TestCase):
         self.sync(self.first)
         self.assertEqual(self.key_entry()['payload']['rev'], 2)
 
+    def key_change(self, epoch: int) -> dict:
+        """The payload of the `key` entry of an epoch on the relay, with the epoch of its body."""
+        row = self.relay.rooms[self.room]['entries'][key_entry(self.keys(self.first)['token'], self.room, epoch)]
+        body = decode(row['body'])
+        return dict(json.loads(base64.b64decode(body['payload'])), body_epoch=body['epoch'])
+
+    def missed_member(self, removed: list) -> tuple:
+        """Noor joins with the key of epoch 0, and Ada removes these members before her Mac reads Noor's `member`
+        entry. Ada shares a page first. Return Noor's Mac and member ID."""
+        bot = self.first.mutate('POST', '/v1/bots', {'name': 'Planner'}, str(uuid4()), 'phone')
+        self.share_page(self.first, self.room, bot)
+        self.sync()
+        noor = self.mac('noor')
+        self.join(noor, self.invite({'room': self.room})['link'], 'Noor')
+        for member in removed:
+            self.remove(member)
+        return noor, noor.team_store.room(self.room)['member']
+
+    def test_a_member_that_two_changes_missed_gets_a_box_in_each_entry_and_reads_the_newest_epoch(self):
+        noor, noor_id = self.missed_member([self.grace, self.lin])
+        self.assertEqual((self.epoch(self.first), self.key_change(1)['boxes'], self.key_change(2)['boxes']),
+                         (2, {self.lin: self.key_change(1)['boxes'][self.lin]}, {}))
+        self.sync(self.first)
+        first, second = self.key_change(1), self.key_change(2)
+        # Each entry keeps the epoch of its body and gets a box for Noor. Lin is removed, so her old box goes.
+        self.assertEqual((first['rev'], first['body_epoch'], sorted(first['boxes'])), (2, 0, [noor_id]))
+        self.assertEqual((second['rev'], second['body_epoch'], sorted(second['boxes'])), (2, 1, [noor_id]))
+        self.message(self.first, 'In epoch 2')
+        noor.team_sync_pass()
+        noor_keys = team_keys.read(noor.root, self.room)['keys']
+        self.assertEqual((noor.team_store.room(self.room)['epoch'], sorted(noor_keys)), (2, ['0', '1', '2']))
+        self.assertEqual(self.texts(noor)[0], 'In epoch 2')
+        self.assertEqual([page['title'] for page in noor.documents()['documents'] if 'team' in page], ['Weekly report'])
+        self.assertEqual(noor.team_store.counts(self.room)[1], 0)
+        # A repeat of the pass writes nothing.
+        writes = self.writes()
+        self.sync(self.first)
+        self.assertEqual(self.writes(), writes)
+
+    def test_a_member_that_three_changes_missed_takes_each_key_also_one_answer_at_a_time(self):
+        fifth = self.mac('fifth')
+        self.join(fifth, self.invite({'room': self.room})['link'], 'Lin')
+        self.sync(self.first, fifth)
+        fifth_id = fifth.team_store.room(self.room)['member']
+        noor, noor_id = self.missed_member([self.grace, self.lin, fifth_id])
+        self.sync(self.first)
+        for epoch in (1, 2, 3):
+            change = self.key_change(epoch)
+            self.assertEqual((change['body_epoch'], sorted(change['boxes'])), (epoch - 1, [noor_id]))
+        self.message(self.first, 'In epoch 3')
+        self.relay.page = 1
+        noor.team_sync_pass()
+        self.assertEqual(noor.team_store.room(self.room)['epoch'], 3)
+        self.assertEqual(self.texts(noor)[0], 'In epoch 3')
+
+    def test_a_key_that_the_admin_lacks_gives_a_log_line_and_the_rest_goes_on(self):
+        self.missed_member([self.grace, self.lin])
+        with mock.patch.object(self.first, '_team_fill_boxes'):
+            self.first.team_sync_pass()
+        keys = self.keys(self.first)
+        team_keys.write(self.first.root, self.room, member_key=keys['member_key'], agreement_key=keys['agreement_key'],
+                        token=keys['token'], keys={'0': keys['keys']['0'], '2': keys['keys']['2']})
+        with self.assertLogs('coconut.team_epochs', 'WARNING') as logs:
+            self.first._team_fill_boxes(self.first.team_store.room(self.room))
+        self.assertEqual(len([line for line in logs.output if 'no room key to write' in line]), 2)
+        self.assertEqual((self.key_change(1)['rev'], self.key_change(2)['rev']), (1, 1))
+
     def test_a_member_that_the_helper_cannot_seal_a_box_for_causes_no_loop_of_writes(self):
         noor = self.mac('fourth')
         self.join(noor, self.invite({'room': self.room})['link'], 'Noor')
