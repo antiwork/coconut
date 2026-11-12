@@ -527,25 +527,33 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
-    /// The store gives each list of the Mac to the hook of the banners (MessageBanners), with the list before it. No
-    /// view is on screen in this test.
+    /// The store loads the list of the teams by itself when it gets a connection (markConnected), and a change loads
+    /// it again. It gives each list to the hook of the banners (MessageBanners), with the list before it. No view is
+    /// on screen and the test never calls loadTeam, so the Mac app gets its lists also without its main window.
     @MainActor
-    func testTheStoreGivesEachListToTheHookOfTheBanners() async throws {
+    func testTheStoreGivesEachListToTheHookOfTheBannersWithoutAView() async throws {
         #if !(DEBUG && targetEnvironment(simulator))
         throw XCTSkip("This HTTP fixture requires a debug simulator build.")
         #else
-        let state = try PreviewStateFixture.load()
-        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        var state = try PreviewStateFixture.load()
+        state.cursor = 10; state.syncVersion = 1
+        let server = try TeamServer(state: APIJSON.encoder().encode(state), cursor: state.cursor)
         let address = try await server.start()
         defer { server.stop() }
         try await withPairedStore(address: address) { store in
+            // A new pairing starts without a list, as a start of the app does.
+            store.disconnect()
             var lists: [(before: TeamRooms?, after: TeamRooms)] = []
             store.teamListLoaded = { lists.append(($0, $1)) }
-            server.addMember("Grace", announce: false)
-            await store.loadTeam()
+            store.setForeground(true)
+            await store.pairOverLoopback(address: address, code: "fixture")
+            try await waitUntil(timeout: .seconds(5)) { !lists.isEmpty }
+            XCTAssertNil(lists[0].before, "The first list after a pairing is history.")
+            XCTAssertEqual(lists[0].after.rooms.first?.memberList.count, 1)
+            server.addMember("Grace")
+            try await waitUntil(timeout: .seconds(5)) { lists.last?.after.rooms.first?.memberList.count == 2 }
             let last = try XCTUnwrap(lists.last)
             XCTAssertEqual(last.before?.rooms.first?.memberList.count, 1)
-            XCTAssertEqual(last.after.rooms.first?.memberList.count, 2)
             XCTAssertEqual(last.after, store.team)
         }
         #endif
