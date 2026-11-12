@@ -1,8 +1,9 @@
 """Durable, private notification delivery through Apple APNs.
 
 Each bot event that can notify becomes one item per phone in `push_items`, and so does each fresh message of another
-member in a team chat (`record_team`). A team item has the room in `team` and the entry ID in `message_id`, and no
-bot, task or turn. Coconut decides when items notify
+member in a team chat (`record_team`) or in a direct chat (`record_direct`). A team item and a direct item have the room
+in `team` and the entry ID in `message_id`, and no bot, task or turn. Their kind tells them apart: `team` or `direct`.
+The other member of a direct chat comes from the row of the message. Coconut decides when items notify
 (`push_schedule.due`) and writes one `push_outbox` row per notification: one urgent card, or one group of the items
 that waited. The row ID is fixed, and a sealed envelope is kept, so a retry never sends a second notification."""
 from __future__ import annotations
@@ -19,7 +20,7 @@ import tempfile
 import threading
 import time
 from uuid import NAMESPACE_URL, uuid5
-from .push_relay import RelayTransport, validate_route, notification_alert, group_text, team_alert
+from .push_relay import RelayTransport, validate_route, notification_alert, group_text, team_alert, direct_alert
 from .team_store import ACTIVE
 from .push_schedule import (LEGACY_SCHEDULE, OUTSIDE, due, holds_urgent, in_window, merge as merge_schedule,
                             stored as stored_schedule)
@@ -41,6 +42,10 @@ PREVIEW_TIMES = ('failing_since', 'failed_at', 'worked_at')
 URGENT_DECISION = "json_extract(data,'$.needs_attention_now') IS 1"
 # The text of a team message for a phone without a relay route. That phone gets no text of a message.
 TEAM_BODY = 'Your team has a new message.'
+# The text of a direct message for a phone without a relay route.
+DIRECT_BODY = 'You have a new direct message.'
+# The kinds of the items of the chats of a team: no bot, task or turn.
+CHAT_KINDS = ('team', 'direct')
 # A phone reaches the Mac only through the relay tunnel, which needs the phone's static key. A device without one is an
 # old version 1 pairing or a tool on this Mac, so it is not paired for notifications.
 PHONES = 'SELECT id FROM devices WHERE peer_key IS NOT NULL'
@@ -356,12 +361,13 @@ class PushDelivery:
     def allows(self, device_id, kind, urgent=False):
         """Whether the phone's preferences let this item notify. A card that needs attention now always may.
 
-        A team message needs preferences that the phone sent and a level other than Only urgent. The switch for bot
-        replies does not decide it. A phone without stored preferences has an app from before team notifications."""
+        A team message and a direct message need preferences that the phone sent and a level other than Only urgent.
+        The switch for bot replies does not decide it. A phone without stored preferences has an app from before team
+        notifications."""
         chosen = self.stored_preferences(device_id)
         if kind == 'decision':
             return bool(urgent) or (chosen or LEGACY_PREFERENCES)['level'] != 'urgent_only'
-        if kind == 'team':
+        if kind in CHAT_KINDS:
             return chosen is not None and chosen['level'] != 'urgent_only'
         if chosen is None:
             return kind in ('failed', 'completed')
@@ -421,13 +427,17 @@ class PushDelivery:
         found = self.service.team_store.room(room)
         if found is None or not found['notifications']:
             return
-        event_key = ':'.join(('team', room, entry))
+        self._record_chat('team', room, entry)
+
+    def _record_chat(self, kind, room, entry):
+        """Queue one item of a chat of a team (CHAT_KINDS) for each phone that allows it."""
+        event_key = ':'.join((kind, room, entry))
         stamp = time.time()
         for (device_id,) in self.service.db.execute(f'SELECT device_id FROM push_devices WHERE enabled=1 AND device_id IN ({PHONES})').fetchall():
-            if self.allows(device_id, 'team'):
+            if self.allows(device_id, kind):
                 self.service.db.execute('''INSERT OR IGNORE INTO push_items
                     (device_id,event_key,kind,bot_id,task_id,decision_id,message_id,turn_id,urgent,created,status,team)
-                    VALUES (?,?,'team','','',NULL,?,'',0,?,'waiting',?)''', (device_id, event_key, entry, stamp, room))
+                    VALUES (?,?,?,'','',NULL,?,'',0,?,'waiting',?)''', (device_id, event_key, kind, entry, stamp, room))
 
     def team_relevant(self, item):
         """Whether a team message still notifies: the room is active with its notifications on, and the message
@@ -440,12 +450,37 @@ class PushDelivery:
         message = store.message(item['team'], item['message_id'])
         return message is not None and message['first'] > store.read_position(item['team'])
 
+    def record_direct(self, room, entry):
+        """Queue one item for each phone for a fresh direct message (TeamStore._note_direct_fresh). The switch
+        `notifications` of the room is for the team chat, so it does not decide. The caller holds the transaction
+        that accepts the entry."""
+        self._record_chat('direct', room, entry)
+
+    def direct_relevant(self, item):
+        """Whether a direct message still notifies: the room is active, and the message shows after the read position
+        of its chat. So a message that the person read, a removed message and a team that the person left send
+        nothing."""
+        store = self.service.team_store
+        room = store.room(item['team'])
+        if room is None or room['state'] != ACTIVE:
+            return False
+        message = store.direct(item['team'], item['message_id'])
+        return message is not None and message['first'] > store.direct_read_position(item['team'], message['member'])
+
+    def direct_chat(self, item):
+        """The other member of the direct chat of an item, or None when the chat no longer shows its message."""
+        message = self.service.team_store.direct(item['team'], item['message_id'])
+        return message['member'] if message else None
+
     def relevant(self, item):
         """Whether the item still describes something the person has not seen: an open card, a visible message,
         or a task that is still failed or finished in the same turn."""
         service = self.service
-        if item['team']:
+        # The kind decides, because a team item and a direct item both have a room.
+        if item['kind'] == 'team':
             return self.allows(item['device_id'], item['kind']) and self.team_relevant(item)
+        if item['kind'] == 'direct':
+            return self.allows(item['device_id'], item['kind']) and self.direct_relevant(item)
         task = service._get('tasks', item['task_id'])
         bot = service._get('bots', item['bot_id'])
         conversation = service._get('bots', task.get('conversation_bot_id', bot['id']))
@@ -554,17 +589,29 @@ class PushDelivery:
         """The notification for one item, or the count of several. Items are rechecked when the text is written."""
         service = self.service
         if len(items) > 1:
-            rooms = {item['team'] for item in items}
-            if len(rooms) == 1 and None not in rooms:
+            # One chat: its kind, its room, and for a direct chat its other member. The kind decides, because a team
+            # item and a direct item of one room are two chats.
+            chats = {(item['kind'], item['team'], self.direct_chat(item) if item['kind'] == 'direct' else None)
+                     for item in items}
+            kind, room, member = next(iter(chats)) if len(chats) == 1 else (None, None, None)
+            if kind == 'team':
                 # A group of one team has the thread of the team, and a tap opens its chat. An older app opens Inbox.
                 return {'aps': {'alert': {'title': 'Coconut', 'body': group_text(items)}, 'sound': 'default',
-                                'thread-id': items[0]['team']},
+                                'thread-id': room},
                         'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items),
-                                    'team': items[0]['team']}}, None
+                                    'team': room}}, None
+            if kind == 'direct' and member:
+                # A group of one direct chat has the thread of the chat. It has no `team` at the top, because the app
+                # of today would open the team chat.
+                return {'aps': {'alert': {'title': 'Coconut', 'body': group_text(items)}, 'sound': 'default',
+                                'thread-id': f'{room}:{member}'},
+                        'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items),
+                                    'direct': {'team': room, 'member': member}}}, None
             # Apps before groups need a bot, task, and card to open a notification. They open the first card in Inbox.
-            # A team item has none, so they come from another item. A group of team items only has none.
+            # A team item and a direct item have none, so they come from another item. A group of such items only has
+            # none.
             first = next((item for item in items if item['decision_id']), None) or next(
-                (item for item in items if not item['team']), None)
+                (item for item in items if item['kind'] not in CHAT_KINDS), None)
             task = service._get('tasks', first['task_id']) if first else None
             return {'aps': {'alert': {'title': 'Coconut', 'body': group_text(items)}, 'sound': 'default', 'thread-id': 'coconut-inbox'},
                     'coconut': {'version': 1, 'device_id': device_id, 'kind': 'group', 'count': len(items),
@@ -572,7 +619,16 @@ class PushDelivery:
                                 'task_id': task['id'] if task else None,
                                 'decision_id': first['decision_id'] if first else None, 'message_id': None}}, None
         item = items[0]
-        if item['team']:
+        if item['kind'] == 'direct':
+            room, member = item['team'], self.direct_chat(item)
+            payload = {'aps': {'alert': {'title': 'Coconut', 'body': DIRECT_BODY}, 'sound': 'default',
+                               'thread-id': f'{room}:{member}'},
+                       'coconut': {'version': 1, 'device_id': device_id, 'kind': 'direct',
+                                   'direct': {'team': room, 'member': member}}}
+            if sealed and member:
+                payload['aps']['alert'] = direct_alert(service.team_store, room, item['message_id'])
+            return payload, item['message_id']
+        if item['kind'] == 'team':
             payload = {'aps': {'alert': {'title': 'Coconut', 'body': TEAM_BODY}, 'sound': 'default', 'thread-id': item['team']},
                        'coconut': {'version': 1, 'device_id': device_id, 'kind': 'team', 'team': item['team']}}
             if sealed:

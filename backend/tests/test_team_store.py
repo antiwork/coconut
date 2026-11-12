@@ -229,8 +229,9 @@ class TeamStoreTests(unittest.TestCase):
         self.write(2, self.member('Grace'))
         self.assertEqual(self.store.members(ROOM), [
             dict(member=ADMIN, name='Ada', avatar='coconut', color='green', agreement=AGREEMENT, entry=entry_id(1),
-                 bot_only=0),
-            dict(member=MEMBER, name='Grace', avatar='', color='', agreement=AGREEMENT, entry=entry_id(2), bot_only=0)])
+                 bot_only=0, direct=0),
+            dict(member=MEMBER, name='Grace', avatar='', color='', agreement=AGREEMENT, entry=entry_id(2), bot_only=0,
+                 direct=0)])
         # A replacement changes the member, and the member keeps its place in the list.
         self.write(1, self.member('Ada L.', rev=2, color='blue'), ADMIN)
         self.assertEqual([(member['name'], member['color']) for member in self.store.members(ROOM)],

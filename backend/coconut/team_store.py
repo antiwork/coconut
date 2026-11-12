@@ -26,6 +26,10 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   person read.
 - `team_triggers`: on a team-only Mac only, the messages that start a turn of a bot of this Mac, in the order in which
   this Mac accepted them (team_turns.py). `started` marks a trigger whose turn began.
+- `team_directs`: the direct messages that this Mac shows: one row for each `direct` entry whose box opens for this
+  Mac, with `member`, the other member of the chat. No query of the Team chat reads this table.
+- `team_direct_reads`: the read position of this Mac in each direct chat: one row for each room and other member.
+- `team_marks`: the lasting marks of this Mac. `direct` means that an app of the person knows direct messages.
 
 `TeamStore.accept` holds the "Rules for a Mac that reads an entry" of the contract. The secrets of a room are not
 here: team_keys.py keeps them in a private file. The caller holds the transaction of each write.
@@ -53,7 +57,7 @@ CREATE TABLE IF NOT EXISTS team_entries (room TEXT NOT NULL, id TEXT NOT NULL, s
     kept INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (room, id));
 CREATE TABLE IF NOT EXISTS team_members (room TEXT NOT NULL, member TEXT NOT NULL, name TEXT NOT NULL,
     avatar TEXT NOT NULL, color TEXT NOT NULL, agreement TEXT NOT NULL, entry TEXT NOT NULL,
-    bot_only INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (room, member));
+    bot_only INTEGER NOT NULL DEFAULT 0, direct INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (room, member));
 CREATE TABLE IF NOT EXISTS team_pending (room TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
     first INTEGER NOT NULL, member TEXT NOT NULL, at INTEGER NOT NULL, kept INTEGER NOT NULL, body BLOB NOT NULL,
     reason TEXT NOT NULL, PRIMARY KEY (room, id));
@@ -80,6 +84,13 @@ CREATE INDEX IF NOT EXISTS team_names_member ON team_names (room, member, kind);
 CREATE TABLE IF NOT EXISTS team_reads (room TEXT PRIMARY KEY, first INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS team_triggers (number INTEGER PRIMARY KEY AUTOINCREMENT, room TEXT NOT NULL,
     bot TEXT NOT NULL, entry TEXT NOT NULL, started INTEGER NOT NULL DEFAULT 0, UNIQUE (room, bot, entry));
+CREATE TABLE IF NOT EXISTS team_directs (room TEXT NOT NULL, entry TEXT NOT NULL, first INTEGER NOT NULL,
+    writer TEXT NOT NULL, member TEXT NOT NULL, text TEXT NOT NULL, reply_to TEXT, created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL, edited INTEGER NOT NULL, PRIMARY KEY (room, entry));
+CREATE INDEX IF NOT EXISTS team_directs_order ON team_directs (room, member, first);
+CREATE TABLE IF NOT EXISTS team_direct_reads (room TEXT NOT NULL, member TEXT NOT NULL, first INTEGER NOT NULL,
+    PRIMARY KEY (room, member));
+CREATE TABLE IF NOT EXISTS team_marks (mark TEXT PRIMARY KEY);
 -- A store from before team_names gets the names that it shows now. A later accept keeps them current.
 INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
     SELECT room, entry, member, 'member', name FROM team_members;
@@ -87,11 +98,12 @@ INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
     SELECT room, entry, member, 'bot', name FROM team_bots;
 '''
 TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_shares', 'team_page_shares',
-          'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers')
+          'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers',
+          'team_directs', 'team_direct_reads')
 ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at',
                'notifications')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
-MEMBER_FIELDS = ('member', 'name', 'avatar', 'color', 'agreement', 'entry', 'bot_only')
+MEMBER_FIELDS = ('member', 'name', 'avatar', 'color', 'agreement', 'entry', 'bot_only', 'direct')
 PENDING_FIELDS = ('id', 'seq', 'first', 'member', 'at', 'kept', 'body', 'reason')
 PAGE_FIELDS = ('key', 'title', 'format', 'summary', 'size', 'rev', 'expires_at', 'created_at', 'updated_at', 'pinned')
 # What the Library of the phone gets for a team page and a team bot. TeamStore.library reads these rows.
@@ -109,6 +121,15 @@ SHOWN_MESSAGE = '''(m.bot IS NULL OR EXISTS (SELECT 1 FROM team_names b WHERE b.
 # The event of each transaction that changes the chat of a room: a message, an edit, a removal, or the read position.
 # GET /v1/updates then has `team_messages_changed`.
 MESSAGES_EVENT = 'team_messages.updated'
+# What a direct chat of the phone gets for a message. TeamStore.directs reads these rows. `member` is the other
+# member of the chat, and `writer` is the member that wrote the message.
+DIRECT_FIELDS = ('entry', 'first', 'writer', 'member', 'member_name', 'text', 'reply_to', 'created_at', 'updated_at',
+                 'edited')
+# The event of each transaction that changes a direct chat: `{"team": <room>, "member": <other member>}`. GET /v1/updates
+# then has `team_directs_changed`.
+DIRECTS_EVENT = 'team_directs.updated'
+# The mark in `team_marks` after an app of the person asked for direct messages.
+DIRECT_MARK = 'direct'
 # The limits of a `message` entry, in Unicode code points and in entry IDs.
 MAX_TEXT = 16000
 MAX_MENTIONS = 16
@@ -203,7 +224,8 @@ def bot_fields(fields: dict) -> dict | None:
 def member_fields(fields: dict) -> dict | None:
     """The name, avatar, color and agreement key of a `member` payload, or None when a field does not fit. Also the
     mark `bot_only`: true only for the JSON value true, which a Mac without a person writes. A missing field and each
-    other value are false, so a value that does not fit hides no member."""
+    other value are false, so a value that does not fit hides no member. The mark `direct` (this member reads direct
+    messages) follows the same rule."""
     result = profile_fields(fields)
     agreement = fields.get('agreement')
     if not result or not isinstance(agreement, str) or not AGREEMENT.fullmatch(agreement):
@@ -211,7 +233,8 @@ def member_fields(fields: dict) -> dict | None:
     # One key has one text: the unused bits of the last character are zero.
     if base64.urlsafe_b64encode(base64.urlsafe_b64decode(agreement + '=')).decode().rstrip('=') != agreement:
         return None
-    return dict(result, agreement=agreement, bot_only=fields.get('bot_only') is True)
+    return dict(result, agreement=agreement, bot_only=fields.get('bot_only') is True,
+                direct=fields.get('direct') is True)
 
 
 def page_fields(fields: dict) -> dict | None:
@@ -284,6 +307,28 @@ def message_fields(fields: dict) -> dict | None:
     return dict(text=text, reply_to=reply_to, mentions=list(dict.fromkeys(mentions)), bot=bot)
 
 
+def direct_fields(plaintext, to: str) -> dict | None:
+    """What a direct chat shows of the plaintext of a box, or None when it does not fit.
+
+    The plaintext is one JSON object in UTF-8. `to` must name the member that the caller expects: this Mac for a
+    message of another member, or the other member for an own message. `text` has 1 to MAX_TEXT code points of valid
+    Unicode text, and `reply_to` is an entry ID or absent. A reader takes null as an absent field and ignores a field
+    that it does not know.
+    """
+    try:
+        fields = json.loads(bytes(plaintext).decode('utf-8'))
+    except (TypeError, ValueError, RecursionError):
+        return None
+    if not isinstance(fields, dict) or not isinstance(fields.get('to'), str) or fields['to'] != to:
+        return None
+    text, reply_to = fields.get('text'), fields.get('reply_to')
+    if not unicode_text(text) or not 0 < len(text) <= MAX_TEXT:
+        return None
+    if reply_to is not None and not entry_id(reply_to):
+        return None
+    return dict(text=text, reply_to=reply_to)
+
+
 SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'message': message_fields}
 
 
@@ -327,6 +372,10 @@ class TeamStore:
         # The fresh messages of the other members, by room (_note_fresh). TeamSync gives them to the push code of a
         # person's Mac and empties the list. A team-only Mac has no push, and the list goes nowhere.
         self.fresh: dict[str, list[str]] = {}
+        # The direct chats that `accept` changed, as (room, other member), and the fresh direct messages of the other
+        # members by room (_note_direct_fresh). TeamSync tells the phone and empties both.
+        self.directed: set[tuple[str, str]] = set()
+        self.fresh_directs: dict[str, list[str]] = {}
         self.clock = time.time
 
     def migrate(self) -> None:
@@ -338,6 +387,9 @@ class TeamStore:
             self.db.execute('ALTER TABLE team_members ADD COLUMN bot_only INTEGER NOT NULL DEFAULT 0')
         if 'notifications' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_rooms)')}:
             self.db.execute('ALTER TABLE team_rooms ADD COLUMN notifications INTEGER NOT NULL DEFAULT 1')
+        # A `member` row of an older version reads as a member without direct messages until its next write.
+        if 'direct' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_members)')}:
+            self.db.execute('ALTER TABLE team_members ADD COLUMN direct INTEGER NOT NULL DEFAULT 0')
 
     def _rows(self, fields, query, values=()) -> list[dict]:
         return [dict(zip(fields, row)) for row in self.db.execute(query, values).fetchall()]
@@ -453,6 +505,12 @@ class TeamStore:
         if 'message' in kinds and self._show_message(room['room'], entry, fields['rev'],
                                                      shown if fields['kind'] == 'message' else None):
             self.chatted.add(room['room'])
+        # A direct message shows only with `direct`: what TeamSync found in its box before the transaction. A write
+        # without it, for example a box that no longer opens, or a `delete` over it, removes the message.
+        if 'direct' in kinds:
+            for member in self._show_direct(room['room'], entry, fields['rev'],
+                                            opened.get('direct') if fields['kind'] == 'direct' else None):
+                self.directed.add((room['room'], member))
         # A trigger is the first write of a message of another member that this Mac sees. A later write is an edit.
         if self.answers and existing is None and other and fields['kind'] == 'message' and fields['rev'] == 1 and shown:
             self._queue_triggers(room, entry, shown)
@@ -487,6 +545,8 @@ class TeamStore:
         # The last step, so a failure of an earlier step leaves no note of an entry that the savepoint takes back.
         if existing is None and fields['kind'] == 'message' and fields['rev'] == 1 and shown:
             self._note_fresh(room, entry, shown)
+        if existing is None and fields['kind'] == 'direct' and fields['rev'] == 1 and other and opened.get('direct'):
+            self._note_direct_fresh(room, entry)
         return STORED, None
 
     def _follow_profile(self, room: str, shown: dict) -> None:
@@ -540,15 +600,15 @@ class TeamStore:
                 fields = member_fields(json.loads(payload.fetchone()[0]))
             if fields:
                 self.db.execute('''INSERT INTO team_members (room, member, name, avatar, color, agreement, entry,
-                    bot_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, member) DO UPDATE SET
+                    bot_only, direct) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, member) DO UPDATE SET
                     name=excluded.name, avatar=excluded.avatar, color=excluded.color, agreement=excluded.agreement,
-                    entry=excluded.entry, bot_only=excluded.bot_only''',
+                    entry=excluded.entry, bot_only=excluded.bot_only, direct=excluded.direct''',
                                 (room, member, fields['name'], fields['avatar'], fields['color'], fields['agreement'], entry,
-                                 int(fields.get('bot_only') is True)))
+                                 int(fields.get('bot_only') is True), int(fields.get('direct') is True)))
                 # A member has one name: the one of the entry that the list shows.
                 if self.db.execute("DELETE FROM team_names WHERE room=? AND member=? AND kind='member' AND entry!=?",
                                    (room, member, entry)).rowcount:
-                    self._names_changed(room)
+                    self._names_changed(room, member)
                 self._name(room, entry, member, 'member', fields['name'])
                 return
         self.db.execute('DELETE FROM team_members WHERE room=? AND member=?', (room, member))
@@ -577,14 +637,17 @@ class TeamStore:
             ON CONFLICT (room, entry) DO UPDATE SET member=excluded.member, kind=excluded.kind, name=excluded.name
             WHERE team_names.member!=excluded.member OR team_names.kind!=excluded.kind
                 OR team_names.name!=excluded.name''', (room, entry, member, kind, name)).rowcount:
-            self._names_changed(room)
+            self._names_changed(room, member if kind == 'member' else None)
 
-    def _names_changed(self, room: str) -> None:
+    def _names_changed(self, room: str, member: str | None = None) -> None:
         """A new or changed name can change the chat: a message of a bot shows once its `bot` entry comes, and the
         names of the messages, of the quotes and of `last_message` follow team_names. So the chat of a room with
-        messages gets an event."""
+        messages gets an event. A direct chat names its other member, so a new name of `member` changes that chat."""
         if self.db.execute('SELECT 1 FROM team_messages WHERE room=? LIMIT 1', (room,)).fetchone():
             self.chatted.add(room)
+        if member and self.db.execute('SELECT 1 FROM team_directs WHERE room=? AND member=? LIMIT 1',
+                                      (room, member)).fetchone():
+            self.directed.add((room, member))
 
     def _relay_time(self, room: str, existing: dict, at: int) -> None:
         """Take the time of the relay for a write that the store has with another time.
@@ -595,10 +658,19 @@ class TeamStore:
         """
         self.db.execute('UPDATE team_entries SET at=? WHERE room=? AND id=?', (at, room, existing['id']))
         old, new = relay_time(existing['at']), relay_time(at)
-        if existing['kind'] == 'message' and new is not None and self.db.execute(
-                '''UPDATE team_messages SET created_at=CASE WHEN created_at=? THEN ? ELSE created_at END, updated_at=?
-                WHERE room=? AND entry=? AND updated_at=?''', (old, new, new, room, existing['id'], old)).rowcount:
+        if existing['kind'] not in ('message', 'direct') or new is None:
+            return
+        table = 'team_messages' if existing['kind'] == 'message' else 'team_directs'
+        if not self.db.execute(f'''UPDATE {table} SET created_at=CASE WHEN created_at=? THEN ? ELSE created_at END,
+                updated_at=? WHERE room=? AND entry=? AND updated_at=?''',
+                               (old, new, new, room, existing['id'], old)).rowcount:
+            return
+        if existing['kind'] == 'message':
             self.chatted.add(room)
+        else:
+            (member,) = self.db.execute('SELECT member FROM team_directs WHERE room=? AND entry=?',
+                                        (room, existing['id'])).fetchone()
+            self.directed.add((room, member))
 
     def _show_message(self, room: str, entry: dict, rev: int, message: dict | None) -> bool:
         """Set the row of a `message` entry, or remove it. `message` is what read_entry found valid, or None for a
@@ -619,6 +691,28 @@ class TeamStore:
                         (room, entry['id'], entry['first'], entry['member'], message['bot'], message['text'],
                          message['reply_to'], json.dumps(message['mentions']), at, at, int(rev > 1)))
         return True
+
+    def _show_direct(self, room: str, entry: dict, rev: int, direct: dict | None) -> set[str]:
+        """Set the row of a `direct` entry, or remove it. `direct` is what the box gave this Mac: the other member of
+        the chat, the text and the reply. It is None for a box that does not open for this Mac or does not fit, and for
+        a `delete` entry over a direct message. Return the other members whose chat changed.
+
+        The times follow the rule of a message: `created_at` is the `at` of the first write that this Mac saw, and
+        `updated_at` the `at` of this write. A message is edited when its `rev` is over 1.
+        """
+        before = self.db.execute('SELECT member FROM team_directs WHERE room=? AND entry=?', (room, entry['id'])).fetchone()
+        changed = {before[0]} if before else set()
+        at = relay_time(entry['at'])
+        if direct is None or at is None:
+            self.db.execute('DELETE FROM team_directs WHERE room=? AND entry=?', (room, entry['id']))
+            return changed
+        self.db.execute('''INSERT INTO team_directs (room, entry, first, writer, member, text, reply_to, created_at,
+            updated_at, edited) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, entry) DO UPDATE SET
+            first=excluded.first, writer=excluded.writer, member=excluded.member, text=excluded.text,
+            reply_to=excluded.reply_to, updated_at=excluded.updated_at, edited=excluded.edited''',
+                        (room, entry['id'], entry['first'], entry['member'], direct['member'], direct['text'],
+                         direct['reply_to'], at, at, int(rev > 1)))
+        return changed | {direct['member']}
 
     def _show_page(self, room: str, entry: dict, fields: dict, page: dict | None, other: bool) -> None:
         """Set the row of a `page` entry. `page` is what read_entry found valid, or None.
@@ -663,6 +757,21 @@ class TeamStore:
         if position is None or entry['first'] <= position[0] or self.message(room_id, entry['id']) is None:
             return
         self.fresh.setdefault(room_id, []).append(entry['id'])
+
+    def _note_direct_fresh(self, room: dict, entry: dict) -> None:
+        """Note a direct message of another member that can notify the phone of the person (docs/team-log.md,
+        "Notifications of a direct message").
+
+        The caller checked that this is the first write of a direct message of another member that this Mac sees, and
+        that its box opened for this Mac. The message also shows now, is under TRIGGER_SECONDS old, and is after the
+        read position of its chat.
+        """
+        if self.clock() * 1000 - entry['at'] >= TRIGGER_SECONDS * 1000:
+            return
+        row = self.direct(room['room'], entry['id'])
+        if row is None or entry['first'] <= self.direct_read_position(room['room'], row['member']):
+            return
+        self.fresh_directs.setdefault(room['room'], []).append(entry['id'])
 
     # The triggers of the bots of a team-only Mac
 
@@ -902,6 +1011,73 @@ class TeamStore:
         return self.db.execute(f'''SELECT COUNT(*) FROM (SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>?
             AND (m.member!=? OR m.bot IS NOT NULL) AND {SHOWN_MESSAGE} LIMIT {MAX_UNREAD})''',
                                (room, self.read_position(room), member)).fetchone()[0]
+
+    # Direct messages
+
+    def direct_on(self) -> bool:
+        """True after an app of the person asked for direct messages on this Mac (team_marks)."""
+        return self.db.execute('SELECT 1 FROM team_marks WHERE mark=?', (DIRECT_MARK,)).fetchone() is not None
+
+    def set_direct(self) -> bool:
+        """Set the mark of direct messages. True when the mark is new."""
+        return self.db.execute('INSERT OR IGNORE INTO team_marks (mark) VALUES (?)', (DIRECT_MARK,)).rowcount > 0
+
+    def direct(self, room: str, entry: str) -> dict | None:
+        """One direct message that this Mac shows, or None."""
+        rows = self._rows(DIRECT_FIELDS, self._direct_sql('d.entry=?'), (room, entry))
+        return rows[0] if rows else None
+
+    def directs(self, room: str, member: str, before: int | None = None, limit: int = 50) -> list[dict]:
+        """The messages of the direct chat with `member` before the `first` of `before`, newest first, at most
+        `limit`. A page with `before` has `d.first<?` as a plain term, so the index team_directs_order starts there."""
+        if before is None:
+            return self._rows(DIRECT_FIELDS, self._direct_sql('d.member=? ORDER BY d.first DESC LIMIT ?'),
+                              (room, member, limit))
+        return self._rows(DIRECT_FIELDS, self._direct_sql('d.member=? AND d.first<? ORDER BY d.first DESC LIMIT ?'),
+                          (room, member, before, limit))
+
+    def directs_of(self, room: str, member: str, entries) -> dict[str, dict]:
+        """The messages of these entry IDs in the direct chat with `member`, by entry ID, in one query."""
+        rows = self._rows(DIRECT_FIELDS, self._direct_sql('d.member=? AND d.entry IN (SELECT value FROM json_each(?))'),
+                          (room, member, json.dumps(sorted(set(entries)))))
+        return {row['entry']: row for row in rows}
+
+    def direct_chats(self, room: str) -> list[dict]:
+        """The newest message of each direct chat of the room, newest chat first."""
+        return self._rows(DIRECT_FIELDS, self._direct_sql('''d.first=(SELECT MAX(x.first) FROM team_directs x
+            WHERE x.room=d.room AND x.member=d.member) ORDER BY d.first DESC'''), (room,))
+
+    @staticmethod
+    def _direct_sql(where: str) -> str:
+        # The name of the other member is the last one that the store showed, also after it left (team_names).
+        return f'''SELECT d.entry, d.first, d.writer, d.member, n.name, d.text, d.reply_to, d.created_at, d.updated_at,
+            d.edited FROM team_directs d
+            LEFT JOIN team_names n ON n.room=d.room AND n.member=d.member AND n.kind='member'
+            WHERE d.room=? AND {where}'''
+
+    def direct_read_position(self, room: str, member: str) -> int:
+        """The `first` of the newest message that the person read in the direct chat with `member`. It starts at 0,
+        so each message that arrives counts as unread."""
+        row = self.db.execute('SELECT first FROM team_direct_reads WHERE room=? AND member=?', (room, member)).fetchone()
+        return row[0] if row else 0
+
+    def mark_direct_read(self, room: str, member: str, first: int) -> int | None:
+        """Move the read position of a direct chat to `first`, but never back and never past its newest message. The
+        new position, or None when it stays."""
+        newest = self.db.execute('SELECT MAX(first) FROM team_directs WHERE room=? AND member=?',
+                                 (room, member)).fetchone()[0] or 0
+        position = min(first, newest)
+        if position <= self.direct_read_position(room, member):
+            return None
+        self.db.execute('''INSERT INTO team_direct_reads (room, member, first) VALUES (?, ?, ?)
+            ON CONFLICT (room, member) DO UPDATE SET first=excluded.first''', (room, member, position))
+        return position
+
+    def direct_unread(self, room: str, member: str) -> int:
+        """How many messages of the other member are after the read position of the direct chat, up to MAX_UNREAD."""
+        return self.db.execute(f'''SELECT COUNT(*) FROM (SELECT 1 FROM team_directs WHERE room=? AND member=?
+            AND writer=? AND first>? LIMIT {MAX_UNREAD})''',
+                               (room, member, member, self.direct_read_position(room, member))).fetchone()[0]
 
     # The Library of the phone
 

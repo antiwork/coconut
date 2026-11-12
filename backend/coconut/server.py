@@ -222,7 +222,9 @@ class Handler(BaseHTTPRequestHandler):
         key = self.headers.get('Idempotency-Key', '') if device else ''
         data = ({name: values[-1] for name, values in parse_qs(url.query).items()} if method == 'GET'
                 else self._body())
-        self._json(200, service.team_request(method, url.path, data, key, device))
+        # An app that knows direct messages says so on each read of the rooms (docs/team-log.md, "Direct messages").
+        direct = bool(device) and self.headers.get('X-Coconut-Team') == 'direct'
+        self._json(200, service.team_request(method, url.path, data, key, device, direct))
 
     def _team_only(self, service, method, url):
         """The routes of a team-only service (team_only.py): the team routes and the page route, for a tool of this

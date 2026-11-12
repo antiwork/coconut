@@ -27,6 +27,8 @@ for a person, because the app shows them.
   (team_messages.py).
 - `PUT /v1/team/rooms/<room>/notifications` with `{enabled}`: the person turns the notifications of the room on or off
   for the phones of this Mac. Only a person's Mac has phones, so a Mac for a team only answers 409.
+- The routes of the direct messages under `/v1/team/rooms/<room>/directs/<member>` (team_directs.py). A `GET
+  /v1/team/rooms` with `X-Coconut-Team: direct` from a paired device sets the mark of direct messages on this Mac.
 
 No answer has a key, a token or an invite secret. Only the invite link, which the person shares, carries a secret.
 
@@ -52,13 +54,14 @@ from uuid import UUID
 from . import team_keys
 from .push_relay import RELAY_URL
 from .team_helper import TeamFormatError, TeamHelper, TeamHelperError
+from .team_directs import TeamDirects
 from .team_keys import ROOM_ID, TeamKeysError
 from .team_messages import TeamMessages
 from .team_pages import TeamPages
 from .team_relay import TeamRelay, TeamRelayError, relay_origin
 from .team_socket import TeamSocket
 from .team_store import ACTIVE, JOINING, MEMBER_LIMITS, SCHEMA, TeamStore, unicode_text
-from .team_sync import INACTIVE, ROOM_ERRORS, TEAM_EVENT, TeamSync, member_payload, room_error, utc_now
+from .team_sync import INACTIVE, ROOM_ERRORS, TEAM_EVENT, TeamSync, room_error, utc_now
 
 __all__ = ['SCHEMA', 'Team']
 
@@ -177,7 +180,7 @@ def team_errors():
         raise ServiceError(status, room_error(error)) from None
 
 
-class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
+class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
     """The team rooms of this Mac: the routes of the tools, and the thread that copies each log."""
 
     def _init_team(self):
@@ -204,8 +207,10 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         self._close_team_socket()
         self._close_team_sync()
 
-    def team_request(self, method: str, path: str, data: dict, key: str = '', device: str = '') -> dict:
+    def team_request(self, method: str, path: str, data: dict, key: str = '', device: str = '',
+                     direct: bool = False) -> dict:
         """One of the routes at the top of this module. server.py checked the token of the device or of the bridge.
+        `direct` is true when the request has `X-Coconut-Team: direct`: the app of the device knows direct messages.
 
         A write calls the relay and can take seconds. When the answer does not reach the phone, the app sends the same
         request again with the same `Idempotency-Key`. That repeat must not make a second room, or answer "already in
@@ -216,7 +221,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         """
         from .service_base import ServiceError
         if not key or method == 'GET' or path.rstrip('/') == '/v1/team/sync':
-            return self._team_route(method, path, data, device=device)
+            return self._team_route(method, path, data, device=device, direct=direct)
         try:
             UUID(key)
         except (ValueError, TypeError, AttributeError):
@@ -268,9 +273,10 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
             if at < old or number < over:
                 del self._team_replies[slot]
 
-    def _team_route(self, method: str, path: str, data: dict, repeat: str = '', device: str = '') -> dict:
+    def _team_route(self, method: str, path: str, data: dict, repeat: str = '', device: str = '',
+                    direct: bool = False) -> dict:
         """Serve one route. `repeat` names the device and the `Idempotency-Key` of a write, or is empty. `device` is
-        the paired device of the request, or empty for a tool of this Mac."""
+        the paired device of the request, or empty for a tool of this Mac. `direct` is the header of team_request."""
         from .service_base import ServiceError
         parts = path.strip('/').split('/')[2:]
         # The check uses the parts that choose the route, so no form of the path passes around it. A Mac for a team
@@ -278,7 +284,9 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         if not device and self.library_reader and not tool_route(method, parts):
             raise ServiceError(403, PERSON_ONLY)
         if parts == ['rooms'] and method == 'GET':
-            return self.team_rooms()
+            return self.team_rooms(direct=bool(device) and direct and self._team_direct_asked())
+        if len(parts) >= 5 and parts[0] == 'rooms' and parts[2] == 'directs':
+            return self._team_direct_route(method, parts, data, repeat)
         if parts == ['rooms'] and method == 'POST':
             return self.team_create(data)
         if parts == ['join'] and method == 'POST':
@@ -315,25 +323,30 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
 
     # Reads
 
-    def team_rooms(self) -> dict:
+    def team_rooms(self, direct: bool = False) -> dict:
         """The rooms, `helper`, and `mac_bots`: the bots of this Mac that a room can take, so a tool can find a bot by
-        its name (`coconut team add-bot`). An archived or deleted bot is not in that list."""
+        its name (`coconut team add-bot`). An archived or deleted bot is not in that list. With `direct`, each member
+        has `direct` and each room has `directs` (TeamDirects)."""
         with self.lock:
-            rooms = [self._team_view(room) for room in self.team_store.rooms()]
+            rooms = [self._team_view(room, direct) for room in self.team_store.rooms()]
             bots = sorted(({'id': bot['id'], 'name': bot['name']} for bot in self._all('bots')
                            if not bot.get('archived') and not bot.get('_deleted')),
                           key=lambda bot: (bot['name'].casefold(), bot['id']))
         return {'rooms': rooms, 'helper': self.team_helper.available, 'mac_bots': bots}
 
-    def _team_view(self, room: dict) -> dict:
-        """What the Team screen and a tool read about a room, with no key. The caller holds the service lock."""
+    def _team_view(self, room: dict, direct: bool = False) -> dict:
+        """What the Team screen and a tool read about a room, with no key. With `direct`, for an app that knows direct
+        messages, each member has `direct` (this Mac can send it one now) and the room has `directs`. The caller holds
+        the service lock."""
         entries, waiting = self.team_store.counts(room['room'])
         status = self._team_status.get(room['room'], {})
+        sends = direct and self._team_reads_directs
         refused = [{name: value for name, value in refusal.items() if name != 'form'}
                    for refusal in self._team_refusals.get(room['room'], {}).values()]
         members = [dict(member=member['member'], name=member['name'], avatar=member['avatar'], color=member['color'],
                         admin=member['member'] == room['admin'], this_mac=member['member'] == room['member'],
-                        bot_only=bool(member['bot_only']))
+                        bot_only=bool(member['bot_only']),
+                        **({'direct': sends and self._team_can_direct(room, member)} if direct else {}))
                    for member in self.team_store.members(room['room'])]
         is_admin = room['member'] == room['admin']
         view = {'room': room['room'], 'name': room['name'], 'relay': room['relay'], 'state': room['state'],
@@ -347,7 +360,26 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
         # Only a person's Mac has phones to notify. The app shows the switch only when the room has this field.
         if self._team_has_phones:
             view['notifications'] = bool(room['notifications'])
+        if direct:
+            view['directs'] = self._team_direct_summary(room)
         return view
+
+    def _team_direct_asked(self) -> bool:
+        """An app of the person asked for the rooms with direct messages. The first ask sets the lasting mark of this
+        Mac, and the next pass of each room writes the `member` entry of this Mac with `direct` (_team_announce). A
+        Mac for a team only has no person, so it never sets the mark. True when the answer has the direct fields."""
+        if self._team_bot_only:
+            return False
+        with self.lock:
+            if self.team_store.direct_on():
+                return True
+        with self.transaction():
+            new = self.team_store.set_direct()
+        if new:
+            # The new mark writes the `member` entry at once, also within ANNOUNCE_SECONDS of an earlier write.
+            self._team_announced.clear()
+            self.team_wake()
+        return True
 
     @property
     def _team_has_phones(self) -> bool:
@@ -586,7 +618,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages):
             current = json.loads(room['profile'])
             profile = dict(current, **member_profile(data, current))
             # The accepted write of this Mac saves the profile in the same transaction.
-            self._team_write(room, profile['entry'], True, member_payload(profile, self._team_bot_only), tries=2)
+            self._team_write(room, profile['entry'], True, self._team_member_payload(profile), tries=2)
         return self._team_answer(room_id)
 
     def team_notifications(self, room_id: str, data: dict) -> dict:

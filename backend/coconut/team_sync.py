@@ -26,7 +26,8 @@ from . import team_keys
 from .team_helper import TeamFormatError, TeamHelperError, TeamHelperMissing
 from .team_keys import TeamKeysError
 from .team_relay import TeamRelayError
-from .team_store import ACTIVE, DROPPED, GONE, JOINING, MESSAGES_EVENT, PENDING, REFUSED, REMOVED, SKIPPED, read_entry
+from .team_store import (ACTIVE, DIRECTS_EVENT, DROPPED, GONE, JOINING, MESSAGES_EVENT, PENDING, REFUSED, REMOVED,
+                         SKIPPED, direct_fields, read_entry)
 
 POLL_SECONDS = 30
 MAX_WAIT_SECONDS = 900
@@ -80,13 +81,16 @@ def room_error(error: Exception) -> str:
     return DEFECT
 
 
-def member_payload(profile: dict, bot_only: bool = False) -> dict:
+def member_payload(profile: dict, bot_only: bool = False, direct: bool = False) -> dict:
     """The fields of the `member` entry of this Mac, from the profile of its room. `bot_only` marks a Mac without a
-    person (team_only.py), so the other Macs do not count it as a person. A full Mac writes no `bot_only`."""
+    person (team_only.py), so the other Macs do not count it as a person. A full Mac writes no `bot_only`. `direct`
+    marks a person's Mac whose app knows direct messages, so the other members can send one to it."""
     fields = {'kind': 'member', 'name': profile['name'], 'avatar': profile['avatar'], 'color': profile['color'],
               'agreement': profile['agreement']}
     if bot_only:
         fields['bot_only'] = True
+    if direct:
+        fields['direct'] = True
     return fields
 
 
@@ -274,8 +278,10 @@ class TeamSync:
             return False
         opened = self.team_helper.open(room_id, secrets['keys'], entries)
         entries = [dict(entry, body=base64.b64decode(entry['body'])) for entry in entries]
-        # The checks of the text run here, before the transaction and without the lock of the service.
+        # The checks of the text and the boxes of the direct messages run here, before the transaction and without
+        # the lock of the service.
         opened = [self._team_prepare(room_id, entry, result) for entry, result in zip(entries, opened)]
+        opened = self._team_open_directs(room, secrets, entries, opened)
         first_epoch = first_key(secrets)
         results = []
         with self.transaction():
@@ -305,6 +311,7 @@ class TeamSync:
             opened = [self._team_prepare(room_id, entry, result)
                       for entry, result in zip(waiting, self.team_helper.open(room_id, secrets['keys'], [
                           dict(entry, body=base64.b64encode(entry['body']).decode()) for entry in waiting]))]
+            opened = self._team_open_directs(room, secrets, waiting, opened)
             first_epoch = first_key(secrets)
             results = []
             with self.transaction():
@@ -333,6 +340,67 @@ class TeamSync:
             log.exception('coconut.team_log room %s: the store cannot take the entry %s at seq %d.', room_id[:8],
                           entry['id'], entry['seq'])
             return {'error': type(error).__name__}
+
+    @property
+    def _team_reads_directs(self) -> bool:
+        """True on a person's Mac whose app asked for direct messages (TeamStore.direct_on). Only such a Mac opens the
+        box of a `direct` entry. Each other Mac keeps the entry as an entry of an unknown kind. The caller holds the
+        service lock."""
+        return not self._team_bot_only and self.team_store.direct_on()
+
+    def _team_open_directs(self, room: dict, secrets: dict, entries: list[dict], opened: list[dict]) -> list[dict]:
+        """Open the boxes of the `direct` entries of one answer of the relay (docs/team-log.md, "Rules for a Mac that
+        reads a `direct` entry"). The caller holds no lock of the service and no transaction.
+
+        The pair key of an entry of another member takes the agreement key of the newest valid `member` entry of the
+        writer that this Mac has at that point: the one of the store, then each `member` entry before it in the answer.
+        A writer without one gets no try. An own entry tries the key of each other member, because a Mac that lost its
+        store does not know for whom it wrote. Each `direct` entry gets `direct` in its result: the other member of
+        the chat, the text and the reply, when a box opens and its fields fit, else None. TeamStore.accept then shows
+        or removes the message. There is no try later.
+        """
+        room_id, own = room['room'], room['member']
+        with self.lock:
+            if not self._team_reads_directs:
+                return opened
+            keys = {member['member']: (member['entry'], member['agreement'])
+                    for member in self.team_store.members(room_id)}
+            # A write that the store has already, for example an own write that the sync reads back, needs no try.
+            stored = {(entry, seq) for entry, seq in self.db.execute(
+                'SELECT id, seq FROM team_entries WHERE room=? AND id IN (SELECT value FROM json_each(?))',
+                (room_id, json.dumps([entry['id'] for entry in entries])))}
+        opened = list(opened)
+        asks = []
+        for index, (entry, result) in enumerate(zip(entries, opened)):
+            fields = result['read'][1] if result.get('read') else None
+            if fields is None:
+                continue
+            writer = entry['member']
+            if fields['kind'] == 'member' and result.get('shown'):
+                keys[writer] = (entry['id'], result['shown']['agreement'])
+            elif keys.get(writer, (None,))[0] == entry['id']:
+                # The `member` entry of the writer no longer fits, or a `delete` entry replaced it.
+                keys.pop(writer)
+            if fields['kind'] != 'direct':
+                continue
+            opened[index] = dict(result, direct=None)
+            box = fields.get('box')
+            others = [writer] if writer != own else [member for member in keys if member != own]
+            for other in others:
+                if isinstance(box, str) and other in keys and (entry['id'], entry['seq']) not in stored:
+                    asks.append((index, other, {'entry': entry['id'], 'writer': writer, 'other': other,
+                                                'agreement': keys[other][1], 'box': box}))
+        if not asks:
+            return opened
+        answers = self.team_helper.open_direct(room_id, secrets['agreement_key'], own, [ask for _, _, ask in asks])
+        for (index, other, ask), answer in zip(asks, answers):
+            if opened[index]['direct'] is not None or 'plaintext' not in answer:
+                continue
+            # A message of another member is for this Mac. An own message names the member that it is for.
+            shown = direct_fields(answer['plaintext'], own if ask['writer'] != own else other)
+            if shown is not None:
+                opened[index] = dict(opened[index], direct=dict(shown, member=other))
+        return opened
 
     def _team_accept(self, room: dict, entry: dict, opened: dict, first_epoch: int) -> tuple[str, str | None]:
         """TeamStore.accept for one entry, in a savepoint of the transaction of the caller.
@@ -373,13 +441,24 @@ class TeamSync:
             # Only a team-only Mac queues triggers (TeamStore.answers). Its turn thread reads them after the commit.
             self.team_store.triggered.discard(room_id)
             self._team_turns_due()
+        # A direct chat has its own event, with the other member of the chat.
+        for member in sorted(member for room, member in self.team_store.directed if room == room_id):
+            self.team_store.directed.discard((room_id, member))
+            self._event(DIRECTS_EVENT, {'team': room_id, 'member': member})
         fresh = self.team_store.fresh.pop(room_id, None)
         if fresh:
             self._team_notify(room_id, fresh)
+        fresh = self.team_store.fresh_directs.pop(room_id, None)
+        if fresh:
+            self._team_notify_directs(room_id, fresh)
 
     def _team_notify(self, room_id: str, entries: list[str]) -> None:
         """Fresh messages of other members wait in the room. Only a person's Mac has phones, and Service queues a
         notification for each one (PushDelivery.record_team). A team-only Mac does nothing here."""
+
+    def _team_notify_directs(self, room_id: str, entries: list[str]) -> None:
+        """Fresh direct messages of other members wait in the room. Service queues a notification for each one
+        (PushDelivery.record_direct). A team-only Mac reads no direct message."""
 
     def _team_turns_due(self) -> None:
         """A new trigger waits. A full Mac queues none, so it does nothing here. See team_turns.TeamTurns."""
@@ -402,18 +481,27 @@ class TeamSync:
         """True on a team-only Mac: no person is at it, so its `member` entry has `bot_only`."""
         return getattr(self, 'team_only', False) is True
 
+    def _team_member_payload(self, profile: dict) -> dict:
+        """The fields of the `member` entry of this Mac now: `bot_only` on a team-only Mac, and `direct` on a person's
+        Mac whose app asked for direct messages."""
+        with self.lock:
+            direct = self._team_reads_directs
+        return member_payload(profile, self._team_bot_only, direct)
+
     def _team_announce(self, room_id: str, force: bool = False) -> None:
         """Write the `member` entry of this Mac when the store shows no member for it, or a member with another
-        mark `bot_only` than this Mac writes.
+        mark `bot_only` or `direct` than this Mac writes.
 
         A Mac writes this entry after it makes or joins a room. This check also writes it after a stop between the
-        join and the write, after a leave that the relay did not answer, and one time after an update gives a
-        team-only Mac the mark. The row of the store keeps the mark, so a pass after the write writes nothing.
+        join and the write, after a leave that the relay did not answer, one time after an update gives a team-only
+        Mac the mark `bot_only`, and one time after the app of the person asks for direct messages. The row of the
+        store keeps both marks, so a pass after the write writes nothing.
         """
         with self.lock:
             room = self.team_store.room(room_id)
             own = self.team_store.member(room_id, room['member']) if room is not None else None
-            shown = own is not None and bool(own['bot_only']) == self._team_bot_only
+            shown = own is not None and bool(own['bot_only']) == self._team_bot_only and (
+                bool(own['direct']) == self._team_reads_directs)
         if room is None or room['state'] != ACTIVE or shown:
             return
         last = self._team_announced.get(room_id)
@@ -421,13 +509,15 @@ class TeamSync:
             return
         self._team_announced[room_id] = time.monotonic()
         profile = json.loads(room['profile'])
-        self._team_write(room, profile['entry'], True, member_payload(profile, self._team_bot_only))
+        self._team_write(room, profile['entry'], True, self._team_member_payload(profile))
 
-    def _team_write(self, room: dict, entry_id: str, kept: bool, fields: dict, tries: int = 1) -> None:
+    def _team_write(self, room: dict, entry_id: str, kept: bool, fields: dict, tries: int = 1,
+                    direct: dict | None = None) -> None:
         """Seal an entry of this Mac, write it to the relay, and put it into the store.
 
         A write with an entry ID that the store has replaces that entry, with the next `rev`. The caller holds the
-        lock of the room.
+        lock of the room. `direct` is what the box of a `direct` entry holds for this Mac: the other member of the
+        chat, the text and the reply. The store does not open an own box again.
         """
         secrets = team_keys.read(self.root, room['room'])
         key = secrets['keys'].get(str(room['epoch']))
@@ -446,6 +536,8 @@ class TeamSync:
             raise
         entry = dict(position, id=entry_id, member=room['member'], at=int(time.time() * 1000), kept=kept, body=b'')
         opened = read_entry({'epoch': room['epoch'], 'payload': payload})
+        if fields['kind'] == 'direct':
+            opened['direct'] = direct
         with self.transaction():
             current = self.team_store.room(room['room'])
             if current is not None:

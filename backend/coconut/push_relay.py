@@ -162,8 +162,18 @@ def team_alert(store, room, entry):
     return {'title': writer, 'subtitle': team, 'body': body}
 
 
+def direct_alert(store, room, entry):
+    """The alert of a direct message, in the pattern of a chat with one person: the writer in the title and the text in
+    the body, with no subtitle. When the store has no name for the writer, the title is the name of the team."""
+    message = store.direct(room, entry)
+    writer = notification_text(message['member_name'], limit=80, byte_limit=256)
+    title = writer or notification_text(store.room(room)['name'], limit=80, byte_limit=256)
+    return {'title': title, 'body': notification_text(message['text'])}
+
+
 GROUP_NOUNS = (('decision', 'decision', 'decisions'), ('message', 'message', 'messages'), ('team', 'team message', 'team messages'),
-               ('failed', 'failed task', 'failed tasks'), ('completed', 'finished task', 'finished tasks'))
+               ('direct', 'direct message', 'direct messages'), ('failed', 'failed task', 'failed tasks'),
+               ('completed', 'finished task', 'finished tasks'))
 
 
 def group_text(items):
