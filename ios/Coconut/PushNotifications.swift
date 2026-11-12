@@ -421,7 +421,7 @@ struct NotificationTarget: Equatable, Sendable {
               let device = data["device_id"] as? String, UUID(uuidString: device) != nil else { return nil }
         // A team message names its room. A group of one team names it too, and each other group names none.
         let room = data["team"] as? String
-        guard room == nil || Self.isRoom(room!) else { return nil }
+        guard room == nil || isLowercaseHex64(room!) else { return nil }
         if data["kind"] as? String == "group" {
             deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; group = true; team = room
             return
@@ -438,11 +438,6 @@ struct NotificationTarget: Equatable, Sendable {
         let message = data["message_id"] as? String
         guard message == nil || UUID(uuidString: message!) != nil else { return nil }
         deviceId = device; botId = bot; taskId = task; decisionId = decision; messageId = message
-    }
-
-    /// A room ID of a team: 64 lowercase hex characters (team_keys.ROOM_ID on the Mac).
-    private static func isRoom(_ text: String) -> Bool {
-        text.utf8.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 }
 

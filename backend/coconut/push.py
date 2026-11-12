@@ -39,9 +39,6 @@ PUSH_TABLES = ('push_devices', 'push_routes', 'push_preferences', 'push_schedule
 PREVIEWS_FILE = 'push-previews.json'
 PREVIEW_TIMES = ('failing_since', 'failed_at', 'worked_at')
 URGENT_DECISION = "json_extract(data,'$.needs_attention_now') IS 1"
-# The columns of an item. A store from before team notifications gets `team` as the last column.
-ITEM_COLUMNS = ('device_id', 'event_key', 'kind', 'bot_id', 'task_id', 'decision_id', 'message_id', 'turn_id', 'urgent',
-                'created', 'status', 'delivery_id', 'reason', 'team')
 # The text of a team message for a phone without a relay route. That phone gets no text of a message.
 TEAM_BODY = 'Your team has a new message.'
 # A phone reaches the Mac only through the relay tunnel, which needs the phone's static key. A device without one is an
@@ -171,7 +168,8 @@ class PushDelivery:
             urgent = 'urgent' if 'urgent' in columns else "explicit_importance IS 'urgent'" if 'explicit_importance' in columns else '0'
             message = 'message_id' if 'message_id' in columns else 'NULL'
             # The statement names its columns, because push_items has more columns than this outbox had.
-            db.execute(f'''INSERT OR IGNORE INTO push_items ({','.join(ITEM_COLUMNS[:13])})
+            db.execute(f'''INSERT OR IGNORE INTO push_items (device_id,event_key,kind,bot_id,task_id,decision_id,
+                    message_id,turn_id,urgent,created,status,delivery_id,reason)
                 SELECT device_id,event_key,kind,bot_id,task_id,decision_id,{message},turn_id,{urgent},not_before,
                        CASE status WHEN 'queued' THEN 'waiting' ELSE 'sent' END,NULL,reason FROM push_outbox''')
             db.execute('DROP TABLE push_outbox')

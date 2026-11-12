@@ -17,13 +17,16 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from coconut import team_store
-from coconut.push import ITEM_COLUMNS, TEAM_BODY, PushDelivery
+from coconut.push import TEAM_BODY, PushDelivery
 from coconut.push_relay import group_text
 from team_fakes import DEVICE, TeamMacs
 from test_push import RecordingTransport, pair_phone
 from test_push_relay import EncryptedTransport
 from test_team_turns import TeamTurnMacs, reply
 
+# The columns of push_items. A store from before team notifications gets `team` as the last column.
+ITEM_COLUMNS = ['device_id', 'event_key', 'kind', 'bot_id', 'task_id', 'decision_id', 'message_id', 'turn_id', 'urgent',
+                'created', 'status', 'delivery_id', 'reason', 'team']
 ROUTE = {'route_id': 'a' * 64, 'send_token': 'b' * 64, 'public_key': base64.b64encode(b'x' * 32).decode()}
 
 
@@ -400,7 +403,7 @@ class OldStores(unittest.TestCase):
 
     def test_an_old_outbox_becomes_items_with_the_new_column(self):
         db = self.store(self.OUTBOX)
-        self.assertEqual([row[1] for row in db.execute('PRAGMA table_info(push_items)')], list(ITEM_COLUMNS))
+        self.assertEqual([row[1] for row in db.execute('PRAGMA table_info(push_items)')], ITEM_COLUMNS)
         self.assertEqual(db.execute('SELECT event_key,kind,status,team FROM push_items').fetchall(),
                          [('a', 'decision', 'waiting', None)])
 

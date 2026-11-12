@@ -5,6 +5,11 @@ import Foundation
 // code (32 bytes), the expiry (4 bytes, big-endian Unix seconds), the relay length (2 bytes, big-endian), the relay, and the Mac
 // name. Hermes masks base64url JSON as a JSON Web Token, but no Hermes rule matches this token.
 // The rendezvous box of a pairing code holds the setup as JSON: {version:2, relay, route, mac_key, secret, expires, name}.
+/// True for 64 lowercase hex characters: the route of a pairing, and the room ID of a team (team_keys.ROOM_ID).
+func isLowercaseHex64(_ text: String) -> Bool {
+    text.utf8.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+}
+
 struct PairingSetup: Equatable, Sendable {
     let relay: URL
     let route: String
@@ -68,7 +73,7 @@ struct PairingSetup: Equatable, Sendable {
     private static func make(relay: String, route: String, macKey: Data, secret: Data, code: String, expires: Int,
                              name: String) throws -> Self {
         guard let relay = validRelay(relay) else { throw PairingSetupError.invalidRelay }
-        guard route.utf8.count == 64, route.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+        guard isLowercaseHex64(route) else {
             throw PairingSetupError.invalidRoute
         }
         guard macKey.count == 32, secret.count == 32 else { throw PairingSetupError.invalidKey }
