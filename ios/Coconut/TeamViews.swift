@@ -80,7 +80,7 @@ extension TeamRoom {
         case .joining: return "Not joined yet"
         case .removed: return "You are no longer in this team"
         case .gone: return "This team no longer exists"
-        case .active: return memberList.count == 1 ? "1 member" : "\(memberList.count) members"
+        case .active: return people.count == 1 ? "1 member" : "\(people.count) members"
         }
     }
 }
@@ -144,8 +144,8 @@ private struct TeamEmptyView: View {
     }
 }
 
-/// One team: its members, the bots that a teammate can ask, the invite, and Leave. A team that this Mac cannot use has
-/// one sentence and one action instead.
+/// One team: its people, the bots of its Macs for a team only, the invite, and Leave. A team that this Mac cannot use
+/// has one sentence and one action instead.
 struct TeamRoomView: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -197,13 +197,16 @@ struct TeamRoomView: View {
                 Section { InlineError(error) }
             }
             Section("Members") {
-                ForEach(room.memberList) { member in memberRow(member, in: room) }
+                ForEach(room.people) { member in memberRow(member, in: room) }
             }
-            // The section shows only while the team has a bot that a teammate can ask.
-            let bots = TeamMentions.bots(of: room)
-            if !bots.isEmpty {
-                Section("Bots") {
-                    ForEach(bots) { botRow($0) }
+            let botRows = TeamBotSection.rows(of: room)
+            if !botRows.isEmpty {
+                Section {
+                    ForEach(botRows) { botRow($0) }
+                } header: {
+                    Text("Bots")
+                } footer: {
+                    if let line = TeamBotSection.footer(for: botRows) { Text(line) }
                 }
             }
             if room.showsInvite {
@@ -263,19 +266,34 @@ struct TeamRoomView: View {
         }
     }
 
-    private func botRow(_ bot: TeamRoomBot) -> some View {
+    /// A face and a name, and the quiet text at the right end, as the row of a member has. When the name and the
+    /// text do not fit on one line, the text goes under the name, so neither is cut.
+    private func botRow(_ row: TeamBotRow) -> some View {
         HStack(spacing: 12) {
-            BotAvatar(symbol: bot.avatar ?? "", color: bot.color ?? "", size: avatarSize, identity: bot.id,
-                      animated: false)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(bot.name)
-                if let owner = bot.memberName {
-                    Text(owner).font(.subheadline).foregroundStyle(.secondary)
-                }
+            if let bot = row.bot {
+                BotAvatar(symbol: bot.avatar ?? "", color: bot.color ?? "", size: avatarSize, identity: bot.id,
+                          animated: false)
             }
-            Spacer(minLength: 0)
+            if let note = row.note {
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        Text(row.name).lineLimit(1)
+                        Spacer()
+                        Text(note).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.name)
+                        Text(note).foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                Text(row.name).frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(row.spoken)
+        .accessibilityIdentifier(row.id)
     }
 
     @ScaledMetric(relativeTo: .body) private var avatarSize = 32.0

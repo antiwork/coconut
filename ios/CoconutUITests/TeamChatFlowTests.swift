@@ -275,6 +275,80 @@ final class TeamChatFlowTests: XCTestCase {
         shot("05-iphone-team-mention-picker-\(look)")
     }
 
+    /// The Team screen of a team with Macs for a team only, in its own test world: Ada and Grace, Reporter Mac with
+    /// the bots Reporter and Scribe, and Spare Mac without a bot. COCONUT_TEAM_BOTS names that team, and
+    /// COCONUT_TEAM_BOT_ROWS has what VoiceOver reads for each row of the section "Bots", in order, with "|" between
+    /// the rows. COCONUT_TEAM_PEOPLE names a team with people only. COCONUT_TEAM_LOOK "dark" or "large" sets the look.
+    @MainActor
+    func testTheTeamScreenShowsTheMacsForATeamOnlyAsBots() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"], let room = env["COCONUT_TEAM_BOTS"],
+              let expected = env["COCONUT_TEAM_BOT_ROWS"]?.split(separator: "|").map(String.init) else {
+            throw XCTSkip("Run with the test world of the Team screen.")
+        }
+        shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
+        let look = env["COCONUT_TEAM_LOOK"] ?? "light"
+        continueAfterFailure = false
+        app = XCUIApplication()
+        if look == "dark" { app.launchArguments += ["-AppleInterfaceStyle", "Dark", "-UIUserInterfaceStyle", "Dark"] }
+        if look == "large" {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        }
+        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
+
+        let row = app.buttons["team-chat-\(room)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        shot("team-\(look)-chats-list")
+        row.tap()
+        let title = app.buttons["team-chat-title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        XCTAssertTrue(title.label.contains("2 people"), title.label)
+        shot("team-\(look)-chat-title")
+        title.tap()
+
+        // The rows of the section "Bots", found by their identifiers, each read as one sentence.
+        let rows = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'team-bot-' OR identifier BEGINSWITH 'team-mac-'"))
+        XCTAssertTrue(rows.firstMatch.waitForExistence(timeout: 15))
+        XCTAssertTrue(app.staticTexts["Ada"].exists && app.staticTexts["Grace"].exists, "The people are members.")
+        XCTAssertFalse(app.staticTexts["Reporter Mac"].exists, "A Mac with a bot shows as its bots, not as a person.")
+        let ask = app.staticTexts["Type @ in the team chat to ask a bot."]
+        // With the largest text the screen scrolls down to Leave, its last row, and reads each row on the way.
+        var labels: [String] = []
+        var asked = false
+        let leave = app.buttons["team-leave"]
+        for step in 0..<6 {
+            for index in 0..<rows.count where !labels.contains(rows.element(boundBy: index).label) {
+                labels.append(rows.element(boundBy: index).label)
+            }
+            asked = asked || ask.exists
+            shot("team-\(look)-screen" + (step == 0 ? "" : "-\(step)"))
+            if leave.exists && leave.isHittable { break }
+            app.swipeUp(velocity: .slow)
+        }
+        XCTAssertEqual(labels, expected)
+        XCTAssertEqual(asked, expected.contains { $0.hasSuffix(", bot") },
+                       "The line under the section shows only while a bot answers.")
+
+        guard let people = env["COCONUT_TEAM_PEOPLE"] else { return }
+        // The Team screen, then the chat.
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        back()
+        let peopleRow = app.buttons["team-chat-\(people)"]
+        XCTAssertTrue(peopleRow.waitForExistence(timeout: 10))
+        peopleRow.tap()
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        title.tap()
+        XCTAssertTrue(app.buttons["team-leave"].waitForExistence(timeout: 10))
+        XCTAssertEqual(rows.count, 0)
+        XCTAssertFalse(app.staticTexts["Bots"].exists, "A team with people only has no section \"Bots\".")
+        shot("team-\(look)-people-only")
+    }
+
     /// The gap between the title of a chat and its first day pill, with the chat scrolled to its top: in the team chat
     /// (a title of two lines) and in a bot chat (one line). Both pills sit fully below their title, with the same gap.
     @MainActor
