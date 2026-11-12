@@ -30,6 +30,8 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
   Mac, with `member`, the other member of the chat. No query of the Team chat reads this table.
 - `team_direct_reads`: the read position of this Mac in each direct chat: one row for each room and other member.
 - `team_marks`: the lasting marks of this Mac. `direct` means that an app of the person knows direct messages.
+- `team_direct_waits`: the `direct` entries that the sync could not try with the key that they need yet, because the
+  `member` entry of that key came later in the read. The end of the read tries each one again, then removes it.
 
 `TeamStore.accept` holds the "Rules for a Mac that reads an entry" of the contract. The secrets of a room are not
 here: team_keys.py keeps them in a private file. The caller holds the transaction of each write.
@@ -91,6 +93,7 @@ CREATE INDEX IF NOT EXISTS team_directs_order ON team_directs (room, member, fir
 CREATE TABLE IF NOT EXISTS team_direct_reads (room TEXT NOT NULL, member TEXT NOT NULL, first INTEGER NOT NULL,
     PRIMARY KEY (room, member));
 CREATE TABLE IF NOT EXISTS team_marks (mark TEXT PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS team_direct_waits (room TEXT NOT NULL, entry TEXT NOT NULL, PRIMARY KEY (room, entry));
 -- A store from before team_names gets the names that it shows now. A later accept keeps them current.
 INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
     SELECT room, entry, member, 'member', name FROM team_members;
@@ -99,7 +102,7 @@ INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
 '''
 TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_shares', 'team_page_shares',
           'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers',
-          'team_directs', 'team_direct_reads')
+          'team_directs', 'team_direct_reads', 'team_direct_waits')
 ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at',
                'notifications')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
@@ -511,6 +514,10 @@ class TeamStore:
             for member in self._show_direct(room['room'], entry, fields['rev'],
                                             opened.get('direct') if fields['kind'] == 'direct' else None):
                 self.directed.add((room['room'], member))
+            # A new write or a `delete` ends the wait of an earlier write. A new write that must wait waits again.
+            self.db.execute('DELETE FROM team_direct_waits WHERE room=? AND entry=?', (room['room'], entry['id']))
+            if fields['kind'] == 'direct' and opened.get('wait'):
+                self.db.execute('INSERT INTO team_direct_waits (room, entry) VALUES (?, ?)', (room['room'], entry['id']))
         # A trigger is the first write of a message of another member that this Mac sees. A later write is an edit.
         if self.answers and existing is None and other and fields['kind'] == 'message' and fields['rev'] == 1 and shown:
             self._queue_triggers(room, entry, shown)
@@ -1021,6 +1028,22 @@ class TeamStore:
     def set_direct(self) -> bool:
         """Set the mark of direct messages. True when the mark is new."""
         return self.db.execute('INSERT OR IGNORE INTO team_marks (mark) VALUES (?)', (DIRECT_MARK,)).rowcount > 0
+
+    def direct_waits(self, room: str) -> list[dict]:
+        """The waiting `direct` entries of the room, as rows of `team_entries`, in the order of the log."""
+        return self._rows(ENTRY_FIELDS, f'''SELECT {", ".join("e." + name for name in ENTRY_FIELDS)} FROM team_entries e
+            JOIN team_direct_waits w ON w.room=e.room AND w.entry=e.id WHERE e.room=? ORDER BY e.seq''', (room,))
+
+    def end_wait(self, room: str, entry: dict, direct: dict | None) -> None:
+        """End the wait of a `direct` entry after its last try. `direct` is what its box gave this Mac, or None. A
+        message that shows now is history: it changes its chat and notifies nothing. A newer write of the entry since
+        the try has its own wait, so this one changes nothing then."""
+        current = self.entry(room, entry['id'])
+        if current is None or current['seq'] != entry['seq']:
+            return
+        if self.db.execute('DELETE FROM team_direct_waits WHERE room=? AND entry=?', (room, entry['id'])).rowcount:
+            for member in self._show_direct(room, entry, entry['rev'], direct):
+                self.directed.add((room, member))
 
     def direct(self, room: str, entry: str) -> dict | None:
         """One direct message that this Mac shows, or None."""

@@ -246,6 +246,9 @@ class TeamSync:
             with lock:
                 more = self._team_read(room)
         with lock:
+            # The read is at the end of the room, so each `member` entry that the relay has is in the store now.
+            if not more:
+                self._team_retry_directs(room)
             self._team_announce(room)
             self._team_publish(room)
 
@@ -354,10 +357,16 @@ class TeamSync:
 
         The pair key of an entry of another member takes the agreement key of the newest valid `member` entry of the
         writer that this Mac has at that point: the one of the store, then each `member` entry before it in the answer.
-        A writer without one gets no try. An own entry tries the key of each other member, because a Mac that lost its
-        store does not know for whom it wrote. Each `direct` entry gets `direct` in its result: the other member of
-        the chat, the text and the reply, when a box opens and its fields fit, else None. TeamStore.accept then shows
-        or removes the message. There is no try later.
+        An own entry tries the key of each other member, because the Mac does not know for whom it wrote when the
+        store lacks the write: after a stop between the write to the relay and the write to the store, or when the
+        store is behind the relay. Each `direct` entry gets `direct` in its result: the other member of the chat, the
+        text and the reply, when a box opens and its fields fit, else None. TeamStore.accept then shows or removes the
+        message.
+
+        The relay gives a replaced `member` entry at the `seq` of its newest write, so a read from an earlier position
+        can meet a direct entry before the `member` entry that it needs. Such an entry gets `wait`: an entry of a
+        writer without a `member` entry at that point, and an own entry that no key of the known members opened. The
+        store keeps the wait, and _team_retry_directs tries the entry once more at the end of the read.
         """
         room_id, own = room['room'], room['member']
         with self.lock:
@@ -370,7 +379,7 @@ class TeamSync:
                 'SELECT id, seq FROM team_entries WHERE room=? AND id IN (SELECT value FROM json_each(?))',
                 (room_id, json.dumps([entry['id'] for entry in entries])))}
         opened = list(opened)
-        asks = []
+        boxes = {}
         for index, (entry, result) in enumerate(zip(entries, opened)):
             fields = result['read'][1] if result.get('read') else None
             if fields is None:
@@ -384,23 +393,66 @@ class TeamSync:
             if fields['kind'] != 'direct':
                 continue
             opened[index] = dict(result, direct=None)
-            box = fields.get('box')
+            if (entry['id'], entry['seq']) in stored:
+                continue
             others = [writer] if writer != own else [member for member in keys if member != own]
-            for other in others:
-                if isinstance(box, str) and other in keys and (entry['id'], entry['seq']) not in stored:
-                    asks.append((index, other, {'entry': entry['id'], 'writer': writer, 'other': other,
-                                                'agreement': keys[other][1], 'box': box}))
+            boxes[index] = (entry['id'], writer, fields.get('box'), {other: keys[other][1] for other in others
+                                                                       if other in keys})
+            # The key that the entry needs can come later in the read.
+            if writer != own and writer not in keys:
+                opened[index]['wait'] = True
+        for index, direct in self._team_open_boxes(room_id, own, secrets, boxes).items():
+            if direct is not None:
+                opened[index]['direct'] = direct
+            elif entries[index]['member'] == own:
+                opened[index]['wait'] = True
+        return opened
+
+    def _team_open_boxes(self, room_id: str, own: str, secrets: dict, boxes: dict) -> dict:
+        """Open boxes with the helper. `boxes` maps a key of the caller to the entry ID, the writer, the box, and the
+        public agreement key of each member to try. The result maps each key to what the box gave this Mac (the other
+        member of the chat, the text and the reply), or None. The caller holds no lock and no transaction."""
+        asks = [(key, other, {'entry': entry, 'writer': writer, 'other': other, 'agreement': agreement, 'box': box})
+                for key, (entry, writer, box, others) in boxes.items() if isinstance(box, str)
+                for other, agreement in others.items()]
+        results = dict.fromkeys(boxes)
         if not asks:
-            return opened
+            return results
         answers = self.team_helper.open_direct(room_id, secrets['agreement_key'], own, [ask for _, _, ask in asks])
-        for (index, other, ask), answer in zip(asks, answers):
-            if opened[index]['direct'] is not None or 'plaintext' not in answer:
+        for (key, other, ask), answer in zip(asks, answers):
+            if results[key] is not None or 'plaintext' not in answer:
                 continue
             # A message of another member is for this Mac. An own message names the member that it is for.
             shown = direct_fields(answer['plaintext'], own if ask['writer'] != own else other)
             if shown is not None:
-                opened[index] = dict(opened[index], direct=dict(shown, member=other))
-        return opened
+                results[key] = dict(shown, member=other)
+        return results
+
+    def _team_retry_directs(self, room_id: str) -> None:
+        """Try each waiting `direct` entry of the room one more time, at the end of a read, with the members that the
+        store has now: an entry of another member with the key of that member, an own entry with the key of each other
+        member. Then the wait goes, also for an entry that does not open and for a writer that still has no `member`
+        entry. A message that shows now is history, so it adds the event of its chat and no notification. The caller
+        holds the lock of the room."""
+        with self.lock:
+            room = self.team_store.room(room_id)
+            if room is None or room['state'] != ACTIVE or not self._team_reads_directs:
+                return
+            waiting = self.team_store.direct_waits(room_id)
+            if not waiting:
+                return
+            keys = {member['member']: member['agreement'] for member in self.team_store.members(room_id)}
+        own = room['member']
+        boxes = {}
+        for entry in waiting:
+            others = [entry['member']] if entry['member'] != own else [member for member in keys if member != own]
+            boxes[entry['id']] = (entry['id'], entry['member'], json.loads(entry['payload']).get('box'),
+                                  {other: keys[other] for other in others if other in keys})
+        results = self._team_open_boxes(room_id, own, team_keys.read(self.root, room_id), boxes)
+        with self.transaction():
+            for entry in waiting:
+                self.team_store.end_wait(room_id, entry, results[entry['id']])
+            self._team_tell(room_id)
 
     def _team_accept(self, room: dict, entry: dict, opened: dict, first_epoch: int) -> tuple[str, str | None]:
         """TeamStore.accept for one entry, in a savepoint of the transaction of the caller.

@@ -186,6 +186,8 @@ class ReadingADirectEntry(DirectMacs, unittest.TestCase):
             room = self.ask(service)
             self.assertEqual((room['unread'], room['last_message']), (0, None), service.root.name)
             self.assertEqual(self.count(service, 'team_messages'), 0)
+            # In the normal order no entry waits, also on Lin's Mac: it tried the entry with Ada's key.
+            self.assertEqual(self.count(service, 'team_direct_waits'), 0)
             self.assertEqual(self.phone(service)('GET', f'/v1/team/rooms/{self.room}/messages', {})['messages'], [])
         # The answer has the fields of a message of the app.
         self.assertEqual(set(sent), {'id', 'first', 'this_mac', 'text', 'reply_to', 'reply', 'created_at', 'edited_at'})
@@ -289,6 +291,99 @@ class ReadingADirectEntry(DirectMacs, unittest.TestCase):
                                       {'text': 'No', 'reply_to': other['id']})[0], 409)
         self.assertEqual(self.refusal(self.phone(self.second), 'POST', self.path(self.ada),
                                       {'text': 'No', 'reply_to': 'x'})[0], 400)
+
+
+class AMemberEntryLaterInTheRead(DirectMacs, unittest.TestCase):
+    """The relay gives a replaced `member` entry at the `seq` of its newest write. So a Mac that reads a room from an
+    earlier position meets a direct entry before the `member` entry that its key needs. The entry waits, and the end
+    of the read tries it one more time."""
+
+    def setUp(self):
+        super().setUp()
+        self.turn_on(*self.macs)
+
+    def rename(self, service, name):
+        """A new name writes the `member` entry of the Mac again, at a new `seq` behind the earlier entries."""
+        self.phone(service)('PATCH', f'/v1/team/rooms/{self.room}', {'member_name': name})
+
+    def rewind(self, service):
+        """The store of the Mac is behind the relay, for example after it was put back from an older copy."""
+        with service.transaction():
+            for table in ('team_entries', 'team_members', 'team_directs'):
+                service.db.execute(f'DELETE FROM {table} WHERE room=?', (self.room,))
+            service.team_store.update_room(self.room, seq=0)
+
+    def read(self, service) -> bool:
+        """One answer of the relay, without the end of the read."""
+        with service._team_room_lock(self.room):
+            return service._team_read(self.room)
+
+    def test_a_direct_entry_before_the_member_entry_of_its_key_shows_after_the_read(self):
+        phone = pair_phone(self.first)
+        register(self.first, phone, level='every')
+        self.send(self.first, self.grace, 'To Grace')
+        self.send(self.second, self.ada, 'To Ada')
+        self.rename(self.second, 'Grace H.')
+        for page in (256, 1):
+            with self.subTest(page=page):
+                self.relay.page = page
+                self.rewind(self.first)
+                cursor = self.first._cursor()
+                # During the read, both entries wait for the `member` entry of Grace.
+                while self.read(self.first):
+                    pass
+                self.assertEqual(self.count(self.first, 'team_direct_waits'), 2)
+                self.assertEqual(self.chat(self.first, self.grace), [])
+                self.first.team_sync_pass()
+                self.assertEqual(self.chat(self.first, self.grace), [('To Ada', False), ('To Grace', True)])
+                self.assertEqual(self.count(self.first, 'team_direct_waits'), 0)
+                self.assertEqual(self.first.updates(cursor, 0, collection_deltas=True)['team_directs_changed'],
+                                 [{'team': self.room, 'member': self.grace}])
+                # The message of Grace is history now, so it notifies nothing.
+                self.assertEqual(self.first.db.execute("SELECT COUNT(*) FROM push_items WHERE kind='direct'").fetchone()[0],
+                                 0)
+
+    def test_an_entry_that_is_not_for_this_mac_does_not_wait_after_its_try(self):
+        self.send(self.first, self.grace, 'To Grace')
+        self.rename(self.first, 'Ada L.')
+        self.rewind(self.third)
+        while self.read(self.third):
+            pass
+        self.assertEqual(self.count(self.third, 'team_direct_waits'), 1)
+        calls = self.third.team_helper.calls.count('open_direct')
+        self.third.team_sync_pass()
+        self.assertEqual(self.third.team_helper.calls.count('open_direct'), calls + 1)
+        self.assertEqual((self.count(self.third, 'team_direct_waits'), self.count(self.third, 'team_directs')), (0, 0))
+        # A later pass tries it no more.
+        self.third.team_sync_pass()
+        self.assertEqual(self.third.team_helper.calls.count('open_direct'), calls + 1)
+
+    def test_a_writer_that_never_gets_a_member_entry_ends_the_wait(self):
+        with self.third.transaction():
+            self.third.db.execute('DELETE FROM team_members WHERE room=? AND member=?', (self.room, self.ada))
+        self.send(self.first, self.grace, 'To Grace')
+        self.read(self.third)
+        self.assertEqual(self.count(self.third, 'team_direct_waits'), 1)
+        self.third.team_sync_pass()
+        self.assertEqual((self.count(self.third, 'team_direct_waits'), self.count(self.third, 'team_directs')), (0, 0))
+
+    def test_a_delete_over_a_waiting_entry_ends_the_wait(self):
+        with self.second.transaction():
+            self.second.db.execute('DELETE FROM team_members WHERE room=? AND member=?', (self.room, self.ada))
+        sent = self.send(self.first, self.grace, 'To Grace')
+        self.read(self.second)
+        self.assertEqual(self.count(self.second, 'team_direct_waits'), 1)
+        self.phone(self.first)('DELETE', self.path(self.grace, f'messages/{sent["id"]}'), {})
+        self.read(self.second)
+        self.assertEqual(self.count(self.second, 'team_direct_waits'), 0)
+
+    def test_a_leave_removes_the_waits(self):
+        with self.second.transaction():
+            self.second.db.execute('DELETE FROM team_members WHERE room=? AND member=?', (self.room, self.ada))
+        self.send(self.first, self.grace, 'To Grace')
+        self.read(self.second)
+        self.leave(self.second, {'room': self.room})
+        self.assertEqual(self.count(self.second, 'team_direct_waits'), 0)
 
 
 class EventsAndReadPosition(DirectMacs, unittest.TestCase):
