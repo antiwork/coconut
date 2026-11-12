@@ -193,9 +193,10 @@ def turn_records(task):
     of other bots that the service delivered to it, and the messages that it sent. Each record has a stable ID.
 
     The plugin of the gateway adds to the turn's own text only the records that the session of the chat does not hold
-    yet (hooks.add_records). Hermes saves that text, so a later turn of the same session gets only new records. The
-    first turn of a session, for example after /new, a reset or a compression, gets every record. A record that
-    changes, for example a sent message whose task finished, is a new record."""
+    yet (hooks.add_records). Hermes saves that text, so a later turn of the same session gets only new records. A
+    session holds a record only while a user message of the session still has its text. The first turn of a session,
+    for example after /new or a reset, gets every record. After a compression, the next turn gets each record again
+    that the session lost. A record that changes, for example a sent message whose task finished, is a new record."""
     records = []
     for comment in (task.get('_native_outcome') or {}).get('comments') or []:
         if not isinstance(comment, dict) or not isinstance(comment.get('body'), str):
