@@ -38,7 +38,7 @@ final class AppStore {
     private(set) var transcriptArtifacts: [Artifact] = []
     var approvals: ApprovalSettings?
     var parallelWork: ParallelWorkSettings?
-    var apiFallback: APIFallbackSettings?
+    var fallback: FallbackSettings?
     var workCapacity: ParallelWorkSettings?
     var routines: [Routine] = []
     var learning: [LearningGroup] = []
@@ -627,7 +627,7 @@ final class AppStore {
         teamChats = [:]; teamChatRequests = [:]; teamChatChanges = [:]; teamReadPosted = [:]; teamReadPosting = [:]
         teamChatsOnScreen = []; teamOlderRequests = [:]; teamMessageChanges = [:]
         chatFilter = .all
-        approvals = nil; parallelWork = nil; apiFallback = nil; workCapacity = nil; mcpServers = []
+        approvals = nil; parallelWork = nil; fallback = nil; workCapacity = nil; mcpServers = []
         reactionOverrides = [:]; decisionReplyDrafts = [:]; answeringDecisionIds = []
         cursor = 0
         lastSync = nil
@@ -1373,13 +1373,14 @@ final class AppStore {
             payload: WorkerLimitRequest(limit: value, bot: false), as: ParallelWorkSettings.self)
     }
 
-    func setAPIFallback(_ enabled: Bool) async {
+    /// Replace the whole fallback chain of Hermes with `models`, in order.
+    func setFallback(_ models: [FallbackModel]) async {
         if isDemo {
-            apiFallback?.enabled = enabled
+            fallback = FallbackSettings(models: models)
             return
         }
-        let _: APIFallbackSettings? = await write("settings/api-fallback", method: "PUT",
-            payload: APIFallbackRequest(enabled: enabled), as: APIFallbackSettings.self)
+        let _: FallbackSettings? = await write("settings/fallback", method: "PUT",
+            payload: FallbackRequest(models: models), as: FallbackSettings.self)
     }
 
     func setWorkerLimit(_ value: Int?, botId: String? = nil) async {
@@ -2131,7 +2132,7 @@ final class AppStore {
             let receiptMCP = mcpServers
             let receiptCapacityLimit = workCapacity?.limit
             let receiptParallelLimit = parallelWork?.limit
-            let receiptFallback = apiFallback
+            let receiptFallback = fallback
             let receiptMessages = messages
             let receiptDecisions = decisions
             let receiptBots = bots
@@ -2173,7 +2174,7 @@ final class AppStore {
                     bots[index].effectiveModel = settings.modelCatalog?.defaults.selection
                 }
             } else if let settings = result as? ApprovalSettings, approvals?.defaults == receiptApproval { approvals = settings }
-            else if let settings = result as? APIFallbackSettings, apiFallback == receiptFallback { apiFallback = settings }
+            else if let settings = result as? FallbackSettings, fallback == receiptFallback { fallback = settings }
             else if let settings = result as? MCPResponse, mcpServers == receiptMCP { mcpServers = settings.servers }
             else if let settings = result as? ParallelWorkSettings {
                 if path == "settings/work-capacity", workCapacity?.limit == receiptCapacityLimit {
@@ -2378,7 +2379,7 @@ final class AppStore {
             snapshot.modelCatalog = modelCatalog
             snapshot.approvals = approvals
             snapshot.parallelWork = parallelWork
-            snapshot.apiFallback = apiFallback
+            snapshot.fallback = fallback
             snapshot.mcpServers = mcpServers
             snapshot.routines = routines
             snapshot.bots = preservingNativeSettings(in: snapshot.bots)
@@ -2397,7 +2398,7 @@ final class AppStore {
         let previewLimit = ParallelWorkSettings(limit: nil, effectiveLimit: 4, automaticLimit: 4)
         assign(\.workCapacity, snapshot.workCapacity ?? (isDemo ? previewLimit : nil))
         assign(\.parallelWork, snapshot.parallelWork ?? (isDemo ? previewLimit : nil))
-        assign(\.apiFallback, snapshot.apiFallback ?? (isDemo ? APIFallbackSettings(enabled: false, available: true, model: "gpt-6-astra", canEnable: true) : nil))
+        assign(\.fallback, snapshot.fallback ?? (isDemo ? FallbackSettings(models: []) : nil))
         assign(\.mcpServers, snapshot.mcpServers ?? [])
         assign(\.routines, snapshot.routines ?? [])
         if foreground { scheduleDelivery() }
@@ -2614,7 +2615,7 @@ final class AppStore {
                 self.assign(\.modelConfigured, native.modelConfigured)
                 self.assign(\.approvals, native.approvals)
                 self.assign(\.parallelWork, native.parallelWork)
-                self.assign(\.apiFallback, native.apiFallback)
+                self.assign(\.fallback, native.fallback)
                 self.assign(\.mcpServers, native.mcpServers ?? [])
                 self.assign(\.routines, native.routines ?? [])
                 if let configured = native.pushConfigured { self.assign(\.pushConfigured, configured) }
