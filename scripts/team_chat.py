@@ -18,17 +18,23 @@ A Mac with a person refuses both: its bots answer only that person.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
 from shlex import quote as quoted
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 
 import host
 
+# A second command for the same Hermes home waits this long, then changes nothing.
+LOCK_SECONDS = 10
 FULL_MAC = ('This Mac has a person, so its bots answer only that person. A bot answers in the team chat only on a Mac '
             'that runs Coconut for a team only.')
 # Requests go to loopback only, never through a proxy from the environment.
@@ -171,6 +177,31 @@ def disconnect(data: Path, argument: str) -> list[str]:
                     'does not restart it.']
 
 
+@contextlib.contextmanager
+def home_lock(data: Path, home: str, name: str):
+    """Hold the lock of one Hermes home from the first read of the flags of its bot to the last write: the flags and
+    the edit of the home. A command for another home does not wait. The lock is a file of the data folder with
+    flock, so it holds across processes, and it goes with the process that holds it, also when that process dies."""
+    folder = data / 'gateway'
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = folder / f'chat-{hashlib.sha256(os.path.realpath(home).encode()).hexdigest()[:16]}.lock'
+    with open(path, 'a') as handle:
+        deadline = time.monotonic() + LOCK_SECONDS
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise Stop(f'Another command for the bot {name} runs now, so this one changed nothing. Run it '
+                               'again when the other one ends.') from None
+                time.sleep(0.2)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def main(arguments=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('action', choices=['connect', 'disconnect'])
@@ -183,8 +214,11 @@ def main(arguments=None) -> int:
             raise Stop(FULL_MAC)
         if args.action == 'disconnect' and args.confirm:
             raise Stop('coconut team disconnect-chat takes no --confirm.')
-        lines = connect(args.data_dir, args.bot, args.confirm) if args.action == 'connect' else disconnect(
-            args.data_dir, args.bot)
+        bot = find_bot(args.data_dir, args.bot)
+        # The command reads the bot again under the lock, so it acts on the flags that the other command left.
+        with home_lock(args.data_dir, bot['home'], bot['name']):
+            lines = connect(args.data_dir, args.bot, args.confirm) if args.action == 'connect' else disconnect(
+                args.data_dir, args.bot)
     except Stop as stop:
         print(stop, file=sys.stderr)
         return 1

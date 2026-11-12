@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -156,6 +157,71 @@ class HalfStateTests(TeamOnlyMacs, unittest.TestCase):
         self.assertEqual(self.flags(), (False, True))
         self.assertEqual(self.refusal(self.call, 'DELETE', f'/v1/team/bots/{self.bot["id"]}')[0], 409)
         with self.edit():
+            self.assertEqual(self.command('connect', 'Reporter', '--confirm'), 0)
+        self.assertEqual(self.flags(), (True, True))
+
+    def test_two_commands_for_one_bot_run_one_after_the_other_and_agree_with_the_home(self):
+        """The home of the stand-in edit is a set of the changes in it, so the flags and the home can be compared."""
+        home, entered, release = set(), threading.Event(), threading.Event()
+
+        def edit(action, home_path, bridge):
+            if action == 'connect':
+                entered.set()
+                release.wait(5)
+                home.add('team chat')
+            elif action == 'disconnect':
+                entered.set()
+                release.wait(5)
+                home.discard('team chat')
+            return [], []
+        for first, second in (('connect', 'disconnect'), ('disconnect', 'connect')):
+            with self.subTest(first=first):
+                entered.clear()
+                release.clear()
+                if first == 'disconnect':
+                    with mock.patch.object(team_chat, 'edit', side_effect=lambda *a: ([], [])):
+                        self.command('connect', 'Reporter', '--confirm')
+                    home.add('team chat')
+                results = {}
+                with mock.patch.object(team_chat, 'edit', side_effect=edit), \
+                        mock.patch.object(team_chat, 'may_have_coconut', return_value=True):
+                    one = threading.Thread(target=lambda: results.setdefault(first, self.command(
+                        *([first, 'Reporter', '--confirm'] if first == 'connect' else [first, 'Reporter']))))
+                    one.start()
+                    entered.wait(5)
+                    two = threading.Thread(target=lambda: results.setdefault(second, self.command(
+                        *([second, 'Reporter', '--confirm'] if second == 'connect' else [second, 'Reporter']))))
+                    two.start()
+                    time.sleep(.5)
+                    release.set()
+                    one.join(10)
+                    two.join(10)
+                self.assertEqual(results, {first: 0, second: 0})
+                chat, plugin = self.flags()
+                # The flags agree with the home: the second command ran after the first one ended.
+                self.assertEqual((chat, plugin), (True, True) if second == 'connect' else (False, False))
+                self.assertEqual('team chat' in home, second == 'connect')
+
+    def test_a_second_command_waits_then_changes_nothing_and_a_dead_command_frees_the_lock(self):
+        import fcntl
+        import hashlib
+        path = self.only.root / 'gateway' / (
+            'chat-' + hashlib.sha256(os.path.realpath(self.bot['home']).encode()).hexdigest()[:16] + '.lock')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Another process holds the lock, and dies.
+        holder = subprocess.Popen([sys.executable, '-c', 'import fcntl, sys, time; handle = open(sys.argv[1], "a"); '
+                                   'fcntl.flock(handle, fcntl.LOCK_EX); print("held", flush=True); time.sleep(60)',
+                                   str(path)], stdout=subprocess.PIPE, text=True)
+        self.addCleanup(lambda: holder.poll() is None and holder.kill())
+        self.assertEqual(holder.stdout.readline().strip(), 'held')
+        with mock.patch.object(team_chat, 'LOCK_SECONDS', 0.5), self.edit():
+            err = []
+            with mock.patch.object(sys, 'stdout', Writer([])), mock.patch.object(sys, 'stderr', Writer(err)):
+                self.assertEqual(team_chat.main(['connect', 'Reporter', '--confirm', '--data-dir', str(self.only.root)]), 1)
+            self.assertIn('Another command for the bot Reporter runs now', ''.join(err))
+            self.assertEqual((self.flags(), self.edits), ((False, False), []))
+            holder.kill()
+            holder.wait(5)
             self.assertEqual(self.command('connect', 'Reporter', '--confirm'), 0)
         self.assertEqual(self.flags(), (True, True))
 
