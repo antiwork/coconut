@@ -240,7 +240,7 @@ The link passes through the chat service that carries it, for example Telegram. 
 
 After its last use, a ticket admits no new member. The relay keeps the ticket and its welcome until the `ttl` ends. A Mac that lost the answer of its join can then ask again with the same `member` and `hash`. After the `ttl`, the relay deletes both, and the link is useless. The admin can remove a ticket earlier.
 
-The admin's Mac keeps a record of each invite that it makes: the hash of the ticket and its end (`team_invites`). It writes the record before it sends the ticket, because the relay can take a ticket without an answer. A member removal uses the record to remove the open tickets. The Mac forgets a record past its end. An invite that a version without the record made ends by itself after its time: one day for each invite of the app.
+The admin's Mac keeps a record of each invite that it makes: the hash of the ticket and its end (`team_invites`). It writes the record before it sends the ticket, because the relay can take a ticket without an answer. A member removal removes the ticket of each record on the relay, whatever its saved end is, because the relay starts its count later than the Mac and its clock can differ. The relay answers 204 also for a ticket that it no longer has. The Mac forgets a record after the relay answered for it in a removal, or when its saved end is more than 7 days in the past: the longest life of a ticket. An invite that a version without the record made ends by itself after its time: one day for each invite of the app.
 
 ## Member removal and key change
 
@@ -250,7 +250,7 @@ The admin removes a member: a person who left the company, a Mac that was lost, 
 
 On the admin's Mac, in this order:
 
-1. The Mac removes each open ticket of its record of the invites (see [Invite and join](#invite-and-join)) with `DELETE .../tickets/<h>`, so that a link that is still open cannot bring the member back.
+1. The Mac removes the ticket of each record of its invites (see [Invite and join](#invite-and-join)) with `DELETE .../tickets/<h>`, so that a link that is still open cannot bring the member back. A failure stops the removal here, and the record stays.
 2. The Mac sends `DELETE .../members/<m>`. The relay removes the token, closes the socket and deletes the kept entries of the member. A member that the relay no longer has is no error: the relay answers 204.
 3. The Mac writes one kept `remove` entry: `{"kind": "remove", "member": "<member ID>", "name": "<last name of the member>"}`.
 
@@ -261,7 +261,8 @@ The removed Mac gets 401 at its next request, and its room becomes `removed`, as
 Rules for a Mac that reads a `remove` entry:
 
 1. Rule 4 of a reader accepts the entry only from the admin.
-2. An entry whose `member` is not a member ID changes nothing. `name` is for the history only, so a `name` that does not fit hides no removal.
+2. An entry whose `member` is not a member ID changes nothing. `name` is for the history only, so a `name` that does not fit hides no removal and changes no name.
+   - When `team_names` has no name for the member, the Mac keeps the `name` of the entry there, by the rules of a name of a `member` entry. A Mac that reads the room after the removal gets no `member` entry of the member, because the relay deleted it, but it gets its messages, and they then have a name. A name that the store already has stays: the last name that this Mac showed wins.
 3. The member leaves the member list, as after a `delete` over its `member` entry, also when the store still has that `member` entry. The relay deleted the kept entries of the member, and no `delete` entry comes for them, so the `remove` entry is the only sign. The Mac keeps the member in `team_removed` while the `remove` entry is in the store.
 4. A later `member` entry of the same member ID does not bring the member back. It cannot come from the relay after step 2, but the reader does not trust that.
 5. The bots and the pages of the member leave the Team screen and the Library, because both show a bot and a page only while its member is in the list. On a Mac for a team only, the waiting triggers of the messages of the member go, and a running turn of such a message stops (see [A bot answers](#a-bot-answers)).

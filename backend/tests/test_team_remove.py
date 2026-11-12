@@ -16,6 +16,7 @@ from uuid import uuid4
 from coconut.team import PERSON_ONLY, removal_entry
 from coconut.team_directs import LEFT
 from coconut.team_relay import TeamRelayError
+from coconut.team_store import MAX_TICKET_SECONDS
 from team_fakes import DEVICE, decode
 from test_team_directs import DirectMacs
 from test_team_only import TeamOnlyMacs
@@ -221,22 +222,53 @@ class InviteRecordTests(RemovalMacs, unittest.TestCase):
         self.leave(self.second, {'room': self.room})
         self.assertEqual(self.second.team_store.invites(self.room), [])
 
-    def test_a_removal_removes_each_open_invite_and_forgets_the_old_ones(self):
+    def test_a_removal_removes_each_recorded_ticket_also_past_its_saved_end(self):
         link = self.invite({'room': self.room}, uses=3)['link']
+        # The relay starts its count later than this Mac, so a ticket past its saved end can still work there.
+        late = self.invite({'room': self.room}, ttl=60)
+        late_hash = self.first.team_helper.ticket(self.first.team_helper.invite(late['link'])['secret'])['hash']
         with self.first.transaction():
-            self.first.team_store.add_invite(self.room, 'e' * 64, int(time.time()) - 1)
-            # A ticket that the relay no longer has is no error.
+            self.first.db.execute('UPDATE team_invites SET expires=? WHERE hash=?', (int(time.time()) - 1, late_hash))
+            # A ticket that the relay no longer has is no error: the relay answers 204.
             self.first.team_store.add_invite(self.room, 'f' * 64, int(time.time()) + 600)
+            # A record more than the longest life of a ticket in the past goes without a call.
+            self.first.team_store.add_invite(self.room, 'e' * 64, int(time.time()) - MAX_TICKET_SECONDS - 1)
         self.relay.requests.clear()
         self.remove(self.grace)
         self.assertEqual(self.tickets(), {})
         self.assertEqual(self.first.team_store.invites(self.room), [])
-        # Three open tickets: the two of the joins and the new one. The old record calls no relay.
-        self.assertEqual(len([request for request in self.relay.requests if request[0] == 'remove_ticket']), 4)
-        # A link of before the removal no longer admits a Mac.
+        # The two tickets of the joins, the open one, the one past its saved end, and the one that the relay lost.
+        self.assertEqual(len([request for request in self.relay.requests if request[0] == 'remove_ticket']), 5)
         fourth = self.mac('fourth')
-        self.assertEqual(self.refusal(lambda: self.join(fourth, link, 'Grace')),
-                         (409, 'The invite link is used, past its end or removed. Ask for a new link.'))
+        for invite_link in (link, late['link']):
+            self.assertEqual(self.refusal(lambda: self.join(fourth, invite_link, 'Grace')),
+                             (409, 'The invite link is used, past its end or removed. Ask for a new link.'))
+
+    def test_a_record_stays_after_a_call_that_failed(self):
+        self.invite({'room': self.room})
+        records = self.first.team_store.invites(self.room)
+
+        def failing(*arguments, **options):
+            raise TeamRelayError(503, 'The relay answered 503.')
+        with mock.patch.object(self.relay, 'remove_ticket', failing):
+            self.assertEqual(self.refusal(lambda: self.remove(self.grace))[0], 503)
+        self.assertEqual(self.first.team_store.invites(self.room), records)
+        # No member goes before each ticket is closed.
+        self.assertIn(self.grace, self.relay.rooms[self.room]['members'])
+        self.remove(self.grace)
+        self.assertEqual(self.first.team_store.invites(self.room), [])
+
+    def test_a_record_is_pruned_only_after_the_longest_life_of_a_ticket(self):
+        now = int(time.time())
+        with self.first.transaction():
+            for number, expires in enumerate((now - 1, now - MAX_TICKET_SECONDS + 60, now - MAX_TICKET_SECONDS - 1)):
+                self.first.team_store.add_invite(self.room, f'{number:x}' * 64, expires)
+            self.first.team_store.drop_old_invites(now)
+        self.assertEqual([expires for _, expires in self.first.team_store.invites(self.room)
+                          if expires < now], [now - MAX_TICKET_SECONDS + 60, now - 1])
+        # A new invite prunes with the same rule.
+        self.invite({'room': self.room})
+        self.assertIn(now - 1, [expires for _, expires in self.first.team_store.invites(self.room)])
 
 
 class TeamOnlyRemovalTests(TeamOnlyMacs, unittest.TestCase):
