@@ -9,7 +9,8 @@ It needs macOS, the Xcode Command Line Tools, and `npm ci` in relay/.
     python3 scripts/test_team_log.py
 
 scripts/test_tunnel_loopback.py loads this test too, so the Mac app job of CI runs it after its `npm ci`.
-TeamLogVectorTests checks the test vectors of docs/team-log.md with the real helper.
+TeamLogVectorTests checks the test vectors of docs/team-log.md with the real helper. TeamDirectTests sends a direct
+message between two of three Macs in one team.
 """
 from __future__ import annotations
 
@@ -1041,6 +1042,126 @@ class TeamPushTests(unittest.TestCase):
         ada.team_sync_pass()
         flush(ada)
         self.assertEqual(len(relay.sent), 1)
+
+
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The direct message test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamDirectTests(unittest.TestCase):
+    """Ada writes a direct message to Grace through the real relay and the real helper. Lin is in the same team, and
+    her Mac stores the entry and shows nothing. The three services run in this process, so each phone gets its
+    notifications through the fake transport of the push tests, and no notification leaves this Mac."""
+
+    @classmethod
+    def setUpClass(cls):
+        TeamPushTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        TeamPushTests.tearDownClass.__func__(cls)
+
+    def test_a_direct_message_reaches_only_the_member_that_it_is_for(self):
+        import logging
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service, ServiceError
+        from test_push import pair_phone
+        from test_push_relay import EncryptedTransport
+        from test_team_push import ROUTE, flush, register
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        records = []
+        handler = logging.Handler(logging.DEBUG)
+        handler.emit = records.append
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        self.addCleanup(root_logger.setLevel, root_logger.level)
+        root_logger.setLevel(logging.DEBUG)
+        self.addCleanup(root_logger.removeHandler, handler)
+        macs, phones = [], []
+        for name in ('ada', 'grace', 'lin'):
+            root = Path(self.temp.name) / name
+            service = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(service.close)
+            phone = pair_phone(service)
+            service.push.relay = EncryptedTransport()
+            register(service, phone, route=ROUTE, level='grouped')
+            macs.append(service)
+            phones.append(phone)
+        ada, grace, lin = macs
+
+        def call(service, method, path, data=None, direct=False):
+            return service.team_request(method, path, data or {}, '', 'test-device', direct)
+
+        def sync():
+            for _ in range(2):
+                for service in macs:
+                    service.team_sync_pass()
+
+        def refusal(*arguments):
+            with self.assertRaises(ServiceError) as raised:
+                call(*arguments)
+            return raised.exception.status, str(raised.exception)
+
+        room_id = call(ada, 'POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                       'relay': self.url})['room']['room']
+        for service, name in ((grace, 'Grace'), (lin, 'Lin')):
+            link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+            call(service, 'POST', '/v1/team/join', {'link': link, 'member_name': name})
+        members = [service.team_store.room(room_id)['member'] for service in macs]
+        ada_id, grace_id, lin_id = members
+
+        def path(member, rest='messages'):
+            return f'/v1/team/rooms/{room_id}/directs/{member}/{rest}'
+
+        # Ada's app asks for direct messages. Grace's Mac has no mark yet, so it gets nothing.
+        call(ada, 'GET', '/v1/team/rooms', direct=True)
+        sync()
+        self.assertEqual(refusal(ada, 'POST', path(grace_id), {'text': 'Too early'})[0], 409)
+        for service in (grace, lin):
+            call(service, 'GET', '/v1/team/rooms', direct=True)
+        sync()
+        (view,) = call(ada, 'GET', '/v1/team/rooms', direct=True)['rooms']
+        self.assertEqual({member['member']: member['direct'] for member in view['members']},
+                         {ada_id: False, grace_id: True, lin_id: True})
+
+        sent = call(ada, 'POST', path(grace_id), {'text': 'Hello Grace'})['message']
+        sync()
+        (received,) = call(grace, 'GET', path(ada_id))['messages']
+        self.assertEqual((received['id'], received['text'], received['this_mac']), (sent['id'], 'Hello Grace', False))
+        (chat,) = call(grace, 'GET', '/v1/team/rooms', direct=True)['rooms'][0]['directs']
+        self.assertEqual((chat['member'], chat['member_name'], chat['unread']), (ada_id, 'Ada', 1))
+        # Grace's phone gets one notification with the text, and the relay of the phone sees no text.
+        for service in macs:
+            flush(service)
+        (payload,) = grace.push.relay.sealed
+        self.assertEqual(payload['aps']['alert'], {'title': 'Ada', 'body': 'Hello Grace'})
+        self.assertEqual(payload['coconut'], {'version': 1, 'device_id': phones[1], 'kind': 'direct',
+                                              'direct': {'team': room_id, 'member': ada_id}})
+        # Lin's Mac has the entry and shows nothing: no direct chat, no row of the team chat, no notification.
+        self.assertEqual(lin.team_store.entry(room_id, sent['id'])['kind'], 'direct')
+        (lin_view,) = call(lin, 'GET', '/v1/team/rooms', direct=True)['rooms']
+        self.assertEqual((lin_view['directs'], lin_view['unread'], lin_view['last_message']), ([], 0, None))
+        self.assertEqual(call(lin, 'GET', path(ada_id))['messages'], [])
+        self.assertEqual(lin.db.execute('SELECT COUNT(*) FROM team_directs').fetchone()[0], 0)
+        self.assertEqual(lin.db.execute('SELECT COUNT(*) FROM team_messages').fetchone()[0], 0)
+        self.assertEqual((lin.push.relay.sealed, ada.push.relay.sealed), ([], []))
+
+        # An edit and a removal reach Grace.
+        call(ada, 'PATCH', path(grace_id, f'messages/{sent["id"]}'), {'text': 'Hello, Grace'})
+        sync()
+        (edited,) = call(grace, 'GET', path(ada_id))['messages']
+        self.assertEqual((edited['text'], edited['first']), ('Hello, Grace', sent['first']))
+        self.assertIsNotNone(edited['edited_at'])
+        call(ada, 'DELETE', path(grace_id, f'messages/{sent["id"]}'))
+        sync()
+        self.assertEqual(call(grace, 'GET', path(ada_id))['messages'], [])
+        for service in macs:
+            flush(service)
+        self.assertEqual((len(grace.push.relay.sealed), lin.push.relay.sealed), (1, []))
+        # No log line has the text of a message or a name.
+        output = '\n'.join(logging.Formatter().format(record) for record in records)
+        for text in ('Hello', 'Grace', 'Example Team'):
+            self.assertNotIn(text, output)
 
 
 def run_of(start: int, count: int) -> bytes:
