@@ -86,6 +86,23 @@ final class MessageBannerTests: XCTestCase {
                        [TeamChatKey(room: "r1", member: grace)])
     }
 
+    func testAMessageThatNamesThisPersonMakesABannerAlsoWithTheSwitchOff() {
+        var named = last(2)
+        named.mentionsMe = true
+        let plan = MessageBanners.plan(before: rooms(room(notifications: false, unread: 0, last: last(1))),
+                                       after: rooms(room(notifications: false, unread: 1, last: named)))
+        XCTAssertEqual(plan.post.map(\.chat), [TeamChatKey(room: "r1")])
+        // A message that names nobody, or another person, follows the switch.
+        var other = last(2)
+        other.mentionsMe = false
+        XCTAssertEqual(MessageBanners.plan(before: rooms(room(notifications: false, unread: 0, last: last(1))),
+                                           after: rooms(room(notifications: false, unread: 1, last: other))).post, [])
+        // A team that is not active makes no banner, also for a mention.
+        XCTAssertEqual(MessageBanners.plan(before: rooms(room(state: "removed", notifications: false, unread: 0, last: last(1))),
+                                           after: rooms(room(state: "removed", notifications: false, unread: 1,
+                                                             last: named))).post, [])
+    }
+
     func testATeamThatIsNotActiveMakesNoBanner() {
         for state in ["joining", "removed", "gone"] {
             let before = rooms(room(state: state, unread: 0, last: last(1), directs: [direct(unread: 0, last: last(1))]))

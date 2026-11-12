@@ -30,8 +30,9 @@ enum MessageBanners {
     ///
     /// - A chat gets a banner when its unread count grew, its newest message is newer (a higher `first`), and that
     ///   message is not a message of this Mac's person. A chat that is new in the list starts at 0.
-    /// - A Team chat also needs the switch "Notifications" of its team (TeamRoom.notifiesPhone). A direct chat needs
-    ///   an active team only.
+    /// - A Team chat also needs the switch "Notifications" of its team (TeamRoom.notifiesPhone), or a newest message
+    ///   that names this person in an active team: a mention reaches the person also in a quiet team, as the push of
+    ///   the iPhone does. A direct chat needs an active team only.
     /// - The first list after a start or a new pairing (`before` is nil) is history and makes no banner.
     /// - A chat has one banner, for its newest message, also after several new messages.
     /// - The banner of a chat with no unread message, and of a chat that left the list, goes away.
@@ -106,8 +107,9 @@ enum MessageBanners {
     }
 
     private static func chats(of room: TeamRoom) -> [Chat] {
+        let named = room.status == .active && room.lastMessage?.mentionsMe == true
         let team = Chat(key: TeamChatKey(room: room.room), room: room, unread: room.unread ?? 0,
-                        last: room.lastMessage, notifies: room.notifiesPhone)
+                        last: room.lastMessage, notifies: room.notifiesPhone || named)
         return [team] + room.directList.map {
             Chat(key: TeamChatKey(room: room.room, member: $0.member), room: room, unread: $0.unread ?? 0,
                  last: $0.lastMessage, notifies: room.status == .active)

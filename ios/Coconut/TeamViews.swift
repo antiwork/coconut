@@ -235,7 +235,10 @@ struct TeamRoomView: View {
                         // One request at a time, so an earlier choice cannot reach the Mac after a later one.
                         .disabled(notificationChoice != nil)
                         .accessibilityIdentifier("team-notifications")
-                } footer: { Text("Get notified when someone writes in this team.") }
+                } footer: {
+                    Text(TeamNotificationFooter.text(enabled: notificationChoice ?? enabled, room: room))
+                        .accessibilityIdentifier("team-notifications-footer")
+                }
             }
             if room.showsInvite {
                 Section {

@@ -17,6 +17,12 @@ protocol MentionableBot: Identifiable where ID == String {
     var faceColor: String { get }
     /// False for a bot that the list does not offer, for example an archived bot.
     var isMentionable: Bool { get }
+    /// The member of a row for a person in the team chat. The row then shows the face of the person. Nil for a bot.
+    var mentionedPerson: TeamMember? { get }
+}
+
+extension MentionableBot {
+    var mentionedPerson: TeamMember? { nil }
 }
 
 extension Bot: MentionableBot {
@@ -135,7 +141,8 @@ enum BotMentions {
         index == text.startIndex || isBoundary(text[text.index(before: index)])
     }
 
-    private static func isBoundary(_ character: Character) -> Bool {
+    /// A character that ends a name: a space or a punctuation mark.
+    static func isBoundary(_ character: Character) -> Bool {
         character.isWhitespace || "([{:;,.!?)]}\"'".contains(character)
     }
 }
@@ -146,7 +153,8 @@ struct BotMentionPicker<B: MentionableBot>: View {
     let select: (B) -> Void
 
     private func accessibleName(for bot: B) -> String {
-        let matching = bots.filter { $0.name.lowercased() == bot.name.lowercased() }
+        guard bot.mentionedPerson == nil else { return bot.name }
+        let matching = bots.filter { $0.mentionedPerson == nil && $0.name.lowercased() == bot.name.lowercased() }
         guard matching.count > 1, let index = matching.firstIndex(where: { $0.id == bot.id }) else { return bot.name }
         let fruit = FruitArtwork.all[FruitArtwork.index(symbol: bot.faceSymbol, identity: bot.id)].name
         return "\(bot.name), \(fruit), bot \(index + 1) of \(matching.count)"
@@ -159,7 +167,11 @@ struct BotMentionPicker<B: MentionableBot>: View {
                     ForEach(bots) { bot in
                         Button { select(bot) } label: {
                             HStack(spacing: 12) {
-                                BotAvatar(symbol: bot.faceSymbol, color: bot.faceColor, size: 30, identity: bot.id)
+                                if let person = bot.mentionedPerson {
+                                    PersonFace(member: person, memberId: person.member, name: person.name, size: 30)
+                                } else {
+                                    BotAvatar(symbol: bot.faceSymbol, color: bot.faceColor, size: 30, identity: bot.id)
+                                }
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(bot.name).font(.body).lineLimit(1)
                                 }
@@ -169,7 +181,7 @@ struct BotMentionPicker<B: MentionableBot>: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityIdentifier("mention-bot-\(bot.id)")
+                        .accessibilityIdentifier(bot.mentionedPerson == nil ? "mention-bot-\(bot.id)" : "mention-person-\(bot.id)")
                         .accessibilityLabel(accessibleName(for: bot))
                         if bot.id != bots.last?.id { Divider().padding(.leading, 56) }
                     }

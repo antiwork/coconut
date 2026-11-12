@@ -564,7 +564,7 @@ final class TeamChatTests: XCTestCase {
         let twice = TeamMentions.ids(in: "@Bot1 and again @Bot1", selected: [], room: room)
         XCTAssertEqual(twice, ["t-r1-1"], "The same bot named twice counts once.")
         XCTAssertFalse(TeamMentions.fits(ids(16) + ["t-r1-1"]), "The Mac counts each item, also a second copy of an ID.")
-        XCTAssertEqual(TeamMentions.overLimit, "Name at most 16 bots in one message.")
+        XCTAssertEqual(TeamMentions.overLimit, "Name at most 16 people and bots in one message.")
     }
 
     @MainActor
@@ -575,7 +575,7 @@ final class TeamChatTests: XCTestCase {
         let mentions = (1...17).map { "t-r1-\($0)" }
         XCTAssertFalse(store.sendTeamMessage("r1", text: "Hello", replyingTo: nil, mentions: mentions))
         XCTAssertEqual(store.teamChats["r1"]?.pending ?? [], [], "Nothing is saved, so nothing waits for a retry.")
-        XCTAssertEqual(store.error, "Name at most 16 bots in one message.")
+        XCTAssertEqual(store.error, "Name at most 16 people and bots in one message.")
         store.error = nil
         XCTAssertTrue(store.sendTeamMessage("r1", text: "Hello", replyingTo: nil, mentions: Array(mentions.prefix(16))))
         XCTAssertNil(store.error)
@@ -602,5 +602,106 @@ final class TeamChatTests: XCTestCase {
         let room = try APIJSON.decoder().decode(TeamRoom.self, from: Data(json.utf8))
         XCTAssertEqual(room.botList.map(\.isOpen), [true, false, false], "A missing mark is false.")
         XCTAssertEqual(TeamMentions.bots(of: room).map(\.name), ["Planner"])
+    }
+
+    // MARK: Names of people with @
+
+    /// Example Team of a service that knows a mention of a person: Ada (this person), the people Lin and Grace, the
+    /// Mac for a team only Team Mac, and the open bots Reporter and Planner.
+    private func peopleRoom(mentioned: Bool? = false, unread: Int = 0, last: TeamLastMessage? = nil) -> TeamRoom {
+        TeamRoom(room: "r1", name: "Example Team", state: "active",
+                 members: [TeamMember(member: "m-ada", name: "Ada", thisMac: true),
+                           TeamMember(member: "m-lin", name: "Lin", avatar: "fruit.kiwi", color: "A68456"),
+                           TeamMember(member: "m-mac", name: "Team Mac", botOnly: true),
+                           TeamMember(member: "m-grace", name: "Grace")],
+                 bots: mentionRoom.botList, unread: unread, lastMessage: last, mentioned: mentioned)
+    }
+
+    func testTheListHasTheBotsThenThePeopleEachInTheOrderOfTheNames() {
+        let rows = TeamMentions.targets(of: peopleRoom())
+        XCTAssertEqual(rows.map(\.name), ["Planner", "Reporter", "Grace", "Lin"],
+                       "No Mac for a team only, not this person, no bot that answers no teammate.")
+        XCTAssertEqual(rows.map(\.id), ["t-r1-b1", "t-r1-b2", "m-grace", "m-lin"], "A person gives its member ID.")
+        XCTAssertEqual(rows.map { $0.mentionedPerson?.member }, [nil, nil, "m-grace", "m-lin"], "A person row has a face.")
+        XCTAssertEqual(rows[3].faceSymbol, "fruit.kiwi")
+        XCTAssertEqual(TeamMentions.bots(of: peopleRoom()).map(\.name), ["Planner", "Reporter"],
+                       "The rule of a bot that a teammate can ask stays.")
+    }
+
+    func testAnOlderServiceListsTheBotsOnly() {
+        XCTAssertFalse(peopleRoom(mentioned: nil).knowsPersonMentions)
+        XCTAssertTrue(peopleRoom(mentioned: false).knowsPersonMentions)
+        XCTAssertEqual(TeamMentions.targets(of: peopleRoom(mentioned: nil)).map(\.name), ["Planner", "Reporter"])
+        XCTAssertEqual(TeamMentions.ids(in: "@Grace hello", selected: [], room: peopleRoom(mentioned: nil)), [])
+    }
+
+    func testTheLettersFilterAPersonAsABot() {
+        let rows = TeamMentions.targets(of: peopleRoom())
+        XCTAssertEqual(BotMentions.candidates(in: rows, text: "@g", selection: nil, selected: []).map(\.name), ["Grace"])
+        XCTAssertEqual(BotMentions.candidates(in: rows, text: "@", selection: nil, selected: []).count, 4)
+        XCTAssertEqual(BotMentions.candidates(in: rows, text: "@Ada", selection: nil, selected: []).count, 0,
+                       "This person is not in the list.")
+    }
+
+    func testASendCarriesTheMemberIDOfANamedPerson() {
+        let room = peopleRoom()
+        let text = "@Grace and @Planner, the week"
+        let picked = [SelectedBotMention(id: "m-grace", name: "Grace", location: 0, snapshot: text),
+                      SelectedBotMention(id: "t-r1-b1", name: "Planner", location: 11, snapshot: text)]
+        XCTAssertEqual(TeamMentions.ids(in: text, selected: picked, room: room), ["m-grace", "t-r1-b1"])
+        XCTAssertEqual(TeamMentions.ids(in: "@Lin, see this. @Lin", selected: [], room: room), ["m-lin"],
+                       "A typed name counts, one time.")
+        XCTAssertEqual(TeamMentions.ids(in: "@Ada and @Team Mac", selected: [], room: room), [],
+                       "Neither this person nor a Mac for a team only is a mention.")
+    }
+
+    func testABubbleShowsTheNameOfThisPersonInBold() {
+        let room = peopleRoom()
+        func message(_ text: String, mentions: [String]?, own: Bool = false) -> TeamMessage {
+            TeamMessage(id: "e1", first: 1, member: own ? "m-ada" : "m-grace", memberName: own ? "Ada" : "Grace",
+                        thisMac: own, text: text, mentions: mentions, createdAt: "2026-11-12T10:00:00Z")
+        }
+        let named = message("@Ada, the report is yours. Thanks @ada!", mentions: ["m-ada"])
+        XCTAssertTrue(TeamMentionEmphasis.namesMe(named, room: room))
+        XCTAssertEqual(TeamMentionEmphasis.text(named.text, message: named, room: room),
+                       "**@Ada**, the report is yours. Thanks **@ada**!")
+        // Another name, a name inside a word, a message that does not name this person, an own message and code stay.
+        let lin = message("@Lin and mail@Ada.com", mentions: ["m-lin", "m-ada"])
+        XCTAssertEqual(TeamMentionEmphasis.text(lin.text, message: lin, room: room), "@Lin and mail@Ada.com")
+        let other = message("@Ada hello", mentions: ["m-lin"])
+        XCTAssertFalse(TeamMentionEmphasis.namesMe(other, room: room))
+        XCTAssertEqual(TeamMentionEmphasis.text(other.text, message: other, room: room), "@Ada hello")
+        let own = message("@Ada note to self", mentions: ["m-ada"], own: true)
+        XCTAssertEqual(TeamMentionEmphasis.text(own.text, message: own, room: room), "@Ada note to self")
+        let code = message("@Ada see `x`", mentions: ["m-ada"])
+        XCTAssertEqual(TeamMentionEmphasis.text(code.text, message: code, room: room), "@Ada see `x`")
+        XCTAssertEqual(TeamMentionEmphasis.spoken, "Names you")
+    }
+
+    func testTheRowOfATeamShowsTheMarkWhileAMessageNamesThisPerson() throws {
+        let json = #"{"room": "r1", "name": "Example Team", "state": "active", "unread": 2, "mentioned": true, "#
+            + #""last_message": {"first": 9, "member": "m-grace", "member_name": "Grace", "text": "Hi", "mentions_me": true}}"#
+        let room = try APIJSON.decoder().decode(TeamRoom.self, from: Data(json.utf8))
+        XCTAssertTrue(room.showsMentionMark)
+        XCTAssertEqual(room.lastMessage?.mentionsMe, true)
+        XCTAssertEqual(TeamRowSpeech.label(room, preview: "Grace: Hi"),
+                       "Example Team, Grace: Hi, 2 unread messages, You are named")
+        XCTAssertFalse(peopleRoom(mentioned: false, unread: 2).showsMentionMark)
+        XCTAssertEqual(TeamRowSpeech.label(peopleRoom(mentioned: false, unread: 2), preview: "Grace: Hi"),
+                       "Example Team, Grace: Hi, 2 unread messages")
+        let older = #"{"room": "r1", "name": "Example Team", "state": "active", "unread": 2}"#
+        let old = try APIJSON.decoder().decode(TeamRoom.self, from: Data(older.utf8))
+        XCTAssertFalse(old.showsMentionMark, "An older service sends no mark.")
+        XCTAssertNil(old.mentioned)
+    }
+
+    func testTheFooterOfTheSwitchSaysWhatOffMeans() {
+        XCTAssertEqual(TeamNotificationFooter.text(enabled: true, room: peopleRoom()),
+                       "Get notified when someone writes in this team.")
+        XCTAssertEqual(TeamNotificationFooter.text(enabled: false, room: peopleRoom()),
+                       "You get a notification only when someone names you with @.")
+        XCTAssertEqual(TeamNotificationFooter.text(enabled: false, room: peopleRoom(mentioned: nil)),
+                       "Get notified when someone writes in this team.",
+                       "An older service sends nothing for a mention in a quiet team.")
     }
 }
