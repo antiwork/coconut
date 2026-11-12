@@ -1,7 +1,8 @@
 """Call the Swift helper of the team log (scripts/team-helper.swift).
 
 The backend uses the Python standard library only, which has no ChaChaPoly, no X25519 and no Ed25519. The helper seals
-and opens entries, the boxes of direct messages and welcomes, signs, and reads and makes invite links, with the format code of ios/Tunnel/TeamLog.swift.
+and opens entries, the boxes of direct messages, the boxes of a room key and welcomes, signs, and reads and makes invite
+links, with the format code of ios/Tunnel/TeamLog.swift.
 docs/team-log.md is the contract.
 
 Each call starts the helper once, sends one JSON object to its standard input and reads one JSON object from its
@@ -138,6 +139,26 @@ class TeamHelper:
                     raise TeamHelperError('The team helper did not finish its work.') from None
                 results.append(result)
         return results
+
+    def seal_key(self, room: str, entry: str, epoch: int, key: str, agreement_key: str, member: str,
+                 members: list[dict]) -> list[dict]:
+        """The boxes of the room key `key` of the epoch `epoch` in the `key` entry `entry`, sealed by `member`
+        (this Mac, the admin). Each item of `members` has `member` and `agreement`, its public agreement key. Each
+        result has `box` (unpadded base64url), or `error`."""
+        if not members:
+            return []
+        boxes = self.call('seal_key', room=room, entry=entry, epoch=epoch, key=key, agreement_key=agreement_key,
+                          member=member, members=members).get('boxes')
+        if not isinstance(boxes, list) or len(boxes) != len(members) or not all(isinstance(box, dict) for box in boxes):
+            raise TeamHelperError('The team helper did not finish its work.')
+        return boxes
+
+    def open_key(self, room: str, entry: str, epoch: int, agreement_key: str, member: str, admin: str, agreement: str,
+                 box: str) -> str:
+        """The room key of the epoch `epoch` from the box of this Mac (`member`) in a `key` entry of the admin.
+        `agreement` is the public agreement key of the admin."""
+        return self.call('open_key', room=room, entry=entry, epoch=epoch, agreement_key=agreement_key, member=member,
+                         admin=admin, agreement=agreement, box=box)['key']
 
     def ticket(self, secret: str) -> dict:
         """The relay ticket of an invite secret, and its hash: ticket, hash."""
