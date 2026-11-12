@@ -25,6 +25,26 @@ struct MessageBannerPlan: Equatable, Sendable {
     var asksPermission = false
 }
 
+/// The banners of the app that are in Notification Center, as far as the app knows. The app asks macOS to remove a
+/// banner only when this set has it, so an equal list costs no call to macOS.
+struct PostedBanners: Equatable, Sendable {
+    var identifiers: Set<String> = []
+
+    /// The set at a start of the app: the banners of a chat that macOS still has from an earlier run. It ignores each
+    /// other identifier.
+    init(delivered: [String] = []) {
+        identifiers = Set(delivered.filter(MessageBanners.isIdentifier))
+    }
+
+    /// The removals of `plan` that the set has. The set then loses the removals and gets the posts of the plan.
+    mutating func removals(for plan: MessageBannerPlan) -> [String] {
+        let removals = plan.remove.filter(identifiers.contains)
+        identifiers.subtract(removals)
+        identifiers.formUnion(plan.post.map(\.identifier))
+        return removals
+    }
+}
+
 enum MessageBanners {
     /// The banners for the change from the list `before` to the list `after`.
     ///
@@ -68,7 +88,12 @@ enum MessageBanners {
     }
 
     /// The identifier of the banner of a chat. A newer banner of the chat takes the place of the older one.
-    static func identifier(_ chat: TeamChatKey) -> String { "team-chat:" + thread(chat) }
+    static func identifier(_ chat: TeamChatKey) -> String { identifierPrefix + thread(chat) }
+
+    /// True for the identifier of the banner of a chat.
+    static func isIdentifier(_ identifier: String) -> Bool { identifier.hasPrefix(identifierPrefix) }
+
+    private static let identifierPrefix = "team-chat:"
 
     /// The thread of a chat, so macOS keeps the banners of one chat together. The push of the iPhone has the same one.
     static func thread(_ chat: TeamChatKey) -> String {
