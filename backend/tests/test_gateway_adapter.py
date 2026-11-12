@@ -222,6 +222,8 @@ class SessionDB:
         return {"id": session_id} if session_id in self.sessions else None
     def get_resume_conversations(self, session_id):
         return self.messages.get(session_id, []), []
+    def get_messages_as_conversation(self, session_id):
+        return self.messages.get(session_id, [])
     def resolve_resume_session_id(self, session_id):
         while session_id in self.lineage:
             session_id = self.lineage[session_id]
@@ -1045,6 +1047,11 @@ class GatewayAdapterTests(unittest.TestCase):
             event = MessageEvent(text='Own text.', source=SessionSource(Platform('coconut'), 'bot:work:1'),
                                  message_id=identity)
             result = hooks.join_conversation(event=event, session_store=store)
+            if store is not None and not busy:
+                # Hermes saves the turn's text in the session that the turn ran in.
+                session = SessionDB().resolve_resume_session_id(store.entry.session_id)
+                SessionDB.messages.setdefault(session, []).append(
+                    {'role': 'user', 'content': result['text'] if result else event.text})
             hooks.commit_records(identity, held=not busy)
             return [name for name in names if result and 'Record ' + name in result['text']]
 
@@ -1101,6 +1108,70 @@ class GatewayAdapterTests(unittest.TestCase):
         adapter_module.CONTEXT_MIDDLEWARE['registered'] = False
         self.assertTrue(adapter._event(dict(request, id='turn-s')).text.endswith('Record comment:9'))
         self.assertNotIn('turn-s', adapter_module.RECORDS)
+
+    def test_a_session_gets_every_record_again_after_a_compression_in_place(self):
+        # Current Hermes compresses a session in place: the same session ID holds a summary and the kept tail, and
+        # the key of its records stays. A session holds a record only while a user message still has its text.
+        hooks = sys.modules['hermes_plugins.coconut.hooks']
+        adapter_module = self.adapter_module
+        from hermes_state import SessionDB
+        from gateway.config import Platform, PlatformConfig
+        from gateway.platforms.event import MessageEvent, SessionSource
+        class Entry:
+            session_key, session_id = 'agent:main:coconut:dm:bot:work:1', 's1'
+        class Store:
+            entry = Entry()
+            def get_or_create_session(self, source, force_new=False):
+                return self.entry
+        adapter = adapter_module.CoconutAdapter(PlatformConfig())
+        adapter._roots['bot:work:1'] = 'root-w'
+        for table in (SessionDB.meta, SessionDB.sessions, SessionDB.lineage, SessionDB.messages):
+            table.clear()
+        self.addCleanup(adapter_module.RECORDS.clear)
+        self.addCleanup(hooks.PENDING_RECORDS.clear)
+        count = iter(range(100))
+        # A record text that ends with white space, with Windows line ends.
+        texts = {'comment:4': 'Record comment:4\r\nSecond line.  \r\n'}
+
+        def turn(*names):
+            identity = 'turn-%d' % next(count)
+            records = [{'id': name, 'text': texts.get(name, 'Record ' + name)} for name in names]
+            adapter_module.RECORDS[identity] = records
+            event = MessageEvent(text='Own text.', source=SessionSource(Platform('coconut'), 'bot:work:1'),
+                                 message_id=identity)
+            result = hooks.join_conversation(event=event, session_store=Store())
+            # Hermes saves the turn's text without the white space at its end.
+            SessionDB.messages.setdefault('s1', []).append(
+                {'role': 'user', 'content': (result['text'] if result else event.text).rstrip()})
+            hooks.commit_records(identity)
+            return [record['id'] for record in records if result and record['text'] in result['text']]
+
+        def compress(kept=0):
+            # Hermes's in-place compression (SessionDB.archive_and_compact): a summary and the kept tail.
+            tail = SessionDB.messages['s1'][len(SessionDB.messages['s1']) - kept:] if kept else []
+            SessionDB.messages['s1'] = [{'role': 'user', 'content': 'Summary of the earlier turns.'}] + tail
+
+        with patch.dict(os.environ, HERMES_HOME=str(self.home)):
+            SessionDB.sessions.add('s1')
+            self.assertEqual(turn('comment:1'), ['comment:1'])
+            self.assertEqual(turn('comment:1', 'comment:2'), ['comment:2'])
+            self.assertEqual(turn('comment:1', 'comment:2'), [])
+            noted = SessionDB.meta[hooks.RECORDS_KEY + 's1']
+            compress()
+            self.assertEqual(SessionDB.meta[hooks.RECORDS_KEY + 's1'], noted)
+            # The next turn gets every record again, and a further turn gets none.
+            self.assertEqual(turn('comment:1', 'comment:2'), ['comment:1', 'comment:2'])
+            self.assertEqual(turn('comment:1', 'comment:2'), [])
+            # A record in a message that the compression kept stays held.
+            self.assertEqual(turn('comment:1', 'comment:2', 'comment:3'), ['comment:3'])
+            compress(kept=1)
+            self.assertEqual(turn('comment:1', 'comment:2', 'comment:3'), ['comment:1', 'comment:2'])
+            # Hermes removes the white space at the end of the saved text. The session still holds the record.
+            self.assertEqual(turn('comment:1', 'comment:4'), ['comment:4'])
+            self.assertEqual(turn('comment:1', 'comment:4'), [])
+            # The compression keeps the turn that added it, and the turn after it.
+            compress(kept=2)
+            self.assertEqual(turn('comment:1', 'comment:4'), ['comment:1'])
 
     def test_the_gateway_session_of_a_chat_joins_the_native_conversation_of_the_bot(self):
         hooks = sys.modules['hermes_plugins.coconut.hooks']

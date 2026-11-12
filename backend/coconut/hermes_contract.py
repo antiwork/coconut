@@ -75,9 +75,10 @@ def verify_contract():
     require_keywords(PluginContext.register_hook, {'hook_name', 'callback'})
     from .model_catalog import _read_profile, _write_profile
 
-    # Session maintenance (native_sessions) and the conversation of a chat (hooks.join_conversation).
+    # Session maintenance (native_sessions), the conversation of a chat (hooks.join_conversation) and the records that
+    # a session holds (hooks.add_records).
     for name in ('get_meta', 'set_meta', 'get_session', 'end_session', 'resolve_resume_session_id',
-                 'get_resume_conversations', 'prune_sessions', 'vacuum', 'close'):
+                 'get_resume_conversations', 'get_messages_as_conversation', 'prune_sessions', 'vacuum', 'close'):
         if not callable(getattr(SessionDB, name, None)):
             raise ValueError('Hermes removed a required conversation storage interface: ' + name)
     # The catalog offers only the reasoning efforts that Hermes sends to xAI.

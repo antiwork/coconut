@@ -10,7 +10,9 @@ session and follows the compression lineage of Hermes from it, so the turns of a
 
 Records. The comments of a native task and the messages between bots are records that a session keeps once
 (native_conversation.turn_records). After the join, `add_records` adds to the turn's own text only the records that
-the session does not hold yet, and `commit_records` notes them as held when the turn ends. A new session holds none.
+the session does not hold yet, and `commit_records` notes their IDs when the turn ends. A session holds a record only
+when it has the ID and a user message of the session still has the record's text. A new session holds none. After a
+compression, which keeps the session ID on current Hermes, the next turn gets each lost record again.
 
 Cron runs. A cron run of the gateway in a bot's profile reports to a Coconut turn through the session hooks
 (cron.py).
@@ -427,7 +429,8 @@ def _join_session(source, session_store):
             entry = session_store.get_or_create_session(source)
             if tip and tip == entry.session_id:
                 # The chat's session is the tip. After /new, Hermes may not have saved that session yet
-                # (follow_new_session). A compression continues the conversation in a newer session of its lineage.
+                # (follow_new_session). On a Hermes that compresses into a new session, the conversation continues in a
+                # newer session of its lineage. Current Hermes compresses in place, under the same session ID.
                 return path, db.resolve_resume_session_id(entry.session_id)
             if not (tip and db.get_session(tip)):
                 tip = root if db.get_session(root) else None
@@ -450,7 +453,7 @@ def _join_session(source, session_store):
     return None
 
 
-# The state_meta key of Hermes that holds the IDs of the records that a session holds (add_records).
+# The state_meta key of Hermes that holds the IDs of the records that the turns of a session added (add_records).
 RECORDS_KEY = 'coconut.records.'
 # The IDs that a session keeps on record, newest last.
 RECORDS_KEPT = 5000
@@ -464,26 +467,56 @@ def records_text(records):
     return backend('native_conversation').records_text(records)
 
 
+def _one_space(text):
+    """A text with each run of white space as one space."""
+    return ' '.join(text.split())
+
+
+def session_text(db, session):
+    """The text of the user messages that a session holds now, with each run of white space as one space. These are
+    the live messages of that one session, which the model gets. Hermes removes the white space at the end of a
+    saved message, so a check of a record text must collapse its white space the same way (_one_space). Hermes also
+    removes its own context blocks and notes from a user message when it loads the message. A record with such text
+    never matches, so each turn gets that record again."""
+    texts = []
+    for message in db.get_messages_as_conversation(session):
+        if message.get('role') != 'user':
+            continue
+        content = message.get('content')
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            texts.extend(part['text'] for part in content
+                         if isinstance(part, dict) and isinstance(part.get('text'), str))
+    return _one_space(' '.join(texts))
+
+
 def add_records(event, records, session):
     """The rewrite of the turn's own text with the records that its session does not hold yet.
 
-    Hermes saves the turn's own text in the session, so the session holds each record that a turn added. A session
-    is new after /new, a reset of Hermes, or a compression, which summarizes the earlier turns into a new session.
-    A new session holds no record, so its first turn gets every record. Without a session of the bot's conversation
-    (`session` None) the turn gets every record too. The IDs count as held when the turn ends (commit_records)."""
-    held = set()
+    Hermes saves the turn's own text in the session. A session holds a record when both are true: the key
+    `coconut.records.<session ID>` has its ID, and a user message of the session still has its text. A compression
+    of current Hermes keeps the session ID and the key, but replaces the earlier messages with a summary. So after a
+    compression, the next turn gets each record again whose text the session lost. After /new or a reset of Hermes,
+    or on a Hermes that compresses into a new session, the session is new. A new session has no key, so its first
+    turn gets every record. Without a session of the bot's conversation (`session` None) the turn gets every record
+    too. When the turn ends, `commit_records` notes the IDs of the records that the turn added."""
+    new = records
     if session is not None:
         try:
             from hermes_state import SessionDB
             db = SessionDB(db_path=session[0])
             try:
-                held = set(json.loads(db.get_meta(RECORDS_KEY + session[1]) or '[]'))
+                noted = set(json.loads(db.get_meta(RECORDS_KEY + session[1]) or '[]'))
+                if any(record['id'] in noted for record in records):
+                    text = session_text(db, session[1])
+                    new = [record for record in records
+                           if record['id'] not in noted or _one_space(record['text']) not in text]
             finally:
                 db.close()
         except Exception:
             LOG.exception('Coconut: the records of a session could not be read. The turn gets every record.')
-            held = set()
-    new = [record for record in records if record['id'] not in held]
+            new = records
     if session is not None and new:
         PENDING_RECORDS[str(event.message_id)] = (session[0], session[1], [record['id'] for record in new])
     if not new:
@@ -492,7 +525,9 @@ def add_records(event, records, session):
 
 
 def commit_records(turn, held=True):
-    """Note the records that a turn added to its session as held, when the session saved the turn's text."""
+    """Note the IDs of the records that a turn added to its session, when the session saved the turn's text. The key
+    holds the IDs that the turns added. The session holds a record only while a user message still has its text
+    (add_records)."""
     pending = PENDING_RECORDS.pop(str(turn), None)
     if pending is None or not held:
         return

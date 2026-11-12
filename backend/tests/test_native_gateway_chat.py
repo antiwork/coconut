@@ -217,6 +217,36 @@ class EmptyReplyFormatTests(unittest.TestCase):
                 with self.subTest(mode, response=response):
                     self.assertIsNone(end(response, mode))
 
+    def test_a_session_gets_every_record_again_after_hermes_compresses_it_in_place(self):
+        # hooks.add_records with the state database of this Hermes. Its compression keeps the session ID and the key of
+        # the records, and replaces the messages with a summary (SessionDB.archive_and_compact).
+        from types import SimpleNamespace as N
+        from unittest.mock import patch
+        temp = tempfile.TemporaryDirectory(prefix='coconut-records-')
+        self.addCleanup(temp.cleanup)
+        with patch.dict(os.environ, HERMES_HOME=temp.name):
+            from hermes_state import SessionDB
+            path = Path(temp.name) / 'state.db'
+            db = SessionDB(db_path=path)
+            self.addCleanup(db.close)
+            db.create_session('s1', source='coconut')
+            # A record text that ends with white space. Hermes removes it when it saves the message.
+            records = [{'id': 'comment:1', 'text': 'Comment one.'}, {'id': 'comment:2', 'text': 'Comment two.\r\n  '}]
+
+            def turn(identity):
+                result = self.hooks.add_records(N(message_id=identity, text='Own text.'), records, (path, 's1'))
+                db.append_message('s1', role='user', content=result['text'] if result else 'Own text.')
+                self.hooks.commit_records(identity)
+                return [record['id'] for record in records if result and record['text'] in result['text']]
+
+            self.assertEqual(turn('turn-1'), ['comment:1', 'comment:2'])
+            self.assertEqual(turn('turn-2'), [])
+            db.archive_and_compact('s1', [{'role': 'user', 'content': 'Summary of the earlier turns.'}])
+            self.assertEqual(db.resolve_resume_session_id('s1'), 's1')
+            self.assertIsNotNone(db.get_meta(self.hooks.RECORDS_KEY + 's1'))
+            self.assertEqual(turn('turn-3'), ['comment:1', 'comment:2'])
+            self.assertEqual(turn('turn-4'), [])
+
 
 @needs_hermes
 class NativeGatewayChatTests(unittest.TestCase):
@@ -356,6 +386,34 @@ class NativeGatewayChatTests(unittest.TestCase):
             self.assertFalse([m for m in service._task_messages(reaction['id']) if m['role'] == 'assistant'
                               and m['kind'] == 'text' and not m.get('_hidden')], diagnostics())
             self.assertTrue(any(REACTION in json.dumps(request['messages']) for request in Model.requests), diagnostics())
+
+            # A record of the work goes into the turn's text once (hooks.add_records). The session holds it while a
+            # user message of the session has its text. After a compression in place, the next turn gets it again.
+            from unittest.mock import patch
+            work_record = {'id': 'comment:1', 'text': 'Record of the native task.\r\nSecond line.  '}
+            collapsed = ' '.join(work_record['text'].split())
+
+            def record_turn(text):
+                task = service.mutate('POST', f'/v1/bots/{bot["id"]}/messages', {'text': text}, str(uuid4()), 'phone')
+                with patch('coconut.native_conversation.turn_records', return_value=[work_record]):
+                    service._run_task(task['id'])
+                self.assertEqual(service._get('tasks', task['id'])['status'], 'completed', diagnostics())
+                request = next(r for r in Model.requests if text in json.dumps(r['messages']))
+                users = [' '.join(json.dumps(m.get('content')).replace('\\r', ' ').replace('\\n', ' ').split())
+                         for m in request['messages'] if m.get('role') == 'user']
+                return [collapsed in user for user in users]
+
+            # The first turn gets the record. The second turn does not, because an earlier message holds it.
+            self.assertTrue(record_turn('First turn with a record.')[-1], diagnostics())
+            held = record_turn('Second turn with a record.')
+            self.assertFalse(held[-1], diagnostics())
+            self.assertTrue(any(held[:-1]), diagnostics())
+            # Hermes compresses the session in place: the same session ID holds only a summary.
+            db = SessionDB(db_path=home / 'state.db')
+            session = db.resolve_resume_session_id(db.get_meta('coconut.session-tip.' + root) or root)
+            db.archive_and_compact(session, [{'role': 'user', 'content': 'Summary of the earlier turns.'}])
+            db.close()
+            self.assertTrue(record_turn('Third turn with a record.')[-1], diagnostics())
 
             # A typed /compress reaches Hermes as its command, without Coconut's context, and the turn gets its reply.
             # The conversation is short, so Hermes compresses nothing.
