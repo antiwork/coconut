@@ -154,6 +154,10 @@ MAX_TEXT = 16000
 MAX_MENTIONS = 16
 # The unread count of a room stops here, so the count reads at most this many rows.
 MAX_UNREAD = 99
+# The check of a mention (`mentioned`) reads at most this many unread messages, the newest first. GET /v1/team/rooms
+# runs it for each room on each load, so it needs a bound. It is larger than MAX_UNREAD: the badge stops at 99, but a
+# mention of the person in the 100th unread message must still show the mark.
+MAX_MENTION_ROWS = 1000
 # A message starts a turn of a bot, or notifies the phone of a person, only while it is younger than this. An older
 # message is history, for example the log that a Mac reads after it joins.
 TRIGGER_SECONDS = 3600
@@ -1226,11 +1230,12 @@ class TeamStore:
             AND {NAMES_MEMBER}''', (room, entry, member)).fetchone() is not None
 
     def mentioned(self, room: str, member: str) -> bool:
-        """True when an unread message (the rule of `unread`) names `member`. The query walks the index
-        team_messages_order from the read position, so it reads only the unread messages, not the room."""
-        return self.db.execute(f'''SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>? AND {UNREAD_MESSAGE}
-            AND {SHOWN_MESSAGE} AND {NAMES_MEMBER} LIMIT 1''',
-                               (room, self.read_position(room), member, member)).fetchone() is not None
+        """True when one of the newest MAX_MENTION_ROWS unread messages (the rule of `unread`) names `member`. The
+        query walks the index team_messages_order back from the newest message to the read position, and reads at
+        most MAX_MENTION_ROWS rows."""
+        return self.db.execute(f'''SELECT 1 FROM (SELECT m.room, m.mentions FROM team_messages m WHERE m.room=?
+            AND m.first>? AND {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} ORDER BY m.first DESC LIMIT {MAX_MENTION_ROWS}) m
+            WHERE {NAMES_MEMBER} LIMIT 1''', (room, self.read_position(room), member, member)).fetchone() is not None
 
     # Direct messages
 

@@ -225,6 +225,16 @@ class TeamMessageStoreTests(unittest.TestCase):
         self.write(10, {'kind': 'delete', 'rev': 2}, OTHER)
         self.assertFalse(self.store.mentioned(ROOM, MEMBER))
         self.assertFalse(self.store.names_member(ROOM, entry_id(10), MEMBER))
+        # A mention under the newest MAX_MENTION_ROWS unread messages does not count, so the check reads a bounded part
+        # of the index.
+        self.store.mark_read(ROOM, MAX_NUMBER)
+        self.write(20, self.message('For Grace, long ago', mentions=[entry_id(1)]))
+        for number in range(21, 21 + team_store.MAX_MENTION_ROWS - 1):
+            self.write(number, self.message(f'Message {number}'))
+        self.assertTrue(self.store.mentioned(ROOM, MEMBER), 'The mention is the oldest of the newest rows.')
+        self.write(21 + team_store.MAX_MENTION_ROWS, self.message('One more'))
+        self.assertFalse(self.store.mentioned(ROOM, MEMBER), 'The mention is under the bound.')
+        self.store.mark_read(ROOM, MAX_NUMBER)
         # A second `member` entry of the person counts as the person too.
         self.write(11, self.member('Grace L.'), MEMBER)
         self.write(12, self.message('For Grace L.', mentions=[entry_id(11)]))
@@ -259,8 +269,6 @@ class TeamMessageStoreTests(unittest.TestCase):
         self.db.execute('BEGIN')
         for number in range(2, 10_002):
             self.write(number, self.message(f'Message {number}'))
-        # The newest message names the person, so the check of a mention reads each unread message.
-        self.write(10_002, self.message('For Grace', mentions=[entry_id(1)]))
         self.db.execute('COMMIT')
         timings = {}
         for name, call in (('newest page', lambda: self.store.messages(ROOM, None, 101)),
@@ -272,7 +280,8 @@ class TeamMessageStoreTests(unittest.TestCase):
             for _ in range(10):
                 result = call()
             timings[name] = (time.perf_counter() - started) / 10 * 1000
-            self.assertTrue(result)
+            # No message names the person, so the check of a mention is false after its whole bound.
+            self.assertEqual(bool(result), name != 'mention')
         print('\n10,000 messages, milliseconds for each call: ' +
               ', '.join(f'{name} {value:.2f}' for name, value in timings.items()))
         self.assertEqual(self.store.unread(ROOM, MEMBER), team_store.MAX_UNREAD)
@@ -286,10 +295,12 @@ class TeamMessageStoreTests(unittest.TestCase):
         plan = self.plan('SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>? AND m.member!=? LIMIT 99',
                          (ROOM, 50, MEMBER))
         self.assertIn('team_messages_order', plan)
-        # The check of a mention starts its search at the read position.
-        plan = self.plan(f'''SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>? AND {team_store.UNREAD_MESSAGE}
-            AND {team_store.SHOWN_MESSAGE} AND {team_store.NAMES_MEMBER} LIMIT 1''', (ROOM, 50, MEMBER, MEMBER))
+        # The check of a mention searches the index from the read position and sorts nothing.
+        plan = self.plan(f'''SELECT 1 FROM (SELECT m.room, m.mentions FROM team_messages m WHERE m.room=? AND m.first>?
+            AND {team_store.UNREAD_MESSAGE} AND {team_store.SHOWN_MESSAGE} ORDER BY m.first DESC
+            LIMIT {team_store.MAX_MENTION_ROWS}) m WHERE {team_store.NAMES_MEMBER} LIMIT 1''', (ROOM, 50, MEMBER, MEMBER))
         self.assertIn('SEARCH m USING INDEX team_messages_order (room=? AND first>?)', plan)
+        self.assertNotIn('TEMP B-TREE', plan)
         for value in timings.values():
             self.assertLess(value, 50)
 

@@ -667,7 +667,7 @@ A person names another person of the team with `@` in the chat, as the person na
 
 - A mention of a person starts no turn of a bot. Rule 4 of [A bot answers](#a-bot-answers) names only `bot` entries.
 - A mention of this Mac's person notifies also in a quiet team (see rule 4 of [Notifications](#notifications)).
-- `GET /v1/team/rooms` gives `mentioned` for each room and `mentions_me` for its newest message. `mentioned` stays true until the read position passes each unread message that names this Mac's person. An own message, a removed message and a message that does not show never count. One query walks the index of the messages from the read position, so it reads the unread messages only.
+- `GET /v1/team/rooms` gives `mentioned` for each room and `mentions_me` for its newest message. `mentioned` stays true until the read position passes each unread message that names this Mac's person. An own message, a removed message and a message that does not show never count. One query walks the index of the messages back from the newest message to the read position. It reads at most the newest 1,000 unread messages, so a mention under them does not show.
 - The `@` list of the app has the bots that a teammate can ask, then each other person of the team, without the Macs for a team only. The app lists the people only for a room with `mentioned`, because an older service does not notify a named person in a quiet team.
 
 #### A bot answers
