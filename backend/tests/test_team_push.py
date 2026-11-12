@@ -113,6 +113,18 @@ class WhichMessageNotifies(TeamPushMacs, unittest.TestCase):
         self.second.team_sync_pass()
         self.assertEqual(len(self.items()), 1)
 
+    def test_a_message_that_the_admin_erases_before_its_notification_sends_nothing(self):
+        self.join(self.third, self.invite({'room': self.room})['link'], name='Lin')
+        sent = self.send('Wrong words', service=self.third)
+        self.second.team_sync_pass()
+        self.assertEqual([item[6] for item in self.items()], [sent['id']])
+        # Grace is the admin. Her `erase` entry reaches Ada's Mac before the item is due.
+        self.first.team_sync_pass()
+        self.phone(self.first)('DELETE', f'/v1/team/rooms/{self.room}/messages/{sent["id"]}', {})
+        self.second.team_sync_pass()
+        flush(self.second)
+        self.assertEqual(self.transport.calls, [])
+
     def test_a_message_that_does_not_show_notifies_nothing(self):
         room = self.first.team_store.room(self.room)
         # A message of a bot that has no `bot` entry does not show.

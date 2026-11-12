@@ -53,6 +53,9 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     /// The direct chats of this person in the team, newest first. Only a service that serves direct messages sends it,
     /// for an app that asks with the header `X-Coconut-Team: direct`.
     var directs: [TeamDirect]? = nil
+    /// True when this person can delete a message of another person or of a bot in the Team chat: the Mac is the
+    /// admin of an active team (TeamMessageDeletion). An older service sends none, and none is false.
+    var canDeleteMessages: Bool? = nil
 
     var id: String { room }
 

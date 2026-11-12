@@ -165,6 +165,88 @@ class TeamMessageStoreTests(unittest.TestCase):
         self.write(1, self.message('\udfff', rev=5))
         self.assertEqual(self.texts(), ['Second words'])
 
+    def erase(self, number: int, target: int, member: str = ADMIN, rev: int = 1):
+        return self.write(number, {'kind': 'erase', 'rev': rev, 'at': '2026-11-10T12:00:00Z', 'entry': entry_id(target)},
+                          member)
+
+    def test_an_erase_of_the_admin_removes_the_message_its_unread_count_and_its_waiting_trigger(self):
+        self.write(1, self.member('Grace'), MEMBER)
+        self.write(2, self.message('Wrong words'), OTHER)
+        self.write(3, self.message('Kept words'), OTHER)
+        for number, started in ((2, 0), (3, 0)):
+            self.db.execute('INSERT INTO team_triggers (room, bot, entry, started) VALUES (?, ?, ?, ?)',
+                            (ROOM, 'bot', entry_id(number), started))
+        self.assertEqual(self.store.unread(ROOM, MEMBER), 2)
+        self.store.chatted.clear()
+        self.assertEqual(self.erase(4, 2), (STORED, None))
+        self.assertEqual(self.texts(), ['Kept words'])
+        self.assertEqual(self.store.unread(ROOM, MEMBER), 1)
+        self.assertIsNone(self.store.message(ROOM, entry_id(2)))
+        self.assertEqual(self.db.execute('SELECT entry FROM team_triggers').fetchall(), [(entry_id(3),)])
+        self.assertEqual((self.store.chatted, self.store.triggered), ({ROOM}, {ROOM}))
+        # The entry of the message stays in the store, as after a `delete`.
+        self.assertEqual(self.store.entry(ROOM, entry_id(2))['kind'], 'message')
+        # The same erase again changes nothing.
+        self.store.chatted.clear()
+        self.erase(5, 2)
+        self.assertEqual(self.store.chatted, set())
+
+    def test_an_erase_holds_against_a_later_write_and_counts_before_its_message(self):
+        self.write(1, self.message('Wrong words'), OTHER)
+        self.erase(2, 1)
+        # The author edits the message: the edit has a newer `seq`, and the chat still shows nothing.
+        self.assertEqual(self.write(1, self.message('Edited words', rev=2), OTHER), (STORED, None))
+        self.write(1, {'kind': 'delete', 'rev': 3}, OTHER)
+        self.write(1, self.message('Again', rev=4), OTHER)
+        self.assertEqual(self.texts(), [])
+        # An erase of an entry that this Mac does not have yet holds when the message comes.
+        self.erase(3, 9)
+        self.assertEqual(self.write(9, self.message('Late words'), OTHER), (STORED, None))
+        self.assertEqual(self.texts(), [])
+        # A write over the erase entry does not bring a message back.
+        self.write(3, {'kind': 'delete', 'rev': 2})
+        self.write(9, self.message('Later words', rev=2), OTHER)
+        self.assertEqual(self.texts(), [])
+
+    def test_an_erase_of_a_member_that_is_not_the_admin_does_nothing(self):
+        self.write(1, self.message('Hello'), OTHER)
+        self.assertEqual(self.erase(2, 1, OTHER), (REFUSED, 'admin'))
+        self.assertEqual(self.erase(3, 1, MEMBER), (REFUSED, 'admin'))
+        self.assertIsNone(self.store.entry(ROOM, entry_id(2)))
+        self.assertEqual(self.texts(), ['Hello'])
+        # A member cannot make its entry an erase entry either.
+        self.write(4, self.message('Mine'), OTHER)
+        self.assertEqual(self.write(4, {'kind': 'erase', 'rev': 2, 'entry': entry_id(1)}, OTHER), (REFUSED, 'admin'))
+        self.assertEqual(self.texts(), ['Mine', 'Hello'])
+
+    def test_an_erase_of_an_entry_of_another_kind_or_of_the_wrong_form_does_nothing(self):
+        self.write(1, self.member('Lin'), OTHER)
+        self.write(2, {'kind': 'direct', 'rev': 1, 'at': '2026-11-10T12:00:00Z', 'box': 'x' * 40}, OTHER)
+        self.write(3, self.bot(), OTHER)
+        for number, target in ((4, 1), (5, 2), (6, 3)):
+            self.assertEqual(self.erase(number, target), (STORED, None))
+        self.assertEqual([member['name'] for member in self.store.members(ROOM)], ['Lin'])
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM team_erased').fetchone()[0], 0)
+        # A later message write over such an entry is a write of its member, and it shows.
+        self.write(2, self.message('Now a message', rev=2), OTHER)
+        self.assertEqual(self.texts(), ['Now a message'])
+        # An erase without an entry ID is stored and does nothing.
+        self.write(7, self.message('Hello'), OTHER)
+        for number, value in ((8, None), (9, 'abc'), (10, 7)):
+            self.assertEqual(self.write(number, {'kind': 'erase', 'rev': 1, 'entry': value}), (STORED, None))
+        self.assertEqual(self.texts(), ['Hello', 'Now a message'])
+
+    def test_the_admin_erases_a_message_of_a_bot_and_of_a_removed_member(self):
+        self.write(1, self.bot(), OTHER)
+        self.write(2, self.message('Of a bot', bot=entry_id(1)), OTHER)
+        self.write(3, self.member('Lin'), OTHER)
+        self.write(4, self.message('Of Lin'), OTHER)
+        self.write(5, {'kind': 'remove', 'rev': 1, 'at': '2026-11-10T12:00:00Z', 'member': OTHER, 'name': 'Lin'})
+        self.assertEqual(self.texts(), ['Of Lin', 'Of a bot'])
+        self.erase(6, 2)
+        self.erase(7, 4)
+        self.assertEqual(self.texts(), [])
+
     def test_a_member_that_left_keeps_its_last_name(self):
         self.write(1, self.member('Ada'))
         self.write(2, self.message('Hello'))
@@ -606,16 +688,110 @@ class TeamChatTests(TeamMacs, unittest.TestCase):
                          ('delete', 2, self.relay.rooms[self.room]['entries'][sent['id']]['seq']))
         self.assertEqual(self.texts(self.first, sync=False), [])
         self.assertEqual(self.texts(self.second), [])
-        # An ID that the store does not have is 404, and an entry of another member is 403.
-        other = self.send(self.second, 'Mine')
-        self.first.team_sync_pass()
-        self.assertEqual(self.refusal(self.phone(self.first), 'DELETE', self.path(f'messages/{"f" * 32}'), {})[0], 404)
-        self.assertEqual(self.refusal(self.phone(self.first), 'DELETE', self.path(f'messages/{other["id"]}'), {})[0],
+        # An ID that the store does not have is 404. On a Mac that is not the admin, an entry of another member is 403.
+        other = self.send(self.first, 'Mine')
+        self.second.team_sync_pass()
+        self.assertEqual(self.refusal(self.phone(self.second), 'DELETE', self.path(f'messages/{"f" * 32}'), {})[0], 404)
+        self.assertEqual(self.refusal(self.phone(self.second), 'DELETE', self.path(f'messages/{other["id"]}'), {})[0],
                          403)
-        self.phone(self.second)('DELETE', self.path(f'messages/{other["id"]}'), {})
-        self.first.team_sync_pass()
-        self.assertEqual(self.refusal(self.phone(self.first), 'DELETE', self.path(f'messages/{other["id"]}'), {})[0],
+        self.phone(self.first)('DELETE', self.path(f'messages/{other["id"]}'), {})
+        self.second.team_sync_pass()
+        self.assertEqual(self.refusal(self.phone(self.second), 'DELETE', self.path(f'messages/{other["id"]}'), {})[0],
                          403)
+
+    def writes(self) -> int:
+        return len([request for request in self.relay.requests if request[0] == 'write'])
+
+    def test_the_admin_deletes_a_message_of_another_member_on_each_mac(self):
+        self.join(self.third, self.invite({'room': self.room})['link'], name='Lin')
+        wrong = self.send(self.second, 'Wrong words')
+        kept = self.send(self.second, 'Kept words')
+        self.assertEqual(self.view(self.third)['unread'], 2)
+        self.first.team_sync_pass()
+        writes = self.writes()
+        path = self.path(f'messages/{wrong["id"]}')
+        self.assertEqual(self.phone(self.first)('DELETE', path, {}), {'room': self.room, 'id': wrong['id'], 'deleted': True})
+        self.assertEqual(self.writes(), writes + 1)
+        # The message goes on the admin's Mac at once, and on the other Macs at their next pass.
+        self.assertEqual(self.texts(self.first, sync=False), ['Kept words'])
+        self.assertEqual(self.texts(self.second), ['Kept words'])
+        self.assertEqual(self.texts(self.third), ['Kept words'])
+        self.assertEqual(self.view(self.third)['unread'], 1)
+        # A repeat gets the same answer and writes nothing.
+        self.assertEqual(self.phone(self.first)('DELETE', path, {}), {'room': self.room, 'id': wrong['id'], 'deleted': True})
+        self.assertEqual(self.writes(), writes + 1)
+        # The author cannot bring the message back with an edit: the chat of the author does not show it.
+        self.assertEqual(self.refusal(self.phone(self.second), 'PATCH', path, {'text': 'Changed words'}),
+                         (404, 'This message is no longer in the chat.'))
+        # A member that is not the admin cannot delete a message of another member.
+        self.assertEqual(self.refusal(self.phone(self.third), 'DELETE', self.path(f'messages/{kept["id"]}'), {}),
+                         (403, 'You can change only your own messages.'))
+        for service in (self.first, self.second, self.third):
+            self.assertEqual(self.texts(service), ['Kept words'])
+        # A message that its author deleted is gone already. The admin gets the same answer and writes nothing.
+        self.phone(self.second)('DELETE', self.path(f'messages/{kept["id"]}'), {})
+        self.first.team_sync_pass()
+        writes = self.writes()
+        self.assertEqual(self.phone(self.first)('DELETE', self.path(f'messages/{kept["id"]}'), {})['deleted'], True)
+        self.assertEqual(self.writes(), writes)
+
+    def test_the_admin_deletes_a_message_of_a_bot_and_a_later_write_shows_nothing(self):
+        bot, by_bot = (f'{number:032x}' for number in range(1, 3))
+        self.raw(self.second, bot, {'kind': 'bot', 'rev': 1, 'name': 'Reporter', 'avatar': '', 'color': ''})
+        self.raw(self.second, by_bot, {'kind': 'message', 'rev': 1, 'text': 'Done.', 'bot': bot})
+        self.assertEqual(self.texts(self.first), ['Done.'])
+        self.phone(self.first)('DELETE', self.path(f'messages/{by_bot}'), {})
+        self.assertEqual(self.texts(self.second), [])
+        # A later write of the erased entry by its member, for example an edit, shows nothing on each Mac.
+        self.raw(self.second, by_bot, {'kind': 'message', 'rev': 2, 'text': 'Done again.', 'bot': bot})
+        self.assertEqual(self.texts(self.first), [])
+        self.assertEqual(self.texts(self.second), [])
+
+    def test_a_repeat_of_an_erase_after_a_lost_answer_writes_nothing(self):
+        sent = self.send(self.second, 'Wrong words')
+        self.first.team_sync_pass()
+        write = self.relay.write
+
+        def lose_the_answer(*arguments, **options):
+            self.relay.write = write
+            write(*arguments, **options)
+            raise TeamRelayError(0, 'The relay did not answer.')
+        self.relay.write = lose_the_answer
+        path = self.path(f'messages/{sent["id"]}')
+        self.assertEqual(self.refusal(self.phone(self.first), 'DELETE', path, {})[0], 503)
+        writes = self.writes()
+        self.assertEqual(self.phone(self.first)('DELETE', path, {}), {'room': self.room, 'id': sent['id'], 'deleted': True})
+        self.assertEqual(self.writes(), writes)
+        self.assertEqual(self.texts(self.first, sync=False), [])
+        self.assertEqual(self.texts(self.second), [])
+
+    def test_only_the_admin_of_an_active_room_can_delete_messages(self):
+        self.assertEqual(self.view(self.first)['can_delete_messages'], True)
+        self.assertEqual(self.view(self.second)['can_delete_messages'], False)
+        with self.first.transaction():
+            self.first.team_store.update_room(self.room, state='removed')
+        self.assertEqual(self.view(self.first)['can_delete_messages'], False)
+
+    def test_an_erase_of_a_member_that_is_not_the_admin_changes_nothing_and_its_log_line_has_no_name(self):
+        sent = self.send(self.first, 'Hello')
+        self.second.team_sync_pass()
+        records = []
+        handler = logging.Handler(logging.DEBUG)
+        handler.emit = records.append
+        logger = logging.getLogger('coconut')
+        logger.addHandler(handler)
+        self.addCleanup(logger.removeHandler, handler)
+        self.raw(self.second, 'e' * 32, {'kind': 'erase', 'rev': 1, 'entry': sent['id']})
+        self.assertEqual(self.texts(self.first), ['Hello'])
+        self.assertEqual(self.texts(self.second), ['Hello'])
+        # Each of the two Macs writes one line.
+        lines = [record.getMessage() for record in records if 'e' * 32 in record.getMessage()]
+        self.assertEqual(len(lines), 2, lines)
+        for line in lines:
+            self.assertIn('refused the entry', line)
+            self.assertIn('(admin)', line)
+            for name in ('Ada', 'Grace', 'Hello'):
+                self.assertNotIn(name, line)
 
     def test_a_repeat_with_the_same_key_sends_one_message(self):
         key = str(uuid4())
