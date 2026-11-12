@@ -242,6 +242,34 @@ class TeamStoreTests(unittest.TestCase):
                 self.assertEqual(self.remove(number, member), (STORED, None))
         self.assertEqual(self.names(), ['Grace'])
 
+    def test_a_reader_that_never_had_the_member_names_its_messages_with_the_name_of_the_remove_entry(self):
+        # This Mac reads the room after the removal: the relay deleted the `member` entry, and the messages stay.
+        self.write(1, {'kind': 'message', 'rev': 1, 'text': 'Hello team'}, OUTSIDER)
+        self.assertIsNone(self.store.messages(ROOM)[0]['member_name'])
+        self.store.chatted.clear()
+        self.remove(2, OUTSIDER, name='Grace')
+        self.assertEqual(self.store.messages(ROOM)[0]['member_name'], 'Grace')
+        self.assertEqual((self.names(), self.store.chatted), ([], {ROOM}))
+
+    def test_a_name_that_the_reader_showed_stays_after_the_remove_entry(self):
+        self.write(1, self.member('Grace L.'), OUTSIDER)
+        self.write(2, {'kind': 'message', 'rev': 1, 'text': 'Hello team'}, OUTSIDER)
+        self.remove(3, OUTSIDER, name='Grace')
+        self.assertEqual(self.store.messages(ROOM)[0]['member_name'], 'Grace L.')
+        self.assertEqual(self.store.last_name(ROOM, OUTSIDER), 'Grace L.')
+
+    def test_a_name_of_a_remove_entry_that_does_not_fit_changes_no_name(self):
+        self.write(1, {'kind': 'message', 'rev': 1, 'text': 'Hello team'}, OUTSIDER)
+        for number, name in enumerate(('', 'n' * 81, 7, None), start=2):
+            with self.subTest(name=name):
+                fields = {} if name is None else {'name': name}
+                self.assertEqual(self.remove(number, OUTSIDER, **fields), (STORED, None))
+                self.assertTrue(self.store.removed(ROOM, OUTSIDER))
+                self.assertIsNone(self.store.last_name(ROOM, OUTSIDER))
+        # A name with a lone surrogate is not valid Unicode text.
+        self.assertEqual(self.remove(6, OUTSIDER, name='\ud800'), (STORED, None))
+        self.assertIsNone(self.store.last_name(ROOM, OUTSIDER))
+
     def test_a_remove_entry_of_a_member_that_is_not_the_admin_changes_nothing(self):
         self.write(1, self.member('Grace'), OUTSIDER)
         self.assertEqual(self.write(2, {'kind': 'remove', 'rev': 1, 'member': OUTSIDER}, MEMBER), (REFUSED, 'admin'))
