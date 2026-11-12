@@ -168,10 +168,11 @@ public enum RemoveRequest {
     /// When step 2 or 3 fails, or the uninstaller fails while the store is still there (it refused, so it removed
     /// nothing), the login items come back (`register`), and the line says so. Each closure returns the line of a
     /// failure, or nil.
-    public static func run(install: Install, unregister: () -> String?, unloaded: () -> Bool,
+    public static func run(install: Install, question: (Install) -> String? = refusal,
+                           unregister: () -> String?, unloaded: () -> Bool,
                            uninstall: () -> String?, register: () -> String?,
                            wait: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }) -> String? {
-        if let line = refusal(install: install) { return line }
+        if let line = question(install) { return line }
         func putBack(_ line: String) -> String {
             if let failure = register() { return line + " " + failure }
             return line + restored

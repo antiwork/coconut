@@ -241,14 +241,18 @@ final class AppModel: ObservableObject {
         }
         guard mode == .team else { return failed(RemoveRequest.fullInstall) }
         let install = install
-        // A refusal changes nothing: the service keeps running, and each bot keeps answering.
-        if let refusal = RemoveRequest.refusal(install: install) { return failed(refusal) }
+        let key = Self.startAtLoginKey
+        // The menu shows the removal at once, also while the question of the store waits for a busy store.
         activity = "Removing Coconut…"
-        UserDefaults.standard.set(false, forKey: Self.startAtLoginKey)
-        // Each change of a login item is a request to launchd, and the uninstaller waits for the stop of the service, so
-        // both run off the main thread (pull request 441).
+        // The question of the store, each change of a login item and the uninstaller run off the main thread (pull
+        // request 441), in the order of RemoveRequest.run: a refusal of the question changes nothing, also not Start at
+        // Login, so the service keeps running, and each bot keeps answering.
         let failure = await Task.detached(priority: .utility) { () -> String? in
-            RemoveRequest.run(install: install, unregister: { LoginItems().unregister() },
+            RemoveRequest.run(install: install,
+                              unregister: {
+                                  UserDefaults.standard.set(false, forKey: key)
+                                  return LoginItems().unregister()
+                              },
                               unloaded: RemoveRequest.serviceUnloaded, uninstall: { Self.uninstall(install) },
                               register: { LoginItems().register(for: .team) })
         }.value

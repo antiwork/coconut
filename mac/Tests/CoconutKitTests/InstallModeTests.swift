@@ -431,6 +431,26 @@ final class InstallModeTests: XCTestCase {
         XCTAssertNil(RemoveRequest.refusal(install: try makeStore("CREATE TABLE devices (id TEXT PRIMARY KEY);")))
     }
 
+    func testARemovalAsksTheQuestionOnceAndBeforeEachStep() throws {
+        let install = try botsStore()
+        var steps: [String] = []
+        let line = RemoveRequest.run(install: install,
+                                     question: { steps.append("asked"); return RemoveRequest.refusal(install: $0) },
+                                     unregister: { steps.append("unregister"); return nil },
+                                     unloaded: { steps.append("check"); return true },
+                                     uninstall: { steps.append("uninstall"); return nil },
+                                     register: { steps.append("register"); return nil }, wait: { _ in })
+        XCTAssertNil(line)
+        XCTAssertEqual(steps, ["asked", "unregister", "check", "uninstall"])
+        // A refusal of the question runs no step.
+        steps = []
+        XCTAssertEqual(RemoveRequest.run(install: install, question: { _ in steps.append("asked"); return "No." },
+                                         unregister: { steps.append("unregister"); return nil },
+                                         unloaded: { true }, uninstall: { steps.append("uninstall"); return nil },
+                                         register: { steps.append("register"); return nil }), "No.")
+        XCTAssertEqual(steps, ["asked"])
+    }
+
     func testARemovalWaitsForLaunchdAndPutsTheLoginItemsBackWhenItStops() throws {
         var steps: [String] = []
         let install = try botsStore()
