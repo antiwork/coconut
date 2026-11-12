@@ -21,7 +21,7 @@ struct HomeLaunchView: View {
         let rooms = store.team?.rooms ?? []
         let filter = ChatFilter.effective(store.chatFilter, rooms: rooms)
         let conversations = filter.items(ChatList.items(bots: activeBots.filter { !$0.pinned }, latest: latest,
-                                                        rooms: rooms))
+                                                        rooms: rooms, local: store.newestLocalMessages))
         let pinned = filter.showsPinned ? pinnedBots : []
         return ScrollView {
             LazyVStack(spacing: 0) {

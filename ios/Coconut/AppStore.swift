@@ -1766,6 +1766,16 @@ final class AppStore {
         if pending { try? saveOutgoing() }
     }
 
+    /// The newest message in the app of each direct chat that has one: an unsent message, or a saved message. The
+    /// Chats list shows a direct chat that the list of the Mac does not have yet with it (TeamRoom.listedDirects).
+    var newestLocalMessages: [TeamChatKey: TeamLastMessage] {
+        var newest: [TeamChatKey: TeamLastMessage] = [:]
+        for (chat, value) in teamChats where chat.isDirect {
+            if let last = value.newestLocal { newest[chat] = last }
+        }
+        return newest
+    }
+
     /// True while the list of the teams has the room of the chat. A list that the app has not loaded yet keeps every
     /// chat. A direct chat stays while its room stays, also after the other member left.
     private func teamListHas(_ chat: TeamChatKey) -> Bool {

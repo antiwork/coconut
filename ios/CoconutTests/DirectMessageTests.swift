@@ -116,6 +116,94 @@ final class DirectMessageTests: XCTestCase {
         XCTAssertNil(items[1].chat)
     }
 
+    // MARK: A direct chat with an unsent message
+
+    private func unsent(_ text: String, at: String) -> TeamPendingMessage {
+        TeamPendingMessage(id: "p-" + text, text: text, replyTo: nil, reply: nil, createdAt: at, failed: true)
+    }
+
+    func testADirectChatWithOnlyAnUnsentMessageHasARow() throws {
+        let lin = TeamChatKey(room: "r1", member: "m-lin")
+        var chat = TeamChat()
+        chat.pending = [unsent("First try", at: "2026-11-08T00:00:00Z"), unsent("Second try", at: "2026-11-09T00:00:00Z")]
+        let local = [lin: try XCTUnwrap(chat.newestLocal)]
+        let room = room(members: [member("m-lin", "Lin", direct: true)],
+                        directs: [direct("m-grace", at: "2026-11-10T09:00:00Z")], last: "2026-11-05T00:00:00Z")
+        let latest = ["planner": "2026-11-07T00:00:00Z".apiDate!]
+        let items = ChatList.items(bots: [bot("planner")], latest: latest, rooms: [room], local: local)
+        XCTAssertEqual(items.map(\.id), ["direct-r1-m-grace", "direct-r1-m-lin", "bot-planner", "team-r1"],
+                       "The time of the newest unsent message places the row.")
+        guard case .direct(let listed, let row) = items[1] else { return XCTFail("No row of Lin.") }
+        XCTAssertEqual(listed.directPeer(row.member).name, "Lin")
+        XCTAssertEqual(TeamChatPreview.text(row.lastMessage, direct: true), "You: Second try")
+        XCTAssertEqual(row.lastMessage?.createdAt, "2026-11-09T00:00:00Z")
+        XCTAssertNil(row.unread, "No unread count.")
+        XCTAssertEqual(ChatFilter.people.items(items).map(\.id), ["direct-r1-m-grace", "direct-r1-m-lin", "team-r1"])
+        XCTAssertEqual(ChatFilter.bots.items(items).map(\.id), ["bot-planner"])
+        XCTAssertEqual(ChatSections.make(bots: [], messages: [], rooms: [room], local: local).people.map(\.id),
+                       ["direct-r1-m-grace", "direct-r1-m-lin", "team-r1"], "The Mac section People reads the rule too.")
+    }
+
+    func testAChatOfTheMacAndOfTheAppShowsOneTimeWithTheRowOfTheMac() {
+        let grace = TeamChatKey(room: "r1", member: "m-grace")
+        let local = [grace: TeamLastMessage(thisMac: true, text: "Unsent", createdAt: "2026-11-11T00:00:00Z")]
+        let room = room(directs: [direct("m-grace", at: "2026-11-10T09:00:00Z", unread: 2)])
+        let directs = room.listedDirects(local: local)
+        XCTAssertEqual(directs.map(\.member), ["m-grace"])
+        XCTAssertEqual(directs.first?.lastMessage?.text, "See you at 3", "The row of the Mac keeps its line.")
+        XCTAssertEqual(directs.first?.unread, 2)
+        XCTAssertEqual(room.listedDirects(local: [TeamChatKey(room: "r2", member: "m-lin"): local[grace]!]).count, 1,
+                       "A chat of another room is not a chat of this room.")
+        XCTAssertEqual(room.listedDirects(local: ["r1": local[grace]!]).count, 1, "The Team chat is no direct chat.")
+    }
+
+    func testTheRowFollowsASendAndARemoval() throws {
+        var chat = TeamChat()
+        chat.pending = [unsent("Hello Lin", at: "2026-11-09T00:00:00Z")]
+        XCTAssertEqual(chat.newestLocal?.text, "Hello Lin")
+        // The Mac confirms the message: the row shows the saved message.
+        chat.pending = []
+        chat.put(TeamMessage(id: "e1", first: 1, thisMac: true, text: "Hello Lin", createdAt: "2026-11-09T00:00:01Z"))
+        let saved = try XCTUnwrap(chat.newestLocal)
+        XCTAssertEqual(TeamChatPreview.text(saved, direct: true), "You: Hello Lin")
+        // The person removes an unsent message, and the chat has nothing left: the row goes.
+        var removed = TeamChat()
+        removed.pending = [unsent("Gone", at: "2026-11-09T00:00:00Z")]
+        removed.pending = []
+        XCTAssertNil(removed.newestLocal)
+        let room = room(directs: [])
+        XCTAssertTrue(room.listedDirects(local: [:]).isEmpty)
+        // A removal on its way hides the message.
+        chat.deleting = ["e1"]
+        XCTAssertNil(chat.newestLocal)
+    }
+
+    func testAMemberThatLeftAndAnOlderService() {
+        let gone = TeamChatKey(room: "r1", member: "m-gone")
+        let local = [gone: TeamLastMessage(thisMac: true, text: "Are you there?", createdAt: "2026-11-09T00:00:00Z")]
+        let room = room(directs: [])
+        let directs = room.listedDirects(local: local)
+        XCTAssertEqual(directs.map(\.member), ["m-gone"])
+        XCTAssertEqual(room.directPeer("m-gone").name, TeamNames.formerMember)
+        XCTAssertFalse(room.directPeer("m-gone").canReceive)
+        // An older service sends no `directs`: no direct row, also with unsent messages in the cache.
+        var older = room
+        older.directs = nil
+        XCTAssertTrue(older.listedDirects(local: local).isEmpty)
+        XCTAssertEqual(ChatList.people([older], local: local).map(\.id), ["team-r1"])
+    }
+
+    /// The store gives the newest message of each direct chat, and none of a Team chat.
+    @MainActor
+    func testTheStoreGivesTheNewestMessageOfEachDirectChat() {
+        let store = AppStore(demo: true)
+        let lin = TeamChatKey(room: "r1", member: "m-lin")
+        store.teamChats[lin] = TeamChat(pending: [unsent("Hello Lin", at: "2026-11-09T00:00:00Z")])
+        store.teamChats["r1"] = TeamChat(pending: [unsent("Hello team", at: "2026-11-09T00:00:00Z")])
+        store.teamChats[TeamChatKey(room: "r1", member: "m-empty")] = TeamChat(loaded: true)
+        XCTAssertEqual(store.newestLocalMessages.mapValues(\.text), [lin: "Hello Lin"])
+    }
+
     func testPeopleHasTheTeamsAndTheDirectChatsAndBotsHasNone() {
         let room = room(directs: [direct("m-grace", at: "2026-11-10T09:00:00Z")])
         let items: [ChatListItem] = [.direct(room, room.directList[0]), .bot(bot("planner")), .team(room)]

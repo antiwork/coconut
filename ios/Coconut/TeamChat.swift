@@ -70,6 +70,22 @@ extension TeamRoom {
     }
 
     var directList: [TeamDirect] { directs ?? [] }
+
+    /// The direct chats of this room that the Chats list and the Mac section "People" show. This is the one place of
+    /// that rule: each chat of `directs`, and each direct chat of this room that the app has with a message that
+    /// `directs` does not have yet. Such a chat has a first message that did not send, or a message that the Mac
+    /// saved after the last list. Its row has no unread count. A chat of `directs` keeps the row of the Mac. An older
+    /// service sends no `directs`, so its room has no direct chat, also with unsent messages in the cache.
+    /// `local` is the newest message of each chat of the store (AppStore.newestLocalMessages).
+    func listedDirects(local: [TeamChatKey: TeamLastMessage]) -> [TeamDirect] {
+        guard let directs else { return [] }
+        let listed = Set(directs.map(\.member))
+        let added = local.compactMap { chat, last -> TeamDirect? in
+            guard chat.room == room, let member = chat.member, !listed.contains(member) else { return nil }
+            return TeamDirect(member: member, lastMessage: last)
+        }
+        return directs + added.sorted { $0.member < $1.member }
+    }
 }
 
 /// The newest message of a team, for its row in the Chats list. `text` is the start of the message.
@@ -205,6 +221,17 @@ struct TeamChat: Equatable, Sendable {
 
     /// The `first` of the newest message that the Mac has.
     var newestFirst: Int? { messages.last?.first }
+
+    /// The newest message of the chat in the app, for the row of a direct chat that the list of the Mac does not have
+    /// yet: the newest unsent message, else the newest saved message that shows. Nil for a chat without one.
+    var newestLocal: TeamLastMessage? {
+        if let pending = pending.last {
+            return TeamLastMessage(thisMac: true, text: pending.text, createdAt: pending.createdAt)
+        }
+        guard let message = messages.last(where: { !deleting.contains($0.id) }) else { return nil }
+        return TeamLastMessage(first: message.first, thisMac: message.thisMac, text: message.text,
+                               createdAt: message.createdAt)
+    }
 
     /// The lower end of the range of the newest page: the `before` of its answer. Nil when the newest page reaches the
     /// start of the chat. The older pages are the messages under it.
@@ -443,9 +470,10 @@ enum ChatList {
     /// One list, newest activity first. `bots` is in that order already. The activity of a team is its newest message,
     /// or the time when this Mac made or joined it, and the activity of a direct chat is its newest message. A team
     /// or a direct chat and a bot with the same time keep the bot first.
-    static func items(bots: [Bot], latest: [String: Date], rooms: [TeamRoom]) -> [ChatListItem] {
+    static func items(bots: [Bot], latest: [String: Date], rooms: [TeamRoom],
+                      local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
-        let people = people(rooms)
+        let people = people(rooms, local: local)
         var items: [ChatListItem] = []
         items.reserveCapacity(bots.count + people.count)
         var next = people.startIndex
@@ -460,10 +488,12 @@ enum ChatList {
         return items
     }
 
-    /// The teams and the direct chats of the rooms, newest activity first. An older service sends no `directs`, so
-    /// its rooms bring the teams only.
-    static func people(_ rooms: [TeamRoom]) -> [ChatListItem] {
-        let items = rooms.flatMap { room in [.team(room)] + room.directList.map { ChatListItem.direct(room, $0) } }
+    /// The teams and the direct chats of the rooms (TeamRoom.listedDirects), newest activity first. An older service
+    /// sends no `directs`, so its rooms bring the teams only.
+    static func people(_ rooms: [TeamRoom], local: [TeamChatKey: TeamLastMessage] = [:]) -> [ChatListItem] {
+        let items = rooms.flatMap { room in
+            [.team(room)] + room.listedDirects(local: local).map { ChatListItem.direct(room, $0) }
+        }
         return items.sorted { ($0.peopleActivity, $1.id) > ($1.peopleActivity, $0.id) }
     }
 }
@@ -516,11 +546,12 @@ struct ChatSections: Equatable {
     var bots: [Bot]
 
     /// One pass over the messages. A section without rows does not show.
-    static func make(bots: [Bot], messages: [Message], rooms: [TeamRoom]) -> ChatSections {
+    static func make(bots: [Bot], messages: [Message], rooms: [TeamRoom],
+                     local: [TeamChatKey: TeamLastMessage] = [:]) -> ChatSections {
         let latest = ChatList.lastMessageDates(messages)
         func activity(_ bot: Bot) -> Date { latest[bot.id] ?? bot.createdAt.apiDate ?? .distantPast }
         let active = bots.filter { !$0.archived }.sorted { activity($0) > activity($1) }
-        return ChatSections(pinned: active.filter(\.pinned), people: ChatList.people(rooms),
+        return ChatSections(pinned: active.filter(\.pinned), people: ChatList.people(rooms, local: local),
                             bots: active.filter { !$0.pinned })
     }
 }
