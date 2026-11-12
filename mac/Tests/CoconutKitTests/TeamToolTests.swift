@@ -63,10 +63,10 @@ final class TeamToolTests: XCTestCase {
     }
 
     func room(_ id: String = TeamToolTests.roomID, name: String = "Example Team", bots: [[String: Any]] = [],
-              error: String? = nil) -> [String: Any] {
+              error: String? = nil, members: [[String: Any]]? = nil) -> [String: Any] {
         ["room": id, "name": name, "state": "active", "is_admin": false, "relay": "https://relay.example",
-         "members": [["member": "m1", "name": "Ada", "avatar": "", "color": "", "admin": true, "this_mac": false],
-                     ["member": "m2", "name": "Grace", "avatar": "", "color": "", "admin": false, "this_mac": true]],
+         "members": members ?? [["member": "m1", "name": "Ada", "avatar": "", "color": "", "admin": true, "this_mac": false],
+                                ["member": "m2", "name": "Grace", "avatar": "", "color": "", "admin": false, "this_mac": true]],
          "bots": bots, "sync": ["seq": 2, "error": error.map { $0 as Any } ?? NSNull()]]
     }
 
@@ -180,6 +180,34 @@ final class TeamToolTests: XCTestCase {
             "Member: Ada (admin)", "Member: Grace (this Mac)", "Bots: none",
         ]))
         XCTAssertEqual(service.sent, ["GET /v1/team/rooms"])
+    }
+
+    func testAMacWithoutAPersonHasTheNoteNoPerson() async throws {
+        func member(_ id: String, _ name: String, admin: Bool = false, thisMac: Bool = false,
+                    botOnly: Bool? = nil) -> [String: Any] {
+            var member: [String: Any] = ["member": id, "name": name, "avatar": "", "color": "", "admin": admin,
+                                         "this_mac": thisMac]
+            member["bot_only"] = botOnly
+            return member
+        }
+        rooms([room(members: [member("m1", "Ada", admin: true, botOnly: false), member("m2", "Grace"),
+                              member("m3", "Spare Mac", botOnly: true)]),
+               room(Self.otherID, name: "Other Team", members: [member("m1", "Spare Mac", thisMac: true, botOnly: true)]),
+               room(Self.lowerID, name: "Third Team",
+                    members: [member("m1", "Spare Mac", admin: true, thisMac: true, botOnly: true)])])
+        let output = try await run([])
+        XCTAssertEqual(output.lines.filter { $0.hasPrefix("Member: ") }, [
+            "Member: Ada (admin)", "Member: Grace", "Member: Spare Mac (no person)",
+            "Member: Spare Mac (this Mac, no person)",
+            "Member: Spare Mac (admin, this Mac, no person)",
+        ])
+    }
+
+    func testAServiceWithoutTheFieldBotOnlyGivesNoNote() async throws {
+        rooms([room(members: [["member": "m1", "name": "Spare Mac", "avatar": "", "color": "", "admin": false,
+                               "this_mac": false]])])
+        let output = try await run([])
+        XCTAssertEqual(output.lines.filter { $0.hasPrefix("Member: ") }, ["Member: Spare Mac"])
     }
 
     func testAMacWithoutATeamSaysSoInOneLine() async throws {
