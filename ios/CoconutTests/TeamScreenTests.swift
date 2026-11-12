@@ -549,6 +549,36 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
+    /// A team notification of a team that the list does not have reads the list first. A pairing that changes during
+    /// that read takes the notification with it, as for a card. Else the tap opens the Chats list.
+    @MainActor
+    func testATeamNotificationGoesWithAPairingThatChangesDuringTheLoad() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        let left = String(repeating: "cd", count: 32)
+        let target = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": TeamServer.device, "kind": "team", "team": left]]))
+        try await withPairedStore(address: address) { store in
+            let destination = await store.notificationDestination(target)
+            XCTAssertEqual(destination, .chatList, "The Mac is no longer in this team.")
+        }
+        try await withPairedStore(address: address) { store in
+            server.holdLists()
+            let late = Task { await store.notificationDestination(target) }
+            try await waitUntil { server.heldLists == 1 }
+            store.disconnect()
+            server.releaseLists()
+            let destination = await late.value
+            XCTAssertNil(destination, "A notification of the earlier pairing opens nothing.")
+        }
+        #endif
+    }
+
     /// An older Mac answers 404 to the team routes. The screen says what to do, with no banner of its own.
     @MainActor
     func testAnOlderMacShowsTheUpdateText() async throws {
@@ -1090,6 +1120,8 @@ final class TeamScreenTests: XCTestCase {
 /// A Mac in one team. It can add a member and say so in its next updates, hold the answers of its list requests,
 /// share the page "d1" of its bot with the team and stop, and leave. With `older`, it has no team routes, as a service before the Team screen.
 private final class TeamServer: @unchecked Sendable {
+    /// The device ID of each pairing with this Mac. A notification target needs a UUID.
+    static let device = "00000000-0000-4000-8000-0000000000d1"
     private let queue = DispatchQueue(label: "coconut.team-test")
     private let lock = NSLock()
     private let listener: NWListener
@@ -1336,7 +1368,7 @@ private final class TeamServer: @unchecked Sendable {
                 let body: String?
                 switch route {
                 case "GET /v1/state": body = nil
-                case "POST /v1/pair": body = #"{"device_id": "device", "token": "fixture-only"}"#
+                case "POST /v1/pair": body = #"{"device_id": "\#(TeamServer.device)", "token": "fixture-only"}"#
                 case _ where older && route.contains("/v1/team/"):
                     status = "404 Not Found"
                     body = #"{"error": "This route was not found."}"#

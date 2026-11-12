@@ -2657,7 +2657,7 @@ final class AppStore {
 
     func notificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {
         guard acceptsNotification(target) else { return nil }
-        if let room = target.team { return await teamNotificationDestination(room) }
+        if target.team != nil { return await teamNotificationDestination(target) }
         if target.group { return .inboxList }
         if target.decisionId == nil { return .conversation(target.conversationRoute) }
         // Without the Mac, the phone opens the card that it has, or the chat. Waiting would keep the Inbox busy
@@ -2698,11 +2698,19 @@ final class AppStore {
     }
 
     /// The chat of the team of a notification, or the Chats list when the app no longer has the team, for example
-    /// after a leave. The app reads the list of the teams first, because a terminated app has none. A list that the
-    /// app cannot read keeps the chat, as a list that it has not loaded keeps each chat (`teamListHas`).
-    func teamNotificationDestination(_ room: String) async -> NotificationDestination {
+    /// after a leave. The app reads the list of the teams first when the list does not have the team. Nil when the
+    /// pairing changed during that read, as for a card.
+    func teamNotificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {
+        guard let room = target.team else { return nil }
         if team?.rooms.contains(where: { $0.room == room }) != true { await loadTeam() }
-        return teamListHas(room) ? .team(room) : .chatList
+        guard acceptsNotification(target) else { return nil }
+        return teamNotificationPlace(room)
+    }
+
+    /// The place of a team notification with the list that the app has now. A list that the app has not loaded, or
+    /// cannot read, keeps each chat (`teamListHas`), so a tap in a terminated app opens the chat at once.
+    func teamNotificationPlace(_ room: String) -> NotificationDestination {
+        teamListHas(room) ? .team(room) : .chatList
     }
 
     func acceptsNotification(_ target: NotificationTarget) -> Bool {
