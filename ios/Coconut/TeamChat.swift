@@ -506,7 +506,7 @@ enum TeamBotRow: Identifiable, Equatable, Sendable {
         }
     }
 
-    /// The bot of the row, for its face. A Mac without a bot has no face, as a member has none.
+    /// The bot of the row, for its face. A Mac without a bot shows a quiet symbol of a Mac instead.
     var bot: TeamRoomBot? {
         switch self {
         case .answers(let bot), .pagesOnly(let bot): bot

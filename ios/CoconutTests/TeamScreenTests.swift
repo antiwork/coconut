@@ -81,7 +81,7 @@ final class TeamScreenTests: XCTestCase {
         XCTAssertEqual(rows.map(\.name), ["Planner", "Reporter", "Scribe", "Spare Mac"])
         XCTAssertEqual(rows.map(\.note), [nil, nil, "Pages only", "No bot yet"])
         XCTAssertEqual(rows.map(\.id), ["team-bot-t-r-4", "team-bot-t-r-3", "team-bot-t-r-2", "team-mac-m-spare"])
-        XCTAssertEqual(rows.compactMap(\.bot?.id), ["t-r-4", "t-r-3", "t-r-2"], "A Mac without a bot has no face.")
+        XCTAssertEqual(rows.compactMap(\.bot?.id), ["t-r-4", "t-r-3", "t-r-2"], "A Mac without a bot has no bot face.")
         XCTAssertFalse(rows.contains { $0.name == "Writer" }, "A bot of a person never shows.")
         XCTAssertFalse(rows.contains { $0.name == "Reporter Mac" || $0.name == "Planner Mac" },
                        "A Mac with a bot shows as its bots.")

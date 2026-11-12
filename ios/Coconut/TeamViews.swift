@@ -253,11 +253,7 @@ struct TeamRoomView: View {
 
     @ViewBuilder private func memberRow(_ member: TeamMember, in room: TeamRoom) -> some View {
         let tags = [member.thisMac == true ? "You" : nil, member.admin == true ? "Admin" : nil].compactMap { $0 }
-        let label = HStack {
-            Text(member.name)
-            Spacer()
-            if !tags.isEmpty { Text(tags.joined(separator: " · ")).foregroundStyle(.secondary) }
-        }
+        let label = TeamRowText(name: member.name, note: tags.isEmpty ? nil : tags.joined(separator: " · "))
         if member.thisMac == true {
             NavigationLink { TeamNameView(roomId: room.room, name: member.name) } label: { label }
                 .accessibilityIdentifier("team-member-you")
@@ -266,30 +262,21 @@ struct TeamRoomView: View {
         }
     }
 
-    /// A face and a name, and the quiet text at the right end, as the row of a member has. When the name and the
-    /// text do not fit on one line, the text goes under the name, so neither is cut.
+    /// A face, the name and the quiet text, as the row of a member has. A Mac without a bot has a quiet symbol of a
+    /// Mac in the space of the face, so each name of the section starts at the same edge.
     private func botRow(_ row: TeamBotRow) -> some View {
         HStack(spacing: 12) {
             if let bot = row.bot {
                 BotAvatar(symbol: bot.avatar ?? "", color: bot.color ?? "", size: avatarSize, identity: bot.id,
                           animated: false)
-            }
-            if let note = row.note {
-                ViewThatFits(in: .horizontal) {
-                    HStack {
-                        Text(row.name).lineLimit(1)
-                        Spacer()
-                        Text(note).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(row.name)
-                        Text(note).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
             } else {
-                Text(row.name).frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "desktopcomputer")
+                    .font(.system(size: avatarSize * 0.6))
+                    .foregroundStyle(.secondary)
+                    .frame(width: avatarSize * BotAvatar.scale, height: avatarSize * BotAvatar.scale)
+                    .accessibilityHidden(true)
             }
+            TeamRowText(name: row.name, note: row.note)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(row.spoken)
@@ -305,6 +292,32 @@ struct TeamRoomView: View {
         Task {
             _ = await action()
             busy = false
+        }
+    }
+}
+
+/// The name of a row of the Team screen, and its quiet text at the right end, such as "You · Admin". When both do not
+/// fit on one line, the text goes under the name, so neither is cut.
+private struct TeamRowText: View {
+    let name: String
+    let note: String?
+
+    var body: some View {
+        if let note {
+            ViewThatFits(in: .horizontal) {
+                HStack {
+                    Text(name).lineLimit(1)
+                    Spacer()
+                    Text(note).foregroundStyle(.secondary).lineLimit(1)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name)
+                    Text(note).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            Text(name).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
