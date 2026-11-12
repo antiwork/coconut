@@ -192,7 +192,8 @@ struct MacSidebar: View {
                             PeopleRow(item: item, avatarSize: 32)
                                 .padding(.vertical, 2)
                                 .tag(MacSelection.team(chat))
-                                .accessibilityIdentifier("sidebar-" + HomeLaunchView.identifier(chat))
+                                .accessibilityIdentifier(chat.member.map { "sidebar-direct-" + $0 }
+                                                         ?? "sidebar-team-" + chat.room)
                         }
                     }
                 }
