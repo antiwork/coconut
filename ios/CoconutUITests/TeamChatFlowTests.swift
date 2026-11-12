@@ -681,6 +681,8 @@ final class TeamChatFlowTests: XCTestCase {
         let banner = springboard.descendants(matching: .any).matching(NSPredicate(format: "label CONTAINS %@", body)).firstMatch
         XCTAssertTrue(banner.waitForExistence(timeout: 45), "The banner must show the text of the message.")
         XCTAssertTrue(banner.label.contains("Grace"), banner.label)
+        // The banner slides in. The picture waits until it is at rest.
+        sleep(2)
         screen("dm-push-banner")
         banner.tap()
         XCTAssertTrue(app.wait(for: .runningForeground, timeout: 10))
