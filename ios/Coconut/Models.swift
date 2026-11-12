@@ -579,7 +579,7 @@ struct StateSnapshot: Codable, Sendable {
     var modelCatalog: ModelCatalog? = nil
     var approvals: ApprovalSettings? = nil
     var parallelWork: ParallelWorkSettings? = nil
-    var apiFallback: APIFallbackSettings? = nil
+    var fallback: FallbackSettings? = nil
     var workCapacity: ParallelWorkSettings? = nil
     var mcpServers: [MCPServer]? = nil
     var pushConfigured: Bool? = nil
@@ -741,15 +741,21 @@ struct MCPRequest: Encodable {
     var token: String? = nil
 }
 
-struct APIFallbackSettings: Codable, Equatable, Sendable {
-    var enabled: Bool
-    var available: Bool
-    var model: String?
-    var canEnable: Bool
+/// The fallback chain of the default Hermes profile, in order. Hermes tries each model when the default model fails.
+struct FallbackSettings: Codable, Equatable, Sendable {
+    var models: [FallbackModel]
 }
 
-struct APIFallbackRequest: Encodable {
-    let enabled: Bool
+struct FallbackModel: Codable, Equatable, Hashable, Sendable {
+    var model: String
+    var provider: String
+
+    var selection: ModelOverride { ModelOverride(model: model, provider: provider, reasoningEffort: nil) }
+    var selectionKey: String { selection.selectionKey }
+}
+
+struct FallbackRequest: Encodable {
+    let models: [FallbackModel]
 }
 
 /// The position of the first message with each ID and each client request ID. AppStore makes it again each time its

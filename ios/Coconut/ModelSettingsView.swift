@@ -87,10 +87,7 @@ struct ModelSettingsView: View {
                         Picker("Model", selection: Binding(get: { selectionKey }, set: { chooseModel($0) })) {
                             if selectedModel == nil { Text("Choose a model").tag("") }
                             ForEach(catalog.models, id: \.selectionKey) { model in
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(model.name)
-                                    Text(model.provider).font(.caption).foregroundStyle(.secondary)
-                                }.tag(model.selectionKey)
+                                ModelRow(name: model.name, provider: model.provider).tag(model.selectionKey)
                             }
                         }
                         .pagePickerStyle()
@@ -125,7 +122,7 @@ struct ModelSettingsView: View {
                     }
                 }
             }
-            if !isBot { APIFallbackSection() }
+            if !isBot { FallbackSection() }
             if !canEdit {
                 Section {} footer: { Text("Connect to your Mac first.") }
             }
@@ -219,37 +216,103 @@ enum ModelPresentation {
     }
 }
 
-private struct APIFallbackSection: View {
+/// A model name with its provider under it, as a picker row and as a value.
+private struct ModelRow: View {
+    let name: String
+    let provider: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(name)
+            Text(provider).font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// The fallback chain of Hermes. The picker sets the first fallback model. Hermes keeps the models after it.
+private struct FallbackSection: View {
     @Environment(AppStore.self) private var store
     @State private var saving = false
 
+    private var canEdit: Bool { store.connection == .connected || store.isDemo }
+
     var body: some View {
-        if let settings = store.apiFallback {
+        let catalog = store.modelCatalog.flatMap { $0.models.isEmpty ? nil : $0 }
+        if let chain = store.fallback?.models, catalog != nil || !chain.isEmpty {
             Section {
-                Toggle(isOn: Binding(get: { settings.enabled }, set: { enabled in
-                    saving = true
-                    Task { await store.setAPIFallback(enabled); saving = false }
-                })) {
-                    HStack {
-                        Text("Use OpenAI API fallback")
-                        if saving { ProgressView().controlSize(.small) }
+                if let catalog {
+                    Picker(selection: Binding(get: { chain.first?.selectionKey ?? "" }, set: { choose($0, chain: chain, catalog: catalog) })) {
+                        Text("None").tag("")
+                        if let first = chain.first, catalog.entry(for: first.selection) == nil {
+                            ModelRow(name: first.model, provider: first.provider).tag(first.selectionKey)
+                        }
+                        ForEach(choices(catalog, first: chain.first), id: \.selectionKey) { model in
+                            ModelRow(name: model.name, provider: model.provider).tag(model.selectionKey)
+                        }
+                    } label: {
+                        HStack {
+                            Text("Fallback model")
+                            if saving { ProgressView().controlSize(.small) }
+                        }
                     }
+                    .pagePickerStyle()
+                    .disabled(saving || !canEdit)
+                    .accessibilityIdentifier("fallback-model-picker")
+                } else if let first = chain.first {
+                    LabeledContent("Fallback model") { row(first) }
                 }
-                .tint(BoardStyle.green)
-                .disabled(saving || (!settings.enabled && !settings.canEnable) || (!store.isDemo && store.connection != .connected))
-                .accessibilityIdentifier("openai-api-fallback")
-                if let model = settings.model {
-                    LabeledContent("Fallback model", value: model)
+                ForEach(Array(chain.enumerated().dropFirst()), id: \.offset) { index, model in
+                    LabeledContent("Then") { row(model) }
+                        .accessibilityIdentifier("fallback-then-\(index)")
                 }
             } header: {
                 Text("Fallback")
             } footer: {
-                Text(!settings.available
-                     ? "Save an OpenAI API key in Hermes on your Mac to enable fallback. The key stays on your Mac."
-                     : !settings.enabled && !settings.canEnable
-                     ? "Select an OpenAI model before enabling this fallback."
-                     : "Hermes uses this model if the primary provider fails or reaches its limit. API usage is billed separately. Changes save automatically and apply to new turns.")
+                footer(chain)
             }
+        }
+    }
+
+    // A model that the catalog does not have shows its model ID.
+    private func row(_ model: FallbackModel) -> ModelRow {
+        ModelRow(name: store.modelCatalog?.name(for: model.selection) ?? model.model, provider: model.provider)
+    }
+
+    private func footer(_ chain: [FallbackModel]) -> Text {
+        if chain.isEmpty {
+            return Text("Hermes uses the fallback model when the default model fails or reaches its limit.")
+        }
+        let text = "Hermes uses this model when the default model fails or reaches its limit. Its provider bills the usage. Changes apply to new turns."
+        return Text(chain.count > 1 ? text + " Hermes has more fallback models after this one. Coconut changes only the first." : text)
+    }
+
+    // The default model is no fallback for itself. It stays in the list only when Hermes already has it first.
+    private func choices(_ catalog: ModelCatalog, first: FallbackModel?) -> [ModelCatalogEntry] {
+        let primary = catalog.defaults.selection
+        return catalog.models.filter { model in
+            !(model.id == primary.model && model.provider == primary.provider)
+                || (model.id == first?.model && model.provider == first?.provider)
+        }
+    }
+
+    // The choice replaces the first model. The models after it stay, in order, without a second copy of the choice.
+    private func choose(_ key: String, chain: [FallbackModel], catalog: ModelCatalog) {
+        guard !saving, canEdit, key != (chain.first?.selectionKey ?? "") else { return }
+        let rest = Array(chain.dropFirst())
+        var models = rest
+        if let choice = catalog.models.first(where: { $0.selectionKey == key }) {
+            let model = FallbackModel(model: choice.id, provider: choice.provider)
+            models = [model] + rest.filter {
+                $0.model.lowercased() != model.model.lowercased() || $0.provider.lowercased() != model.provider.lowercased()
+            }
+        } else if !key.isEmpty {
+            return
+        }
+        saving = true
+        store.error = nil
+        Task {
+            await store.setFallback(models)
+            saving = false
         }
     }
 }

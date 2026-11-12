@@ -144,7 +144,7 @@ struct NativeSnapshot: Decodable, Sendable {
     let modelConfigured: Bool
     let approvals: ApprovalSettings?
     let parallelWork: ParallelWorkSettings?
-    let apiFallback: APIFallbackSettings?
+    let fallback: FallbackSettings?
     let mcpServers: [MCPServer]?
     let routines: [Routine]?
     let pushConfigured: Bool?

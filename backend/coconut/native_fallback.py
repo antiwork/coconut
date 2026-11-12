@@ -1,101 +1,91 @@
-"""Expose Hermes's OpenAI fallback without owning provider retry logic."""
-from contextlib import contextmanager
-import os
-from pathlib import Path
+"""Expose the fallback models of Hermes. Hermes owns the retry logic."""
+from copy import deepcopy
 
 if __package__:
     from .native_settings import raw_config, save_config
-    from .model_catalog import _contained
+    from .model_catalog import FALLBACK_KEYS
 else:
     from native_settings import raw_config, save_config
-    from model_catalog import _contained
+    from model_catalog import FALLBACK_KEYS
+
+# A request holds at most this many fallback models. A chain that a person wrote in Hermes stays below it.
+MAX_MODELS = 32
 
 
 def chain(config):
-    if not any(key in config for key in ('fallback_providers', 'fallback_model')):
+    """The fallback chain of Hermes, in order: `fallback_providers`, then the legacy `fallback_model`."""
+    if not any(key in config for key in FALLBACK_KEYS):
         return []
     from hermes_cli.fallback_config import get_fallback_chain
     return get_fallback_chain(config)
 
 
-def is_openai(entry):
-    return (entry.get('provider') == 'openai-api'
-            and entry_url(entry).rstrip('/') == 'https://api.openai.com/v1')
+def identity(entry):
+    """The route of an entry without its endpoint. The app does not see or send an endpoint."""
+    from hermes_cli.providers import normalize_provider
+    return normalize_provider(entry['provider']), entry['model'].strip().lower()
 
 
-def entry_url(entry):
-    from hermes_cli.auth import PROVIDER_REGISTRY
-    from agent.secret_scope import get_secret
-    provider = PROVIDER_REGISTRY['openai-api']
-    # Bind the native registry endpoint through the same scope as its key.
-    return entry.get('base_url') or (get_secret(provider.base_url_env_var) or '').strip() or provider.inference_base_url
-
-
-@contextmanager
-def configuration(home):
-    for name in ('config.yaml', '.env'):
-        _contained(Path(home) / name, home)
-    raw_config(home)
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
-    from agent.secret_scope import build_profile_secret_scope, set_secret_scope, reset_secret_scope
-    from hermes_cli.config import load_config_readonly
-    from hermes_cli.env_loader import hydrate_profile_secret_sources, reset_secret_source_cache
-    home_token = set_hermes_home_override(str(home))
-    secret_token = None
-    try:
-        # Process exports can belong to another bot or an earlier turn.
-        secrets = dict.fromkeys(os.environ, '')
-        reset_secret_source_cache(Path(home))
-        hydrate_profile_secret_sources(Path(home))
-        secrets.update(build_profile_secret_scope(Path(home)))
-        secret_token = set_secret_scope(secrets)
-        yield load_config_readonly()
-    finally:
-        if secret_token is not None:
-            reset_secret_scope(secret_token)
-        reset_hermes_home_override(home_token)
+def public(entries):
+    # Only the model and its provider leave the Mac. Other keys can hold a key, a key name or a private endpoint.
+    return {'models': [{'model': entry['model'], 'provider': entry['provider']} for entry in entries]}
 
 
 def state(home):
-    with configuration(home) as config:
-        entry = next((item for item in chain(config) if is_openai(item)), None)
-        model = config.get('model') or {}
-        candidate = model.get('default') if isinstance(model, dict) and model.get('provider') in ('openai-codex', 'openai-api') else None
-        available = bool(entry_key(entry or {'provider': 'openai-api'}))
-        return dict(enabled=entry is not None, available=available,
-                    model=entry['model'] if entry else candidate,
-                    can_enable=available and bool(entry or candidate))
+    return public(chain(raw_config(home)))
 
 
-def save(home, enabled):
-    if type(enabled) is not bool:
-        raise ValueError('Choose whether to use the OpenAI API fallback.')
-    current = state(home)
-    if enabled and not current['can_enable']:
-        raise ValueError('Save an OpenAI API key on the Mac and select an OpenAI model first.')
+def validate(models):
+    if (not isinstance(models, list) or len(models) > MAX_MODELS
+            or not all(isinstance(item, dict) and set(item) == {'model', 'provider'}
+                       and all(isinstance(item[key], str) and item[key].strip() for key in item) for item in models)):
+        raise ValueError('Select fallback models from the Hermes list.')
+    return [{'model': item['model'].strip(), 'provider': item['provider'].strip()} for item in models]
+
+
+def kept_entries(current, models, identity):
+    """Map `models` to entries of the chain `current`. Return the new chain.
+
+    Each model that the chain has keeps its entry. The chain can hold one model more than once, with different
+    endpoints. When the request holds fewer copies of that model, the last copies of the chain stay: the app removes or
+    replaces models at the start. A further copy of a model that the request already has is dropped. A new model gets
+    only its provider and model.
+    """
+    from collections import Counter
+    wanted = Counter(identity(item) for item in models)
+    unused = {}
+    for entry in current:
+        unused.setdefault(identity(entry), []).append(entry)
+    for route, entries in unused.items():
+        del entries[:max(len(entries) - wanted[route], 0)]
+    result, seen = [], set()
+    for item in models:
+        route = identity(item)
+        if unused.get(route):
+            result.append(deepcopy(unused[route].pop(0)))
+        elif route not in seen:
+            result.append(item)
+        seen.add(route)
+    return result
+
+
+def save(home, models):
+    """Set the fallback chain of a profile to `models`, in order. Return the new state.
+
+    Each model keeps its entry of the chain, with its endpoint and its key settings (see `kept_entries`). The kept entry
+    is the copy that Hermes reads: Hermes removes spaces from `provider` and `model`, and the `/` at the end of
+    `base_url`. Hermes resolves the endpoint and the key of a new model from its provider. The new chain goes into
+    `fallback_providers`, so the legacy `fallback_model` moves there. An entry that Hermes cannot use, without a
+    provider or a model, is not kept.
+    """
+    models = validate(models)
     config = raw_config(home)
-    entries = chain(config)
-    from hermes_cli.config import _expand_env_vars
-    with configuration(home):
-        openai_entries = [is_openai(_expand_env_vars(entry)) for entry in entries]
-    if enabled and not any(openai_entries):
-        entries.append(dict(provider='openai-api', model=current['model'],
-                            base_url='https://api.openai.com/v1', key_env='OPENAI_API_KEY'))
-    if not enabled:
-        entries = [entry for entry, matches in zip(entries, openai_entries) if not matches]
-    config['fallback_providers'] = entries
-    config.pop('fallback_model', None)
+    entries = kept_entries(chain(config), models, identity)
+    providers, legacy = FALLBACK_KEYS
+    config.pop(legacy, None)
+    if entries:
+        config[providers] = entries
+    else:
+        config.pop(providers, None)
     save_config(home, config)
     return state(home)
-
-
-def entry_key(entry):
-    from hermes_cli.fallback_config import resolve_entry_api_key
-    from hermes_cli.auth import resolve_api_key_provider_credentials
-    from hermes_cli.config import _ENV_REF_RE
-    key = resolve_entry_api_key(entry)
-    if key and _ENV_REF_RE.search(key):
-        key = None
-    if not key and entry.get('provider') == 'openai-api':
-        key = resolve_api_key_provider_credentials('openai-api').get('api_key')
-    return key if key and not _ENV_REF_RE.search(key) else None
