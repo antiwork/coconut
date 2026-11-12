@@ -9,7 +9,8 @@ It needs macOS, the Xcode Command Line Tools, and `npm ci` in relay/.
     python3 scripts/test_team_log.py
 
 scripts/test_tunnel_loopback.py loads this test too, so the Mac app job of CI runs it after its `npm ci`.
-TeamLogVectorTests checks the test vectors of docs/team-log.md with the real helper.
+TeamLogVectorTests checks the test vectors of docs/team-log.md with the real helper. TeamDirectTests sends a direct
+message between two of three Macs in one team.
 """
 from __future__ import annotations
 
@@ -1043,6 +1044,126 @@ class TeamPushTests(unittest.TestCase):
         self.assertEqual(len(relay.sent), 1)
 
 
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The direct message test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamDirectTests(unittest.TestCase):
+    """Ada writes a direct message to Grace through the real relay and the real helper. Lin is in the same team, and
+    her Mac stores the entry and shows nothing. The three services run in this process, so each phone gets its
+    notifications through the fake transport of the push tests, and no notification leaves this Mac."""
+
+    @classmethod
+    def setUpClass(cls):
+        TeamPushTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        TeamPushTests.tearDownClass.__func__(cls)
+
+    def test_a_direct_message_reaches_only_the_member_that_it_is_for(self):
+        import logging
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service, ServiceError
+        from test_push import pair_phone
+        from test_push_relay import EncryptedTransport
+        from test_team_push import ROUTE, flush, register
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        records = []
+        handler = logging.Handler(logging.DEBUG)
+        handler.emit = records.append
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        self.addCleanup(root_logger.setLevel, root_logger.level)
+        root_logger.setLevel(logging.DEBUG)
+        self.addCleanup(root_logger.removeHandler, handler)
+        macs, phones = [], []
+        for name in ('ada', 'grace', 'lin'):
+            root = Path(self.temp.name) / name
+            service = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(service.close)
+            phone = pair_phone(service)
+            service.push.relay = EncryptedTransport()
+            register(service, phone, route=ROUTE, level='grouped')
+            macs.append(service)
+            phones.append(phone)
+        ada, grace, lin = macs
+
+        def call(service, method, path, data=None, direct=False):
+            return service.team_request(method, path, data or {}, '', 'test-device', direct)
+
+        def sync():
+            for _ in range(2):
+                for service in macs:
+                    service.team_sync_pass()
+
+        def refusal(*arguments):
+            with self.assertRaises(ServiceError) as raised:
+                call(*arguments)
+            return raised.exception.status, str(raised.exception)
+
+        room_id = call(ada, 'POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                       'relay': self.url})['room']['room']
+        for service, name in ((grace, 'Grace'), (lin, 'Lin')):
+            link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+            call(service, 'POST', '/v1/team/join', {'link': link, 'member_name': name})
+        members = [service.team_store.room(room_id)['member'] for service in macs]
+        ada_id, grace_id, lin_id = members
+
+        def path(member, rest='messages'):
+            return f'/v1/team/rooms/{room_id}/directs/{member}/{rest}'
+
+        # Ada's app asks for direct messages. Grace's Mac has no mark yet, so it gets nothing.
+        call(ada, 'GET', '/v1/team/rooms', direct=True)
+        sync()
+        self.assertEqual(refusal(ada, 'POST', path(grace_id), {'text': 'Too early'})[0], 409)
+        for service in (grace, lin):
+            call(service, 'GET', '/v1/team/rooms', direct=True)
+        sync()
+        (view,) = call(ada, 'GET', '/v1/team/rooms', direct=True)['rooms']
+        self.assertEqual({member['member']: member['direct'] for member in view['members']},
+                         {ada_id: False, grace_id: True, lin_id: True})
+
+        sent = call(ada, 'POST', path(grace_id), {'text': 'Hello Grace'})['message']
+        sync()
+        (received,) = call(grace, 'GET', path(ada_id))['messages']
+        self.assertEqual((received['id'], received['text'], received['this_mac']), (sent['id'], 'Hello Grace', False))
+        (chat,) = call(grace, 'GET', '/v1/team/rooms', direct=True)['rooms'][0]['directs']
+        self.assertEqual((chat['member'], chat['member_name'], chat['unread']), (ada_id, 'Ada', 1))
+        # Grace's phone gets one notification with the text, and the relay of the phone sees no text.
+        for service in macs:
+            flush(service)
+        (payload,) = grace.push.relay.sealed
+        self.assertEqual(payload['aps']['alert'], {'title': 'Ada', 'body': 'Hello Grace'})
+        self.assertEqual(payload['coconut'], {'version': 1, 'device_id': phones[1], 'kind': 'direct',
+                                              'direct': {'team': room_id, 'member': ada_id}})
+        # Lin's Mac has the entry and shows nothing: no direct chat, no row of the team chat, no notification.
+        self.assertEqual(lin.team_store.entry(room_id, sent['id'])['kind'], 'direct')
+        (lin_view,) = call(lin, 'GET', '/v1/team/rooms', direct=True)['rooms']
+        self.assertEqual((lin_view['directs'], lin_view['unread'], lin_view['last_message']), ([], 0, None))
+        self.assertEqual(call(lin, 'GET', path(ada_id))['messages'], [])
+        self.assertEqual(lin.db.execute('SELECT COUNT(*) FROM team_directs').fetchone()[0], 0)
+        self.assertEqual(lin.db.execute('SELECT COUNT(*) FROM team_messages').fetchone()[0], 0)
+        self.assertEqual((lin.push.relay.sealed, ada.push.relay.sealed), ([], []))
+
+        # An edit and a removal reach Grace.
+        call(ada, 'PATCH', path(grace_id, f'messages/{sent["id"]}'), {'text': 'Hello, Grace'})
+        sync()
+        (edited,) = call(grace, 'GET', path(ada_id))['messages']
+        self.assertEqual((edited['text'], edited['first']), ('Hello, Grace', sent['first']))
+        self.assertIsNotNone(edited['edited_at'])
+        call(ada, 'DELETE', path(grace_id, f'messages/{sent["id"]}'))
+        sync()
+        self.assertEqual(call(grace, 'GET', path(ada_id))['messages'], [])
+        for service in macs:
+            flush(service)
+        self.assertEqual((len(grace.push.relay.sealed), lin.push.relay.sealed), (1, []))
+        # No log line has the text of a message or a name.
+        output = '\n'.join(logging.Formatter().format(record) for record in records)
+        for text in ('Hello', 'Grace', 'Example Team'):
+            self.assertNotIn(text, output)
+
+
 def run_of(start: int, count: int) -> bytes:
     """The bytes from `start`, one higher each time, as the inputs of the test vectors name them."""
     return bytes(range(start, start + count))
@@ -1073,6 +1194,30 @@ WELCOME = bytes.fromhex(
     'ae40e555299323d31f25e0ef44f5563707469473e4f402151b7e88aff20ed3')
 LINK = ('coconut://team/aeqccirdeqssmjzifevcwlbnfyxtamjsgm2dknrxha4tuoz4hu7d6aabaibqibiga4eascqlbqgq4dyqcejbgfavcylrqgi'
         '2dmob2hq7nne5eaaacvuhi5dqom5c6l3smvwgc6jomv4gc3lqnrsuk6dbnvygyzjakrswc3i')
+# The direct message of the vectors: MEMBER writes to READER. The agreement keys are the bytes `c0` to `df` (MEMBER)
+# and `e0` to `ff` (READER).
+READER = run_of(0x10, 32).hex()
+WRITER_AGREEMENT_KEY, READER_AGREEMENT_KEY = b64(run_of(0xc0, 32)), b64(run_of(0xe0, 32))
+WRITER_AGREEMENT, READER_AGREEMENT = '3CzKMejkO72R3_fkdcyjNH60eBB9W9dlq6SuSjDDXUQ', 'c2hF1U6H3gnWuxFKpwQsUKSgFb2ZAdGgAm9ZVlM6FRk'
+SHARED = bytes.fromhex('28150aa20f6f6c9c8177b9deded7464ebc5aac96029777ff7503cd8e8ca7143e')
+PAIR_KEY = bytes.fromhex('46fc42722c716d505c7d6f995ea6ee8b53045f1531ad140a5a036a6a2db93f00')
+DIRECT = f'{{"to":"{READER}","text":"Hello Grace"}}'.encode()
+BOX = bytes.fromhex(
+    'f0f1f2f3f4f5f6f7f8f9fafb33e43c192dd25841a9fdffa40e61265aa37d51c1c7363a4803ccf485d7ae13e09a75e006914d5f3feeddd09e'
+    'd30dc1ddaaa3f4e5311aac1732bf7070e95d0273c0e0b87ec0d6d1cbc438d7deee6138dba44205e6c8f8decba995e6ddd5e9ed63f1d46e5b'
+    'c09457d158d768b49c27')
+
+
+def b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).decode().rstrip('=')
+
+
+def hkdf(secret: bytes, info: bytes) -> bytes:
+    """HKDF-SHA256 with an empty salt and 32 bytes of output (RFC 5869), with the Python standard library."""
+    import hashlib
+    import hmac
+    key = hmac.new(b'\0' * 32, secret, hashlib.sha256).digest()
+    return hmac.new(key, info + b'\x01', hashlib.sha256).digest()
 
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun'),
@@ -1137,6 +1282,31 @@ class TeamLogVectorTests(unittest.TestCase):
         # CryptoKit adds random bytes to each signature, so only the hash of the token is a fixed value.
         proof = self.helper.proof(ROOM, TOKEN, MEMBER_KEY)
         self.assertEqual((proof['hash'], len(base64.b64decode(proof['proof']))), (TOKEN_HASH, 64))
+
+    def test_the_pair_key_and_the_box_of_a_direct_message(self):
+        # The Python standard library gives the pair key from the shared secret: the lower member ID comes first.
+        self.assertEqual(hkdf(SHARED, b'coconut room direct' + bytes.fromhex(ROOM + READER + MEMBER)), PAIR_KEY)
+        self.assertEqual(len(BOX), 122)
+
+        def opened(box: bytes = BOX, *, room: str = ROOM, entry: str = ENTRY, writer: str = MEMBER,
+                   agreement: str = WRITER_AGREEMENT) -> dict:
+            (result,) = self.helper.open_direct(room, READER_AGREEMENT_KEY, READER, [
+                {'entry': entry, 'writer': writer, 'other': MEMBER, 'agreement': agreement, 'box': b64url(box)}])
+            return result
+        self.assertEqual(opened(), {'plaintext': DIRECT})
+        # The box belongs to its room, its entry, its writer and its pair key.
+        self.assertEqual(opened(room='21' + ROOM[2:])['error'], 'seal')
+        self.assertEqual(opened(entry='41' + ENTRY[2:])['error'], 'seal')
+        self.assertEqual(opened(writer=READER)['error'], 'seal')
+        self.assertEqual(opened(agreement=READER_AGREEMENT)['error'], 'seal')
+        changed = bytearray(BOX)
+        changed[40] ^= 1
+        self.assertEqual(opened(bytes(changed))['error'], 'seal')
+        self.assertEqual(opened(BOX[:28])['error'], 'malformed')
+        # A box that the writer seals opens for the reader, and a new nonce makes it differ from the vector.
+        box = self.helper.seal_direct(ROOM, ENTRY, WRITER_AGREEMENT_KEY, MEMBER, READER, READER_AGREEMENT, DIRECT)
+        self.assertNotEqual(box, b64url(BOX))
+        self.assertEqual(opened(base64.urlsafe_b64decode(box + '==')), {'plaintext': DIRECT})
 
 
 if __name__ == '__main__':

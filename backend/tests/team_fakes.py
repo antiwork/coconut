@@ -52,6 +52,11 @@ def decode(text: str):
     return value
 
 
+def public_agreement(agreement_key: str) -> str:
+    """The public agreement key of a private one in the fakes: unpadded base64url of 32 bytes, as in a `member` entry."""
+    return base64.urlsafe_b64encode(hashlib.sha256(agreement_key.encode()).digest()).decode().rstrip('=')
+
+
 class FakeHelper:
     """The helper without its cryptography. `version` is the version of the bodies that it seals and can open."""
 
@@ -68,9 +73,36 @@ class FakeHelper:
     def member(self) -> dict:
         self._call('member')
         member = secrets.token_hex(32)
+        agreement_key = base64.b64encode(secrets.token_bytes(32)).decode()
         return {'member': member, 'member_key': 'key of ' + member, 'token': secrets.token_hex(32),
-                'agreement': base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip('='),
-                'agreement_key': base64.b64encode(secrets.token_bytes(32)).decode()}
+                'agreement': public_agreement(agreement_key), 'agreement_key': agreement_key}
+
+    def seal_direct(self, room: str, entry: str, agreement_key: str, member: str, other: str, agreement: str,
+                    plaintext: bytes) -> str:
+        """A box that names its room, its entry, its writer and its pair: the two public agreement keys and the two
+        member IDs. Only the same pair opens it, as with the pair key of the real helper."""
+        self._call('seal_direct')
+        return base64.urlsafe_b64encode(json.dumps({
+            'room': room, 'entry': entry, 'writer': member, 'keys': sorted([public_agreement(agreement_key), agreement]),
+            'members': sorted([member, other]), 'plaintext': base64.b64encode(plaintext).decode()}).encode()).decode().rstrip('=')
+
+    def open_direct(self, room: str, agreement_key: str, member: str, boxes: list) -> list:
+        self._call('open_direct')
+        results = []
+        for box in boxes:
+            try:
+                sealed = json.loads(base64.urlsafe_b64decode(box['box'] + '=' * (-len(box['box']) % 4)))
+                plaintext = strict_base64(sealed['plaintext'])
+            except (ValueError, TypeError, KeyError):
+                results.append({'error': 'malformed'})
+                continue
+            if (sealed['room'], sealed['entry'], sealed['writer'], sealed['keys'], sealed['members']) != (
+                    room, box['entry'], box['writer'], sorted([public_agreement(agreement_key), box['agreement']]),
+                    sorted([member, box['other']])):
+                results.append({'error': 'seal'})
+            else:
+                results.append({'plaintext': plaintext})
+        return results
 
     def proof(self, room: str, token: str, member_key: str) -> dict:
         self._call('proof')

@@ -169,6 +169,68 @@ final class TeamLogTests: XCTestCase {
         XCTAssertLessThanOrEqual(try TeamLog.seal(wide, room: room, secret: secret).count, TeamLog.maximumWelcome)
     }
 
+    // The direct message of the vectors: the member of the vectors writes to a reader with the member ID `10` to `2f`.
+    private var reader: Data { range(0x10, 32) }
+    private let pairKeyHex = "46fc42722c716d505c7d6f995ea6ee8b53045f1531ad140a5a036a6a2db93f00"
+    private let directText = #"{"to":"101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f","text":"Hello Grace"}"#
+    private let box = TeamLog.bytes(hex: "f0f1f2f3f4f5f6f7f8f9fafb33e43c192dd25841a9fdffa40e61265aa37d51c1c7363a4803ccf485d7ae13e09a75e006914d5f3feeddd09ed30dc1ddaaa3f4e5311aac1732bf7070e95d0273c0e0b87ec0d6d1cbc438d7deee6138dba44205e6c8f8decba995e6ddd5e9ed63f1d46e5bc09457d158d768b49c27")!
+    private func agreement(_ first: UInt8) throws -> Curve25519.KeyAgreement.PrivateKey {
+        try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: range(first, 32))
+    }
+    /// The pair key that the reader makes, with the room `room`.
+    private func readerKey(room: Data? = nil) throws -> SymmetricKey {
+        try TeamLog.pairKey(agreement: agreement(0xe0), other: agreement(0xc0).publicKey.rawRepresentation,
+                            room: room ?? self.room, member: reader, otherMember: memberID)
+    }
+
+    func testThePairKeyAndTheBoxOfTheContract() throws {
+        let writer = try agreement(0xc0)
+        XCTAssertEqual(TeamLog.base64URL(writer.publicKey.rawRepresentation), "3CzKMejkO72R3_fkdcyjNH60eBB9W9dlq6SuSjDDXUQ")
+        XCTAssertEqual(TeamLog.base64URL(try agreement(0xe0).publicKey.rawRepresentation),
+                       "c2hF1U6H3gnWuxFKpwQsUKSgFb2ZAdGgAm9ZVlM6FRk")
+        // Both members make the same key. The lower member ID comes first in the info, also for the writer.
+        let written = try TeamLog.pairKey(agreement: writer, other: agreement(0xe0).publicKey.rawRepresentation, room: room,
+                                          member: memberID, otherMember: reader)
+        XCTAssertEqual(written.withUnsafeBytes { TeamLog.hex(Data($0)) }, pairKeyHex)
+        XCTAssertEqual(try readerKey().withUnsafeBytes { TeamLog.hex(Data($0)) }, pairKeyHex)
+        XCTAssertEqual(try TeamLog.openDirect(box, key: readerKey(), room: room, entry: entry, writer: memberID),
+                       Data(directText.utf8))
+        // A seal of the plaintext of the contract with its nonce gives exactly its bytes.
+        let exact = try ChaChaPoly.seal(Data(directText.utf8), using: written, nonce: ChaChaPoly.Nonce(data: range(0xf0, 12)),
+                                        authenticating: room + entry + memberID).combined
+        XCTAssertEqual(exact, box)
+        let sealed = try TeamLog.sealDirect(Data(directText.utf8), key: written, room: room, entry: entry, writer: memberID)
+        XCTAssertEqual(sealed.count, box.count)
+        XCTAssertNotEqual(sealed, box)
+        XCTAssertEqual(try TeamLog.openDirect(sealed, key: readerKey(), room: room, entry: entry, writer: memberID),
+                       Data(directText.utf8))
+    }
+
+    func testItRefusesABoxOfAnotherPlaceOrKey() throws {
+        let key = try readerKey()
+        func refusal(_ box: Data, key other: SymmetricKey? = nil, room: Data? = nil, entry: Data? = nil, writer: Data? = nil) -> TeamLog.Failure? {
+            failure { _ = try TeamLog.openDirect(box, key: other ?? key, room: room ?? self.room,
+                                                 entry: entry ?? self.entry, writer: writer ?? self.memberID) }
+        }
+        XCTAssertEqual(refusal(box, key: SymmetricKey(size: .bits256)), .seal)
+        // The key of the same members in another room opens nothing in this room.
+        XCTAssertEqual(refusal(box, key: try readerKey(room: changed(room, at: 31))), .seal)
+        XCTAssertEqual(refusal(box, room: changed(room, at: 0)), .seal)
+        XCTAssertEqual(refusal(box, entry: changed(entry, at: 15)), .seal)
+        XCTAssertEqual(refusal(box, writer: reader), .seal)
+        for index in [0, 11, 12, box.count - 1] {
+            XCTAssertEqual(refusal(changed(box, at: index)), .seal, "byte \(index)")
+        }
+        XCTAssertEqual(refusal(box.prefix(28)), .malformed)
+        XCTAssertEqual(refusal(box, entry: entry.dropLast()), .malformed)
+        XCTAssertEqual(failure { _ = try TeamLog.sealDirect(Data(), key: key, room: room, entry: entry, writer: memberID) }, .malformed)
+        // A member has no pair key with itself, and an agreement key has 32 bytes.
+        XCTAssertEqual(failure { _ = try TeamLog.pairKey(agreement: agreement(0xe0), other: agreement(0xc0).publicKey.rawRepresentation,
+                                                         room: room, member: reader, otherMember: reader) }, .malformed)
+        XCTAssertEqual(failure { _ = try TeamLog.pairKey(agreement: agreement(0xe0), other: Data(count: 31), room: room,
+                                                         member: reader, otherMember: memberID) }, .malformed)
+    }
+
     func testTheProofOfTheContract() throws {
         let token = TeamLog.hex(range(0xb0, 32))
         XCTAssertEqual(TeamLog.hash(token), "796b2e4cd51a1e5c8c5346d578100dd667264b6c26b5a1dfca876f2e0fb104a5")

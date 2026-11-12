@@ -1,8 +1,8 @@
 import CryptoKit
 import Foundation
 
-// The format of the team log (docs/team-log.md): the sealed body of an entry, the welcome and the link of an invite,
-// and the proof of a member. The relay sees none of the plaintext.
+// The format of the team log (docs/team-log.md): the sealed body of an entry, the box of a direct message, the welcome
+// and the link of an invite, and the proof of a member. The relay sees none of the plaintext.
 //
 // This file uses CryptoKit and Foundation only, and its text helpers are its own. So a helper of the Mac can compile
 // it without the app, as the sidecar compiles Noise.swift. TeamLogTests checks each part against the vectors of the
@@ -85,6 +85,48 @@ enum TeamLog {
     /// The bytes that the member key signs.
     private static func signed(_ payload: Data, room: Data, entry: Data, epoch: UInt32) -> Data {
         Data("coconut room entry v1".utf8) + room + entry + bigEndian(epoch) + payload
+    }
+
+    // MARK: Direct message
+
+    /// The 12 bytes of the nonce and the 16 bytes of the tag around the ciphertext of a box.
+    private static let boxOverhead = 12 + 16
+
+    /// The pair key of two members of a room: X25519 of the own agreement key and the public agreement key of the other
+    /// member, then HKDF-SHA256 with an empty salt. The info is `"coconut room direct" | room ID | the lower member ID
+    /// | the higher member ID`, compared as bytes. So both members make the same key, and a key of one room opens
+    /// nothing in another room.
+    static func pairKey(agreement: Curve25519.KeyAgreement.PrivateKey, other: Data, room: Data, member: Data,
+                        otherMember: Data) throws -> SymmetricKey {
+        guard room.count == longLength, member.count == longLength, otherMember.count == longLength, member != otherMember,
+              let otherKey = try? Curve25519.KeyAgreement.PublicKey(rawRepresentation: other),
+              let secret = try? agreement.sharedSecretFromKeyAgreement(with: otherKey) else { throw Failure.malformed }
+        let (low, high) = member.lexicographicallyPrecedes(otherMember) ? (member, otherMember) : (otherMember, member)
+        return secret.hkdfDerivedSymmetricKey(using: SHA256.self, salt: Data(),
+                                              sharedInfo: Data("coconut room direct".utf8) + room + low + high,
+                                              outputByteCount: 32)
+    }
+
+    /// Seals the plaintext of a direct message as its box: `nonce | ciphertext | tag`, ChaChaPoly with the pair key.
+    /// The additional data is `room ID | entry ID | member ID of the writer`, so the box belongs to one entry.
+    static func sealDirect(_ plaintext: Data, key: SymmetricKey, room: Data, entry: Data, writer: Data) throws -> Data {
+        guard room.count == longLength, entry.count == entryLength, writer.count == longLength,
+              (1...maximumBody - boxOverhead).contains(plaintext.count) else { throw Failure.malformed }
+        // CryptoKit makes a new random nonce for each seal.
+        return try ChaChaPoly.seal(plaintext, using: key, authenticating: room + entry + writer).combined
+    }
+
+    /// Opens the box of a direct message. Another pair key, room, entry ID or writer, or a changed byte, fails with
+    /// `seal`.
+    static func openDirect(_ box: Data, key: SymmetricKey, room: Data, entry: Data, writer: Data) throws -> Data {
+        let box = Data(box)
+        guard room.count == longLength, entry.count == entryLength, writer.count == longLength,
+              (boxOverhead + 1...maximumBody).contains(box.count) else { throw Failure.malformed }
+        guard let sealed = try? ChaChaPoly.SealedBox(combined: box),
+              let plain = try? ChaChaPoly.open(sealed, using: key, authenticating: room + entry + writer) else {
+            throw Failure.seal
+        }
+        return plain
     }
 
     // MARK: Invite

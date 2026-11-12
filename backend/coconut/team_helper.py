@@ -1,7 +1,7 @@
 """Call the Swift helper of the team log (scripts/team-helper.swift).
 
-The backend uses the Python standard library only, which has no ChaChaPoly and no Ed25519. The helper seals and opens
-entries and welcomes, signs, and reads and makes invite links, with the format code of ios/Tunnel/TeamLog.swift.
+The backend uses the Python standard library only, which has no ChaChaPoly, no X25519 and no Ed25519. The helper seals
+and opens entries, the boxes of direct messages and welcomes, signs, and reads and makes invite links, with the format code of ios/Tunnel/TeamLog.swift.
 docs/team-log.md is the contract.
 
 Each call starts the helper once, sends one JSON object to its standard input and reads one JSON object from its
@@ -107,6 +107,33 @@ class TeamHelper:
                 try:
                     if 'error' not in result:
                         result = {'epoch': int(result['epoch']), 'payload': base64.b64decode(result['payload'], validate=True)}
+                except (TypeError, KeyError, ValueError):
+                    raise TeamHelperError('The team helper did not finish its work.') from None
+                results.append(result)
+        return results
+
+    def seal_direct(self, room: str, entry: str, agreement_key: str, member: str, other: str, agreement: str,
+                    plaintext: bytes) -> str:
+        """The box of a direct message of `member` (this Mac) to `other`, as the unpadded base64url text of a payload.
+        `agreement` is the public agreement key of `other`."""
+        return self.call('seal_direct', room=room, entry=entry, agreement_key=agreement_key, member=member, other=other,
+                         agreement=agreement, plaintext=base64.b64encode(plaintext).decode())['box']
+
+    def open_direct(self, room: str, agreement_key: str, member: str, boxes: list[dict]) -> list[dict]:
+        """Open the boxes of direct messages with the pair key of this Mac (`member`) and the `other` of each box.
+        Each box has `entry`, `writer`, `other`, `agreement` and `box`. Each result has `plaintext` (bytes), or
+        `error`."""
+        results = []
+        for start in range(0, len(boxes), OPEN_BATCH):
+            batch = boxes[start:start + OPEN_BATCH]
+            opened = self.call('open_direct', room=room, agreement_key=agreement_key, member=member,
+                               boxes=batch).get('boxes')
+            if not isinstance(opened, list) or len(opened) != len(batch):
+                raise TeamHelperError('The team helper did not finish its work.')
+            for result in opened:
+                try:
+                    if 'error' not in result:
+                        result = {'plaintext': base64.b64decode(result['plaintext'], validate=True)}
                 except (TypeError, KeyError, ValueError):
                     raise TeamHelperError('The team helper did not finish its work.') from None
                 results.append(result)

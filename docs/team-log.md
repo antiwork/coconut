@@ -2,20 +2,21 @@
 
 A team is a set of Macs that share one log. The log lives on the Cloudflare relay as sealed entries. Each member Mac copies the log into its own store. The relay sees IDs, times and sizes, never content.
 
-The log carries everything that a team shares: the people of the team, the authors of the shared pages, the messages of the Team chat, and the shared pages. A phone talks only to its own Mac, as before.
+The log carries everything that a team shares: the people of the team, the authors of the shared pages, the messages of the Team chat, the direct messages between two people, and the shared pages. A phone talks only to its own Mac, as before.
 
 A team has two kinds of Mac:
 
 - **A person's Mac** (a full install): its bots are the person's, and nobody else can ask them. The person shares a page of a bot with a team by one act on the page, and stops when they want. The bot of the page is then the author of the page in the team, and nothing more.
 - **A Mac for a team only** (see [Team-only mode](#team-only-mode)): its bots are the team's. Each page that such a bot saves with the audience "team" goes to the teams of the bot.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat of the people and serves it to the phone (see [Team chat](#team-chat)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). These parts are not built yet:
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat of the people and serves it to the phone (see [Team chat](#team-chat)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone (see [Direct messages](#direct-messages)). These parts are not built yet:
 
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
 - A record of the open invites on the Mac.
 - The member removal and the key change.
 - The mentions of the Team chat in the app. The app shows each team in its Chats list, and the chat of the team sends and shows text only.
 - A bot that reads or writes the Team chat.
+- The direct messages in the app. Until an app asks for them, no Mac writes `direct` in its `member` entry, and nobody can send a direct message.
 
 ## Terms
 
@@ -31,7 +32,7 @@ Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joi
 | --- | --- | --- |
 | Room key | The admin's Mac | 32 random bytes. Seals each entry of its epoch. |
 | Member key | Each Mac, for each room | Ed25519. Signs each entry of the Mac, and the proof of a join. Its public key in lowercase hex is the member ID. |
-| Agreement key | Each Mac, for each room | X25519. Receives the new room key after a key change. |
+| Agreement key | Each Mac, for each room | X25519. Receives the new room key after a key change, and makes the pair key of a direct message with each other member. |
 | Member token | Each Mac, for each room | 32 random bytes in lowercase hex. Authorizes the Mac at the relay. |
 | Invite secret | The admin's Mac, for each invite | 32 random bytes. Gives the relay ticket and the welcome key. |
 
@@ -83,15 +84,16 @@ Each payload has these fields:
 
 | Kind | `kept` | Author | Fields |
 | --- | --- | --- | --- |
-| `member` | `true` | Each member, one entry | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20), `agreement` (the public agreement key), `bot_only` (`true` for a Mac without a person, or absent) |
+| `member` | `true` | Each member, one entry | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20), `agreement` (the public agreement key), `bot_only` (`true` for a Mac without a person, or absent), `direct` (`true` for a person's Mac that reads direct messages, or absent) |
 | `delete` | `false` | The member of the replaced entry | None. It replaces an entry that its author deletes. |
 | `bot` | `true` | The Mac that runs the bot, one entry for each bot | `name` (1 to 80 characters), `avatar` (at most 80), `color` (at most 20), `open` (`true` for a bot that answers each member, or absent) |
 | `page` | `true` | The Mac that runs the bot of the page, one entry for each document | `bot` (the entry ID of the `bot` entry), `key`, `title`, `format`, `summary` (or null), `content`, `version` (the version of the document on its Mac), `expires_at` (or null) |
 | `message` | `false` | Any member | `text` (1 to 16,000 characters), `reply_to` (an entry ID, or absent), `mentions` (at most 16 entry IDs, or absent), `bot` (the entry ID of a `bot` entry of the same member, or absent). See [Team chat](#team-chat). |
+| `direct` | `false` | A person's Mac | `box`: the text of a direct message to one other member, sealed a second time with the pair key of the two members. See [Direct messages](#direct-messages). |
 | `remove` | `true` | The admin | The removal of a member. See [Member removal](#member-removal-and-key-change). |
 | `key` | `true` | The admin | The room key of the next epoch. |
 
-The kinds `member`, `delete`, `bot`, `page` and `message` are complete. See [Bots and pages](#bots-and-pages) for the rules of `bot` and `page`, and [Team chat](#team-chat) for `message`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
+The kinds `member`, `delete`, `bot`, `page`, `message` and `direct` are complete. See [Bots and pages](#bots-and-pages) for the rules of `bot` and `page`, [Team chat](#team-chat) for `message`, and [Direct messages](#direct-messages) for `direct`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
@@ -253,7 +255,7 @@ A removed Mac keeps what it already read. Without the key change, a removed memb
 
 ## What the relay sees
 
-The relay stores the room ID, the member IDs, the hashes of tokens and tickets, and for each entry the fields of the entry table. It sees which member writes, when, and how many bytes. It sees no name, no message, no page, and no room key. `relay/README.md` allows no plaintext field, and this contract adds none.
+The relay stores the room ID, the member IDs, the hashes of tokens and tickets, and for each entry the fields of the entry table. It sees which member writes, when, and how many bytes. It sees no name, no message, no page, and no room key. For a direct message it sees the same fields as for each other entry, and not the kind, so it does not know that the entry is a direct message or for whom it is. `relay/README.md` allows no plaintext field, and this contract adds none.
 
 The relay accepts a member ID only with a proof of its key, so one member cannot write as another member. The relay itself can hold back an entry or give an old one. It cannot make an entry, change one, or move one to another member, entry ID or room. The `rev` rule stops an old write of an entry on a Mac that already has a newer one.
 
@@ -267,7 +269,7 @@ A Mac with no person at it, for example a Mac that only runs a Hermes agent, use
 
 ### Helper
 
-`scripts/team-helper.swift` compiles with `ios/Tunnel/TeamLog.swift`, which holds the format. It seals, opens, signs, and reads and makes links and welcomes. It takes no argument and touches no file: it reads one JSON object from standard input and writes one to standard output. So a key, a token or a secret is never in a command line, a file or a log. A failure is `{"error": "<code>"}`, and a code names no value of the input.
+`scripts/team-helper.swift` compiles with `ios/Tunnel/TeamLog.swift`, which holds the format. It seals, opens, signs, seals and opens the boxes of direct messages, and reads and makes links and welcomes. It takes no argument and touches no file: it reads one JSON object from standard input and writes one to standard output. So a key, a token or a secret is never in a command line, a file or a log. A failure is `{"error": "<code>"}`, and a code names no value of the input.
 
 - Coconut.app carries the helper in `Contents/Helpers/team-helper`, as a binary for both architectures. `coconut service` and `coconut update` name it in `COCONUT_TEAM_HELPER`.
 - A source install compiles it into `<data>/team/team-helper` with `python3 scripts/team.py build`. `deploy.py` runs that command in each update, and the receipt `helper.sha256` stops a second build of the same sources. With `COCONUT_TEAM_HELPER` set, the command compiles nothing.
@@ -284,7 +286,7 @@ Everything else is in `coconut.sqlite3`:
 | --- | --- |
 | `team_rooms` | One row for each room: its relay, its name, the member ID of this Mac, the admin, the state, the epoch, the read position (`seq`), the profile that this Mac writes in its `member` entry, and `notifications`: the choice of the person of this Mac to get notifications of the room. |
 | `team_entries` | The newest accepted write of each entry ID, with its payload. |
-| `team_members` | The members that a Mac shows: the newest valid `member` entry of each member. |
+| `team_members` | The members that a Mac shows: the newest valid `member` entry of each member, with its marks `bot_only` and `direct`. |
 | `team_pending` | The bodies that the Mac cannot open yet, for a later version or a later epoch. |
 | `team_shares` | The bots of this Mac that author a page in each room, each with the entry ID of its `bot` entry. On a person's Mac a row comes with the first shared page of the bot and goes with the last one. |
 | `team_page_shares` | The documents that the person of this Mac shares with each room. A Mac for a team only has no rows here. |
@@ -295,6 +297,10 @@ Everything else is in `coconut.sqlite3`:
 | `team_names` | The last name that the store showed for each member and each bot of a room. A `delete` entry does not remove it. |
 | `team_reads` | The read position of this Mac in the chat of each room. |
 | `team_triggers` | Only on a team-only Mac: the messages that start a turn of a bot of this Mac, in the order in which the Mac accepted them, each with a mark for a turn that began. See [A bot answers](#a-bot-answers). |
+| `team_directs` | The direct messages that this Mac shows: one row for each `direct` entry whose box opens for this Mac, with the other member of its chat. See [Direct messages](#direct-messages). |
+| `team_direct_reads` | The read position of this Mac in each direct chat: one row for each room and other member. |
+| `team_direct_waits` | The `direct` entries whose key comes later in the read. The end of the read tries each one again, then removes it. |
+| `team_marks` | The lasting marks of this Mac, for all its rooms. `direct`: an app of the person asked for direct messages. A leave does not remove it. |
 
 A room is `joining` (the relay did not answer the join yet), `active`, `removed` (the relay answered 401) or `gone` (the relay answered 404). The copy of a `removed` or `gone` room stays until the person leaves the room on the Mac. The Library does not show the bots and the pages of such a room.
 
@@ -378,6 +384,7 @@ Who can call what depends on the kind of Mac:
 | `POST /v1/team/rooms/<room>/bots`, body `{bot_id}` | On a Mac for a team only: shares a bot of this Mac with the room. An archived or deleted bot answers 409 or 404. A person's Mac answers a paired device with 409 and the text "The bots of this Mac stay yours, so a team does not get them. To share a page with the team, open it in the Library of the Coconut app." An app of today shows that text. |
 | `DELETE /v1/team/rooms/<room>/bots/<bot_id>` | On a Mac for a team only: stops sharing the bot with the room. A person's Mac answers 409 as above. |
 | The routes of the Team chat | See [Team chat](#team-chat). |
+| The routes of the direct messages | See [Direct messages](#direct-messages). |
 
 A room in an answer has what the Team screen shows, so the app needs no other request:
 
@@ -390,6 +397,7 @@ A room in an answer has what the Team screen shows, so the app needs no other re
 | `sync` | `synced_at`, and `error`: one sentence for a person, or null. Also `seq`, `entries`, `waiting`, `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)), and `socket`: true while the socket of the room is open. The app does not show `socket`. |
 | `unread`, `last_message` | The unread count of the Team chat, from 0 to 99, and the newest message that the chat shows: `first`, `member`, `member_name`, `this_mac`, `bot`, `bot_name`, `text` (its first 200 characters) and `created_at`, or null. `member`, `this_mac` and `bot` have the values of a message in a page, so the Chats list of the app can show "You" for a message of this Mac's person: `this_mac` is true and `bot` is null. An older service sends none of the three. See [Team chat](#team-chat). |
 | `relay`, `member`, `admin`, `epoch` | For the tools. |
+| `directs` | Only for a request with `X-Coconut-Team: direct` from a paired device. Then each member also has `direct`. See [Direct messages](#direct-messages). |
 
 The `id` of a bot is `t-<room ID>-<entry ID>`, as in `team_bots` of `GET /v1/documents`.
 
@@ -592,6 +600,83 @@ What the chat shows when a turn fails:
 | The chat of the bot goes off, the bot leaves the team, this Mac leaves, the member leaves, or the message is removed | Nothing. The turn stops or does not start. |
 | The relay refuses the write of a reply | Nothing. The relay client tries three times, then the service writes a log line. |
 
+### Direct messages
+
+A direct message is a private chat between two people of a team. It is an entry of the kind `direct` in the log that the team has. Its text is sealed a second time, with a key that only the two Macs can make. No second room, no invite and no join is necessary. `backend/coconut/team_directs.py` serves the routes, and `TeamStore` keeps the chats.
+
+#### The box
+
+The payload of a `direct` entry is `{"kind": "direct", "rev": n, "at": "...", "box": "<unpadded base64url>"}`. The entry is not kept, so the relay holds it for 90 days, as a `message` entry.
+
+```
+box       = nonce (12 bytes) | ciphertext | tag (16 bytes)
+plaintext = {"to": "<member ID>", "text": "...", "reply_to": "<entry ID>"}
+```
+
+- The seal is ChaChaPoly with the pair key. The nonce is 12 random bytes, new for each seal.
+- The additional data is `room ID (32 bytes) | entry ID (16 bytes) | member ID of the writer (32 bytes)`: 80 bytes. So a box belongs to one room, one entry and one writer.
+- The pair key: X25519 of the own private agreement key and the public agreement key of the other member (the `agreement` of its `member` entry). Then HKDF-SHA256 with an empty salt and 32 bytes of output. The input is the shared secret, and the info is `"coconut room direct" | room ID (32 bytes) | the lower member ID (32 bytes) | the higher member ID (32 bytes)`, compared as bytes. So both Macs make the same key, and a key of one room opens nothing in another room.
+- The plaintext is one JSON object in UTF-8. `to` is the member that the message is for. `text` has 1 to 16,000 code points of valid Unicode text. `reply_to` is the entry ID of a direct message of the same chat, or absent. A reader takes null as an absent field, and ignores a field that it does not know.
+- An edit is a new write of the same entry ID with the next `rev` and a new box. A removal is a `delete` entry over it. The rules of an entry (`rev`, the member of an entry) do not change.
+
+`TeamLog.swift` has the pair key, the seal and the open of a box. The helper has the operations `seal_direct` and `open_direct`. See [Test vectors](#test-vectors).
+
+#### What the other members see
+
+The recipient is inside the box. Another member of the team can open the outer seal with the room key. So that member sees that the writer wrote a `direct` entry, its size, its time, and its edits and removal. That member cannot see for whom the message is, and cannot read it. The relay sees what it sees for each entry, and nothing more (see [What the relay sees](#what-the-relay-sees)).
+
+#### Who can get a direct message
+
+- A `member` entry has the optional field `direct`. `true` means "this person can read direct messages". A missing `direct` and each other value are false. Only a person's Mac writes it, never a Mac for a team only.
+- A Mac writes `direct: true` only after an app of its person that knows direct messages asked for them. The sign is the header `X-Coconut-Team: direct` on `GET /v1/team/rooms` from a paired device. The first such request sets a lasting mark in the store (`team_marks`). From then on, the sync writes the `member` entry of this Mac again with `direct: true`, one time in each room, as for a changed `bot_only` mark. The next pass does it at once, also within 5 minutes of an earlier write. A change of the name, avatar or color keeps the field. A tool on this Mac can send the header too, and nothing happens.
+- Without the mark, a Mac writes no `direct`, and nobody can send to it. So an app of today sees no change.
+- A Mac sends a direct message only to a member that is in the member list now, has `direct` true, is not a Mac for a team only, and is not itself. The Mac itself must have the mark.
+
+#### Rules for a Mac that reads a `direct` entry
+
+1. Only a person's Mac with the mark reads the kind. Each other Mac keeps the entry by the rule of an unknown kind and shows nothing.
+2. The Mac opens each box before the transaction of the answer, without the lock of the service, as it opens the bodies. No call to the helper or the relay runs in a transaction.
+3. An entry of another member: the pair key takes the agreement key of the newest valid `member` entry of the writer that the Mac has at that point. The store has some, and the `member` entries before it in the same answer of the relay count, in their order. When the box opens, `to` is this Mac, and the fields fit, the entry is a message of the chat with the writer. When the box does not open or names another member, the entry is not for this Mac and shows nothing.
+4. An own entry that the store does not have: the Mac tries the pair key of each other member until the box opens and `to` names that member. This happens after a stop between the write to the relay and the write to the store, and when the store is behind the relay. A Mac never reads a room without its row in the store.
+5. The relay keeps only the newest write of an entry and gives it at the `seq` of that write. So when a member writes its `member` entry again, for a new name or the mark `direct`, that entry comes after the direct entries from before the change. A Mac that reads the room from an earlier position meets these direct entries before the key that they need. So such an entry waits (`team_direct_waits`, in the transaction that accepts the entry): an entry of a writer without a `member` entry at that point, and an own entry that no key of the known members opened. When the Mac has read the room to its end, it tries each waiting entry one more time, outside a transaction, with the members that the store has now. Then the wait ends, also for an entry that does not open and for a writer that still has no `member` entry. A message that shows then is history: it adds the event of its chat and no notification. A `delete` over a waiting entry and a new write of it end its wait, and a new write gets its own try. A leave removes the waits of the room.
+6. The newest write of an entry counts. A write that no longer opens, and a `delete` over the entry, remove the message from the chat on this Mac.
+7. The times follow rule 6 of the Team chat: `created_at` is the `at` of the first write that this Mac saw, and `edited_at` is the `at` of the newest write when `rev` is over 1.
+8. A chat keeps its history after the other member leaves or is removed. The name comes from `team_names`, as in the Team chat.
+
+A direct message never goes into `team_messages`. The Mac keeps it in `team_directs`, and the read position of each chat in `team_direct_reads`: one for each room and other member. So no query of the Team chat, of its unread count, of its last message, of the triggers of a bot, or of the notifications of the team reads a direct message.
+
+The read position of a direct chat starts at 0, so a direct message that arrives counts as unread. It moves only forward, and never past the newest message of the chat. The unread count is the number of messages of the other member after it, up to 99.
+
+#### Routes of the direct messages
+
+Only a paired device reaches these routes on a person's Mac: `tool_route` refuses the token of the bridge file. A Mac for a team only answers 409 with "This Mac runs Coconut for a team only, so it has no direct messages." A write in a room that is not `active` answers 409, as in the Team chat.
+
+| Request | Answer |
+| --- | --- |
+| `GET /v1/team/rooms` with `X-Coconut-Team: direct` | As without the header, and: each member has `direct`, true when this Mac can send it a direct message now (see [Who can get a direct message](#who-can-get-a-direct-message)) and the room is `active`. Each room has `directs`: one item for each direct chat with a message that shows, newest chat first: `member`, `member_name`, `unread`, and `last_message` (`first`, `this_mac`, the first 200 code points of `text`, `created_at`). A chat with a member that left stays in the list. |
+| `GET /v1/team/rooms/<room>/directs/<member>/messages?before=<first>&limit=<n>` | One page, newest first: `{room, member, messages, before}`, with the rules of a page of the Team chat. A member ID that is not 64 hex characters answers 404. |
+| `POST /v1/team/rooms/<room>/directs/<member>/messages`, body `{text, reply_to?}` | Writes a direct message of the person and answers `{room, member, message}`. `reply_to` is the `id` of a message of the same chat. With an `Idempotency-Key`, the entry ID comes from the room, the device and the key, as in the Team chat. 409 with a sentence when the member cannot get a direct message now: it left the team, it has no `direct`, it is a Mac for a team only, it is this Mac, or this Mac has no mark. |
+| `PATCH /v1/team/rooms/<room>/directs/<member>/messages/<id>`, body `{text}` | Changes the text of a message of this Mac's person, with a new box, and answers `{room, member, message}`. The reply stays. The same text writes nothing. A message of the other member answers 403. A member that can no longer get a direct message answers 409. |
+| `DELETE /v1/team/rooms/<room>/directs/<member>/messages/<id>` | Removes a message of this Mac's person with a `delete` entry, and answers `{room, member, id, deleted: true}`. A repeat gives the same answer and writes nothing. |
+| `POST /v1/team/rooms/<room>/directs/<member>/read`, body `{first}` | Moves the read position of the chat, and answers `{room, member, read, unread}`. |
+
+A message in an answer: `id`, `first`, `this_mac`, `text`, `reply_to`, `reply` (`id`, `this_mac` and the first 200 code points of `text` of the message that `reply_to` names in the same chat, or null), `created_at` and `edited_at`.
+
+When a direct chat changes on this Mac, the Mac adds one `team_directs.updated` event with `{"team": <room ID>, "member": <member ID>}` in the same transaction: a new message, an edit, a removal, a new time from the relay, a new name of the other member, or a new read position. `GET /v1/updates` then has `team_directs_changed`: a list of `{team, member}`. The type is in the `known` set, so an app of today does not read its whole state again. A change of `direct` of a member adds `team.updated`, as each other change of a member.
+
+#### Notifications of a direct message
+
+A direct message notifies the phone like a team message (see [Notifications](#notifications)), with these differences:
+
+1. The kind of the item is `direct`. The switch `notifications` of the room is for the Team chat, so it does not decide.
+2. A direct message notifies only when it is the first write of a direct message of the other member that this Mac sees for the first time, shows, is after the read position of its chat, and has an `at` under one hour old.
+3. Each plan and each send checks the item again: the room is `active`, the message still shows, and it is after the read position of its chat.
+4. The sealed alert has the name of the writer as its title and the text as its body, with no subtitle. When the store has no name for the writer, the title is the name of the team. `thread-id` is the room ID, a colon, and the member ID of the other member. A phone without a relay route gets "Coconut" and "You have a new direct message."
+5. The `coconut` part is `{"version": 1, "device_id": ..., "kind": "direct", "direct": {"team": <room ID>, "member": <member ID>}}`. A group whose items are all direct messages of one chat has the thread of that chat and `{"version": 1, "device_id": ..., "kind": "group", "count": n, "direct": {"team": <room ID>, "member": <member ID>}}`. Neither has `team` at the top, because the app of today would open the Team chat. Each other group opens Inbox, also a group of team messages and direct messages of one room.
+6. A group counts "direct message" and "direct messages" after "team message".
+
+No log line has the text of a direct message, the name of a writer or the name of a team.
+
 ### Team-only mode
 
 A Mac can run a production Hermes agent with no person at it and no Coconut. Such a Mac runs Coconut "team only" (`backend/coconut/team_only.py`), so its agent can publish pages to the team. The full service does much more than a team needs, and it changes the Hermes profiles of the Mac. The team-only service does none of that.
@@ -675,6 +760,31 @@ Proof of the member for this room and this member token:
 - Proof (RFC 8032), as base64: `9//Nt2eHY2C17r4Mb2qhzMYlw/Frovnl8OfRJZc6eTNDOFiq9+nfJ4umm2EeFWWcIcE/YnFIhBuQr7Cf7akrBg==`
 
 The relay's check (WebCrypto) and CryptoKit accept this proof, and the relay accepts a proof that CryptoKit makes.
+
+A direct message (see [Direct messages](#direct-messages)). The member ID above writes to a reader. Node's `crypto` made these values, and CryptoKit gets the same values. The Python standard library gets the pair key from the shared secret.
+
+| Input | Value |
+| --- | --- |
+| Member ID of the reader | The bytes `10` to `2f` |
+| Agreement key of the writer (the private key) | The bytes `c0` to `df` |
+| Agreement key of the reader (the private key) | The bytes `e0` to `ff` |
+| Nonce of the box | The bytes `f0` to `fb` |
+| Plaintext | `{"to":"101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f","text":"Hello Grace"}` |
+
+The room ID and the entry ID are the ones above.
+
+- Public agreement key of the writer: `3CzKMejkO72R3_fkdcyjNH60eBB9W9dlq6SuSjDDXUQ`
+- Public agreement key of the reader: `c2hF1U6H3gnWuxFKpwQsUKSgFb2ZAdGgAm9ZVlM6FRk`
+- Shared secret (X25519): `28150aa20f6f6c9c8177b9deded7464ebc5aac96029777ff7503cd8e8ca7143e`
+- Pair key: `46fc42722c716d505c7d6f995ea6ee8b53045f1531ad140a5a036a6a2db93f00`. The member ID of the reader is lower, so the info is `coconut room direct`, the room ID, the member ID of the reader, then the member ID of the writer.
+
+Box, 122 bytes. A seal of the plaintext with the nonce above must give exactly these bytes:
+
+```
+f0f1f2f3f4f5f6f7f8f9fafb33e43c192dd25841a9fdffa40e61265aa37d51c1c7363a4803ccf485d7ae13e09a75e006914d5f3feeddd09ed30dc1ddaaa3f4e5311aac1732bf7070e95d0273c0e0b87ec0d6d1cbc438d7deee6138dba44205e6c8f8decba995e6ddd5e9ed63f1d46e5bc09457d158d768b49c27
+```
+
+Each implementation must open the box with the pair key of the reader and get the plaintext. It must refuse the box with another room ID, entry ID, writer or pair key, or with one changed byte.
 
 Link:
 
