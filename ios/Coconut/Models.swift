@@ -744,6 +744,15 @@ struct MCPRequest: Encodable {
 /// The fallback chain of the default Hermes profile, in order. Hermes tries each model when the default model fails.
 struct FallbackSettings: Codable, Equatable, Sendable {
     var models: [FallbackModel]
+
+    /// The chain with `choice` as its first model. Nil removes the first model. The choice replaces the first model,
+    /// and takes the place of its first copy in the rest, so each other copy keeps its entry on the Mac.
+    func replacingFirst(with choice: FallbackModel?) -> [FallbackModel] {
+        var rest = Array(models.dropFirst())
+        guard let choice else { return rest }
+        if let index = rest.firstIndex(where: { $0.sameRoute(as: choice) }) { rest.remove(at: index) }
+        return [choice] + rest
+    }
 }
 
 struct FallbackModel: Codable, Equatable, Hashable, Sendable {
@@ -752,6 +761,11 @@ struct FallbackModel: Codable, Equatable, Hashable, Sendable {
 
     var selection: ModelOverride { ModelOverride(model: model, provider: provider, reasoningEffort: nil) }
     var selectionKey: String { selection.selectionKey }
+
+    /// The service compares routes without case.
+    func sameRoute(as other: FallbackModel) -> Bool {
+        model.lowercased() == other.model.lowercased() && provider.lowercased() == other.provider.lowercased()
+    }
 }
 
 struct FallbackRequest: Encodable {

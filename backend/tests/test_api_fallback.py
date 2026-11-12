@@ -134,6 +134,15 @@ class FallbackTests(unittest.TestCase):
             self.save([model('model-b', 'native-b'), model('model-b', 'native-b')])
         self.assertEqual(raised.exception.status, 400)
 
+    def test_choosing_a_model_that_the_chain_has_twice_keeps_both_entries(self):
+        other = {'model': 'other-model', 'provider': 'other'}
+        first = {'model': 'model-b', 'provider': 'native-b', 'base_url': 'https://one.example'}
+        second = {'model': 'model-b', 'provider': 'native-b', 'base_url': 'https://two.example'}
+        self.provider.chain = [deepcopy(other), deepcopy(first), deepcopy(second)]
+        # The app replaces the first model with model-b and keeps the rest of the chain.
+        self.assertEqual(self.save([model('model-b', 'native-b')] * 2), {'models': [model('model-b', 'native-b')] * 2})
+        self.assertEqual(self.provider.chain, [first, second])
+
     def test_a_pending_record_of_the_old_switch_settles_as_an_error(self):
         old = str(uuid4())
         with self.service.transaction():

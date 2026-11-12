@@ -240,27 +240,24 @@ private struct FallbackSection: View {
         let catalog = store.modelCatalog.flatMap { $0.models.isEmpty ? nil : $0 }
         if let chain = store.fallback?.models, catalog != nil || !chain.isEmpty {
             Section {
-                if let catalog {
-                    Picker(selection: Binding(get: { chain.first?.selectionKey ?? "" }, set: { choose($0, chain: chain, catalog: catalog) })) {
-                        Text("None").tag("")
-                        if let first = chain.first, catalog.entry(for: first.selection) == nil {
-                            ModelRow(name: first.model, provider: first.provider).tag(first.selectionKey)
-                        }
-                        ForEach(choices(catalog, first: chain.first), id: \.selectionKey) { model in
-                            ModelRow(name: model.name, provider: model.provider).tag(model.selectionKey)
-                        }
-                    } label: {
-                        HStack {
-                            Text("Fallback model")
-                            if saving { ProgressView().controlSize(.small) }
-                        }
+                // Without a model list the picker still offers None, so a fallback that fails can be removed.
+                Picker(selection: Binding(get: { chain.first?.selectionKey ?? "" }, set: { choose($0, chain: chain, catalog: catalog) })) {
+                    Text("None").tag("")
+                    if let first = chain.first, catalog?.entry(for: first.selection) == nil {
+                        ModelRow(name: first.model, provider: first.provider).tag(first.selectionKey)
                     }
-                    .pagePickerStyle()
-                    .disabled(saving || !canEdit)
-                    .accessibilityIdentifier("fallback-model-picker")
-                } else if let first = chain.first {
-                    LabeledContent("Fallback model") { row(first) }
+                    ForEach(choices(catalog, first: chain.first), id: \.selectionKey) { model in
+                        ModelRow(name: model.name, provider: model.provider).tag(model.selectionKey)
+                    }
+                } label: {
+                    HStack {
+                        Text("Fallback model")
+                        if saving { ProgressView().controlSize(.small) }
+                    }
                 }
+                .pagePickerStyle()
+                .disabled(saving || !canEdit)
+                .accessibilityIdentifier("fallback-model-picker")
                 ForEach(Array(chain.enumerated().dropFirst()), id: \.offset) { index, model in
                     LabeledContent("Then") { row(model) }
                         .accessibilityIdentifier("fallback-then-\(index)")
@@ -287,7 +284,8 @@ private struct FallbackSection: View {
     }
 
     // The default model is no fallback for itself. It stays in the list only when Hermes already has it first.
-    private func choices(_ catalog: ModelCatalog, first: FallbackModel?) -> [ModelCatalogEntry] {
+    private func choices(_ catalog: ModelCatalog?, first: FallbackModel?) -> [ModelCatalogEntry] {
+        guard let catalog else { return [] }
         let primary = catalog.defaults.selection
         return catalog.models.filter { model in
             !(model.id == primary.model && model.provider == primary.provider)
@@ -295,19 +293,12 @@ private struct FallbackSection: View {
         }
     }
 
-    // The choice replaces the first model. The models after it stay, in order, without a second copy of the choice.
-    private func choose(_ key: String, chain: [FallbackModel], catalog: ModelCatalog) {
+    // None and the catalog models are the choices. The saved first model is already the current value.
+    private func choose(_ key: String, chain: [FallbackModel], catalog: ModelCatalog?) {
         guard !saving, canEdit, key != (chain.first?.selectionKey ?? "") else { return }
-        let rest = Array(chain.dropFirst())
-        var models = rest
-        if let choice = catalog.models.first(where: { $0.selectionKey == key }) {
-            let model = FallbackModel(model: choice.id, provider: choice.provider)
-            models = [model] + rest.filter {
-                $0.model.lowercased() != model.model.lowercased() || $0.provider.lowercased() != model.provider.lowercased()
-            }
-        } else if !key.isEmpty {
-            return
-        }
+        let choice = catalog?.models.first { $0.selectionKey == key }.map { FallbackModel(model: $0.id, provider: $0.provider) }
+        guard choice != nil || key.isEmpty else { return }
+        let models = FallbackSettings(models: chain).replacingFirst(with: choice)
         saving = true
         store.error = nil
         Task {
