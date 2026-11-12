@@ -59,6 +59,23 @@ class MessageEvent:
     allow_gateway_control: bool = True
     reply_expected: Optional[bool] = None
 '''
+# The registration of a Hermes that has each field that the team chat needs (team.REGISTRATION_FIELDS).
+REGISTRY = '''
+from dataclasses import dataclass, field
+from typing import Any
+@dataclass
+class PlatformEntry:
+    name: str
+    label: str
+    adapter_factory: Any
+    check_fn: Any
+    trusted_inbound: bool = False
+    display_tier: str = ""
+    display_overrides: dict = field(default_factory=dict)
+    platform_hint: str = ""
+    max_message_length: int = 0
+    emoji: str = ""
+'''
 
 
 class Context:
@@ -85,7 +102,8 @@ class Context:
 def setUpModule():
     global STUBS, plugin, team
     STUBS = tempfile.TemporaryDirectory()
-    with mock.patch.dict(test_gateway_adapter.STUBS, {'gateway/platforms/event.py': EVENT}):
+    with mock.patch.dict(test_gateway_adapter.STUBS, {'gateway/platforms/event.py': EVENT,
+                                                       'gateway/platform_registry.py': REGISTRY}):
         plugin, _ = test_gateway_adapter.load_plugin(Path(STUBS.name))
     import hermes_plugins.coconut.team as team
 
@@ -111,6 +129,8 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual((options['name'], options['trusted_inbound'], options['platform_hint']),
                          ('coconut', True, plugin.TEAM_HINT))
         self.assertIs(options['adapter_factory'], team.TeamAdapter)
+        self.assertEqual(options['display_overrides'], plugin.DISPLAY)
+        self.assertIsNone(team.TeamAdapter.lacking)
         # Without the mode, the plugin registers what it registers for a full install.
         full = Context()
         plugin.register(full)
@@ -129,6 +149,29 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual((context.platforms, context.tools, context.hooks), ([], [], []))
         self.assertEqual(len(logs.records), 1)
         self.assertIn('channel_context', logs.output[0])
+
+    def test_a_hermes_without_a_field_of_the_registration_gets_a_channel_that_takes_no_message(self):
+        import gateway.platform_registry
+
+        @dataclasses.dataclass
+        class OlderEntry:
+            name: str
+            label: str
+            adapter_factory: object
+            check_fn: object
+            display_tier: str = ''
+            platform_hint: str = ''
+        self.addCleanup(setattr, team.TeamAdapter, 'lacking', None)
+        context = Context()
+        with team_mode(), mock.patch.object(gateway.platform_registry, 'PlatformEntry', OlderEntry), \
+                self.assertLogs('hermes_plugins.coconut', logging.WARNING) as logs:
+            plugin.register(context)
+        (options,) = context.platforms
+        self.assertIs(options['adapter_factory'], team.TeamAdapter)
+        self.assertNotIn('trusted_inbound', options)
+        self.assertEqual(team.TeamAdapter.lacking, 'trusted_inbound, display_overrides')
+        self.assertEqual(logs.output, ['WARNING:hermes_plugins.coconut:Coconut: the team chat takes no message, '
+                                       'because this Hermes lacks trusted_inbound, display_overrides. Update Hermes.'])
 
     def test_a_hermes_that_raises_gets_one_log_line_and_no_channel(self):
         for fault in ('register', 'import'):
@@ -173,9 +216,36 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         while not self.only.gateway_bridge.connected(self.home) and time.monotonic() < deadline:
             time.sleep(.02)
 
+    def record_polls(self):
+        """Record the body of each poll that reaches the bridge."""
+        polls, poll = [], self.only.gateway_bridge.poll
+        self.only.gateway_bridge.poll = lambda data: (polls.append(dict(data)), poll(data))[1]
+        return polls
+
+    def test_an_adapter_of_a_hermes_that_lacks_a_field_takes_no_turn_and_names_it_in_each_poll(self):
+        from coconut.team_turns import OUTDATED
+
+        async def runner(event):
+            return 'Three tasks are open.'
+        polls = self.record_polls()
+        with mock.patch.object(team.TeamAdapter, 'lacking', 'trusted_inbound'):
+            self.connect(runner)
+            named = self.send('@Reporter what is open?', mentions=[self.mention])
+            self.sync()
+            self.run_turns()
+            self.assertEqual(self.adapter.events, [])
+            self.assertEqual(self.chat()[-1], ('Reporter', OUTDATED, named['id']))
+            # A turn that reaches the adapter anyway does not reach Hermes: the poll skips it.
+            with self.assertRaises(ValueError):
+                self.adapter._event({'id': 'turn', 'chat_id': 'b:team:r', 'text': 'Hello',
+                                     'team': {'member': 'm', 'member_name': 'Ada'}})
+        self.assertTrue(polls)
+        self.assertEqual({poll.get('lacking') for poll in polls}, {'trusted_inbound'})
+
     def test_a_turn_is_a_group_message_and_its_reply_reaches_the_chat(self):
         async def runner(event):
             return 'Three tasks are open.'
+        polls = self.record_polls()
         self.connect(runner)
         self.send('Yesterday we shipped the export.')
         named = self.send('@Reporter what is open?', mentions=[self.mention])
@@ -202,6 +272,9 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
                          (bot_message['id'], 'Three tasks are open.', True))
         self.assertEqual(self.adapter._turns, {})
         self.assertEqual(self.complete(self.adapter.get_chat_info(source.chat_id))['type'], 'group')
+        # A Hermes with each field of the registration: no poll names a lack.
+        self.assertTrue(polls)
+        self.assertFalse(any('lacking' in poll for poll in polls))
 
     def test_an_approval_is_denied_and_a_clarify_question_goes_into_the_chat(self):
         from types import SimpleNamespace

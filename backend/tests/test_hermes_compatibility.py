@@ -1,11 +1,14 @@
+import dataclasses
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 
-from coconut.hermes_contract import require_keywords
+from coconut.hermes_contract import require_keywords, require_registration_fields
 from coconut.hermes_runtime import CONTRACT
+from hermes_env import PYTHON, SOURCE, needs_hermes
 
 
 class KeywordContractTests(unittest.TestCase):
@@ -25,6 +28,34 @@ class KeywordContractTests(unittest.TestCase):
         def current(model=None, reasoning_config=None, future_option=None):
             pass
         require_keywords(current, {'model', 'reasoning_config'})
+
+    def test_a_platform_registration_without_a_field_of_coconut_fails(self):
+        @dataclasses.dataclass
+        class OlderEntry:
+            name: str
+            display_tier: str = ''
+
+        @dataclasses.dataclass
+        class Entry(OlderEntry):
+            trusted_inbound: bool = False
+            display_overrides: dict = dataclasses.field(default_factory=dict)
+        with self.assertRaisesRegex(ValueError, 'registration fields of the coconut platform: trusted_inbound, '
+                                                'display_overrides$'):
+            require_registration_fields(OlderEntry)
+        require_registration_fields(Entry)
+
+    @needs_hermes
+    def test_the_gateway_contract_passes_with_the_installed_hermes(self):
+        program = ('import sys; sys.path.insert(0, sys.argv[2]); sys.path.insert(0, sys.argv[1]); '
+                   'from coconut.hermes_contract import verify_gateway_contract; '
+                   'verify_gateway_contract(); print("checked")')
+        with tempfile.TemporaryDirectory() as temporary:
+            environment = dict(PATH=os.environ.get('PATH', '/usr/bin:/bin'), HOME=temporary,
+                               HERMES_HOME=temporary, HERMES_DISABLE_LAZY_INSTALLS='1', HERMES_DISABLE_TELEMETRY='1')
+            result = subprocess.run([PYTHON, '-I', '-B', '-c', program, str(Path(__file__).resolve().parents[1]),
+                                     SOURCE], cwd=temporary, env=environment, capture_output=True, text=True,
+                                    timeout=300)
+        self.assertEqual((result.returncode, result.stdout), (0, 'checked\n'), result.stderr[-3000:])
 
     def test_check_process_blocks_network_before_loading_the_contract(self):
         with tempfile.TemporaryDirectory() as temporary:

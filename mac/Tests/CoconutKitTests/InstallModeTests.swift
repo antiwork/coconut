@@ -220,6 +220,28 @@ final class InstallModeTests: XCTestCase {
         XCTAssertFalse(chat.line.contains("Restart"))
     }
 
+    func testTheStatusSaysWhenHermesIsTooOldForTheTeamChat() async throws {
+        let tooOld = "Team chat of Reporter: on, but this Hermes is too old for it (it lacks trusted_inbound). Update "
+            + "Hermes, then restart the Hermes gateway of Reporter."
+        var bots = Self.bots
+        bots["bots"] = [["id": "b1", "name": "Reporter", "home": "/h", "chat": true, "adapter": true,
+                         "lacking": "trusted_inbound"]]
+        let status = try await TeamServiceStatus.fetch(transport: service(bots: bots))
+        XCTAssertEqual(status.chats.map(\.line), [tooOld])
+        XCTAssertTrue(lines(.success(status)).contains(tooOld))
+        // The line wins over "Hermes takes the messages", and a problem of the Hermes home wins over it.
+        var chat = TeamServiceStatus.Chat(bot: "Reporter", connected: true, hermes: true, lacking: "trusted_inbound")
+        XCTAssertEqual(chat.line, tooOld)
+        chat.problem = "/h/config.yaml does not read."
+        XCTAssertEqual(chat.line, "Team chat of Reporter: on, but /h/config.yaml does not read.")
+        // A chat that is off says so, whatever the adapter says.
+        chat.connected = false
+        XCTAssertTrue(chat.line.hasPrefix("Team chat of Reporter: off."), chat.line)
+        // A service before this field, and a Hermes that has each field, keep the line of before.
+        chat = TeamServiceStatus.Chat(bot: "Reporter", connected: true, hermes: true)
+        XCTAssertEqual(chat.line, "Team chat of Reporter: on. Hermes takes the messages.")
+    }
+
     func testTheTeamStatusComesFromTheTeamOnlyRoutes() async throws {
         let service = service()
         let status = try await TeamServiceStatus.fetch(transport: service)

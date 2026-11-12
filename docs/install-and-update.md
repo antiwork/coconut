@@ -235,6 +235,7 @@ You work in a terminal on that Mac, for example over SSH. In the steps, `coconut
 ### Before you start
 
 - Install the Python of Homebrew: `brew install python`. Coconut does not use the Python of Hermes.
+- For the team chat, use Hermes 0.22.4 or later. It is the oldest Hermes that Coconut supports (`backend/coconut/hermes_versions.json`).
 - Ask an admin of the team for an invite link. The admin makes it on the Team screen of the app.
 
 ### Install
@@ -292,7 +293,7 @@ Each member of the teams of the bot can then name the bot in the team chat, and 
    - in `gateway.platforms.coconut` of `config.yaml`: `enabled: true`, `extra.mode: team` and `extra.bridge` (the address file of the Coconut service).
 2. Read the changes. Then run `coconut team connect-chat Reporter --confirm`. Expect `The team chat of Reporter is connected.` The command writes with the writer of Hermes, so each comment, the order of the keys and the layout of what it does not change stay as they are. Hermes keeps its own copy of `config.yaml` in `backups/config`.
 3. Restart the Hermes gateway of that Hermes home yourself, for example with `hermes gateway restart`. The gateway loads the plugin at its start.
-4. Run `coconut status`. Expect `Team chat of Reporter: on. Hermes takes the messages.` If the line says that Hermes does not take the messages, the gateway did not load the plugin: restart it, then look at its log. If the line names a path, the Hermes home misses a part of the team chat (the link `plugins/coconut`, the plugin behind it, or the entries in `config.yaml`), and the line gives the command that repairs it. Hermes skips a plugin folder without its plugin and writes no log line about it, so a restart alone does not help there. The status does not parse `config.yaml`: after an edit with a YAML fault, it shows the fault only when the gateway restarts and no longer takes the messages.
+4. Run `coconut status`. Expect `Team chat of Reporter: on. Hermes takes the messages.` If the line says that Hermes does not take the messages, the gateway did not load the plugin: restart it, then look at its log. If the line names a path, the Hermes home misses a part of the team chat (the link `plugins/coconut`, the plugin behind it, or the entries in `config.yaml`), and the line gives the command that repairs it. If the line says `on, but this Hermes is too old for it (it lacks trusted_inbound)`, the gateway loaded the plugin, but this Hermes cannot run the team chat. Each message that names the bot then gets the notice "Hermes on this Mac needs an update, so I cannot answer." Update Hermes to 0.22.4 or later, for example with `hermes update`, then restart the Hermes gateway of the bot and run `coconut status` again. Hermes skips a plugin folder without its plugin and writes no log line about it, so a restart alone does not help there. The status does not parse `config.yaml`: after an edit with a YAML fault, it shows the fault only when the gateway restarts and no longer takes the messages.
 
 When only another profile of a gateway with several profiles has the team chat, Hermes logs `Skipping invalid ... 'coconut' is not a valid Platform` at each start for the sessions of that chat. The line is expected, and the chat works.
 

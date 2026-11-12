@@ -5,7 +5,8 @@ person's Hermes gateway (hermes_plugin/coconut) instead of to its own worker. Th
 the main listener, with the token of `<data>/gateway/bridge.json`:
 
 - `POST /v1/gateway/poll` waits for turns of one Hermes home (one profile, one bot), and for turns to stop. The request
-  lists the turns that still run in the gateway.
+  lists the turns that still run in the gateway. An adapter of the team chat whose Hermes lacks a part of the chat
+  names it (`lacking`) and gets no turn.
 - `POST /v1/gateway/events` reports what the gateway does with a turn: `typing`, `send`, `edit`, `delete`, `question`
   and `done`.
 - `POST /v1/gateway/tools` runs a Coconut tool of the `coconut` toolset for the task of a running turn (gateway_chat).
@@ -30,6 +31,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import tempfile
 import threading
@@ -52,6 +54,10 @@ ADAPTER_SECONDS = 60
 # some seconds and take a turn that it drops. So a poll of the same home that starts this long after the hand-out and
 # does not list the turn takes it again, and a turn that nobody shows for TAKE_SECONDS counts as not taken.
 HANDOFF_SECONDS = 5
+# What the Hermes of an adapter of the team chat lacks for the chat (hermes_plugin/coconut/team.py, `lacking` of a
+# poll): field names of Hermes, separated by ", ". `coconut status` shows the text, so the bridge takes nothing else.
+LACKING = re.compile(r'[a-z_]+(, [a-z_]+)*')
+MAX_LACKING = 200
 MAX_TEXT = 200_000
 # `delta` stays known: a gateway that still runs the plugin of an earlier version sends partial text for each turn.
 # The bridge drops it (event), so the turn goes on with its complete sends. Remove `delta` when no install has that plugin.
@@ -169,6 +175,8 @@ class GatewayBridge:
         self.token = secrets.token_urlsafe(32)
         self.lock = threading.Condition()
         self.adapters: dict[str, float] = {}
+        # What the Hermes of each home lacks for the team chat, while the polls of its adapter name it (LACKING).
+        self.lacking: dict[str, str] = {}
         self.turns: dict[str, _Turn] = {}
         # Answers to questions, for the next poll of each Hermes home.
         self.answers: dict[str, list[dict]] = {}
@@ -199,16 +207,30 @@ class GatewayBridge:
         with self.lock:
             return sorted(home for home, last in self.adapters.items() if time.monotonic() - last < ADAPTER_SECONDS)
 
+    def lacking_of(self, home) -> str | None:
+        """What the Hermes of a connected adapter of `home` lacks for the team chat, or None."""
+        home = os.path.realpath(home)
+        with self.lock:
+            return self.lacking.get(home) if self.connected(home) else None
+
     def poll(self, data: dict) -> dict:
         home = data.get('home')
         if not isinstance(home, str) or not home:
             raise ValueError('Name the Hermes home of the adapter.')
         home = os.path.realpath(home)
+        lacking = data.get('lacking')
+        if lacking is not None and not (isinstance(lacking, str) and len(lacking) <= MAX_LACKING
+                                        and LACKING.fullmatch(lacking)):
+            raise ValueError('Name what Hermes lacks as a short list of field names.')
         active = {value for value in data.get('active') or [] if isinstance(value, str)}
         wait = max(0.0, min(float(data.get('wait', POLL_SECONDS)), POLL_SECONDS))
         started = time.monotonic()
         deadline = started + wait
         with self.lock:
+            if lacking:
+                self.lacking[home] = lacking
+            else:
+                self.lacking.pop(home, None)
             while True:
                 current = time.monotonic()
                 self.adapters[home] = current
@@ -221,7 +243,8 @@ class GatewayBridge:
                         # The adapter that got this turn did not show it, and an adapter of the home polls without
                         # it: nothing of the turn ran, so this poll takes it again.
                         turn.state, turn.created = 'pending', current
-                offered = [turn for turn in mine if turn.state == 'pending']
+                # A Hermes that lacks a part of the team chat gets no turn (team_turns.py posts the notice).
+                offered = [turn for turn in mine if turn.state == 'pending' and not lacking]
                 stopping = [turn for turn in mine if turn.state == 'stopping']
                 if offered or stopping or self.answers.get(home) or self.closed or current >= deadline:
                     break
@@ -374,7 +397,9 @@ class GatewayBridge:
                         current = time.monotonic()
                         if turn.deadline is not None and current > turn.deadline:
                             raise TimeoutError('The turn ran past its time.')
-                        if turn.state == 'pending' and current - turn.created > TAKE_SECONDS:
+                        # An adapter whose Hermes lacks a part of the team chat never takes the turn (poll).
+                        if turn.state == 'pending' and (current - turn.created > TAKE_SECONDS
+                                                        or turn.team and self.lacking.get(turn.home)):
                             raise GatewayUnavailable('No Hermes gateway took this turn.')
                         if turn.state == 'active' and current - turn.seen > turn.silent_seconds:
                             raise RuntimeError('The Hermes gateway stopped answering during this turn.')
