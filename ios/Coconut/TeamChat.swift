@@ -447,9 +447,8 @@ extension TeamRoom {
     /// the list has no member.
     var whoLine: String? {
         guard !memberList.isEmpty else { return nil }
-        // A Mac without a person is a member, but no person.
-        let people = memberList.filter { !$0.isBotOnly }.count
-        let line = people == 1 ? "1 person" : "\(people) people"
+        let count = people.count
+        let line = count == 1 ? "1 person" : "\(count) people"
         let bots = TeamMentions.bots(of: self).count
         guard bots > 0 else { return line }
         return line + (bots == 1 ? ", 1 bot" : ", \(bots) bots")
@@ -470,8 +469,8 @@ enum TeamMentions {
 
     /// The bots that a teammate can ask: the bots of the team that answer each member (`open`). A bot of a person,
     /// also of this person, answers no teammate: it is only the author of the pages that the person shares. This is
-    /// the one place of that rule. The `@` list, the Bots section of the Team screen and the line of who is in the
-    /// chat read it.
+    /// the one place of that rule. The `@` list, the line of who is in the chat and the section "Bots" of the Team
+    /// screen (TeamBotSection) read it.
     static func bots(of room: TeamRoom) -> [TeamRoomBot] {
         var seen = Set<String>()
         return room.botList.filter { $0.isOpen && seen.insert($0.id).inserted }
@@ -483,10 +482,95 @@ enum TeamMentions {
     }
 }
 
+/// One row of the section "Bots" of the Team screen.
+enum TeamBotRow: Identifiable, Equatable, Sendable {
+    /// A bot that a teammate can ask (TeamMentions.bots).
+    case answers(TeamRoomBot)
+    /// A bot of a Mac for a team only that does not answer in the chat. It only publishes pages.
+    case pagesOnly(TeamRoomBot)
+    /// A Mac for a team only that has no bot in the team.
+    case noBot(TeamMember)
+
+    /// Also the accessibility identifier of the row.
+    var id: String {
+        switch self {
+        case .answers(let bot), .pagesOnly(let bot): "team-bot-" + bot.id
+        case .noBot(let mac): "team-mac-" + mac.member
+        }
+    }
+
+    var name: String {
+        switch self {
+        case .answers(let bot), .pagesOnly(let bot): bot.name
+        case .noBot(let mac): mac.name
+        }
+    }
+
+    /// The bot of the row, for its face. A Mac without a bot shows a quiet symbol of a Mac instead.
+    var bot: TeamRoomBot? {
+        switch self {
+        case .answers(let bot), .pagesOnly(let bot): bot
+        case .noBot: nil
+        }
+    }
+
+    /// The quiet text at the right end of the row.
+    var note: String? {
+        switch self {
+        case .answers: nil
+        case .pagesOnly: "Pages only"
+        case .noBot: "No bot yet"
+        }
+    }
+
+    /// What VoiceOver reads for the row: one sentence.
+    var spoken: String {
+        switch self {
+        case .answers: name + ", bot"
+        case .pagesOnly: name + ", bot, pages only"
+        case .noBot: name + ", no bot yet"
+        }
+    }
+}
+
+/// The section "Bots" of the Team screen: what the Macs for a team only bring to the team. A bot of a person is only
+/// the author of the pages that the person shares, so it never shows. A Mac for a team only is no person, so the
+/// section "Members" does not show it (TeamRoom.people), and this section does.
+enum TeamBotSection {
+    static let askLine = "Type @ in the team chat to ask a bot."
+
+    /// The bots that a teammate can ask, the other bots of the Macs for a team only, and one row for each such Mac
+    /// without a bot, in the order of their names. An older service sends no `open` and no `bot_only`, so the
+    /// section then has no row, as before.
+    static func rows(of room: TeamRoom) -> [TeamBotRow] {
+        let macs = room.memberList.filter(\.isBotOnly)
+        let macIds = Set(macs.map(\.member))
+        let withBot = Set(room.botList.compactMap(\.member))
+        let answers = TeamMentions.bots(of: room)
+        var seen = Set(answers.map(\.id))
+        let pagesOnly = room.botList.filter { bot in
+            bot.member.map(macIds.contains) == true && seen.insert(bot.id).inserted
+        }
+        let rows = answers.map(TeamBotRow.answers) + pagesOnly.map(TeamBotRow.pagesOnly)
+            + macs.filter { !withBot.contains($0.member) }.map(TeamBotRow.noBot)
+        return rows.sorted {
+            switch $0.name.localizedStandardCompare($1.name) {
+            case .orderedAscending: true
+            case .orderedDescending: false
+            case .orderedSame: $0.id < $1.id
+            }
+        }
+    }
+
+    /// The line under the section: only while a row is a bot that a teammate can ask.
+    static func footer(for rows: [TeamBotRow]) -> String? {
+        rows.contains { if case .answers = $0 { true } else { false } } ? askLine : nil
+    }
+}
+
 /// The line under the name in an empty team chat.
 enum TeamChatEmptyLine {
-    /// One sentence, and a second one when the team has a bot that the person can ask (TeamMentions.bots). The
-    /// empty chat is the only place that tells of `@`.
+    /// One sentence, and a second one when the team has a bot that the person can ask (TeamMentions.bots).
     static func text(for room: TeamRoom) -> String {
         let line = "Messages here go to each person in \(room.name)."
         return TeamMentions.bots(of: room).isEmpty ? line : line + " Type @ to ask a bot."

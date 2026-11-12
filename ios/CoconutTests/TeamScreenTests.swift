@@ -30,25 +30,119 @@ final class TeamScreenTests: XCTestCase {
         XCTAssertEqual(room.memberList.map { $0.thisMac == true }, [true, false])
         XCTAssertEqual(room.memberList.map { $0.admin == true }, [true, false])
         XCTAssertEqual(room.botList.map(\.memberName), ["Ada", "Grace"])
+        XCTAssertEqual(room.botList.map(\.member), ["m-ada", "m-grace"])
         // The two bots are the authors of shared pages, so a teammate cannot ask them, and the Team screen shows
         // no Bots section.
         XCTAssertEqual(TeamMentions.bots(of: room), [])
+        XCTAssertEqual(TeamBotSection.rows(of: room), [])
         XCTAssertNil(room.sync?.error)
         XCTAssertTrue(room.showsInvite)
     }
 
-    /// The Bots section of the Team screen lists the bots of TeamMentions.bots: it shows for a team with an open bot,
-    /// and hides for a team with only the author entries of the bots of people.
-    func testTheBotsSectionShowsOnlyTheBotsThatATeammateCanAsk() {
-        let author = TeamRoomBot(id: "t-r-1", name: "Reporter", memberName: "Ada", thisMac: true, botId: "bot-1")
-        let open = TeamRoomBot(id: "t-r-2", name: "Planner", memberName: "Team Mac", open: true)
-        let people = [TeamMember(member: "m0", name: "Ada"), TeamMember(member: "m1", name: "Grace")]
+    /// Ada and Grace, and three Macs for a team only: Reporter Mac with Reporter, which answers, and Scribe, which
+    /// only publishes pages; Spare Mac without a bot; and Planner Mac whose bot Planner answers. Ada shares a page of
+    /// her bot Writer, so Writer is in the team as its author.
+    private static func mixedTeam() -> TeamRoom {
+        let members = [TeamMember(member: "m-ada", name: "Ada", admin: true, thisMac: true),
+                       TeamMember(member: "m-reporter", name: "Reporter Mac", botOnly: true),
+                       TeamMember(member: "m-grace", name: "Grace", botOnly: false),
+                       TeamMember(member: "m-spare", name: "Spare Mac", botOnly: true),
+                       TeamMember(member: "m-planner", name: "Planner Mac", botOnly: true)]
+        let bots = [TeamRoomBot(id: "t-r-1", name: "Writer", member: "m-ada", memberName: "Ada", thisMac: true,
+                                botId: "bot-writer", open: false),
+                    TeamRoomBot(id: "t-r-2", name: "Scribe", member: "m-reporter", memberName: "Reporter Mac",
+                                open: false),
+                    TeamRoomBot(id: "t-r-3", name: "Reporter", member: "m-reporter", memberName: "Reporter Mac",
+                                open: true),
+                    TeamRoomBot(id: "t-r-4", name: "Planner", member: "m-planner", memberName: "Planner Mac",
+                                open: true)]
+        return TeamRoom(room: "r", name: "Example Team", state: "active", members: members, bots: bots)
+    }
+
+    /// The people of a team are the members that are not a Mac for a team only. The section "Members", the count in
+    /// the list of teams and the line of who is in the chat read the same list.
+    func testThePeopleOfATeamLeaveOutEachMacForATeamOnly() {
+        let room = Self.mixedTeam()
+        XCTAssertEqual(room.people.map(\.name), ["Ada", "Grace"])
+        XCTAssertEqual(room.summary, "2 members")
+        XCTAssertEqual(room.whoLine, "2 people, 2 bots")
+        var alone = room
+        alone.members = [TeamMember(member: "m-ada", name: "Ada"), TeamMember(member: "m-spare", name: "Spare Mac",
+                                                                               botOnly: true)]
+        XCTAssertEqual(alone.summary, "1 member")
+        XCTAssertEqual(alone.whoLine, "1 person, 2 bots")
+    }
+
+    /// Each of the three kinds of row, in the order of the names. A bot of a person (Writer) never shows, and the `@`
+    /// list keeps its own rule: only the bots that answer.
+    func testTheBotsSectionHasEachKindInTheOrderOfTheNames() {
+        let room = Self.mixedTeam()
+        let rows = TeamBotSection.rows(of: room)
+        XCTAssertEqual(rows.map(\.name), ["Planner", "Reporter", "Scribe", "Spare Mac"])
+        XCTAssertEqual(rows.map(\.note), [nil, nil, "Pages only", "No bot yet"])
+        XCTAssertEqual(rows.map(\.id), ["team-bot-t-r-4", "team-bot-t-r-3", "team-bot-t-r-2", "team-mac-m-spare"])
+        XCTAssertEqual(rows.compactMap(\.bot?.id), ["t-r-4", "t-r-3", "t-r-2"], "A Mac without a bot has no bot face.")
+        XCTAssertFalse(rows.contains { $0.name == "Writer" }, "A bot of a person never shows.")
+        XCTAssertFalse(rows.contains { $0.name == "Reporter Mac" || $0.name == "Planner Mac" },
+                       "A Mac with a bot shows as its bots.")
+        XCTAssertEqual(TeamMentions.bots(of: room).map(\.name), ["Reporter", "Planner"])
+        XCTAssertEqual(TeamBotSection.footer(for: rows), "Type @ in the team chat to ask a bot.")
+    }
+
+    /// A team with only the author entries of the bots of people has no section, and a bot that the service lists
+    /// two times has one row.
+    func testABotOfAPersonNeverShowsAndABotShowsOneTime() {
+        let author = TeamRoomBot(id: "t-r-1", name: "Writer", member: "m0", memberName: "Ada", thisMac: true,
+                                 botId: "bot-1")
+        let people = [TeamMember(member: "m0", name: "Ada"), TeamMember(member: "m1", name: "Grace", botOnly: false)]
         let authors = TeamRoom(room: "r", name: "Example Team", state: "active", members: people, bots: [author])
-        XCTAssertEqual(TeamMentions.bots(of: authors), [], "No section: a bot of a person is never listed.")
+        XCTAssertEqual(TeamBotSection.rows(of: authors), [], "No section.")
         XCTAssertEqual(authors.whoLine, "2 people")
-        let withOpen = TeamRoom(room: "r", name: "Example Team", state: "active", members: people, bots: [author, open])
-        XCTAssertEqual(TeamMentions.bots(of: withOpen).map(\.name), ["Planner"])
-        XCTAssertEqual(withOpen.whoLine, "2 people, 1 bot")
+        let scribe = TeamRoomBot(id: "t-r-2", name: "Scribe", member: "m2", open: false)
+        let twice = TeamRoom(room: "r", name: "Example Team", state: "active",
+                             members: people + [TeamMember(member: "m2", name: "Reporter Mac", botOnly: true)],
+                             bots: [author, scribe, scribe])
+        XCTAssertEqual(TeamBotSection.rows(of: twice), [.pagesOnly(scribe)])
+    }
+
+    /// The line under the section needs a bot that answers. Pages only and a Mac without a bot bring no line.
+    func testTheLineUnderTheBotsSectionNeedsABotThatAnswers() {
+        var room = Self.mixedTeam()
+        room.bots = room.botList.map { bot in
+            var quiet = bot
+            quiet.open = false
+            return quiet
+        }
+        let rows = TeamBotSection.rows(of: room)
+        XCTAssertEqual(rows.map(\.name), ["Planner", "Reporter", "Scribe", "Spare Mac"])
+        XCTAssertEqual(rows.map(\.note), ["Pages only", "Pages only", "Pages only", "No bot yet"])
+        XCTAssertNil(TeamBotSection.footer(for: rows))
+        XCTAssertNil(TeamBotSection.footer(for: []))
+        XCTAssertEqual(room.whoLine, "2 people")
+    }
+
+    /// An older Mac sends no `bot_only` and no `open`: each member is a person, and the section "Bots" has no row, as
+    /// before. A bot without its `member` cannot belong to a Mac for a team only, so it stays out unless it answers.
+    func testAnOlderMacWithoutTheMarksShowsAsBefore() throws {
+        let answer = #"""
+        {"rooms": [{"room": "r1", "name": "Example Team", "state": "active",
+          "members": [{"member": "m1", "name": "Ada"}, {"member": "m2", "name": "Reporter Mac"}],
+          "bots": [{"id": "t-1", "name": "Reporter", "member_name": "Reporter Mac"}]}]}
+        """#
+        let room = try XCTUnwrap(APIJSON.decoder().decode(TeamRooms.self, from: Data(answer.utf8)).rooms.first)
+        XCTAssertEqual(room.people.map(\.name), ["Ada", "Reporter Mac"])
+        XCTAssertEqual(room.summary, "2 members")
+        XCTAssertEqual(TeamBotSection.rows(of: room), [])
+        var open = room
+        open.bots = [TeamRoomBot(id: "t-1", name: "Reporter", open: true)]
+        XCTAssertEqual(TeamBotSection.rows(of: open).map(\.name), ["Reporter"], "A bot that answers always shows.")
+    }
+
+    /// VoiceOver reads each row as one sentence.
+    func testVoiceOverReadsEachBotRowAsOneSentence() {
+        let rows = TeamBotSection.rows(of: Self.mixedTeam())
+        XCTAssertEqual(rows.map(\.spoken), ["Planner, bot", "Reporter, bot", "Scribe, bot, pages only",
+                                            "Spare Mac, no bot yet"])
     }
 
     /// An older service, or a room that is not active, leaves fields out. The app shows what it has.

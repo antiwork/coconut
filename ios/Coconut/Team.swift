@@ -55,6 +55,9 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     var showsInvite: Bool { status == .active && canInvite == true }
     var memberList: [TeamMember] { members ?? [] }
     var botList: [TeamRoomBot] { bots ?? [] }
+    /// The people of the team: each member that is not a Mac for a team only. This is the one place of that rule.
+    /// The section "Members", the count in the list of teams and the line of who is in the chat read it.
+    var people: [TeamMember] { memberList.filter { !$0.isBotOnly } }
 }
 
 struct TeamMember: Decodable, Identifiable, Equatable, Sendable {
@@ -79,6 +82,8 @@ struct TeamRoomBot: Decodable, Identifiable, Equatable, Sendable {
     var name: String
     var avatar: String? = nil
     var color: String? = nil
+    /// The member ID of the Mac of the bot. An older service sends none.
+    var member: String? = nil
     var memberName: String? = nil
     var thisMac: Bool? = nil
     var botId: String? = nil
