@@ -2,6 +2,28 @@ import XCTest
 @testable import Coconut
 
 final class ModelSettingsTests: XCTestCase {
+    func testFallbackChoiceReplacesOnlyTheFirstModel() {
+        let a = FallbackModel(model: "model-a", provider: "provider-a")
+        let b = FallbackModel(model: "model-b", provider: "provider-b")
+        let c = FallbackModel(model: "model-c", provider: "provider-c")
+        let d = FallbackModel(model: "model-d", provider: "provider-d")
+        func chosen(_ chain: [FallbackModel], _ choice: FallbackModel?) -> [FallbackModel] {
+            FallbackSettings(models: chain).replacingFirst(with: choice)
+        }
+
+        XCTAssertEqual(chosen([], b), [b])
+        XCTAssertEqual(chosen([a], b), [b])
+        XCTAssertEqual(chosen([a, b, c], b), [b, c])
+        XCTAssertEqual(chosen([a, b, c], d), [d, b, c])
+        // Each other copy of the choice keeps its entry, and its endpoint, on the Mac.
+        XCTAssertEqual(chosen([a, b, b], b), [b, b])
+        XCTAssertEqual(chosen([a, b], nil), [b])
+        XCTAssertEqual(chosen([b, b], nil), [b])
+        XCTAssertEqual(chosen([], nil), [])
+        let upper = FallbackModel(model: "MODEL-B", provider: "Provider-B")
+        XCTAssertEqual(chosen([a, upper, c], b), [b, c])
+    }
+
     func testLegacyCachedBotHasNoModelOverride() throws {
         let bot = try JSONDecoder().decode(Bot.self, from: Data(legacyBotJSON.utf8))
 

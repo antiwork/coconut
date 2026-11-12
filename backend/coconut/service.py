@@ -1047,7 +1047,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
                 if native is not None:
                     state['approvals'] = native['approvals']
                     state['parallel_work'] = native.get('parallel_work')
-                    state['api_fallback'] = native.get('api_fallback')
+                    state['fallback'] = native.get('fallback')
                     state['mcp_servers'] = native.get('mcp_servers', [])
                 if timings is not None:
                     timings.update(data_rows=(rows_finished - data_started - (work_finished - work_started)) * 1000,
@@ -1114,7 +1114,7 @@ class Service(TaskCache, HistoryCache, NativeFallbackUpdates, NativeKanban, Stat
             return self.delete_document(document_id) if method == 'DELETE' else self.pin_document(document_id, data)
         if method == 'POST' and path.startswith('/v1/settings/google/'):
             return self.google_connection(path.rsplit('/', 1)[1], data, device_id, key)
-        if method == 'PUT' and path == '/v1/settings/api-fallback' and hasattr(self.provider, 'native_settings'):
+        if method == 'PUT' and path == '/v1/settings/fallback' and hasattr(self.provider, 'native_settings'):
             return self.mutate_native_fallback(data, key, fingerprint)
         if method == 'PUT' and path == '/v1/settings/parallel-work' and hasattr(self.provider, 'native_settings'):
             return self.mutate_parallel_work(data, key, fingerprint)

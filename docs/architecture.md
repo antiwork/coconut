@@ -27,7 +27,8 @@ Coconut retains small projections for phone display. Native files own behavior.
 Inbox threads group decisions. They do not restrict a bot's recall of its own conversation.
 The gateway resumes native history and compression continuations. The phone never displays those internal boundaries.
 Model and access defaults resolve from the active native default profile.
-Each bot stores its MCP servers, approval settings and API fallback in its own native configuration, as in Hermes. A bot without its own model uses the default model.
+Each bot stores its MCP servers, approval settings and fallback models in its own native configuration, as in Hermes. A bot without its own model uses the default model.
+The Model page shows the fallback chain of the default profile (`fallback_providers`, then the legacy `fallback_model`). Only the model and the provider of each entry leave the Mac. The page sets the first fallback model from the same list as the default model. `PUT /v1/settings/fallback` replaces the whole chain: an entry that the chain has keeps its other keys, and a new entry gets only its provider and model.
 
 ## Native integration
 
