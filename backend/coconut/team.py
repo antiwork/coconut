@@ -15,6 +15,7 @@ for a person, because the app shows them.
 - `POST /v1/team/rooms` with `{name, member_name, avatar, color, relay}`: make a room. This Mac is its admin.
 - `PATCH /v1/team/rooms/<room>` with `{member_name, avatar, color}`: change what the team sees for this Mac.
 - `POST /v1/team/rooms/<room>/invites` with `{ttl, uses}`: make an invite link. Only the admin can do this.
+- `DELETE /v1/team/rooms/<room>/members/<member>`: the admin removes another member (team_remove).
 - `POST /v1/team/join` with `{link, member_name, avatar, color}`: join a room.
 - `DELETE /v1/team/rooms/<room>`: leave the room, and delete its copy and its keys on this Mac.
 - `POST /v1/team/sync`: read each room from the relay now, and return the rooms.
@@ -33,7 +34,7 @@ for a person, because the app shows them.
 No answer has a key, a token or an invite secret. Only the invite link, which the person shares, carries a secret.
 
 A write of a paired device with an `Idempotency-Key` is safe to repeat (team_request). A leave of a `joining` room
-always removes the room from this Mac (team_leave).
+always removes the room from this Mac (team_leave). Each step of a removal is safe to repeat (team_remove).
 """
 from __future__ import annotations
 
@@ -58,7 +59,7 @@ from .team_directs import TeamDirects
 from .team_keys import ROOM_ID, TeamKeysError
 from .team_messages import TeamMessages
 from .team_pages import TeamPages
-from .team_relay import TeamRelay, TeamRelayError, relay_origin
+from .team_relay import HEX64, TeamRelay, TeamRelayError, relay_origin
 from .team_socket import TeamSocket
 from .team_store import ACTIVE, JOINING, MEMBER_LIMITS, SCHEMA, TeamStore, unicode_text
 from .team_sync import INACTIVE, ROOM_ERRORS, TEAM_EVENT, TeamSync, room_error, utc_now
@@ -82,6 +83,8 @@ SYNC_WAIT_SECONDS = 60
 # runs again. The limit keeps the memory small when a device sends many keys.
 REPLY_SECONDS = 600
 REPLY_LIMIT = 256
+# The label of the entry ID of a `remove` entry (removal_entry).
+REMOVAL_LABEL = b'coconut room remove'
 # The answer on a person's Mac to a team route that only a paired device can call (tool_route).
 PERSON_ONLY = 'Only the person can do this in the team. Use the Coconut app.'
 # The clock of the saved answers. A test replaces it, so it needs no wait of 10 minutes.
@@ -150,6 +153,18 @@ def tool_route(method: str, parts: list[str]) -> bool:
     rule closes the plain path only: a process of the same macOS account can still read other files of this Mac."""
     return (method, parts) in (('GET', ['rooms']), ('POST', ['join']), ('POST', ['sync'])) or (
         method == 'DELETE' and len(parts) == 2 and parts[0] == 'rooms')
+
+
+def removal_entry(token: str, room: str, member: str) -> str:
+    """The entry ID of the `remove` entry of a member: from the room and the member ID, so a repeat of a removal
+    writes the same entry.
+
+    The member token of the admin is the key of the HMAC. Without a secret, each member could compute the ID and write
+    an entry that is not kept with it first. The relay keeps such an entry after a removal, and it gives an entry ID
+    to one member only, so the admin could then never write the `remove` entry.
+    """
+    message = REMOVAL_LABEL + bytes.fromhex(room) + bytes.fromhex(member)
+    return hmac.new(token.encode(), message, hashlib.sha256).hexdigest()[:32]
 
 
 def whole(data: dict, field: str, default: int, limits: tuple[int, int], text: str) -> int:
@@ -299,6 +314,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
             return self.team_profile(parts[1], data)
         if len(parts) == 3 and parts[0] == 'rooms' and parts[2] == 'invites' and method == 'POST':
             return self.team_invite(parts[1], data)
+        if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'members' and method == 'DELETE':
+            return self.team_remove(parts[1], parts[3])
         if len(parts) == 4 and parts[0] == 'rooms' and parts[2] == 'pages' and method in ('PUT', 'DELETE'):
             if method == 'PUT':
                 return self.team_share_page(parts[1], parts[3])
@@ -343,12 +360,15 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
         sends = direct and self._team_reads_directs
         refused = [{name: value for name, value in refusal.items() if name != 'form'}
                    for refusal in self._team_refusals.get(room['room'], {}).values()]
+        is_admin = room['member'] == room['admin']
+        # The admin of an active room can remove each other member (team_remove). An app reads only this field, so an
+        # older service shows no action.
+        removes = is_admin and room['state'] == ACTIVE
         members = [dict(member=member['member'], name=member['name'], avatar=member['avatar'], color=member['color'],
                         admin=member['member'] == room['admin'], this_mac=member['member'] == room['member'],
-                        bot_only=bool(member['bot_only']),
+                        bot_only=bool(member['bot_only']), can_remove=removes and member['member'] != room['member'],
                         **({'direct': sends and self._team_can_direct(room, member)} if direct else {}))
                    for member in self.team_store.members(room['room'])]
-        is_admin = room['member'] == room['admin']
         view = {'room': room['room'], 'name': room['name'], 'relay': room['relay'], 'state': room['state'],
                 'member': room['member'], 'admin': room['admin'], 'is_admin': is_admin,
                 'can_invite': is_admin and room['state'] == ACTIVE, 'epoch': room['epoch'],
@@ -459,6 +479,11 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
             except TeamFormatError:
                 raise ServiceError(409, 'This Mac cannot make an invite link for this team. Update Coconut, then try '
                                         'again.') from None
+            # The record comes before the ticket, because the relay can take a ticket without an answer. A removal
+            # then removes a ticket that the relay does not have, and that is no error.
+            with self.transaction():
+                self.team_store.drop_old_invites(time.time())
+                self.team_store.add_invite(room_id, ticket['hash'], expires)
             try:
                 self.team_relay.add_ticket(room['relay'], room_id, secrets['token'], ticket['hash'], ttl, uses, welcome, tries=2)
             except TeamRelayError as error:
@@ -583,8 +608,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
                         if room['state'] == JOINING:
                             # The relay never answered the join, and it can never answer, for example when the link
                             # named a server that does not exist. The room must not stay on the Team screen for ever.
-                            # A relay that took the join keeps this Mac as a member without a Mac, until the member
-                            # removal of the contract exists.
+                            # A relay that took the join keeps this Mac as a member without a Mac. No Mac shows that
+                            # member, so the admin cannot remove it.
                             log.warning('coconut.team_log room %s: the relay did not take the leave of a join that did '
                                         'not finish, so this Mac removes only its copy. %s', room_id[:8], error)
                         elif error.status == 409:
@@ -594,6 +619,67 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
                         # Else the relay no longer knows this Mac or the room, so the Mac is out already.
                 self._team_forget(room_id)
         return {'room': room_id, 'left': True}
+
+    def team_remove(self, room_id: str, member: str) -> dict:
+        """The admin removes another member from the room (docs/team-log.md, "Member removal"). Three steps:
+
+        1. Remove the open invites of the room on the relay, so that a link that is still open cannot bring the member
+           back. The Mac keeps a record of each invite that it made (TeamStore.add_invite).
+        2. Remove the member on the relay. The relay removes its token, closes its socket and deletes its kept entries.
+           A member that the relay no longer has, for example one that left without its `delete` entry, is no error.
+        3. Write one kept `remove` entry with the member ID and the last name of the member. Each other Mac takes the
+           member out from it (TeamStore._show_removal). The entry ID comes from the room and the member, so a repeat
+           writes nothing new.
+
+        Each step is safe to repeat. A removal that stopped after a step finishes when the admin asks again, because
+        the store keeps the member until the `remove` entry is in it. The answer is the room view.
+        """
+        from .service_base import ServiceError
+        room = self._team_room(room_id)
+        if room['state'] != ACTIVE:
+            raise ServiceError(409, INACTIVE[room['state']])
+        if room['admin'] != room['member']:
+            raise ServiceError(403, 'Only the admin of the team can remove a member.')
+        if member == room['member']:
+            raise ServiceError(409, 'This is your own Mac. To go out of the team, leave the team.')
+        with self.lock:
+            known = isinstance(member, str) and HEX64.fullmatch(member) is not None and (
+                self.team_store.member(room_id, member) is not None or self.team_store.removed(room_id, member))
+        if not known:
+            raise ServiceError(404, 'This member is not in the team.')
+        with self._team_operation, team_errors():
+            # An operation before this one can have changed the room.
+            room = self._team_room(room_id)
+            if room['state'] != ACTIVE:
+                raise ServiceError(409, INACTIVE[room['state']])
+            secrets = team_keys.read(self.root, room_id)
+            self._team_close_invites(room, secrets['token'])
+            self.team_relay.remove_member(room['relay'], room_id, secrets['token'], member, tries=2)
+            with self._team_room_lock(room_id):
+                # A write without an answer can be on the relay already. The read finds it.
+                self._team_settle(room_id)
+                entry_id = removal_entry(secrets['token'], room_id, member)
+                with self.lock:
+                    done = self.team_store.removed(room_id, member)
+                    name = self.team_store.last_name(room_id, member)
+                if not done:
+                    fields = {'kind': 'remove', 'member': member}
+                    if name:
+                        fields['name'] = name
+                    self._team_write(room, entry_id, True, fields, tries=2)
+        log.info('coconut.team_log room %s: this Mac removed the member %s.', room_id[:8], member[:8])
+        return self._team_answer(room_id)
+
+    def _team_close_invites(self, room: dict, token: str) -> None:
+        """Remove each open invite of the room on the relay, and forget each kept invite. An invite of a version
+        without the record ends by itself: the app makes each invite for one day."""
+        with self.lock:
+            invites = self.team_store.invites(room['room'])
+        for ticket_hash, expires in invites:
+            if expires > time.time():
+                self.team_relay.remove_ticket(room['relay'], room['room'], token, ticket_hash, tries=2)
+            with self.transaction():
+                self.team_store.drop_invite(room['room'], ticket_hash)
 
     def team_profile(self, room_id: str, data: dict) -> dict:
         """Change what the team sees for this Mac: its name, avatar and color. The Mac writes its `member` entry
@@ -675,8 +761,8 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
         """Replace the `member` entry of this Mac with a `delete` entry, so each other Mac takes it out of its list.
 
         A member must always be able to leave. Without a working helper or room key, the Mac leaves without the
-        `delete` entry, and the other Macs show it until the member removal of the contract exists. The caller holds
-        the lock of the room.
+        `delete` entry, and the other Macs show it until the admin removes it (team_remove). The caller holds the lock
+        of the room.
         """
         entry_id = json.loads(room['profile'])['entry']
         try:

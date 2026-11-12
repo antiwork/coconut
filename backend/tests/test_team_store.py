@@ -196,6 +196,89 @@ class TeamStoreTests(unittest.TestCase):
                 self.assertEqual(self.write(number, {'kind': kind, 'rev': 1}, ADMIN), (STORED, None))
                 self.assertEqual(self.store.entry(ROOM, entry_id(number))['kind'], kind)
 
+    # The `remove` entry of the admin
+
+    def remove(self, number: int, member, rev: int = 1, **fields) -> tuple:
+        return self.write(number, {'kind': 'remove', 'rev': rev, 'at': '2026-11-10T12:00:00Z', 'member': member,
+                                   **fields}, ADMIN)
+
+    def test_a_remove_entry_takes_the_member_out_also_while_the_store_has_its_member_entry(self):
+        self.write(1, self.member('Ada'), ADMIN)
+        self.write(2, self.member('Grace'), OUTSIDER)
+        self.store.changed.clear()
+        # The relay deleted the `member` entry of Grace, and no `delete` entry came, so the store still has it.
+        self.assertEqual(self.remove(3, OUTSIDER, name='Grace'), (STORED, None))
+        self.assertEqual(self.names(), ['Ada'])
+        self.assertEqual(self.store.entry(ROOM, entry_id(2))['kind'], 'member')
+        self.assertTrue(self.store.removed(ROOM, OUTSIDER))
+        # The Team screen gets its event, and the history keeps the name.
+        self.assertEqual(self.store.changed, {ROOM})
+        self.assertEqual(self.store.last_name(ROOM, OUTSIDER), 'Grace')
+
+    def test_a_later_member_entry_does_not_bring_a_removed_member_back(self):
+        self.write(1, self.member('Grace'), OUTSIDER)
+        self.remove(2, OUTSIDER)
+        self.assertEqual(self.write(1, self.member('Grace L.', rev=2), OUTSIDER), (STORED, None))
+        self.assertEqual(self.write(3, self.member('Grace'), OUTSIDER), (STORED, None))
+        self.assertEqual(self.names(), [])
+        # A repeat of the same removal keeps it.
+        self.assertEqual(self.remove(2, OUTSIDER, rev=2), (STORED, None))
+        self.assertEqual(self.names(), [])
+
+    def test_a_remove_entry_that_names_the_admin_or_this_mac_changes_nothing(self):
+        self.write(1, self.member('Ada'), ADMIN)
+        self.write(2, self.member('Lin'), MEMBER)
+        self.store.changed.clear()
+        for number, member in ((3, ADMIN), (4, MEMBER)):
+            with self.subTest(member=member[:4]):
+                self.assertEqual(self.remove(number, member), (STORED, None))
+                self.assertFalse(self.store.removed(ROOM, member))
+        self.assertEqual((self.names(), self.store.changed), (['Ada', 'Lin'], set()))
+
+    def test_a_remove_entry_without_a_member_id_changes_nothing(self):
+        self.write(1, self.member('Grace'), OUTSIDER)
+        for number, member in enumerate((None, 'A' * 64, OUTSIDER[:32], 7), start=2):
+            with self.subTest(member=member):
+                self.assertEqual(self.remove(number, member), (STORED, None))
+        self.assertEqual(self.names(), ['Grace'])
+
+    def test_a_remove_entry_of_a_member_that_is_not_the_admin_changes_nothing(self):
+        self.write(1, self.member('Grace'), OUTSIDER)
+        self.assertEqual(self.write(2, {'kind': 'remove', 'rev': 1, 'member': OUTSIDER}, MEMBER), (REFUSED, 'admin'))
+        self.assertEqual(self.names(), ['Grace'])
+        self.assertFalse(self.store.removed(ROOM, OUTSIDER))
+
+    def test_a_remove_entry_takes_away_the_bots_and_pages_of_the_member_and_keeps_its_messages(self):
+        self.write(1, self.member('Grace'), OUTSIDER)
+        self.write(2, {'kind': 'bot', 'rev': 1, 'name': 'Helper', 'avatar': '', 'color': ''}, OUTSIDER)
+        self.write(3, {'kind': 'page', 'rev': 1, 'bot': entry_id(2), 'key': 'weekly-report', 'title': 'Weekly report',
+                       'format': 'markdown', 'summary': None, 'content': '3 tasks are open.', 'version': 1,
+                       'expires_at': None}, OUTSIDER)
+        self.write(4, {'kind': 'message', 'rev': 1, 'text': 'Hello team'}, OUTSIDER)
+        pages, bots = self.store.library('2026-11-10T12:00:00Z')
+        self.assertEqual(([page['title'] for page in pages], [bot['name'] for bot in bots]), (['Weekly report'], ['Helper']))
+        self.store.touched.clear()
+        self.remove(5, OUTSIDER, name='Grace')
+        self.assertEqual(self.store.library('2026-11-10T12:00:00Z'), ([], []))
+        # The Library of the phone gets its event. The chat keeps the message with the name of the member.
+        self.assertEqual(self.store.touched, {ROOM})
+        (message,) = self.store.messages(ROOM)
+        self.assertEqual((message['text'], message['member_name']), ('Hello team', 'Grace'))
+
+    def test_a_remove_entry_drops_the_waiting_triggers_of_the_messages_of_the_member(self):
+        self.write(1, self.member('Grace'), OUTSIDER)
+        self.write(2, self.member('Lin'), ADMIN)
+        for number, member in ((3, OUTSIDER), (4, ADMIN), (5, OUTSIDER)):
+            self.write(number, {'kind': 'message', 'rev': 1, 'text': 'Hello'}, member)
+        for number, started in ((3, 0), (4, 0), (5, 1)):
+            self.db.execute('INSERT INTO team_triggers (room, bot, entry, started) VALUES (?, ?, ?, ?)',
+                            (ROOM, 'bot', entry_id(number), started))
+        self.remove(6, OUTSIDER)
+        # A started trigger is a running turn: the turn thread stops it, because its member is out.
+        self.assertEqual(self.db.execute('SELECT entry, started FROM team_triggers ORDER BY number').fetchall(),
+                         [(entry_id(4), 0), (entry_id(5), 1)])
+        self.assertEqual(self.store.triggered, {ROOM})
+
     def test_a_member_cannot_make_its_entry_a_kind_of_the_admin(self):
         self.write(1, {'kind': 'message', 'rev': 1})
         self.assertEqual(self.write(1, {'kind': 'key', 'rev': 2}), (REFUSED, 'admin'))

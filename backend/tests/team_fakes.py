@@ -232,6 +232,13 @@ class FakeRelay:
             raise TeamRelayError(409, 'The relay answered 409.')
         state['tickets'][ticket_hash] = {'uses': uses, 'welcome': welcome, 'ttl': ttl}
 
+    def remove_ticket(self, relay: str, room: str, token: str, ticket_hash: str, tries: int = 1) -> None:
+        self._request('remove_ticket', relay, room)
+        state, member = self._member(room, token)
+        if not state['members'][member]['admin']:
+            raise TeamRelayError(403, 'The relay answered 403.')
+        state['tickets'].pop(ticket_hash, None)
+
     def join(self, relay: str, room: str, ticket: str, claim: dict, tries: int = 1) -> str:
         self._request('join', relay, room)
         if room not in self.rooms:

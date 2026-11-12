@@ -123,8 +123,11 @@ class TeamRelay:
         self._expect(self.request(relay, 'POST', f'{room}/tickets', authorization='Bearer ' + token, tries=tries,
                                   body={'hash': ticket_hash, 'ttl': ttl, 'uses': uses, 'welcome': welcome}), 204)
 
-    def remove_ticket(self, relay: str, room: str, token: str, ticket_hash: str) -> None:
-        self._expect(self.request(relay, 'DELETE', f'{room}/tickets/{ticket_hash}', authorization='Bearer ' + token), 204)
+    def remove_ticket(self, relay: str, room: str, token: str, ticket_hash: str, tries: int = 1) -> None:
+        """Remove a ticket and its welcome. Only the admin can do this. A ticket that the relay no longer has is no
+        error."""
+        self._expect(self.request(relay, 'DELETE', f'{room}/tickets/{ticket_hash}', authorization='Bearer ' + token,
+                                  tries=tries), 204)
 
     def join(self, relay: str, room: str, ticket: str, claim: dict, tries: int = 1) -> str:
         """Add this Mac as a member with a ticket. Return the sealed welcome as base64."""
