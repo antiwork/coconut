@@ -114,6 +114,47 @@ class RoutingRuleTests(unittest.TestCase):
                 self.assertFalse(is_silence_reply(text))
 
 
+class ContextBlockTests(unittest.TestCase):
+    """The retained work and the pending cards in the text of a turn are short when they can be."""
+
+    CARD = {'id': 'd1', 'title': 'Ship the release?', 'action_type': 'question', 'revision': 2, 'task_id': 't1',
+            'status': 'pending', 'bot_id': 'b1', 'resource': '', 'merge_pr_url': None,
+            'explanation': 'The tests pass.', 'options': [{'id': 'ship', 'label': 'Ship'}], 'sources': []}
+
+    def test_a_retained_item_leaves_out_its_empty_fields_its_own_bot_and_a_work_state_equal_to_the_status(self):
+        from coconut.native_conversation import tracked_note
+        item = {'id': 'w1', 'bot_id': 'b1', 'key': 'k', 'title': 'Ship', 'status': 'waiting', 'activity': '',
+                'task_id': 't1', 'current_task': False, 'work_state': 'waiting', 'completion_condition': 'Ship',
+                'completion_evidence': None, 'next_step': None, 'external_wait': None, 'paused_by_decision_id': None,
+                'routine_check': True, 'dismissed': False}
+        other = dict(item, id='w2', bot_id='b2', work_state='blocked', next_step='Ask Lin.')
+        text = tracked_note({'bot_id': 'b1', '_tracked_work': [item, other]})
+        self.assertIn('An absent field is empty or false.', text)
+        sent = json.loads(text[text.index('Existing work for this bot: ') + len('Existing work for this bot: '):])
+        self.assertEqual(sent[0], {'id': 'w1', 'key': 'k', 'title': 'Ship', 'status': 'waiting', 'task_id': 't1',
+                                   'completion_condition': 'Ship', 'routine_check': True})
+        # Another bot and a work state that differs from the status stay.
+        self.assertEqual((sent[1]['bot_id'], sent[1]['work_state'], sent[1]['next_step']), ('b2', 'blocked', 'Ask Lin.'))
+
+    def test_without_a_human_source_a_pending_card_has_only_the_fields_that_name_it(self):
+        from coconut.native_conversation import pending_decisions_context
+        text = pending_decisions_context({'_pending_decisions': [self.CARD], '_decision_reply_sources': []})
+        self.assertIn('They stay pending: the person answers them in Coconut.', text)
+        self.assertNotIn('coconut_resolve_reply', text)
+        self.assertEqual(json.loads(text[text.index('\n[') + 1:]), [
+            {'id': 'd1', 'title': 'Ship the release?', 'action_type': 'question', 'revision': 2, 'task_id': 't1'}])
+        merge = dict(self.CARD, merge_pr_url='https://github.com/o/r/pull/1')
+        text = pending_decisions_context({'_pending_decisions': [merge]})
+        self.assertEqual(json.loads(text[text.index('\n[') + 1:])[0]['merge_pr_url'], 'https://github.com/o/r/pull/1')
+
+    def test_with_a_human_source_each_pending_card_is_complete(self):
+        from coconut.native_conversation import pending_decisions_context
+        sources = [{'id': 'm1', 'text': 'Ship it.'}]
+        text = pending_decisions_context({'_pending_decisions': [self.CARD], '_decision_reply_sources': sources})
+        self.assertIn('Decide whether the new human message answers one', text)
+        self.assertEqual(json.loads(text[text.index('\n{') + 1:]), {'decisions': [self.CARD], 'human_sources': sources})
+
+
 class WorkTurnRuleTests(unittest.TestCase):
     def test_a_task_with_its_own_work_session_runs_in_the_gateway_without_other_worker_inputs(self):
         from coconut.gateway_bridge import gateway_work_turn

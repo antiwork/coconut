@@ -300,6 +300,28 @@ def source_activity_note(task):
     return text
 
 
+def present_fields(item):
+    """The fields of `item` that hold a value: no null, false, empty text, empty list or empty object."""
+    return {key: value for key, value in item.items() if value is not None and value is not False
+            and not (isinstance(value, (str, list, dict)) and not value)}
+
+
+def lean_work_item(item, bot_id):
+    """A retained work item (tracked_work._tracked_items_input) for the text of a turn. The text leaves out the empty
+    fields, the bot of the turn, and a work_state that equals the status."""
+    item = present_fields(item)
+    if item.get('bot_id') == bot_id:
+        item.pop('bot_id')
+    if item.get('work_state') == item.get('status'):
+        item.pop('work_state', None)
+    return item
+
+
+# The fields of a pending card that name it in a turn without a human message that can answer it: the card and its
+# revision, its kind, the task that asked it, and the PR or resource that it is about.
+CARD_NAME_FIELDS = ('id', 'title', 'action_type', 'revision', 'task_id', 'merge_pr_url', 'resource')
+
+
 def tracked_note(task):
     """The tracked PRs and work of a task, their latest GitHub observations, and its native kanban task. Empty without
     them. The comments of the native task are records of the turn (turn_records), not part of this note."""
@@ -316,8 +338,8 @@ def tracked_note(task):
         text += ('\nRetain existing work and its owner, decisions, files, and saved waits. '
             'Use coconut_track_work only to update these retained items until Coconut migrates them. '
             'Do not create a native replacement or repeat completed steps. '
-            'Use native kanban tasks for new outcomes. Existing work for this bot: '
-            + json.dumps(task['_tracked_work']))
+            'Use native kanban tasks for new outcomes. An absent field is empty or false. Existing work for this bot: '
+            + json.dumps([lean_work_item(item, task.get('bot_id')) for item in task['_tracked_work']]))
     if task.get('_native_outcome'):
         text += '\nNative kanban task:\n' + task['_native_outcome']['context']
     return text
@@ -398,9 +420,17 @@ def resume_prompt(request):
 
 
 def pending_decisions_context(task):
-    """The pending cards of the conversation and the human messages that can answer them. Empty without cards."""
+    """The pending cards of the conversation and the human messages that can answer them. Empty without cards.
+
+    Without a human message that can answer a card (decision_inbox.decision_chat_input), the turn cannot answer one.
+    The text then names each card in a short form, so that the bot does not make a duplicate card."""
     if not task.get('_pending_decisions'):
         return ''
+    if not task.get('_decision_reply_sources'):
+        return ('\nPending decisions in this conversation follow. They stay pending: the person answers them in Coconut. '
+                'Do not make a duplicate card. An absent field is empty.\n' + json.dumps([
+                    present_fields({key: decision.get(key) for key in CARD_NAME_FIELDS})
+                    for decision in task['_pending_decisions']]))
     return ('\nPending decisions in this conversation follow. Decide whether the new human message answers one, asks about one, or starts other work. '
             'Use coconut_resolve_reply only for an explicit answer, rejection, or revision. Quote the supplied human source. '
             'Leave decisions pending for questions or unrelated work. If the intended decision is ambiguous, ask in chat. '
