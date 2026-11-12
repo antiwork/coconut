@@ -9,13 +9,9 @@ A team has two kinds of Mac:
 - **A person's Mac** (a full install): its bots are the person's, and nobody else can ask them. The person shares a page of a bot with a team by one act on the page, and stops when they want. The bot of the page is then the author of the page in the team, and nothing more.
 - **A Mac for a team only** (see [Team-only mode](#team-only-mode)): its bots are the team's. Each page that such a bot saves with the audience "team" goes to the teams of the bot.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat of the people and serves it to the phone (see [Team chat](#team-chat)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone (see [Direct messages](#direct-messages)). The admin removes a member (see [Removal](#removal)). These parts are not built yet:
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat and serves it to the phone, and the app lists the team bots that a person can name with `@` (see [Team chat](#team-chat)). A bot of a Mac for a team only answers in the Team chat (see [A bot answers](#a-bot-answers)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone, and the app shows them (see [Direct messages](#direct-messages)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). This part is not built yet:
 
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
-- The key change after a member removal.
-- The mentions of the Team chat in the app. The app shows each team in its Chats list, and the chat of the team sends and shows text only.
-- A bot that reads or writes the Team chat.
-- The direct messages in the app. Until an app asks for them, no Mac writes `direct` in its `member` entry, and nobody can send a direct message.
 
 ## Terms
 
@@ -31,7 +27,7 @@ Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joi
 | --- | --- | --- |
 | Room key | The admin's Mac | 32 random bytes. Seals each entry of its epoch. |
 | Member key | Each Mac, for each room | Ed25519. Signs each entry of the Mac, and the proof of a join. Its public key in lowercase hex is the member ID. |
-| Agreement key | Each Mac, for each room | X25519. Receives the new room key after a key change, and makes the pair key of a direct message with each other member. |
+| Agreement key | Each Mac, for each room | X25519. Makes the pair key of a key box after a key change, and the pair key of a direct message, with each other member. |
 | Member token | Each Mac, for each room | 32 random bytes in lowercase hex. Authorizes the Mac at the relay. |
 | Invite secret | The admin's Mac, for each invite | 32 random bytes. Gives the relay ticket and the welcome key. |
 
@@ -90,9 +86,9 @@ Each payload has these fields:
 | `message` | `false` | Any member | `text` (1 to 16,000 characters), `reply_to` (an entry ID, or absent), `mentions` (at most 16 entry IDs, or absent), `bot` (the entry ID of a `bot` entry of the same member, or absent). See [Team chat](#team-chat). |
 | `direct` | `false` | A person's Mac | `box`: the text of a direct message to one other member, sealed a second time with the pair key of the two members. See [Direct messages](#direct-messages). |
 | `remove` | `true` | The admin, one entry for each removed member | `member` (the member ID of the removed member), `name` (the last name that the admin's Mac showed for it, or absent). See [Removal](#removal). |
-| `key` | `true` | The admin | The room key of the next epoch. |
+| `key` | `true` | The admin, one entry for each new epoch | `epoch` (the new epoch), `agreement` (the public agreement key of the admin), `boxes` (for each member ID, the room key of the new epoch in a box for that member). See [Key change](#key-change). |
 
-The kinds `member`, `delete`, `bot`, `page`, `message`, `direct` and `remove` are complete. See [Bots and pages](#bots-and-pages) for the rules of `bot` and `page`, [Team chat](#team-chat) for `message`, and [Direct messages](#direct-messages) for `direct`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
+The kinds `member`, `delete`, `bot`, `page`, `message`, `direct`, `remove` and `key` are complete. See [Bots and pages](#bots-and-pages) for the rules of `bot` and `page`, [Team chat](#team-chat) for `message`, and [Direct messages](#direct-messages) for `direct`. Each other kind gets its fields in the pull request that builds it. A new kind needs no change of the relay and no change of the body.
 
 A key in a payload is unpadded base64url, as in a pairing setup.
 
@@ -107,7 +103,7 @@ A Mac writes the `name` of its own `member` entry by a stricter rule: 1 to 80 co
 1. If the version of the body is later than the Mac knows, keep the bytes and try again after the next update of Coconut. This check comes first, because a later version can have another form.
 2. Open the body with the room key of its epoch. Then check the signature with `member`. If one of them fails, drop the entry and write a log line. Do the same when the payload is not a JSON object with a `kind` (1 to 64 characters of valid Unicode text) and a whole `rev` from 1 to 2^53 - 1.
    - If the Mac has no room key for the epoch, and the epoch is before the first epoch that the Mac has a key for, skip the entry. A member that joins later never gets the keys of earlier epochs.
-   - If the epoch is later, keep the bytes until the key comes in a `key` entry.
+   - If the epoch is later, keep the bytes until the key comes in a `key` entry. Then open them again.
 3. If the Mac already has this entry ID, accept the entry only from the same member and only with a higher `rev`.
 4. Accept `remove` and `key` only from the admin. The admin is the member ID that the welcome names.
 5. If the kind is unknown, keep the payload and show nothing.
@@ -244,7 +240,7 @@ The admin's Mac keeps a record of each invite that it makes: the hash of the tic
 
 ## Member removal and key change
 
-The admin removes a member: a person who left the company, a Mac that was lost, or a member that left without its `delete` entry and still shows in each list. A removal has two parts. The removal is built. The key change is not built yet.
+The admin removes a member: a person who left the company, a Mac that was lost, or a member that left without its `delete` entry and still shows in each list. A removal has two parts: the removal, then the key change.
 
 ### Removal
 
@@ -272,13 +268,81 @@ Rules for a Mac that reads a `remove` entry:
 
 ### Key change
 
-This part is not built yet. The format already has what it needs: the epoch, the agreement key, and the kind `key`.
+The removed Mac still has the room key. If that person also gets the storage of the relay, the key opens each later entry. So after a removal, the room gets a new room key that the removed member never gets. `backend/coconut/team_epochs.py` holds these steps.
 
-1. After the removal, the admin's Mac makes a new room key. It seals that key for the agreement key of each other member with HPKE (`Curve25519_SHA256_ChachaPoly`, as for push previews). It writes one `key` entry with these sealed keys, in the old epoch.
-2. Each Mac opens its sealed key and uses the new epoch for its next writes.
-3. Each Mac writes its kept entries again in the new epoch, so a later member can open them.
+A key change is due on the admin's Mac when its store has a `remove` entry that is newer than the newest `key` entry, or a `remove` entry and no `key` entry. `first` gives the order, because a new write of a `key` entry keeps its `first`. The admin's Mac makes the change at the end of a removal, after the `remove` entry. Each pass of the room checks again, so a change that did not finish finishes later. One change covers each removal before it.
 
-A removed Mac keeps what it already read. Until the key change exists, a removed member that also reads the relay's storage could open later entries. With it, that member cannot.
+On the admin's Mac, in this order:
+
+1. The Mac makes the room key of the next epoch (32 random bytes). It saves the key in the key file of the room before anything goes to the relay. When the key file has a key for that epoch and the store has no `key` entry for it, an earlier try stopped, and the Mac uses that key.
+2. For each member of the member list now, except itself, the Mac seals the new key in a box (see [The key box](#the-key-box)).
+3. The Mac writes one kept `key` entry, sealed with the room key of the old epoch: `{"kind": "key", "epoch": <new epoch>, "agreement": "<public agreement key of the admin>", "boxes": {"<member ID>": "<box>", ...}}`. The entry ID is the first 16 bytes of HMAC-SHA256 with the member token of the admin as the key, over `"coconut room key" | room ID (32 bytes) | new epoch (4 bytes, big-endian)`. So a repeat writes the same entry, and no other member can take the ID first.
+4. When the relay took the entry, the Mac moves its room to the new epoch. Each next write of the Mac uses it.
+
+Each step is safe to repeat. A write that the relay took without an answer is found by the read before the next write. A failure of the key change is no failure of the removal: the removal answers as before, and the next pass tries the change again.
+
+The entry has `agreement` for a Mac that joins at the time of the change (see [A member that the `key` entry missed](#a-member-that-the-key-entry-missed)). That Mac reads the log from its start. The admin wrote its `member` entry again in the new epoch (see [The kept entries again](#the-kept-entries-again)), so that Mac cannot open it before it has the new key. The admin signs the `key` entry, so `agreement` is as sure as the `member` entry of the admin.
+
+#### The key box
+
+```
+box = nonce (12 bytes) | ciphertext (32 bytes) | tag (16 bytes)
+```
+
+- The seal is ChaChaPoly with the pair key of the admin and the member. The plaintext is the 32 bytes of the new room key. The nonce is 12 random bytes, new for each seal.
+- The pair key is the pair key of a direct message (see [The box](#the-box)) with the label `"coconut room key"` in the place of `"coconut room direct"`. So a key box never opens as a direct message, and a direct message never opens as a key box.
+- The additional data is `room ID (32 bytes) | entry ID (16 bytes) | member ID of the admin (32 bytes) | new epoch (4 bytes, big-endian)`: 84 bytes. So a box belongs to one room, one `key` entry, one admin and one epoch.
+- A box in the payload is unpadded base64url: 80 characters.
+
+`TeamLog.swift` has the seal and the open of a key box. The helper has the operations `seal_key` and `open_key`. See [Test vectors](#test-vectors).
+
+#### Rules for a Mac that reads a `key` entry
+
+A person's Mac and a Mac for a team only follow the same rules.
+
+1. Rule 4 of a reader accepts the entry only from the admin. The entry is valid only when `epoch` is the epoch of its own body plus 1, `agreement` is a public agreement key, and `boxes` is an object of at most 64 member IDs with a text each. The store keeps no `key` entry that is not valid.
+2. A Mac that has the key of that epoch in its key file already opens no box. It only moves its room to the epoch: the Mac is the admin, or a stop came between the save of the key and the move.
+3. Else the Mac opens its own box with the pair key of itself and the admin, with `agreement` of the entry. The helper call runs outside a transaction, as for the boxes of direct messages.
+4. The Mac saves the key in its key file first. Then the store moves the room to the new epoch. The epoch of a room only moves forward, and one epoch at a time, because the `key` entry of an epoch has a body of the epoch before it.
+5. Then the Mac tries again each body that waits (`team_pending`). The bodies of the new epoch open now, also the bodies that came in the same answer as the `key` entry, before it or after it. One of them can be the next `key` entry, so the Mac looks again.
+6. A Mac that finds no box of its own, or whose box does not open, keeps its epoch and writes one log line without a key and without a name. Entries of the new epoch wait. A new write of the `key` entry gets a new try.
+7. An entry of an older epoch that comes after the change stays valid: a Mac that had not read the `key` entry yet wrote it. A reader opens each entry with the key of its epoch.
+
+#### A member that the `key` entry missed
+
+A Mac can join at the time of the change: it took its invite before the removal closed the invites, and its `member` entry comes after the `key` entry. It has the old key from its welcome and no box. One Mac can miss more than one change: the admin can remove two members before its Mac reads the `member` entry of the new Mac.
+
+- A member of the list needs each `key` entry whose epoch is after the epoch of the body of its `member` entry, up to the epoch of the room. The admin's Mac looks for each such entry that has no box for the member. The admin itself and a removed member never count.
+- The Mac writes each such entry again, in the order of the epochs: the same entry ID, the next `rev`, a body of the epoch before its own, and a box for each member that needs it. The boxes of the members that the list still has stay. A removed member gets no box, and its old box goes.
+- The reader takes one epoch after the other, so the member opens one key after the other, in one read or across reads.
+- Each step is safe to repeat. A member that the helper cannot seal a box for causes no second write of that entry.
+- When the key file of the admin lacks a key that such a write needs, the Mac writes one log line without a key and goes on with the other entries.
+
+#### The kept entries again
+
+A Mac that joins after the change gets only the new key in its welcome, so it cannot open a kept entry of an older epoch. So each Mac, after it moved to a new epoch, writes each of its own kept `member`, `bot` and `page` entries again with the new key: the same entry ID, the next `rev`, and the same fields. The admin does not write its `remove` and `key` entries again.
+
+- The store keeps the epoch of the body of each entry (`team_entries`). So the Mac finds the entries that are left after a stop, and a repeat writes nothing.
+- The Mac writes at most 100 entries again in one minute in one room, and the rest at the next passes. The relay takes 300 writes of one member in one minute, so the person can still write in the chat.
+
+A write again changes nothing that a person sees. A reader follows this rule:
+
+- A new write of a `member`, `bot` or `page` entry with the same fields as the write that the store has (each field except `rev` and `at`) is a write again.
+- A write again goes into `team_entries` as each other write does: its `seq`, its `rev`, its epoch and its payload. So the rule of `rev` and the work of the kept entries above stay correct.
+- A write again changes nothing that a person sees. A page keeps its `created_at` and its `updated_at`, a member and a bot keep their rows and their names, and no event goes to the phone. The version of a page for the phone is the `rev` of its entry, so it can move by one, with no event. The Mac that wrote again keeps its own rows the same way.
+- A Mac that reads the entry for the first time, for example a member that joins later, takes it as it comes.
+- A real change after a write again, for example a new version of a page, gets a new time and an event, as before.
+- The move of a room to a new epoch adds no event, because the phone shows no epoch.
+
+An invite that the admin makes after the change carries the new epoch and the new key in its welcome.
+
+#### Limits
+
+- A removed Mac keeps what it read before the change.
+- An old message stays readable with the old key. That is history that the removed member already had.
+- A kept entry of a Mac that was off at the change stays in the old epoch until that Mac comes back and writes it again. Until then, a member that joins later does not see it.
+- A member that joins later reads nothing of an earlier epoch, as rule 2 of a reader says.
+- Only a removal starts a key change. No Mac changes the key by hand or on a timer.
 
 ## What the relay sees
 
@@ -296,7 +360,7 @@ A Mac with no person at it, for example a Mac that only runs a Hermes agent, use
 
 ### Helper
 
-`scripts/team-helper.swift` compiles with `ios/Tunnel/TeamLog.swift`, which holds the format. It seals, opens, signs, seals and opens the boxes of direct messages, and reads and makes links and welcomes. It takes no argument and touches no file: it reads one JSON object from standard input and writes one to standard output. So a key, a token or a secret is never in a command line, a file or a log. A failure is `{"error": "<code>"}`, and a code names no value of the input.
+`scripts/team-helper.swift` compiles with `ios/Tunnel/TeamLog.swift`, which holds the format. It seals, opens, signs, seals and opens the boxes of direct messages and the boxes of a room key, and reads and makes links and welcomes. It takes no argument and touches no file: it reads one JSON object from standard input and writes one to standard output. So a key, a token or a secret is never in a command line, a file or a log. A failure is `{"error": "<code>"}`, and a code names no value of the input.
 
 - Coconut.app carries the helper in `Contents/Helpers/team-helper`, as a binary for both architectures. `coconut service` and `coconut update` name it in `COCONUT_TEAM_HELPER`.
 - A source install compiles it into `<data>/team/team-helper` with `python3 scripts/team.py build`. `deploy.py` runs that command in each update, and the receipt `helper.sha256` stops a second build of the same sources. With `COCONUT_TEAM_HELPER` set, the command compiles nothing.
@@ -312,9 +376,9 @@ Everything else is in `coconut.sqlite3`:
 | Table | Holds |
 | --- | --- |
 | `team_rooms` | One row for each room: its relay, its name, the member ID of this Mac, the admin, the state, the epoch, the read position (`seq`), the profile that this Mac writes in its `member` entry, and `notifications`: the choice of the person of this Mac to get notifications of the room. |
-| `team_entries` | The newest accepted write of each entry ID, with its payload. |
+| `team_entries` | The newest accepted write of each entry ID, with its payload and the epoch of its body. |
 | `team_members` | The members that a Mac shows: the newest valid `member` entry of each member, with its marks `bot_only` and `direct`. |
-| `team_pending` | The bodies that the Mac cannot open yet, for a later version or a later epoch. |
+| `team_pending` | The bodies that the Mac cannot open yet, for a later version or a later epoch. Each start of the service and each new room key give them a new try. |
 | `team_shares` | The bots of this Mac that author a page in each room, each with the entry ID of its `bot` entry. On a person's Mac a row comes with the first shared page of the bot and goes with the last one. |
 | `team_page_shares` | The documents that the person of this Mac shares with each room. A Mac for a team only has no rows here. |
 | `team_page_entries` | The entry ID of each document of this Mac that a room has or had as a `page` entry. One document keeps one entry ID. |
@@ -339,9 +403,10 @@ One thread, `coconut-team-sync`, reads each `active` room after its `seq`, one a
 
 - The thread reads a room without an open socket every 30 seconds, and a room with an open socket every 5 minutes. A room operation, a save of a team page and `POST /v1/team/sync` start a pass of each room at once. A new `seq` on the socket of a room starts a pass of that room. See [Socket on the Mac](#socket-on-the-mac).
 - After a failure, a room waits 60, 120, 240 and 480 seconds, then 900 seconds for each later try.
-- After each start of the service, the thread tries the waiting bodies again, because an update of Coconut starts the service again.
+- After each start of the service, the thread tries the waiting bodies again, because an update of Coconut starts the service again. A new room key gives them a new try too (see [Key change](#key-change)).
 - When the log shows no `member` entry of this Mac, the thread writes it, at most every 5 minutes. This repairs a stop between a join and its first write.
-- After the read, the thread makes the log equal to the pages that this Mac shares and their author bots. See [Bots and pages](#bots-and-pages).
+- After the read, the admin's Mac makes a key change that is due. See [Key change](#key-change).
+- After the read, the thread makes the log equal to the pages that this Mac shares and their author bots. See [Bots and pages](#bots-and-pages). Then it writes each own kept entry of an older epoch again with the key of the room.
 - The profile of a room on this Mac follows each accepted `member` entry of this Mac, also one that the sync reads back after a write without an answer. So a later change of one field, or a new `member` entry after a loss, never writes an older name.
 - A write of this Mac goes into the store at once. When a write gets no answer, the relay can have it. So before the next write or leave in that room, the Mac reads the room to its end. Its next `rev` is then higher, and a leave finds a `member` entry that only the relay has.
 - A leave holds the lock of the room from its `delete` entry until the relay removed the member and the Mac deleted its copy. So the thread cannot write the `member` entry again in between. When the relay does not answer the leave, the room stays `active`, and the Mac is still a member.
@@ -815,6 +880,24 @@ f0f1f2f3f4f5f6f7f8f9fafb33e43c192dd25841a9fdffa40e61265aa37d51c1c7363a4803ccf485
 ```
 
 Each implementation must open the box with the pair key of the reader and get the plaintext. It must refuse the box with another room ID, entry ID, writer or pair key, or with one changed byte.
+
+A key box (see [The key box](#the-key-box)). The member ID above is the admin, and it seals the room key of epoch 1 for the reader of the direct message, in the entry ID above. Node's `crypto` made these values, and CryptoKit gets the same values. The Python standard library gets the pair key from the shared secret above.
+
+| Input | Value |
+| --- | --- |
+| New epoch | 1 |
+| Room key of the new epoch | The bytes `80` to `9f` |
+| Nonce of the key box | The bytes `d0` to `db` |
+
+- Pair key: `19f3c68ac593a603428b74650a69601b6646dd3a77ded33bdf2e22ba1d5f9b87`. The info is `coconut room key`, the room ID, the member ID of the reader, then the member ID of the admin.
+
+Key box, 60 bytes. A seal of the room key with the nonce above must give exactly these bytes:
+
+```
+d0d1d2d3d4d5d6d7d8d9dadb2c4dba36e7ae9260e0a7363b61bb113381f5cbf96e6a3986abf2aaeeb4e46564f9f6c1eb25ceffad16bc4c1cf077c77c
+```
+
+Each implementation must open the key box with the pair key of the reader and get the room key. It must refuse the key box with another room ID, entry ID, admin, epoch or pair key, with the pair key of a direct message, or with one changed byte. The pair key of a key box must open no box of a direct message.
 
 Link:
 

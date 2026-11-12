@@ -5,7 +5,8 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_rooms`: one row for each room of this Mac: its relay, its name, this Mac's member ID, the admin, and how far
   the sync read (`seq`). `profile` is what this Mac writes about itself in its `member` entry. `notifications` is the
   choice of the person of this Mac: a new message of the room notifies the phone. It never goes into the log.
-- `team_entries`: the newest accepted write of each entry ID, with the payload as its member wrote it.
+- `team_entries`: the newest accepted write of each entry ID, with the payload as its member wrote it and the epoch of
+  its body.
 - `team_members`: the members that the app shows. It is a view of `team_entries`: the newest valid `member` entry
   of each member.
 - `team_pending`: bodies that this Mac cannot open yet. It keeps the bytes and tries again later.
@@ -60,7 +61,7 @@ CREATE TABLE IF NOT EXISTS team_rooms (room TEXT PRIMARY KEY, relay TEXT NOT NUL
     notifications INTEGER NOT NULL DEFAULT 1);
 CREATE TABLE IF NOT EXISTS team_entries (room TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
     first INTEGER NOT NULL, member TEXT NOT NULL, kind TEXT NOT NULL, rev INTEGER NOT NULL, at INTEGER NOT NULL,
-    kept INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (room, id));
+    kept INTEGER NOT NULL, payload TEXT NOT NULL, epoch INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (room, id));
 CREATE TABLE IF NOT EXISTS team_members (room TEXT NOT NULL, member TEXT NOT NULL, name TEXT NOT NULL,
     avatar TEXT NOT NULL, color TEXT NOT NULL, agreement TEXT NOT NULL, entry TEXT NOT NULL,
     bot_only INTEGER NOT NULL DEFAULT 0, direct INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (room, member));
@@ -180,6 +181,14 @@ MAX_KIND = 64
 MEMBER_LIMITS = {'name': 80, 'avatar': 80, 'color': 20}
 # A public agreement key: 32 bytes as unpadded base64url.
 AGREEMENT = re.compile(r'[A-Za-z0-9_-]{43}')
+# A `key` entry has a box for at most this many members: each member of a full room but the admin.
+MAX_BOXES = 64
+# The longest text of a box that a reader takes. A box of the contract has 80 characters.
+MAX_BOX = 1024
+# The epoch of a body is a 32-bit number.
+MAX_EPOCH = 2 ** 32 - 1
+# The kinds of the kept entries that a Mac writes again with the room key of a new epoch (TeamEpochs).
+WRITTEN_AGAIN = ('member', 'bot', 'page')
 
 
 def unicode_text(value) -> bool:
@@ -243,10 +252,7 @@ def member_fields(fields: dict) -> dict | None:
     messages) follows the same rule."""
     result = profile_fields(fields)
     agreement = fields.get('agreement')
-    if not result or not isinstance(agreement, str) or not AGREEMENT.fullmatch(agreement):
-        return None
-    # One key has one text: the unused bits of the last character are zero.
-    if base64.urlsafe_b64encode(base64.urlsafe_b64decode(agreement + '=')).decode().rstrip('=') != agreement:
+    if not result or not agreement_key(agreement):
         return None
     return dict(result, agreement=agreement, bot_only=fields.get('bot_only') is True,
                 direct=fields.get('direct') is True)
@@ -356,6 +362,40 @@ def remove_fields(fields: dict) -> dict | None:
     return dict(member=member, name=name if unicode_text(name) and 0 < len(name) <= MEMBER_LIMITS['name'] else None)
 
 
+def agreement_key(value) -> bool:
+    """True when a value is a public agreement key: 32 bytes as unpadded base64url, in the one text of these bytes (the
+    unused bits of the last character are zero)."""
+    if not isinstance(value, str) or not AGREEMENT.fullmatch(value):
+        return False
+    return base64.urlsafe_b64encode(base64.urlsafe_b64decode(value + '=')).decode().rstrip('=') == value
+
+
+def same_fields(payload: str, fields: dict) -> bool:
+    """True when the payload of the store has the same fields as `fields`, each field but `rev` and `at`."""
+    stored = json.loads(payload)
+    return {name: value for name, value in stored.items() if name not in ('rev', 'at')} == {
+        name: value for name, value in fields.items() if name not in ('rev', 'at')}
+
+
+def key_fields(fields: dict, epoch) -> dict | None:
+    """The new epoch, the agreement key of the admin and the boxes of a `key` payload, or None when a field does not
+    fit (docs/team-log.md, "Key change").
+
+    `epoch` is the epoch of the body. The new epoch is the next one. `boxes` maps at most MAX_BOXES member IDs to the
+    box of each, as text. A box that does not open is a matter for its own member only, so this check does not read a
+    box.
+    """
+    new, agreement, boxes = fields.get('epoch'), fields.get('agreement'), fields.get('boxes')
+    if type(epoch) is not int or type(new) is not int or new != epoch + 1 or new > MAX_EPOCH:
+        return None
+    if not agreement_key(agreement) or not isinstance(boxes, dict) or len(boxes) > MAX_BOXES:
+        return None
+    if not all(HEX64.fullmatch(member) and isinstance(box, str) and 0 < len(box) <= MAX_BOX
+               for member, box in boxes.items()):
+        return None
+    return dict(epoch=new, agreement=agreement, boxes=boxes)
+
+
 SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'message': message_fields,
          'remove': remove_fields}
 
@@ -363,9 +403,9 @@ SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'messa
 def read_entry(opened: dict) -> dict:
     """The first part of the reading rules for one entry: the work that needs no database.
 
-    It reads the payload (rule 2), and for a `member`, `bot`, `page` or `message` entry it checks the fields that the
-    store shows. The page rules run an HTML parser on up to 512 KiB that another member wrote, so a caller runs this
-    part before its transaction and without the lock of the service. A page that is slow to check then slows only the
+    It reads the payload (rule 2), and for a `member`, `bot`, `page`, `message`, `remove` or `key` entry it checks the
+    fields that the store uses. The page rules run an HTML parser on up to 512 KiB that another member wrote, so a
+    caller runs this part before its transaction and without the lock of the service. A page that is slow to check then slows only the
     sync thread. The result is `opened` with `read` (the text and the fields of the payload, or None) and `shown`
     (the checked fields, or None). TeamStore.accept is the second part.
     """
@@ -373,6 +413,10 @@ def read_entry(opened: dict) -> dict:
         return opened
     payload = read_payload(opened.get('payload'))
     check = SHOWN.get(payload[1]['kind']) if payload else None
+    if payload and payload[1]['kind'] == 'key':
+        # The new epoch of a `key` entry follows the epoch of its body.
+        def check(fields):
+            return key_fields(fields, opened.get('epoch'))
     shown = None
     if check:
         try:
@@ -418,6 +462,9 @@ class TeamStore:
         # A `member` row of an older version reads as a member without direct messages until its next write.
         if 'direct' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_members)')}:
             self.db.execute('ALTER TABLE team_members ADD COLUMN direct INTEGER NOT NULL DEFAULT 0')
+        # Each body of an older version has epoch 0, because no Mac changed a room key before this column.
+        if 'epoch' not in {row[1] for row in self.db.execute('PRAGMA table_info(team_entries)')}:
+            self.db.execute('ALTER TABLE team_entries ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0')
 
     def _rows(self, fields, query, values=()) -> list[dict]:
         return [dict(zip(fields, row)) for row in self.db.execute(query, values).fetchall()]
@@ -518,16 +565,28 @@ class TeamStore:
         # Rule 4. The admin is the member that the welcome names.
         if fields['kind'] in ADMIN_KINDS and entry['member'] != room['admin']:
             return REFUSED, 'admin'
+        # A `key` entry that does not fit never gives a key, so the store does not keep it (TeamEpochs reads the rest).
+        if fields['kind'] == 'key' and shown is None:
+            return REFUSED, 'key'
         # Rule 5. An entry of an unknown kind goes into the store as each other entry, and nothing reads it.
-        self.db.execute('''INSERT INTO team_entries (room, id, seq, first, member, kind, rev, at, kept, payload)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, id) DO UPDATE SET seq=excluded.seq,
+        self.db.execute('''INSERT INTO team_entries (room, id, seq, first, member, kind, rev, at, kept, payload, epoch)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (room, id) DO UPDATE SET seq=excluded.seq,
             first=excluded.first, kind=excluded.kind, rev=excluded.rev, at=excluded.at, kept=excluded.kept,
-            payload=excluded.payload''',
+            payload=excluded.payload, epoch=excluded.epoch''',
                         (room['room'], entry['id'], entry['seq'], entry['first'], entry['member'], fields['kind'],
-                         fields['rev'], entry['at'], int(bool(entry['kept'])), text))
+                         fields['rev'], entry['at'], int(bool(entry['kept'])), text, opened['epoch']))
         # The relay keeps only the newest write of an entry ID, so an earlier body that waits is gone there.
         self.db.execute('DELETE FROM team_pending WHERE room=? AND id=? AND seq<=?',
                         (room['room'], entry['id'], entry['seq']))
+        # A Mac writes its kept entries again with the room key of a new epoch (TeamEpochs). Such a write has the
+        # fields of the write that the store has, and it changes nothing that a person sees: the rows, the times and
+        # the names stay, and no event goes to the phone. Only the version of a page, the `rev`, moves.
+        if existing and existing['kind'] == fields['kind'] and fields['kind'] in WRITTEN_AGAIN and same_fields(
+                existing['payload'], fields):
+            if fields['kind'] == 'page':
+                self.db.execute('UPDATE team_pages SET rev=? WHERE room=? AND entry=?',
+                                (fields['rev'], room['room'], entry['id']))
+            return STORED, None
         kinds = {fields['kind'], existing['kind'] if existing else None}
         other = entry['member'] != room['member']
         if 'message' in kinds and self._show_message(room['room'], entry, fields['rev'],
@@ -698,6 +757,42 @@ class TeamStore:
         row = self.db.execute("SELECT name FROM team_names WHERE room=? AND member=? AND kind='member' LIMIT 1",
                               (room, member)).fetchone()
         return row[0] if row else None
+
+    # The key change
+
+    def key_change_due(self, room: str) -> bool:
+        """True when the room has a `remove` entry that is newer than its newest `key` entry, or a `remove` entry and no
+        `key` entry. Only the admin writes both kinds (rule 4). `first` gives the order, because a `key` entry that the
+        admin writes again for a member that it missed (TeamEpochs) gets a new `seq` and keeps its `first`."""
+        return bool(self.db.execute('''SELECT (SELECT MAX(first) FROM team_entries WHERE room=? AND kind='remove')
+            > COALESCE((SELECT MAX(first) FROM team_entries WHERE room=? AND kind='key'), 0)''',
+                                    (room, room)).fetchone()[0])
+
+    def key_changes(self, room: str, after: int) -> list[dict]:
+        """The `key` entries of the room for an epoch after `after`, in the order of the epochs: `entry`, `seq`,
+        `epoch`, `agreement` (the public agreement key of the admin) and `boxes`. For one epoch, only the newest write
+        counts. `accept` keeps only a `key` entry whose fields fit."""
+        changes = {}
+        rows = self.db.execute("SELECT id, seq, payload FROM team_entries WHERE room=? AND kind='key' ORDER BY seq",
+                               (room,))
+        for entry, seq, payload in rows:
+            fields = json.loads(payload)
+            if fields['epoch'] > after:
+                changes[fields['epoch']] = dict(entry=entry, seq=seq, epoch=fields['epoch'],
+                                                agreement=fields['agreement'], boxes=fields['boxes'])
+        return [changes[epoch] for epoch in sorted(changes)]
+
+    def member_epochs(self, room: str) -> dict[str, int]:
+        """The epoch of the body of the `member` entry of each member in the list."""
+        return dict(self.db.execute('''SELECT m.member, e.epoch FROM team_members m
+            JOIN team_entries e ON e.room=m.room AND e.id=m.entry WHERE m.room=?''', (room,)).fetchall())
+
+    def older_entries(self, room: str, member: str, epoch: int, limit: int) -> list[dict]:
+        """The kept `member`, `bot` and `page` entries of `member` with a body of an epoch before `epoch`, in the
+        order of the log, at most `limit`. This Mac writes them again with the room key of `epoch`."""
+        return self._rows(('id', 'payload'), f'''SELECT id, payload FROM team_entries WHERE room=? AND member=?
+            AND kept=1 AND kind IN ({", ".join("?" * len(WRITTEN_AGAIN))}) AND epoch<? ORDER BY seq LIMIT ?''',
+                          (room, member, *WRITTEN_AGAIN, epoch, limit))
 
     # The invites of the admin
 

@@ -2,8 +2,8 @@
 
 A team is a set of Macs that share one sealed log on the relay. This module holds the steps of the contract for one
 Mac. team_sync.py copies the log, team_socket.py learns of new entries through the socket of each room, team_store.py
-keeps the log, team_keys.py keeps the secrets of each room, team_relay.py talks to the relay, and team_helper.py does
-the cryptography.
+keeps the log, team_epochs.py makes and takes a new room key after a removal, team_keys.py keeps the secrets of each
+room, team_relay.py talks to the relay, and team_helper.py does the cryptography.
 
 The routes are for the Team screen of the app and for the tools on this Mac (server.py). A paired device calls them
 on the tunnel listener or on the main listener, with the authorization of its other routes. A tool calls them on the
@@ -56,6 +56,7 @@ from . import team_keys
 from .push_relay import RELAY_URL
 from .team_helper import TeamFormatError, TeamHelper, TeamHelperError
 from .team_directs import TeamDirects
+from .team_epochs import TeamEpochs
 from .team_keys import ROOM_ID, TeamKeysError
 from .team_messages import TeamMessages
 from .team_pages import TeamPages
@@ -195,7 +196,7 @@ def team_errors():
         raise ServiceError(status, room_error(error)) from None
 
 
-class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
+class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects, TeamEpochs):
     """The team rooms of this Mac: the routes of the tools, and the thread that copies each log."""
 
     def _init_team(self):
@@ -213,6 +214,7 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
         self._init_team_sync()
         self._init_team_socket()
         self._init_team_pages()
+        self._init_team_epochs()
 
     def _start_team(self):
         self._start_team_sync()
@@ -631,6 +633,9 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
            member out from it (TeamStore._show_removal). The entry ID comes from the room and the member, so a repeat
            writes nothing new.
 
+        Then the Mac makes the key change (TeamEpochs._team_change_key), so the removed member cannot read the later
+        entries. A failure of the key change is no failure of the removal: the next pass of the room tries again.
+
         Each step is safe to repeat. A removal that stopped after a step finishes when the admin asks again, because
         the store keeps the member until the `remove` entry is in it. The answer is the room view.
         """
@@ -667,7 +672,14 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
                     if name:
                         fields['name'] = name
                     self._team_write(room, entry_id, True, fields, tries=2)
-        log.info('coconut.team_log room %s: this Mac removed the member %s.', room_id[:8], member[:8])
+                log.info('coconut.team_log room %s: this Mac removed the member %s.', room_id[:8], member[:8])
+                # The removal is complete. A key change that does not finish here finishes in a later pass.
+                try:
+                    self._team_change_key(room_id)
+                except ROOM_ERRORS as error:
+                    log.warning('coconut.team_log room %s: the key change waits for the next pass. %s', room_id[:8],
+                                error)
+                    self.team_wake()
         return self._team_answer(room_id)
 
     def _team_close_invites(self, room: dict, token: str) -> None:
@@ -814,4 +826,5 @@ class Team(TeamSync, TeamSocket, TeamPages, TeamMessages, TeamDirects):
             state.pop(room_id, None)
         self._team_retried.discard(room_id)
         self._team_unsure.discard(room_id)
+        self._team_forget_epochs(room_id)
         self._team_socket_forget(room_id)
