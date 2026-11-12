@@ -6,19 +6,35 @@ import SwiftUI
 
 @main
 struct CoconutApp: App {
-    @StateObject private var model = AppModel()
+    @StateObject private var model: AppModel
     @StateObject private var updater = Updater()
     // The chat client: the same state as the iPhone app. A Mac app keeps running without a window, so it keeps its
     // connection to the paired Mac and shows each new card at once.
-    @State private var store = AppStore()
+    @State private var store: AppStore
+    @State private var banners: MacBanners
+
+    init() {
+        let model = AppModel()
+        let store = AppStore()
+        let banners = MacBanners(model: model, store: store)
+        // The chat client starts with the app, not with a view: the app can start without its main window, and the
+        // banners need the lists of the teams also then. A team-only Mac has no pairing, so its chat client has
+        // nothing to connect to.
+        if model.mode == .full {
+            banners.start()
+            store.start()
+        }
+        _model = StateObject(wrappedValue: model)
+        _store = State(initialValue: store)
+        _banners = State(initialValue: banners)
+    }
 
     var body: some Scene {
         Window("Coconut", id: "main") {
             MacMainWindow(model: model)
                 .environment(store)
                 .tint(.primary)
-                // A team-only Mac has no pairing, so its chat client has nothing to connect to.
-                .task { if model.mode == .full { store.start() } }
+                .modifier(BannerWindowOpener(banners: banners))
                 .onOpenURL { url in
                     // A team-only Mac pairs no iPhone, and it joins a team with coconut team join.
                     guard model.mode == .full else { return }
@@ -50,7 +66,10 @@ struct CoconutApp: App {
         MenuBarExtra {
             MenuContent(model: model, updater: updater)
         } label: {
+            // The label shows while the app runs, also without a window, so it gives the banners the action that opens
+            // the main window.
             Image(systemName: model.status.service == .running ? "network" : "network.slash")
+                .modifier(BannerWindowOpener(banners: banners))
         }
         .menuBarExtraStyle(.menu)
 

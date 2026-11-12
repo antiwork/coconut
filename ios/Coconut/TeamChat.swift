@@ -99,6 +99,13 @@ struct TeamLastMessage: Decodable, Equatable, Sendable {
     var botName: String? = nil
     var text: String? = nil
     var createdAt: String? = nil
+
+    /// A message of a bot. An older service can send the name of the bot without its ID.
+    var isBot: Bool { bot != nil || botName != nil }
+    /// A message of this Mac's person, as TeamMessage.isOwn. A bot of this Mac writes as itself, not as the person.
+    var isOwn: Bool { thisMac == true && !isBot }
+    /// The name of the writer that the message has: the bot for a message of a bot, else the member. Nil without one.
+    var writerName: String? { isBot ? botName : memberName }
 }
 
 /// The answered message that a message quotes: the start of its text.
@@ -409,10 +416,10 @@ enum TeamChatPreview {
     static func text(_ last: TeamLastMessage?, direct: Bool = false) -> String {
         guard let last, let text = last.text else { return empty }
         let body = TranscriptPresentation.previewText(text)
-        if last.bot != nil || last.botName != nil { return (last.botName ?? "Bot") + ": " + body }
+        if last.isBot { return (last.writerName ?? "Bot") + ": " + body }
         if last.thisMac == true { return "You: " + body }
         if direct { return body }
-        return (last.memberName ?? TeamNames.formerMember) + ": " + body
+        return (last.writerName ?? TeamNames.formerMember) + ": " + body
     }
 }
 

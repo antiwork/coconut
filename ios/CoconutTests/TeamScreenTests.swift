@@ -527,6 +527,30 @@ final class TeamScreenTests: XCTestCase {
         #endif
     }
 
+    /// The store gives each list of the Mac to the hook of the banners (MessageBanners), with the list before it. No
+    /// view is on screen in this test.
+    @MainActor
+    func testTheStoreGivesEachListToTheHookOfTheBanners() async throws {
+        #if !(DEBUG && targetEnvironment(simulator))
+        throw XCTSkip("This HTTP fixture requires a debug simulator build.")
+        #else
+        let state = try PreviewStateFixture.load()
+        let server = try TeamServer(state: APIJSON.encoder().encode(state))
+        let address = try await server.start()
+        defer { server.stop() }
+        try await withPairedStore(address: address) { store in
+            var lists: [(before: TeamRooms?, after: TeamRooms)] = []
+            store.teamListLoaded = { lists.append(($0, $1)) }
+            server.addMember("Grace", announce: false)
+            await store.loadTeam()
+            let last = try XCTUnwrap(lists.last)
+            XCTAssertEqual(last.before?.rooms.first?.memberList.count, 1)
+            XCTAssertEqual(last.after.rooms.first?.memberList.count, 2)
+            XCTAssertEqual(last.after, store.team)
+        }
+        #endif
+    }
+
     /// Two list requests overlap, and the answer of the first arrives last. It has the older list.
     @MainActor
     func testAnAnswerOfAnEarlierListRequestDoesNotReplaceALaterList() async throws {

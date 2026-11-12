@@ -173,6 +173,10 @@ final class AppStore {
     var inboxBadgeCount: Int { pendingDecisions.filter { !answeringDecisionIds.contains($0.id) }.count }
     var reconciledBadgeCount: Int? { lastSync.map { _ in inboxBadgeCount } }
     @ObservationIgnored var setBadge: (Int) -> Void = { PushNotifications.shared.setBadgeCount($0) }
+    /// Gets the list of the teams before and after each list that the Mac sent. The list before is nil for the first
+    /// list after a start or a new pairing. The Mac app posts its banners from it (MessageBanners). The iPhone app
+    /// gets a push instead, so it does nothing here.
+    @ObservationIgnored var teamListLoaded: (TeamRooms?, TeamRooms) -> Void = { _, _ in }
 
     func reconcileBadge() {
         if let count = reconciledBadgeCount { setBadge(count) }
@@ -1586,7 +1590,9 @@ final class AppStore {
         // The Mac confirmed a change during this request, so this list can be older. Ask again.
         guard changes == teamChanges else { return await loadTeam() }
         // Each change of a chat loads the list. A list that changes nothing does not draw the Chats list again.
+        let before = team
         assign(\.team, response)
+        teamListLoaded(before, response)
         assign(\.teamLoadError, nil)
         teamListVersion += 1
         assign(\.chatFilter, ChatFilter.effective(chatFilter, rooms: response.rooms))
