@@ -647,6 +647,14 @@ enum TeamBotRow: Identifiable, Equatable, Sendable {
         }
     }
 
+    /// The member ID of the Mac for a team only of the row. A removal of the row removes that Mac (TeamRemoval).
+    var member: String? {
+        switch self {
+        case .answers(let bot), .pagesOnly(let bot): bot.member
+        case .noBot(let mac): mac.member
+        }
+    }
+
     /// The bot of the row, for its face. A Mac without a bot shows a quiet symbol of a Mac instead.
     var bot: TeamRoomBot? {
         switch self {

@@ -91,9 +91,49 @@ struct TeamMember: Decodable, Identifiable, Equatable, Sendable {
     /// True when this person can send the member a direct message now (TeamRoom.directMember). An older service sends
     /// none, and none is false.
     var direct: Bool? = nil
+    /// True when this person can remove the member: the Mac is the admin of an active team, and the member is another
+    /// Mac (TeamRemoval). An older service sends none, and none is false.
+    var canRemove: Bool? = nil
 
     var id: String { member }
     var isBotOnly: Bool { botOnly == true }
+}
+
+/// The admin takes a member out of the team (backend/coconut/team.py, `team_remove`): which rows of the Team screen
+/// have the action, and the texts of the one confirmation. A person and a Mac for a team only are both members.
+struct TeamRemoval: Identifiable, Equatable {
+    let member: TeamMember
+    let team: String
+    /// The names of the bots of a Mac for a team only, in the order of the Team screen. A person has none here: the
+    /// bots of a person are only the authors of the pages that the person shares.
+    let bots: [String]
+
+    var id: String { member.member }
+
+    /// The removal of a member of the room, or nil when this person cannot remove it. `can_remove` of the service is
+    /// the one rule, so an older service shows no action.
+    init?(member id: String?, in room: TeamRoom) {
+        guard room.status == .active, let member = room.memberList.first(where: { $0.member == id }),
+              member.canRemove == true, member.thisMac != true else { return nil }
+        self.member = member
+        team = room.name
+        bots = member.isBotOnly
+            ? room.botList.filter { $0.member == member.member }.map(\.name)
+                .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            : []
+    }
+
+    var title: String { "Remove \(member.name) from \(team)?" }
+
+    var message: String {
+        let first = "\(member.name) can no longer read or write in this team."
+        if !member.isBotOnly { return first + " The pages that \(member.name) shared leave the Library." }
+        switch bots.count {
+        case 0: return first
+        case 1: return first + " Its bot \(bots[0]) leaves the team with it."
+        default: return first + " Its bots \(bots.formatted(.list(type: .and))) leave the team with it."
+        }
+    }
 }
 
 /// A bot that is in a team. `botId` is the ID of a bot of this Mac. A bot of another Mac has none.

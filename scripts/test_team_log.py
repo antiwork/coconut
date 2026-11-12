@@ -1164,6 +1164,117 @@ class TeamDirectTests(unittest.TestCase):
             self.assertNotIn(text, output)
 
 
+@unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
+                     and (ROOT / 'relay/node_modules/miniflare').is_dir(),
+                     'The member removal test needs macOS, the Xcode Command Line Tools, Node, and npm ci in relay/.')
+class TeamRemovalTests(unittest.TestCase):
+    """Ada, the admin, removes Grace through the real relay and the real helper. Lin's Mac drops Grace, her bot and
+    her page, and Grace's Mac can read and write nothing more. The services run in this process."""
+
+    @classmethod
+    def setUpClass(cls):
+        TeamPushTests.setUpClass.__func__(cls)
+
+    @classmethod
+    def tearDownClass(cls):
+        TeamPushTests.tearDownClass.__func__(cls)
+
+    def test_the_admin_removes_a_member_and_each_mac_follows(self):
+        import logging
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service, ServiceError
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        records = []
+        handler = logging.Handler(logging.DEBUG)
+        handler.emit = records.append
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        self.addCleanup(root_logger.setLevel, root_logger.level)
+        root_logger.setLevel(logging.DEBUG)
+        self.addCleanup(root_logger.removeHandler, handler)
+        macs = []
+        for name in ('ada', 'grace', 'lin', 'other'):
+            root = Path(self.temp.name) / name
+            service = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(service.close)
+            macs.append(service)
+        ada, grace, lin, other = macs
+
+        def call(service, method, path, data=None):
+            return service.team_request(method, path, data or {}, '', 'test-device')
+
+        def sync():
+            for _ in range(2):
+                for service in (ada, grace, lin):
+                    service.team_sync_pass()
+
+        def refusal(*arguments):
+            with self.assertRaises(ServiceError) as raised:
+                call(*arguments)
+            return raised.exception.status, str(raised.exception)
+
+        def view(service):
+            (room,) = call(service, 'GET', '/v1/team/rooms')['rooms']
+            return room
+
+        room_id = call(ada, 'POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Ada',
+                                                       'relay': self.url})['room']['room']
+        for service, name in ((grace, 'Grace'), (lin, 'Lin')):
+            link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+            call(service, 'POST', '/v1/team/join', {'link': link, 'member_name': name})
+        grace_id = grace.team_store.room(room_id)['member']
+        # Grace shares a page of her bot, and writes in the chat. An invite stays open.
+        bot = grace.mutate('POST', '/v1/bots', {'name': 'Helper'}, secrets.token_hex(16), 'phone')
+        grace.publish_page(bot['id'], {'key': 'weekly-report', 'title': 'Weekly report', 'format': 'markdown',
+                                       'content': '3 tasks are open.'})
+        document = grace._document_of_key(bot['id'], 'weekly-report')
+        call(grace, 'PUT', f'/v1/team/rooms/{room_id}/pages/{document["id"]}')
+        call(grace, 'POST', f'/v1/team/rooms/{room_id}/messages', {'text': 'Hello team'})
+        open_link = call(ada, 'POST', f'/v1/team/rooms/{room_id}/invites', {'uses': 2})['link']
+        sync()
+        self.assertEqual([page['title'] for page in lin.documents()['documents'] if 'team' in page], ['Weekly report'])
+        self.assertEqual([bot['name'] for bot in view(lin)['bots']], ['Helper'])
+        self.assertEqual({member['name']: member['can_remove'] for member in view(ada)['members']},
+                         {'Ada': False, 'Grace': True, 'Lin': True})
+
+        room = call(ada, 'DELETE', f'/v1/team/rooms/{room_id}/members/{grace_id}')['room']
+        self.assertEqual([member['name'] for member in room['members']], ['Ada', 'Lin'])
+        # The relay has no member Grace any more.
+        keys = json.loads((ada.root / f'team/{room_id}.json').read_text())
+        relay_members = TeamRelay().members(self.url, room_id, keys['token'])
+        self.assertNotIn(grace_id, [row['member'] for row in relay_members])
+
+        # Lin's Mac drops Grace, her bot and her page, and keeps her message with her name.
+        sync()
+        lin_view = view(lin)
+        self.assertEqual(([member['name'] for member in lin_view['members']], lin_view['bots']), (['Ada', 'Lin'], []))
+        library = lin.documents()
+        self.assertEqual(([page for page in library['documents'] if 'team' in page], library['team_bots']), ([], []))
+        (message,) = call(lin, 'GET', f'/v1/team/rooms/{room_id}/messages')['messages']
+        self.assertEqual((message['text'], message['member_name']), ('Hello team', 'Grace'))
+
+        # Grace's Mac is out: the room is `removed`, and it can read and write nothing.
+        grace_view = view(grace)
+        self.assertEqual((grace_view['state'], grace_view['bots']), ('removed', []))
+        with self.assertRaises(TeamRelayError) as raised:
+            TeamRelay().read(self.url, room_id, json.loads((grace.root / f'team/{room_id}.json').read_text())['token'], 0)
+        self.assertEqual(raised.exception.status, 401)
+        self.assertEqual(refusal(grace, 'POST', f'/v1/team/rooms/{room_id}/messages', {'text': 'Still here?'}),
+                         (409, 'This Mac is no longer in the team.'))
+
+        # The invite of before the removal admits no Mac.
+        self.assertEqual(refusal(other, 'POST', '/v1/team/join', {'link': open_link, 'member_name': 'Grace'}),
+                         (409, 'The invite link is used, past its end or removed. Ask for a new link.'))
+        # A repeat of the removal gives the same view.
+        again = call(ada, 'DELETE', f'/v1/team/rooms/{room_id}/members/{grace_id}')['room']
+        self.assertEqual([member['name'] for member in again['members']], ['Ada', 'Lin'])
+        # No log line has a name.
+        output = '\n'.join(logging.Formatter().format(record) for record in records)
+        for text in ('Grace', 'Example Team', 'Hello'):
+            self.assertNotIn(text, output)
+
+
 def run_of(start: int, count: int) -> bytes:
     """The bytes from `start`, one higher each time, as the inputs of the test vectors name them."""
     return bytes(range(start, start + count))

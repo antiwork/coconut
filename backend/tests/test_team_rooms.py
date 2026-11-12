@@ -26,7 +26,7 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
         self.assertEqual((room['name'], room['relay'], room['state'], room['is_admin'], room['admin'], room['epoch']),
                          ('Example Team', RELAY, 'active', True, room['member'], 0))
         self.assertEqual(room['members'], [dict(member=room['member'], name='Ada', avatar='coconut', color='green',
-                                                admin=True, this_mac=True, bot_only=False)])
+                                                admin=True, this_mac=True, bot_only=False, can_remove=False)])
         # The public agreement key is a key, so no answer has it. The store has it from the `member` entry.
         (stored,) = self.first.team_store.members(room['room'])
         state = self.relay.rooms[room['room']]
@@ -382,8 +382,10 @@ class TeamRoomTests(TeamMacs, unittest.TestCase):
                                  (room['room'], 'Example Team', 'active', view is admin, view is admin))
                 service = self.first if view is admin else self.second
                 self.assertEqual(view['created_at'], service.team_store.room(room['room'])['created_at'])
-                self.assertEqual(view['members'], [dict(ada, this_mac=this_mac == room['member']),
-                                                   dict(grace, this_mac=this_mac == joined['member'])])
+                # Only the admin can remove a member, and never its own Mac.
+                self.assertEqual(view['members'], [dict(ada, this_mac=this_mac == room['member'], can_remove=False),
+                                                   dict(grace, this_mac=this_mac == joined['member'],
+                                                        can_remove=view is admin)])
                 # The bots follow the order of the members. A bot of this Mac also has its local ID. The archived
                 # bot is not in the list. A bot of a full Mac is not open: it answers only its own person.
                 expected = [dict(bot, this_mac=bot['member'] == this_mac) for bot in bots]

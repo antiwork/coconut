@@ -749,6 +749,139 @@ final class TeamChatFlowTests: XCTestCase {
         shot("dm-chat-after-leave")
     }
 
+    /// The test world of a removal: Example Team (COCONUT_TEAM_REMOVE) with Ada, the admin and the person of this app,
+    /// the people Grace and Lin, and Spare Mac, a Mac for a team only with the bots Reporter and Scribe.
+    /// COCONUT_REMOVE_GRACE is the member ID of Grace. COCONUT_TEAM_LOOK
+    /// "dark" or "large" sets the look. Only with COCONUT_REMOVE_CONFIRM=1 does the test remove Grace, because the
+    /// removal changes the test world for good.
+    @MainActor
+    func testTheAdminRemovesAPersonWithTheSwipeAction() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"], let room = env["COCONUT_TEAM_REMOVE"],
+              let grace = env["COCONUT_REMOVE_GRACE"] else {
+            throw XCTSkip("Run with the test world of a member removal.")
+        }
+        let look = launchTeamScreen(url: url, code: code, room: room)
+        let row = app.buttons["team-member-\(grace)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+
+        // A swipe to the left shows the red action, and VoiceOver finds it by its name.
+        row.swipeLeft()
+        let swipe = app.buttons["team-remove-swipe"]
+        XCTAssertTrue(swipe.waitForExistence(timeout: 5))
+        XCTAssertEqual(swipe.label, "Remove")
+        shot("remove-\(look)-1-swipe")
+        swipe.tap()
+        let confirm = app.buttons["team-remove-confirm"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Remove Grace from Example Team?"].exists)
+        XCTAssertTrue(app.staticTexts["Grace can no longer read or write in this team. The pages that Grace shared leave the Library."].exists)
+        shot("remove-\(look)-3-confirm-grace")
+        cancelQuestion()
+        XCTAssertTrue(confirm.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(row.exists, "Cancel keeps the row.")
+        guard look == "light" else { return }
+
+        // A long press shows the menu: the direct chat, then the removal.
+        row.press(forDuration: 1.2)
+        let menu = app.buttons["team-remove-menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+        XCTAssertEqual(menu.label, "Remove from team")
+        XCTAssertTrue(app.buttons["Message Grace"].exists)
+        shot("remove-\(look)-2-menu-grace")
+        menu.tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        cancelQuestion()
+        XCTAssertTrue(confirm.waitForNonExistence(timeout: 5))
+
+        // The row of a bot of Spare Mac removes that Mac with its two bots.
+        let bot = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'team-bot-' AND label BEGINSWITH 'Reporter'")).firstMatch
+        for _ in 0..<4 where !(bot.exists && bot.isHittable) { app.swipeUp(velocity: .slow) }
+        bot.press(forDuration: 1.2)
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Message Spare Mac"].exists, "A Mac for a team only gets no direct message.")
+        menu.tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Remove Spare Mac from Example Team?"].exists)
+        XCTAssertTrue(app.staticTexts["Spare Mac can no longer read or write in this team. Its bots Reporter and Scribe leave the team with it."].exists)
+        shot("remove-\(look)-3-confirm-spare-mac")
+        cancelQuestion()
+        XCTAssertTrue(confirm.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(bot.exists, "Cancel keeps the bots.")
+
+        guard env["COCONUT_REMOVE_CONFIRM"] == "1" else { return }
+        for _ in 0..<4 where !(row.exists && row.isHittable) { app.swipeDown(velocity: .slow) }
+        row.swipeLeft()
+        XCTAssertTrue(swipe.waitForExistence(timeout: 5))
+        swipe.tap()
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.tap()
+        XCTAssertTrue(row.waitForNonExistence(timeout: 30), "The row of Grace goes after the removal.")
+        XCTAssertFalse(app.staticTexts["Grace"].exists)
+        XCTAssertTrue(app.staticTexts["Lin"].exists)
+        shot("remove-\(look)-4-after")
+    }
+
+    /// The Team screen of a member that is not the admin, or of the removed person. COCONUT_TEAM_REMOVE names the
+    /// team. COCONUT_REMOVE_AS names the picture. With COCONUT_REMOVE_SWIPE=1 the test swipes and presses the row of
+    /// the bot Reporter, which opens nothing, and finds no removal. A swipe on the row of a person counts as a tap and
+    /// opens the direct chat, as before.
+    @MainActor
+    func testATeamScreenWithoutTheRemoval() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"], let room = env["COCONUT_TEAM_REMOVE"],
+              let name = env["COCONUT_REMOVE_AS"] else {
+            throw XCTSkip("Run with the test world of a member removal and COCONUT_REMOVE_AS.")
+        }
+        launchTeamScreen(url: url, code: code, room: room, chatShot: "remove-\(name)-chat")
+        shot("remove-\(name)-team-screen")
+        guard env["COCONUT_REMOVE_SWIPE"] == "1" else { return }
+        let bot = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'team-bot-' AND label BEGINSWITH 'Reporter'")).firstMatch
+        XCTAssertTrue(bot.waitForExistence(timeout: 15))
+        bot.swipeLeft()
+        XCTAssertFalse(app.buttons["team-remove-swipe"].waitForExistence(timeout: 2), "A member has no removal.")
+        shot("remove-\(name)-after-swipe")
+        bot.press(forDuration: 1.2)
+        XCTAssertFalse(app.buttons["team-remove-menu"].waitForExistence(timeout: 2), "A member has no menu.")
+        XCTAssertFalse(app.buttons["Remove from team"].exists)
+    }
+
+    /// Closes a question without its action. An iPhone shows it as a popover without a Cancel button, so a tap beside
+    /// it cancels it.
+    private func cancelQuestion() {
+        if app.buttons["Cancel"].exists { app.buttons["Cancel"].tap() } else {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.6)).tap()
+        }
+    }
+
+    /// Opens the Team screen of a team from its chat, in the look of COCONUT_TEAM_LOOK. Return the look.
+    @MainActor @discardableResult
+    private func launchTeamScreen(url: String, code: String, room: String, chatShot: String? = nil) -> String {
+        let env = ProcessInfo.processInfo.environment
+        shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
+        let look = env["COCONUT_TEAM_LOOK"] ?? "light"
+        continueAfterFailure = false
+        app = XCUIApplication()
+        if look == "dark" { app.launchArguments += ["-AppleInterfaceStyle", "Dark", "-UIUserInterfaceStyle", "Dark"] }
+        if look == "large" {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        }
+        app.launchEnvironment = Self.pairing(url: url, code: code)
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
+        let row = app.buttons["team-chat-\(room)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+        row.tap()
+        let title = app.buttons["team-chat-title"]
+        XCTAssertTrue(title.waitForExistence(timeout: 10))
+        if let chatShot { shot(chatShot) }
+        title.tap()
+        return look
+    }
+
     /// The Team screen of a team, from its chat. Return the switch "Notifications".
     private func openTeamScreen(_ room: String) throws -> XCUIElement {
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))

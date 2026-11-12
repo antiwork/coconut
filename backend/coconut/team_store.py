@@ -32,6 +32,10 @@ Each table has the room ID in its key, because a Mac can be in more than one roo
 - `team_marks`: the lasting marks of this Mac. `direct` means that an app of the person knows direct messages.
 - `team_direct_waits`: the `direct` entries that the sync could not try with the key that they need yet, because the
   `member` entry of that key came later in the read. The end of the read tries each one again, then removes it.
+- `team_removed`: the members that a `remove` entry of the admin took out of the room, each with the entry ID of that
+  entry. A member here shows in no list, also when the store still has its `member` entry.
+- `team_invites`: on the admin's Mac, the invites that this Mac made: the hash of the ticket and its end. A removal
+  removes the open ones on the relay first.
 
 `TeamStore.accept` holds the "Rules for a Mac that reads an entry" of the contract. The secrets of a room are not
 here: team_keys.py keeps them in a private file. The caller holds the transaction of each write.
@@ -45,7 +49,7 @@ import logging
 import re
 import time
 
-from .team_relay import HEX32, number
+from .team_relay import HEX32, HEX64, number
 
 log = logging.getLogger(__name__)
 
@@ -94,6 +98,10 @@ CREATE TABLE IF NOT EXISTS team_direct_reads (room TEXT NOT NULL, member TEXT NO
     PRIMARY KEY (room, member));
 CREATE TABLE IF NOT EXISTS team_marks (mark TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS team_direct_waits (room TEXT NOT NULL, entry TEXT NOT NULL, PRIMARY KEY (room, entry));
+CREATE TABLE IF NOT EXISTS team_removed (room TEXT NOT NULL, member TEXT NOT NULL, entry TEXT NOT NULL,
+    PRIMARY KEY (room, member));
+CREATE TABLE IF NOT EXISTS team_invites (room TEXT NOT NULL, hash TEXT NOT NULL, expires INTEGER NOT NULL,
+    PRIMARY KEY (room, hash));
 -- A store from before team_names gets the names that it shows now. A later accept keeps them current.
 INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
     SELECT room, entry, member, 'member', name FROM team_members;
@@ -102,7 +110,7 @@ INSERT OR IGNORE INTO team_names (room, entry, member, kind, name)
 '''
 TABLES = ('team_rooms', 'team_entries', 'team_members', 'team_pending', 'team_shares', 'team_page_shares',
           'team_page_entries', 'team_bots', 'team_pages', 'team_messages', 'team_names', 'team_reads', 'team_triggers',
-          'team_directs', 'team_direct_reads', 'team_direct_waits')
+          'team_directs', 'team_direct_reads', 'team_direct_waits', 'team_removed', 'team_invites')
 ROOM_FIELDS = ('room', 'relay', 'name', 'member', 'admin', 'state', 'epoch', 'seq', 'profile', 'created_at',
                'notifications')
 ENTRY_FIELDS = ('id', 'seq', 'first', 'member', 'kind', 'rev', 'at', 'kept', 'payload')
@@ -160,6 +168,10 @@ SAME = 'same'        # The store already has this write.
 SKIPPED = 'skipped'  # The entry is from before this Mac joined, and it cannot get the room key of that epoch.
 DROPPED = 'dropped'  # The body does not open, or its payload is not the payload of an entry.
 REFUSED = 'refused'  # The body opens, and a rule of the contract refuses the entry.
+
+# The longest life of a ticket on the relay (docs/team-log.md, "Limits"). The Mac forgets the record of an invite only
+# this long after its saved end, because the relay starts its own count later than this Mac, and its clock can differ.
+MAX_TICKET_SECONDS = 7 * 86400
 
 # Only the admin writes these kinds (rule 4).
 ADMIN_KINDS = ('remove', 'key')
@@ -332,7 +344,20 @@ def direct_fields(plaintext, to: str) -> dict | None:
     return dict(text=text, reply_to=reply_to)
 
 
-SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'message': message_fields}
+def remove_fields(fields: dict) -> dict | None:
+    """The member that a `remove` payload takes out of the room, and its name, or None when a field does not fit.
+
+    `member` is a member ID: 64 lowercase hex characters. `name` is the last name that the admin's Mac showed for that
+    member, for the history. A reader does not need it, so a name that does not fit hides no removal.
+    """
+    member, name = fields.get('member'), fields.get('name')
+    if not isinstance(member, str) or not HEX64.fullmatch(member):
+        return None
+    return dict(member=member, name=name if unicode_text(name) and 0 < len(name) <= MEMBER_LIMITS['name'] else None)
+
+
+SHOWN = {'member': member_fields, 'bot': bot_fields, 'page': page_fields, 'message': message_fields,
+         'remove': remove_fields}
 
 
 def read_entry(opened: dict) -> dict:
@@ -521,6 +546,9 @@ class TeamStore:
         # A trigger is the first write of a message of another member that this Mac sees. A later write is an edit.
         if self.answers and existing is None and other and fields['kind'] == 'message' and fields['rev'] == 1 and shown:
             self._queue_triggers(room, entry, shown)
+        # A `remove` entry of the admin takes a member out. Rule 4 checked the writer above.
+        if 'remove' in kinds:
+            self._show_removal(room, entry, shown if fields['kind'] == 'remove' else None)
         if 'member' in kinds:
             self.show_member(room['room'], entry['member'], (entry['id'], shown) if fields['kind'] == 'member' else None)
             if not other and fields['kind'] == 'member':
@@ -597,6 +625,11 @@ class TeamStore:
             self.changed.add(room)
 
     def _show_member(self, room: str, member: str, known: tuple[str, dict | None] | None) -> None:
+        if self.removed(room, member):
+            # A `remove` entry of the admin took the member out. A `member` entry of the store, or a later one, does
+            # not bring it back.
+            self.db.execute('DELETE FROM team_members WHERE room=? AND member=?', (room, member))
+            return
         rows = self.db.execute("SELECT id FROM team_entries WHERE room=? AND member=? AND kind='member' "
                                'ORDER BY seq DESC', (room, member)).fetchall()
         for (entry,) in rows:
@@ -619,6 +652,72 @@ class TeamStore:
                 self._name(room, entry, member, 'member', fields['name'])
                 return
         self.db.execute('DELETE FROM team_members WHERE room=? AND member=?', (room, member))
+
+    def _show_removal(self, room: dict, entry: dict, removal: dict | None) -> None:
+        """Apply a `remove` entry of the admin, or a write over one (docs/team-log.md, "Member removal").
+
+        `removal` is what read_entry found valid, or None for an entry that does not fit and for a write of another kind
+        over a `remove` entry. The relay deleted the kept entries of the removed member, and no `delete` entry comes for
+        them, so this entry is the only sign. The member leaves the member list, so its bots, its pages and the Library
+        rows of these hide by the rules that exist. Its messages and its names in `team_names` stay for the history,
+        and a direct chat with it becomes read-only. On a Mac for a team only, its messages start no waiting turn.
+
+        A removal of the admin or of this Mac changes nothing: the admin cannot be removed, and the relay tells this
+        Mac by a refusal of its token.
+        """
+        room_id = room['room']
+        members = {row[0] for row in self.db.execute('SELECT member FROM team_removed WHERE room=? AND entry=?',
+                                                      (room_id, entry['id']))}
+        self.db.execute('DELETE FROM team_removed WHERE room=? AND entry=?', (room_id, entry['id']))
+        if removal is not None and removal['member'] not in (room['admin'], room['member']):
+            self.db.execute('INSERT OR REPLACE INTO team_removed (room, member, entry) VALUES (?, ?, ?)',
+                            (room_id, removal['member'], entry['id']))
+            members.add(removal['member'])
+            if self.db.execute('''DELETE FROM team_triggers WHERE room=? AND started=0 AND entry IN (
+                    SELECT entry FROM team_messages WHERE room=? AND member=?)''',
+                               (room_id, room_id, removal['member'])).rowcount:
+                # The turn thread also checks a running turn, and stops the turn of a member that is out.
+                self.triggered.add(room_id)
+            # A Mac that reads the room after the removal gets no `member` entry of the member, because the relay
+            # deleted it, but it gets the messages. The name of the entry names them. A name that this Mac showed wins.
+            name = removal['name']
+            if name is not None and self.last_name(room_id, removal['member']) is None:
+                self._name(room_id, entry['id'], removal['member'], 'member', name)
+        for member in sorted(members):
+            self.show_member(room_id, member)
+            # The Library shows a bot only while its member is in the list.
+            if self.db.execute('SELECT 1 FROM team_bots WHERE room=? AND member=? LIMIT 1', (room_id, member)).fetchone():
+                self.touched.add(room_id)
+
+    def removed(self, room: str, member: str) -> bool:
+        """True when a `remove` entry of the admin took the member out of the room."""
+        return self.db.execute('SELECT 1 FROM team_removed WHERE room=? AND member=?', (room, member)).fetchone() is not None
+
+    def last_name(self, room: str, member: str) -> str | None:
+        """The last name that the store showed for a member, also after it left (team_names)."""
+        row = self.db.execute("SELECT name FROM team_names WHERE room=? AND member=? AND kind='member' LIMIT 1",
+                              (room, member)).fetchone()
+        return row[0] if row else None
+
+    # The invites of the admin
+
+    def add_invite(self, room: str, ticket_hash: str, expires: int) -> None:
+        """Keep the hash of the ticket of an invite and its end, so a removal can remove the ticket first."""
+        self.db.execute('INSERT OR REPLACE INTO team_invites (room, hash, expires) VALUES (?, ?, ?)',
+                        (room, ticket_hash, expires))
+
+    def invites(self, room: str) -> list[tuple[str, int]]:
+        """The kept invites of the room: the hash of each ticket and its end, oldest end first."""
+        return [tuple(row) for row in self.db.execute(
+            'SELECT hash, expires FROM team_invites WHERE room=? ORDER BY expires, hash', (room,))]
+
+    def drop_invite(self, room: str, ticket_hash: str) -> None:
+        self.db.execute('DELETE FROM team_invites WHERE room=? AND hash=?', (room, ticket_hash))
+
+    def drop_old_invites(self, now: float) -> None:
+        """Forget the invites whose saved end is more than MAX_TICKET_SECONDS in the past. The relay deleted their
+        tickets by then, also when its count started later than the count of this Mac."""
+        self.db.execute('DELETE FROM team_invites WHERE expires<=?', (int(now) - MAX_TICKET_SECONDS,))
 
     def _show_bot(self, room: str, entry: dict, profile: dict | None) -> None:
         """Set the row of a `bot` entry: the profile that read_entry found valid for another member, or the profile
