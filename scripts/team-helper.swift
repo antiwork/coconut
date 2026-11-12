@@ -21,6 +21,12 @@ import Foundation
 // - `seal` (`room`, `entry`, `epoch`, `key`, `member_key`, `payload`): `body`.
 // - `open` (`room`, `keys`: epoch to room key, `entries`: a list of `id`, `member`, `body`): `entries`, one result
 //   for each entry in the same order: `epoch` and `payload`, or `error`. A result with `unknown_epoch` has `epoch`.
+// - `seal_direct` (`room`, `entry`, `agreement_key`, `member`, `other`, `agreement`, `plaintext`): `box`, the box of a
+//   direct message as unpadded base64url, as a payload carries it. `member` is this Mac and the writer, `other` the
+//   member that the message is for, and `agreement` the public agreement key of `other` as unpadded base64url.
+// - `open_direct` (`room`, `agreement_key`, `member`, `boxes`: a list of `entry`, `writer`, `other`, `agreement`,
+//   `box`): `boxes`, one result for each box in the same order: `plaintext`, or `error`. The pair key of a box is the
+//   one of this Mac and `other`, with the agreement key `agreement` of `other`.
 // - `ticket` (`secret`): `ticket` and `hash`, the hash of the ticket.
 // - `seal_welcome` (`room`, `secret`, `epoch`, `key`, `admin`, `name`): `welcome`.
 // - `open_welcome` (`room`, `secret`, `welcome`): `epoch`, `key`, `admin`, `name`.
@@ -36,6 +42,16 @@ struct TeamHelper {
             let id: String
             let member: String
             let body: Data
+        }
+
+        /// The box of a direct message in a call of `open_direct`. The IDs are lowercase hex, and the agreement key
+        /// and the box are unpadded base64url.
+        struct Box: Decodable {
+            let entry: String
+            let writer: String
+            let other: String
+            let agreement: String
+            let box: String
         }
 
         let operation: String
@@ -55,11 +71,18 @@ struct TeamHelper {
         var expires: UInt32?
         var link: String?
         var token: String?
+        var agreementKey: Data?
+        var member: String?
+        var other: String?
+        var agreement: String?
+        var plaintext: Data?
+        var boxes: [Box]?
 
         enum CodingKeys: String, CodingKey {
             case operation, room, entry, epoch, key, keys, payload, entries, secret, welcome, admin, name, relay
-            case expires, link, token
+            case expires, link, token, member, other, agreement, plaintext, boxes
             case memberKey = "member_key"
+            case agreementKey = "agreement_key"
         }
     }
 
@@ -129,6 +152,17 @@ struct TeamHelper {
                 keys[epoch] = try SymmetricKey(data: roomKey(key))
             }
             return ["entries": try need(input.entries).map { open($0, room: room, keys: keys) }]
+        case "seal_direct":
+            let room = try bytes(input.room), member = try bytes(input.member)
+            let key = try TeamLog.pairKey(agreement: agreement(input.agreementKey), other: base64URL(input.agreement),
+                                          room: room, member: member, otherMember: bytes(input.other))
+            let box = try TeamLog.sealDirect(need(input.plaintext), key: key, room: room, entry: bytes(input.entry),
+                                             writer: member)
+            return ["box": TeamLog.base64URL(box)]
+        case "open_direct":
+            let room = try bytes(input.room), member = try bytes(input.member)
+            let own = try agreement(input.agreementKey)
+            return ["boxes": try need(input.boxes).map { openDirect($0, room: room, member: member, agreement: own) }]
         case "ticket":
             let ticket = try TeamLog.ticket(secret: need(input.secret))
             return ["ticket": ticket, "hash": TeamLog.hash(ticket)]
@@ -173,6 +207,22 @@ struct TeamHelper {
         }
     }
 
+    /// Opens one box of a batch. A failure of one box does not stop the batch.
+    static func openDirect(_ box: Input.Box, room: Data, member: Data,
+                           agreement: Curve25519.KeyAgreement.PrivateKey) -> [String: Any] {
+        do {
+            let key = try TeamLog.pairKey(agreement: agreement, other: base64URL(box.agreement), room: room,
+                                          member: member, otherMember: bytes(box.other))
+            let plaintext = try TeamLog.openDirect(base64URL(box.box), key: key, room: room, entry: bytes(box.entry),
+                                                   writer: bytes(box.writer))
+            return ["plaintext": plaintext.base64EncodedString()]
+        } catch let failure as TeamLog.Failure {
+            return ["error": code(failure)]
+        } catch {
+            return ["error": "malformed"]
+        }
+    }
+
     static func code(_ failure: TeamLog.Failure) -> String {
         switch failure {
         case .malformed: "malformed"
@@ -202,6 +252,16 @@ struct TeamHelper {
 
     static func signer(_ key: Data?) throws -> Curve25519.Signing.PrivateKey {
         try Curve25519.Signing.PrivateKey(rawRepresentation: need(key))
+    }
+
+    static func agreement(_ key: Data?) throws -> Curve25519.KeyAgreement.PrivateKey {
+        try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: need(key))
+    }
+
+    /// The bytes of an unpadded base64url text, as a payload carries a key or a box.
+    static func base64URL(_ text: String?) throws -> Data {
+        guard let data = TeamLog.bytes(base64URL: try need(text)) else { throw TeamLog.Failure.malformed }
+        return data
     }
 }
 

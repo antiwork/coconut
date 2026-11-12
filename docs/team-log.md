@@ -676,6 +676,31 @@ Proof of the member for this room and this member token:
 
 The relay's check (WebCrypto) and CryptoKit accept this proof, and the relay accepts a proof that CryptoKit makes.
 
+A direct message (see [Direct messages](#direct-messages)). The member ID above writes to a reader. Node's `crypto` made these values, and CryptoKit gets the same values. The Python standard library gets the pair key from the shared secret.
+
+| Input | Value |
+| --- | --- |
+| Member ID of the reader | The bytes `10` to `2f` |
+| Agreement key of the writer (the private key) | The bytes `c0` to `df` |
+| Agreement key of the reader (the private key) | The bytes `e0` to `ff` |
+| Nonce of the box | The bytes `f0` to `fb` |
+| Plaintext | `{"to":"101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f","text":"Hello Grace"}` |
+
+The room ID and the entry ID are the ones above.
+
+- Public agreement key of the writer: `3CzKMejkO72R3_fkdcyjNH60eBB9W9dlq6SuSjDDXUQ`
+- Public agreement key of the reader: `c2hF1U6H3gnWuxFKpwQsUKSgFb2ZAdGgAm9ZVlM6FRk`
+- Shared secret (X25519): `28150aa20f6f6c9c8177b9deded7464ebc5aac96029777ff7503cd8e8ca7143e`
+- Pair key: `46fc42722c716d505c7d6f995ea6ee8b53045f1531ad140a5a036a6a2db93f00`. The member ID of the reader is lower, so the info is `coconut room direct`, the room ID, the member ID of the reader, then the member ID of the writer.
+
+Box, 122 bytes. A seal of the plaintext with the nonce above must give exactly these bytes:
+
+```
+f0f1f2f3f4f5f6f7f8f9fafb33e43c192dd25841a9fdffa40e61265aa37d51c1c7363a4803ccf485d7ae13e09a75e006914d5f3feeddd09ed30dc1ddaaa3f4e5311aac1732bf7070e95d0273c0e0b87ec0d6d1cbc438d7deee6138dba44205e6c8f8decba995e6ddd5e9ed63f1d46e5bc09457d158d768b49c27
+```
+
+Each implementation must open the box with the pair key of the reader and get the plaintext. It must refuse the box with another room ID, entry ID, writer or pair key, or with one changed byte.
+
 Link:
 
 ```
