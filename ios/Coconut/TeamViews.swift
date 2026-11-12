@@ -157,10 +157,8 @@ struct TeamRoomView: View {
     @State private var busy = false
     @State private var inviting = false
     @State private var joining = false
-    /// The state of the switch while its request runs, with the number of that request. Without it, the switch shows
-    /// the state of the Mac.
-    @State private var notificationChoice: (enabled: Bool, request: Int)?
-    @State private var notificationRequests = 0
+    /// The choice of the switch while its request runs. Without it, the switch shows the state of the Mac.
+    @State private var notificationChoice: Bool?
 
     private var room: TeamRoom? { store.team?.rooms.first { $0.room == roomId } }
 
@@ -216,9 +214,11 @@ struct TeamRoomView: View {
             // An older service and a Mac for a team only send no `notifications`, so the screen has no switch.
             if let enabled = room.notifications {
                 Section {
-                    Toggle("Notifications", isOn: Binding(get: { notificationChoice?.enabled ?? enabled },
+                    Toggle("Notifications", isOn: Binding(get: { notificationChoice ?? enabled },
                                                           set: { setNotifications($0, in: room) }))
                         .tint(BoardStyle.green)
+                        // One request at a time, so an earlier choice cannot reach the Mac after a later one.
+                        .disabled(notificationChoice != nil)
                         .accessibilityIdentifier("team-notifications")
                 } footer: { Text("Get notified when someone writes in this team.") }
             }
@@ -298,16 +298,15 @@ struct TeamRoomView: View {
 
     @ScaledMetric(relativeTo: .body) private var avatarSize = 32.0
 
-    /// Saves the switch at once. It shows the new state while the Mac answers. A failure puts it back, and the banner
-    /// of the screen shows the error. Only the latest tap decides what the switch shows.
+    /// Saves the switch at once. It shows the new state while the Mac answers. Then it shows the state of the Mac:
+    /// the new one after a success, and the old one after a failure, with the error in the banner of the screen.
     private func setNotifications(_ enabled: Bool, in room: TeamRoom) {
-        notificationRequests += 1
-        let request = notificationRequests
-        notificationChoice = (enabled, request)
+        guard notificationChoice == nil else { return }
+        notificationChoice = enabled
         store.error = nil
         Task {
             _ = await store.setTeamNotifications(room.room, enabled: enabled)
-            if notificationChoice?.request == request { notificationChoice = nil }
+            notificationChoice = nil
         }
     }
 
