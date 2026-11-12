@@ -9,12 +9,9 @@ A team has two kinds of Mac:
 - **A person's Mac** (a full install): its bots are the person's, and nobody else can ask them. The person shares a page of a bot with a team by one act on the page, and stops when they want. The bot of the page is then the author of the page in the team, and nothing more.
 - **A Mac for a team only** (see [Team-only mode](#team-only-mode)): its bots are the team's. Each page that such a bot saves with the audience "team" goes to the teams of the bot.
 
-Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat of the people and serves it to the phone (see [Team chat](#team-chat)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone (see [Direct messages](#direct-messages)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). These parts are not built yet:
+Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joins, leaves and copies a room for the tools on the Mac, and it learns of a new entry at once through the socket of the room (see [Mac](#mac)). It shares the pages that a person shares, and the Library of the phone lists the team pages of the other Macs (see [Bots and pages](#bots-and-pages)). It keeps the Team chat and serves it to the phone, and the app lists the team bots that a person can name with `@` (see [Team chat](#team-chat)). A bot of a Mac for a team only answers in the Team chat (see [A bot answers](#a-bot-answers)). A message of another member reaches this Mac through the socket in about one second, and a person's Mac notifies its phones (see [Notifications](#notifications)). The Mac keeps the direct messages between two people and serves them to the phone, and the app shows them (see [Direct messages](#direct-messages)). The admin removes a member (see [Removal](#removal)), and the room then gets a new room key (see [Key change](#key-change)). This part is not built yet:
 
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
-- The mentions of the Team chat in the app. The app shows each team in its Chats list, and the chat of the team sends and shows text only.
-- A bot that reads or writes the Team chat.
-- The direct messages in the app. Until an app asks for them, no Mac writes `direct` in its `member` entry, and nobody can send a direct message.
 
 ## Terms
 
@@ -313,7 +310,13 @@ A person's Mac and a Mac for a team only follow the same rules.
 
 #### A member that the `key` entry missed
 
-A Mac can join at the time of the change: it took its invite before the removal closed the invites, and its `member` entry comes after the `key` entry. It has the old key from its welcome and no box. So the admin's Mac looks for a member of its list that has a `member` entry of an older epoch and no box in the newest `key` entry. For such a member, it writes that `key` entry again: the same entry ID, the next `rev`, a body of the old epoch, and a box for each member of the list now. A reader takes the newest write of the entry by the rules that exist. A member that the helper cannot seal a box for causes no second write.
+A Mac can join at the time of the change: it took its invite before the removal closed the invites, and its `member` entry comes after the `key` entry. It has the old key from its welcome and no box. One Mac can miss more than one change: the admin can remove two members before its Mac reads the `member` entry of the new Mac.
+
+- A member of the list needs each `key` entry whose epoch is after the epoch of the body of its `member` entry, up to the epoch of the room. The admin's Mac looks for each such entry that has no box for the member. The admin itself and a removed member never count.
+- The Mac writes each such entry again, in the order of the epochs: the same entry ID, the next `rev`, a body of the epoch before its own, and a box for each member that needs it. The boxes of the members that the list still has stay. A removed member gets no box, and its old box goes.
+- The reader takes one epoch after the other, so the member opens one key after the other, in one read or across reads.
+- Each step is safe to repeat. A member that the helper cannot seal a box for causes no second write of that entry.
+- When the key file of the admin lacks a key that such a write needs, the Mac writes one log line without a key and goes on with the other entries.
 
 #### The kept entries again
 
