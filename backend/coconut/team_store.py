@@ -129,6 +129,13 @@ MESSAGE_FIELDS = ('entry', 'first', 'member', 'member_name', 'bot', 'bot_name', 
 # time. team_names keeps the bot after a `delete`, so the history of a bot that the team no longer has stays.
 SHOWN_MESSAGE = '''(m.bot IS NULL OR EXISTS (SELECT 1 FROM team_names b WHERE b.room=m.room AND b.entry=m.bot
     AND b.kind='bot' AND b.member=m.member))'''
+# A message names a member when its `mentions` have a `member` entry of that member. The value is the member ID. The
+# primary key of team_names finds each mention, so the check reads at most 16 rows.
+NAMES_MEMBER = '''EXISTS (SELECT 1 FROM json_each(m.mentions) j JOIN team_names n ON n.room=m.room AND n.entry=j.value
+    WHERE n.kind='member' AND n.member=?)'''
+# A message counts as unread for this Mac's person when another member wrote it, or a bot wrote it. The value is the
+# member ID of this Mac.
+UNREAD_MESSAGE = '(m.member!=? OR m.bot IS NOT NULL)'
 # The event of each transaction that changes the chat of a room: a message, an edit, a removal, or the read position.
 # GET /v1/updates then has `team_messages_changed`.
 MESSAGES_EVENT = 'team_messages.updated'
@@ -1115,8 +1122,20 @@ class TeamStore:
         person counts as read: the person did not write the reply of a bot of this Mac. The LIMIT keeps the count to
         at most MAX_UNREAD rows of the index."""
         return self.db.execute(f'''SELECT COUNT(*) FROM (SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>?
-            AND (m.member!=? OR m.bot IS NOT NULL) AND {SHOWN_MESSAGE} LIMIT {MAX_UNREAD})''',
+            AND {UNREAD_MESSAGE} AND {SHOWN_MESSAGE} LIMIT {MAX_UNREAD})''',
                                (room, self.read_position(room), member)).fetchone()[0]
+
+    def names_member(self, room: str, entry: str, member: str) -> bool:
+        """True when the shown message `entry` names `member` in its `mentions`."""
+        return self.db.execute(f'''SELECT 1 FROM team_messages m WHERE m.room=? AND m.entry=? AND {SHOWN_MESSAGE}
+            AND {NAMES_MEMBER}''', (room, entry, member)).fetchone() is not None
+
+    def mentioned(self, room: str, member: str) -> bool:
+        """True when an unread message (the rule of `unread`) names `member`. The query walks the index
+        team_messages_order from the read position, so it reads only the unread messages, not the room."""
+        return self.db.execute(f'''SELECT 1 FROM team_messages m WHERE m.room=? AND m.first>? AND {UNREAD_MESSAGE}
+            AND {SHOWN_MESSAGE} AND {NAMES_MEMBER} LIMIT 1''',
+                               (room, self.read_position(room), member, member)).fetchone() is not None
 
     # Direct messages
 

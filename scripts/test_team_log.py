@@ -1043,6 +1043,55 @@ class TeamPushTests(unittest.TestCase):
         flush(ada)
         self.assertEqual(len(relay.sent), 1)
 
+    def test_a_mention_notifies_the_named_person_in_a_quiet_team(self):
+        """Grace names Ada. Ada and Lin both made the team quiet. Ada's phone gets one notification, because the
+        message names her, and Lin's phone gets none."""
+        from coconut.providers import FixtureProvider
+        from coconut.service import Service
+        from test_push import pair_phone
+        from test_push_relay import EncryptedTransport
+        from test_team_push import ROUTE, flush, register
+        os.environ['COCONUT_TEAM_HELPER'] = str(self.helper_path)
+        self.addCleanup(os.environ.pop, 'COCONUT_TEAM_HELPER', None)
+        macs = {}
+        for name in ('ada', 'grace', 'lin'):
+            root = Path(self.temp.name) / f'mention-{name}'
+            macs[name] = Service(root, FixtureProvider(root), start_workers=False)
+            self.addCleanup(macs[name].close)
+        ada, grace, lin = macs['ada'], macs['grace'], macs['lin']
+
+        def call(service, method, path, data, device='test-device'):
+            return service.team_request(method, path, data, '', device)
+        room = call(grace, 'POST', '/v1/team/rooms', {'name': 'Example Team', 'member_name': 'Grace',
+                                                      'relay': self.url})
+        room_id = room['room']['room']
+        for service, name in ((ada, 'Ada'), (lin, 'Lin')):
+            link = call(grace, 'POST', f'/v1/team/rooms/{room_id}/invites', {})['link']
+            call(service, 'POST', '/v1/team/join', {'link': link, 'member_name': name})
+        relays = {}
+        for name, service in (('ada', ada), ('lin', lin)):
+            phone = pair_phone(service)
+            relays[name] = EncryptedTransport()
+            service.push.relay = relays[name]
+            register(service, phone, route=ROUTE, level='every')
+            call(service, 'PUT', f'/v1/team/rooms/{room_id}/notifications', {'enabled': False}, phone)
+        grace.team_sync_pass()
+        members = {member['name']: member['member']
+                   for member in call(grace, 'GET', '/v1/team/rooms', {})['rooms'][0]['members']}
+        call(grace, 'POST', f'/v1/team/rooms/{room_id}/messages', {'text': 'Ada, the report is yours.',
+                                                                   'mentions': [members['Ada']]})
+        for service in (ada, lin):
+            service.team_sync_pass()
+            flush(service)
+        (payload,) = relays['ada'].sealed
+        self.assertEqual(payload['aps']['alert'], {'title': 'Grace', 'subtitle': 'Example Team',
+                                                   'body': 'Ada, the report is yours.'})
+        self.assertEqual(relays['lin'].sealed, [])
+        (view,) = call(ada, 'GET', '/v1/team/rooms', {})['rooms']
+        self.assertEqual((view['mentioned'], view['last_message']['mentions_me']), (True, True))
+        (view,) = call(lin, 'GET', '/v1/team/rooms', {})['rooms']
+        self.assertEqual((view['mentioned'], view['last_message']['mentions_me']), (False, False))
+
 
 @unittest.skipUnless(sys.platform == 'darwin' and shutil.which('xcrun') and shutil.which('node')
                      and (ROOT / 'relay/node_modules/miniflare').is_dir(),

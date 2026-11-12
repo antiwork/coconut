@@ -13,7 +13,6 @@ Status: the relay has the room (`relay/src/room.js`). The Mac backend makes, joi
 
 - A call of `GET .../members` that finds a member that left without a `delete` entry.
 - The key change after a member removal.
-- The mentions of the Team chat in the app. The app shows each team in its Chats list, and the chat of the team sends and shows text only.
 - A bot that reads or writes the Team chat.
 - The direct messages in the app. Until an app asks for them, no Mac writes `direct` in its `member` entry, and nobody can send a direct message.
 
@@ -425,7 +424,8 @@ A room in an answer has what the Team screen shows, so the app needs no other re
 | `members` | In the order of their first `member` entry: `member` (the member ID), `name`, `avatar`, `color`, `admin`, `this_mac`, `bot_only`, and `can_remove`: true on the admin's Mac of an `active` room for each other member. The app shows the action of a removal only for a member with `can_remove`, so an older service shows no action. |
 | `bots` | Each bot of the team, while the room is `active` and the member of the bot is in `members`. `id`, `name`, `avatar`, `color`, `member` (the ID of the Mac that runs the bot), `member_name`, `this_mac` and `open`. A bot of a person's Mac is only the author of the pages that the person shares, and its `open` is false. The app lists and counts only the bots with `open` true: the bots that a teammate can ask. A bot of this Mac also has `bot_id`, its ID on this Mac, and its profile comes from that bot. An archived or deleted bot of this Mac is not in the list. The bots follow the order of the members, then their names. |
 | `sync` | `synced_at`, and `error`: one sentence for a person, or null. Also `seq`, `entries`, `waiting`, `refused`: the writes that the relay refused (see [Bots and pages](#bots-and-pages)), and `socket`: true while the socket of the room is open. The app does not show `socket`. |
-| `unread`, `last_message` | The unread count of the Team chat, from 0 to 99, and the newest message that the chat shows: `first`, `member`, `member_name`, `this_mac`, `bot`, `bot_name`, `text` (its first 200 characters) and `created_at`, or null. `member`, `this_mac` and `bot` have the values of a message in a page, so the Chats list of the app can show "You" for a message of this Mac's person: `this_mac` is true and `bot` is null. An older service sends none of the three. See [Team chat](#team-chat). |
+| `unread`, `last_message` | The unread count of the Team chat, from 0 to 99, and the newest message that the chat shows: `first`, `member`, `member_name`, `this_mac`, `bot`, `bot_name`, `text` (its first 200 characters), `created_at` and `mentions_me`, or null. `member`, `this_mac` and `bot` have the values of a message in a page, so the Chats list of the app can show "You" for a message of this Mac's person: `this_mac` is true and `bot` is null. An older service sends none of the three. `mentions_me` is true when the message names this Mac's person (see [Mentions of a person](#mentions-of-a-person)). See [Team chat](#team-chat). |
+| `mentioned` | True while an unread message of the Team chat names this Mac's person. The rule of the unread count decides which message is unread. An older service sends neither `mentioned` nor `mentions_me`, so the app shows people in its `@` list only for a room with `mentioned`. |
 | `relay`, `member`, `admin`, `epoch` | For the tools. |
 | `directs` | Only for a request with `X-Coconut-Team: direct` from a paired device. Then each member also has `direct`. See [Direct messages](#direct-messages). |
 
@@ -586,14 +586,23 @@ A team message notifies the person like a bot reply: the same pipeline, the same
 1. A message notifies only when it is the first write (`rev` 1) of a `message` entry that this Mac sees for the first time, shows, counts as unread (a message of another member, or a message with a `bot`), is after the read position, and has an `at` under one hour old. The read position comes with the own `member` entry of this Mac, so the history that a Mac reads after a join notifies nothing. An edit, a removal and a read again notify nothing.
 2. The transaction that accepts the entry writes one item of the kind `team` for each phone in `push_items`: the room in `team`, the entry ID in `message_id`, and no bot, task or turn. No network call runs in that transaction.
 3. A phone gets an item when its notifications are on, it sent its preferences, and its level is not Only urgent. The switch for bot replies does not decide. A phone without stored preferences has an older app and gets none.
-4. Each room has `notifications` on this Mac, on at the start. It is a choice of the person, not of the team: it never goes into the log or to the relay. `GET /v1/team/rooms` gives it for each room on a person's Mac, and `PUT /v1/team/rooms/<room>/notifications` changes it. Only a paired device calls that route, and a change adds `team.updated`. A Mac for a team only answers 409.
-5. Each plan and each send checks the item again: the room is `active` with `notifications` on, the message still shows, and it is after the read position. So a message that the person read on another device, a removed message, a team that the person left and a quiet team send nothing.
+4. Each room has `notifications` on this Mac, on at the start. It is a choice of the person, not of the team: it never goes into the log or to the relay. `GET /v1/team/rooms` gives it for each room on a person's Mac, and `PUT /v1/team/rooms/<room>/notifications` changes it. Only a paired device calls that route, and a change adds `team.updated`. A Mac for a team only answers 409. The switch decides only for a message that does not name this Mac's person. A message whose `mentions` have the entry ID of a `member` entry of this Mac notifies also when the switch is off, and each other rule stays: the level, the work hours, the read position and the checks of rule 5. A message that names nobody, or only other members, follows the switch.
+5. Each plan and each send checks the item again: the room is `active`, the message still shows, it is after the read position, and `notifications` is on or the message names this Mac's person. So a message that the person read on another device, a removed message, a team that the person left and a quiet team send nothing. Only a message that names the person still notifies in a quiet team.
 6. An item waits and groups as a bot reply does (level, work hours, the gap after the last notification). It is never urgent. The app icon badge counts cards only.
 7. The sealed alert has the name of the writer as its title (the name of the bot for a message with a `bot`), the name of the team as its subtitle, and the text as its body. When the store has no name for the writer, the title is the name of the team, and the alert has no subtitle. `thread-id` is the room ID. A phone without a relay route gets "Your team has a new message." and no text.
 8. A group counts "team message" and "team messages" after "message". A group of the messages of one team has the thread of the team and `{"kind": "group", "count": n, "team": <room ID>}`, so a tap opens the chat. Each other group opens Inbox, and its fields for older apps come from an item that is not a team message.
 9. The `coconut` part of one message is `{"version": 1, "device_id": ..., "kind": "team", "team": <room ID>}`. An older app finds no `bot_id` there, so a tap opens the app and nothing more.
 
 No log line has the text of a message, the name of a writer or the name of a team.
+
+#### Mentions of a person
+
+A person names another person of the team with `@` in the chat, as the person names a bot. The app sends the member ID in `mentions`, and the Mac writes the entry ID of the `member` entry of that member. The log format and the relay do not change.
+
+- A mention of a person starts no turn of a bot. Rule 4 of [A bot answers](#a-bot-answers) names only `bot` entries.
+- A mention of this Mac's person notifies also in a quiet team (see rule 4 of [Notifications](#notifications)).
+- `GET /v1/team/rooms` gives `mentioned` for each room and `mentions_me` for its newest message. `mentioned` stays true until the read position passes each unread message that names this Mac's person. An own message, a removed message and a message that does not show never count. One query walks the index of the messages from the read position, so it reads the unread messages only.
+- The `@` list of the app has the bots that a teammate can ask, then each other person of the team, without the Macs for a team only. The app lists the people only for a room with `mentioned`, because an older service does not notify a named person in a quiet team.
 
 #### A bot answers
 

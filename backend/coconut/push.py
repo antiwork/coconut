@@ -425,9 +425,15 @@ class PushDelivery:
         """Queue one item for each phone for a fresh team message (TeamStore._note_fresh). The caller holds the
         transaction that accepts the entry."""
         found = self.service.team_store.room(room)
-        if found is None or not found['notifications']:
+        if found is None or not self.team_notifies(found, entry):
             return
         self._record_chat('team', room, entry)
+
+    def team_notifies(self, room, entry):
+        """Whether a message of the team chat can notify the person: the switch `notifications` of the room is on, or
+        the message names this Mac's person. A mention reaches the person also in a quiet team. This is the one place
+        of that rule."""
+        return bool(room['notifications']) or self.service.team_store.names_member(room['room'], entry, room['member'])
 
     def _record_chat(self, kind, room, entry):
         """Queue one item of a chat of a team (CHAT_KINDS) for each phone that allows it."""
@@ -440,15 +446,17 @@ class PushDelivery:
                     VALUES (?,?,?,'','',NULL,?,'',0,?,'waiting',?)''', (device_id, event_key, kind, entry, stamp, room))
 
     def team_relevant(self, item):
-        """Whether a team message still notifies: the room is active with its notifications on, and the message
-        shows after the read position of the room. So a message that the person read, a removed message, a team that
-        the person left and a quiet team send nothing."""
+        """Whether a team message still notifies: the room is active, the message shows after the read position of
+        the room, and the switch of the room is on or the message names this Mac's person (team_notifies). So a
+        message that the person read, a removed message, a team that the person left and a quiet team send nothing,
+        except a mention of the person in a quiet team."""
         store = self.service.team_store
         room = store.room(item['team'])
-        if room is None or room['state'] != ACTIVE or not room['notifications']:
+        if room is None or room['state'] != ACTIVE:
             return False
         message = store.message(item['team'], item['message_id'])
-        return message is not None and message['first'] > store.read_position(item['team'])
+        return (message is not None and message['first'] > store.read_position(item['team'])
+                and self.team_notifies(room, item['message_id']))
 
     def record_direct(self, room, entry):
         """Queue one item for each phone for a fresh direct message (TeamStore._note_direct_fresh). The switch
