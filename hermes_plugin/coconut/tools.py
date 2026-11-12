@@ -122,7 +122,7 @@ def _service_tool(name):
             # The card ends the turn. The hook blocks each further tool call (hooks.guard_tool).
             PAUSED.add(turn)
         if result.get('ended'):
-            # A recorded wait ends the turn. The hook blocks each further tool call (hooks.guard_tool).
+            # A recorded wait or card check ends the turn. The hook blocks each further tool call (hooks.guard_tool).
             WAITED.add(turn)
         return _result(result)
     return handler

@@ -355,7 +355,7 @@ RECOMMENDED_FIRST = ('List the recommended choice first. Move the option with id
                      'also in the labels, explanations and any text that a choice posts.')
 
 # The result of coconut_ask in the gateway. The plugin then blocks each further tool call of the turn.
-PAUSED = ('Coconut shows this card in chat and Inbox. End this turn now: do not call other tools and do not write more. '
+PAUSED = ('Coconut shows this card in chat and Inbox. Call no other tool. End this turn now with one short sentence. '
           'Coconut continues this conversation with the answer.')
 
 # The rules for a merge card. Every turn gets them (pull_request_reviews).

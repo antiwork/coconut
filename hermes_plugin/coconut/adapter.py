@@ -52,8 +52,12 @@ OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 # The turns whose card ended them (coconut_ask), and the mode of a turn that is not a plain chat turn, for example
 # `context`: a follow-up on a pending card. The pre_tool_call hook reads both (hooks.guard_tool).
 PAUSED: set[str] = set()
-# The turns that recorded a wait (coconut_wait). A recorded wait ends its turn, so the hook blocks each further tool call.
+# The turns that recorded a wait (coconut_wait) or the result of a card check (coconut_refresh_decision). Such a result
+# ends its turn, so the hook blocks each further tool call.
 WAITED: set[str] = set()
+# The reply that ends a turn of PAUSED or WAITED when the model writes no text (hooks.end_turn_text). The chat does not
+# show it (ends_quietly).
+END_TEXT = 'This turn is complete.'
 MODES: dict[str, str] = {}
 # The context of each running Coconut turn: the whole turn text, which the model calls of the turn get, while Hermes
 # saves only the turn's own text (hooks.add_turn_context). Set when the hooks registered the middleware.
@@ -107,6 +111,12 @@ def turn_for_chat(chat_id):
         if turn is not None:
             return adapter, turn
     return None, None
+
+
+def ends_quietly(turn, text) -> bool:
+    """Whether a send is END_TEXT of a turn that a card, a wait or a check ended. The chat does not show it: after a
+    card, the card is the message, and after a wait or a check, the turn has nothing new to say."""
+    return (turn in PAUSED or turn in WAITED) and str(text or '').strip() == END_TEXT
 
 
 
@@ -441,6 +451,9 @@ class CoconutAdapter(BasePlatformAdapter):
             return SendResult(success=True)
         if turn is None:
             return await self._send_outside(str(chat_id), str(content), metadata or {})
+        if ends_quietly(turn, content):
+            LOG.info('Coconut: turn %s ended after its card, wait or check. Its closing text stays in the log.', turn)
+            return SendResult(success=True)
         self._count += 1
         message_id = f'{turn}:{self._count}'
         # The gateway marks status and commentary sends with _interim_send. Each is a complete message.

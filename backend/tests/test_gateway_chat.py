@@ -1045,7 +1045,10 @@ class ServiceRoutingTests(unittest.TestCase):
                 'choice': 'approve', 'option_id': 'ship', 'quote': 'ship'}})
         result = self.service.gateway_tool({'turn_id': turn['id'], 'tool': 'refresh_decision', 'arguments': {
             'status': 'current', 'evidence': 'The release notes still need a decision.'}})
-        self.assertEqual(result.get('status'), 'recorded')
+        # The recorded result ends the check, so the plugin blocks each further tool call of the turn.
+        from coconut.gateway_chat import CHECK_FINISH
+        self.assertEqual((result.get('status'), result.get('ended'), result.get('instruction')),
+                         ('recorded', True, CHECK_FINISH))
         self.service.gateway_bridge.event({'turn_id': turn['id'], 'kind': 'done', 'outcome': 'success'})
         self.service.context_threads[context['id']].join(5)
         self.assertEqual(self.read('contexts', context['id'])['status'], 'completed')
@@ -1676,7 +1679,7 @@ class ServiceRoutingTests(unittest.TestCase):
             # The call after the limit ends the turn, so the plugin blocks each further tool call.
             spent = wait(reason='One more', no_card=True, next_check_at='2026-11-09T14:00:00Z')
             self.assertEqual((spent['status'], spent['ended']), ('limit', True))
-            self.assertIn('Finish this turn now', spent['instruction'])
+            self.assertIn('End this turn now', spent['instruction'])
         self.assertEqual(len(calls), gateway_chat.WAIT_CALLS)
 
     def running_turn(self, task, **fields):
