@@ -99,8 +99,6 @@ struct TeamLastMessage: Decodable, Equatable, Sendable {
     var botName: String? = nil
     var text: String? = nil
     var createdAt: String? = nil
-    /// True when the message names this person. An older service sends none.
-    var mentionsMe: Bool? = nil
 
     /// A message of a bot. An older service can send the name of the bot without its ID.
     var isBot: Bool { bot != nil || botName != nil }

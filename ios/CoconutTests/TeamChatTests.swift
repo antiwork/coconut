@@ -680,10 +680,10 @@ final class TeamChatTests: XCTestCase {
 
     func testTheRowOfATeamShowsTheMarkWhileAMessageNamesThisPerson() throws {
         let json = #"{"room": "r1", "name": "Example Team", "state": "active", "unread": 2, "mentioned": true, "#
-            + #""last_message": {"first": 9, "member": "m-grace", "member_name": "Grace", "text": "Hi", "mentions_me": true}}"#
+            + #""mention_first": 8, "last_message": {"first": 9, "member": "m-grace", "member_name": "Grace", "text": "Hi"}}"#
         let room = try APIJSON.decoder().decode(TeamRoom.self, from: Data(json.utf8))
         XCTAssertTrue(room.showsMentionMark)
-        XCTAssertEqual(room.lastMessage?.mentionsMe, true)
+        XCTAssertEqual(room.mentionFirst, 8)
         XCTAssertEqual(TeamRowSpeech.label(room, preview: "Grace: Hi"),
                        "Example Team, Grace: Hi, 2 unread messages, You are named")
         XCTAssertFalse(peopleRoom(mentioned: false, unread: 2).showsMentionMark)
@@ -693,6 +693,7 @@ final class TeamChatTests: XCTestCase {
         let old = try APIJSON.decoder().decode(TeamRoom.self, from: Data(older.utf8))
         XCTAssertFalse(old.showsMentionMark, "An older service sends no mark.")
         XCTAssertNil(old.mentioned)
+        XCTAssertNil(old.mentionFirst)
     }
 
     func testTheFooterOfTheSwitchSaysWhatOffMeans() {

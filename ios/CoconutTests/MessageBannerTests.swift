@@ -86,21 +86,44 @@ final class MessageBannerTests: XCTestCase {
                        [TeamChatKey(room: "r1", member: grace)])
     }
 
-    func testAMessageThatNamesThisPersonMakesABannerAlsoWithTheSwitchOff() {
-        var named = last(2)
-        named.mentionsMe = true
-        let plan = MessageBanners.plan(before: rooms(room(notifications: false, unread: 0, last: last(1))),
-                                       after: rooms(room(notifications: false, unread: 1, last: named)))
+    /// A quiet team: the switch is off. `mention` is `mention_first` of the service, nil when no unread message names
+    /// this person.
+    private func quiet(state: String = "active", unread: Int, last: TeamLastMessage, mention: Int?) -> TeamRooms {
+        var team = room(state: state, notifications: false, unread: unread, last: last)
+        team.mentioned = mention != nil
+        team.mentionFirst = mention
+        return rooms(team)
+    }
+
+    func testAMentionAndALaterPlainMessageInOneLoadMakeOneBannerInAQuietTeam() {
+        let plan = MessageBanners.plan(before: quiet(unread: 0, last: last(1), mention: nil),
+                                       after: quiet(unread: 2, last: last(3, text: "And one more thing"), mention: 2))
         XCTAssertEqual(plan.post.map(\.chat), [TeamChatKey(room: "r1")])
-        // A message that names nobody, or another person, follows the switch.
-        var other = last(2)
-        other.mentionsMe = false
+        XCTAssertEqual(plan.post.map(\.body), ["And one more thing"], "The banner has the newest message.")
+    }
+
+    func testAPlainMessageInAQuietTeamMakesNoBanner() {
+        XCTAssertEqual(MessageBanners.plan(before: quiet(unread: 0, last: last(1), mention: nil),
+                                           after: quiet(unread: 1, last: last(2), mention: nil)).post, [])
+    }
+
+    func testAnOldMentionAndANewPlainMessageMakeNoBanner() {
+        XCTAssertEqual(MessageBanners.plan(before: quiet(unread: 1, last: last(2), mention: 2),
+                                           after: quiet(unread: 2, last: last(3), mention: 2)).post, [])
+    }
+
+    func testASecondMentionMakesABanner() {
+        let plan = MessageBanners.plan(before: quiet(unread: 1, last: last(2), mention: 2),
+                                       after: quiet(unread: 2, last: last(3), mention: 3))
+        XCTAssertEqual(plan.post.map(\.chat), [TeamChatKey(room: "r1")])
+    }
+
+    func testAMentionInATeamThatIsNotActiveOrOfAnOlderServiceMakesNoBanner() {
+        XCTAssertEqual(MessageBanners.plan(before: quiet(state: "removed", unread: 0, last: last(1), mention: nil),
+                                           after: quiet(state: "removed", unread: 1, last: last(2), mention: 2)).post, [])
+        // An older service sends neither `mentioned` nor `mention_first`.
         XCTAssertEqual(MessageBanners.plan(before: rooms(room(notifications: false, unread: 0, last: last(1))),
-                                           after: rooms(room(notifications: false, unread: 1, last: other))).post, [])
-        // A team that is not active makes no banner, also for a mention.
-        XCTAssertEqual(MessageBanners.plan(before: rooms(room(state: "removed", notifications: false, unread: 0, last: last(1))),
-                                           after: rooms(room(state: "removed", notifications: false, unread: 1,
-                                                             last: named))).post, [])
+                                           after: rooms(room(notifications: false, unread: 1, last: last(2)))).post, [])
     }
 
     func testATeamThatIsNotActiveMakesNoBanner() {

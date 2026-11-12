@@ -41,6 +41,9 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     /// True while an unread message of the Team chat names this person. An older service sends none: it does not
     /// know a mention of a person (TeamRoom.knowsPersonMentions).
     var mentioned: Bool? = nil
+    /// The `first` of the newest unread message that names this person. Nil when none does, and for an older service.
+    /// The Mac banner of a quiet team reads it (MessageBanners).
+    var mentionFirst: Int? = nil
     /// Whether a new message of the team notifies this phone. It is a choice of the person on this Mac. A Mac for a
     /// team only and an older service send none, and the Team screen then has no switch.
     var notifications: Bool? = nil
