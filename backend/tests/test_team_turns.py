@@ -365,6 +365,107 @@ class OutsideTests(TeamTurnMacs, unittest.TestCase):
         self.assertEqual([row for row in self.chat() if row[0] == 'Reporter'], [])
 
 
+class HandoffTests(unittest.TestCase):
+    """A turn of the team chat counts as taken only when the adapter that got it shows it (HANDOFF_SECONDS)."""
+
+    def setUp(self):
+        import tempfile
+        from coconut.gateway_bridge import GatewayBridge
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.bridge = GatewayBridge(self.temp.name)
+        self.home = self.temp.name
+        patcher = mock.patch('coconut.gateway_bridge.HANDOFF_SECONDS', 0.3)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def submit(self, team=True):
+        turn_id = self.bridge.submit_turn('team:r:b', self.home, 'b:team:r', 'Hello', chat_name='Example Team',
+                                          team={'member': 'm', 'member_name': 'Ada'} if team else None)
+        self.events, self.error = [], None
+
+        def follow():
+            try:
+                self.bridge.follow(turn_id, lambda kind, payload: self.events.append(kind))
+            except Exception as error:
+                self.error = error
+        self.follower = threading.Thread(target=follow, daemon=True)
+        self.follower.start()
+        return turn_id
+
+    def poll(self, active=()):
+        return self.bridge.poll({'home': self.home, 'wait': 0, 'active': list(active)})
+
+    def finish(self, turn_id):
+        self.bridge.event({'turn_id': turn_id, 'kind': 'send', 'message_id': 'a', 'text': 'Done.'})
+        self.bridge.event({'turn_id': turn_id, 'kind': 'done', 'outcome': 'success'})
+        self.follower.join(5)
+
+    def test_a_turn_that_a_stopping_gateway_dropped_goes_to_the_next_adapter_once(self):
+        turn_id = self.submit()
+        # The poll of the gateway that stops takes the turn and never comes back.
+        self.assertEqual([turn['id'] for turn in self.poll()['turns']], [turn_id])
+        time.sleep(.4)
+        # The new gateway polls without the turn: it gets it, one time.
+        self.assertEqual([turn['id'] for turn in self.poll()['turns']], [turn_id])
+        self.assertEqual(self.poll(active=[turn_id])['turns'], [])
+        time.sleep(.4)
+        self.assertEqual(self.poll(active=[turn_id])['turns'], [])
+        self.finish(turn_id)
+        self.assertEqual((self.error, self.events.count('completed')), (None, 1))
+
+    def test_a_slow_living_adapter_never_gets_the_turn_twice(self):
+        turn_id = self.submit()
+        self.assertEqual(len(self.poll()['turns']), 1)
+        time.sleep(.4)
+        # The adapter lists the turn in its next poll, late: the turn stays with it.
+        self.assertEqual(self.poll(active=[turn_id])['turns'], [])
+        time.sleep(.4)
+        # Once shown, a poll without it does not take it again, for example of a second process of the home.
+        self.assertEqual(self.poll()['turns'], [])
+        self.finish(turn_id)
+        # An event shows the turn too.
+        second = self.submit()
+        self.assertEqual(len(self.poll()['turns']), 1)
+        self.bridge.event({'turn_id': second, 'kind': 'typing'})
+        time.sleep(.4)
+        self.assertEqual(self.poll()['turns'], [])
+        self.finish(second)
+        # A poll that started before the hand-out window ended does not count: the next poll of a living adapter
+        # comes at once.
+        third = self.submit()
+        self.assertEqual(len(self.poll()['turns']), 1)
+        self.assertEqual(self.poll()['turns'], [])
+        self.finish(third)
+
+    def test_a_stop_in_the_hand_out_window_stops_and_offers_nothing(self):
+        turn_id = self.submit()
+        self.assertEqual(len(self.poll()['turns']), 1)
+        self.bridge.cancel('team:r:b')
+        self.follower.join(5)
+        time.sleep(.4)
+        answer = self.poll()
+        self.assertEqual((answer['turns'], answer['stop']), ([], ['b:team:r']))
+        self.assertNotIn(turn_id, self.bridge.turns)
+
+    def test_a_dropped_turn_that_nobody_takes_again_counts_as_not_taken(self):
+        with mock.patch('coconut.gateway_bridge.TAKE_SECONDS', 0.5):
+            self.submit()
+            self.assertEqual(len(self.poll()['turns']), 1)
+            self.follower.join(5)
+        from coconut.gateway_bridge import GatewayUnavailable
+        self.assertIsInstance(self.error, GatewayUnavailable)
+        self.assertEqual(self.events, [])
+
+    def test_a_turn_of_a_full_install_keeps_the_rule_of_before(self):
+        turn_id = self.submit(team=False)
+        self.assertEqual(len(self.poll()['turns']), 1)
+        time.sleep(.4)
+        # Without `team`, a poll without the turn takes nothing again.
+        self.assertEqual(self.poll()['turns'], [])
+        self.finish(turn_id)
+
+
 class FailureTests(TeamTurnMacs, unittest.TestCase):
     def trigger(self):
         sent = self.send('@Reporter status?', mentions=[self.mention])
@@ -401,6 +502,25 @@ class FailureTests(TeamTurnMacs, unittest.TestCase):
             self.run_turns()
         self.assertGreaterEqual(time.monotonic() - started, 2)
         self.assertEqual(self.replies()[-1], (UNAVAILABLE, second['id']))
+
+    def test_a_message_that_a_stopping_gateway_dropped_gets_its_answer_from_the_next_one(self):
+        named = self.trigger()
+        # The gateway that stops still holds a poll: it takes the turn and drops it.
+        dropped = self.only.gateway_bridge.poll({'home': str(self.home), 'wait': 5})['turns']
+        self.assertEqual(len(dropped), 0, 'No turn waits before the run.')
+        runner = self.runner()
+        deadline = time.monotonic() + 5
+        while not dropped and time.monotonic() < deadline:
+            dropped = self.only.gateway_bridge.poll({'home': str(self.home), 'wait': 1})['turns']
+        self.assertEqual(len(dropped), 1)
+        with mock.patch('coconut.gateway_bridge.HANDOFF_SECONDS', 0.5):
+            time.sleep(1)
+            # The next gateway gets it, and answers once.
+            gateway = self.serve(reply('Here after the restart.'))
+            runner.join(10)
+        self.sync()
+        self.assertEqual(self.replies(), [('Here after the restart.', named['id'])])
+        self.assertEqual(len(gateway.turns), 1)
 
     def test_a_parked_profile_gives_the_notice_at_once(self):
         named = self.trigger()

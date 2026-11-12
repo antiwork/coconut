@@ -46,6 +46,12 @@ SILENT_SECONDS = 90
 # HERMES_CRON_TIMEOUT (600 s by default), and the plugin then reports its end.
 CRON_SILENT_SECONDS = 3 * 3600
 ADAPTER_SECONDS = 60
+# A turn of the team chat counts as taken only when the adapter that got it shows that it has it: an event of the
+# turn, or a later poll that lists it in `active`. A living adapter does both at once: it lists a turn that it took in
+# its next poll, which it sends as soon as it gave the turns to Hermes. A gateway that stops can still hold a poll for
+# some seconds and take a turn that it drops. So a poll of the same home that starts this long after the hand-out and
+# does not list the turn takes it again, and a turn that nobody shows for TAKE_SECONDS counts as not taken.
+HANDOFF_SECONDS = 5
 MAX_TEXT = 200_000
 # `delta` stays known: a gateway that still runs the plugin of an earlier version sends partial text for each turn.
 # The bridge drops it (event), so the turn goes on with its complete sends. Remove `delta` when no install has that plugin.
@@ -152,6 +158,9 @@ class _Turn:
         self.context_id = None
         # The monotonic time at which a turn of the team chat stops (team_turns.TURN_SECONDS), or None.
         self.deadline = None
+        # A turn of the team chat (team_turns.py), the time of its last hand-out to a poll, and whether the adapter
+        # showed that it has it (HANDOFF_SECONDS).
+        self.team, self.taken, self.shown = False, 0.0, False
 
 
 class GatewayBridge:
@@ -197,7 +206,8 @@ class GatewayBridge:
         home = os.path.realpath(home)
         active = {value for value in data.get('active') or [] if isinstance(value, str)}
         wait = max(0.0, min(float(data.get('wait', POLL_SECONDS)), POLL_SECONDS))
-        deadline = time.monotonic() + wait
+        started = time.monotonic()
+        deadline = started + wait
         with self.lock:
             while True:
                 current = time.monotonic()
@@ -205,7 +215,12 @@ class GatewayBridge:
                 mine = [turn for turn in self.turns.values() if turn.home == home]
                 for turn in mine:
                     if turn.id in active:
-                        turn.seen = current
+                        turn.seen, turn.shown = current, True
+                    elif (turn.team and turn.state == 'active' and not turn.shown
+                          and turn.taken + HANDOFF_SECONDS < started):
+                        # The adapter that got this turn did not show it, and an adapter of the home polls without
+                        # it: nothing of the turn ran, so this poll takes it again.
+                        turn.state, turn.created = 'pending', current
                 offered = [turn for turn in mine if turn.state == 'pending']
                 stopping = [turn for turn in mine if turn.state == 'stopping']
                 if offered or stopping or self.answers.get(home) or self.closed or current >= deadline:
@@ -213,6 +228,7 @@ class GatewayBridge:
                 self.lock.wait(deadline - current)
             for turn in offered:
                 turn.state, turn.seen = 'active', time.monotonic()
+                turn.taken, turn.shown = turn.seen, False
             for turn in stopping:
                 self.turns.pop(turn.id, None)
             answers = self.answers.pop(home, [])
@@ -235,7 +251,7 @@ class GatewayBridge:
             if turn is None or turn.state != 'active':
                 # A cancelled or finished turn. The gateway may still send its last messages.
                 return {'ok': False}
-            turn.seen = time.monotonic()
+            turn.seen, turn.shown = time.monotonic(), True
             if kind == 'delta':
                 return {'ok': True}
             turn.events.append({key: data[key] for key in ('kind', 'text', 'message_id', 'interim', 'outcome',
@@ -319,6 +335,7 @@ class GatewayBridge:
             turn.request['records'] = records
         if team is not None:
             turn.request['team'] = team
+            turn.team = True
         turn.deadline = deadline
         turn.silent, turn.commentary = silent, commentary
         if context_id:
@@ -356,6 +373,9 @@ class GatewayBridge:
                             raise GatewayUnavailable('No Hermes gateway took this turn.')
                         if turn.state == 'active' and current - turn.seen > turn.silent_seconds:
                             raise RuntimeError('The Hermes gateway stopped answering during this turn.')
+                        if turn.team and turn.state == 'active' and not turn.shown and current - turn.taken > TAKE_SECONDS:
+                            # A living adapter shows a turn at once. One that never does dropped it, so nothing ran.
+                            raise GatewayUnavailable('No Hermes gateway kept this turn.')
                         self.lock.wait(1)
                     if turn.state in ('cancelled', 'stopping'):
                         return

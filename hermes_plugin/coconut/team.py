@@ -71,6 +71,11 @@ class TeamAdapter(CoconutAdapter):
         # The source of each running turn: its member is the user of its session key, when Hermes keeps a session for
         # each member of a group (group_sessions_per_user). A `/stop` with that source finds that session.
         self._sources: dict[str, object] = {}
+        # The turns that this adapter gave to Hermes and that did not end. The service gives a turn again only when
+        # no adapter showed it (gateway_bridge.HANDOFF_SECONDS), so this guard against a second run never acts on a
+        # living adapter: it keeps the rule "at most once" also if the service is wrong. (The base adapter of Hermes
+        # has its own `_running`, so the name is of this adapter.)
+        self._team_runs: set[str] = set()
 
     def _event(self, turn: dict) -> MessageEvent:
         try:
@@ -100,6 +105,14 @@ class TeamAdapter(CoconutAdapter):
     async def disconnect(self) -> None:
         await super().disconnect()
 
+    async def handle_message(self, event: MessageEvent) -> None:
+        if event.message_type is MessageType.TEXT and event.message_id in self._team_runs:
+            LOG.warning('Coconut: the team chat got a turn again that runs already. It runs once.')
+            return
+        if event.message_type is MessageType.TEXT:
+            self._team_runs.add(event.message_id)
+        await super().handle_message(event)
+
     @guarded()
     async def _stop(self, chat_id: str) -> None:
         """Stop the running turn of a chat, as `/stop` does, with the source of that turn: the session key of Hermes
@@ -125,6 +138,7 @@ class TeamAdapter(CoconutAdapter):
             del self._turns[event.source.chat_id]
         self._typing.discard(event.message_id)
         self._sources.pop(event.message_id, None)
+        self._team_runs.discard(event.message_id)
         for delay in (*RETRY_SECONDS, None):
             if await self._report(event.message_id, 'done', outcome=getattr(outcome, 'value', str(outcome))):
                 break

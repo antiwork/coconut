@@ -109,28 +109,38 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         self.sync()
         self.only.start()
         self.log = Path(self.temp.name) / 'gateway.log'
+        self.gateway = self.start_gateway()
+        self.room = room
+        self.mention = self.call('GET', '/v1/team/rooms', service=self.first)['rooms'][0]['bots'][0]['id']
+        return room, bot
+
+    def start_gateway(self):
+        """Start `hermes gateway run` for the home, as the operator does, and wait until its adapter polls."""
         with open(self.log, 'ab') as output:
             gateway = subprocess.Popen([PYTHON, '-c', LAUNCH, SOURCE, 'gateway', 'run'], cwd=self.temp.name,
                                        env=self.environment, stdin=subprocess.DEVNULL, stdout=output,
                                        stderr=subprocess.STDOUT, start_new_session=True)
-
-        def stop_gateway():
-            if gateway.poll() is None:
-                os.killpg(gateway.pid, signal.SIGTERM)
-                try:
-                    gateway.wait(30)
-                except subprocess.TimeoutExpired:
-                    os.killpg(gateway.pid, signal.SIGKILL)
-                    gateway.wait(5)
-        self.addCleanup(stop_gateway)
-        deadline = time.monotonic() + 180
-        while not self.only.gateway_bridge.connected(self.hermes_home) and time.monotonic() < deadline:
+        self.addCleanup(self.stop_gateway, gateway)
+        started = time.monotonic()
+        deadline = started + 180
+        while time.monotonic() < deadline:
             self.assertIsNone(gateway.poll(), self.diagnostics())
+            with self.only.gateway_bridge.lock:
+                last = self.only.gateway_bridge.adapters.get(os.path.realpath(self.hermes_home))
+            if last is not None and last > started:
+                return gateway
             time.sleep(.5)
-        self.assertTrue(self.only.gateway_bridge.connected(self.hermes_home), self.diagnostics())
-        self.room = room
-        self.mention = self.call('GET', '/v1/team/rooms', service=self.first)['rooms'][0]['bots'][0]['id']
-        return room, bot
+        self.fail(self.diagnostics())
+
+    @staticmethod
+    def stop_gateway(gateway):
+        if gateway.poll() is None:
+            os.killpg(gateway.pid, signal.SIGTERM)
+            try:
+                gateway.wait(30)
+            except subprocess.TimeoutExpired:
+                os.killpg(gateway.pid, signal.SIGKILL)
+                gateway.wait(5)
 
     def diagnostics(self):
         parts = [f'Model requests: {len(Model.requests)}', 'gateway.log:', self.log.read_text(errors='replace')[-4000:]]
@@ -179,6 +189,22 @@ class NativeTeamChatTests(AsThePerson, TeamOnlyMacs, unittest.TestCase):
         self.assertEqual(len(self.bot_messages()), 2)
         self.assertEqual(len(Model.requests), calls, 'A message that names nobody starts no turn.')
         self.assertNotIn('Traceback', self.log.read_text(errors='replace'))
+
+    def test_a_message_during_a_restart_of_the_gateway_gets_its_answer(self):
+        from coconut import team_turns
+        self.start_chat()
+        for number in range(2):
+            with self.subTest(restart=number):
+                # The operator stops the gateway. A member names the bot at once, while the old process can still hold
+                # its poll. Then the operator starts the gateway again.
+                os.killpg(self.gateway.pid, signal.SIGTERM)
+                named = self.send(f'@Reporter are you back {number}?', mentions=[self.mention])
+                self.gateway.wait(60)
+                self.gateway = self.start_gateway()
+                answer = self.wait_until(lambda: [row for row in self.bot_messages() if row['reply_to'] == named['id']],
+                                         seconds=110)
+                self.assertEqual([row['text'] for row in answer], [FIRST], self.diagnostics())
+                self.assertNotIn(team_turns.UNFINISHED, [row['text'] for row in self.bot_messages()])
 
     def stop_in_the_tool(self, stop):
         """Start a turn whose model runs a slow command, call `stop` while the command runs, and check that Hermes

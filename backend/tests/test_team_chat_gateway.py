@@ -229,6 +229,23 @@ class TeamAdapterTests(TeamTurnMacs, unittest.TestCase):
         replies = [(text, to) for writer, text, to in self.chat() if writer == 'Reporter']
         self.assertEqual(replies, [('Which build?\n- Debug\n- Release', named['id']), ('I asked in the chat.', None)])
 
+    def test_a_turn_that_comes_again_runs_once(self):
+        runs = []
+
+        async def runner(event):
+            runs.append(event.message_id)
+            await asyncio.sleep(.3)
+            return None
+        self.connect(runner)
+        turn = {'id': 'turn-1', 'chat_id': 'b:team:r', 'chat_name': 'Example Team', 'text': 'Hello',
+                'team': {'member': 'm', 'member_name': 'Ada'}}
+        event = self.adapter._event(turn)
+        with self.assertLogs('hermes_plugins.coconut', 'WARNING'):
+            self.complete(self.adapter.handle_message(event))
+            self.complete(self.adapter.handle_message(self.adapter._event(turn)))
+            time.sleep(.6)
+        self.assertEqual(runs, ['turn-1'])
+
     def test_a_fault_in_an_entry_point_stays_in_the_adapter(self):
         async def runner(event):
             return None
