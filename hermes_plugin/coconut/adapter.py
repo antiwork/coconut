@@ -58,6 +58,9 @@ WAITED: set[str] = set()
 # The reply that ends a turn of PAUSED or WAITED when the model writes no text (hooks.end_turn_text). The chat does not
 # show it (ends_quietly).
 END_TEXT = 'This turn is complete.'
+# The turns whose empty reply got END_TEXT from the plugin. A model that writes the same words itself is not in this set,
+# and the chat shows its reply.
+CLOSED: set[str] = set()
 MODES: dict[str, str] = {}
 # The context of each running Coconut turn: the whole turn text, which the model calls of the turn get, while Hermes
 # saves only the turn's own text (hooks.add_turn_context). Set when the hooks registered the middleware.
@@ -114,9 +117,9 @@ def turn_for_chat(chat_id):
 
 
 def ends_quietly(turn, text) -> bool:
-    """Whether a send is END_TEXT of a turn that a card, a wait or a check ended. The chat does not show it: after a
-    card, the card is the message, and after a wait or a check, the turn has nothing new to say."""
-    return (turn in PAUSED or turn in WAITED) and str(text or '').strip() == END_TEXT
+    """Whether a send is the END_TEXT that the plugin gave an empty reply of the turn (CLOSED). The chat does not show
+    it: after a card, the card is the message, and after a wait or a check, the turn has nothing new to say."""
+    return turn in CLOSED and str(text or '').strip() == END_TEXT
 
 
 
@@ -380,6 +383,7 @@ class CoconutAdapter(BasePlatformAdapter):
             del self._turns[event.source.chat_id]
         PAUSED.discard(turn)
         WAITED.discard(turn)
+        CLOSED.discard(turn)
         self._typing.discard(turn)
         for delay in (*RETRY_SECONDS, None):
             if await self._report(turn, 'done', outcome=getattr(outcome, 'value', str(outcome))):
@@ -408,6 +412,7 @@ class CoconutAdapter(BasePlatformAdapter):
         self._typing.discard(event.message_id)
         PAUSED.discard(event.message_id)
         WAITED.discard(event.message_id)
+        CLOSED.discard(event.message_id)
         MODES.pop(event.message_id, None)
         CONTEXTS.pop(event.message_id, None)
         FOLDERS.pop(event.message_id, None)

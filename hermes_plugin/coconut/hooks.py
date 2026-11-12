@@ -265,7 +265,7 @@ def end_turn_text(request=None, next_call=None, api_mode='', **_):
     does not show END_TEXT (adapter.ends_quietly). A reply with text or with a tool call stays as it is. Every other
     model call goes through unchanged."""
     response = next_call(request)
-    from .adapter import PAUSED, WAITED
+    from .adapter import CLOSED, PAUSED, WAITED
     _holder, turn = _turn()
     if turn is None or (turn not in PAUSED and turn not in WAITED):
         return response
@@ -276,6 +276,8 @@ def end_turn_text(request=None, next_call=None, api_mode='', **_):
         return response
     if closed is None:
         return response
+    # The chat leaves out only this closing text, not the same words from the model (adapter.ends_quietly).
+    CLOSED.add(turn)
     LOG.info('Coconut: the model wrote no text after the end of turn %s. The turn ends with its closing text.', turn)
     return closed
 

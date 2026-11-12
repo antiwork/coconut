@@ -791,6 +791,32 @@ class GatewayAdapterTests(unittest.TestCase):
         self.assertEqual(self.replies(task), [])
         self.assertEqual(self.read('tasks', task['id'])['status'], 'completed')
 
+    def test_a_reply_of_the_model_with_the_words_of_the_closing_text_reaches_the_chat(self):
+        # The chat leaves out only the closing text that the plugin gave an empty reply. After a recorded wait, a model
+        # that writes the same words itself gets its reply shown.
+        tools = sys.modules['hermes_plugins.coconut.tools']
+        END_TEXT = self.adapter_module.END_TEXT
+        self.assertFalse(self.adapter_module.ends_quietly('turn', END_TEXT))
+        with patch.object(self.adapter_module, 'CLOSED', {'turn'}):
+            self.assertTrue(self.adapter_module.ends_quietly('turn', ' ' + END_TEXT + '\n'))
+            self.assertFalse(self.adapter_module.ends_quietly('turn', 'The wait is recorded.'))
+
+        async def runner(event):
+            def tool_calls():
+                token = self.session(event.source.chat_id)
+                try:
+                    tools._service_tool('wait')({'no_card': True, 'reason': 'Nothing.'})
+                    return END_TEXT
+                finally:
+                    from gateway.session_context import SESSION
+                    SESSION.reset(token)
+            return await asyncio.to_thread(tool_calls)
+        self.connect(runner)
+        task = self.write('POST', f'/v1/bots/{self.bot["id"]}/messages', {'text': 'Check the source.'})
+        with patch.object(self.service, 'wait_for_task', return_value={'status': 'recorded'}):
+            self.service._run_task(task['id'])
+        self.assertEqual(self.replies(task), [(END_TEXT, False)])
+
     def test_the_coconut_tools_act_for_the_turn_of_the_chat_and_a_card_ends_the_turn(self):
         tools = sys.modules['hermes_plugins.coconut.tools']
         hooks = sys.modules['hermes_plugins.coconut.hooks']
