@@ -1682,6 +1682,20 @@ final class AppStore {
         return true
     }
 
+    /// Turns the notifications of a team on or off for the phones of this Mac. Return whether the Mac did it. The list
+    /// then loads again, so a later write of the same room keeps the order of the Mac.
+    func setTeamNotifications(_ room: String, enabled: Bool) async -> Bool {
+        let ticket = startTeamWrite(room)
+        let answer: TeamNotificationsAnswer? = await write("team/rooms/\(room)/notifications", method: "PUT",
+                                                           payload: TeamNotificationsRequest(enabled: enabled),
+                                                           as: TeamNotificationsAnswer.self, refreshInBackground: true)
+        guard let answer else { return false }
+        var changed = team?.rooms.first { $0.room == room }
+        changed?.notifications = answer.notifications
+        applyTeamChange(room: changed, write: ticket)
+        return true
+    }
+
     /// Shares a page of this Mac with a team, or stops (backend/coconut/team_pages.py). Return whether the Mac did it.
     ///
     /// The person can tap again before the Mac answers, and the answers can come in another order. So each act on a page
@@ -2643,6 +2657,7 @@ final class AppStore {
 
     func notificationDestination(_ target: NotificationTarget) async -> NotificationDestination? {
         guard acceptsNotification(target) else { return nil }
+        if let room = target.team { return await teamNotificationDestination(room) }
         if target.group { return .inboxList }
         if target.decisionId == nil { return .conversation(target.conversationRoute) }
         // Without the Mac, the phone opens the card that it has, or the chat. Waiting would keep the Inbox busy
@@ -2680,6 +2695,14 @@ final class AppStore {
             guard self.client === client, acceptsNotification(target) else { return nil }
             return offline()
         }
+    }
+
+    /// The chat of the team of a notification, or the Chats list when the app no longer has the team, for example
+    /// after a leave. The app reads the list of the teams first, because a terminated app has none. A list that the
+    /// app cannot read keeps the chat, as a list that it has not loaded keeps each chat (`teamListHas`).
+    func teamNotificationDestination(_ room: String) async -> NotificationDestination {
+        if team?.rooms.contains(where: { $0.room == room }) != true { await loadTeam() }
+        return teamListHas(room) ? .team(room) : .chatList
     }
 
     func acceptsNotification(_ target: NotificationTarget) -> Bool {
@@ -2799,6 +2822,8 @@ private struct PinRequest: Encodable { let pinned: Bool }
 private struct TeamCreateRequest: Encodable { let name: String; let memberName: String }
 private struct TeamJoinBody: Encodable { let link: String; let memberName: String }
 private struct TeamProfileRequest: Encodable { let memberName: String }
+private struct TeamNotificationsRequest: Encodable { let enabled: Bool }
+private struct TeamNotificationsAnswer: Decodable, Sendable { let room: String; let notifications: Bool }
 /// The answer of a share or a stop of a page: the document with its teams.
 private struct PageShareAnswer: Decodable, Sendable { let document: BotDocument }
 /// A nil `mentions` is not in the JSON: a message without a mention sends none.

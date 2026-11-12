@@ -31,6 +31,9 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     /// The unread count of the Team chat, 0 to 99. An older service has no chat and sends none.
     var unread: Int? = nil
     var lastMessage: TeamLastMessage? = nil
+    /// Whether a new message of the team notifies this phone. It is a choice of the person on this Mac. A Mac for a
+    /// team only and an older service send none, and the Team screen then has no switch.
+    var notifications: Bool? = nil
 
     var id: String { room }
 

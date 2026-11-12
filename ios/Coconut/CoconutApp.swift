@@ -243,6 +243,13 @@ struct CoconutHome: View {
             PushNotifications.shared.target = nil
             return
         }
+        if target.team != nil {
+            // The app checks that it still has the team, so a team that the person left opens the Chats list.
+            PushNotifications.shared.target = nil
+            previewedNotification = nil
+            Task { if let destination = await store.notificationDestination(target) { showNotification(destination) } }
+            return
+        }
         if target.group || target.decisionId == nil {
             PushNotifications.shared.target = nil
             previewedNotification = nil
@@ -283,6 +290,15 @@ struct CoconutHome: View {
             selectedTab = .bots
             botsPath = NavigationPath()
             botsPath.append(route)
+        case .team(let room):
+            notificationDecisionId = nil
+            selectedTab = .bots
+            botsPath = NavigationPath()
+            botsPath.append(TeamChatRoute(roomId: room))
+        case .chatList:
+            notificationDecisionId = nil
+            selectedTab = .bots
+            botsPath = NavigationPath()
         }
     }
 

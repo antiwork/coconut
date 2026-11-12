@@ -38,6 +38,58 @@ final class NotificationTargetTests: XCTestCase {
         XCTAssertFalse(AppStore(demo: true).acceptsNotification(target))
     }
 
+    private let room = String(repeating: "ab", count: 32)
+
+    func testATeamMessageOpensTheChatOfItsTeam() throws {
+        let target = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": device, "kind": "team", "team": room]]))
+        XCTAssertEqual(target.deviceId, device)
+        XCTAssertEqual(target.team, room)
+        XCTAssertFalse(target.group)
+        XCTAssertEqual(target.destination(pendingDecisionIds: [], snapshotReady: false), .team(room))
+    }
+
+    func testAGroupOfOneTeamOpensItsChatAndEachOtherGroupOpensInbox() throws {
+        let team = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": device, "kind": "group", "count": 3, "team": room]]))
+        XCTAssertTrue(team.group)
+        XCTAssertEqual(team.destination(pendingDecisionIds: [], snapshotReady: false), .team(room))
+        // A mixed group names no team. Its fields for older apps name the first card.
+        let mixed = try XCTUnwrap(NotificationTarget(userInfo: ["coconut": [
+            "version": 1, "device_id": device, "kind": "group", "count": 2, "bot_id": bot, "task_id": task,
+            "decision_id": decision, "message_id": NSNull()]]))
+        XCTAssertNil(mixed.team)
+        XCTAssertEqual(mixed.destination(pendingDecisionIds: [decision], snapshotReady: true), .inboxList)
+    }
+
+    func testATeamTargetNeedsTheIDOfARoom() {
+        for value in ["", "AB" + room.dropFirst(2), String(room.dropLast()), room + "a", "https://example.com"] {
+            for kind in ["team", "group"] {
+                XCTAssertNil(NotificationTarget(userInfo: ["coconut": [
+                    "version": 1, "device_id": device, "kind": kind, "team": value]]), "\(kind) \(value)")
+            }
+        }
+        XCTAssertNil(NotificationTarget(userInfo: ["coconut": ["version": 1, "device_id": device, "kind": "team"]]))
+    }
+
+    /// An app before team notifications reads a target only with a `bot_id` and a `task_id`, or as a group. The Mac
+    /// sends neither for one team message, so that app opens and stays where it was: the rule of the code above the
+    /// check of `kind == "team"`, which this payload without `kind` follows.
+    func testATeamMessageWithoutItsKindIsNoTarget() {
+        XCTAssertNil(NotificationTarget(userInfo: ["coconut": ["version": 1, "device_id": device, "team": room]]))
+    }
+
+    @MainActor
+    func testATeamThatTheAppNoLongerHasOpensTheChatsList() async throws {
+        let store = AppStore(demo: true)
+        store.team = TeamRooms(rooms: [TeamRoom(room: room, name: "Example Team", state: "active")], helper: true)
+        let known = await store.teamNotificationDestination(room)
+        XCTAssertEqual(known, .team(room))
+        let other = String(repeating: "cd", count: 32)
+        let unknown = await store.teamNotificationDestination(other)
+        XCTAssertEqual(unknown, .chatList)
+    }
+
     private func payload(decisionID: String? = nil) -> [AnyHashable: Any] {
         var data: [String: Any] = ["version": 1, "device_id": device, "bot_id": bot, "task_id": task]
         if let decisionID { data["decision_id"] = decisionID }

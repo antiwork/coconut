@@ -157,6 +157,10 @@ struct TeamRoomView: View {
     @State private var busy = false
     @State private var inviting = false
     @State private var joining = false
+    /// The state of the switch while its request runs, with the number of that request. Without it, the switch shows
+    /// the state of the Mac.
+    @State private var notificationChoice: (enabled: Bool, request: Int)?
+    @State private var notificationRequests = 0
 
     private var room: TeamRoom? { store.team?.rooms.first { $0.room == roomId } }
 
@@ -208,6 +212,15 @@ struct TeamRoomView: View {
                 } footer: {
                     if let line = TeamBotSection.footer(for: botRows) { Text(line) }
                 }
+            }
+            // An older service and a Mac for a team only send no `notifications`, so the screen has no switch.
+            if let enabled = room.notifications {
+                Section {
+                    Toggle("Notifications", isOn: Binding(get: { notificationChoice?.enabled ?? enabled },
+                                                          set: { setNotifications($0, in: room) }))
+                        .tint(BoardStyle.green)
+                        .accessibilityIdentifier("team-notifications")
+                } footer: { Text("Get notified when someone writes in this team.") }
             }
             if room.showsInvite {
                 Section {
@@ -284,6 +297,19 @@ struct TeamRoomView: View {
     }
 
     @ScaledMetric(relativeTo: .body) private var avatarSize = 32.0
+
+    /// Saves the switch at once. It shows the new state while the Mac answers. A failure puts it back, and the banner
+    /// of the screen shows the error. Only the latest tap decides what the switch shows.
+    private func setNotifications(_ enabled: Bool, in room: TeamRoom) {
+        notificationRequests += 1
+        let request = notificationRequests
+        notificationChoice = (enabled, request)
+        store.error = nil
+        Task {
+            _ = await store.setTeamNotifications(room.room, enabled: enabled)
+            if notificationChoice?.request == request { notificationChoice = nil }
+        }
+    }
 
     /// One action at a time. The form stays disabled until the Mac answers.
     private func run(_ action: @escaping () async -> Bool) {

@@ -385,6 +385,10 @@ enum NotificationDestination: Equatable {
     /// A group notification opens the Inbox list.
     case inboxList
     case conversation(ConversationRoute)
+    /// The chat of a team, by its room ID.
+    case team(String)
+    /// The Chats list: a team notification of a team that the app no longer has.
+    case chatList
 }
 
 struct NotificationTarget: Equatable, Sendable {
@@ -395,10 +399,13 @@ struct NotificationTarget: Equatable, Sendable {
     let messageId: String?
     /// A group counts several items and names none of them.
     var group = false
+    /// The room ID of a team message, or of a group of the messages of one team.
+    var team: String? = nil
 
     var conversationRoute: ConversationRoute { ConversationRoute(botId: botId, decisionId: decisionId, messageId: messageId) }
 
     func destination(pendingDecisionIds: Set<String>, snapshotReady: Bool) -> NotificationDestination? {
+        if let team { return .team(team) }
         if group { return .inboxList }
         if let decisionId {
             guard snapshotReady else { return nil }
@@ -412,8 +419,16 @@ struct NotificationTarget: Equatable, Sendable {
         guard userInfo["coconut_encrypted"] == nil || decoded != nil else { return nil }
         guard let data = (decoded?["coconut"] ?? userInfo["coconut"]) as? [String: Any], data["version"] as? Int == 1,
               let device = data["device_id"] as? String, UUID(uuidString: device) != nil else { return nil }
+        // A team message names its room. A group of one team names it too, and each other group names none.
+        let room = data["team"] as? String
+        guard room == nil || Self.isRoom(room!) else { return nil }
         if data["kind"] as? String == "group" {
-            deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; group = true
+            deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; group = true; team = room
+            return
+        }
+        if data["kind"] as? String == "team" {
+            guard let room else { return nil }
+            deviceId = device; botId = ""; taskId = ""; decisionId = nil; messageId = nil; team = room
             return
         }
         guard let bot = data["bot_id"] as? String, UUID(uuidString: bot) != nil,
@@ -423,6 +438,11 @@ struct NotificationTarget: Equatable, Sendable {
         let message = data["message_id"] as? String
         guard message == nil || UUID(uuidString: message!) != nil else { return nil }
         deviceId = device; botId = bot; taskId = task; decisionId = decision; messageId = message
+    }
+
+    /// A room ID of a team: 64 lowercase hex characters (team_keys.ROOM_ID on the Mac).
+    private static func isRoom(_ text: String) -> Bool {
+        text.utf8.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
 }
 
