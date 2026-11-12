@@ -421,6 +421,111 @@ enum TeamChatPreview {
         if direct { return body }
         return (last.writerName ?? TeamNames.formerMember) + ": " + body
     }
+
+    /// The second line of the row of a team at `date`: who types, in place of the newest message, as a bot row shows a
+    /// working phase. Nil for a Mac with an older service, which has no chat.
+    static func line(_ room: TeamRoom, at date: Date) -> Line? {
+        guard room.hasChat else { return nil }
+        if let typing = TeamTypingText.text(room.typingNow(at: date)) { return Line(text: typing, typing: true) }
+        return Line(text: text(room.lastMessage), typing: false)
+    }
+
+    struct Line: Equatable {
+        let text: String
+        let typing: Bool
+    }
+}
+
+/// One person or one bot that types in the Team chat now, from `typing` of the list of the teams (docs/team-log.md,
+/// "Typing"). `bot` is the `t-<room>-<entry>` ID of a team bot, and nil for a person. `seconds` is the time that was
+/// left when the Mac sent the list.
+struct TeamTyping: Decodable, Identifiable, Equatable, Sendable {
+    var member: String
+    var name: String? = nil
+    var bot: String? = nil
+    var botName: String? = nil
+    var seconds: Double
+
+    var id: String { bot ?? member }
+
+    /// The name that the row shows: the bot for a bot, else the person.
+    var shownName: String {
+        if bot != nil { return botName ?? "Bot" }
+        return name ?? TeamNames.formerMember
+    }
+}
+
+/// `typing` of a room, and the time when the app got it. Each subject ends `seconds` after that time, so the app hides
+/// it without a request. One item that the app cannot read drops only that item.
+struct TeamTypingList: Decodable, Equatable, Sendable {
+    var items: [TeamTyping]
+    var received: Date
+
+    init(items: [TeamTyping], received: Date = .now) {
+        self.items = items
+        self.received = received
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        items = (try? container.decode([Lossy<TeamTyping>].self))?.compactMap(\.value) ?? []
+        received = .now
+    }
+
+    /// Two empty lists are the same, also from two reads. A list with a subject has its own ends.
+    static func == (lhs: TeamTypingList, rhs: TeamTypingList) -> Bool {
+        lhs.items == rhs.items && (lhs.items.isEmpty || lhs.received == rhs.received)
+    }
+
+    /// The subjects that still type at `date`, in the order of the Mac: the earliest start first.
+    func active(at date: Date) -> [TeamTyping] {
+        items.filter { received.addingTimeInterval($0.seconds) > date }
+    }
+
+    /// The time when each subject ends, the earliest first. The views look again at these times.
+    var ends: [Date] {
+        Set(items.map { received.addingTimeInterval($0.seconds) }).sorted()
+    }
+}
+
+extension TeamRoom {
+    /// Who types in the Team chat at `date`. A team that is not active shows nobody.
+    func typingNow(at date: Date) -> [TeamTyping] {
+        status == .active ? typing?.active(at: date) ?? [] : []
+    }
+}
+
+/// The text of who types (docs/team-log.md, "Typing"): one name, two names, or the count for three or more. A bot is one
+/// subject with its name.
+enum TeamTypingText {
+    static func text(_ subjects: [TeamTyping]) -> String? {
+        let names = subjects.map(\.shownName)
+        switch names.count {
+        case 0: return nil
+        case 1: return names[0] + " is typing"
+        case 2: return names[0] + " and " + names[1] + " are typing"
+        default: return "\(names.count) people are typing"
+        }
+    }
+}
+
+/// When the composer of the Team chat tells the Mac that the person types: while the person changes a draft that is
+/// not empty, at most one time in `interval` seconds. The Mac writes at most one entry in 4 seconds.
+struct TeamTypingPace: Equatable, Sendable {
+    static let interval: TimeInterval = 5
+    private(set) var last: Date?
+
+    /// True when the app calls the Mac now for this draft. The call then counts for the pace.
+    mutating func take(draft: String, at date: Date) -> Bool {
+        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        if let last, date.timeIntervalSince(last) < Self.interval { return false }
+        last = date
+        return true
+    }
+}
+
+struct TeamTypingAnswer: Decodable, Sendable {
+    var room: String
 }
 
 /// One row of the Chats list: a bot, a team, or a direct chat with one person of a team.

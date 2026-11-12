@@ -603,4 +603,97 @@ final class TeamChatTests: XCTestCase {
         XCTAssertEqual(room.botList.map(\.isOpen), [true, false, false], "A missing mark is false.")
         XCTAssertEqual(TeamMentions.bots(of: room).map(\.name), ["Planner"])
     }
+
+    // MARK: Typing
+
+    private func typing(_ name: String, bot: String? = nil, seconds: Double = 10) -> TeamTyping {
+        TeamTyping(member: "m-" + name.lowercased(), name: bot == nil ? name : "Reporter Mac", bot: bot,
+                   botName: bot == nil ? nil : name, seconds: seconds)
+    }
+
+    /// The answer of GET /v1/team/rooms with `typing` (backend/coconut/team_typing.py). An item that the app cannot read
+    /// drops only that item, a value that is no list gives an empty list, and an older service sends none.
+    func testTheListOfWhoTypesDecodes() throws {
+        let json = #"{"rooms": [{"room": "r1", "name": "Example Team", "state": "active", "unread": 0, "typing": ["#
+            + #"{"member": "m-grace", "name": "Grace", "bot": null, "bot_name": null, "seconds": 10},"#
+            + #" {"member": "m-mac", "name": "Reporter Mac", "bot": "t-r1-b1", "bot_name": "Reporter", "seconds": 30},"#
+            + #" {"member": 7}]}, {"room": "r2", "name": "Old", "state": "active", "typing": "x"},"#
+            + #" {"room": "r3", "name": "Older", "state": "active"}]}"#
+        let rooms = try APIJSON.decoder().decode(TeamRooms.self, from: Data(json.utf8)).rooms
+        XCTAssertEqual(rooms[0].typing?.items.map(\.shownName), ["Grace", "Reporter"])
+        XCTAssertEqual(rooms[0].typing?.items.map(\.seconds), [10, 30])
+        XCTAssertEqual(rooms[1].typing?.items, [])
+        XCTAssertNil(rooms[2].typing)
+        XCTAssertEqual(rooms[2].typingNow(at: .now), [])
+        let page = #"{"after": 4, "cursor": 5, "server_time": "2026-11-09T00:00:00Z", "team_typing_changed": ["r1"]}"#
+        XCTAssertEqual(try APIJSON.decoder().decode(StateUpdates.self, from: Data(page.utf8)).teamTypingChanged, ["r1"])
+    }
+
+    func testTheTextOfWhoTypes() {
+        XCTAssertNil(TeamTypingText.text([]))
+        XCTAssertEqual(TeamTypingText.text([typing("Grace")]), "Grace is typing")
+        XCTAssertEqual(TeamTypingText.text([typing("Grace"), typing("Lin")]), "Grace and Lin are typing")
+        XCTAssertEqual(TeamTypingText.text([typing("Grace"), typing("Lin"), typing("Noor")]), "3 people are typing")
+        // A bot is one subject with its name.
+        XCTAssertEqual(TeamTypingText.text([typing("Reporter", bot: "t-r1-b1")]), "Reporter is typing")
+        XCTAssertEqual(TeamTypingText.text([typing("Grace"), typing("Reporter", bot: "t-r1-b1")]),
+                       "Grace and Reporter are typing")
+        XCTAssertEqual(TeamTypingText.text([typing("Grace"), typing("Lin"), typing("Reporter", bot: "t-r1-b1"),
+                                            typing("Noor")]), "4 people are typing")
+        // A subject without a name.
+        XCTAssertEqual(TeamTypingText.text([TeamTyping(member: "m-x", seconds: 10)]), "Former member is typing")
+        XCTAssertEqual(TeamTypingText.text([TeamTyping(member: "m-x", bot: "t-r1-b9", seconds: 30)]), "Bot is typing")
+    }
+
+    /// Each subject ends `seconds` after the list came, without a request. A team that is not active shows nobody.
+    func testWhoTypesEndsByTheSecondsOfEachSubject() {
+        let received = Date(timeIntervalSince1970: 1_000)
+        let list = TeamTypingList(items: [typing("Grace", seconds: 3), typing("Reporter", bot: "t-r1-b1", seconds: 30)],
+                                  received: received)
+        XCTAssertEqual(list.active(at: received).map(\.shownName), ["Grace", "Reporter"])
+        XCTAssertEqual(list.active(at: received.addingTimeInterval(2.9)).count, 2)
+        XCTAssertEqual(list.active(at: received.addingTimeInterval(3)).map(\.shownName), ["Reporter"])
+        XCTAssertEqual(list.active(at: received.addingTimeInterval(30)), [])
+        XCTAssertEqual(list.ends, [received.addingTimeInterval(3), received.addingTimeInterval(30)])
+        var room = TeamRoom(room: "r1", name: "Example Team", state: "active", unread: 0, typing: list)
+        XCTAssertEqual(room.typingNow(at: received).count, 2)
+        room.state = "removed"
+        XCTAssertEqual(room.typingNow(at: received), [])
+        // Two empty lists are the same, so a list without a subject does not draw the Chats list again. A list with a
+        // subject has its own ends.
+        XCTAssertEqual(TeamTypingList(items: [], received: received), TeamTypingList(items: [], received: .now))
+        XCTAssertNotEqual(TeamTypingList(items: [typing("Grace")], received: received),
+                          TeamTypingList(items: [typing("Grace")], received: received.addingTimeInterval(4)))
+    }
+
+    /// The composer calls the Mac while the draft is not empty, at most one time in 5 seconds.
+    func testThePaceOfTheTypingCalls() {
+        var pace = TeamTypingPace()
+        let start = Date(timeIntervalSince1970: 1_000)
+        XCTAssertFalse(pace.take(draft: "", at: start))
+        XCTAssertFalse(pace.take(draft: " \n", at: start), "An empty draft calls nothing.")
+        XCTAssertTrue(pace.take(draft: "H", at: start))
+        XCTAssertFalse(pace.take(draft: "He", at: start.addingTimeInterval(1)))
+        XCTAssertFalse(pace.take(draft: "Hello", at: start.addingTimeInterval(4.9)))
+        XCTAssertTrue(pace.take(draft: "Hello t", at: start.addingTimeInterval(5)))
+        XCTAssertFalse(pace.take(draft: "Hello te", at: start.addingTimeInterval(9)))
+        XCTAssertTrue(pace.take(draft: "Hello team", at: start.addingTimeInterval(10.5)))
+    }
+
+    /// The second line of the row of a team: who types in place of the newest message, until the seconds end.
+    func testTheSecondLineOfTheRowOfATeam() {
+        let received = Date(timeIntervalSince1970: 1_000)
+        let last = TeamLastMessage(first: 4, member: "m-lin", memberName: "Lin", thisMac: false, text: "Hi",
+                                   createdAt: "2026-11-10T12:00:00Z")
+        var room = TeamRoom(room: "r1", name: "Example Team", state: "active", unread: 1, lastMessage: last)
+        XCTAssertEqual(TeamChatPreview.line(room, at: received), .init(text: "Lin: Hi", typing: false))
+        room.typing = TeamTypingList(items: [typing("Grace")], received: received)
+        XCTAssertEqual(TeamChatPreview.line(room, at: received), .init(text: "Grace is typing", typing: true))
+        XCTAssertEqual(TeamChatPreview.line(room, at: received.addingTimeInterval(10)),
+                       .init(text: "Lin: Hi", typing: false))
+        room.typing = TeamTypingList(items: [typing("Grace"), typing("Lin")], received: received)
+        XCTAssertEqual(TeamChatPreview.line(room, at: received)?.text, "Grace and Lin are typing")
+        // A Mac with an older service has no chat, so the row has no second line.
+        XCTAssertNil(TeamChatPreview.line(TeamRoom(room: "r2", name: "Old", state: "active"), at: received))
+    }
 }

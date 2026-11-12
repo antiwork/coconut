@@ -44,6 +44,8 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     /// The direct chats of this person in the team, newest first. Only a service that serves direct messages sends it,
     /// for an app that asks with the header `X-Coconut-Team: direct`.
     var directs: [TeamDirect]? = nil
+    /// Who types in the Team chat now (docs/team-log.md, "Typing"). An older service sends none.
+    var typing: TeamTypingList? = nil
 
     var id: String { room }
 

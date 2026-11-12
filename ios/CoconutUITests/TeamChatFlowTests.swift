@@ -529,6 +529,77 @@ final class TeamChatFlowTests: XCTestCase {
         shot("team-push-switch-refused")
     }
 
+    // MARK: Typing
+
+    /// Another person types, and the row of the chat shows and then goes (docs/team-log.md, "Typing"). The test world of
+    /// typing has Example Team (COCONUT_TYPING_TEAM) with Ada, the person of this app, Grace, Lin, and Reporter Mac
+    /// with the bot Reporter. A script of the world acts on the files in COCONUT_TEAM_FLAGS: `grace-types` makes Grace
+    /// type one time (then `grace-typed`), `both-type` makes Grace and Lin type (`both-typed`), and `bot-types` makes
+    /// Grace ask Reporter, whose turn runs until `bot-done` (`bot-typing` when the gateway shows the turn).
+    /// COCONUT_TEAM_LOOK "dark" or "large" sets the look and takes only the pictures of Grace.
+    @MainActor
+    func testAnotherPersonTypesAndTheRowShowsThenGoes() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"],
+              let room = env["COCONUT_TYPING_TEAM"], let flags = env["COCONUT_TEAM_FLAGS"] else {
+            throw XCTSkip("Run with the test world of typing.")
+        }
+        shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
+        let look = env["COCONUT_TEAM_LOOK"] ?? "light"
+        continueAfterFailure = false
+        app = XCUIApplication()
+        if look == "dark" { app.launchArguments += ["-AppleInterfaceStyle", "Dark", "-UIUserInterfaceStyle", "Dark"] }
+        if look == "large" {
+            app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
+        }
+        app.launchEnvironment = Self.pairing(url: url, code: code)
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Chats"].tap()
+        let row = app.buttons["team-chat-\(room)"]
+        XCTAssertTrue(row.waitForExistence(timeout: 15))
+
+        // The row of the team in the Chats list says who types, in place of the newest message.
+        try typingAct(flags, "grace-types", done: "grace-typed")
+        XCTAssertTrue(waitForLabel(row, contains: "Grace is typing", timeout: 10), row.label)
+        shot("typing-\(look)-4-chats-row")
+        row.tap()
+        let typing = element("team-typing")
+        XCTAssertTrue(typing.waitForExistence(timeout: 10), "The chat shows who types.")
+        XCTAssertEqual(typing.label, "Grace is typing")
+        shot("typing-\(look)-1-chat-grace", settle: false)
+        // Grace stops: the row goes after its seconds, without a new entry.
+        XCTAssertTrue(waitUntilGone(typing, timeout: 20), "The row goes after its seconds.")
+        guard look == "light" else { return }
+
+        try typingAct(flags, "both-type", done: "both-typed")
+        XCTAssertTrue(waitForLabel(typing, contains: "Grace and Lin are typing", timeout: 10), typing.label)
+        shot("typing-light-3-chat-grace-and-lin", settle: false)
+        XCTAssertTrue(waitUntilGone(typing, timeout: 20))
+
+        // A bot types while its turn runs, also after a message of the turn.
+        try typingAct(flags, "bot-types", done: "bot-typing", wait: 150)
+        XCTAssertTrue(waitForLabel(typing, contains: "Reporter is typing", timeout: 15), typing.label)
+        shot("typing-light-2-chat-reporter", settle: false)
+        try typingAct(flags, "bot-done", done: "bot-answered")
+        XCTAssertTrue(waitUntilGone(typing, timeout: 15), "The row goes at the end of the turn.")
+    }
+
+    private func waitUntilGone(_ element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+        return XCTWaiter().wait(for: [gone], timeout: timeout) == .completed
+    }
+
+    /// Waits for a script of the test world of typing: the test writes `flag`, and the script writes `done`.
+    private func typingAct(_ flags: String, _ flag: String, done: String, wait: Int = 60) throws {
+        let folder = URL(fileURLWithPath: flags)
+        try? FileManager.default.removeItem(at: folder.appendingPathComponent(done))
+        try Data().write(to: folder.appendingPathComponent(flag))
+        let path = folder.appendingPathComponent(done).path
+        for _ in 0..<(wait * 2) where !FileManager.default.fileExists(atPath: path) { usleep(500_000) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path), "The script of the test world did \(flag).")
+    }
+
     // MARK: Direct messages
 
     /// The test world of the direct messages: Example Team (COCONUT_TEAM_EXAMPLE) with Ada, the person of this app,

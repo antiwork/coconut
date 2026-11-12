@@ -24,6 +24,8 @@ struct StateUpdates: Decodable, Sendable {
     var teamMessagesChanged: [String]?
     /// The direct chats that changed: a message, an edit, a removal, a name, or the read position.
     var teamDirectsChanged: [TeamDirectChange]?
+    /// The teams where who types changed. The list of the teams says who types now.
+    var teamTypingChanged: [String]?
     var confirmedRequestIds: [String]?
 
     /// The chats that changed: each Team chat and each direct chat of this page.
