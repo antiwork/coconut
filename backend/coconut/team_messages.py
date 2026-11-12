@@ -295,9 +295,11 @@ class TeamMessages:
                 for row, entries in zip(rows, mentions)]
 
     def _team_chat_summary(self, room: dict) -> dict:
-        """The unread count and the newest message of a room, for GET /v1/team/rooms. The caller holds the service
-        lock."""
-        newest = self.team_store.messages(room['room'], None, 1)
+        """The unread count and the newest message of a room, for GET /v1/team/rooms. `mentioned` is true while an
+        unread message names this Mac's person, and `mention_first` is the `first` of the newest such message. The
+        caller holds the service lock."""
+        store = self.team_store
+        newest = store.messages(room['room'], None, 1)
         last = None
         if newest:
             row = newest[0]
@@ -307,4 +309,6 @@ class TeamMessages:
                     'bot': team_id(room['room'], row['bot']) if row['bot'] else None, 'bot_name': row['bot_name'],
                     'text': row['text'][:PREVIEW],
                     'created_at': row['created_at']}
-        return {'unread': self.team_store.unread(room['room'], room['member']), 'last_message': last}
+        mention = store.mention_first(room['room'], room['member'])
+        return {'unread': store.unread(room['room'], room['member']), 'last_message': last,
+                'mentioned': mention is not None, **({'mention_first': mention} if mention is not None else {})}

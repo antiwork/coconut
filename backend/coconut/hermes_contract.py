@@ -14,6 +14,17 @@ def require_keywords(function, names):
         raise ValueError(f'Hermes API changed in {function.__qualname__}: ' + ', '.join(missing))
 
 
+def require_registration_fields(entry):
+    """The fields of the registration of a platform (PlatformEntry) that the coconut platform needs. Without
+    `trusted_inbound`, Hermes refuses each Coconut sender as an unknown user. Without `display_overrides`, Hermes sends
+    its tool progress into the chat as messages. The team chat needs the same fields (hermes_plugin/coconut/team.py,
+    REGISTRATION_FIELDS)."""
+    missing = [name for name in ('trusted_inbound', 'display_overrides')
+               if name not in getattr(entry, '__dataclass_fields__', {})]
+    if missing:
+        raise ValueError('Hermes lacks the registration fields of the coconut platform: ' + ', '.join(missing))
+
+
 def verify_session_lifecycle_contract():
     """Session maintenance reads the store path and the end fields of a session row. Check them on a scratch store."""
     from hermes_state import SessionDB
@@ -169,6 +180,7 @@ def verify_gateway_contract():
     from gateway.platform_registry import PlatformEntry
     if 'platform_hint' not in PlatformEntry.__dataclass_fields__:
         raise ValueError('Hermes removed the platform hint of a plugin platform, which holds the card rules of Coconut.')
+    require_registration_fields(PlatformEntry)
     require_keywords(BasePlatformAdapter.send_clarify, ['chat_id', 'question', 'choices', 'clarify_id', 'session_key'])
     require_keywords(BasePlatformAdapter.on_processing_complete, ['event', 'outcome'])
     require_keywords(SessionStore.get_or_create_session, ['source', 'force_new'])

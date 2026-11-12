@@ -35,9 +35,18 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     var sync: TeamSync? = nil
     /// The time when this Mac made or joined the team.
     var createdAt: String? = nil
-    /// The unread count of the Team chat, 0 to 99. An older service has no chat and sends none.
+    /// The unread count of the Team chat, 0 to `maxUnread`. An older service has no chat and sends none.
     var unread: Int? = nil
+    /// The highest unread count of a chat of a team, also of a direct chat: the service stops its count there
+    /// (`MAX_UNREAD` in backend/coconut/team_store.py). A count at this value can hide a new message.
+    static let maxUnread = 99
     var lastMessage: TeamLastMessage? = nil
+    /// True while an unread message of the Team chat names this person. An older service sends none: it does not
+    /// know a mention of a person (TeamRoom.knowsPersonMentions).
+    var mentioned: Bool? = nil
+    /// The `first` of the newest unread message that names this person. Nil when none does, and for an older service.
+    /// The Mac banner of a quiet team reads it (MessageBanners).
+    var mentionFirst: Int? = nil
     /// Whether a new message of the team notifies this phone. It is a choice of the person on this Mac. A Mac for a
     /// team only and an older service send none, and the Team screen then has no switch.
     var notifications: Bool? = nil
@@ -56,6 +65,9 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
 
     /// The Mac serves the Team chat of this team. An older service has no `unread`.
     var hasChat: Bool { unread != nil }
+    /// The Mac knows a mention of a person: it notifies a named person also in a quiet team. Its sign is `mentioned`,
+    /// which an older service does not send. The `@` list and the footer of the switch read it.
+    var knowsPersonMentions: Bool { mentioned != nil }
     /// The member of this Mac.
     var ownMember: TeamMember? { memberList.first { $0.thisMac == true } }
     /// The newest message, or the time when this Mac made or joined the team. The Chats list sorts by it.

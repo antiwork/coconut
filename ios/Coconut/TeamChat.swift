@@ -202,8 +202,8 @@ struct TeamPendingMessage: Codable, Identifiable, Equatable, Sendable {
     let reply: TeamMessageQuote?
     let createdAt: String
     var failed = false
-    /// The `id` of each team bot that the text names. Nil for a message without a mention, and for a message that an
-    /// older app saved.
+    /// The ID of each team bot and each person that the text names. Nil for a message without a mention, and for a
+    /// message that an older app saved.
     var mentions: [String]? = nil
 
     var idempotencyKey: String { id }
@@ -618,12 +618,71 @@ extension TeamRoom {
     }
 }
 
-/// The names of team bots with `@` in the team chat. People are not in the list yet: a mention of a person does nothing.
+/// One row of the `@` list of the team chat: a bot that a teammate can ask, or another person of the team. Its `id` is
+/// the ID that a send puts into `mentions`: the `t-` ID of the bot, or the member ID of the person.
+enum TeamMentionTarget: MentionableBot, Equatable, Sendable {
+    case bot(TeamRoomBot)
+    case person(TeamMember)
+
+    var id: String {
+        switch self {
+        case .bot(let bot): bot.id
+        case .person(let member): member.member
+        }
+    }
+
+    var name: String {
+        switch self {
+        case .bot(let bot): bot.name
+        case .person(let member): member.name
+        }
+    }
+
+    var faceSymbol: String {
+        switch self {
+        case .bot(let bot): bot.faceSymbol
+        case .person(let member): member.avatar ?? ""
+        }
+    }
+
+    var faceColor: String {
+        switch self {
+        case .bot(let bot): bot.faceColor
+        case .person(let member): member.color ?? ""
+        }
+    }
+
+    var isMentionable: Bool { true }
+
+    var mentionedPerson: TeamMember? { if case .person(let member) = self { member } else { nil } }
+}
+
+/// The names of team bots and people with `@` in the team chat. A mention of a bot asks the bot. A mention of a person
+/// starts no turn: it tells the person, also in a quiet team.
 enum TeamMentions {
     /// The most mentions that the Mac takes in one message (`MAX_MENTIONS` in backend/coconut/team_store.py). A send
     /// with more saves nothing, so a message that the Mac refuses for its mentions never waits for a retry.
     static let limit = 16
-    static let overLimit = "Name at most \(limit) bots in one message."
+    static let overLimit = "Name at most \(limit) people and bots in one message."
+
+    /// The rows of the `@` list: the bots that a teammate can ask, then the people of the team, each group in the order
+    /// of the names. This is the one place of that rule. A person is each member that is not a Mac for a team only and
+    /// is not this person. An older service does not notify a named person in a quiet team, so its list has the bots
+    /// only (TeamRoom.knowsPersonMentions).
+    static func targets(of room: TeamRoom) -> [TeamMentionTarget] {
+        let people = room.knowsPersonMentions ? room.people.filter { $0.thisMac != true } : []
+        return byName(bots(of: room).map(TeamMentionTarget.bot)) + byName(people.map(TeamMentionTarget.person))
+    }
+
+    private static func byName(_ items: [TeamMentionTarget]) -> [TeamMentionTarget] {
+        items.sorted {
+            switch $0.name.localizedStandardCompare($1.name) {
+            case .orderedAscending: true
+            case .orderedDescending: false
+            case .orderedSame: $0.id < $1.id
+            }
+        }
+    }
 
     /// True when the `mentions` of a send fit the limit. The Mac counts each item of the list, so this does too.
     static func fits(_ mentions: [String]) -> Bool {
@@ -639,9 +698,74 @@ enum TeamMentions {
         return room.botList.filter { $0.isOpen && seen.insert($0.id).inserted }
     }
 
-    /// The `mentions` of a send: the `id` of each team bot that the text still names, one time each, in text order.
+    /// The `mentions` of a send: the ID of each row of the list that the text still names, one time each, in text
+    /// order. A bot gives its `t-` ID, and a person its member ID.
     static func ids(in text: String, selected: [SelectedBotMention], room: TeamRoom) -> [String] {
-        BotMentions.recipients(in: text, selected: selected, bots: bots(of: room)).map(\.id)
+        BotMentions.recipients(in: text, selected: selected, bots: targets(of: room)).map(\.id)
+    }
+}
+
+/// How a bubble shows a message that names this person: the `@` name of the person in bold, as Markdown already
+/// shows a strong word. No new color. A bubble shows each other name as the text has it.
+enum TeamMentionEmphasis {
+    /// What VoiceOver adds to such a bubble, as the bold name shows it.
+    static let spoken = "Names you"
+
+    /// True when the message of another writer names this person in its `mentions`.
+    static func namesMe(_ message: TeamMessage?, room: TeamRoom) -> Bool {
+        guard let message, !message.isOwn, let own = room.ownMember else { return false }
+        return message.mentions?.contains(own.member) == true
+    }
+
+    /// The text of the bubble: each `@name` of this person in bold. A text with a code mark (`) stays as it is,
+    /// because a mark of Markdown inside code would show as a character.
+    static func text(_ text: String, message: TeamMessage?, room: TeamRoom) -> String {
+        guard namesMe(message, room: room), let name = room.ownMember?.name, !name.isEmpty, !text.contains("`")
+        else { return text }
+        let token = "@" + name
+        var result = ""
+        var rest = text[...]
+        while let range = rest.range(of: token, options: .caseInsensitive) {
+            let before = range.lowerBound == text.startIndex ? nil : text[text.index(before: range.lowerBound)]
+            let after = range.upperBound == text.endIndex ? nil : text[range.upperBound]
+            result += String(rest[..<range.lowerBound])
+            if before.map(BotMentions.isBoundary) ?? true, after.map(BotMentions.isBoundary) ?? true {
+                result += "**" + String(text[range]) + "**"
+            } else {
+                result += String(text[range])
+            }
+            rest = rest[range.upperBound...]
+        }
+        return result + String(rest)
+    }
+}
+
+extension TeamRoom {
+    /// The row of the team shows the round "@" mark: an unread message names this person. An older service sends no
+    /// `mentioned`, so its row shows no mark.
+    var showsMentionMark: Bool { mentioned == true }
+}
+
+/// What VoiceOver reads for the row of a team in the Chats list and in the Mac sidebar.
+enum TeamRowSpeech {
+    static let named = "You are named"
+
+    /// The name, the newest message, the unread count, and "You are named" while the row shows the mark.
+    static func label(_ room: TeamRoom, preview: String?) -> String {
+        let unread = room.unread ?? 0
+        return [room.name, preview, unread > 0 ? UnreadBadge.spoken(unread) : nil,
+                room.showsMentionMark ? named : nil].compactMap { $0 }.joined(separator: ", ")
+    }
+}
+
+/// The footer of the switch "Notifications" on the Team screen. Off still notifies for a mention of this person, but
+/// only a service that knows a mention of a person does so (TeamRoom.knowsPersonMentions).
+enum TeamNotificationFooter {
+    static let on = "Get notified when someone writes in this team."
+    static let off = "You get a notification only when someone names you with @."
+
+    static func text(enabled: Bool, room: TeamRoom) -> String {
+        enabled || !room.knowsPersonMentions ? on : off
     }
 }
 

@@ -287,12 +287,14 @@ enum ChatRowText {
 
 /// The layout of one row of the Chats list and of the Mac sidebar, for a bot and a team, as the chat list of WhatsApp:
 /// the face, the name alone, one line under it, and on the right the age of the newest message with the unread badge
-/// under it. No line is empty, so a row of one line has its text centered on the face.
+/// under it. No line is empty, so a row of one line has its text centered on the face. A team whose unread message
+/// names this person has the round "@" mark before the badge, as in WhatsApp and Telegram.
 struct ChatRowLayout<Face: View, Subtitle: View>: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let name: String
     let unread: Int
     let date: Date?
+    var mentioned = false
     @ViewBuilder let face: () -> Face
     @ViewBuilder let subtitle: () -> Subtitle
 
@@ -303,10 +305,10 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
                 // The badge grows with the text and stands on its own line, so it covers no name.
                 VStack(alignment: .leading, spacing: 5) {
                     nameText
-                    if date != nil || unread > 0 {
+                    if date != nil || unread > 0 || mentioned {
                         HStack(spacing: 8) {
                             if let date { CompactAgeLabel(date: date).font(.caption).foregroundStyle(.secondary) }
-                            if unread > 0 { UnreadBadge(count: unread) }
+                            badges
                         }
                     }
                     subtitle()
@@ -318,10 +320,10 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
                         subtitle()
                     }
                     Spacer(minLength: 0)
-                    if date != nil || unread > 0 {
+                    if date != nil || unread > 0 || mentioned {
                         VStack(alignment: .trailing, spacing: 6) {
                             if let date { CompactAgeLabel(date: date).font(.caption).foregroundStyle(.secondary) }
-                            if unread > 0 { UnreadBadge(count: unread) }
+                            badges
                         }
                         .fixedSize()
                     }
@@ -333,6 +335,29 @@ struct ChatRowLayout<Face: View, Subtitle: View>: View {
 
     private var nameText: some View {
         Text(name).font(.body.weight(unread > 0 ? .semibold : .medium)).lineLimit(1)
+    }
+
+    /// The "@" mark, then the unread count.
+    private var badges: some View {
+        HStack(spacing: 4) {
+            if mentioned { MentionBadge() }
+            if unread > 0 { UnreadBadge(count: unread) }
+        }
+    }
+}
+
+/// The mark of a team whose unread message names this person: an "@" in a circle of the size and the fill of the
+/// unread badge. The label of the row says it to VoiceOver (TeamRowSpeech), so the mark itself is silent.
+struct MentionBadge: View {
+    @ScaledMetric(relativeTo: .caption2) private var size = 20
+
+    var body: some View {
+        Text("@")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(BoardStyle.controlLabel)
+            .frame(width: size, height: size)
+            .background(UnreadBadge.fill, in: Circle())
+            .accessibilityHidden(true)
     }
 }
 
@@ -359,7 +384,7 @@ struct UnreadBadge: View {
     }
 
     /// The ink of the app (the fill of the send button) without vibrancy: black in light mode, white in dark mode.
-    private static let fill = Color.adaptive { dark, _ in dark ? .white : .black }
+    static let fill = Color.adaptive { dark, _ in dark ? .white : .black }
 
     /// The digits of the badge. Over 99 shows "99+".
     nonisolated static func text(_ count: Int) -> String { count > 99 ? "99+" : "\(count)" }
