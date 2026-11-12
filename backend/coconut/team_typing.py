@@ -8,6 +8,8 @@ and `GET /v1/team/rooms` gives the list in `typing`.
 - A person's Mac writes the entry of its person with `on` true through `POST /v1/team/rooms/<room>/typing`. The app
   calls the route while the person changes the draft of the Team chat. The Mac writes at most one such entry in
   FLOOR_SECONDS for a room.
+- A Mac for a team only writes the entry of a bot while a turn of the bot runs (BotTyping): `on` true when the turn
+  starts in the gateway, again every AGAIN_SECONDS, and `on` false at the end of the turn.
 
 A direct chat shows no typing: a `typing` entry would tell each member that two people talk. No log line of this module
 has a name.
@@ -30,6 +32,11 @@ log = logging.getLogger(__name__)
 # A person's Mac writes the `typing` entry of its person at most this often in a room. A call inside that time writes
 # nothing.
 FLOOR_SECONDS = 4
+# A Mac for a team only writes the `typing` entry of a bot again this often while the turn runs. A reader shows a bot
+# for TYPING_BOT_SECONDS (team_store.py) after each read, so the row does not go between two writes.
+AGAIN_SECONDS = 20
+# How often BotTyping looks whether the adapter of the gateway took the turn.
+SHOWN_SECONDS = 0.2
 # The label of the entry ID of a `typing` entry (typing_entry).
 TYPING_LABEL = b'coconut room typing'
 # The answer of a Mac for a team only: no person types there.
@@ -111,3 +118,52 @@ class TeamTyping:
                           'bot_name': bots[(member, bot)] if bot else None, 'seconds': math.ceil(seconds)})
         return items
 
+
+class BotTyping:
+    """The `typing` entry of one bot of a Mac for a team only while one turn runs (team_turns.py), on a thread of its
+    own, so a write never fails or delays the turn.
+
+    The thread waits until the adapter of the gateway shows the turn (`started`). Then it writes `on` true, again every
+    AGAIN_SECONDS, and `on` false after `stop`. A turn that ends before the adapter shows it writes nothing. A turn that
+    gets a notice at once (no adapter) never starts this thread. A failed write gives one log line."""
+
+    def __init__(self, service, room: str, bot: str, started):
+        self.service, self.room, self.bot, self.started = service, room, bot, started
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=self.run, name='coconut-team-typing', daemon=True)
+
+    def start(self) -> BotTyping:
+        self.thread.start()
+        return self
+
+    def stop(self) -> None:
+        self.done.set()
+
+    def run(self) -> None:
+        while not self.started():
+            if self.done.wait(SHOWN_SECONDS):
+                return
+        wrote = False
+        while True:
+            wrote = self.write(True) or wrote
+            if self.done.wait(AGAIN_SECONDS):
+                break
+        if wrote:
+            self.write(False)
+
+    def write(self, on: bool) -> bool:
+        """Write the entry while the bot still answers in the room. True when the relay took it."""
+        service = self.service
+        try:
+            with service._team_room_lock(self.room):
+                with service.lock:
+                    room = service.team_store.room(self.room)
+                    share = service._team_share(self.room, self.bot, None)
+                if room is None or share is None:
+                    return False
+                service._team_typing_write(room, share, on)
+            return True
+        except Exception as error:
+            log.warning('coconut.team_turns room %s: the typing entry of the bot %s did not reach the relay (%s).',
+                        self.room[:8], self.bot, type(error).__name__)
+            return False

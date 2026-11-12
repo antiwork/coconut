@@ -1,17 +1,23 @@
 """Who types in the Team chat (coconut/team_typing.py, docs/team-log.md "Typing").
 
 Ada's Mac (`first`) made the room, and Grace's Mac (`second`) joined it. The Macs share the FakeRelay and the FakeHelper
-of team_fakes.py.
+of team_fakes.py. A bot of a team-only Mac types while its turn runs: FakeGateway of test_team_turns.py plays the
+adapter of its gateway. No model runs.
 """
+import base64
 import json
 import logging
+import threading
 import time
 import unittest
 from unittest import mock
 
 from coconut import team_typing
-from coconut.team_store import TYPING_PERSON_SECONDS
-from team_fakes import TeamMacs
+from coconut.team_relay import TeamRelayError
+from coconut.team_store import TYPING_BOT_SECONDS, TYPING_PERSON_SECONDS
+from coconut.team_turns import UNAVAILABLE
+from team_fakes import TeamMacs, decode
+from test_team_turns import TeamTurnMacs
 
 
 class TypingMacs(TeamMacs):
@@ -155,6 +161,121 @@ class PersonTests(TypingMacs, unittest.TestCase):
         for line in logs.output:
             self.assertNotIn('Grace', line)
             self.assertNotIn('Example Team', line)
+
+
+class BotTests(TeamTurnMacs, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.object(team_typing, 'AGAIN_SECONDS', 0.3)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # Each `typing` write of the team-only Mac, as (entry ID, on, bot). The body of the FakeHelper has the payload.
+        self.writes = []
+        self.refuse = False
+        write = self.relay.write
+
+        def record(relay, room, token, entry, kept, body, tries=1):
+            payload = json.loads(base64.b64decode(decode(body)['payload']))
+            if payload['kind'] == 'typing':
+                if self.refuse:
+                    raise TeamRelayError(503, 'The relay answered 503.')
+                self.writes.append((entry, payload['on'], payload.get('bot')))
+            return write(relay, room, token, entry, kept, body, tries)
+        self.relay.write = record
+
+    def slow(self, text, pause=1.0):
+        """A turn with two messages and a pause between them. The first message is a commentary, so the chat shows
+        it at once, and the gateway shows the turn with it."""
+        def script(turn):
+            yield {'kind': 'send', 'message_id': f'{turn["id"]}:1', 'text': text, 'interim': True}
+            time.sleep(pause)
+            yield {'kind': 'send', 'message_id': f'{turn["id"]}:2', 'text': text + ' Done.'}
+            yield {'kind': 'done', 'outcome': 'success'}
+        return script
+
+    def run_and_look(self) -> list:
+        """Run the waiting turns on a thread, and read Ada's list of who types while they run. Return each list."""
+        seen = []
+        turn = threading.Thread(target=self.run_turns)
+        turn.start()
+        while turn.is_alive():
+            self.first.team_sync_pass()
+            seen.append(self.typing())
+            time.sleep(0.1)
+        turn.join()
+        for typing in list(self.only._turns_typing.values()):
+            typing.thread.join(5)
+        self.sync()
+        return seen
+
+    def typing(self) -> list:
+        return self.call('GET', '/v1/team/rooms', service=self.first)['rooms'][0]['typing']
+
+    def test_the_bot_types_while_its_turn_runs_and_stops_at_its_end(self):
+        self.send('@Reporter what is open?', mentions=[self.mention])
+        self.sync()
+        self.serve(self.slow('3 tasks are open.'))
+        seen = [items for items in self.run_and_look() if items]
+        self.assertTrue(seen, 'Ada saw the bot type.')
+        (item,) = seen[0]
+        self.assertEqual({name: item[name] for name in ('name', 'bot', 'bot_name', 'seconds')},
+                         {'name': 'Reporter Mac', 'bot': self.mention, 'bot_name': 'Reporter',
+                          'seconds': TYPING_BOT_SECONDS})
+        ons = [on for _, on, _ in self.writes]
+        self.assertGreaterEqual(ons.count(True), 2, 'On, then again while the turn runs.')
+        self.assertEqual(ons[-1], False, 'Off at the end.')
+        self.assertEqual({(entry, bot) for entry, _, bot in self.writes}, {(self.writes[0][0], self.entry)},
+                         'One entry for the bot.')
+        self.assertEqual(self.typing(), [])
+        # A second turn writes the same entry with the next `rev`.
+        self.send('@Reporter and now?', mentions=[self.mention])
+        self.sync()
+        self.gateway.script = self.slow('2 tasks.', pause=0.5)
+        self.run_and_look()
+        self.assertEqual({entry for entry, _, _ in self.writes}, {self.writes[0][0]})
+        self.assertEqual(self.typing(), [])
+
+    def test_the_messages_of_the_bot_do_not_end_its_typing(self):
+        self.send('@Reporter what is open?', mentions=[self.mention])
+        self.sync()
+        self.serve(self.slow('First part.', pause=1.5))
+        seen = []
+        turn = threading.Thread(target=self.run_turns)
+        turn.start()
+        while turn.is_alive():
+            self.first.team_sync_pass()
+            texts = [text for _, text, _ in self.chat()]
+            seen.append(('First part.' in texts, bool(self.typing())))
+            time.sleep(0.1)
+        turn.join()
+        # Ada read the first message while the turn still ran, and the bot still typed after it.
+        self.assertIn((True, True), seen)
+
+    def test_a_failed_write_does_not_fail_the_turn_and_gives_one_log_line(self):
+        self.send('@Reporter what is open?', mentions=[self.mention])
+        self.sync()
+        self.serve(self.slow('3 tasks are open.', pause=0.5))
+        self.refuse = True
+        with self.assertLogs('coconut.team_typing', level='WARNING') as logs:
+            seen = self.run_and_look()
+        self.assertEqual([text for _, text, _ in self.chat()[-2:]], ['3 tasks are open.', '3 tasks are open. Done.'])
+        self.assertFalse(any(seen))
+        self.assertTrue(logs.output)
+        for line in logs.output:
+            self.assertIn('the typing entry of the bot', line)
+            self.assertNotIn('Reporter', line)
+
+    def test_a_turn_without_an_adapter_writes_no_typing(self):
+        self.send('@Reporter what is open?', mentions=[self.mention])
+        self.sync()
+        with mock.patch('coconut.team_turns.ADAPTER_SECONDS', 0):
+            self.run_turns()
+        self.assertEqual(self.writes, [])
+        self.assertEqual(self.chat()[-1][1], UNAVAILABLE)
+
+    def test_the_route_is_closed_on_a_team_only_mac(self):
+        self.assertEqual(self.refusal(self.only.team_request, 'POST', f'/v1/team/rooms/{self.room}/typing', {}),
+                         (409, team_typing.TEAM_ONLY))
 
 
 if __name__ == '__main__':
