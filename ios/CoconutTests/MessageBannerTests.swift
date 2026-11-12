@@ -126,6 +126,31 @@ final class MessageBannerTests: XCTestCase {
                                            after: rooms(room(notifications: false, unread: 1, last: last(2)))).post, [])
     }
 
+    // MARK: A count at its limit
+
+    func testANewMentionInAQuietTeamAtTheLimitMakesABanner() {
+        let full = TeamRoom.maxUnread
+        let plan = MessageBanners.plan(before: quiet(unread: full, last: last(200), mention: 150),
+                                       after: quiet(unread: full, last: last(201), mention: 201))
+        XCTAssertEqual(plan.post.map(\.chat), [TeamChatKey(room: "r1")])
+    }
+
+    func testATeamWithItsSwitchOnAtTheLimitMakesABannerForANewerMessageOnly() {
+        let full = TeamRoom.maxUnread
+        XCTAssertEqual(MessageBanners.plan(before: rooms(room(unread: full, last: last(200))),
+                                           after: rooms(room(unread: full, last: last(201)))).post.map(\.chat),
+                       [TeamChatKey(room: "r1")])
+        XCTAssertEqual(MessageBanners.plan(before: rooms(room(unread: full, last: last(200))),
+                                           after: rooms(room(unread: full, last: last(200)))).post, [])
+    }
+
+    func testADirectChatAtTheLimitMakesABannerForANewerMessage() {
+        let full = TeamRoom.maxUnread
+        let plan = MessageBanners.plan(before: rooms(room(directs: [direct(unread: full, last: last(200))])),
+                                       after: rooms(room(directs: [direct(unread: full, last: last(201))])))
+        XCTAssertEqual(plan.post.map(\.chat), [TeamChatKey(room: "r1", member: grace)])
+    }
+
     func testATeamThatIsNotActiveMakesNoBanner() {
         for state in ["joining", "removed", "gone"] {
             let before = rooms(room(state: state, unread: 0, last: last(1), directs: [direct(unread: 0, last: last(1))]))

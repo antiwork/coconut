@@ -35,8 +35,11 @@ struct TeamRoom: Decodable, Identifiable, Equatable, Sendable {
     var sync: TeamSync? = nil
     /// The time when this Mac made or joined the team.
     var createdAt: String? = nil
-    /// The unread count of the Team chat, 0 to 99. An older service has no chat and sends none.
+    /// The unread count of the Team chat, 0 to `maxUnread`. An older service has no chat and sends none.
     var unread: Int? = nil
+    /// The highest unread count of a chat of a team, also of a direct chat: the service stops its count there
+    /// (`MAX_UNREAD` in backend/coconut/team_store.py). A count at this value can hide a new message.
+    static let maxUnread = 99
     var lastMessage: TeamLastMessage? = nil
     /// True while an unread message of the Team chat names this person. An older service sends none: it does not
     /// know a mention of a person (TeamRoom.knowsPersonMentions).

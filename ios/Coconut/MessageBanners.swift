@@ -48,12 +48,15 @@ struct PostedBanners: Equatable, Sendable {
 enum MessageBanners {
     /// The banners for the change from the list `before` to the list `after`.
     ///
-    /// - A chat gets a banner when its unread count grew, its newest message is newer (a higher `first`), and that
-    ///   message is not a message of this Mac's person. A chat that is new in the list starts at 0.
-    /// - A Team chat also needs the switch "Notifications" of its team (TeamRoom.notifiesPhone), or a new mention of
-    ///   this person in an active team: `mentionFirst` grew since the list `before`. So a mention reaches the person
-    ///   also in a quiet team, as the push of the iPhone does, also when a plain message came after it. A direct chat
-    ///   needs an active team only.
+    /// - A chat gets a banner only when its newest message is newer (a higher `first`) and is not a message of this
+    ///   Mac's person. A chat that is new in the list starts at 0.
+    /// - A new mention of this person in the Team chat of an active team makes a banner: `mentionFirst` grew since the
+    ///   list `before`. It needs no growth of the unread count, because `mention_first` counts unread messages only.
+    ///   So a mention reaches the person also in a quiet team, as the push of the iPhone does, also when a plain
+    ///   message came after it, and also when the count is at its limit.
+    /// - Each other banner needs the unread count to grow, or to be at its limit (TeamRoom.maxUnread), where the
+    ///   service stops the count. A Team chat also needs the switch "Notifications" of its team
+    ///   (TeamRoom.notifiesPhone). A direct chat needs an active team only.
     /// - The first list after a start or a new pairing (`before` is nil) is history and makes no banner.
     /// - A chat has one banner, for its newest message, also after several new messages.
     /// - The banner of a chat with no unread message, and of a chat that left the list, goes away.
@@ -69,8 +72,10 @@ enum MessageBanners {
         for chat in chats {
             guard let last = chat.last, !last.isOwn else { continue }
             let old = earlier[chat.key]
-            guard chat.notifies || (chat.mentions && chat.mentionFirst > old?.mentionFirst ?? 0) else { continue }
-            guard chat.unread > old?.unread ?? 0, last.first ?? 0 > old?.last?.first ?? 0 else { continue }
+            guard last.first ?? 0 > old?.last?.first ?? 0 else { continue }
+            let mention = chat.mentions && chat.mentionFirst > old?.mentionFirst ?? 0
+            let counted = chat.unread > old?.unread ?? 0 || chat.unread >= TeamRoom.maxUnread
+            guard mention || (chat.notifies && counted) else { continue }
             plan.post.append(banner(chat.key, room: chat.room, last: last))
         }
         return plan
