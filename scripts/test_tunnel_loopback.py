@@ -26,8 +26,17 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 import pairing  # noqa: E402
 import tunnel  # noqa: E402
 # The Mac app job of CI runs this file after its `npm ci`, so the team log tests run there too.
-from test_team_log import (TeamLogTests, TeamLogVectorTests, TeamOnlyTests, TeamSocketTests,  # noqa: E402,F401
-                           start_failure)
+from test_team_log import (TeamLogTests, TeamLogVectorTests, TeamOnlyTests, TeamPushTests,  # noqa: E402,F401
+                           TeamSocketTests, start_failure)
+import test_team_log  # noqa: E402
+
+
+class TeamLogImportTests(unittest.TestCase):
+    def test_every_team_log_test_is_imported(self):
+        # A new test class in test_team_log must also be in the import above, or CI does not run it.
+        names = {name for name, value in vars(test_team_log).items()
+                 if isinstance(value, type) and issubclass(value, unittest.TestCase)}
+        self.assertEqual(names - set(globals()), set())
 
 
 def free_port() -> int:
