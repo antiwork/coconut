@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from coconut import team_store, team_turns
 from coconut.team_relay import TeamRelayError
-from coconut.team_turns import ASKED, DENIED, UNAVAILABLE, UNFINISHED
+from coconut.team_turns import ASKED, DENIED, OUTDATED, UNAVAILABLE, UNFINISHED
 from team_fakes import DEVICE
 from test_team_only import TeamOnlyMacs
 
@@ -23,18 +23,20 @@ class FakeGateway(threading.Thread):
     """Poll the bridge as the adapter of the team mode does, and report the events of `script(turn)` for each turn.
     A `question` event waits for its answer, which the next poll brings."""
 
-    def __init__(self, bridge, home, script):
+    def __init__(self, bridge, home, script, lacking=None):
         super().__init__(daemon=True)
         self.bridge, self.home, self.script = bridge, str(home), script
+        # What the Hermes of this adapter lacks for the team chat: each poll names it (hermes_plugin/coconut/team.py).
+        self.lacking = {'lacking': lacking} if lacking else {}
         self.turns, self.answers = [], []
         self.done = threading.Event()
         # The first poll connects the adapter, and it can bring a turn that waits.
-        self.waiting = bridge.poll({'home': self.home, 'wait': 0})['turns']
+        self.waiting = bridge.poll({'home': self.home, 'wait': 0, **self.lacking})['turns']
 
     def run(self):
         while not self.done.is_set():
             answer = self.bridge.poll({'home': self.home, 'wait': 0.2,
-                                       'active': [turn['id'] for turn in self.turns]})
+                                       'active': [turn['id'] for turn in self.turns], **self.lacking})
             self.answers += answer.get('answers', [])
             waiting, self.waiting = self.waiting, []
             for turn in waiting + answer['turns']:
@@ -96,8 +98,8 @@ class TeamTurnMacs(AsThePerson, TeamOnlyMacs):
             return [(row['entry'], row['started']) for row in self.only.team_store._rows(
                 team_store.TRIGGER_FIELDS, 'SELECT * FROM team_triggers ORDER BY number')]
 
-    def serve(self, script):
-        self.gateway = FakeGateway(self.only.gateway_bridge, self.home, script)
+    def serve(self, script, lacking=None):
+        self.gateway = FakeGateway(self.only.gateway_bridge, self.home, script, lacking)
         self.gateway.start()
         self.addCleanup(self.gateway.stop)
         return self.gateway
@@ -473,6 +475,52 @@ class HandoffTests(unittest.TestCase):
         self.finish(turn_id)
 
 
+class LackingTests(unittest.TestCase):
+    """An adapter whose Hermes lacks a part of the team chat names it in each poll (gateway_bridge.LACKING)."""
+
+    setUp, submit, finish = HandoffTests.setUp, HandoffTests.submit, HandoffTests.finish
+
+    def poll(self, **fields):
+        return self.bridge.poll({'home': self.home, 'wait': 0, **fields})
+
+    def test_the_bridge_keeps_replaces_and_forgets_what_hermes_lacks(self):
+        self.assertIsNone(self.bridge.lacking_of(self.home))
+        self.poll(lacking='trusted_inbound')
+        self.assertEqual(self.bridge.lacking_of(self.home), 'trusted_inbound')
+        self.poll(lacking='trusted_inbound, display_overrides')
+        self.assertEqual(self.bridge.lacking_of(self.home), 'trusted_inbound, display_overrides')
+        # An adapter that no longer polls has no Hermes to name.
+        with mock.patch('coconut.gateway_bridge.ADAPTER_SECONDS', 0):
+            self.assertIsNone(self.bridge.lacking_of(self.home))
+        self.poll()
+        self.assertIsNone(self.bridge.lacking_of(self.home))
+
+    def test_the_bridge_refuses_a_text_that_is_not_a_short_list_of_names(self):
+        self.poll(lacking='trusted_inbound')
+        for text in ('', 7, ['trusted_inbound'], 'Trusted inbound', 'trusted_inbound,display_overrides',
+                     'trusted_inbound\nUpdate now', 'a, ' * 70 + 'a'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                self.poll(lacking=text)
+        self.assertEqual(self.bridge.lacking_of(self.home), 'trusted_inbound')
+
+    def test_an_adapter_whose_hermes_lacks_a_part_gets_no_turn(self):
+        from coconut.gateway_bridge import GatewayUnavailable
+        started = time.monotonic()
+        self.submit()
+        self.assertEqual(self.poll(lacking='trusted_inbound')['turns'], [])
+        self.follower.join(5)
+        # The turn waits no TAKE_SECONDS: team_turns posts the notice at once.
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIsInstance(self.error, GatewayUnavailable)
+        self.assertEqual((self.events, self.bridge.turns), ([], {}))
+        # After a poll without the field, the adapter gets the next turn again.
+        self.poll()
+        turn_id = self.submit()
+        self.assertEqual([turn['id'] for turn in self.poll()['turns']], [turn_id])
+        self.finish(turn_id)
+        self.assertEqual((self.error, self.events.count('completed')), (None, 1))
+
+
 class FailureTests(TeamTurnMacs, unittest.TestCase):
     def trigger(self):
         sent = self.send('@Reporter status?', mentions=[self.mention])
@@ -488,6 +536,31 @@ class FailureTests(TeamTurnMacs, unittest.TestCase):
             self.run_turns()
         self.assertEqual(self.replies(), [(UNAVAILABLE, named['id'])])
         self.assertEqual(self.triggers(), [])
+
+    def test_a_hermes_that_lacks_a_part_gets_the_update_notice_at_once_each_time(self):
+        old = self.serve(reply('Three tasks are open.'), lacking='trusted_inbound')
+        bot = self.call('GET', '/v1/team/bots')['bots'][0]
+        self.assertEqual((bot['adapter'], bot['lacking']), (True, 'trusted_inbound'))
+        for number in range(2):
+            with self.subTest(trigger=number):
+                named = self.trigger()
+                started = time.monotonic()
+                with self.assertLogs('coconut.team_turns', logging.WARNING) as logs:
+                    self.run_turns()
+                self.assertLess(time.monotonic() - started, 5)
+                self.assertEqual(self.replies()[-1], (OUTDATED, named['id']))
+                self.assertEqual(len(logs.records), 1)
+                self.assertIn('trusted_inbound', logs.output[0])
+                for word in ('status?', 'Ada', 'Reporter'):
+                    self.assertNotIn(word, logs.output[0])
+        self.assertEqual((len(self.replies()), old.turns), (2, []))
+        # After an update of Hermes, the polls do not name it, and the bot answers as before.
+        old.stop()
+        self.serve(reply('Three tasks are open.'))
+        self.assertIsNone(self.call('GET', '/v1/team/bots')['bots'][0]['lacking'])
+        named = self.trigger()
+        self.run_turns()
+        self.assertEqual(self.replies()[-1], ('Three tasks are open.', named['id']))
 
     def test_a_gateway_that_restarts_takes_the_turn_and_one_that_is_gone_gets_the_notice_at_the_time(self):
         # The gateway polled a moment ago and stopped: the bridge still counts it as there.

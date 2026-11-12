@@ -249,7 +249,8 @@ class TeamOnlyService(TeamTurns, Documents, Team):
         return {'id': bot['id'], 'name': bot['name'], 'avatar': bot['avatar'], 'color': bot['color'],
                 'home': bot['home'], 'chat': bot.get('chat') is True, 'plugin': bot.get('plugin') is True,
                 'teams': self.team_store.rooms_of(bot['id']),
-                'adapter': self.gateway_bridge.connected(bot['home'])}
+                'adapter': self.gateway_bridge.connected(bot['home']),
+                'lacking': self.gateway_bridge.lacking_of(bot['home'])}
 
     def team_declare_bot(self, data: dict) -> dict:
         """Declare a bot for the Hermes home that it stands for. One home has one bot, and one name one bot, because
