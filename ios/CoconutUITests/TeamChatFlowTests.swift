@@ -26,7 +26,7 @@ final class TeamChatFlowTests: XCTestCase {
         shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
+        app.launchEnvironment = Self.pairing(url: url, code: code)
         app.launch()
 
         // The Chats tab lists the bots and the teams.
@@ -235,7 +235,7 @@ final class TeamChatFlowTests: XCTestCase {
         if look == "large" {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         }
-        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
+        app.launchEnvironment = Self.pairing(url: url, code: code)
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
@@ -294,7 +294,7 @@ final class TeamChatFlowTests: XCTestCase {
         if look == "large" {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         }
-        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
+        app.launchEnvironment = Self.pairing(url: url, code: code)
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         app.tabBars.buttons["Chats"].tap()
@@ -438,7 +438,7 @@ final class TeamChatFlowTests: XCTestCase {
         shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
         continueAfterFailure = false
         app = XCUIApplication()
-        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
+        app.launchEnvironment = Self.pairing(url: url, code: code)
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Chats"].waitForExistence(timeout: 15))
         allowNotifications()
@@ -476,7 +476,7 @@ final class TeamChatFlowTests: XCTestCase {
         if look == "large" {
             app.launchArguments += ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"]
         }
-        app.launchEnvironment = ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
+        app.launchEnvironment = Self.pairing(url: url, code: code)
         app.launch()
         let toggle = try openTeamScreen(room)
         XCTAssertEqual(toggle.value as? String, "1", "A team notifies at the start.")
@@ -496,6 +496,37 @@ final class TeamChatFlowTests: XCTestCase {
         XCTAssertEqual(again.value as? String, "0", "The Mac kept the choice.")
         again.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
         XCTAssertTrue(waitForValue(again, "1"))
+    }
+
+    /// When the Mac refuses the change, the switch goes back and the screen shows the error. The test writes the file
+    /// `hold-store` into the folder of COCONUT_TEAM_FLAGS. A script of the test world then holds the write lock of
+    /// the store of Ada's Mac and writes `store-held`, so the next write fails. The test writes `release-store` at
+    /// its end.
+    @MainActor
+    func testTheSwitchGoesBackWhenTheMacRefusesTheChange() throws {
+        let env = ProcessInfo.processInfo.environment
+        guard let url = env["COCONUT_TEAM_URL"], let code = env["COCONUT_TEAM_CODE"],
+              let room = env["COCONUT_TEAM_NOTIFY"], env["COCONUT_TEAM_REFUSE"] == "1",
+              let flags = env["COCONUT_TEAM_FLAGS"].map({ URL(fileURLWithPath: $0) }) else {
+            throw XCTSkip("Run with the test world of the team notifications and COCONUT_TEAM_REFUSE.")
+        }
+        shots = env["COCONUT_TEAM_SHOTS"].map { URL(fileURLWithPath: $0) }
+        continueAfterFailure = false
+        app = XCUIApplication()
+        app.launchEnvironment = Self.pairing(url: url, code: code)
+        app.launch()
+        let toggle = try openTeamScreen(room)
+        XCTAssertEqual(toggle.value as? String, "1")
+        try Data().write(to: flags.appendingPathComponent("hold-store"))
+        defer { try? Data().write(to: flags.appendingPathComponent("release-store")) }
+        let held = flags.appendingPathComponent("store-held")
+        for _ in 0..<30 where !FileManager.default.fileExists(atPath: held.path) { sleep(1) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: held.path), "The script holds the store.")
+        toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
+        let banner = app.descendants(matching: .any).matching(identifier: "action-error").firstMatch
+        XCTAssertTrue(banner.waitForExistence(timeout: 30), "The screen shows the error of the Mac.")
+        XCTAssertTrue(waitForValue(toggle, "1"), "The switch goes back.")
+        shot("team-push-switch-refused")
     }
 
     /// The Team screen of a team, from its chat. Return the switch "Notifications".
@@ -554,6 +585,17 @@ final class TeamChatFlowTests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    /// The pairing codes that a test of this run already gave to the app.
+    @MainActor private static var usedCodes: Set<String> = []
+
+    /// The launch environment of the app for the service at `url`. A pairing code works one time: the Mac refuses it
+    /// at a second pairing, and the app then stays disconnected. All tests of one run share one code and one app,
+    /// which keeps its pairing, so only the first launch of the run gets the code.
+    @MainActor private static func pairing(url: String, code: String) -> [String: String] {
+        guard usedCodes.insert(code).inserted else { return ["COCONUT_SERVER_URL": url] }
+        return ["COCONUT_SERVER_URL": url, "COCONUT_PAIR_CODE": code]
     }
 
     private func back() {
