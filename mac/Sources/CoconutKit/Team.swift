@@ -260,6 +260,8 @@ struct TeamRoom: Decodable {
         var name: String
         var admin: Bool
         var thisMac: Bool
+        /// True for a Mac for a team only: no person is at it. A service before this field does not send it.
+        var botOnly: Bool?
     }
 
     struct Bot: Decodable {
@@ -277,7 +279,8 @@ struct TeamRoom: Decodable {
     var lines: [String] {
         var lines = ["Team: \(name)", "ID: \(room)", "State: \(state)", "This Mac is the admin: \(isAdmin ? "yes" : "no")"]
         for member in members {
-            let notes = [member.admin ? "admin" : nil, member.thisMac ? "this Mac" : nil].compactMap { $0 }
+            let notes = [member.admin ? "admin" : nil, member.thisMac ? "this Mac" : nil,
+                         member.botOnly == true ? "no person" : nil].compactMap { $0 }
             lines.append("Member: \(member.name)" + (notes.isEmpty ? "" : " (\(notes.joined(separator: ", ")))"))
         }
         for bot in bots {
