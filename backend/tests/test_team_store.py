@@ -189,12 +189,58 @@ class TeamStoreTests(unittest.TestCase):
     # Rule 4: the kinds of the admin
 
     def test_remove_and_key_count_only_from_the_admin(self):
+        # The body of a test entry has epoch 0, so a `key` entry gives epoch 1.
+        fields = {'remove': {}, 'key': {'epoch': 1, 'agreement': 'A' * 43, 'boxes': {}}}
         for number, kind in enumerate(('remove', 'key'), start=1):
             with self.subTest(kind=kind):
-                self.assertEqual(self.write(number, {'kind': kind, 'rev': 1}, MEMBER), (REFUSED, 'admin'))
+                payload = {'kind': kind, 'rev': 1, **fields[kind]}
+                self.assertEqual(self.write(number, payload, MEMBER), (REFUSED, 'admin'))
                 self.assertIsNone(self.store.entry(ROOM, entry_id(number)))
-                self.assertEqual(self.write(number, {'kind': kind, 'rev': 1}, ADMIN), (STORED, None))
+                self.assertEqual(self.write(number, payload, ADMIN), (STORED, None))
                 self.assertEqual(self.store.entry(ROOM, entry_id(number))['kind'], kind)
+
+    # The `key` entry of the admin
+
+    def key(self, number: int, rev: int = 1, *, body_epoch: int = 0, member: str = ADMIN, **fields) -> tuple:
+        payload = {'kind': 'key', 'rev': rev, 'at': '2026-11-10T12:00:00Z', 'epoch': body_epoch + 1,
+                   'agreement': AGREEMENT, 'boxes': {MEMBER: 'box of Grace'}, **fields}
+        return self.accept(self.entry(number, member), {'epoch': body_epoch, 'payload': json.dumps(payload).encode()})
+
+    def test_a_key_entry_fits_only_with_the_next_epoch_an_agreement_key_and_boxes(self):
+        for fields in ({'epoch': 2}, {'epoch': 0}, {'epoch': '1'}, {'epoch': True}, {'agreement': None},
+                       {'agreement': AGREEMENT[:-1] + 'P'}, {'boxes': []}, {'boxes': {MEMBER[:-1] + 'G': 'box'}},
+                       {'boxes': {MEMBER: 7}}, {'boxes': {MEMBER: ''}}, {'boxes': {MEMBER: 'b' * 1025}},
+                       {'boxes': {f'{number:064x}': 'box' for number in range(65)}}):
+            with self.subTest(fields=fields):
+                self.assertEqual(self.key(1, **fields), (REFUSED, 'key'))
+                self.assertIsNone(self.store.entry(ROOM, entry_id(1)))
+        # A body of epoch 3 gives epoch 4. The store keeps the epoch of the body of each entry.
+        self.assertEqual(self.key(1, body_epoch=3, boxes={f'{number:064x}': 'box' for number in range(64)}),
+                         (STORED, None))
+        self.assertEqual(self.db.execute('SELECT epoch FROM team_entries WHERE id=?', (entry_id(1),)).fetchone(), (3,))
+        self.assertEqual([change['epoch'] for change in self.store.key_changes(ROOM, 0)], [4])
+        self.assertEqual(self.store.key_changes(ROOM, 4), [])
+        # Rule 4 comes first.
+        self.assertEqual(self.key(2, member=MEMBER), (REFUSED, 'admin'))
+
+    def test_a_key_change_is_due_after_each_removal_that_is_newer_than_the_newest_key_entry(self):
+        self.assertFalse(self.store.key_change_due(ROOM))
+        self.remove(1, '3' * 64)
+        self.assertTrue(self.store.key_change_due(ROOM))
+        self.key(2)
+        self.assertFalse(self.store.key_change_due(ROOM))
+        # One change covers each removal before it, also a removal of the same member again.
+        self.remove(3, '4' * 64)
+        self.assertTrue(self.store.key_change_due(ROOM))
+        # A new write of the older `key` entry, for a member that the admin missed, keeps its place.
+        self.key(2, rev=2)
+        self.assertTrue(self.store.key_change_due(ROOM))
+        self.key(4, body_epoch=1)
+        self.assertFalse(self.store.key_change_due(ROOM))
+        self.assertFalse(self.store.key_change_due(OTHER_ROOM))
+        # For one epoch, the newest write counts.
+        (first, second) = self.store.key_changes(ROOM, 0)
+        self.assertEqual((first['entry'], first['epoch'], first['seq'], second['epoch']), (entry_id(2), 1, 4, 2))
 
     # The `remove` entry of the admin
 
@@ -474,6 +520,20 @@ class TeamStoreTests(unittest.TestCase):
         db.executescript(team_store.SCHEMA)
         TeamStore(db).migrate()
         self.assertEqual(db.execute('SELECT name, bot_only FROM team_members').fetchall(), [('Grace', 0)])
+
+    def test_an_older_store_gets_the_epoch_of_each_entry_as_0(self):
+        db = sqlite3.connect(':memory:', isolation_level=None)
+        self.addCleanup(db.close)
+        db.execute('CREATE TABLE team_entries (room TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL, '
+                   'first INTEGER NOT NULL, member TEXT NOT NULL, kind TEXT NOT NULL, rev INTEGER NOT NULL, '
+                   'at INTEGER NOT NULL, kept INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY (room, id))')
+        db.execute("INSERT INTO team_entries VALUES (?, ?, 1, 1, ?, 'member', 1, 0, 1, '{}')",
+                   (ROOM, entry_id(1), ADMIN))
+        db.executescript(team_store.SCHEMA)
+        store = TeamStore(db)
+        store.migrate()
+        store.migrate()
+        self.assertEqual(db.execute('SELECT id, epoch FROM team_entries').fetchall(), [(entry_id(1), 0)])
 
 
 if __name__ == '__main__':

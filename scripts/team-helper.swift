@@ -27,6 +27,11 @@ import Foundation
 // - `open_direct` (`room`, `agreement_key`, `member`, `boxes`: a list of `entry`, `writer`, `other`, `agreement`,
 //   `box`): `boxes`, one result for each box in the same order: `plaintext`, or `error`. The pair key of a box is the
 //   one of this Mac and `other`, with the agreement key `agreement` of `other`.
+// - `seal_key` (`room`, `entry`, `epoch`, `key`, `agreement_key`, `member`, `members`: a list of `member` and
+//   `agreement`): `boxes`, one result for each member in the same order: `box`, the box of the room key `key` of the
+//   epoch `epoch` for that member as unpadded base64url, or `error`. `member` is this Mac, the admin.
+// - `open_key` (`room`, `entry`, `epoch`, `agreement_key`, `member`, `admin`, `agreement`, `box`): `key`, the room key
+//   of the epoch `epoch`. `member` is this Mac, and `agreement` is the public agreement key of the admin.
 // - `ticket` (`secret`): `ticket` and `hash`, the hash of the ticket.
 // - `seal_welcome` (`room`, `secret`, `epoch`, `key`, `admin`, `name`): `welcome`.
 // - `open_welcome` (`room`, `secret`, `welcome`): `epoch`, `key`, `admin`, `name`.
@@ -54,6 +59,13 @@ struct TeamHelper {
             let box: String
         }
 
+        /// A member that gets a box in a call of `seal_key`: its ID in lowercase hex, and its public agreement key as
+        /// unpadded base64url.
+        struct Recipient: Decodable {
+            let member: String
+            let agreement: String
+        }
+
         let operation: String
         var room: String?
         var entry: String?
@@ -77,10 +89,12 @@ struct TeamHelper {
         var agreement: String?
         var plaintext: Data?
         var boxes: [Box]?
+        var box: String?
+        var members: [Recipient]?
 
         enum CodingKeys: String, CodingKey {
             case operation, room, entry, epoch, key, keys, payload, entries, secret, welcome, admin, name, relay
-            case expires, link, token, member, other, agreement, plaintext, boxes
+            case expires, link, token, member, other, agreement, plaintext, boxes, box, members
             case memberKey = "member_key"
             case agreementKey = "agreement_key"
         }
@@ -155,7 +169,8 @@ struct TeamHelper {
         case "seal_direct":
             let room = try bytes(input.room), member = try bytes(input.member)
             let key = try TeamLog.pairKey(agreement: agreement(input.agreementKey), other: base64URL(input.agreement),
-                                          room: room, member: member, otherMember: bytes(input.other))
+                                          room: room, member: member, otherMember: bytes(input.other),
+                                          label: TeamLog.directLabel)
             let box = try TeamLog.sealDirect(need(input.plaintext), key: key, room: room, entry: bytes(input.entry),
                                              writer: member)
             return ["box": TeamLog.base64URL(box)]
@@ -163,6 +178,20 @@ struct TeamHelper {
             let room = try bytes(input.room), member = try bytes(input.member)
             let own = try agreement(input.agreementKey)
             return ["boxes": try need(input.boxes).map { openDirect($0, room: room, member: member, agreement: own) }]
+        case "seal_key":
+            let room = try bytes(input.room), entry = try bytes(input.entry), member = try bytes(input.member)
+            let own = try agreement(input.agreementKey), newKey = try roomKey(input.key), epoch = try need(input.epoch)
+            return ["boxes": try need(input.members).map {
+                sealKey(newKey, for: $0, room: room, entry: entry, admin: member, epoch: epoch, agreement: own)
+            }]
+        case "open_key":
+            let room = try bytes(input.room), admin = try bytes(input.admin)
+            let key = try TeamLog.pairKey(agreement: agreement(input.agreementKey), other: base64URL(input.agreement),
+                                          room: room, member: bytes(input.member), otherMember: admin,
+                                          label: TeamLog.keyLabel)
+            let opened = try TeamLog.openKey(base64URL(input.box), key: key, room: room, entry: bytes(input.entry),
+                                             admin: admin, epoch: need(input.epoch))
+            return ["key": opened.base64EncodedString()]
         case "ticket":
             let ticket = try TeamLog.ticket(secret: need(input.secret))
             return ["ticket": ticket, "hash": TeamLog.hash(ticket)]
@@ -212,10 +241,25 @@ struct TeamHelper {
                            agreement: Curve25519.KeyAgreement.PrivateKey) -> [String: Any] {
         do {
             let key = try TeamLog.pairKey(agreement: agreement, other: base64URL(box.agreement), room: room,
-                                          member: member, otherMember: bytes(box.other))
+                                          member: member, otherMember: bytes(box.other), label: TeamLog.directLabel)
             let plaintext = try TeamLog.openDirect(base64URL(box.box), key: key, room: room, entry: bytes(box.entry),
                                                    writer: bytes(box.writer))
             return ["plaintext": plaintext.base64EncodedString()]
+        } catch let failure as TeamLog.Failure {
+            return ["error": code(failure)]
+        } catch {
+            return ["error": "malformed"]
+        }
+    }
+
+    /// Seals the room key for one member of a `seal_key` call. A member with a key that does not fit fails alone.
+    static func sealKey(_ roomKey: Data, for recipient: Input.Recipient, room: Data, entry: Data, admin: Data,
+                        epoch: UInt32, agreement: Curve25519.KeyAgreement.PrivateKey) -> [String: Any] {
+        do {
+            let key = try TeamLog.pairKey(agreement: agreement, other: base64URL(recipient.agreement), room: room,
+                                          member: admin, otherMember: bytes(recipient.member), label: TeamLog.keyLabel)
+            let box = try TeamLog.sealKey(roomKey, key: key, room: room, entry: entry, admin: admin, epoch: epoch)
+            return ["box": TeamLog.base64URL(box)]
         } catch let failure as TeamLog.Failure {
             return ["error": code(failure)]
         } catch {

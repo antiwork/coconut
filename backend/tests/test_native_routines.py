@@ -15,27 +15,29 @@ from coconut.service import Service, ServiceError
 
 class ApprovalRecoveryTests(unittest.TestCase):
     def test_ambiguous_native_write_reconciles_without_repeating_or_overwriting(self):
-        with tempfile.TemporaryDirectory() as root:
-            service = Service(root, FixtureProvider(root), start_workers=False)
-            self.addCleanup(service.close)
-            state = {'default': 'off', 'modes': [{'id': 'off'}, {'id': 'manual'}]}
-            writes = []
-            def native(operation='read', **values):
-                if operation == 'set_default_approval':
-                    writes.append(values['mode'])
-                    state['default'] = values['mode']
-                    raise ConnectionError('Lost response after write.')
-                return {'approvals': dict(state)}
-            service.provider.native_settings = native
-            key = str(uuid4())
-            with self.assertRaises(ServiceError):
-                service.mutate('PUT', '/v1/settings/approvals', {'mode': 'manual'}, key)
-            result = service.mutate('PUT', '/v1/settings/approvals', {'mode': 'manual'}, key)
-            self.assertEqual(result['default'], 'manual')
-            state['default'] = 'off'
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = temp.name
+        service = Service(root, FixtureProvider(root), start_workers=False)
+        self.addCleanup(service.close)
+        state = {'default': 'off', 'modes': [{'id': 'off'}, {'id': 'manual'}]}
+        writes = []
+        def native(operation='read', **values):
+            if operation == 'set_default_approval':
+                writes.append(values['mode'])
+                state['default'] = values['mode']
+                raise ConnectionError('Lost response after write.')
+            return {'approvals': dict(state)}
+        service.provider.native_settings = native
+        key = str(uuid4())
+        with self.assertRaises(ServiceError):
             service.mutate('PUT', '/v1/settings/approvals', {'mode': 'manual'}, key)
-            self.assertEqual(state['default'], 'off')
-            self.assertEqual(writes, ['manual'])
+        result = service.mutate('PUT', '/v1/settings/approvals', {'mode': 'manual'}, key)
+        self.assertEqual(result['default'], 'manual')
+        state['default'] = 'off'
+        service.mutate('PUT', '/v1/settings/approvals', {'mode': 'manual'}, key)
+        self.assertEqual(state['default'], 'off')
+        self.assertEqual(writes, ['manual'])
 
 
 class RoutineChangeTests(unittest.TestCase):
